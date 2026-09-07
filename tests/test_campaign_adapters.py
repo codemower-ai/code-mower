@@ -1892,5 +1892,149 @@ class StructuredResultCapabilityTests(unittest.TestCase):
             self.assertFalse(campaign_adapters.check_structured_result_capability("claude_audit"))
 
 
+class ClaudeMacosCertificatePathTests(unittest.TestCase):
+    """macOS Claude runs install through pip's TLS-verifying legacy trust store.
+
+    Claude Code's maintained strict sandbox denies the Security.framework call
+    pip's default macOS trust store makes (OSStatus -26276). The legacy path
+    keeps certificate verification enabled; only the trust store changes. The
+    workaround is scoped to Claude on macOS and nothing else.
+    """
+
+    def _prompt(self, provider: str, platform_system: str, **overrides: Any) -> str:
+        kwargs: dict[str, Any] = {
+            "provider": provider,
+            "release_tag": "v1.0.0",
+            "package_spec": "code-mower==1.0.0",
+            "package_identity": "code-mower",
+            "normalized_version": "1.0.0",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "platform_system": platform_system,
+        }
+        kwargs.update(overrides)
+        return campaign_adapters.build_qualification_prompt(**kwargs)
+
+    def test_macos_claude_cold_install_uses_legacy_certs_without_ambient_pip_config(self) -> None:
+        prompt = self._prompt("claude", "Darwin")
+        self.assertIn(
+            "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null "
+            ".venv/bin/python -m pip --isolated --use-deprecated=legacy-certs install",
+            prompt,
+        )
+        # TLS verification stays on: no trusted-host, no verification bypass,
+        # and no route out of the sandbox.
+        self.assertNotIn("--trusted-host", prompt)
+        self.assertNotIn("--cert ", prompt)
+        self.assertNotIn("PYTHONHTTPSVERIFY", prompt)
+        self.assertNotIn("CURL_CA_BUNDLE=", prompt)
+        self.assertIn("Certificate verification", prompt)
+
+    def test_macos_claude_upgrade_and_testpypi_plans_use_the_same_pip_command(self) -> None:
+        legacy = campaign_adapters.PIP_LEGACY_CERTS_FLAG
+        upgrade = self._prompt(
+            "claude",
+            "Darwin",
+            qualification_context="upgrade",
+            starting_version="0.9.0",
+        )
+        self.assertIn(f"--isolated {legacy} install code-mower==0.9.0", upgrade)
+        self.assertIn(f'--isolated {legacy} install "code-mower==1.0.0"', upgrade)
+        self.assertNotIn(".venv/bin/python -m pip install", upgrade)
+
+        testpypi = self._prompt("claude", "Darwin", package_source="testpypi")
+        self.assertIn(f"--isolated {legacy} download --no-deps --no-cache-dir", testpypi)
+        self.assertIn(f"--isolated {legacy} install", testpypi)
+        # The TestPyPI index contract is unchanged by the certificate path.
+        self.assertIn("https://test.pypi.org/simple/", testpypi)
+
+    def test_macos_claude_prompt_classifies_remaining_certificate_failure_as_network(self) -> None:
+        prompt = self._prompt("claude", "Darwin")
+        self.assertIn("`failure_reason` `network`", prompt)
+        self.assertIn("never `sandbox_permission`", prompt)
+
+    def test_linux_claude_and_other_providers_keep_the_default_certificate_path(self) -> None:
+        for provider, platform_system in (
+            ("claude", "Linux"),
+            ("codex", "Darwin"),
+            ("antigravity", "Darwin"),
+            ("muse", "Darwin"),
+            ("devin_cli", "Darwin"),
+        ):
+            with self.subTest(provider=provider, platform=platform_system):
+                prompt = self._prompt(provider, platform_system)
+                self.assertNotIn(campaign_adapters.PIP_LEGACY_CERTS_FLAG, prompt)
+                self.assertIn(".venv/bin/python -m pip install", prompt)
+
+    def test_pip_command_builder_is_scoped_to_claude_on_macos(self) -> None:
+        self.assertEqual(
+            campaign_adapters.build_qualification_pip_command(
+                provider="claude", platform_system="Darwin"
+            ),
+            f"{campaign_adapters.PIP_ISOLATED_BASE} {campaign_adapters.PIP_LEGACY_CERTS_FLAG}",
+        )
+        self.assertEqual(
+            campaign_adapters.build_qualification_pip_command(
+                provider="claude", platform_system="Linux"
+            ),
+            campaign_adapters.PIP_DEFAULT_BASE,
+        )
+        self.assertEqual(
+            campaign_adapters.build_qualification_pip_command(
+                provider="codex", platform_system="Darwin"
+            ),
+            campaign_adapters.PIP_DEFAULT_BASE,
+        )
+        # TestPyPI keeps its ambient-config strip on every provider.
+        self.assertEqual(
+            campaign_adapters.build_qualification_pip_command(
+                provider="codex", package_source="testpypi", platform_system="Darwin"
+            ),
+            campaign_adapters.PIP_ISOLATED_BASE,
+        )
+
+    def test_platform_system_defaults_to_the_running_host(self) -> None:
+        with mock.patch("code_mower.campaign_adapters.platform.system", return_value="Darwin"):
+            self.assertTrue(campaign_adapters.claude_macos_certificate_path_required("claude"))
+            self.assertFalse(campaign_adapters.claude_macos_certificate_path_required("codex"))
+        with mock.patch("code_mower.campaign_adapters.platform.system", return_value="Linux"):
+            self.assertFalse(campaign_adapters.claude_macos_certificate_path_required("claude"))
+
+    def test_claude_sandbox_posture_is_unchanged_by_the_certificate_path(self) -> None:
+        argv = campaign_adapters.build_claude_argv(
+            claude_bin="/bin/claude",
+            model="sonnet",
+            max_budget_usd="5.00",
+            schema_json="{}",
+            workspace_dir="/tmp/work",
+        )
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        sandbox = settings["sandbox"]
+        self.assertIs(sandbox["enabled"], True)
+        self.assertIs(sandbox["failIfUnavailable"], True)
+        self.assertIs(sandbox["allowUnsandboxedCommands"], False)
+        self.assertEqual(sandbox["filesystem"]["denyRead"], ["~"])
+        self.assertEqual(sandbox["filesystem"]["denyWrite"], ["~"])
+        self.assertEqual(
+            sandbox["network"]["allowedDomains"],
+            ["pypi.org", "files.pythonhosted.org"],
+        )
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+
+    def test_provider_child_env_still_excludes_ambient_pip_and_token_settings(self) -> None:
+        ambient = {
+            "PIP_INDEX_URL": "https://internal.example/simple/",
+            "PIP_EXTRA_INDEX_URL": "https://internal.example/extra/",
+            "PIP_CONFIG_FILE": "/tmp/ambient-pip.conf",
+            "PIP_TRUSTED_HOST": "internal.example",
+            "GITHUB_TOKEN": "ghp_example",
+            "ANTHROPIC_API_KEY": "sk-example",
+        }
+        with mock.patch.dict(os.environ, ambient, clear=False):
+            child_env = campaign_adapters.build_adapter_child_env("claude")
+        for name in ambient:
+            self.assertNotIn(name, child_env)
+
+
 if __name__ == "__main__":
     unittest.main()

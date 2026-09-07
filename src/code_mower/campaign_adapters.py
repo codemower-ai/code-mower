@@ -57,6 +57,7 @@ import argparse
 import copy
 import json
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -174,6 +175,58 @@ def _claude_sandbox_settings(package_source: str) -> dict[str, Any]:
             "network": {"allowedDomains": list(allowed_domains)},
         },
     }
+
+
+#: Strips ambient pip configuration from the disposable qualification install:
+#: no inherited index URLs, no user/site pip configuration file, and pip's own
+#: ``--isolated`` mode for every other ambient setting.
+PIP_AMBIENT_CONFIG_STRIP = "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null"
+PIP_ISOLATED_BASE = f"{PIP_AMBIENT_CONFIG_STRIP} .venv/bin/python -m pip --isolated"
+PIP_DEFAULT_BASE = ".venv/bin/python -m pip"
+#: pip 24.2+ verifies certificates through the platform trust store. On macOS
+#: that path calls Security.framework, which the maintained strict Claude OS
+#: sandbox denies (``OSStatus -26276``) even with the package index allowlisted.
+#: ``legacy-certs`` keeps TLS verification fully enabled: it only moves pip back
+#: to its bundled certifi trust store, which needs no Security.framework call.
+PIP_LEGACY_CERTS_FLAG = "--use-deprecated=legacy-certs"
+
+
+def claude_macos_certificate_path_required(provider: str, *, platform_system: str = "") -> bool:
+    """True only for a Claude campaign run on macOS.
+
+    This is the exact scope of the upstream Claude Code macOS sandbox
+    certificate-validation defect. Linux Claude runs and every other provider
+    keep pip's default certificate path.
+    """
+    system = platform_system or platform.system()
+    return provider == "claude" and system.strip().lower() == "darwin"
+
+
+def build_qualification_pip_command(
+    *,
+    provider: str,
+    package_source: str = DEFAULT_PACKAGE_SOURCE,
+    platform_system: str = "",
+) -> str:
+    """Return the pip command the qualification prompt tells the agent to run.
+
+    A macOS Claude run always gets the ambient-configuration strip as well as
+    :data:`PIP_LEGACY_CERTS_FLAG`, so the certificate path is chosen by this
+    adapter rather than by whatever pip configuration happens to be on the
+    host.
+    """
+    legacy_certs = claude_macos_certificate_path_required(
+        provider, platform_system=platform_system
+    )
+    if package_source == "testpypi" or legacy_certs:
+        command = PIP_ISOLATED_BASE
+    else:
+        command = PIP_DEFAULT_BASE
+    if legacy_certs:
+        command = f"{command} {PIP_LEGACY_CERTS_FLAG}"
+    return command
+
+
 ANTIGRAVITY_MODEL_ENV_NAMES = ("CODE_MOWER_ANTIGRAVITY_MODEL", "ANTIGRAVITY_MODEL")
 ANTIGRAVITY_AMBIENT_HOME_ENV = "ANTIGRAVITY_CLI_USE_AMBIENT_HOME"
 MUSE_MODEL_ENV_NAMES = ("CODE_MOWER_MUSE_MODEL", "MUSE_MODEL", "META_MUSE_MODEL")
@@ -385,6 +438,7 @@ def build_qualification_prompt(
     package_source: str = DEFAULT_PACKAGE_SOURCE,
     python_bin: str = "python3",
     target_runtime: str = "",
+    platform_system: str = "",
 ) -> str:
     """Build the shared release-qualification prompt for one provider run.
 
@@ -394,14 +448,19 @@ def build_qualification_prompt(
     directory it creates itself. ``package_source`` is the closed vocabulary
     (``pypi``/``testpypi``); when it is ``testpypi`` the prompt keeps candidate
     retrieval exclusive to TestPyPI and dependency resolution exclusive to
-    production PyPI.
+    production PyPI. ``platform_system`` defaults to the running host and
+    exists so the macOS-only Claude certificate path is testable off macOS.
     """
     python_cmd = shlex.quote(python_bin or "python3")
+    legacy_certs = claude_macos_certificate_path_required(
+        provider, platform_system=platform_system
+    )
+    pip = build_qualification_pip_command(
+        provider=provider,
+        package_source=package_source,
+        platform_system=platform_system,
+    )
     if package_source == "testpypi":
-        pip = (
-            "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null "
-            ".venv/bin/python -m pip --isolated"
-        )
         steps = [
             "1. In the current disposable directory, run "
             f"`{python_cmd} -m venv .venv`. Use only `.venv/bin/python` and installed "
@@ -438,11 +497,11 @@ def build_qualification_prompt(
             "1. In the current disposable directory, run "
             f"`{python_cmd} -m venv .venv`. Use only `.venv/bin/python` and installed "
             "entry points for the remaining steps.\n"
-            f"2. Install the starting version with `.venv/bin/python -m pip install"
+            f"2. Install the starting version with `{pip} install"
             " "
             f"{package_identity}=={starting_version}` to rehearse "
             f"an upgrade from exactly that version.\n"
-            f'3. Upgrade with `.venv/bin/python -m pip install "{package_spec}"`.'
+            f'3. Upgrade with `{pip} install "{package_spec}"`.'
         )
         verification_step = 4
     else:
@@ -450,7 +509,7 @@ def build_qualification_prompt(
             "1. In the current disposable directory, run "
             f"`{python_cmd} -m venv .venv`. Use only `.venv/bin/python` and installed "
             "entry points for the remaining steps.\n"
-            f"2. Install the exact release with `.venv/bin/python -m pip install"
+            f"2. Install the exact release with `{pip} install"
             f' "{package_spec}"`. No other version is acceptable.'
         )
         verification_step = 4
@@ -470,6 +529,24 @@ def build_qualification_prompt(
                 "Perform every file creation and edit through shell commands only;",
                 "dedicated file write/edit tools cannot be approved in this unattended",
                 "run and any call to them ends the session without a result.",
+            ]
+        )
+    if legacy_certs:
+        # macOS-only Claude sandbox defect: pip's default trust store calls
+        # Security.framework, which this sandbox denies (OSStatus -26276).
+        lines.extend(
+            [
+                "Every pip command in the procedure below already carries "
+                f"`{PIP_LEGACY_CERTS_FLAG}`, because pip's default macOS trust",
+                "store is unreachable from this sandbox. Certificate verification",
+                "stays fully enabled; only the trust store changes. If this pip",
+                "build rejects that option as an invalid choice, rerun the identical",
+                "command without it and change nothing else. Never add",
+                "`--trusted-host`, never disable or skip TLS verification, and never",
+                "run any command outside the sandbox. If an install still fails",
+                "certificate verification, report the `package_install` step with",
+                "`failure_reason` `network` (or `package_index` when the index itself",
+                "served the error) -- never `sandbox_permission`.",
             ]
         )
     lines.extend(
