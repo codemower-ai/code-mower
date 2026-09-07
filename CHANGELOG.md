@@ -7,6 +7,39 @@ later entries are regular releases.
 
 ## Unreleased
 
+No changes yet.
+
+## v1.0.11
+
+This patch hardens release qualification. Canonical hosted Devin campaigns move
+onto the bounded, pollable Devin Sessions API v3 transport, and macOS Claude
+qualification can cold-install an exact PyPI release again without weakening
+the maintained strict sandbox. It preserves supervised pilot gate semantics,
+Python 3.12+, and the metadata-only privacy boundary.
+
+### Changed
+
+- Canonical hosted Devin release campaigns dispatch through the Devin Sessions
+  API v3 instead of a GitHub issue comment. The API call is the execution
+  trigger, and it requires a service-user `DEVIN_API_KEY` with the
+  `UseDevinSessions` and `ViewOrgSessions` organization permissions, the opaque
+  `org-*` `DEVIN_ORG_ID`, and the exact `OWNER/REPO` target acknowledged in
+  `CODE_MOWER_DEVIN_REPOSITORIES`. Matching is against the full slug, so a
+  same-name personal fork does not satisfy an organization repository target,
+  and `DEVIN_ORG_ID` is not a GitHub owner name. Credentials are read but never
+  printed or persisted. A dispatch is bounded and pollable: a resume
+  (`--resume` or `watch`) polls the stored session id and never creates another
+  paid session, and `--retry-provider devin --apply` creates a new session only
+  after the prior session is known terminal or its one-hour response deadline
+  has expired, so an active or owner-blocked session is polled but never
+  duplicated. `--issue` becomes optional audit evidence for this lane rather
+  than the trigger; Cursor Cloud Agent keeps the issue-comment transport and its
+  own five-check profile. An informational Devin attempt that stays active but
+  cannot be completed can be closed out with `release campaign dispose`, which
+  records a terminal, metadata-only disposition without inventing a result or
+  contacting Devin again. See
+  [Devin Setup](docs/release-qualification.md#devin-setup) (#770, PR #771).
+
 ### Fixed
 
 - macOS Claude release campaigns can cold-install an exact PyPI release again
@@ -22,7 +55,8 @@ later entries are regular releases.
   package-install failure, never `sandbox_permission` and never
   `package_index`; a non-certificate index response such as a 404 still
   classifies as `package_index`. See
-  [macOS Claude sandbox certificate path](docs/release-qualification.md#macos-claude-sandbox-certificate-path).
+  [macOS Claude sandbox certificate path](docs/release-qualification.md#macos-claude-sandbox-certificate-path)
+  (#769, PR #772).
 
 ## v1.0.10
 
