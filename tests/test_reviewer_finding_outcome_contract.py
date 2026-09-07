@@ -126,6 +126,14 @@ def test_invalid_repo_slug():
         validate_reviewer_finding_outcome_payload(event)
 
 
+def test_mismatched_repo_slug():
+    """Test that dimension repo_slug must match envelope repo_slug."""
+    event = valid_finding_outcome()
+    event["repo_slug"] = "different-owner/different-repo"
+    with pytest.raises(CloudBundleError, match="dimension 'repo_slug'.*must match.*envelope repo_slug"):
+        validate_reviewer_finding_outcome_payload(event)
+
+
 def test_missing_pr_number():
     """Test that missing pr_number is rejected."""
     event = valid_finding_outcome()
@@ -146,6 +154,14 @@ def test_zero_pr_number():
     """Test that zero pr_number is rejected."""
     event = valid_finding_outcome()
     event["dimensions"]["pr_number"] = "0"
+    with pytest.raises(CloudBundleError, match="pr_number.*positive integer"):
+        validate_reviewer_finding_outcome_payload(event)
+
+
+def test_unicode_digit_pr_number():
+    """Test that non-ASCII digit characters in pr_number are rejected."""
+    event = valid_finding_outcome()
+    event["dimensions"]["pr_number"] = "\u00b9\u00b2\u00b3"  # superscript 123
     with pytest.raises(CloudBundleError, match="pr_number.*positive integer"):
         validate_reviewer_finding_outcome_payload(event)
 
@@ -368,6 +384,22 @@ def test_finding_outcome_count_not_one():
     """Test that finding_outcome_count must equal 1."""
     event = valid_finding_outcome()
     event["metrics"]["finding_outcome_count"] = 2
+    with pytest.raises(CloudBundleError, match="finding_outcome_count.*must equal 1"):
+        validate_reviewer_finding_outcome_payload(event)
+
+
+def test_finding_outcome_count_boolean():
+    """Test that boolean True is rejected for finding_outcome_count."""
+    event = valid_finding_outcome()
+    event["metrics"]["finding_outcome_count"] = True
+    with pytest.raises(CloudBundleError, match="finding_outcome_count.*must equal 1"):
+        validate_reviewer_finding_outcome_payload(event)
+
+
+def test_finding_outcome_count_float():
+    """Test that float 1.0 is rejected for finding_outcome_count."""
+    event = valid_finding_outcome()
+    event["metrics"]["finding_outcome_count"] = 1.0
     with pytest.raises(CloudBundleError, match="finding_outcome_count.*must equal 1"):
         validate_reviewer_finding_outcome_payload(event)
 

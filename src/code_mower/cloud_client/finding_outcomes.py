@@ -109,9 +109,15 @@ def validate_reviewer_finding_outcome_payload(event: Mapping[str, Any]) -> None:
         raise CloudBundleError(
             "reviewer_finding_outcome dimension 'repo_slug' must be in OWNER/REPO format"
         )
+    envelope_repo_slug = _required_text(event.get("repo_slug"), "repo_slug")
+    if repo_slug != envelope_repo_slug:
+        raise CloudBundleError(
+            f"reviewer_finding_outcome dimension 'repo_slug' {repo_slug!r} must match "
+            f"envelope repo_slug {envelope_repo_slug!r}"
+        )
 
     pr_number = _required_text(dimensions.get("pr_number"), "dimension 'pr_number'")
-    if not pr_number.isdigit() or int(pr_number) < 1:
+    if not (pr_number.isascii() and pr_number.isdigit()) or int(pr_number) < 1:
         raise CloudBundleError(
             "reviewer_finding_outcome dimension 'pr_number' must be a positive integer string"
         )
@@ -185,7 +191,7 @@ def validate_reviewer_finding_outcome_payload(event: Mapping[str, Any]) -> None:
         )
 
     outcome_count = metrics.get("finding_outcome_count")
-    if outcome_count != 1:
+    if not isinstance(outcome_count, int) or isinstance(outcome_count, bool) or outcome_count != 1:
         raise CloudBundleError(
             "reviewer_finding_outcome metric 'finding_outcome_count' must equal 1"
         )
