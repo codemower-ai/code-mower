@@ -1171,6 +1171,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Optional GitHub issue number for remote or comment dispatch",
     )
     campaign.add_argument(
+        "--release-pr",
+        default="",
+        help=(
+            "Optional release pull request number linked to this campaign. "
+            "Trusted hosted results posted there are discovered alongside the "
+            "campaign issue, under the identical author, schema, campaign, "
+            "repository, and release checks. It may be supplied later to fill "
+            "a campaign created without one; it can never change a linked PR "
+            "the campaign already carries"
+        ),
+    )
+    campaign.add_argument(
         "--apply",
         action="store_true",
         help="Apply mutations, remote dispatch, or paid work (default is dry-run)",
@@ -1410,6 +1422,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 repo_path=args.repo_path,
                 repo_slug=args.repo_slug,
                 issue=args.issue,
+                release_pr=args.release_pr,
                 apply=args.apply,
                 resume=args.resume,
                 status=args.status,

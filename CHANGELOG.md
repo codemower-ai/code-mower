@@ -7,7 +7,19 @@ later entries are regular releases.
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- Release campaigns can record the linked release pull request with
+  `--release-pr <number>`. Hosted result discovery now reads that one
+  explicitly linked pull request alongside the campaign issue, under the
+  identical trusted-author, marker schema, campaign, repository, package, and
+  exact release/version checks. A hosted Cursor qualification answered on the
+  linked release PR therefore completes through `release campaign watch`
+  without operator `--record-result` transcription. Identical results found on
+  both surfaces are deduplicated, the source surface is kept as metadata only
+  (no issue or comment body text), an unreadable surface stays the retryable
+  `github_poll_unavailable`, and discovery is never widened to arbitrary
+  repository issues or pull requests (issue #791).
 
 ## v1.0.14
 
