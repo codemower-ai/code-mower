@@ -25,12 +25,13 @@ def _builder_run_event(
     pr_number: str,
     cost_usd: float | None,
     provider: str = "devin",
+    created_at: str = "2026-09-03T10:00:00Z",
 ) -> dict[str, object]:
     return {
         "schema": "code_mower.benchmarkEvent.v1",
         "event_id": event_id,
         "event_type": "builder_run",
-        "created_at": "2026-09-03T10:00:00Z",
+        "created_at": created_at,
         "repo_slug": "owner/repo",
         "team_id": "team",
         "install_id": "install",
@@ -56,12 +57,13 @@ def _reviewer_run_event(
     pr_number: str,
     cost_usd: float | None,
     lane: str = "claude-audit",
+    created_at: str = "2026-09-03T11:00:00Z",
 ) -> dict[str, object]:
     return {
         "schema": "code_mower.benchmarkEvent.v1",
         "event_id": event_id,
         "event_type": "reviewer_run",
-        "created_at": "2026-09-03T11:00:00Z",
+        "created_at": created_at,
         "repo_slug": "owner/repo",
         "team_id": "team",
         "install_id": "install",
@@ -438,6 +440,196 @@ class PackagePathRegressionTests(unittest.TestCase):
         self.assertEqual(result["event_count"], 1)
         self.assertEqual(len(result["errors"]), 1)
         self.assertIn("PR 1", result["errors"][0])
+
+
+class PrOutcomeIdentityTests(unittest.TestCase):
+    def test_unchanged_retry_is_idempotent(self) -> None:
+        run_events = [
+            _builder_run_event("b1", "60", 0.15),
+            _reviewer_run_event("r1", "60", 0.10),
+        ]
+        event1 = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="60",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=run_events,
+            created_at="2026-09-03T13:00:00Z",
+        )
+        event2 = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="60",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=run_events,
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertEqual(event1["event_id"], event2["event_id"])
+        self.assertEqual(event1["created_at"], event2["created_at"])
+        self.assertEqual(
+            event1["dimensions"]["pr_outcome_observation_version"],
+            event2["dimensions"]["pr_outcome_observation_version"],
+        )
+        validate_cloud_event(event1)
+        validate_cloud_event(event2)
+
+    def test_late_arriving_builder_spend_changes_identity_and_ordering(self) -> None:
+        reviewer = _reviewer_run_event("r1", "61", 0.10)
+        original = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="61",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[reviewer],
+            created_at="2026-09-03T13:00:00Z",
+        )
+        updated = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="61",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[
+                reviewer,
+                _builder_run_event(
+                    "b1",
+                    "61",
+                    0.15,
+                    created_at="2026-09-03T14:00:00Z",
+                ),
+            ],
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertNotEqual(original["event_id"], updated["event_id"])
+        self.assertNotEqual(
+            original["dimensions"]["pr_outcome_observation_version"],
+            updated["dimensions"]["pr_outcome_observation_version"],
+        )
+        self.assertGreater(updated["created_at"], original["created_at"])
+        self.assertEqual(updated["dimensions"]["cost_coverage"], "complete")
+        validate_cloud_event(updated)
+
+    def test_late_arriving_reviewer_spend_changes_identity_and_ordering(self) -> None:
+        builder = _builder_run_event("b1", "62", 0.15)
+        original = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="62",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[builder],
+            created_at="2026-09-03T13:00:00Z",
+        )
+        updated = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="62",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[
+                builder,
+                _reviewer_run_event(
+                    "r1",
+                    "62",
+                    0.10,
+                    created_at="2026-09-03T14:00:00Z",
+                ),
+            ],
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertNotEqual(original["event_id"], updated["event_id"])
+        self.assertNotEqual(
+            original["dimensions"]["pr_outcome_observation_version"],
+            updated["dimensions"]["pr_outcome_observation_version"],
+        )
+        self.assertGreater(updated["created_at"], original["created_at"])
+        self.assertEqual(updated["dimensions"]["cost_coverage"], "complete")
+        validate_cloud_event(updated)
+
+    def test_corrected_cost_changes_identity_and_versioning(self) -> None:
+        run_events = [_builder_run_event("b1", "63", 0.15)]
+        original = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="63",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=run_events,
+            created_at="2026-09-03T13:00:00Z",
+        )
+        corrected = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="63",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[_builder_run_event("b1", "63", 0.25)],
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertNotEqual(original["event_id"], corrected["event_id"])
+        self.assertNotEqual(
+            original["dimensions"]["pr_outcome_observation_version"],
+            corrected["dimensions"]["pr_outcome_observation_version"],
+        )
+        self.assertAlmostEqual(corrected["metrics"]["reported_cost_usd"], 0.25)
+        self.assertEqual(original["created_at"], corrected["created_at"])
+        validate_cloud_event(corrected)
+
+
+class PrOutcomeUnidentifiedReviewerTests(unittest.TestCase):
+    def test_missing_reviewer_run_id_does_not_report_cost(self) -> None:
+        event = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="64",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[
+                _builder_run_event("b1", "64", 0.15),
+                _reviewer_run_event("", "64", 0.10),
+            ],
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertEqual(event["dimensions"]["cost_coverage"], "partial")
+        self.assertEqual(event["metrics"]["cost_reported_run_count"], 1)
+        self.assertEqual(event["metrics"]["cost_expected_run_count"], 2)
+        self.assertAlmostEqual(event["metrics"]["reported_cost_usd"], 0.15)
+        self.assertEqual(
+            event["dimensions"]["missing_cost_sources"],
+            ["claude-audit"],
+        )
+        validate_cloud_event(event)
+
+    def test_duplicate_unidentified_rows_do_not_inflate_spend_or_completeness(self) -> None:
+        run_events: list[dict[str, object]] = [_builder_run_event("b1", "65", 0.15)]
+        run_events.extend(_reviewer_run_event("", "65", 0.10) for _ in range(2))
+        event = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="65",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=run_events,
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertEqual(event["dimensions"]["cost_coverage"], "partial")
+        self.assertEqual(event["metrics"]["cost_reported_run_count"], 1)
+        self.assertEqual(event["metrics"]["cost_expected_run_count"], 3)
+        self.assertAlmostEqual(event["metrics"]["reported_cost_usd"], 0.15)
+        self.assertEqual(
+            set(event["dimensions"]["missing_cost_sources"]),
+            {"claude-audit"},
+        )
+        validate_cloud_event(event)
 
 
 if __name__ == "__main__":

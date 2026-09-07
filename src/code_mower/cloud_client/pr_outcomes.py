@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import math
 import uuid
 from typing import Any, Mapping
@@ -36,6 +38,7 @@ PR_OUTCOME_DIMENSIONS = (
     "outcome",
     "cost_coverage",
     "missing_cost_sources",
+    "pr_outcome_observation_version",
 )
 
 
@@ -71,6 +74,76 @@ def _count(metrics: Mapping[str, Any], field: str, *, required: bool = False) ->
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise CloudBundleError(f"pr_outcome metric {field!r} must be a non-negative integer")
     return value
+
+
+def _run_event_canonical(event: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a stable, metadata-only representation for evidence versioning."""
+
+    dimensions = _as_mapping(event.get("dimensions"))
+    metrics = _as_mapping(event.get("metrics"))
+    item: dict[str, Any] = {
+        "event_id": str(event.get("event_id") or "").strip(),
+        "event_type": str(event.get("event_type") or "").strip(),
+        "provider": str(event.get("provider") or "").strip(),
+        "lens": str(event.get("lens") or "").strip(),
+        "status": str(event.get("status") or "").strip(),
+        "repo_slug": str(event.get("repo_slug") or "").strip(),
+        "pr_number": str(dimensions.get("pr_number") or "").strip(),
+        "builder_provider": str(dimensions.get("builder_provider") or "").strip(),
+        "lane": str(dimensions.get("lane") or "").strip(),
+        "head_sha": str(dimensions.get("head_sha") or "").strip(),
+    }
+    if "cost_usd" in metrics:
+        item["cost_usd"] = metrics["cost_usd"]
+    return item
+
+
+def _run_events_digest(run_events: list[Mapping[str, Any]]) -> str:
+    """Return a deterministic SHA-256 digest of the observed run evidence.
+
+    The digest is metadata-only: it uses the same visible fields that are safe
+    to include in pr_outcome identity, never raw diffs, prompts, or transcripts.
+    """
+
+    canonical = [_run_event_canonical(event) for event in run_events]
+    canonical.sort(key=lambda item: json.dumps(item, sort_keys=True, allow_nan=False))
+    encoded = json.dumps(canonical, sort_keys=True, allow_nan=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _observed_at(
+    created_at: str,
+    run_events: list[Mapping[str, Any]],
+) -> str:
+    """Return a deterministic observation timestamp for this pr_outcome.
+
+    The observation timestamp is the latest of the supplied ``created_at`` and
+    the latest run event ``created_at``.  This gives late-arriving local spend
+    evidence a later ``created_at`` even when the GitHub ``updatedAt`` did not
+    change, while the ``pr_outcome_observation_version`` digest provides a
+    stable versioning tie-breaker for corrected evidence.
+    """
+
+    base_text = created_at or _utc_now()
+    try:
+        base = _timestamp(base_text, "created_at")
+    except CloudBundleError:
+        base = dt.datetime.now(dt.UTC)
+
+    latest = base
+    for event in run_events:
+        ts_text = str(event.get("created_at") or "").strip()
+        if not ts_text:
+            continue
+        try:
+            parsed = _timestamp(ts_text, "run event created_at")
+        except CloudBundleError:
+            continue
+        if parsed > latest:
+            latest = parsed
+
+    latest = latest.replace(microsecond=0, tzinfo=dt.UTC)
+    return latest.isoformat().replace("+00:00", "Z")
 
 
 def _lane_for_run_event(event: Mapping[str, Any]) -> str:
@@ -196,6 +269,8 @@ def build_pr_outcome_event(
         run_events
     )
 
+    evidence_digest = _run_events_digest(run_events)
+
     if reported > 0 and reported == expected:
         cost_coverage = "complete"
     elif reported > 0:
@@ -218,6 +293,7 @@ def build_pr_outcome_event(
         "opened_at": opened_at,
         "outcome": outcome,
         "cost_coverage": cost_coverage,
+        "pr_outcome_observation_version": evidence_digest,
     }
     if merged_at:
         dimensions["merged_at"] = merged_at
@@ -228,9 +304,10 @@ def build_pr_outcome_event(
     if missing_sources:
         dimensions["missing_cost_sources"] = missing_sources
 
-    created_at_value = created_at or _utc_now()
+    created_at_value = _observed_at(created_at, run_events)
     event_id_seed = (
-        f"code-mower-pr-outcome:{repo_slug}:{pr_number}:{created_at_value}"
+        f"code-mower-pr-outcome:{repo_slug}:{pr_number}:{created_at_value}:"
+        f"{evidence_digest}"
     )
     event: dict[str, Any] = {
         "schema": "code_mower.benchmarkEvent.v1",

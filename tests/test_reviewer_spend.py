@@ -232,3 +232,54 @@ def test_claude_audit_main_respects_no_spend_capture() -> None:
 
         assert code == 0
         assert not spend.exists()
+
+
+def test_spend_runs_to_events_preserves_missing_run_id() -> None:
+    payload = {
+        "runs": [
+            {
+                "lane": "claude-audit",
+                "repo": "owner/repo",
+                "pr_number": 42,
+                "head_sha": "abc123",
+                "model": "sonnet",
+                "wall_seconds": 1.0,
+                "verdict": "PASS",
+                "cost_usd": 0.05,
+            }
+        ]
+    }
+    events = reviewer_spend.spend_runs_to_events(
+        payload,
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        source="unit-test",
+    )
+
+    assert len(events) == 1
+    assert events[0]["event_id"] == ""
+    assert events[0]["dimensions"]["spend_run_id"] == ""
+    assert events[0]["metrics"]["cost_usd"] == 0.05
+
+
+def test_spend_runs_to_events_does_not_uuid_duplicate_missing_run_ids() -> None:
+    run = {
+        "lane": "claude-audit",
+        "repo": "owner/repo",
+        "pr_number": 42,
+        "head_sha": "abc123",
+        "model": "sonnet",
+        "wall_seconds": 1.0,
+        "verdict": "PASS",
+        "cost_usd": 0.05,
+    }
+    payload = {"runs": [run, run]}
+    events = reviewer_spend.spend_runs_to_events(
+        payload,
+        repo_slug="owner/repo",
+    )
+
+    assert len(events) == 2
+    assert all(event["event_id"] == "" for event in events)
+    assert len({event["event_id"] for event in events}) == 1
