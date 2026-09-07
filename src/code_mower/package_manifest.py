@@ -65,6 +65,7 @@ PACKAGE_FILES = (
     ("src/code_mower/cloud_client/errors.py", "src/code_mower/cloud_client/errors.py", "core"),
     ("src/code_mower/cloud_client/events.py", "src/code_mower/cloud_client/events.py", "core"),
     ("src/code_mower/cloud_client/export.py", "src/code_mower/cloud_client/export.py", "core"),
+    ("src/code_mower/cloud_client/finding_outcomes.py", "src/code_mower/cloud_client/finding_outcomes.py", "core"),
     (
         "src/code_mower/cloud_client/git_metadata.py",
         "src/code_mower/cloud_client/git_metadata.py",

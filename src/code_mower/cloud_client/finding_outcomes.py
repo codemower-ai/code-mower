@@ -105,11 +105,19 @@ def validate_reviewer_finding_outcome_payload(event: Mapping[str, Any]) -> None:
         )
 
     repo_slug = _required_text(dimensions.get("repo_slug"), "dimension 'repo_slug'")
-    if "/" not in repo_slug:
+    parts = repo_slug.split("/")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
         raise CloudBundleError(
-            "reviewer_finding_outcome dimension 'repo_slug' must be in OWNER/REPO format"
+            "reviewer_finding_outcome dimension 'repo_slug' must be exactly OWNER/REPO "
+            "with two non-empty components"
         )
     envelope_repo_slug = _required_text(event.get("repo_slug"), "repo_slug")
+    envelope_parts = envelope_repo_slug.split("/")
+    if len(envelope_parts) != 2 or not envelope_parts[0] or not envelope_parts[1]:
+        raise CloudBundleError(
+            "reviewer_finding_outcome envelope 'repo_slug' must be exactly OWNER/REPO "
+            "with two non-empty components"
+        )
     if repo_slug != envelope_repo_slug:
         raise CloudBundleError(
             f"reviewer_finding_outcome dimension 'repo_slug' {repo_slug!r} must match "
