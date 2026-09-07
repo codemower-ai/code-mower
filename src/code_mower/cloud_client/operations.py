@@ -38,7 +38,9 @@ from .pr_outcomes import (
     save_pr_outcome_observations,
 )
 from .export import build_cloud_bundle
+from .events import safe_event_type
 from .git_metadata import detect_repo_slug
+from .productivity_windows import load_productivity_window_events
 from .tokens import (
     CloudTokenResolution,
     require_upload_token,
@@ -55,6 +57,15 @@ CATCH_UP_TRUST_GUIDANCE = {
     "next_step": (
         "run current dogfood uploads plus reviewer-runs or calibration evidence "
         "before making provider/lens decisions"
+    ),
+}
+
+PRODUCTIVITY_BASELINE_TRUST_GUIDANCE = {
+    "use_for": "before/after Code Mower correlation context at repo/release scope",
+    "do_not_use_for": "causal claims that Code Mower changed productivity",
+    "next_step": (
+        "compare windows with the same comparison_basis and check "
+        "active_time_coverage/defect_coverage before citing a delta"
     ),
 }
 
@@ -1278,6 +1289,14 @@ def repo_sync_output_name(repo_slug: str, repo_path: Path, index: int) -> str:
     return f"{cleaned or 'repo'}-{index + 1}"
 
 
+def _export_event_types(step: Mapping[str, Any]) -> Mapping[str, Any]:
+    export = step.get("export")
+    if not isinstance(export, Mapping):
+        return {}
+    event_types = export.get("event_types")
+    return event_types if isinstance(event_types, Mapping) else {}
+
+
 def build_repo_sync_data_class_summary(
     repos: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
@@ -1305,6 +1324,15 @@ def build_repo_sync_data_class_summary(
             "events": 0,
             "description": "per-PR spend coverage observations",
         },
+        "productivity_baseline": {
+            "steps": 0,
+            "events": 0,
+            "description": (
+                "normalized repository/release productivity windows "
+                "(correlation context, not causal proof)"
+            ),
+            "trust_guidance": PRODUCTIVITY_BASELINE_TRUST_GUIDANCE,
+        },
     }
     for repo in repos:
         steps = repo.get("steps")
@@ -1320,6 +1348,15 @@ def build_repo_sync_data_class_summary(
                 export = step.get("export")
                 if isinstance(export, dict):
                     target["events"] += int(export.get("event_count") or 0)
+                window_events = _export_event_types(step).get("productivity_summary") or 0
+                try:
+                    window_count = int(window_events)
+                except (TypeError, ValueError):
+                    window_count = 0
+                if window_count > 0:
+                    baseline = summary["productivity_baseline"]
+                    baseline["steps"] += 1
+                    baseline["events"] += window_count
             elif mode == "cloud-catch-up":
                 target = summary["imported_history"]
                 target["steps"] += 1
@@ -1339,6 +1376,46 @@ def build_repo_sync_data_class_summary(
     return summary
 
 
+def repo_sync_window_events(
+    specs: list[str],
+    *,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+) -> list[dict[str, Any]]:
+    """Load repo-sync ``EVENT_TYPE=PATH`` entries with per-repo context.
+
+    Window observations (``code_mower.productivityWindow.v1``) convert
+    deterministically, filling an empty observation repo slug from the synced
+    repo; already-normalized events pass through unchanged. Loading per repo
+    keeps repeated syncs idempotent: the same observation file always yields
+    the same event id.
+    """
+
+    events: list[dict[str, Any]] = []
+    for raw in specs:
+        if "=" not in raw:
+            raise CloudBundleError(
+                "--event entries must use EVENT_TYPE=PATH, for example "
+                "productivity_summary=window.json"
+            )
+        event_type, path_text = raw.split("=", 1)
+        events.extend(
+            load_productivity_window_events(
+                Path(path_text),
+                safe_event_type(event_type),
+                repo_slug=repo_slug,
+                team_id=team_id,
+                install_id=install_id,
+                source=source,
+            )
+        )
+    if len(events) > MAX_EVENT_COUNT:
+        raise CloudBundleError(f"too many events: {len(events)}; max {MAX_EVENT_COUNT}")
+    return events
+
+
 def repo_sync_upload(
     *,
     repo_specs: list[str],
@@ -1356,8 +1433,10 @@ def repo_sync_upload(
     include_git_ref: bool,
     yes: bool,
     timeout: float,
+    events: list[str] | None = None,
 ) -> dict[str, Any]:
     selected_modes = modes or ["dogfood", "reviewer-runs"]
+    event_specs = list(events or [])
     repos: list[dict[str, Any]] = []
     error_count = 0
     step_statuses: list[str] = []
@@ -1380,7 +1459,13 @@ def repo_sync_upload(
                         repo_path=repo_path,
                         output_dir=repo_output_dir / "dogfood",
                         reports=[],
-                        events=[],
+                        events=repo_sync_window_events(
+                            event_specs,
+                            repo_slug=repo_slug,
+                            team_id=team_id,
+                            install_id=install_id,
+                            source=f"{source_prefix}-dogfood",
+                        ),
                         spend_path=None,
                         repo_slug=repo_slug,
                         team_id=team_id,

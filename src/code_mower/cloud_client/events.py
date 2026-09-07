@@ -925,9 +925,14 @@ def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
             raise CloudBundleError(
                 f"event file contains a non-object event: {source}"
             )
+        # Deferred import: productivity_windows only needs events lazily, and
+        # events must not import it at module load.
+        from .productivity_windows import productivity_window_event_from_dict
+
         events.append(
             _builder_event_from_authoring_run(item, event_type)
             or adoption_event_from_result_dict(item, event_type)
+            or productivity_window_event_from_dict(item, event_type)
             or normalize_event(item, event_type)
         )
     return events

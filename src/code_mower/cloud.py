@@ -665,6 +665,17 @@ def main(argv: list[str] | None = None) -> int:
         help="sync mode to run; repeatable, defaults to dogfood and reviewer-runs",
     )
     repo_sync.add_argument(
+        "--event",
+        action="append",
+        default=[],
+        metavar="EVENT_TYPE=PATH",
+        help=(
+            "include structured benchmark events from JSON/JSONL in each repo's "
+            "dogfood step; productivity_summary entries also accept "
+            "code_mower.productivityWindow.v1 window observations"
+        ),
+    )
+    repo_sync.add_argument(
         "--output-dir",
         type=Path,
         default=Path(DEFAULT_REPO_SYNC_OUTPUT_DIR),
@@ -1027,6 +1038,7 @@ def main(argv: list[str] | None = None) -> int:
                 include_git_ref=args.include_git_ref,
                 yes=args.yes,
                 timeout=args.timeout,
+                events=args.event,
             )
             if args.json:
                 print(json.dumps(result, indent=2, sort_keys=True))
@@ -1041,6 +1053,7 @@ def main(argv: list[str] | None = None) -> int:
                     current = summary.get("current_dogfood", {})
                     history = summary.get("imported_history", {})
                     reviewer = summary.get("reviewer_evidence", {})
+                    baseline = summary.get("productivity_baseline", {})
                     print(
                         "Current dogfood: "
                         f"{current.get('steps', 0)} steps, "
@@ -1056,6 +1069,12 @@ def main(argv: list[str] | None = None) -> int:
                         "Reviewer evidence: "
                         f"{reviewer.get('steps', 0)} steps, "
                         f"{reviewer.get('events', 0)} events"
+                    )
+                    print(
+                        "Productivity baseline: "
+                        f"{baseline.get('steps', 0)} steps, "
+                        f"{baseline.get('events', 0)} events "
+                        "(correlation only, no causal claims)"
                     )
                     guidance = (
                         history.get("trust_guidance", {})
