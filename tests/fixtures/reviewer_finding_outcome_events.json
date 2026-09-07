@@ -1,0 +1,288 @@
+[
+  {
+    "schema": "code_mower.benchmarkEvent.v1",
+    "event_type": "reviewer_finding_outcome",
+    "event_id": "finding-outcome-001",
+    "created_at": "2026-09-07T20:00:00Z",
+    "repo_slug": "codemower-ai/code-mower",
+    "team_id": "test-team",
+    "install_id": "test-install",
+    "source": "code-mower-audit",
+    "provider": "codex",
+    "lens": "security",
+    "status": "observed",
+    "tool": {
+      "role": "reporter",
+      "tool_name": "code-mower",
+      "tool_version": "1.0.0",
+      "provider": "code-mower",
+      "model": "",
+      "model_source": "not_applicable",
+      "version_source": "cli_version_probe",
+      "integration": "cli",
+      "lens": "security",
+      "source": "code-mower-audit"
+    },
+    "metrics": {
+      "finding_outcome_count": 1
+    },
+    "dimensions": {
+      "reviewer_finding_outcome_schema": "code_mower.reviewerFindingOutcome.v1",
+      "finding_id": "codex-sec-xss-001",
+      "repo_slug": "codemower-ai/code-mower",
+      "pr_number": "736",
+      "head_sha": "abc1234567890def",
+      "lane_id": "codex",
+      "severity": "blocker",
+      "disposition": "accepted_fixed",
+      "observed_at": "2026-09-07T20:00:00Z",
+      "resolved_at": "2026-09-07T21:30:00Z",
+      "fix_commit_sha": "def9876543210abc",
+      "source": "automated"
+    }
+  },
+  {
+    "schema": "code_mower.benchmarkEvent.v1",
+    "event_type": "reviewer_finding_outcome",
+    "event_id": "finding-outcome-002",
+    "created_at": "2026-09-07T20:15:00Z",
+    "repo_slug": "codemower-ai/code-mower",
+    "team_id": "test-team",
+    "install_id": "test-install",
+    "source": "code-mower-audit",
+    "provider": "claude",
+    "lens": "security",
+    "status": "observed",
+    "tool": {
+      "role": "reporter",
+      "tool_name": "code-mower",
+      "tool_version": "1.0.0",
+      "provider": "code-mower",
+      "model": "",
+      "model_source": "not_applicable",
+      "version_source": "cli_version_probe",
+      "integration": "cli",
+      "lens": "security",
+      "source": "code-mower-audit"
+    },
+    "metrics": {
+      "finding_outcome_count": 1
+    },
+    "dimensions": {
+      "reviewer_finding_outcome_schema": "code_mower.reviewerFindingOutcome.v1",
+      "finding_id": "claude-sec-sqli-042",
+      "repo_slug": "codemower-ai/code-mower",
+      "pr_number": "735",
+      "head_sha": "xyz7890abcdef123",
+      "lane_id": "claude_audit",
+      "severity": "blocker",
+      "disposition": "false_positive",
+      "observed_at": "2026-09-07T20:15:00Z",
+      "resolved_at": "2026-09-07T20:45:00Z",
+      "source": "manual"
+    }
+  },
+  {
+    "schema": "code_mower.benchmarkEvent.v1",
+    "event_type": "reviewer_finding_outcome",
+    "event_id": "finding-outcome-003",
+    "created_at": "2026-09-07T21:00:00Z",
+    "repo_slug": "codemower-ai/code-mower",
+    "team_id": "test-team",
+    "install_id": "test-install",
+    "source": "code-mower-decide",
+    "provider": "codex",
+    "lens": "security",
+    "status": "observed",
+    "tool": {
+      "role": "reporter",
+      "tool_name": "code-mower",
+      "tool_version": "1.0.0",
+      "provider": "code-mower",
+      "model": "",
+      "model_source": "not_applicable",
+      "version_source": "cli_version_probe",
+      "integration": "cli",
+      "lens": "security",
+      "source": "code-mower-decide"
+    },
+    "metrics": {
+      "finding_outcome_count": 1
+    },
+    "dimensions": {
+      "reviewer_finding_outcome_schema": "code_mower.reviewerFindingOutcome.v1",
+      "finding_id": "codex-sec-auth-015",
+      "repo_slug": "codemower-ai/code-mower",
+      "pr_number": "740",
+      "head_sha": "fedcba0987654321",
+      "lane_id": "codex",
+      "severity": "major",
+      "disposition": "owner_decision",
+      "observed_at": "2026-09-07T21:00:00Z",
+      "resolved_at": "2026-09-07T21:15:00Z",
+      "decision_id": "owner-decision-2026-09-07-001",
+      "source": "manual"
+    }
+  },
+  {
+    "schema": "code_mower.benchmarkEvent.v1",
+    "event_type": "reviewer_finding_outcome",
+    "event_id": "finding-outcome-004",
+    "created_at": "2026-09-07T22:00:00Z",
+    "repo_slug": "codemower-ai/code-mower",
+    "team_id": "test-team",
+    "install_id": "test-install",
+    "source": "code-mower-audit",
+    "provider": "codex",
+    "lens": "best-practices",
+    "status": "observed",
+    "tool": {
+      "role": "reporter",
+      "tool_name": "code-mower",
+      "tool_version": "1.0.0",
+      "provider": "code-mower",
+      "model": "",
+      "model_source": "not_applicable",
+      "version_source": "cli_version_probe",
+      "integration": "cli",
+      "lens": "best-practices",
+      "source": "code-mower-audit"
+    },
+    "metrics": {
+      "finding_outcome_count": 1
+    },
+    "dimensions": {
+      "reviewer_finding_outcome_schema": "code_mower.reviewerFindingOutcome.v1",
+      "finding_id": "codex-bp-naming-008",
+      "repo_slug": "codemower-ai/code-mower",
+      "pr_number": "742",
+      "head_sha": "1234567890abcdef",
+      "lane_id": "codex",
+      "severity": "minor",
+      "disposition": "duplicate",
+      "observed_at": "2026-09-07T22:00:00Z",
+      "source": "automated"
+    }
+  },
+  {
+    "schema": "code_mower.benchmarkEvent.v1",
+    "event_type": "reviewer_finding_outcome",
+    "event_id": "finding-outcome-005",
+    "created_at": "2026-09-07T23:00:00Z",
+    "repo_slug": "codemower-ai/code-mower",
+    "team_id": "test-team",
+    "install_id": "test-install",
+    "source": "code-mower-audit",
+    "provider": "claude",
+    "lens": "security",
+    "status": "observed",
+    "tool": {
+      "role": "reporter",
+      "tool_name": "code-mower",
+      "tool_version": "1.0.0",
+      "provider": "code-mower",
+      "model": "",
+      "model_source": "not_applicable",
+      "version_source": "cli_version_probe",
+      "integration": "cli",
+      "lens": "security",
+      "source": "code-mower-audit"
+    },
+    "metrics": {
+      "finding_outcome_count": 1
+    },
+    "dimensions": {
+      "reviewer_finding_outcome_schema": "code_mower.reviewerFindingOutcome.v1",
+      "finding_id": "claude-infra-timeout-003",
+      "repo_slug": "codemower-ai/code-mower",
+      "pr_number": "745",
+      "head_sha": "abcdef1234567890",
+      "lane_id": "claude_audit",
+      "severity": "info",
+      "disposition": "infrastructure",
+      "observed_at": "2026-09-07T23:00:00Z",
+      "source": "automated"
+    }
+  },
+  {
+    "schema": "code_mower.benchmarkEvent.v1",
+    "event_type": "reviewer_finding_outcome",
+    "event_id": "finding-outcome-006",
+    "created_at": "2026-09-08T00:00:00Z",
+    "repo_slug": "codemower-ai/code-mower",
+    "team_id": "test-team",
+    "install_id": "test-install",
+    "source": "code-mower-audit",
+    "provider": "codex",
+    "lens": "security",
+    "status": "observed",
+    "tool": {
+      "role": "reporter",
+      "tool_name": "code-mower",
+      "tool_version": "1.0.0",
+      "provider": "code-mower",
+      "model": "",
+      "model_source": "not_applicable",
+      "version_source": "cli_version_probe",
+      "integration": "cli",
+      "lens": "security",
+      "source": "code-mower-audit"
+    },
+    "metrics": {
+      "finding_outcome_count": 1
+    },
+    "dimensions": {
+      "reviewer_finding_outcome_schema": "code_mower.reviewerFindingOutcome.v1",
+      "finding_id": "codex-sec-crypto-021",
+      "repo_slug": "codemower-ai/code-mower",
+      "pr_number": "748",
+      "head_sha": "9876543210fedcba",
+      "lane_id": "codex",
+      "severity": "major",
+      "disposition": "insufficient_context",
+      "observed_at": "2026-09-08T00:00:00Z",
+      "source": "automated"
+    }
+  },
+  {
+    "schema": "code_mower.benchmarkEvent.v1",
+    "event_type": "reviewer_finding_outcome",
+    "event_id": "finding-outcome-007",
+    "created_at": "2026-09-08T01:00:00Z",
+    "repo_slug": "codemower-ai/code-mower",
+    "team_id": "test-team",
+    "install_id": "test-install",
+    "source": "code-mower-audit",
+    "provider": "claude",
+    "lens": "security",
+    "status": "observed",
+    "tool": {
+      "role": "reporter",
+      "tool_name": "code-mower",
+      "tool_version": "1.0.0",
+      "provider": "code-mower",
+      "model": "",
+      "model_source": "not_applicable",
+      "version_source": "cli_version_probe",
+      "integration": "cli",
+      "lens": "security",
+      "source": "code-mower-audit"
+    },
+    "metrics": {
+      "finding_outcome_count": 1
+    },
+    "dimensions": {
+      "reviewer_finding_outcome_schema": "code_mower.reviewerFindingOutcome.v1",
+      "finding_id": "claude-sec-rce-007",
+      "repo_slug": "codemower-ai/code-mower",
+      "pr_number": "750",
+      "head_sha": "0fedcba987654321",
+      "lane_id": "claude_audit",
+      "severity": "blocker",
+      "disposition": "accepted_risk",
+      "observed_at": "2026-09-08T01:00:00Z",
+      "resolved_at": "2026-09-08T01:30:00Z",
+      "source": "manual"
+    }
+  }
+]

@@ -35,6 +35,7 @@ SAFE_EVENT_TYPES = {
     "productivity_summary",
     "provider_catalog_snapshot",
     "queue_state_snapshot",
+    "reviewer_finding_outcome",
     "reviewer_run",
     "value_report_snapshot",
     "work_order",
