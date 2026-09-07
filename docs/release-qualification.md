@@ -304,6 +304,10 @@ Claude Code 2.1.258 on macOS cannot complete pip's default certificate verificat
 
 Every pip command in a **macOS Claude** qualification prompt therefore runs as `env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null .venv/bin/python -m pip --isolated --use-deprecated=legacy-certs ...`. What that does and does not change:
 
+The provider stays in the disposable workspace Code Mower already created; it
+must not create or change into another system temporary directory outside the
+sandbox's allowed workspace.
+
 - **TLS verification stays on.** `--use-deprecated=legacy-certs` only moves pip back to its bundled certifi trust store, which needs no Security.framework call. No `--trusted-host`, no `--cert` bypass, no disabled verification, and no unsandboxed command is introduced.
 - **The sandbox posture is unchanged.** The Claude campaign run keeps `sandbox.enabled`, `failIfUnavailable`, the disabled unsandboxed escape hatch (`allowUnsandboxedCommands: false`), the home read/write denials, and the closed package-index domain allowlist for the requested `--package-source`.
 - **The disposable pip process inherits no ambient pip configuration.** The `env -u`/`PIP_CONFIG_FILE=/dev/null` prefix plus pip's own `--isolated` mode mean the certificate path (and the index) is chosen by the adapter, not by whatever pip configuration the host happens to carry. Provider child environments still exclude ambient GitHub, cloud, provider-token, and pip settings.

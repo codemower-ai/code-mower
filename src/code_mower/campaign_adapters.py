@@ -515,8 +515,9 @@ def build_qualification_prompt(
         verification_step = 4
     lines = [
         f"You are the {provider} release-qualification agent for Code Mower.",
-        "Qualify exactly one release in a disposable environment you create.",
-        "Do all work inside a fresh temporary directory; do not read or modify",
+        "Qualify exactly one release in the current disposable workspace.",
+        "Code Mower already created this workspace; do not create or change into",
+        "another temporary directory. Do not read or modify",
         "any existing checkout, home directory, credential file, or environment",
         "variable holding a secret. Never print secrets, tokens, file paths,",
         "commands you ran, or raw logs in your final answer.",
@@ -612,7 +613,8 @@ def build_qualification_prompt(
         "the step status strings: fail if any status is fail;",
         "pass_with_warnings if any status is warn or unavailable; otherwise",
         "pass. In particular, all-pass steps require outcome pass. No extra",
-        "fields, no prose, no fences.",
+        "fields, no prose, no fences. Set total elapsed_seconds to the sum of",
+        "the step elapsed_seconds values (within one second for rounding).",
     ])
     return "\n".join(lines) + "\n"
 
