@@ -9,6 +9,38 @@ later entries are regular releases.
 
 No changes yet.
 
+## v1.0.12
+
+This patch completes the macOS Claude release-qualification fix that v1.0.11
+started. The maintained provider qualification prompt no longer contradicts the
+disposable workspace Code Mower already creates, and it states the existing
+result timing contract explicitly. It preserves supervised pilot gate
+semantics, Python 3.12+, provider posture, and the metadata-only privacy
+boundary.
+
+### Fixed
+
+- The release-qualification prompt keeps the agent in the disposable workspace
+  Code Mower already created instead of telling it to create a fresh temporary
+  directory of its own. The old wording ("qualify ... in a disposable
+  environment you create", "do all work inside a fresh temporary directory")
+  conflicted with the maintained macOS Claude strict sandbox, whose allowed
+  workspace is the one Code Mower prepared, so a real macOS Claude campaign
+  could be pushed outside it. The prompt now says the workspace already exists
+  and that the agent must not create or change into another temporary
+  directory. Every other instruction is unchanged: no reading or modifying an
+  existing checkout, home directory, credential file, or secret-bearing
+  environment variable, and no printing of secrets, tokens, paths, commands, or
+  raw logs. See
+  [macOS Claude sandbox certificate path](docs/release-qualification.md#macos-claude-sandbox-certificate-path)
+  (#769, PR #775).
+- The qualification prompt now states the `code_mower.adoptionResult.v1` timing
+  contract that a result's total `elapsed_seconds` is the sum of its step
+  `elapsed_seconds` values, within one second for rounding, so a provider does
+  not report a total that contradicts its own steps. The closed result schema,
+  outcome derivation from step statuses, and the metadata-only upload boundary
+  are unchanged (#769, PR #775).
+
 ## v1.0.11
 
 This patch hardens release qualification. Canonical hosted Devin campaigns move
