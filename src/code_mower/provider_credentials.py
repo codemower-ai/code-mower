@@ -151,8 +151,45 @@ def check_file_permissions(path: Path) -> bool:
     return (mode & 0o077) == 0
 
 
+def _strip_inline_comment(s: str) -> str:
+    """Strip shell-compatible unquoted inline comments from a value string.
+
+    Preserves # inside single or double quotes, or escaped with backslash.
+    A comment begins with an unquoted # preceded by whitespace or at the start.
+    """
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    for i, ch in enumerate(s):
+        if in_single_quote:
+            if ch == "'":
+                in_single_quote = False
+        elif in_double_quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_double_quote = False
+        else:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == "'":
+                in_single_quote = True
+            elif ch == '"':
+                in_double_quote = True
+            elif ch == "#":
+                if i == 0 or s[i - 1].isspace():
+                    return s[:i]
+    return s
+
+
 def _parse_assignment_value(value: str) -> str:
-    value = value.strip()
+    value = _strip_inline_comment(value).strip()
+    if not value:
+        return ""
     try:
         parsed = shlex.split(value, posix=True)
     except ValueError as exc:
@@ -284,7 +321,9 @@ def resolve_provider_credentials(
     validators: dict[str, Callable[[str], bool]] = spec.get("validators", {})
 
     # 1. Ambient environment check
-    ambient_present: list[str] = []
+    ambient_present: list[str] = [
+        var for var in required_vars if var in current_env and current_env[var] is not None
+    ]
     ambient_missing: list[str] = []
     ambient_invalid: list[str] = []
     ambient_creds: dict[str, str] = {}
@@ -294,7 +333,6 @@ def resolve_provider_credentials(
         if not val:
             ambient_missing.append(var)
         else:
-            ambient_present.append(var)
             validator = validators.get(var)
             if validator and not validator(val):
                 ambient_invalid.append(var)

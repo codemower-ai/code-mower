@@ -652,6 +652,165 @@ class ProviderCredentialsTests(unittest.TestCase):
                 )
             )
 
+    def test_empty_required_ambient_credentials_fail_closed_with_stored_profile_present(self) -> None:
+        """Explicitly empty ambient credential variables fail closed and do not fall back to stored profiles."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            cred_file = config_dir / "devin.env"
+            cred_file.write_text(
+                "DEVIN_API_KEY=stored-secret-key\n"
+                "DEVIN_ORG_ID=org-stored\n"
+                "CODE_MOWER_DEVIN_REPOSITORIES=stored/repo\n"
+            )
+            cred_file.chmod(0o600)
+
+            # Case 1: DEVIN_API_KEY explicitly empty string, DEVIN_ORG_ID unset
+            res1 = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={"DEVIN_API_KEY": ""},
+            )
+            self.assertFalse(res1.has_credentials)
+            self.assertEqual(res1.status, "missing")
+            self.assertEqual(res1.source, "env")
+            self.assertEqual(res1.missing_variables, ("DEVIN_API_KEY", "DEVIN_ORG_ID"))
+            self.assertIn("DEVIN_API_KEY is not set", res1.message)
+            self.assertIn("unset ambient Devin variables", res1.remediation)
+            self.assertEqual(dict(res1.credentials), {})
+            self.assertNotIn("stored-secret-key", str(res1.credentials))
+
+            key1, org1, missing1 = devin_api.credentials_from_env(
+                config_dir=config_dir,
+                env={"DEVIN_API_KEY": ""},
+            )
+            self.assertEqual(key1, "")
+            self.assertEqual(org1, "")
+            self.assertEqual(missing1, "DEVIN_API_KEY")
+
+            # Case 2: DEVIN_ORG_ID explicitly empty string, DEVIN_API_KEY unset
+            res2 = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={"DEVIN_ORG_ID": ""},
+            )
+            self.assertFalse(res2.has_credentials)
+            self.assertEqual(res2.status, "missing")
+            self.assertEqual(res2.source, "env")
+            self.assertEqual(dict(res2.credentials), {})
+            self.assertNotIn("stored-secret-key", str(res2.credentials))
+
+            # Case 3: Both DEVIN_API_KEY and DEVIN_ORG_ID explicitly empty strings
+            res3 = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={"DEVIN_API_KEY": "", "DEVIN_ORG_ID": ""},
+            )
+            self.assertFalse(res3.has_credentials)
+            self.assertEqual(res3.status, "missing")
+            self.assertEqual(res3.source, "env")
+            self.assertEqual(res3.missing_variables, ("DEVIN_API_KEY", "DEVIN_ORG_ID"))
+            self.assertIn("DEVIN_API_KEY is not set", res3.message)
+            self.assertEqual(dict(res3.credentials), {})
+
+            # Case 4: DEVIN_API_KEY empty string with valid ambient DEVIN_ORG_ID
+            res4 = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={"DEVIN_API_KEY": "", "DEVIN_ORG_ID": "org-ambient"},
+            )
+            self.assertFalse(res4.has_credentials)
+            self.assertEqual(res4.status, "missing")
+            self.assertEqual(res4.source, "env")
+            self.assertEqual(res4.missing_variables, ("DEVIN_API_KEY",))
+            self.assertIn("DEVIN_API_KEY is not set", res4.message)
+            self.assertEqual(dict(res4.credentials), {})
+
+            # Case 5: Whitespace-only DEVIN_API_KEY
+            res5 = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={"DEVIN_API_KEY": "   ", "DEVIN_ORG_ID": "org-ambient"},
+            )
+            self.assertFalse(res5.has_credentials)
+            self.assertEqual(res5.status, "missing")
+            self.assertEqual(res5.source, "env")
+            self.assertEqual(res5.missing_variables, ("DEVIN_API_KEY",))
+            self.assertIn("DEVIN_API_KEY is not set", res5.message)
+
+    def test_parse_env_file_unquoted_inline_comments(self) -> None:
+        """Unquoted inline comments are stripped while hash characters inside quotes are preserved."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "comments.env"
+            content = (
+                "DEVIN_ORG_ID=org-example # production\n"
+                'QUOTED_DOUBLE="org-example # production"\n'
+                "QUOTED_SINGLE='org-example # production'\n"
+                'AFTER_DOUBLE="org-example" # production\n'
+                "AFTER_SINGLE='org-example' # production\n"
+                "EMBEDDED_HASH=token#123 # inline comment\n"
+                'MULTI_HASH="sk#1#2" # comment with # inside\n'
+                "export EXPORT_KEY=export-val # export comment\n"
+                "SPACED_KEY=spaced-val   # multi spaces\n"
+                "TABBED_KEY=tabbed-val\t# tab separated\n"
+                "EMPTY_WITH_COMMENT= # comment only\n"
+                "LITERAL_HASH_NO_SPACE=token#nohashcomment\n"
+            )
+            env_file.write_text(content)
+            parsed = provider_credentials.parse_env_file(env_file)
+            self.assertEqual(parsed["DEVIN_ORG_ID"], "org-example")
+            self.assertEqual(parsed["QUOTED_DOUBLE"], "org-example # production")
+            self.assertEqual(parsed["QUOTED_SINGLE"], "org-example # production")
+            self.assertEqual(parsed["AFTER_DOUBLE"], "org-example")
+            self.assertEqual(parsed["AFTER_SINGLE"], "org-example")
+            self.assertEqual(parsed["EMBEDDED_HASH"], "token#123")
+            self.assertEqual(parsed["MULTI_HASH"], "sk#1#2")
+            self.assertEqual(parsed["EXPORT_KEY"], "export-val")
+            self.assertEqual(parsed["SPACED_KEY"], "spaced-val")
+            self.assertEqual(parsed["TABBED_KEY"], "tabbed-val")
+            self.assertEqual(parsed["EMPTY_WITH_COMMENT"], "")
+            self.assertEqual(parsed["LITERAL_HASH_NO_SPACE"], "token#nohashcomment")
+
+    def test_resolver_with_inline_comments_in_profile(self) -> None:
+        """Provider credential resolver succeeds when profile contains inline comments."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            cred_file = config_dir / "devin.env"
+            cred_file.write_text(
+                'DEVIN_API_KEY="secret#api#key" # active production key\n'
+                "DEVIN_ORG_ID=org-example # production\n"
+                "CODE_MOWER_DEVIN_REPOSITORIES=myorg/myrepo # primary repo\n"
+            )
+            cred_file.chmod(0o600)
+
+            res = provider_credentials.resolve_provider_credentials(
+                "devin",
+                config_dir=config_dir,
+                env={},
+            )
+            self.assertTrue(res.has_credentials)
+            self.assertEqual(res.status, "ok")
+            self.assertEqual(res.source, "single_profile")
+            self.assertEqual(res.credentials.get("DEVIN_API_KEY"), "secret#api#key")
+            self.assertEqual(res.credentials.get("DEVIN_ORG_ID"), "org-example")
+            self.assertEqual(
+                res.credentials.get("CODE_MOWER_DEVIN_REPOSITORIES"), "myorg/myrepo"
+            )
+
+            key, org, missing = devin_api.credentials_from_env(
+                config_dir=config_dir,
+                env={},
+            )
+            self.assertEqual(key, "secret#api#key")
+            self.assertEqual(org, "org-example")
+            self.assertEqual(missing, "")
+            self.assertTrue(
+                devin_api.repository_scope_acknowledged(
+                    "myorg/myrepo",
+                    config_dir=config_dir,
+                    env={},
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
