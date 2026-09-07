@@ -1626,6 +1626,16 @@ def _poll_devin_running(
     provider_data["next_detail"] = "structured output did not match this campaign"
 
 
+def _devin_retry_is_safe(provider_data: Mapping[str, Any]) -> bool:
+    """Return whether the observed session is terminal enough to redispatch."""
+    state = str(provider_data.get("state") or "")
+    error = str(provider_data.get("error") or "")
+    return (state == "unavailable" and error in {
+        "hosted_response_timeout",
+        "devin_session_failed",
+    }) or (state == "blocked" and error == "hosted_result_rejected")
+
+
 def _dispatch_devin_api(
     provider_data: dict[str, Any],
     campaign: dict[str, Any],
@@ -3085,7 +3095,13 @@ def dispatch_or_advance_campaign(
         # Devin API polling is one bounded GET per advance/watch tick. An
         # ordinary resume never reaches the paid create path; an explicit
         # retry may fall through after this final result check.
-        if current_state == "running" and _is_devin_api_lane(lane):
+        if _is_devin_api_lane(lane) and (
+            current_state == "running"
+            or (
+                current_state == "blocked"
+                and provider_data.get("error") == "devin_waiting_for_owner"
+            )
+        ):
             _poll_devin_running(
                 provider_data,
                 lane,
@@ -3098,7 +3114,17 @@ def dispatch_or_advance_campaign(
                 api_runner=api_runner,
             )
             _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
-            if not is_explicit_retry or provider_data.get("state") != "running":
+            if not (is_explicit_retry and _devin_retry_is_safe(provider_data)):
+                if is_explicit_retry and provider_data.get("state") in {
+                    "running",
+                    "blocked",
+                }:
+                    provider_data["next_detail"] = (
+                        "explicit retry refused while the existing Devin session is active"
+                    )
+                    _save_campaign_progress(
+                        campaign, campaigns_dir, now_utc=now_utc
+                    )
                 continue
 
         # 3. If another hosted transport is running, reconcile its issue

@@ -143,6 +143,15 @@ class DevinApiModuleTests(unittest.TestCase):
         self.assertEqual(result, _adoption_result())
         self.assertEqual([call[0] for call in runner.calls], ["POST", "GET"])
 
+    def test_session_id_is_opaque_bounded_and_not_prefix_specific(self) -> None:
+        runner = _FakeApiRunner([{"session_id": "01K4Z_session.v3~candidate"}])
+        self.assertEqual(
+            devin_api.create_devin_session(
+                "org-test", {"prompt": "test"}, "key", api_runner=runner
+            ),
+            ("01K4Z_session.v3~candidate", ""),
+        )
+
     def test_poll_maps_owner_wait_and_terminal_failure_to_closed_codes(self) -> None:
         waiting = _FakeApiRunner(
             [{"status": "running", "status_detail": "waiting_for_approval"}]
@@ -337,6 +346,94 @@ class DevinCampaignApiTests(unittest.TestCase):
             self.assertEqual(entry["state"], "complete")
             self.assertEqual(entry["adoption_result"]["provider"], "devin")
             self.assertEqual([call[0] for call in api.calls], ["GET"])
+
+    def test_explicit_retry_does_not_duplicate_an_active_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self._campaign()
+            entry = self._entry(campaign)
+            entry.update(
+                {
+                    "state": "running",
+                    "attempted_at": "2026-09-04T08:00:00Z",
+                    "response_deadline_at": "2099-01-01T00:00:00Z",
+                    "dispatch_ref": {"session_id": "active-session"},
+                }
+            )
+            api = _FakeApiRunner([{"status": "running", "status_detail": "working"}])
+            updated = release_campaigns.dispatch_or_advance_campaign(
+                campaign,
+                apply=True,
+                retry_provider="devin",
+                repo_path=Path(tmp),
+                campaigns_dir=Path(tmp) / "campaigns",
+                env=self._env(),
+                api_runner=api,
+            )
+            entry = self._entry(updated)
+            self.assertEqual(entry["state"], "running")
+            self.assertIn("retry refused", entry["next_detail"])
+            self.assertEqual([call[0] for call in api.calls], ["GET"])
+
+    def test_explicit_retry_does_not_duplicate_an_owner_blocked_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self._campaign()
+            entry = self._entry(campaign)
+            entry.update(
+                {
+                    "state": "blocked",
+                    "error": "devin_waiting_for_owner",
+                    "attempted_at": "2026-09-04T08:00:00Z",
+                    "response_deadline_at": "2099-01-01T00:00:00Z",
+                    "dispatch_ref": {"session_id": "owner-blocked-session"},
+                }
+            )
+            api = _FakeApiRunner(
+                [{"status": "running", "status_detail": "waiting_for_approval"}]
+            )
+            updated = release_campaigns.dispatch_or_advance_campaign(
+                campaign,
+                apply=True,
+                retry_provider="devin",
+                repo_path=Path(tmp),
+                campaigns_dir=Path(tmp) / "campaigns",
+                env=self._env(),
+                api_runner=api,
+            )
+            entry = self._entry(updated)
+            self.assertEqual(entry["state"], "blocked")
+            self.assertIn("retry refused", entry["next_detail"])
+            self.assertEqual([call[0] for call in api.calls], ["GET"])
+
+    def test_explicit_retry_can_redispatch_after_response_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = self._campaign()
+            entry = self._entry(campaign)
+            entry.update(
+                {
+                    "state": "running",
+                    "attempted_at": "2026-09-04T08:00:00Z",
+                    "response_deadline_at": "2020-01-01T00:00:00Z",
+                    "dispatch_ref": {"session_id": "expired-session"},
+                }
+            )
+            api = _FakeApiRunner(
+                [
+                    {"status": "running", "status_detail": "working"},
+                    {"session_id": "replacement-session"},
+                ]
+            )
+            updated = release_campaigns.dispatch_or_advance_campaign(
+                campaign,
+                apply=True,
+                retry_provider="devin",
+                repo_path=Path(tmp),
+                campaigns_dir=Path(tmp) / "campaigns",
+                env=self._env(),
+                api_runner=api,
+            )
+            entry = self._entry(updated)
+            self.assertEqual(entry["dispatch_ref"]["session_id"], "replacement-session")
+            self.assertEqual([call[0] for call in api.calls], ["GET", "POST"])
 
     def test_api_error_is_bounded_and_never_persists_secret_or_raw_exception(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -456,8 +456,10 @@ code-mower release campaign \
 ```
 
 A resume (`--resume` or `watch`) polls the stored Devin session id and never
-creates another paid session. Only `--retry-provider devin --apply` creates a
-new session, preserving bounded attempt history.
+creates another paid session. `--retry-provider devin --apply` creates a new
+session only after the prior session is known terminal or its response deadline
+has expired; an active or owner-blocked session is polled but never duplicated.
+Every accepted retry preserves bounded attempt history.
 
 If an informational Devin attempt remains active but cannot be completed, an
 operator may record a terminal, metadata-only disposition without inventing a

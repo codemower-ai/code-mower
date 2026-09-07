@@ -27,7 +27,9 @@ REQUEST_TIMEOUT_SECONDS = 30.0
 MAX_RESPONSE_BYTES = 512 * 1024
 
 _ORG_ID_RE = re.compile(r"^org-[A-Za-z0-9_-]+$")
-_SESSION_ID_RE = re.compile(r"^devin-[A-Za-z0-9_-]+$")
+# Session ids are opaque API references. Accept any bounded RFC 3986
+# unreserved token instead of assuming Devin will retain one prefix forever.
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 SAFE_ERROR_CODES = frozenset(
