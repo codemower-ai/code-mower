@@ -235,7 +235,7 @@ def test_all_disposition_values(disposition):
     """Test that all defined disposition values are accepted when requirements met."""
     event = valid_finding_outcome()
     event["dimensions"]["disposition"] = disposition
-    
+
     # Add required fields for certain dispositions
     if disposition == "accepted_fixed":
         event["dimensions"]["fix_commit_sha"] = "def9876543210"
@@ -244,7 +244,7 @@ def test_all_disposition_values(disposition):
     else:
         # These dispositions don't require fix_commit_sha
         event["dimensions"].pop("fix_commit_sha", None)
-    
+
     validate_reviewer_finding_outcome_payload(event)
 
 
@@ -444,17 +444,17 @@ def test_fixture_events():
     """Test that fixture events pass validation."""
     import json
     from pathlib import Path
-    
+
     fixture_path = Path(__file__).parent / "fixtures" / "reviewer_finding_outcome_events.json"
     if not fixture_path.exists():
         pytest.skip(f"Fixture file not found: {fixture_path}")
-    
+
     with open(fixture_path) as f:
         events = json.load(f)
-    
+
     assert isinstance(events, list), "Fixture file should contain a list of events"
     assert len(events) > 0, "Fixture file should contain at least one event"
-    
+
     for event in events:
         validate_cloud_event(event)
         validate_reviewer_finding_outcome_payload(event)
