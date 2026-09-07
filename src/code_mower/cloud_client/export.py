@@ -203,6 +203,13 @@ def build_cloud_bundle(
         raise CloudBundleError(
             f"too many events: {len(included_events)}; max {MAX_EVENT_COUNT}"
         )
+    # Deferred import: productivity_windows only needs events lazily, and
+    # export must not import it at module load (see events.py).
+    from .productivity_windows import count_normalized_productivity_window_events
+
+    productivity_window_event_count = count_normalized_productivity_window_events(
+        included_events
+    )
     upload_ready = not anonymous and bool(included_reports or included_events)
     upload_status = "ready_for_dry_run" if upload_ready else "local_export_only"
     manifest = {
@@ -256,6 +263,7 @@ def build_cloud_bundle(
         "included_reports": included_reports,
         "event_count": len(manifest["events"]),
         "event_types": event_type_counts(manifest["events"]),
+        "productivity_window_event_count": productivity_window_event_count,
         "provenance": manifest["provenance"],
         "upload_ready": upload_ready,
         "upload_status": upload_status,

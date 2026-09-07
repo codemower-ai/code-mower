@@ -1289,12 +1289,21 @@ def repo_sync_output_name(repo_slug: str, repo_path: Path, index: int) -> str:
     return f"{cleaned or 'repo'}-{index + 1}"
 
 
-def _export_event_types(step: Mapping[str, Any]) -> Mapping[str, Any]:
+def _export_window_event_count(step: Mapping[str, Any]) -> int:
+    """Return the normalized-window count from a dogfood export step.
+
+    Only events carrying the ``productivity_window_schema`` marker count as
+    ``productivity_baseline`` coverage; legacy ``productivity_summary``
+    events without the stamp are current-dogfood history, not baselines.
+    """
+
     export = step.get("export")
     if not isinstance(export, Mapping):
-        return {}
-    event_types = export.get("event_types")
-    return event_types if isinstance(event_types, Mapping) else {}
+        return 0
+    try:
+        return max(0, int(export.get("productivity_window_event_count") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def build_repo_sync_data_class_summary(
@@ -1348,11 +1357,7 @@ def build_repo_sync_data_class_summary(
                 export = step.get("export")
                 if isinstance(export, dict):
                     target["events"] += int(export.get("event_count") or 0)
-                window_events = _export_event_types(step).get("productivity_summary") or 0
-                try:
-                    window_count = int(window_events)
-                except (TypeError, ValueError):
-                    window_count = 0
+                window_count = _export_window_event_count(step)
                 if window_count > 0:
                     baseline = summary["productivity_baseline"]
                     baseline["steps"] += 1
@@ -1390,7 +1395,9 @@ def repo_sync_window_events(
     deterministically, filling an empty observation repo slug from the synced
     repo; already-normalized events pass through unchanged. Loading per repo
     keeps repeated syncs idempotent: the same observation file always yields
-    the same event id.
+    the same event id. An observation that carries an explicit repo slug
+    disagreeing with the sync target is rejected so one shared ``--event``
+    file cannot silently duplicate one repo's window into another repo.
     """
 
     events: list[dict[str, Any]] = []
@@ -1401,16 +1408,24 @@ def repo_sync_window_events(
                 "productivity_summary=window.json"
             )
         event_type, path_text = raw.split("=", 1)
-        events.extend(
-            load_productivity_window_events(
-                Path(path_text),
-                safe_event_type(event_type),
-                repo_slug=repo_slug,
-                team_id=team_id,
-                install_id=install_id,
-                source=source,
-            )
+        loaded = load_productivity_window_events(
+            Path(path_text),
+            safe_event_type(event_type),
+            repo_slug=repo_slug,
+            team_id=team_id,
+            install_id=install_id,
+            source=source,
         )
+        if repo_slug:
+            for event in loaded:
+                observed_slug = str(event.get("repo_slug") or "")
+                if observed_slug and observed_slug != repo_slug:
+                    raise CloudBundleError(
+                        f"--event window observation repo_slug {observed_slug!r} "
+                        f"does not match repo-sync target {repo_slug!r}; "
+                        "use a per-repo window file"
+                    )
+        events.extend(loaded)
     if len(events) > MAX_EVENT_COUNT:
         raise CloudBundleError(f"too many events: {len(events)}; max {MAX_EVENT_COUNT}")
     return events
@@ -1440,6 +1455,7 @@ def repo_sync_upload(
     repos: list[dict[str, Any]] = []
     error_count = 0
     step_statuses: list[str] = []
+    total_window_events = 0
 
     for index, spec in enumerate(repo_specs):
         repo_slug, repo_path = parse_repo_sync_spec(spec)
@@ -1455,17 +1471,28 @@ def repo_sync_upload(
         for mode in selected_modes:
             try:
                 if mode == "dogfood":
+                    # Resolve the slug before loading window events so the
+                    # supported `--repo PATH` form fills slugless observations
+                    # exactly as dogfood_upload would below.
+                    effective_slug = repo_slug or detect_repo_slug(repo_path)
+                    window_events = repo_sync_window_events(
+                        event_specs,
+                        repo_slug=effective_slug,
+                        team_id=team_id,
+                        install_id=install_id,
+                        source=f"{source_prefix}-dogfood",
+                    )
+                    total_window_events += len(window_events)
+                    if total_window_events > MAX_EVENT_COUNT:
+                        raise CloudBundleError(
+                            f"too many events: {total_window_events}; "
+                            f"max {MAX_EVENT_COUNT}"
+                        )
                     step_result = dogfood_upload(
                         repo_path=repo_path,
                         output_dir=repo_output_dir / "dogfood",
                         reports=[],
-                        events=repo_sync_window_events(
-                            event_specs,
-                            repo_slug=repo_slug,
-                            team_id=team_id,
-                            install_id=install_id,
-                            source=f"{source_prefix}-dogfood",
-                        ),
+                        events=window_events,
                         spend_path=None,
                         repo_slug=repo_slug,
                         team_id=team_id,

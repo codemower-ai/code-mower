@@ -13,6 +13,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from code_mower.cloud_client import (
     EVENT_SCHEMA,
@@ -22,6 +23,7 @@ from code_mower.cloud_client import (
     PRODUCTIVITY_WINDOW_DIMENSION,
     PRODUCTIVITY_WINDOW_INPUT_SCHEMA,
     CloudBundleError,
+    is_normalized_productivity_window_event,
     load_event_file,
     load_productivity_window_events,
     normalize_event,
@@ -30,7 +32,11 @@ from code_mower.cloud_client import (
     validate_cloud_event,
     validate_productivity_window_event,
 )
-from code_mower.cloud_client.operations import build_repo_sync_data_class_summary
+from code_mower.cloud_client.operations import (
+    build_repo_sync_data_class_summary,
+    dogfood_upload,
+    repo_sync_upload,
+)
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "productivity_window_observations.json"
@@ -178,6 +184,36 @@ class ProductivityWindowIdempotenceTests(unittest.TestCase):
                 source="s",
             )
 
+    def test_posture_and_source_fork_the_event_id(self) -> None:
+        observation = _fixture()["repo_window"]
+        base = productivity_window_to_event(observation, source="unit-test")
+
+        # Repeat content through another route stays stable.
+        repeat = productivity_window_to_event(
+            copy.deepcopy(observation), team_id="other", install_id="other", source="b"
+        )
+        self.assertEqual(repeat["event_id"], base["event_id"])
+
+        postured = copy.deepcopy(observation)
+        postured["pilot_posture"] = "supervised"
+        postured_event = productivity_window_to_event(postured, source="unit-test")
+        validate_cloud_event(postured_event)
+        self.assertEqual(postured_event["dimensions"]["pilot_posture"], "supervised")
+        self.assertNotEqual(postured_event["event_id"], base["event_id"])
+        self.assertEqual(
+            productivity_window_to_event(
+                copy.deepcopy(postured), source="other-route"
+            )["event_id"],
+            postured_event["event_id"],
+        )
+
+        resourced = copy.deepcopy(observation)
+        resourced["event_source"] = "dogfood"
+        resourced_event = productivity_window_to_event(resourced, source="unit-test")
+        validate_cloud_event(resourced_event)
+        self.assertEqual(resourced_event["dimensions"]["event_source"], "dogfood")
+        self.assertNotEqual(resourced_event["event_id"], base["event_id"])
+
 
 class ProductivityWindowEventFileTests(unittest.TestCase):
     def test_event_file_loading_accepts_window_observations(self) -> None:
@@ -223,11 +259,14 @@ class ProductivityWindowEventFileTests(unittest.TestCase):
                         {
                             "mode": "cloud-dogfood",
                             "export": {
-                                "event_count": 3,
+                                "event_count": 4,
                                 "event_types": {
                                     "dogfood_upload": 1,
-                                    "productivity_summary": 2,
+                                    # Legacy and normalized windows share the
+                                    # event type; only the marker counts.
+                                    "productivity_summary": 3,
                                 },
+                                "productivity_window_event_count": 2,
                             },
                         },
                         {"mode": "cloud-reviewer-runs", "event_count": 1},
@@ -243,7 +282,33 @@ class ProductivityWindowEventFileTests(unittest.TestCase):
         self.assertIn("causal", baseline["trust_guidance"]["do_not_use_for"])
         # Existing classes are unchanged.
         self.assertEqual(summary["current_dogfood"]["steps"], 1)
-        self.assertEqual(summary["current_dogfood"]["events"], 3)
+        self.assertEqual(summary["current_dogfood"]["events"], 4)
+
+    def test_repo_sync_summary_ignores_legacy_productivity_summaries(self) -> None:
+        summary = build_repo_sync_data_class_summary(
+            [
+                {
+                    "steps": [
+                        {
+                            "mode": "cloud-dogfood",
+                            "export": {
+                                "event_count": 2,
+                                "event_types": {
+                                    "dogfood_upload": 1,
+                                    "productivity_summary": 1,
+                                },
+                                "productivity_window_event_count": 0,
+                            },
+                        }
+                    ]
+                }
+            ]
+        )
+
+        baseline = summary["productivity_baseline"]
+        self.assertEqual(baseline["steps"], 0)
+        self.assertEqual(baseline["events"], 0)
+        self.assertEqual(summary["current_dogfood"]["events"], 2)
 
 
 class ProductivityWindowRejectionTests(unittest.TestCase):
@@ -294,6 +359,29 @@ class ProductivityWindowRejectionTests(unittest.TestCase):
         with self.assertRaisesRegex(CloudBundleError, "local paths"):
             productivity_window_to_event(with_path)
 
+    def test_rejects_silent_elapsed_seconds_input(self) -> None:
+        observation = copy.deepcopy(_fixture()["repo_window"])
+        observation["timings"] = dict(observation["timings"])
+        observation["timings"]["elapsed_seconds"] = 604800
+        with self.assertRaisesRegex(
+            CloudBundleError, "unsupported productivity_window timing"
+        ):
+            productivity_window_to_event(observation)
+
+    def test_fixtures_stay_metadata_only(self) -> None:
+        serialized = json.dumps(_fixture()).lower()
+        for phrase in (
+            "raw_diff",
+            "transcript",
+            "issue body",
+            "source code",
+            "auth output",
+            "local path",
+            "secret",
+            "prompt",
+        ):
+            self.assertNotIn(phrase, serialized)
+
     def test_windowed_event_validation_enforces_coverage_and_causality(self) -> None:
         event = productivity_window_to_event(_fixture()["repo_window"], source="unit-test")
 
@@ -334,19 +422,211 @@ class ProductivityWindowRejectionTests(unittest.TestCase):
         validate_productivity_window_event(legacy)
         validate_cloud_event(legacy)
 
-    def test_fixtures_stay_metadata_only(self) -> None:
-        serialized = json.dumps(_fixture()).lower()
-        for phrase in (
-            "raw_diff",
-            "transcript",
-            "issue body",
-            "source code",
-            "auth output",
-            "local path",
-            "secret",
-            "prompt",
-        ):
-            self.assertNotIn(phrase, serialized)
+class ProductivityWindowRepoSyncTests(unittest.TestCase):
+    def test_repo_sync_rejects_mismatched_repo_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "window.json"
+            path.write_text(json.dumps(_fixture()["repo_window"]), encoding="utf-8")
+            with self.assertRaisesRegex(
+                CloudBundleError, "does not match repo-sync target"
+            ):
+                repo_sync_window_events(
+                    [f"{PRODUCTIVITY_EVENT_TYPE}={path}"],
+                    repo_slug="owner/other",
+                    team_id="t",
+                    install_id="i",
+                    source="s",
+                )
+
+    def test_repo_sync_accepts_matching_and_slugless_observations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            matching = Path(tmp) / "window.json"
+            matching.write_text(
+                json.dumps(_fixture()["repo_window"]), encoding="utf-8"
+            )
+            events = repo_sync_window_events(
+                [f"{PRODUCTIVITY_EVENT_TYPE}={matching}"],
+                repo_slug="owner/repo",
+                team_id="t",
+                install_id="i",
+                source="s",
+            )
+            self.assertEqual(events[0]["repo_slug"], "owner/repo")
+
+            slugless = copy.deepcopy(_fixture()["repo_window"])
+            del slugless["repo_slug"]
+            slugless_path = Path(tmp) / "slugless.json"
+            slugless_path.write_text(json.dumps(slugless), encoding="utf-8")
+            filled = repo_sync_window_events(
+                [f"{PRODUCTIVITY_EVENT_TYPE}={slugless_path}"],
+                repo_slug="owner/repo",
+                team_id="t",
+                install_id="i",
+                source="s",
+            )
+            self.assertEqual(filled[0]["repo_slug"], "owner/repo")
+
+    def test_repo_sync_resolves_path_slug_before_loading_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            slugless = copy.deepcopy(_fixture()["repo_window"])
+            del slugless["repo_slug"]
+            window_path = Path(tmp) / "window.json"
+            window_path.write_text(json.dumps(slugless), encoding="utf-8")
+            with patch(
+                "code_mower.cloud_client.operations.detect_repo_slug",
+                return_value="owner/repo",
+            ):
+                result = repo_sync_upload(
+                    repo_specs=[str(repo)],
+                    output_dir=Path(tmp) / "out",
+                    modes=["dogfood"],
+                    team_id="t",
+                    install_id="i",
+                    source_prefix="unit-test",
+                    limit=5,
+                    endpoint="https://codemower.com/api/ingest",
+                    token_env="CODE_MOWER_TEST_EMPTY_TOKEN",
+                    include_reports=False,
+                    include_git_ref=False,
+                    yes=False,
+                    timeout=0.1,
+                    events=[f"{PRODUCTIVITY_EVENT_TYPE}={window_path}"],
+                )
+            self.assertEqual(result["status"], "dry_run")
+            dogfood_step = result["repos"][0]["steps"][0]
+            self.assertEqual(dogfood_step["status"], "dry_run")
+            self.assertEqual(
+                dogfood_step["export"]["productivity_window_event_count"], 1
+            )
+            baseline = result["data_class_summary"]["productivity_baseline"]
+            self.assertEqual((baseline["steps"], baseline["events"]), (1, 1))
+
+    def test_repo_sync_enforces_global_event_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            observations = []
+            for day in (1, 2):
+                observation = copy.deepcopy(_fixture()["repo_window"])
+                del observation["repo_slug"]
+                observation["window_start"] = f"2026-08-0{day}T00:00:00Z"
+                observation["window_end"] = f"2026-08-0{day + 1}T00:00:00Z"
+                observations.append(observation)
+            window_path = Path(tmp) / "windows.json"
+            window_path.write_text(json.dumps(observations), encoding="utf-8")
+            repo_a = Path(tmp) / "a"
+            repo_a.mkdir()
+            repo_b = Path(tmp) / "b"
+            repo_b.mkdir()
+            # Each repo loads 2 events (under a per-repo cap of 3) but the
+            # run total of 4 exceeds the same cap, so the run must fail.
+            with patch(
+                "code_mower.cloud_client.operations.MAX_EVENT_COUNT", 3
+            ):
+                result = repo_sync_upload(
+                    repo_specs=[f"owner/a={repo_a}", f"owner/b={repo_b}"],
+                    output_dir=Path(tmp) / "out",
+                    modes=["dogfood"],
+                    team_id="t",
+                    install_id="i",
+                    source_prefix="unit-test",
+                    limit=5,
+                    endpoint="https://codemower.com/api/ingest",
+                    token_env="CODE_MOWER_TEST_EMPTY_TOKEN",
+                    include_reports=False,
+                    include_git_ref=False,
+                    yes=False,
+                    timeout=0.1,
+                    events=[f"{PRODUCTIVITY_EVENT_TYPE}={window_path}"],
+                )
+            self.assertEqual(result["repos"][0]["steps"][0]["status"], "dry_run")
+            second = result["repos"][1]["steps"][0]
+            self.assertEqual(second["status"], "error")
+            self.assertIn("too many events", second["error"])
+            self.assertEqual(result["status"], "partial")
+
+    def test_baseline_counts_only_normalized_windows_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            window_path = Path(tmp) / "window.json"
+            window_path.write_text(
+                json.dumps(_fixture()["repo_window"]), encoding="utf-8"
+            )
+            legacy = {
+                "event_type": PRODUCTIVITY_EVENT_TYPE,
+                "repo_slug": "owner/repo",
+                "source": "unit-test",
+                "status": "observed",
+                "metrics": {"merged_pr_count": 1},
+                "dimensions": {
+                    "productivity_schema": PRODUCTIVITY_METRICS_SCHEMA,
+                    "repo_slug": "owner/repo",
+                    "window_start": "2026-09-03T00:00:00Z",
+                    "window_end": "2026-09-03T01:00:00Z",
+                    "window_granularity": "cycle",
+                    "aggregation_subject": "repo",
+                },
+            }
+            legacy_path = Path(tmp) / "legacy.json"
+            legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+            window_events = repo_sync_window_events(
+                [f"{PRODUCTIVITY_EVENT_TYPE}={window_path}"],
+                repo_slug="owner/repo",
+                team_id="t",
+                install_id="i",
+                source="s",
+            )
+            legacy_events = load_productivity_window_events(
+                legacy_path,
+                PRODUCTIVITY_EVENT_TYPE,
+                repo_slug="owner/repo",
+                team_id="t",
+                install_id="i",
+                source="s",
+            )
+            self.assertTrue(
+                is_normalized_productivity_window_event(window_events[0])
+            )
+            self.assertFalse(
+                is_normalized_productivity_window_event(legacy_events[0])
+            )
+
+            def _dogfood(extra_events: list[dict[str, object]], name: str) -> dict[str, object]:
+                return dogfood_upload(  # type: ignore[return-value]
+                    repo_path=root,
+                    output_dir=Path(tmp) / name,
+                    reports=[],
+                    events=extra_events,  # type: ignore[arg-type]
+                    spend_path=None,
+                    repo_slug="owner/repo",
+                    team_id="t",
+                    install_id="i",
+                    source="unit-test",
+                    endpoint="https://codemower.com/api/ingest",
+                    token_env="CODE_MOWER_TEST_EMPTY_TOKEN",
+                    include_reports=False,
+                    yes=False,
+                    timeout=0.1,
+                )
+
+            window_step = _dogfood(window_events, "bundle-window")
+            legacy_step = _dogfood(legacy_events, "bundle-legacy")
+            self.assertEqual(
+                window_step["export"]["productivity_window_event_count"], 1  # type: ignore[index]
+            )
+            self.assertEqual(
+                legacy_step["export"]["productivity_window_event_count"], 0  # type: ignore[index]
+            )
+
+            summary = build_repo_sync_data_class_summary(
+                [{"steps": [window_step, legacy_step]}]  # type: ignore[list-item]
+            )
+            baseline = summary["productivity_baseline"]
+            self.assertEqual((baseline["steps"], baseline["events"]), (1, 1))
+            # The legacy summary still lands in current dogfood history.
+            self.assertGreaterEqual(summary["current_dogfood"]["events"], 2)
 
 
 if __name__ == "__main__":

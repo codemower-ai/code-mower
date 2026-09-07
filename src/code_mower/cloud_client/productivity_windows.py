@@ -76,10 +76,12 @@ COVERAGE_VALUES = ("observed", "unavailable")
 CAUSAL_CLAIM_NONE = "none"
 
 #: Timings accepted on a window observation. Each maps 1:1 onto the
-#: contracted ``productivity_summary`` time metric of the same name, except
-#: ``elapsed_seconds``, which becomes ``cycle_time_seconds``.
+#: contracted ``productivity_summary`` time metric of the same name.
+#: ``cycle_time_seconds`` is always the ``window_end`` minus ``window_start``
+#: span; ``timings.elapsed_seconds`` is not accepted (rejected as an
+#: unsupported timing) so operator input can never silently diverge from the
+#: emitted elapsed metric.
 WINDOW_TIMING_FIELDS = (
-    "elapsed_seconds",
     "active_seconds",
     "queue_wait_seconds",
     "wait_time_seconds",
@@ -90,7 +92,6 @@ WINDOW_TIMING_FIELDS = (
 )
 
 TIMING_TO_METRIC = {
-    "elapsed_seconds": "cycle_time_seconds",
     "active_seconds": "active_time_seconds",
     "queue_wait_seconds": "queue_wait_seconds",
     "wait_time_seconds": "wait_time_seconds",
@@ -231,6 +232,8 @@ def _window_identity(window: Mapping[str, Any]) -> dict[str, Any]:
         "aggregation_subject": window["aggregation_subject"],
         "aggregation_key": window.get("aggregation_key", ""),
         "release": window.get("release", ""),
+        "pilot_posture": window.get("pilot_posture", ""),
+        "event_source": window.get("event_source", ""),
         "comparison_basis": window.get("comparison_basis", "unknown"),
         "timing_provenance": window.get("timing_provenance", "unknown"),
         "metrics": window.get("metrics", {}),
@@ -360,7 +363,7 @@ def normalize_window_observation(
     }
     active_observed = False
     for field in WINDOW_TIMING_FIELDS:
-        if field == "elapsed_seconds" or timings.get(field) in (None, ""):
+        if timings.get(field) in (None, ""):
             continue
         number = _finite_seconds(timings.get(field), field)
         metrics[TIMING_TO_METRIC[field]] = number
@@ -578,6 +581,28 @@ def load_productivity_window_events(
         else:
             events.append(normalize_event(dict(item), event_type))
     return events
+
+
+def is_normalized_productivity_window_event(event: Mapping[str, Any]) -> bool:
+    """Return whether an event is a normalized window carrying the marker.
+
+    Only events with ``dimensions.productivity_window_schema`` equal to the
+    producer stamp count as ``productivity_baseline`` coverage; legacy or
+    third-party ``productivity_summary`` events without the stamp do not,
+    even though they share the event type.
+    """
+
+    dimensions = event.get("dimensions")
+    return (
+        isinstance(dimensions, Mapping)
+        and dimensions.get("productivity_window_schema") == PRODUCTIVITY_WINDOW_DIMENSION
+    )
+
+
+def count_normalized_productivity_window_events(events: list[Mapping[str, Any]]) -> int:
+    """Count normalized windows in an event list (marker carriers only)."""
+
+    return sum(1 for event in events if is_normalized_productivity_window_event(event))
 
 
 def validate_productivity_window_event(event: Mapping[str, Any]) -> None:
