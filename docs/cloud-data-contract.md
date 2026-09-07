@@ -99,6 +99,7 @@ Supported event types include:
 - `owner_intervention`
 - `pr_outcome`
 - `productivity_summary`
+- `reviewer_finding_outcome`
 
 Events may include provider/lens names, timing, cost, verdict, useful finding
 counts, false-positive counts, repository slug, install id, and coarse runtime
@@ -207,6 +208,40 @@ counts/cost only. Its dimension and metric names are closed in v1, so undeclared
 fields are rejected rather than becoming accidental prose channels. It must not
 contain PR or issue prose, source, diffs, prompts, transcripts, issue body text,
 raw stdout/stderr, auth output, local paths, or secrets.
+
+## Reviewer Finding Outcomes
+
+`reviewer_finding_outcome` is the additive blocker-scoped disposition event for
+reviewer evidence and confirmed-catch claims. It uses the normal
+`code_mower.benchmarkEvent.v1` envelope with
+`dimensions.reviewer_finding_outcome_schema=code_mower.reviewerFindingOutcome.v1`.
+One event describes one finding outcome observation; the stable opaque
+`finding_id` plus `repo_slug`, `pr_number`, `head_sha`, and `lane_id` form the
+finding identity. Producers should make retries idempotent with the same
+`event_id`. When a newer observation uses another event id, consumers select the
+latest `observed_at` observation per finding before aggregating.
+
+Required dimensions are `reviewer_finding_outcome_schema`, opaque `finding_id`
+(at most 160 characters), `repo_slug` (in `OWNER/REPO` format), positive
+integer-string `pr_number`, `head_sha` (7-64 characters), `lane_id` (at most 80
+characters), `severity` (`blocker`, `major`, `minor`, or `info`), `disposition`
+(`accepted_fixed`, `false_positive`, `accepted_risk`, `owner_decision`,
+`duplicate`, `infrastructure`, or `insufficient_context`), ISO 8601 `observed_at`
+with a UTC offset, and `source` (`automated` or `manual`). Optional dimensions
+are `resolved_at` (which cannot precede `observed_at`), `fix_commit_sha` (7-64
+characters, required for `accepted_fixed` disposition), and `decision_id` (at
+most 160 characters, required for `owner_decision` disposition).
+
+Metrics are atomic: `finding_outcome_count` is always `1`. No precomputed
+dashboard rates are uploaded.
+
+The event contains identifiers, timestamps, severity, disposition, and optional
+linkage only. Its dimension and metric names are closed in v1, so undeclared
+fields are rejected rather than becoming accidental prose channels. It must not
+contain finding prose, titles, details, source, diffs, prompts, transcripts,
+issue body text, raw stdout/stderr, auth output, file paths, local paths, or
+secrets. Events that omit `reviewer_finding_outcome`, including all uploads
+before this contract, remain valid.
 
 ## Work Type Taxonomy And Lane Attribution
 

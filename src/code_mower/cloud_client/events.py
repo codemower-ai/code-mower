@@ -32,6 +32,10 @@ from .adoption_runs import (
 )
 from .dogfood import DogfoodPlan
 from .errors import CloudBundleError
+from .finding_outcomes import (
+    REVIEWER_FINDING_OUTCOME_EVENT_TYPE,
+    validate_reviewer_finding_outcome_payload,
+)
 from .git_metadata import run_git
 from .productivity import (
     PRODUCTIVITY_EVENT_TYPE,
@@ -321,6 +325,8 @@ def validate_cloud_event(value: Any) -> dict[str, Any]:
         validate_pr_outcome_payload(value)
     if value["event_type"] == ADOPTION_RUN_EVENT_TYPE:
         validate_adoption_run_payload(value)
+    if value["event_type"] == REVIEWER_FINDING_OUTCOME_EVENT_TYPE:
+        validate_reviewer_finding_outcome_payload(value)
     validate_work_type_metadata(value["dimensions"], value["event_type"], value["tool"])
     return value
 
@@ -802,6 +808,7 @@ def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
         ADOPTION_RUN_EVENT_TYPE,
         PR_OUTCOME_EVENT_TYPE,
         PRODUCTIVITY_EVENT_TYPE,
+        REVIEWER_FINDING_OUTCOME_EVENT_TYPE,
         "value_report_snapshot",
     }:
         normalized["tool"] = build_code_mower_tool_provenance(
