@@ -2348,6 +2348,30 @@ def _versioned_python_candidates(path_value: str) -> tuple[str, ...]:
     return tuple(f"python3.{minor}" for minor in sorted(minors, reverse=True))
 
 
+def _resolve_python_candidate(
+    candidate: str,
+    *,
+    explicit: str,
+    which_fn: Callable[[str], str | None],
+) -> str | None:
+    candidate_path = Path(candidate).expanduser()
+    is_path = bool(
+        os.sep in candidate
+        or (os.altsep and os.altsep in candidate)
+        or candidate == sys.executable
+        or (candidate == explicit and candidate_path.exists())
+    )
+    if is_path:
+        if not candidate_path.exists():
+            return None
+        return str(candidate_path if candidate_path.is_absolute() else candidate_path.resolve())
+    resolved = which_fn(candidate)
+    if not resolved:
+        return None
+    resolved_path = Path(resolved).expanduser()
+    return str(resolved_path if resolved_path.is_absolute() else resolved_path.resolve())
+
+
 def resolve_supported_runtime(
     *,
     environ: Mapping[str, str] | None = None,
@@ -2361,43 +2385,42 @@ def resolve_supported_runtime(
     """
     env = os.environ if environ is None else environ
     explicit = env.get("CODE_MOWER_PYTHON", "").strip()
+    which = shutil.which if which_fn is None else which_fn
     if explicit:
-        candidates = (explicit,)
+        resolved = _resolve_python_candidate(explicit, explicit=explicit, which_fn=which)
+        candidates = (resolved,) if resolved else ()
     else:
         discovered = _versioned_python_candidates(str(env.get("PATH", "")))
-        candidates = (
-            sys.executable,
+        raw_candidates = (
             *discovered,
-            "python3.12",
-            "python3.13",
             "python3.14",
+            "python3.13",
+            "python3.12",
             "python3",
+            sys.executable,
         )
-    which = shutil.which if which_fn is None else which_fn
+        resolved_candidates: list[str] = []
+        seen: set[str] = set()
+        for candidate in raw_candidates:
+            resolved = _resolve_python_candidate(candidate, explicit="", which_fn=which)
+            if resolved and resolved not in seen:
+                seen.add(resolved)
+                resolved_candidates.append(resolved)
+
+        home = Path(str(env.get("HOME") or Path.home())).expanduser().resolve()
+        outside_home = [
+            candidate for candidate in resolved_candidates if not Path(candidate).resolve().is_relative_to(home)
+        ]
+        inside_home = [candidate for candidate in resolved_candidates if Path(candidate).resolve().is_relative_to(home)]
+        candidates = (*outside_home, *inside_home)
+
     run = subprocess.run if runner is None else runner
     for cand in candidates:
         if not cand:
             continue
-        cand_path = Path(cand).expanduser()
-        if (
-            os.sep in cand
-            or (os.altsep and os.altsep in cand)
-            or cand == sys.executable
-            or (cand == explicit and cand_path.exists())
-        ):
-            if cand_path.exists():
-                resolved = str(cand_path.resolve()) if not cand_path.is_absolute() else cand
-            else:
-                resolved = None
-        else:
-            resolved = which(cand)
-            if resolved and not Path(resolved).is_absolute():
-                resolved = str(Path(resolved).resolve())
-        if not resolved:
-            continue
         try:
             completed = run(
-                [resolved, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"],
+                [cand, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"],
                 text=True,
                 capture_output=True,
                 check=False,
@@ -2414,7 +2437,7 @@ def resolve_supported_runtime(
         except (IndexError, ValueError):
             continue
         if (major, minor) >= (3, 12):
-            return resolved, f"python_{major}.{minor}"
+            return cand, f"python_{major}.{minor}"
     return None
 
 
