@@ -187,10 +187,6 @@ def resolve_sync_identity(
     if explicit and (len(explicit) > _MAX_KEY_LENGTH or not _KEY_RE.fullmatch(explicit)):
         return {"status": "mismatch", "reason": "jira_identity_mismatch"}
     if parsed["status"] != "ok":
-        if explicit:
-            # An explicit reference with no usable PR marker is still
-            # actionable: the operator named the target directly.
-            return {"status": "ok", "issue_key": explicit, "reason": "ok"}
         reason = str(parsed.get("reason") or "missing_jira_identity")
         return {"status": "missing" if reason == "missing_jira_identity" else "ambiguous",
                 "reason": reason}
@@ -280,21 +276,21 @@ def build_sync_plan(
         if identity["status"] == "ambiguous":
             action = (
                 "Owner action required: more than one Jira marker was found "
-                "in the branch or PR title. Set one explicit --issue for "
-                "this PR and re-run. No Jira write was attempted."
+                "in the branch or PR title. Keep one matching marker and "
+                "re-run. No Jira write was attempted."
             )
         elif identity["status"] == "mismatch":
             action = (
                 "Owner action required: the Jira marker disagrees with "
                 "--issue or the configured project key. Confirm the owning "
-                "issue with the PR author and re-run with one explicit "
-                "--issue. No Jira write was attempted."
+                "issue with the PR author, correct the metadata or config, "
+                "and re-run. No Jira write was attempted."
             )
         else:
             action = (
                 "Owner action required: no Jira marker was found in the "
-                "branch name or the leading PR title token. Add the issue "
-                "key there, or pass one explicit --issue, and re-run. "
+                "branch name or the leading PR title token. Add one issue "
+                "key there and re-run. "
                 "No Jira write was attempted."
             )
         return _owner_action_report(
@@ -441,6 +437,24 @@ def reconcile_missed_events(
     received = 0
     results: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
+    pr_markers: dict[str, set[str]] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        pr_url = str(event.get("pr_url") or "").strip().lower()
+        marker = str(
+            event.get("issue_ref")
+            or event.get("issue_key")
+            or parse_jira_marker(
+                branch=str(event.get("branch") or ""),
+                pr_title=str(event.get("pr_title") or ""),
+            ).get("issue_key", "")
+        ).upper()
+        if pr_url and marker:
+            pr_markers.setdefault(pr_url, set()).add(marker)
+    conflicted_prs = {
+        pr_url for pr_url, markers in pr_markers.items() if len(markers) > 1
+    }
     for event in events:
         if not isinstance(event, Mapping):
             continue
@@ -455,6 +469,15 @@ def reconcile_missed_events(
                 pr_title=str(event.get("pr_title") or ""),
             ).get("issue_key", "")
         )
+        if pr_url.strip().lower() in conflicted_prs:
+            results.append({
+                "status": "blocked",
+                "reason": "ambiguous_jira_identity",
+                "milestone": milestone,
+                "issue_key": "",
+                "write_request_count": 0,
+            })
+            continue
         key = (marker.upper(), pr_url.strip().lower(), milestone)
         if key in seen:
             results.append({"status": "duplicate_skipped", "reason": "ok",

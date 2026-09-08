@@ -292,6 +292,7 @@ PACKAGE_FILES = (
     ("src/code_mower/devin_api.py", "src/code_mower/devin_api.py", "core"),
     ("src/code_mower/jira_cloud.py", "src/code_mower/jira_cloud.py", "core"),
     ("src/code_mower/jira_mutations.py", "src/code_mower/jira_mutations.py", "core"),
+    ("src/code_mower/jira_pr_sync.py", "src/code_mower/jira_pr_sync.py", "core"),
     ("src/code_mower/provider_credentials.py", "src/code_mower/provider_credentials.py", "core"),
     ("src/code_mower/campaign_discovery.py", "src/code_mower/campaign_discovery.py", "core"),
     ("src/code_mower/campaign_adapters.py", "src/code_mower/campaign_adapters.py", "core"),

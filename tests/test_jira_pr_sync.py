@@ -261,6 +261,18 @@ class MarkerParsingTest(unittest.TestCase):
         self.assertEqual(identity, {"status": "mismatch",
                                     "reason": "jira_identity_mismatch"})
 
+    def test_explicit_issue_does_not_replace_missing_marker(self) -> None:
+        identity = jira_pr_sync.resolve_sync_identity(
+            sync_config(), branch="feature/no-marker", issue_ref="ABC-123")
+        self.assertEqual(identity, {"status": "missing",
+                                    "reason": "missing_jira_identity"})
+
+    def test_explicit_issue_does_not_disambiguate_conflicting_markers(self) -> None:
+        identity = jira_pr_sync.resolve_sync_identity(
+            sync_config(), branch="ABC-123-x-DEF-456", issue_ref="ABC-123")
+        self.assertEqual(identity, {"status": "ambiguous",
+                                    "reason": "ambiguous_jira_identity"})
+
     def test_wrong_project_prefix_is_mismatch(self) -> None:
         identity = jira_pr_sync.resolve_sync_identity(
             sync_config(), branch="feature/XYZ-9-work")
@@ -432,6 +444,34 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(summary["events_replayed"], 1)
         self.assertEqual(summary["results"][0]["status"], "planned")
         self.assertEqual(summary["results"][0]["write_request_count"], 0)
+
+    def test_reconcile_rejects_one_pr_mapped_to_multiple_issues(self) -> None:
+        config, runner = sync_config(), FakeJira()
+        applied: list[dict[str, Any]] = []
+
+        def apply_fn(report: dict[str, Any]) -> dict[str, Any]:
+            applied.append(report)
+            return apply_plan(report, runner)
+
+        summary = jira_pr_sync.reconcile_missed_events(
+            [
+                {"milestone": "opened", "pr_url": PR_URL,
+                 "branch": "feature/ABC-123-work"},
+                {"milestone": "merged", "pr_url": PR_URL,
+                 "branch": "feature/ABC-456-other"},
+            ],
+            config,
+            apply_requested=True,
+            apply_fn=apply_fn,
+        )
+
+        self.assertEqual(summary["events_replayed"], 2)
+        self.assertEqual(
+            [item["reason"] for item in summary["results"]],
+            ["ambiguous_jira_identity", "ambiguous_jira_identity"],
+        )
+        self.assertEqual(applied, [])
+        self.assertEqual(runner.calls, [])
 
 
 class DiscoverLinksTest(unittest.TestCase):
