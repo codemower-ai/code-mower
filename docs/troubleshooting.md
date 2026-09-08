@@ -195,7 +195,10 @@ for the PR and retry. See [Local Audit Runner](local-audit-runner.md).
 If the wrapper posts `UNKNOWN` because a provider could not produce structured
 output, treat it as audit infrastructure, not a code-review BLOCKED verdict.
 Retry once on the same head; if it repeats, keep the lane informational or
-record an owner decision before relying on it.
+record an owner decision before relying on it. For Antigravity CLI audits,
+headless runs require `--dangerously-skip-permissions` inside the temporary
+sandbox; verify `agy --help` exposes `--dangerously-skip-permissions` if audits
+fail with permission denials or UNKNOWN.
 
 ## Board URL Does Not Open From Another Machine
 

@@ -251,6 +251,7 @@ def verify_prompt_file_contract(
     cwd: Path,
     env: Mapping[str, str],
     display_name: str,
+    required_sentinels: tuple[str, ...] = PROMPT_FILE_HELP_SENTINELS,
 ) -> None:
     completed = subprocess.run(
         [command, "--help"],
@@ -264,15 +265,46 @@ def verify_prompt_file_contract(
     help_text = f"{completed.stdout}\n{completed.stderr}"
     missing = [
         sentinel
-        for sentinel in PROMPT_FILE_HELP_SENTINELS
+        for sentinel in required_sentinels
         if sentinel not in help_text
     ]
     if completed.returncode != 0 or missing:
+        sentinels_desc = (
+            ", ".join(required_sentinels[:-1]) + f", and {required_sentinels[-1]}"
+            if len(required_sentinels) > 1
+            else required_sentinels[0]
+            if required_sentinels
+            else ""
+        )
         raise GeminiCliUnsupportedError(
-            f"{display_name} must support --print, --print-timeout, --sandbox, "
-            "and --add-dir for Code Mower calibration prompt-file transport. "
+            f"{display_name} must support {sentinels_desc} for Code Mower "
+            "calibration prompt-file transport. "
             f"Missing help sentinel(s): {missing!r}."
         )
+
+
+def build_prompt_file_argv(
+    command: str,
+    *,
+    workspace_dir: Path,
+    prompt_instruction: str,
+    timeout_seconds: int,
+    model: str = "",
+    extra_args: tuple[str, ...] = (),
+) -> list[str]:
+    gemini_args = [
+        command,
+        "--sandbox",
+        *extra_args,
+        "--add-dir",
+        str(workspace_dir),
+        "--print-timeout",
+        f"{timeout_seconds}s",
+    ]
+    if model:
+        gemini_args.extend(["--model", model])
+    gemini_args.extend(["--print", prompt_instruction])
+    return gemini_args
 
 
 def _clip_diff(diff: str, max_bytes: int) -> tuple[str, bool, int, int]:
@@ -552,6 +584,8 @@ def run_gemini_cli_audit(
     cli_transport: str = "stdin_json",
     preserve_ambient_home: bool = False,
     context_pack_text: str = "",
+    extra_args: tuple[str, ...] = (),
+    required_help_sentinels: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     pr_meta = fetch_pull_request(repo, pr_number, token=github_token)
     pr_head_sha = str(pr_meta.get("head", {}).get("sha") or "")
@@ -662,22 +696,24 @@ def run_gemini_cli_audit(
                 "the complete Code Mower audit prompt. Return only the requested "
                 "JSON verdict."
             )
-            gemini_args = [
+            gemini_args = build_prompt_file_argv(
                 command,
-                "--sandbox",
-                "--add-dir",
-                str(workspace_dir),
-                "--print-timeout",
-                f"{timeout_seconds}s",
-            ]
-            if gemini_model:
-                gemini_args.extend(["--model", gemini_model])
-            gemini_args.extend(["--print", prompt_instruction])
+                workspace_dir=workspace_dir,
+                prompt_instruction=prompt_instruction,
+                timeout_seconds=timeout_seconds,
+                model=gemini_model,
+                extra_args=extra_args,
+            )
             verify_prompt_file_contract(
                 command,
                 cwd=workspace_dir,
                 env=child_env,
                 display_name=display_name,
+                required_sentinels=(
+                    required_help_sentinels
+                    if required_help_sentinels is not None
+                    else PROMPT_FILE_HELP_SENTINELS
+                ),
             )
             completed = subprocess.run(
                 gemini_args,
