@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Mapping
@@ -761,6 +762,33 @@ def _builder_evidence_pr_number(filename: str) -> str:
     return match.group(1) if match else ""
 
 
+def _pr_number_from_run_event(event: Mapping[str, Any]) -> str:
+    dimensions = event.get("dimensions")
+    if isinstance(dimensions, Mapping):
+        number = str(dimensions.get("pr_number") or "").strip()
+        if number:
+            return number
+    return str(event.get("pr_number") or "").strip()
+
+
+def _is_associable_builder_run(payload: Any) -> bool:
+    """Return True when a parsed record has the fields needed to associate it.
+
+    A parseable but structurally unusable record -- such as one that only
+    carries ``event_type=builder_run`` -- must not be silently filtered out.
+    """
+
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("event_type") != "builder_run":
+        return False
+    if not str(payload.get("repo_slug") or "").strip():
+        return False
+    if not _pr_number_from_run_event(payload):
+        return False
+    return True
+
+
 def _builder_run_events(
     repo_path: Path,
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -774,44 +802,35 @@ def _builder_run_events(
     """
 
     builder_dir = repo_path / ".code-mower" / "builder-runs"
-    if not builder_dir.is_dir():
-        # ``is_dir`` swallows OSError, so an existing-but-unreadable directory
-        # is indistinguishable from a missing one.  When the entry exists but
-        # cannot be confirmed as a readable directory, record one
-        # unattributable failure so coverage cannot be reported as complete.
-        try:
-            exists = builder_dir.exists()
-        except OSError:
-            exists = True
-        if exists:
-            return [], [""]
+    try:
+        with os.scandir(builder_dir) as it:
+            entries = sorted(it, key=lambda entry: entry.name)
+    except FileNotFoundError:
         return [], []
+    except NotADirectoryError:
+        return [], []
+    except OSError:
+        # The builder-run directory exists but cannot be enumerated.  Record
+        # a single bounded unattributable failure so no PR can be reported
+        # complete while scanning errors are not recoverable.
+        return [], [""]
     events: list[dict[str, Any]] = []
     unreadable: list[str] = []
-    try:
-        paths = sorted(builder_dir.glob("*.cloud-event.json"))
-    except OSError:
-        return events, [""]
-    for path in paths:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            unreadable.append(_builder_evidence_pr_number(path.name))
+    for entry in entries:
+        if not entry.name.endswith(".cloud-event.json"):
             continue
-        if isinstance(payload, dict) and payload.get("event_type") == "builder_run":
+        try:
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            payload = json.loads(Path(entry).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            unreadable.append(_builder_evidence_pr_number(entry.name))
+            continue
+        if _is_associable_builder_run(payload):
             events.append(payload)
         else:
-            unreadable.append(_builder_evidence_pr_number(path.name))
+            unreadable.append(_builder_evidence_pr_number(entry.name))
     return events, unreadable
-
-
-def _pr_number_from_run_event(event: Mapping[str, Any]) -> str:
-    dimensions = event.get("dimensions")
-    if isinstance(dimensions, Mapping):
-        number = str(dimensions.get("pr_number") or "").strip()
-        if number:
-            return number
-    return str(event.get("pr_number") or "").strip()
 
 
 def pr_outcomes_upload(

@@ -47,6 +47,7 @@ PR_OUTCOME_DIMENSIONS = (
     "cost_coverage",
     "missing_cost_sources",
     "pr_outcome_observation_version",
+    "evidence_incomplete",
 )
 
 
@@ -160,6 +161,8 @@ def _observation_fingerprint(
     closed_at: str,
     reverted_at: str,
     evidence_digest: str,
+    evidence_incomplete: bool = False,
+    missing_sources: list[str] | None = None,
 ) -> str:
     """Return a deterministic fingerprint of the full observation content."""
 
@@ -170,6 +173,8 @@ def _observation_fingerprint(
         "closed_at": closed_at,
         "reverted_at": reverted_at,
         "evidence_digest": evidence_digest,
+        "evidence_incomplete": bool(evidence_incomplete),
+        "incomplete_evidence_state": sorted(set(missing_sources or [])),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -440,6 +445,8 @@ def build_pr_outcome_event(
         dimensions["reverted_at"] = reverted_at
     if missing_sources:
         dimensions["missing_cost_sources"] = missing_sources
+    if evidence_incomplete:
+        dimensions["evidence_incomplete"] = True
 
     fingerprint = _observation_fingerprint(
         outcome=outcome,
@@ -448,6 +455,8 @@ def build_pr_outcome_event(
         closed_at=closed_at,
         reverted_at=reverted_at,
         evidence_digest=evidence_digest,
+        evidence_incomplete=evidence_incomplete,
+        missing_sources=missing_sources,
     )
     created_at_value = _observed_at(
         created_at,
@@ -494,6 +503,9 @@ def pr_outcome_observation_record(event: Mapping[str, Any]) -> dict[str, str]:
     """Return the local metadata-only state entry for an emitted event."""
 
     dimensions = _as_mapping(event.get("dimensions"))
+    missing_sources = dimensions.get("missing_cost_sources")
+    if not isinstance(missing_sources, list):
+        missing_sources = []
     fingerprint = _observation_fingerprint(
         outcome=str(dimensions.get("outcome") or ""),
         opened_at=str(dimensions.get("opened_at") or ""),
@@ -503,6 +515,8 @@ def pr_outcome_observation_record(event: Mapping[str, Any]) -> dict[str, str]:
         evidence_digest=str(
             dimensions.get("pr_outcome_observation_version") or ""
         ),
+        evidence_incomplete=bool(dimensions.get("evidence_incomplete", False)),
+        missing_sources=missing_sources,
     )
     return {
         "fingerprint": fingerprint,
