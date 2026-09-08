@@ -14,6 +14,12 @@ later entries are regular releases.
   tracker. Configs that omit `tracker` are unchanged and still mean GitHub.
   No Jira network calls or writes are added by this change (issue #798).
 
+### Fixed
+
+- Code Mower Board recognizes active supervised Muse lanes running under `muse`
+  or versioned `muse-bin-*` executables without exposing raw arguments, versions,
+  or private paths (issue #806).
+
 ## v1.0.15
 
 This release makes current-state reporting, provider credentials, release

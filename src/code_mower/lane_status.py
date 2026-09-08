@@ -34,6 +34,7 @@ PROCESS_PROVIDERS = {
     "devin": "devin",
     "gemini": "gemini",
     "gitar": "gitar",
+    "muse": "muse",
 }
 BOARD_DEFAULT_PORTS = set(range(5332, 5342))
 LOCAL_BOARD_DEFAULT_PORTS = BOARD_DEFAULT_PORTS
@@ -496,12 +497,36 @@ def _provider(command: str) -> str:
     executable = os.path.basename(command.split()[0]).lower() if command.split() else ""
     if executable in PROCESS_PROVIDERS:
         return PROCESS_PROVIDERS[executable]
+    if executable.startswith("muse-bin-") and len(executable) > len("muse-bin-"):
+        return "muse"
     lower = command.lower()
-    cli_lanes = {"antigravity-cli": "antigravity", "claude-audit": "claude", "codex-audit": "codex", "gemini-cli": "gemini"}
+    cli_lanes = {
+        "antigravity-cli": "antigravity",
+        "claude-audit": "claude",
+        "codex-audit": "codex",
+        "gemini-cli": "gemini",
+        "muse-cli": "muse",
+    }
     for command_name, provider in cli_lanes.items():
         if f"code_mower.cli {command_name}" in lower or f"code-mower {command_name}" in lower:
             return provider
+    match = re.search(r"\s+--\s+", command)
+    if match and ("lane-delivery supervise" in lower or "lane_delivery supervise" in lower):
+        child_command = command[match.end():].strip()
+        child_provider = _provider(child_command)
+        if child_provider:
+            return child_provider
     return ""
+
+
+def _process_display_name(command: str, provider: str) -> str:
+    lower = command.lower()
+    if re.search(r"\s+--\s+", command) and ("lane-delivery supervise" in lower or "lane_delivery supervise" in lower):
+        return provider
+    executable = os.path.basename(command.split()[0]) if command.split() else provider
+    if executable.lower().startswith("muse-bin-"):
+        return "muse"
+    return executable
 
 
 def _lane_cwd(cwd: str) -> bool:
@@ -522,7 +547,7 @@ def collect_lane_processes(command_runner: CommandRunner = _run_command) -> dict
         provider = "" if pid == os.getpid() else _provider(command)
         cwd = _process_cwd(pid, command_runner) if provider else ""
         if provider and _lane_cwd(cwd):
-            process = os.path.basename(command.split()[0]) if command.split() else provider
+            process = _process_display_name(command, provider)
             processes.append({"pid": pid, "provider": provider, "process": process, "cwd": cwd})
         if len(processes) >= 12:
             break

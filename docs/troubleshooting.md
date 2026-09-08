@@ -82,6 +82,18 @@ When restart is recommended, stop the old Board process and start it again:
 code-mower board serve --repo OWNER/REPO
 ```
 
+## Supervised Muse Lane Does Not Appear On Board
+
+Code Mower Board recognizes active Muse lanes running under `muse`, versioned
+`muse-bin-*` executables, or `code-mower lane-delivery supervise -- ...`. If an
+active lane is missing from Board:
+
+1. Verify the process is still running with `ps aux | grep muse`.
+2. Check that the working directory of the process is within an active lane checkout
+   and not in `/` or an excluded path.
+3. Ensure you are running Code Mower with Muse process discovery support, and
+   restart `code-mower board serve` if it was started under an older package version.
+
 ## `provider.review_hygiene` Mentions Clear-Stale Workflows
 
 Merge-authority reviewer lanes should have clear-stale workflows so old PASS or
