@@ -61,6 +61,14 @@ class TrackerWorkItemValidationTests(unittest.TestCase):
 
         self.assertTrue(any(error.startswith("identity.issue_key:") for error in errors))
 
+    def test_identity_values_must_be_single_line(self) -> None:
+        item = copy.deepcopy(_fixture()["github"])
+        item["identity"]["repo"] = "owner/example\nprivate prose"
+
+        errors = tracker_contract.validate_tracker_work_item(item)
+
+        self.assertTrue(any(error.startswith("identity.repo:") for error in errors))
+
     def test_github_identity_url_and_timestamps_are_required(self) -> None:
         item = copy.deepcopy(_fixture()["github"])
         item["identity"] = {"repo": "owner/example"}
@@ -92,6 +100,22 @@ class TrackerWorkItemValidationTests(unittest.TestCase):
         self.assertTrue(any(error.startswith("url:") for error in errors))
         self.assertTrue(any(error.startswith("created_at:") for error in errors))
         self.assertTrue(any(error.startswith("updated_at:") for error in errors))
+
+    def test_malformed_url_returns_an_error_instead_of_raising(self) -> None:
+        item = copy.deepcopy(_fixture()["github"])
+        item["url"] = "https://[bad"
+
+        errors = tracker_contract.validate_tracker_work_item(item)
+
+        self.assertTrue(any(error.startswith("url:") for error in errors))
+
+    def test_non_ascii_issue_number_returns_an_error_instead_of_raising(self) -> None:
+        item = copy.deepcopy(_fixture()["github"])
+        item["identity"]["number"] = "\u00b2"
+
+        errors = tracker_contract.validate_tracker_work_item(item)
+
+        self.assertTrue(any(error.startswith("identity.number:") for error in errors))
 
     def test_normalizer_preserves_invalid_missing_number_for_validation(self) -> None:
         item = tracker_contract.normalize_github_work_item(

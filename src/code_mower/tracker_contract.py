@@ -144,6 +144,8 @@ def _validate_identity_keys(
             not isinstance(value, str)
             or not value.strip()
             or len(value) > MAX_IDENTITY_VALUE_LENGTH
+            or "\n" in value
+            or "\r" in value
         ):
             errors.append(
                 f"{path}.{key}: must be a non-empty string of at most "
@@ -188,9 +190,15 @@ def validate_tracker_work_item(payload: Mapping[str, Any]) -> tuple[str, ...]:
             errors,
         )
         number = identity.get("number")
-        if isinstance(number, str) and (
-            not number.isdigit() or int(number) < 1
-        ):
+        valid_number = (
+            isinstance(number, str)
+            and number.isascii()
+            and number.isdigit()
+            and len(number) <= MAX_IDENTITY_VALUE_LENGTH
+        )
+        if valid_number:
+            valid_number = int(number) >= 1
+        if isinstance(number, str) and not valid_number:
             errors.append("identity.number: must be a positive integer string")
     elif kind == "jira_cloud":
         _validate_identity_keys(
@@ -205,8 +213,16 @@ def validate_tracker_work_item(payload: Mapping[str, Any]) -> tuple[str, ...]:
     if not isinstance(url, str) or len(url) > 2048:
         errors.append("url: must be a bounded HTTPS URL")
     else:
-        parsed_url = urlparse(url)
-        if parsed_url.scheme != "https" or not parsed_url.netloc or parsed_url.username:
+        try:
+            parsed_url = urlparse(url)
+            valid_url = (
+                parsed_url.scheme == "https"
+                and bool(parsed_url.netloc)
+                and parsed_url.username is None
+            )
+        except ValueError:
+            valid_url = False
+        if not valid_url:
             errors.append("url: must be a bounded HTTPS URL")
 
     for field_name in ("created_at", "updated_at"):
