@@ -524,29 +524,63 @@ def pr_outcome_observation_record(event: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def _malformed_observation_state_error() -> CloudBundleError:
+    """Return the bounded, path-free error for corrupt observation state."""
+
+    return CloudBundleError(
+        "pr_outcome observation state is malformed; aborting export/upload "
+        "rather than discarding recorded ordering state. Remove or repair "
+        "the repository observation state file and retry."
+    )
+
+
 def load_pr_outcome_observations(path: Path) -> dict[str, dict[str, str]]:
-    """Load local pr_outcome observation state; never raises on bad data."""
+    """Load local pr_outcome observation state; fail closed on bad data.
+
+    Only a genuinely missing state file is valid initial state.  An
+    unreadable or malformed file raises a bounded, path-free
+    ``CloudBundleError`` so export/upload aborts instead of silently
+    replacing recorded ordering state with an empty mapping -- which would
+    let a later correction tie on ``created_at``.
+    """
 
     try:
-        payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        text = Path(path).expanduser().read_text(encoding="utf-8")
+    except FileNotFoundError:
         return {}
+    except UnicodeDecodeError as exc:
+        raise _malformed_observation_state_error() from exc
+    except OSError as exc:
+        # ``strerror`` carries the OS reason only -- never a path -- so the
+        # diagnostic stays metadata-only.
+        reason = getattr(exc, "strerror", None) or "read failed"
+        raise CloudBundleError(
+            "unable to read pr_outcome observation state "
+            f"({reason}); aborting export/upload so a later correction "
+            "cannot tie on created_at. Restore read access to the "
+            "repository state directory and retry."
+        ) from exc
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise _malformed_observation_state_error() from exc
     if not isinstance(payload, Mapping):
-        return {}
+        raise _malformed_observation_state_error()
     observations = payload.get("observations")
     if not isinstance(observations, Mapping):
-        return {}
+        raise _malformed_observation_state_error()
     result: dict[str, dict[str, str]] = {}
     for key, item in observations.items():
         if not isinstance(item, Mapping):
-            continue
+            raise _malformed_observation_state_error()
         fingerprint = str(item.get("fingerprint") or "").strip()
         created_at = str(item.get("created_at") or "").strip()
-        if fingerprint and created_at:
-            result[str(key)] = {
-                "fingerprint": fingerprint,
-                "created_at": created_at,
-            }
+        if not fingerprint or not created_at:
+            raise _malformed_observation_state_error()
+        result[str(key)] = {
+            "fingerprint": fingerprint,
+            "created_at": created_at,
+        }
     return result
 
 

@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from .. import board
 from .. import code_mower_telemetry
 from .. import reviewer_spend
+from ..file_locks import FileLockError, exclusive_file_lock
 from .bundle import MAX_EVENT_COUNT
 from .doctor import run_cloud_doctor
 from .dogfood import build_dogfood_dry_run_preview, build_dogfood_plan, default_dogfood_reports
@@ -771,11 +772,23 @@ def _pr_number_from_run_event(event: Mapping[str, Any]) -> str:
     return str(event.get("pr_number") or "").strip()
 
 
+def _is_positive_int_pr_number(number: str) -> bool:
+    """Return True only for a decimal string naming a positive integer PR.
+
+    Values such as ``unknown``, ``0``, ``-1``, booleans, or non-integral
+    numerics must not associate evidence with a PR.
+    """
+
+    return number.isdigit() and int(number) >= 1
+
+
 def _is_associable_builder_run(payload: Any) -> bool:
     """Return True when a parsed record has the fields needed to associate it.
 
     A parseable but structurally unusable record -- such as one that only
-    carries ``event_type=builder_run`` -- must not be silently filtered out.
+    carries ``event_type=builder_run``, or one whose PR number is not a
+    positive integer -- must not be silently filtered out; it routes through
+    filename-attributed or unattributable fail-closed evidence handling.
     """
 
     if not isinstance(payload, dict):
@@ -784,7 +797,7 @@ def _is_associable_builder_run(payload: Any) -> bool:
         return False
     if not str(payload.get("repo_slug") or "").strip():
         return False
-    if not _pr_number_from_run_event(payload):
+    if not _is_positive_int_pr_number(_pr_number_from_run_event(payload)):
         return False
     return True
 
@@ -820,7 +833,12 @@ def _builder_run_events(
         if not entry.name.endswith(".cloud-event.json"):
             continue
         try:
+            # A non-regular entry whose name matches ``*.cloud-event.json``
+            # -- a symlink, directory, fifo, or similar -- is unreadable
+            # evidence, not an empty slot: silently skipping it could let a
+            # PR report ``complete`` coverage while an attempt is missing.
             if not entry.is_file(follow_symlinks=False):
+                unreadable.append(_builder_evidence_pr_number(entry.name))
                 continue
             payload = json.loads(Path(entry).read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -940,9 +958,16 @@ def pr_outcomes_upload(
         )
     # Local metadata-only observation state keeps retries idempotent and makes
     # corrected evidence chronologically newer even when no source timestamp
-    # (GitHub ``updatedAt`` or run ``created_at``) advanced.
+    # (GitHub ``updatedAt`` or run ``created_at``) advanced.  The read,
+    # per-PR update, and atomic write are serialized on the repository's
+    # exclusive file lock so overlapping ``pr-outcomes`` commands cannot
+    # interleave the read-modify-write and lose ordering state.  Lock or
+    # state-access failures abort before export/upload with a bounded,
+    # path-free error.
     observation_state_path = repo_path / DEFAULT_OBSERVATION_STATE_PATH
-    observations = load_pr_outcome_observations(observation_state_path)
+    observation_lock_path = observation_state_path.with_name(
+        f"{observation_state_path.name}.lock"
+    )
     # ``reverted`` is intentionally absent: GitHub's PR-list ``state`` field
     # cannot prove a rollback, so ``reverted`` is reserved for callers that
     # supply explicit rollback evidence (``reverted_at``).
@@ -951,60 +976,83 @@ def pr_outcomes_upload(
         "merged": "merged",
         "closed": "closed_unmerged",
     }
-    for pr in pr_records:
-        pr_number = str(pr.get("number") or "").strip()
-        if not pr_number:
-            continue
-        state = str(pr.get("state") or "").strip().lower()
-        outcome = state_to_outcome.get(state)
-        if not outcome:
-            continue
-        opened_at = str(pr.get("createdAt") or "").strip()
-        if not opened_at:
-            continue
-        merged_at = str(pr.get("mergedAt") or "").strip()
-        closed_at = str(pr.get("closedAt") or "").strip()
-        observation_key = pr_outcome_observation_key(
-            detected_repo_slug, pr_number
-        )
-        try:
-            event = build_pr_outcome_event(
-                repo_slug=detected_repo_slug,
-                pr_number=pr_number,
-                outcome=outcome,
-                opened_at=opened_at,
-                merged_at=merged_at,
-                closed_at=closed_at,
-                run_events=events_by_pr.get(pr_number, []),
-                team_id=resolved_team_id,
-                install_id=resolved_install_id,
-                source=source,
-                created_at=str(pr.get("updatedAt") or opened_at).strip(),
-                prior_observation=observations.get(observation_key),
-                evidence_incomplete=unattributed_failures > 0,
-            )
-            validate_cloud_event(event)
-        except CloudBundleError as exc:
-            errors.append(f"PR {pr_number}: {exc}")
-            continue
-        events.append(event)
-        observations[observation_key] = pr_outcome_observation_record(event)
+    try:
+        with exclusive_file_lock(observation_lock_path):
+            observations = load_pr_outcome_observations(observation_state_path)
+            for pr in pr_records:
+                pr_number = str(pr.get("number") or "").strip()
+                if not pr_number:
+                    continue
+                state = str(pr.get("state") or "").strip().lower()
+                outcome = state_to_outcome.get(state)
+                if not outcome:
+                    continue
+                opened_at = str(pr.get("createdAt") or "").strip()
+                if not opened_at:
+                    continue
+                merged_at = str(pr.get("mergedAt") or "").strip()
+                closed_at = str(pr.get("closedAt") or "").strip()
+                observation_key = pr_outcome_observation_key(
+                    detected_repo_slug, pr_number
+                )
+                try:
+                    event = build_pr_outcome_event(
+                        repo_slug=detected_repo_slug,
+                        pr_number=pr_number,
+                        outcome=outcome,
+                        opened_at=opened_at,
+                        merged_at=merged_at,
+                        closed_at=closed_at,
+                        run_events=events_by_pr.get(pr_number, []),
+                        team_id=resolved_team_id,
+                        install_id=resolved_install_id,
+                        source=source,
+                        created_at=str(pr.get("updatedAt") or opened_at).strip(),
+                        prior_observation=observations.get(observation_key),
+                        evidence_incomplete=unattributed_failures > 0,
+                    )
+                    validate_cloud_event(event)
+                except CloudBundleError as exc:
+                    errors.append(f"PR {pr_number}: {exc}")
+                    continue
+                events.append(event)
+                observations[observation_key] = pr_outcome_observation_record(
+                    event
+                )
 
-    if events:
-        try:
-            save_pr_outcome_observations(observation_state_path, observations)
-        except OSError as exc:
-            # Correction ordering for every emitted outcome depends on this
-            # state: without it, a later correction could tie on created_at.
-            # Fail closed before export/upload.  ``strerror`` carries the OS
-            # reason only -- never a path -- so diagnostics stay metadata-only.
-            reason = getattr(exc, "strerror", None) or "write failed"
-            raise CloudBundleError(
-                "unable to persist pr_outcome observation state "
-                f"({reason}); aborting export/upload so a later correction "
-                "cannot tie on created_at. Restore write access to the "
-                "repository state directory and retry."
-            ) from exc
+            if events:
+                try:
+                    save_pr_outcome_observations(
+                        observation_state_path, observations
+                    )
+                except OSError as exc:
+                    # Correction ordering for every emitted outcome depends on
+                    # this state: without it, a later correction could tie on
+                    # created_at.  Fail closed before export/upload.
+                    # ``strerror`` carries the OS reason only -- never a
+                    # path -- so diagnostics stay metadata-only.
+                    reason = getattr(exc, "strerror", None) or "write failed"
+                    raise CloudBundleError(
+                        "unable to persist pr_outcome observation state "
+                        f"({reason}); aborting export/upload so a later "
+                        "correction cannot tie on created_at. Restore write "
+                        "access to the repository state directory and retry."
+                    ) from exc
+    except FileLockError as exc:
+        raise CloudBundleError(
+            "unable to lock pr_outcome observation state; aborting "
+            "export/upload so overlapping pr-outcomes commands cannot lose "
+            "ordering state. Retry once the other command finishes."
+        ) from exc
+    except OSError as exc:
+        # Covers lock-file creation/opening failures (for example a state
+        # directory that cannot be created).  ``strerror`` is path-free.
+        reason = getattr(exc, "strerror", None) or "I/O failure"
+        raise CloudBundleError(
+            "unable to access pr_outcome observation state "
+            f"({reason}); aborting export/upload. Restore access to the "
+            "repository state directory and retry."
+        ) from exc
 
     if not events:
         return {

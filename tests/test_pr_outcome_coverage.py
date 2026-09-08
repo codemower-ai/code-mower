@@ -10,6 +10,7 @@ from unittest import mock
 
 import code_mower.cloud as cloud_module
 from code_mower import reviewer_spend
+from code_mower.file_locks import FileLockError, exclusive_file_lock
 from code_mower.cloud_client import (
     PR_OUTCOME_EVENT_TYPE,
     PR_OUTCOME_SCHEMA,
@@ -1328,6 +1329,575 @@ class PrOutcomeFailClosedP2Tests(unittest.TestCase):
             )
             self.assertTrue(any("PR 5" in e for e in result["errors"]))
             self.assertNotIn(str(repo_path), " ".join(result["errors"]))
+
+
+class PrOutcomeStateFailClosedTests(unittest.TestCase):
+    def _run_upload(
+        self,
+        repo_path: Path,
+        output_dir: Path,
+        pr_records: list[dict[str, object]],
+    ) -> tuple[int, str]:
+        with mock.patch(
+            "code_mower.cloud_client.operations.run_gh_pr_list",
+            return_value=pr_records,
+        ):
+            out = StringIO()
+            with redirect_stdout(out):
+                code = cloud_module.main(
+                    [
+                        "pr-outcomes",
+                        "--repo-path",
+                        str(repo_path),
+                        "--repo-slug",
+                        "owner/repo",
+                        "--output-dir",
+                        str(output_dir),
+                        "--endpoint",
+                        "https://codemower.example.com/api/upload",
+                        "--json",
+                    ]
+                )
+        return code, out.getvalue()
+
+    def _merged_pr(self, number: str) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": "MERGED",
+            "createdAt": "2026-09-03T10:00:00Z",
+            "mergedAt": "2026-09-03T12:00:00Z",
+            "updatedAt": "2026-09-03T13:00:00Z",
+        }
+
+    def _upload_kwargs(self, repo_path: Path) -> dict[str, object]:
+        return {
+            "repo_path": repo_path,
+            "output_dir": repo_path / "bundle",
+            "repo_slug": "owner/repo",
+            "team_id": "",
+            "install_id": "",
+            "source": "unit-test",
+            "limit": 10,
+            "endpoint": "https://codemower.example.com/api/upload",
+            "token_env": "CODE_MOWER_TEST_TOKEN",
+            "yes": False,
+            "timeout": 1.0,
+        }
+
+    def _state_path(self, repo_path: Path) -> Path:
+        return repo_path / ".code-mower" / "pr-outcome-observations.json"
+
+    def test_missing_state_file_is_valid_initial_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / ".code-mower" / "pr-outcome-observations.json"
+            self.assertEqual(load_pr_outcome_observations(missing), {})
+
+    def test_corrupt_state_file_aborts_before_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            state_path = self._state_path(repo_path)
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text("{not json", encoding="utf-8")
+            with mock.patch(
+                "code_mower.cloud_client.operations.run_gh_pr_list",
+                return_value=[self._merged_pr("1")],
+            ), mock.patch(
+                "code_mower.cloud_client.operations.build_cloud_bundle"
+            ) as bundle:
+                with self.assertRaises(CloudBundleError) as ctx:
+                    pr_outcomes_upload(**self._upload_kwargs(repo_path))
+            bundle.assert_not_called()
+            message = str(ctx.exception)
+            self.assertIn("observation state", message)
+            self.assertIn("malformed", message)
+            self.assertNotIn(str(repo_path), message)
+            self.assertNotIn(str(state_path), message)
+
+    def test_malformed_state_structure_aborts_before_export(self) -> None:
+        for payload in (
+            '"just a string"',
+            '{"observations": []}',
+            '{"observations": {"owner/repo#1": "oops"}}',
+            '{"observations": {"owner/repo#1": {"fingerprint": "abc"}}}',
+        ):
+            with self.subTest(payload=payload):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_path = Path(tmp)
+                    state_path = self._state_path(repo_path)
+                    state_path.parent.mkdir(parents=True)
+                    state_path.write_text(payload, encoding="utf-8")
+                    with mock.patch(
+                        "code_mower.cloud_client.operations.run_gh_pr_list",
+                        return_value=[self._merged_pr("1")],
+                    ), mock.patch(
+                        "code_mower.cloud_client.operations.build_cloud_bundle"
+                    ) as bundle:
+                        with self.assertRaises(CloudBundleError) as ctx:
+                            pr_outcomes_upload(**self._upload_kwargs(repo_path))
+                    bundle.assert_not_called()
+                    self.assertIn("observation state", str(ctx.exception))
+                    self.assertNotIn(str(repo_path), str(ctx.exception))
+
+    def test_unreadable_state_file_aborts_before_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            state_path = self._state_path(repo_path)
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(
+                '{"schema": "x", "observations": {}}', encoding="utf-8"
+            )
+            try:
+                state_path.chmod(0o000)
+                with mock.patch(
+                    "code_mower.cloud_client.operations.run_gh_pr_list",
+                    return_value=[self._merged_pr("1")],
+                ), mock.patch(
+                    "code_mower.cloud_client.operations.build_cloud_bundle"
+                ) as bundle:
+                    with self.assertRaises(CloudBundleError) as ctx:
+                        pr_outcomes_upload(**self._upload_kwargs(repo_path))
+            finally:
+                state_path.chmod(0o644)
+            bundle.assert_not_called()
+            message = str(ctx.exception)
+            self.assertIn("observation state", message)
+            self.assertNotIn(str(repo_path), message)
+            self.assertNotIn(str(state_path), message)
+
+    def test_corrupt_state_aborts_via_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            state_path = self._state_path(repo_path)
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text("not json at all", encoding="utf-8")
+            code, raw = self._run_upload(
+                repo_path, repo_path / "bundle", [self._merged_pr("1")]
+            )
+            self.assertEqual(code, 1)
+            self.assertEqual(raw.strip(), "")
+
+    def test_state_directory_where_file_expected_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            self._state_path(repo_path).mkdir(parents=True)
+            with mock.patch(
+                "code_mower.cloud_client.operations.run_gh_pr_list",
+                return_value=[self._merged_pr("1")],
+            ), mock.patch(
+                "code_mower.cloud_client.operations.build_cloud_bundle"
+            ) as bundle:
+                with self.assertRaises(CloudBundleError) as ctx:
+                    pr_outcomes_upload(**self._upload_kwargs(repo_path))
+            bundle.assert_not_called()
+            self.assertIn("observation state", str(ctx.exception))
+            self.assertNotIn(str(repo_path), str(ctx.exception))
+
+
+class PrOutcomeNonRegularEvidenceTests(unittest.TestCase):
+    def _run_upload(
+        self,
+        repo_path: Path,
+        output_dir: Path,
+        pr_records: list[dict[str, object]],
+    ) -> tuple[int, str]:
+        with mock.patch(
+            "code_mower.cloud_client.operations.run_gh_pr_list",
+            return_value=pr_records,
+        ):
+            out = StringIO()
+            with redirect_stdout(out):
+                code = cloud_module.main(
+                    [
+                        "pr-outcomes",
+                        "--repo-path",
+                        str(repo_path),
+                        "--repo-slug",
+                        "owner/repo",
+                        "--output-dir",
+                        str(output_dir),
+                        "--endpoint",
+                        "https://codemower.example.com/api/upload",
+                        "--json",
+                    ]
+                )
+        return code, out.getvalue()
+
+    def _merged_pr(self, number: str) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": "MERGED",
+            "createdAt": "2026-09-03T10:00:00Z",
+            "mergedAt": "2026-09-03T12:00:00Z",
+            "updatedAt": "2026-09-03T13:00:00Z",
+        }
+
+    def _emitted_events(self, result: dict[str, object]) -> dict[str, dict]:
+        manifest = json.loads(
+            Path(result["export"]["manifest"]).read_text(encoding="utf-8")
+        )
+        return {
+            event["dimensions"]["pr_number"]: event
+            for event in manifest["events"]
+        }
+
+    def test_directory_named_like_evidence_counts_as_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            (builder_dir / "devin-local-pr-8-aa88.cloud-event.json").mkdir(
+                parents=True
+            )
+            (builder_dir / "devin-local-pr-9-bb99.cloud-event.json").write_text(
+                json.dumps(_builder_run_event("b9", "9", 0.10)),
+                encoding="utf-8",
+            )
+
+            code, raw = self._run_upload(
+                repo_path,
+                repo_path / "bundle",
+                [self._merged_pr("8"), self._merged_pr("9")],
+            )
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            events = self._emitted_events(result)
+            self.assertEqual(
+                events["8"]["dimensions"]["cost_coverage"], "unknown"
+            )
+            self.assertEqual(
+                events["8"]["dimensions"]["missing_cost_sources"],
+                ["unreadable-evidence"],
+            )
+            validate_cloud_event(events["8"])
+            self.assertEqual(
+                events["9"]["dimensions"]["cost_coverage"], "complete"
+            )
+            self.assertTrue(any("PR 8" in e for e in result["errors"]))
+            self.assertNotIn(str(repo_path), " ".join(result["errors"]))
+
+    def test_symlinked_evidence_file_counts_as_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            target = repo_path / "real-event.json"
+            target.write_text(
+                json.dumps(_builder_run_event("b10", "10", 0.10)),
+                encoding="utf-8",
+            )
+            (builder_dir / "devin-local-pr-10-cc10.cloud-event.json").symlink_to(
+                target
+            )
+
+            code, raw = self._run_upload(
+                repo_path, repo_path / "bundle", [self._merged_pr("10")]
+            )
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            events = self._emitted_events(result)
+            self.assertEqual(
+                events["10"]["dimensions"]["cost_coverage"], "unknown"
+            )
+            self.assertEqual(
+                events["10"]["metrics"]["cost_expected_run_count"], 1
+            )
+            self.assertEqual(
+                events["10"]["dimensions"]["missing_cost_sources"],
+                ["unreadable-evidence"],
+            )
+            validate_cloud_event(events["10"])
+            self.assertTrue(any("PR 10" in e for e in result["errors"]))
+            self.assertNotIn(str(repo_path), " ".join(result["errors"]))
+            self.assertNotIn(str(target), " ".join(result["errors"]))
+
+    def test_unattributable_non_regular_entry_suppresses_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            (builder_dir / "odd.cloud-event.json").mkdir(parents=True)
+            (builder_dir / "devin-local-pr-2-bb22.cloud-event.json").write_text(
+                json.dumps(_builder_run_event("b2", "2", 0.10)),
+                encoding="utf-8",
+            )
+
+            code, raw = self._run_upload(
+                repo_path, repo_path / "bundle", [self._merged_pr("2")]
+            )
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            events = self._emitted_events(result)
+            self.assertEqual(
+                events["2"]["dimensions"]["cost_coverage"], "partial"
+            )
+            self.assertIn(
+                "unreadable-evidence",
+                events["2"]["dimensions"]["missing_cost_sources"],
+            )
+            self.assertTrue(events["2"]["dimensions"]["evidence_incomplete"])
+            self.assertTrue(
+                any("not attributable" in e for e in result["errors"])
+            )
+
+
+class PrOutcomeInvalidPrNumberTests(unittest.TestCase):
+    def _run_upload(
+        self,
+        repo_path: Path,
+        output_dir: Path,
+        pr_records: list[dict[str, object]],
+    ) -> tuple[int, str]:
+        with mock.patch(
+            "code_mower.cloud_client.operations.run_gh_pr_list",
+            return_value=pr_records,
+        ):
+            out = StringIO()
+            with redirect_stdout(out):
+                code = cloud_module.main(
+                    [
+                        "pr-outcomes",
+                        "--repo-path",
+                        str(repo_path),
+                        "--repo-slug",
+                        "owner/repo",
+                        "--output-dir",
+                        str(output_dir),
+                        "--endpoint",
+                        "https://codemower.example.com/api/upload",
+                        "--json",
+                    ]
+                )
+        return code, out.getvalue()
+
+    def _merged_pr(self, number: str) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": "MERGED",
+            "createdAt": "2026-09-03T10:00:00Z",
+            "mergedAt": "2026-09-03T12:00:00Z",
+            "updatedAt": "2026-09-03T13:00:00Z",
+        }
+
+    def _emitted_events(self, result: dict[str, object]) -> dict[str, dict]:
+        manifest = json.loads(
+            Path(result["export"]["manifest"]).read_text(encoding="utf-8")
+        )
+        return {
+            event["dimensions"]["pr_number"]: event
+            for event in manifest["events"]
+        }
+
+    def test_invalid_pr_number_shapes_route_to_fail_closed(self) -> None:
+        for bad_number in ("unknown", "0", "-2", "1.5", "", "1e3"):
+            with self.subTest(pr_number=bad_number):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_path = Path(tmp)
+                    builder_dir = repo_path / ".code-mower" / "builder-runs"
+                    builder_dir.mkdir(parents=True)
+                    event = _builder_run_event("b11", "11", 0.10)
+                    event["dimensions"]["pr_number"] = bad_number
+                    (
+                        builder_dir / "devin-local-pr-11-dd11.cloud-event.json"
+                    ).write_text(json.dumps(event), encoding="utf-8")
+
+                    code, raw = self._run_upload(
+                        repo_path,
+                        repo_path / "bundle",
+                        [self._merged_pr("11")],
+                    )
+                    self.assertEqual(code, 0, raw)
+                    result = json.loads(raw)
+                    events = self._emitted_events(result)
+                    pr11 = events["11"]
+                    self.assertEqual(
+                        pr11["dimensions"]["cost_coverage"], "unknown"
+                    )
+                    self.assertEqual(
+                        pr11["metrics"]["cost_expected_run_count"], 1
+                    )
+                    self.assertEqual(
+                        pr11["dimensions"]["missing_cost_sources"],
+                        ["unreadable-evidence"],
+                    )
+                    validate_cloud_event(pr11)
+                    self.assertTrue(
+                        any("PR 11" in e for e in result["errors"])
+                    )
+                    self.assertNotIn(
+                        str(repo_path), " ".join(result["errors"])
+                    )
+
+    def test_non_string_pr_number_shapes_route_to_fail_closed(self) -> None:
+        for bad_number in (0, -1, 1.5, True):
+            with self.subTest(pr_number=bad_number):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_path = Path(tmp)
+                    builder_dir = repo_path / ".code-mower" / "builder-runs"
+                    builder_dir.mkdir(parents=True)
+                    event = _builder_run_event("b12", "12", 0.10)
+                    event["dimensions"]["pr_number"] = bad_number
+                    (
+                        builder_dir / "devin-local-pr-12-ee12.cloud-event.json"
+                    ).write_text(json.dumps(event), encoding="utf-8")
+
+                    code, raw = self._run_upload(
+                        repo_path,
+                        repo_path / "bundle",
+                        [self._merged_pr("12")],
+                    )
+                    self.assertEqual(code, 0, raw)
+                    result = json.loads(raw)
+                    events = self._emitted_events(result)
+                    self.assertEqual(
+                        events["12"]["dimensions"]["cost_coverage"], "unknown"
+                    )
+                    self.assertTrue(
+                        any("PR 12" in e for e in result["errors"])
+                    )
+
+    def test_invalid_pr_number_without_filename_attribution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            event = _builder_run_event("b13", "unknown", 0.10)
+            (builder_dir / "devin-run-ff13.cloud-event.json").write_text(
+                json.dumps(event), encoding="utf-8"
+            )
+            (builder_dir / "devin-local-pr-13-ff13.cloud-event.json").write_text(
+                json.dumps(_builder_run_event("b13b", "13", 0.10)),
+                encoding="utf-8",
+            )
+
+            code, raw = self._run_upload(
+                repo_path, repo_path / "bundle", [self._merged_pr("13")]
+            )
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            events = self._emitted_events(result)
+            self.assertEqual(
+                events["13"]["dimensions"]["cost_coverage"], "partial"
+            )
+            self.assertIn(
+                "unreadable-evidence",
+                events["13"]["dimensions"]["missing_cost_sources"],
+            )
+            self.assertTrue(events["13"]["dimensions"]["evidence_incomplete"])
+            self.assertTrue(
+                any("not attributable" in e for e in result["errors"])
+            )
+
+
+class PrOutcomeObservationLockTests(unittest.TestCase):
+    def _merged_pr(self, number: str) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": "MERGED",
+            "createdAt": "2026-09-03T10:00:00Z",
+            "mergedAt": "2026-09-03T12:00:00Z",
+            "updatedAt": "2026-09-03T13:00:00Z",
+        }
+
+    def _upload_kwargs(self, repo_path: Path) -> dict[str, object]:
+        return {
+            "repo_path": repo_path,
+            "output_dir": repo_path / "bundle",
+            "repo_slug": "owner/repo",
+            "team_id": "",
+            "install_id": "",
+            "source": "unit-test",
+            "limit": 10,
+            "endpoint": "https://codemower.example.com/api/upload",
+            "token_env": "CODE_MOWER_TEST_TOKEN",
+            "yes": False,
+            "timeout": 1.0,
+        }
+
+    def test_observation_state_is_read_and_written_under_exclusive_lock(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            reacquired: list[bool] = []
+
+            real_lock = exclusive_file_lock
+
+            def recording_lock(lock_path, **kwargs):
+                ctx = real_lock(lock_path, **kwargs)
+
+                class _Recording:
+                    def __enter__(self):
+                        handle = ctx.__enter__()
+                        # flock is per open-file-description: a second open
+                        # must contend while the command holds the lock.
+                        try:
+                            with real_lock(lock_path, timeout_seconds=0):
+                                reacquired.append(True)
+                        except FileLockError:
+                            reacquired.append(False)
+                        return handle
+
+                    def __exit__(self, *exc_info):
+                        return ctx.__exit__(*exc_info)
+
+                return _Recording()
+
+            with mock.patch(
+                "code_mower.cloud_client.operations.run_gh_pr_list",
+                return_value=[self._merged_pr("1")],
+            ), mock.patch(
+                "code_mower.cloud_client.operations.exclusive_file_lock",
+                side_effect=recording_lock,
+            ):
+                result = pr_outcomes_upload(**self._upload_kwargs(repo_path))
+
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["event_count"], 1)
+            # The lock was held for the whole read-modify-write: a concurrent
+            # acquirer could not take it even once.
+            self.assertEqual(reacquired, [False])
+            self.assertFalse(reacquired[0])
+
+    def test_lock_contention_aborts_with_bounded_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+
+            def contended(*args, **kwargs):
+                raise FileLockError(
+                    "timed out waiting for an exclusive lock"
+                )
+
+            with mock.patch(
+                "code_mower.cloud_client.operations.run_gh_pr_list",
+                return_value=[self._merged_pr("1")],
+            ), mock.patch(
+                "code_mower.cloud_client.operations.exclusive_file_lock",
+                side_effect=contended,
+            ), mock.patch(
+                "code_mower.cloud_client.operations.build_cloud_bundle"
+            ) as bundle:
+                with self.assertRaises(CloudBundleError) as ctx:
+                    pr_outcomes_upload(**self._upload_kwargs(repo_path))
+
+            bundle.assert_not_called()
+            message = str(ctx.exception)
+            self.assertIn("observation state", message)
+            self.assertNotIn(str(repo_path), message)
+
+    def test_lock_oserror_aborts_with_bounded_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            (repo_path / ".code-mower").write_text("blocked", encoding="utf-8")
+            with mock.patch(
+                "code_mower.cloud_client.operations.run_gh_pr_list",
+                return_value=[self._merged_pr("1")],
+            ), mock.patch(
+                "code_mower.cloud_client.operations.build_cloud_bundle"
+            ) as bundle:
+                with self.assertRaises(CloudBundleError) as ctx:
+                    pr_outcomes_upload(**self._upload_kwargs(repo_path))
+            bundle.assert_not_called()
+            message = str(ctx.exception)
+            self.assertIn("observation state", message)
+            self.assertNotIn(str(repo_path), message)
 
 
 if __name__ == "__main__":
