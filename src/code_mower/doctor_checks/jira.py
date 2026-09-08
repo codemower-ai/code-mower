@@ -18,6 +18,7 @@ Stable JSON check ids:
 from __future__ import annotations
 
 import os
+import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
@@ -34,6 +35,23 @@ JIRA_READ_CHECK = "tracker.jira.read"
 JiraClientFactory = Callable[..., Any]
 
 _SETUP_JIRA_DOC = "docs/tracker-data-contract.md (Read-only Jira Cloud probe)"
+
+
+def _site_identity(value: str) -> tuple[str, str, int | None, str] | None:
+    """Return the comparable, credential-free identity for a Jira site URL."""
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        return None
+    return (
+        "https",
+        parsed.hostname.lower(),
+        port,
+        parsed.path.rstrip("/"),
+    )
 
 
 def _skip_config(message: str) -> DoctorCheck:
@@ -262,9 +280,18 @@ def _probe_jira_read(
         )
 
     try:
-        client.get_server_info()
+        server_info = client.get_server_info()
     except jira_cloud_module.JiraApiError as exc:
         return _map_probe_error(exc, "serverInfo", _fail)
+    if _site_identity(str(server_info.get("base_url") or "")) != _site_identity(
+        site_url
+    ):
+        return _fail(
+            "Jira cloud tenant identity does not match the configured site",
+            "Set tracker.jira_cloud.cloud_id and site_url to the same Jira Cloud "
+            f"tenant. See {_SETUP_JIRA_DOC}.",
+            "wrong-cloud",
+        )
     try:
         project = client.get_project(project_id)
     except jira_cloud_module.JiraApiError as exc:
@@ -317,6 +344,13 @@ def _probe_jira_read(
         permissions = client.check_permissions(project_id)
     except jira_cloud_module.JiraApiError as exc:
         return _map_probe_error(exc, "permissions", _fail)
+    if permissions.get("BROWSE_PROJECTS") is not True:
+        return _fail(
+            "Jira account cannot browse the configured project",
+            "Grant the account Browse Projects permission on the configured "
+            "project, then re-run `code-mower doctor --adoption`.",
+            "forbidden",
+        )
 
     try:
         jql = block.get("jql")
@@ -397,6 +431,13 @@ def _map_probe_error(
             "Verify tracker.jira_cloud project identity against the live "
             f"tenant. See {_SETUP_JIRA_DOC}.",
             "wrong-project",
+        )
+    if exc.code == "jira_rejected":
+        return fail(
+            "Jira rejected the read probe request",
+            "Verify the Jira tracker identity and read configuration, then "
+            "re-run `code-mower doctor --adoption`.",
+            "rejected",
         )
     if exc.code == "jira_rate_limited":
         return DoctorCheck(

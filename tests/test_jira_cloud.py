@@ -1259,6 +1259,25 @@ class DoctorCheckTests(unittest.TestCase):
         self.assertEqual(read.status, "fail")
         self.assertEqual(read.detail.get("reason"), "wrong-cloud")
 
+    def test_wrong_cloud_fails_on_mismatched_returned_site(self) -> None:
+        env = {jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN}
+        checks, _ = run_doctor_checks(
+            jira_config(),
+            [http_response({"baseUrl": "https://other.atlassian.net"})],
+            env=env,
+        )
+        read = checks_by_id(checks)[jira_doctor.JIRA_READ_CHECK]
+        self.assertEqual(read.status, "fail")
+        self.assertEqual(read.detail.get("reason"), "wrong-cloud")
+
+    def test_server_identity_allows_trailing_slash(self) -> None:
+        env = {jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN}
+        checks, _ = run_doctor_checks(
+            jira_config(site_url=f"{SITE_URL}/"), ready_script(), env=env
+        )
+        read = checks_by_id(checks)[jira_doctor.JIRA_READ_CHECK]
+        self.assertEqual(read.status, "pass")
+
     def test_wrong_project_fails_on_project_lookup(self) -> None:
         env = {jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN}
         checks, _ = run_doctor_checks(
@@ -1300,6 +1319,27 @@ class DoctorCheckTests(unittest.TestCase):
             self.assertEqual(call["method"], "GET")
         blob = doctor_blob(checks)
         self.assertNotIn("limited-marker", blob)
+
+    def test_browse_projects_denial_fails_readiness(self) -> None:
+        env = {jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN}
+        script = ready_script()
+        script[4] = http_response(
+            {"globalPermissions": [], "projectPermissions": []}
+        )
+        checks, _ = run_doctor_checks(jira_config(), script, env=env)
+        read = checks_by_id(checks)[jira_doctor.JIRA_READ_CHECK]
+        self.assertEqual(read.status, "fail")
+        self.assertEqual(read.detail.get("reason"), "forbidden")
+
+    def test_rejected_request_has_non_transient_remediation(self) -> None:
+        env = {jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN}
+        checks, _ = run_doctor_checks(
+            jira_config(), [http_error(400, b"{}")], env=env
+        )
+        read = checks_by_id(checks)[jira_doctor.JIRA_READ_CHECK]
+        self.assertEqual(read.status, "fail")
+        self.assertEqual(read.detail.get("reason"), "rejected")
+        self.assertNotIn("transient", str(read.remediation).lower())
 
     def test_issue_type_probe_reports_required_fields(self) -> None:
         env = {jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN}
@@ -1974,4 +2014,3 @@ class DoctorFailClosedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
