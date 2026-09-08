@@ -52,6 +52,7 @@ class PrOutcomeContractTests(unittest.TestCase):
                     "opened_at": "2026-09-03T12:00:00Z",
                     "outcome": "open",
                     "cost_coverage": "unknown",
+                    "pr_outcome_observation_version": "fixture-digest",
                 },
             },
             PR_OUTCOME_EVENT_TYPE,
@@ -129,3 +130,43 @@ class PrOutcomeContractTests(unittest.TestCase):
 
         with self.assertRaisesRegex(CloudBundleError, "cannot precede merged_at"):
             validate_cloud_event(event)
+
+    def test_accepts_legacy_v1_without_observation_version(self) -> None:
+        # Historical valid v1 events predate the observation-version
+        # dimension; its omission must remain valid.
+        event = copy.deepcopy(_fixture()["pr_outcome_events"][0])
+        del event["dimensions"]["pr_outcome_observation_version"]
+        validate_cloud_event(event)
+
+        legacy = _fixture()["legacy_pr_outcome_events"][0]
+        self.assertNotIn(
+            "pr_outcome_observation_version", legacy["dimensions"]
+        )
+        validate_cloud_event(legacy)
+
+    def test_accepts_producer_supplied_observation_version(self) -> None:
+        event = copy.deepcopy(_fixture()["pr_outcome_events"][0])
+        self.assertIn(
+            "pr_outcome_observation_version", event["dimensions"]
+        )
+        validate_cloud_event(event)
+
+    def test_rejects_malformed_observation_version(self) -> None:
+        base = copy.deepcopy(_fixture()["pr_outcome_events"][0])
+        base["dimensions"]["pr_outcome_observation_version"] = ""
+        with self.assertRaisesRegex(
+            CloudBundleError, "pr_outcome_observation_version"
+        ):
+            validate_cloud_event(base)
+
+        base["dimensions"]["pr_outcome_observation_version"] = 123
+        with self.assertRaisesRegex(
+            CloudBundleError, "pr_outcome_observation_version"
+        ):
+            validate_cloud_event(base)
+
+    def test_rejects_non_boolean_evidence_incomplete(self) -> None:
+        base = copy.deepcopy(_fixture()["pr_outcome_events"][0])
+        base["dimensions"]["evidence_incomplete"] = "yes"
+        with self.assertRaisesRegex(CloudBundleError, "evidence_incomplete"):
+            validate_cloud_event(base)

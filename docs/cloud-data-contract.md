@@ -184,7 +184,8 @@ Required dimensions are `pr_outcome_schema`, positive integer-string
 or `unknown`). Merged and reverted outcomes require `merged_at`, closed-unmerged
 requires `closed_at`, and reverted requires `reverted_at`. Timestamps include a
 UTC offset and cannot precede `opened_at`; `reverted_at` cannot precede
-`merged_at`.
+`merged_at`. The `reverted` outcome is reserved for producers that hold
+rollback evidence; GitHub's PR-list `state` field alone cannot infer it.
 
 Metrics are atomic values, never precomputed dashboard rates:
 
@@ -202,6 +203,45 @@ only merged observations with `cost_coverage=complete` and computes
 `sum(reported_cost_usd) / sum(cost_covered_pr_count)`. No `cost_per_pr` value is
 uploaded. Events that omit `pr_outcome`, including v0.6 through v1.0 uploads,
 remain valid.
+
+The `code-mower cloud pr-outcomes` command joins local `builder_run` events
+(from `.code-mower/builder-runs/*.cloud-event.json`), `reviewer_run` events
+derived from reviewer-spend rows, and the live GitHub PR list to produce one
+`pr_outcome` event per PR.  Attempts are deduplicated by their source identity
+(`event_id`, or `dimensions.spend_run_id` for converted reviewer-spend rows)
+for cost totals, but attempts with missing or duplicate source identities are
+still counted as expected attempts with unknown cost so they cannot inflate
+`complete` coverage. Outcome event identifiers are stable for unchanged
+observation content, making repeated uploads idempotent, while a deterministic
+digest of the observed run evidence is reported as
+`dimensions.pr_outcome_observation_version` and included in the `event_id`.
+The observation-version dimension is optional: historical valid
+`code_mower.prOutcome.v1` events predate it, so consumers must accept its
+absence, though a present value must be a non-empty string.
+The command records a local metadata-only observation state
+(`.code-mower/pr-outcome-observations.json`, fingerprints and timestamps only)
+so an unchanged retry reproduces the same `created_at` and `event_id`, and
+corrected or late-arriving local evidence produces a new `event_id` whose
+`created_at` never regresses below the previously emitted observation — even
+when GitHub `updatedAt` and the run timestamps did not advance.  Cost coverage is
+`complete` when every observed builder/reviewer attempt reports `cost_usd`,
+`partial` when at least one but not all attempts report cost, and `unknown`
+when no attempt reports cost.  The optional
+`dimensions.missing_cost_sources` list names observed lane/provider
+identifiers that did not report cost; it is metadata-only and must never
+contain commands, paths, auth output, or secrets.  Missing cost is omitted,
+never serialized as zero.
+
+Builder evidence fails closed: a `*.cloud-event.json` file that cannot be
+read, parsed, or recognized as a `builder_run` event is never silently
+omitted.  A failure attributable to a PR via its filename is recorded on that
+PR as an expected attempt with unknown cost under the fixed
+`unreadable-evidence` source label and surfaced as a bounded per-PR error;
+a failure that cannot be attributed suppresses `complete` coverage for every
+emitted outcome.  Diagnostics carry PR numbers and fixed labels only — never
+paths or file contents.  If the observation-state file cannot be persisted,
+the command aborts before export/upload so a later correction cannot tie on
+`created_at`.
 
 The event contains identifiers, timestamps, categorical outcomes, and numeric
 counts/cost only. Its dimension and metric names are closed in v1, so undeclared

@@ -50,6 +50,7 @@ if __package__ in {None, ""}:
         repo_slug_from_remote as _repo_slug_from_remote,
         repo_sync_output_name as _repo_sync_output_name,
         repo_sync_upload as _repo_sync_upload,
+        pr_outcomes_upload as _pr_outcomes_upload,
         resolve_setup_token as _resolve_setup_token,
         reviewer_runs_upload as _reviewer_runs_upload,
         run_cloud_doctor,
@@ -104,6 +105,7 @@ else:  # pragma: no cover - exercised after package extraction.
         repo_slug_from_remote as _repo_slug_from_remote,
         repo_sync_output_name as _repo_sync_output_name,
         repo_sync_upload as _repo_sync_upload,
+        pr_outcomes_upload as _pr_outcomes_upload,
         resolve_setup_token as _resolve_setup_token,
         reviewer_runs_upload as _reviewer_runs_upload,
         run_cloud_doctor,
@@ -125,6 +127,7 @@ DEFAULT_OUTPUT_DIR = ".code-mower/cloud-benchmark-bundle"
 DEFAULT_CATCH_UP_OUTPUT_DIR = ".code-mower/cloud-catch-up-bundle"
 DEFAULT_REVIEWER_RUNS_OUTPUT_DIR = ".code-mower/reviewer-run-bundle"
 DEFAULT_REPO_SYNC_OUTPUT_DIR = ".code-mower/cloud-repo-sync"
+DEFAULT_PR_OUTCOMES_OUTPUT_DIR = ".code-mower/cloud-pr-outcomes-bundle"
 DEFAULT_BOARD_SNAPSHOT_OUTPUT_DIR = ".code-mower/cloud-board-snapshot-bundle"
 
 # Keep the legacy cloud.py import surface intentional while implementation
@@ -143,6 +146,7 @@ __all__ = [
     "DEFAULT_CATCH_UP_OUTPUT_DIR",
     "DEFAULT_REVIEWER_RUNS_OUTPUT_DIR",
     "DEFAULT_REPO_SYNC_OUTPUT_DIR",
+    "DEFAULT_PR_OUTCOMES_OUTPUT_DIR",
     "DEFAULT_BOARD_SNAPSHOT_OUTPUT_DIR",
     "build_cloud_bundle",
     "build_upload_payload",
@@ -170,6 +174,7 @@ __all__ = [
     "_repo_slug_from_remote",
     "_repo_sync_output_name",
     "_repo_sync_upload",
+    "_pr_outcomes_upload",
     "_resolve_setup_token",
     "_reviewer_runs_upload",
     "_run_git",
@@ -468,6 +473,57 @@ def main(argv: list[str] | None = None) -> int:
     )
     catch_up.add_argument("--timeout", type=float, default=20.0)
     catch_up.add_argument("--json", action="store_true")
+    pr_outcomes = subparsers.add_parser("pr-outcomes")
+    pr_outcomes.add_argument("--repo-path", type=Path, default=Path.cwd())
+    pr_outcomes.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path(DEFAULT_PR_OUTCOMES_OUTPUT_DIR),
+    )
+    pr_outcomes.add_argument("--repo-slug", default="")
+    pr_outcomes.add_argument("--team-id", default="")
+    pr_outcomes.add_argument("--install-id", default="")
+    pr_outcomes.add_argument("--source", default="code-mower-pr-outcomes")
+    pr_outcomes.add_argument(
+        "--limit",
+        type=int,
+        default=MAX_EVENT_COUNT,
+        help=f"number of PRs to include; max {MAX_EVENT_COUNT}",
+    )
+    pr_outcomes.add_argument(
+        "--spend",
+        type=Path,
+        default=None,
+        help=(
+            "reviewer spend ledger to merge into coverage; defaults to "
+            ".code-mower/reviewer-spend.json when present"
+        ),
+    )
+    pr_outcomes.add_argument(
+        "--endpoint",
+        default=os.environ.get("CODE_MOWER_CLOUD_ENDPOINT", DEFAULT_UPLOAD_ENDPOINT),
+    )
+    pr_outcomes.add_argument("--token-env", default=DEFAULT_TOKEN_ENV)
+    pr_outcomes.add_argument(
+        "--token-file",
+        type=Path,
+        default=None,
+        help="token env file or raw token file to use when token env is not set",
+    )
+    pr_outcomes.add_argument(
+        "--token-dir",
+        type=Path,
+        default=None,
+        help="directory with Code Mower Cloud token profiles",
+    )
+    pr_outcomes.add_argument(
+        "--yes",
+        action="store_true",
+        help="perform the network upload; without this, pr-outcomes is a dry run",
+    )
+    pr_outcomes.add_argument("--timeout", type=float, default=20.0)
+    pr_outcomes.add_argument("--json", action="store_true")
+
     board_snapshot = subparsers.add_parser("board-snapshot")
     board_snapshot.add_argument("--repo-path", type=Path, default=Path.cwd())
     board_snapshot.add_argument(
@@ -604,7 +660,7 @@ def main(argv: list[str] | None = None) -> int:
     repo_sync.add_argument(
         "--mode",
         action="append",
-        choices=("dogfood", "catch-up", "reviewer-runs"),
+        choices=("dogfood", "catch-up", "reviewer-runs", "pr-outcomes"),
         default=[],
         help="sync mode to run; repeatable, defaults to dogfood and reviewer-runs",
     )
@@ -920,6 +976,40 @@ def main(argv: list[str] | None = None) -> int:
                 elif result["status"] == "dry_run":
                     print("Network: skipped (pass --yes to upload)")
             return 1 if result["status"] == "doctor_failed" else 0
+        if args.command == "pr-outcomes":
+            result = _pr_outcomes_upload(
+                repo_path=args.repo_path,
+                output_dir=args.output_dir,
+                repo_slug=args.repo_slug,
+                team_id=args.team_id,
+                install_id=args.install_id,
+                source=args.source,
+                limit=args.limit,
+                endpoint=args.endpoint,
+                token_env=args.token_env,
+                token_file=args.token_file,
+                token_dir=args.token_dir,
+                yes=args.yes,
+                timeout=args.timeout,
+                spend_path=args.spend,
+            )
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("Code Mower cloud PR outcomes")
+                print(f"Status: {result['status']}")
+                print(f"Repository: {result['repo_slug']}")
+                print(f"PRs examined: {result.get('pr_count', 0)}")
+                print(f"Events: {result['event_count']}")
+                if result["status"] == "uploaded":
+                    print(f"Upload status: {result['upload']['status']}")
+                elif result["status"] == "dry_run":
+                    print("Network: skipped (pass --yes to upload)")
+                errors = result.get("errors") or []
+                if errors:
+                    print(f"Validation errors: {len(errors)}")
+            return 1 if result["status"] == "doctor_failed" else 0
+
         if args.command == "repo-sync":
             result = _repo_sync_upload(
                 repo_specs=args.repo,

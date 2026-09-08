@@ -30,6 +30,7 @@ TOKEN_KEYS = {
     "reasoning_tokens",
 }
 COST_KEYS = {"cost_usd", "total_cost_usd", "usd"}
+UNATTRIBUTED_EVIDENCE_LANE = "unreadable-evidence"
 LOCK_TIMEOUT_SECONDS = 30.0
 LOCK_POLL_SECONDS = 0.05
 
@@ -38,10 +39,12 @@ def utc_now() -> str:
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 
-def load_spend_file(path: Path) -> dict[str, Any]:
+def load_spend_file(path: Path, *, required: bool = False) -> dict[str, Any]:
     try:
         payload = json.loads(path.expanduser().read_text(encoding="utf-8"))
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
+        if required:
+            raise ValueError("reviewer spend file is missing") from exc
         return {"schema": SPEND_SCHEMA, "profiles": {}, "runs": []}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"unable to read reviewer spend file {path}: {exc}") from exc
@@ -237,16 +240,50 @@ def spend_runs_to_events(
     team_id: str = "",
     install_id: str = "",
     source: str = "reviewer-spend",
+    preserve_unattributable: bool = False,
 ) -> list[dict[str, Any]]:
+    """Convert reviewer spend rows to ``reviewer_run`` events.
+
+    By default this keeps the historical shared semantics: non-mapping rows
+    are skipped and rows without a ``lane`` are dropped, with ``cost_usd``
+    reported as recorded.  ``preserve_unattributable=True`` opts in to the
+    fail-closed behavior used by pr-outcomes: the top-level ``runs`` member
+    must exist and be an array, malformed or lane-less rows are preserved
+    as ``unreadable-evidence`` events so the caller can count them as
+    unattributable incomplete evidence, and their ``cost_usd`` is withheld
+    because it cannot be attributed to a specific lane and PR.
+    """
+
     events: list[dict[str, Any]] = []
-    for run in spend_runs(payload):
+    if preserve_unattributable:
+        if "runs" not in payload or payload["runs"] is None:
+            raise ValueError("reviewer spend runs must be an array")
+        raw_runs = payload["runs"]
+        if not isinstance(raw_runs, list):
+            raise ValueError("reviewer spend runs must be a list")
+        runs: list[Mapping[str, Any]] = [
+            raw if isinstance(raw, Mapping) else {} for raw in raw_runs
+        ]
+    else:
+        runs = spend_runs(payload)
+    for run in runs:
         lane = str(run.get("lane") or "").strip()
+        pr_number = str(run.get("pr_number") or "").strip()
+        identity_complete = bool(lane and pr_number)
         if not lane:
-            continue
+            if not preserve_unattributable:
+                continue
+            lane = UNATTRIBUTED_EVIDENCE_LANE
         provider = provider_from_lane(lane)
         metrics: dict[str, Any] = {}
         for key in ("wall_seconds", "cost_usd", *sorted(TOKEN_KEYS)):
             if key in run:
+                if (
+                    preserve_unattributable
+                    and key == "cost_usd"
+                    and not identity_complete
+                ):
+                    continue
                 metrics[key] = run[key]
         model = str(run.get("model") or "")
         event = {
@@ -274,7 +311,7 @@ def spend_runs_to_events(
             "metrics": metrics,
             "dimensions": {
                 "lane": lane,
-                "pr_number": str(run.get("pr_number") or ""),
+                "pr_number": pr_number,
                 "head_sha": str(run.get("head_sha") or ""),
                 "spend_run_id": str(run.get("run_id") or ""),
             },

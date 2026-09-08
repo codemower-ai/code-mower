@@ -72,6 +72,16 @@ GITHUB_RUN_LIST_FIELDS = (
     "updatedAt",
     "url",
 )
+GITHUB_PR_LIST_FIELDS = (
+    "number",
+    "state",
+    "createdAt",
+    "closedAt",
+    "mergedAt",
+    "updatedAt",
+    "url",
+    "headRefName",
+)
 
 
 def safe_kind(value: str) -> str:
@@ -190,6 +200,57 @@ def run_gh_run_list(
             raise CloudBundleError("`gh run list --json` returned a non-object run")
         runs.append(item)
     return runs
+
+
+def run_gh_pr_list(
+    *,
+    repo_slug: str,
+    limit: int,
+    repo_path: Path,
+) -> list[dict[str, Any]]:
+    """List recent PRs from GitHub to provide outcome truth for pr_outcome events."""
+
+    command = [
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        repo_slug,
+        "--state",
+        "all",
+        "--limit",
+        str(limit),
+        "--json",
+        ",".join(GITHUB_PR_LIST_FIELDS),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repo_path,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise CloudBundleError("GitHub PR outcome sync requires the `gh` CLI") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise CloudBundleError(
+            "unable to read GitHub PR list with `gh pr list`"
+            + (f": {detail}" if detail else "")
+        )
+    try:
+        parsed = json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise CloudBundleError("`gh pr list --json` returned invalid JSON") from exc
+    if not isinstance(parsed, list):
+        raise CloudBundleError("`gh pr list --json` must return a JSON array")
+    prs: list[dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            raise CloudBundleError("`gh pr list --json` returned a non-object PR")
+        prs.append(item)
+    return prs
 
 
 def build_workflow_run_event(

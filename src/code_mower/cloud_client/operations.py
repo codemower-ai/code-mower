@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import os
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
 from .. import board
 from .. import code_mower_telemetry
 from .. import reviewer_spend
+from ..file_locks import FileLockError, exclusive_file_lock
 from .bundle import MAX_EVENT_COUNT
 from .doctor import run_cloud_doctor
 from .dogfood import build_dogfood_dry_run_preview, build_dogfood_plan, default_dogfood_reports
@@ -18,7 +22,20 @@ from .events import (
     build_dogfood_event,
     build_provider_catalog_snapshot_events,
     build_workflow_run_event,
+    run_gh_pr_list,
     run_gh_run_list,
+    validate_cloud_event,
+)
+from .pr_outcomes import (
+    DEFAULT_OBSERVATION_STATE_PATH,
+    UNATTRIBUTED_EVIDENCE_LANE,
+    build_pr_outcome_event,
+    canonical_pr_number,
+    load_pr_outcome_observations,
+    max_source_freshness,
+    pr_outcome_observation_key,
+    pr_outcome_observation_record,
+    save_pr_outcome_observations,
 )
 from .export import build_cloud_bundle
 from .git_metadata import detect_repo_slug
@@ -110,6 +127,17 @@ def build_catch_up_summary(
     }
 
 
+def _invalid_spend_ledger_error() -> CloudBundleError:
+    """Return the bounded, path-free error for an unusable spend ledger."""
+
+    return CloudBundleError(
+        "the reviewer spend ledger could not provide spend evidence; "
+        "aborting export/upload rather than reporting coverage without it. "
+        "Supply a readable, regular JSON ledger file or omit the ledger path "
+        "to use the optional default ledger."
+    )
+
+
 def _reviewer_spend_events(
     *,
     repo_path: Path,
@@ -118,17 +146,50 @@ def _reviewer_spend_events(
     team_id: str,
     install_id: str,
     source: str,
+    preserve_unattributable: bool = False,
+    require_valid_spend: bool = False,
 ) -> list[dict[str, Any]]:
-    resolved_spend_path = spend_path or repo_path / reviewer_spend.DEFAULT_SPEND_PATH
-    if not resolved_spend_path.is_file():
-        return []
-    return reviewer_spend.spend_runs_to_events(
-        reviewer_spend.load_spend_file(resolved_spend_path),
-        repo_slug=repo_slug,
-        team_id=team_id,
-        install_id=install_id,
-        source=source,
+    explicit_spend = spend_path is not None
+    resolved_spend_path = (
+        Path(spend_path).expanduser()
+        if explicit_spend
+        else repo_path / reviewer_spend.DEFAULT_SPEND_PATH
     )
+    if explicit_spend and require_valid_spend:
+        # An explicitly requested ledger must fail closed: a missing path,
+        # directory, symlink, or other non-regular file cannot silently
+        # degrade to "no reviewer evidence" and report complete coverage.
+        if resolved_spend_path.is_symlink() or not resolved_spend_path.is_file():
+            raise _invalid_spend_ledger_error()
+    elif require_valid_spend:
+        # The optional default ledger may only be silently absent.  Any
+        # existing but unusable entry -- directory, dangling symlink,
+        # symlink, or other non-regular file -- must fail closed rather
+        # than treat a corrupt ledger as no evidence.
+        if not resolved_spend_path.exists() and not resolved_spend_path.is_symlink():
+            return []
+        if resolved_spend_path.is_symlink() or not resolved_spend_path.is_file():
+            raise _invalid_spend_ledger_error()
+    elif not resolved_spend_path.is_file():
+        return []
+    try:
+        return reviewer_spend.spend_runs_to_events(
+            reviewer_spend.load_spend_file(
+                resolved_spend_path, required=explicit_spend and require_valid_spend
+            ),
+            repo_slug=repo_slug,
+            team_id=team_id,
+            install_id=install_id,
+            source=source,
+            preserve_unattributable=preserve_unattributable,
+        )
+    except (OSError, ValueError) as exc:
+        if require_valid_spend:
+            # ``load_spend_file`` and ``spend_runs_to_events`` diagnostics may
+            # embed the raw path; the fail-closed error stays bounded and
+            # path-free.
+            raise _invalid_spend_ledger_error() from exc
+        raise
 
 
 def _mapping(value: object) -> Mapping[str, Any]:
@@ -147,7 +208,7 @@ def _event_match_values(event: Mapping[str, Any]) -> tuple[str, str, str, str]:
     ).strip()
     return (
         str(event.get("repo_slug") or "").strip(),
-        str(dimensions.get("pr_number") or "").strip(),
+        canonical_pr_number(dimensions.get("pr_number")),
         lane,
         str(dimensions.get("head_sha") or "").strip(),
     )
@@ -736,6 +797,466 @@ def reviewer_runs_upload(
     }
 
 
+# Builder evidence filenames embed ``pr-<number>`` when the run is tied to a
+# pull request; used only to attribute an unreadable file to a PR.
+_BUILDER_EVIDENCE_PR_PATTERN = re.compile(r"(?:^|-)pr-([0-9]+)")
+
+
+def _builder_evidence_pr_number(filename: str) -> str:
+    """Return the canonical PR number encoded in a builder evidence filename, or ""."""
+
+    match = _BUILDER_EVIDENCE_PR_PATTERN.search(filename)
+    if not match:
+        return ""
+    return canonical_pr_number(match.group(1))
+
+
+def _pr_number_from_run_event(event: Mapping[str, Any]) -> str:
+    dimensions = _mapping(event.get("dimensions"))
+    number = canonical_pr_number(dimensions.get("pr_number"))
+    if number:
+        return number
+    return canonical_pr_number(event.get("pr_number"))
+
+
+def _is_positive_int_pr_number(number: str) -> bool:
+    """Return True only for a canonical positive integer PR number.
+
+    Kept as a thin wrapper over the shared canonicalizer for any call sites
+    that still need a boolean check.
+    """
+
+    return bool(canonical_pr_number(number))
+
+
+def _is_associable_builder_run(payload: Any) -> bool:
+    """Return True when a parsed record has the fields needed to associate it.
+
+    A parseable but structurally unusable record -- such as one that only
+    carries ``event_type=builder_run``, or one whose PR number is not a
+    positive integer -- must not be silently filtered out; it routes through
+    filename-attributed or unattributable fail-closed evidence handling.
+    """
+
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("event_type") != "builder_run":
+        return False
+    if not str(payload.get("repo_slug") or "").strip():
+        return False
+    if not _is_positive_int_pr_number(_pr_number_from_run_event(payload)):
+        return False
+    return True
+
+
+def _builder_run_events(
+    repo_path: Path,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Load local builder_run events; never drop unreadable evidence silently.
+
+    Returns ``(events, unreadable_pr_numbers)``.  ``unreadable_pr_numbers``
+    carries one entry per ``*.cloud-event.json`` file that could not be read,
+    parsed, or recognized as a ``builder_run`` event: the PR number encoded in
+    the filename when the failure can be attributed to a PR, or ``""`` when it
+    cannot.  Entries are PR numbers only -- never paths or file contents.
+    """
+
+    builder_dir = repo_path / ".code-mower" / "builder-runs"
+    try:
+        with os.scandir(builder_dir) as it:
+            entries = sorted(it, key=lambda entry: entry.name)
+    except FileNotFoundError:
+        # A genuinely missing inventory is not a failure, but a dangling
+        # symlink or otherwise present-but-unreachable path is unusable
+        # evidence.  Use an lstat-based check (``is_symlink`` does not follow
+        # the final path component) so a dangling symlink still counts as one
+        # bounded unattributable failure and prevents complete coverage.
+        if builder_dir.is_symlink():
+            return [], [""]
+        return [], []
+    except NotADirectoryError:
+        # ``builder-runs`` exists but is not a directory (e.g. a regular file
+        # or a symlink to one).  Record a single bounded unattributable
+        # failure so this is never treated as empty evidence.
+        return [], [""]
+    except OSError:
+        # The builder-run directory exists but cannot be enumerated.  Record
+        # a single bounded unattributable failure so no PR can be reported
+        # complete while scanning errors are not recoverable.
+        return [], [""]
+    events: list[dict[str, Any]] = []
+    unreadable: list[str] = []
+    for entry in entries:
+        if not entry.name.endswith(".cloud-event.json"):
+            continue
+        try:
+            # A non-regular entry whose name matches ``*.cloud-event.json``
+            # -- a symlink, directory, fifo, or similar -- is unreadable
+            # evidence, not an empty slot: silently skipping it could let a
+            # PR report ``complete`` coverage while an attempt is missing.
+            if not entry.is_file(follow_symlinks=False):
+                unreadable.append(_builder_evidence_pr_number(entry.name))
+                continue
+            payload = json.loads(Path(entry).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            unreadable.append(_builder_evidence_pr_number(entry.name))
+            continue
+        if _is_associable_builder_run(payload):
+            events.append(payload)
+        else:
+            unreadable.append(_builder_evidence_pr_number(entry.name))
+    return events, unreadable
+
+
+def pr_outcomes_upload(
+    *,
+    repo_path: Path,
+    output_dir: Path,
+    repo_slug: str,
+    team_id: str,
+    install_id: str,
+    source: str,
+    limit: int,
+    endpoint: str,
+    token_env: str,
+    token_file: Path | None = None,
+    token_dir: Path | None = None,
+    yes: bool,
+    timeout: float,
+    spend_path: Path | None = None,
+) -> dict[str, Any]:
+    """Build and optionally upload per-PR spend coverage observations."""
+
+    if limit < 1 or limit > MAX_EVENT_COUNT:
+        raise CloudBundleError(f"--limit must be between 1 and {MAX_EVENT_COUNT}")
+    repo_path = repo_path.expanduser().resolve()
+    detected_repo_slug = repo_slug or detect_repo_slug(repo_path)
+    if not detected_repo_slug:
+        raise CloudBundleError(
+            "unable to detect repo slug; pass --repo-slug OWNER/REPO"
+        )
+    token_resolution, resolved_endpoint = _resolve_upload_profile(
+        endpoint=endpoint,
+        token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+    )
+    resolved_team_id, resolved_install_id = resolve_cloud_identity(
+        team_id=team_id,
+        install_id=install_id,
+        resolution=token_resolution,
+    )
+
+    pr_records = run_gh_pr_list(
+        repo_slug=detected_repo_slug,
+        limit=limit,
+        repo_path=repo_path,
+    )
+
+    observation_state_path = repo_path / DEFAULT_OBSERVATION_STATE_PATH
+    observation_lock_path = observation_state_path.with_name(
+        f"{observation_state_path.name}.lock"
+    )
+    # ``reverted`` is intentionally absent: GitHub's PR-list ``state`` field
+    # cannot prove a rollback, so ``reverted`` is reserved for callers that
+    # supply explicit rollback evidence (``reverted_at``).
+    state_to_outcome = {
+        "open": "open",
+        "merged": "merged",
+        "closed": "closed_unmerged",
+    }
+
+    events: list[dict[str, Any]] = []
+    errors: list[str] = []
+    lock_acquired = False
+    try:
+        # Local metadata-only observation state keeps retries idempotent and makes
+        # corrected evidence chronologically newer even when no source timestamp
+        # (GitHub ``updatedAt`` or run ``created_at``) advanced.  The read,
+        # per-PR update, and atomic write are serialized on the repository's
+        # exclusive file lock so overlapping ``pr-outcomes`` commands cannot
+        # interleave the read-modify-write and lose ordering state.  All local
+        # evidence (builder runs and reviewer spend) is loaded, grouped, and
+        # fail-closed accounted for inside that same lock so an older local cost
+        # snapshot can never be used after a newer correction has already been
+        # committed.  The lock is held through bundle creation and payload
+        # loading as well: the bundle directory is shared staging, so
+        # releasing it early could let a concurrent invocation overwrite the
+        # manifest between export and payload assembly and make this command
+        # upload the other invocation's observation.  Lock or state-access
+        # failures abort before export/upload with a bounded, path-free error.
+        with exclusive_file_lock(observation_lock_path):
+            lock_acquired = True
+            builder_events, unreadable_builder_prs = _builder_run_events(repo_path)
+            spend_events = _reviewer_spend_events(
+                repo_path=repo_path,
+                spend_path=spend_path,
+                repo_slug=detected_repo_slug,
+                team_id=resolved_team_id,
+                install_id=resolved_install_id,
+                source=f"{source}-spend",
+                # pr-outcomes fails closed: malformed or unattributable reviewer
+                # spend rows are preserved as unattributed evidence so they
+                # suppress ``complete`` coverage instead of being silently
+                # dropped.  An explicitly requested ledger path that is
+                # missing, non-regular, unreadable, or malformed aborts the
+                # command rather than silently reporting coverage without it;
+                # only the absent optional default ledger may mean "no
+                # reviewer evidence".
+                preserve_unattributable=True,
+                require_valid_spend=True,
+            )
+
+            run_events: list[dict[str, Any]] = []
+            unattributable_evidence_count = 0
+            for event in [*builder_events, *spend_events]:
+                event_repo = str(event.get("repo_slug") or "").strip()
+                event_pr = _pr_number_from_run_event(event)
+                if not _is_positive_int_pr_number(event_pr):
+                    unattributable_evidence_count += 1
+                    continue
+                if event_repo != detected_repo_slug:
+                    unattributable_evidence_count += 1
+                    continue
+                run_events.append(event)
+
+            events_by_pr: dict[str, list[dict[str, Any]]] = {}
+            for event in run_events:
+                pr_number = _pr_number_from_run_event(event)
+                events_by_pr.setdefault(pr_number, []).append(event)
+
+            # Fail closed on unreadable builder evidence.  A failure attributed
+            # to a PR is represented on that PR as an expected attempt with
+            # unknown cost (plus a bounded per-PR error), so ``complete``
+            # coverage cannot be emitted while other healthy PRs are still
+            # processed.  An unattributable failure suppresses ``complete``
+            # coverage for every emitted outcome because the missing attempt
+            # cannot be proven to belong elsewhere.
+            attributed_failures: set[str] = set()
+            unattributed_failures = 0
+            for failed_pr_number in unreadable_builder_prs:
+                if not failed_pr_number:
+                    unattributed_failures += 1
+                    continue
+                if failed_pr_number not in attributed_failures:
+                    attributed_failures.add(failed_pr_number)
+                    errors.append(
+                        f"PR {failed_pr_number}: builder evidence unreadable or "
+                        "malformed; attempt counted with unknown cost"
+                    )
+                events_by_pr.setdefault(failed_pr_number, []).append(
+                    {
+                        "event_id": "",
+                        "event_type": "builder_run",
+                        "repo_slug": detected_repo_slug,
+                        "dimensions": {
+                            "builder_provider": UNATTRIBUTED_EVIDENCE_LANE,
+                            "pr_number": failed_pr_number,
+                        },
+                    }
+                )
+            if unattributed_failures:
+                errors.append(
+                    f"{unattributed_failures} builder evidence file(s) unreadable or "
+                    "malformed and not attributable to a PR; complete spend coverage "
+                    "suppressed"
+                )
+            if unattributable_evidence_count:
+                errors.append(
+                    f"{unattributable_evidence_count} parsed attempt(s) could not be "
+                    "attributed to a PR; complete spend coverage suppressed"
+                )
+
+            observations = load_pr_outcome_observations(observation_state_path)
+            candidate_records: list[tuple[dict[str, Any], str, str]] = []
+            for pr in pr_records:
+                pr_number = canonical_pr_number(pr.get("number"))
+                if not pr_number:
+                    continue
+                state = str(pr.get("state") or "").strip().lower()
+                outcome = state_to_outcome.get(state)
+                if not outcome:
+                    continue
+                opened_at = str(pr.get("createdAt") or "").strip()
+                if not opened_at:
+                    continue
+                merged_at = str(pr.get("mergedAt") or "").strip()
+                closed_at = str(pr.get("closedAt") or "").strip()
+                observation_key = pr_outcome_observation_key(
+                    detected_repo_slug, pr_number
+                )
+                try:
+                    event = build_pr_outcome_event(
+                        repo_slug=detected_repo_slug,
+                        pr_number=pr_number,
+                        outcome=outcome,
+                        opened_at=opened_at,
+                        merged_at=merged_at,
+                        closed_at=closed_at,
+                        run_events=events_by_pr.get(pr_number, []),
+                        team_id=resolved_team_id,
+                        install_id=resolved_install_id,
+                        source=source,
+                        created_at=str(pr.get("updatedAt") or opened_at).strip(),
+                        prior_observation=observations.get(observation_key),
+                        evidence_incomplete=(
+                            unattributed_failures > 0
+                            or unattributable_evidence_count > 0
+                        ),
+                    )
+                    validate_cloud_event(event)
+                except CloudBundleError as exc:
+                    errors.append(f"PR {pr_number}: {exc}")
+                    continue
+                source_freshness = str(event.pop("source_freshness", ""))
+                candidate_records.append((event, observation_key, source_freshness))
+
+            emitted = candidate_records[:MAX_EVENT_COUNT]
+            for event, observation_key, source_freshness in emitted:
+                events.append(event)
+                record = pr_outcome_observation_record(
+                    event, source_freshness=source_freshness
+                )
+                prior_record = observations.get(observation_key)
+                if prior_record:
+                    # The source-freshness watermark must never regress,
+                    # even if an unchanged retry is emitted for an older
+                    # snapshot.
+                    record["source_freshness"] = max_source_freshness(
+                        str(prior_record.get("source_freshness") or ""),
+                        record["source_freshness"],
+                    )
+                observations[observation_key] = record
+
+            if events:
+                try:
+                    save_pr_outcome_observations(
+                        observation_state_path, observations
+                    )
+                except OSError as exc:
+                    # Correction ordering for every emitted outcome depends on
+                    # this state: without it, a later correction could tie on
+                    # created_at.  Fail closed before export/upload.
+                    # ``strerror`` carries the OS reason only -- never a
+                    # path -- so diagnostics stay metadata-only.
+                    reason = getattr(exc, "strerror", None) or "write failed"
+                    raise CloudBundleError(
+                        "unable to persist pr_outcome observation state "
+                        f"({reason}); aborting export/upload so a later "
+                        "correction cannot tie on created_at. Restore write "
+                        "access to the repository state directory and retry."
+                    ) from exc
+
+            if not events:
+                return {
+                    "mode": "cloud-pr-outcomes",
+                    "status": "no_events",
+                    "repo_slug": detected_repo_slug,
+                    "event_count": 0,
+                    "pr_count": len(pr_records),
+                    "errors": errors,
+                }
+
+            if len(events) > MAX_EVENT_COUNT:
+                events = events[:MAX_EVENT_COUNT]
+
+            export_result = build_cloud_bundle(
+                reports=[],
+                events=events,
+                output_dir=output_dir,
+                repo_slug=detected_repo_slug,
+                team_id=resolved_team_id,
+                install_id=resolved_install_id,
+                anonymous=False,
+            )
+            doctor_result = run_cloud_doctor(
+                bundle_dir=output_dir,
+                endpoint=resolved_endpoint,
+                token_env=token_env,
+                token_file=token_file,
+                token_dir=token_dir,
+                install_id=install_id,
+                require_token=yes,
+            )
+            if doctor_result["failures"]:
+                return {
+                    "mode": "cloud-pr-outcomes",
+                    "status": "doctor_failed",
+                    "repo_slug": detected_repo_slug,
+                    "event_count": len(events),
+                    "pr_count": len(pr_records),
+                    "errors": errors,
+                    "export": export_result,
+                    "doctor": doctor_result,
+                }
+            # The upload payload is assembled from the on-disk bundle while
+            # the observation lock is still held, so a concurrent invocation
+            # sharing this output directory cannot swap the manifest out from
+            # under it.
+            payload = build_upload_payload(
+                bundle_dir=output_dir, include_reports=False
+            )
+    except FileLockError as exc:
+        raise CloudBundleError(
+            "unable to lock pr_outcome observation state; aborting "
+            "export/upload so overlapping pr-outcomes commands cannot lose "
+            "ordering state. Retry once the other command finishes."
+        ) from exc
+    except OSError as exc:
+        if lock_acquired:
+            # Raised inside the critical section (evidence loading, export,
+            # doctor, or payload assembly), not while opening or acquiring
+            # the lock file; keep the original failure instead of
+            # mislabeling it as a state-access error.
+            raise
+        # Covers lock-file creation/opening failures (for example a state
+        # directory that cannot be created).  ``strerror`` is path-free.
+        reason = getattr(exc, "strerror", None) or "I/O failure"
+        raise CloudBundleError(
+            "unable to access pr_outcome observation state "
+            f"({reason}); aborting export/upload. Restore access to the "
+            "repository state directory and retry."
+        ) from exc
+
+    if not yes:
+        return {
+            "mode": "cloud-pr-outcomes",
+            "status": "dry_run",
+            "repo_slug": detected_repo_slug,
+            "event_count": len(events),
+            "pr_count": len(pr_records),
+            "errors": errors,
+            "export": export_result,
+            "doctor": doctor_result,
+            "upload": build_dogfood_dry_run_preview(
+                endpoint=resolved_endpoint,
+                payload=payload,
+            ),
+        }
+    token = require_upload_token(
+        endpoint=resolved_endpoint,
+        resolution=token_resolution,
+        local_endpoint=is_local_http_endpoint(resolved_endpoint),
+    )
+    return {
+        "mode": "cloud-pr-outcomes",
+        "status": "uploaded",
+        "repo_slug": detected_repo_slug,
+        "event_count": len(events),
+        "pr_count": len(pr_records),
+        "errors": errors,
+        "export": export_result,
+        "doctor": doctor_result,
+        "upload": post_upload_payload(
+            payload=payload,
+            endpoint=resolved_endpoint,
+            token=token,
+            timeout=timeout,
+        ),
+    }
+
+
 def parse_repo_sync_spec(spec: str) -> tuple[str, Path]:
     if "=" not in spec:
         return "", Path(spec)
@@ -779,6 +1300,11 @@ def build_repo_sync_data_class_summary(
             "events": 0,
             "description": "metadata-only reviewer verdict artifacts",
         },
+        "pr_outcome_evidence": {
+            "steps": 0,
+            "events": 0,
+            "description": "per-PR spend coverage observations",
+        },
     }
     for repo in repos:
         steps = repo.get("steps")
@@ -804,6 +1330,10 @@ def build_repo_sync_data_class_summary(
                     target["events"] += int(step.get("run_count") or 0)
             elif mode == "cloud-reviewer-runs":
                 target = summary["reviewer_evidence"]
+                target["steps"] += 1
+                target["events"] += int(step.get("event_count") or 0)
+            elif mode == "cloud-pr-outcomes":
+                target = summary["pr_outcome_evidence"]
                 target["steps"] += 1
                 target["events"] += int(step.get("event_count") or 0)
     return summary
@@ -897,6 +1427,23 @@ def repo_sync_upload(
                         yes=yes,
                         timeout=timeout,
                         include_git_ref=include_git_ref,
+                        spend_path=None,
+                    )
+                elif mode == "pr-outcomes":
+                    step_result = pr_outcomes_upload(
+                        repo_path=repo_path,
+                        output_dir=repo_output_dir / "pr-outcomes",
+                        repo_slug=repo_slug,
+                        team_id=team_id,
+                        install_id=install_id,
+                        source=f"{source_prefix}-pr-outcomes",
+                        limit=limit,
+                        endpoint=endpoint,
+                        token_env=token_env,
+                        token_file=token_file,
+                        token_dir=token_dir,
+                        yes=yes,
+                        timeout=timeout,
                         spend_path=None,
                     )
                 else:  # pragma: no cover - argparse constrains modes.
