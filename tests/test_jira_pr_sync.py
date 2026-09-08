@@ -465,7 +465,8 @@ class RecoveryTest(unittest.TestCase):
             apply_fn=apply_fn,
         )
 
-        self.assertEqual(summary["events_replayed"], 2)
+        self.assertEqual(summary["events_replayed"], 0)
+        self.assertEqual(summary["events_blocked"], 2)
         self.assertEqual(
             [item["reason"] for item in summary["results"]],
             ["ambiguous_jira_identity", "ambiguous_jira_identity"],

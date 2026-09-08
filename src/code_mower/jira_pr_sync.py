@@ -512,11 +512,16 @@ def reconcile_missed_events(
             "issue_key": str(report.get("issue_key") or ""),
             "write_request_count": int(report.get("write_request_count") or 0),
         })
-    replayed = sum(1 for item in results if item["status"] != "duplicate_skipped")
+    replayed = sum(
+        1 for item in results
+        if item["status"] not in {"duplicate_skipped", "blocked"}
+    )
+    blocked = sum(1 for item in results if item["status"] == "blocked")
     return {
         "schema": "code_mower.jiraPrSyncReconcile.v1",
         "events_received": received,
         "events_replayed": replayed,
+        "events_blocked": blocked,
         "gate_authority": "github",
         "gate_impact": "none",
         "results": results,
