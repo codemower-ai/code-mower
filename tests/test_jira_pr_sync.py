@@ -110,6 +110,7 @@ class FakeJira:
         self.global_ids: list[str] = []
         self.comments: list[Any] = []
         self.calls: list[dict[str, Any]] = []
+        self.before_remote_link_post: Any = None
 
     def _fault(self, method: str, label: str) -> Any:
         queue = self.faults.get((method, label))
@@ -191,6 +192,9 @@ class FakeJira:
         if suffix == "/remotelink" and method == "GET":
             return ok([{"id": 9, "globalId": gid} for gid in self.global_ids])
         if suffix == "/remotelink" and method == "POST":
+            hook, self.before_remote_link_post = self.before_remote_link_post, None
+            if hook is not None:
+                hook()
             if body["globalId"] not in self.global_ids:
                 self.global_ids.append(body["globalId"])
             return ok({"id": 9}, status=201)
@@ -504,11 +508,37 @@ class ApplyIdempotencyTest(unittest.TestCase):
             runner,
             pr_url="https://github.com/owner/repo/pull/19",
         )
-        self.assertEqual(replacement["status"], "applied")
+        self.assertEqual(replacement["status"], "blocked")
+        self.assertEqual(replacement["reason"], "already_linked_elsewhere")
+        self.assertEqual(runner.status_id, "1")
+        self.assertEqual(runner.global_ids, [])
+
+        resumed = plan_and_apply(config, "merged", runner)
+        self.assertEqual(resumed["status"], "applied")
         self.assertEqual(runner.status_id, "9")
-        self.assertEqual(
-            runner.global_ids, ["code-mower:github:owner/repo/pull/19"]
+        self.assertEqual(runner.global_ids, [GLOBAL_ID])
+
+    def test_competing_pr_association_claims_serialize(self) -> None:
+        config, runner = sync_config(), FakeJira()
+        first_plan = plan(config, "opened", apply_requested=True)
+        second_plan = plan(
+            config,
+            "merged",
+            apply_requested=True,
+            pr_url="https://github.com/owner/repo/pull/19",
         )
+        second_result: list[dict[str, Any]] = []
+        runner.before_remote_link_post = lambda: second_result.append(
+            jira_pr_sync.apply_sync_plan(second_plan, make_client(runner))
+        )
+
+        first = jira_pr_sync.apply_sync_plan(first_plan, make_client(runner))
+
+        self.assertEqual(first["status"], "applied")
+        self.assertEqual(second_result[0]["status"], "blocked")
+        self.assertEqual(second_result[0]["reason"], "already_linked_elsewhere")
+        self.assertEqual(runner.global_ids, [GLOBAL_ID])
+        self.assertEqual(len(runner.transition_posts()), 1)
 
     def test_unrelated_remote_link_does_not_block_pr_association(self) -> None:
         config, runner = sync_config(), FakeJira()

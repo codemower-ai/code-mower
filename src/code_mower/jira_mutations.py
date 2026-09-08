@@ -159,6 +159,12 @@ LEDGER_STATES = ("applied",)
 COMMENT_CLAIM_PREFIX = "code-mower-comment-v1."
 COMMENT_CLAIM_SCHEMA = "code_mower.jiraCommentClaim.v1"
 
+#: One fixed issue property serializes competing PR associations. Its value
+#: contains only the deterministic Code Mower remote-link global id; no issue
+#: prose, PR title, branch, account, or local identity is retained.
+PR_ASSOCIATION_PROPERTY_KEY = "code-mower-pr-association-v1"
+PR_ASSOCIATION_SCHEMA = "code_mower.jiraPrAssociation.v1"
+
 #: Closed comment-claim states. ``claimed`` is written by the 201 that
 #: acquired the claim, immediately before the post. ``posted`` is written
 #: after a post this process saw succeed. ``unverified`` records a post whose
@@ -881,6 +887,14 @@ _WRITE_ALLOW_LIST: tuple[tuple[str, re.Pattern[str]], ...] = (
         "PUT",
         re.compile(
             r"^/rest/api/3/issue/[^/]+/properties/"
+            + re.escape(PR_ASSOCIATION_PROPERTY_KEY)
+            + r"$"
+        ),
+    ),
+    (
+        "PUT",
+        re.compile(
+            r"^/rest/api/3/issue/[^/]+/properties/"
             + re.escape(COMMENT_CLAIM_PREFIX)
             + r"[0-9a-f]{32}$"
         ),
@@ -950,6 +964,7 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         # association. The transport rechecks it immediately before every
         # write so a competing link added after preflight still fails closed.
         self._expected_pr_global_id = ""
+        self._pr_association_claim_write_active = False
 
     # -- Armed write scope -----------------------------------------------
 
@@ -979,6 +994,7 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         self._write_scope = None
         self._write_forbidden_status_ids = ()
         self._expected_pr_global_id = ""
+        self._pr_association_claim_write_active = False
 
     def require_code_mower_pr_link(self, expected_global_id: str) -> None:
         """Bind this apply to one expected Code Mower PR association."""
@@ -989,6 +1005,11 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
     def clear_code_mower_pr_link_requirement(self) -> None:
         """Clear a PR-sync-only guard without changing other client state."""
         self._expected_pr_global_id = ""
+        self._pr_association_claim_write_active = False
+
+    def requires_code_mower_pr_association(self, global_id: str) -> bool:
+        """Report whether this apply armed PR-sync association semantics."""
+        return bool(self._expected_pr_global_id == str(global_id or ""))
 
     def refuse_writes_in_statuses(self, status_ids: Sequence[Any]) -> None:
         """Refuse the current operation if Jira has reached a later status."""
@@ -1043,6 +1064,17 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
             issue_ref, self._expected_pr_global_id
         ):
             raise WriteScopeRefused("already_linked_elsewhere")
+        if self._expected_pr_global_id and not self.has_remote_link(
+            issue_ref, self._expected_pr_global_id
+        ):
+            claim_path = self._issue_path(
+                issue_ref, f"properties/{PR_ASSOCIATION_PROPERTY_KEY}"
+            )
+            if self._pr_association_claim_write_active and path == claim_path:
+                return
+            claim = self.get_issue_property(issue_ref, PR_ASSOCIATION_PROPERTY_KEY)
+            if _pr_association_global_id(claim) != self._expected_pr_global_id:
+                raise WriteScopeRefused("already_linked_elsewhere")
 
     @staticmethod
     def _is_write_request(method: str, path: str) -> bool:
@@ -1179,6 +1211,43 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
             for entry in entries
         )
 
+    def acquire_code_mower_pr_association(
+        self, issue_ref: str, expected_global_id: str
+    ) -> str:
+        """Acquire one issue-level PR association claim without guessing.
+
+        Jira returns 201 only to the request that created an issue property;
+        a competing PUT returns 200. The creator rereads the value, and the
+        transport rechecks it before the link POST, so interleaved different
+        PRs cannot both proceed. An interrupted owner can retry the same PR.
+        """
+        expected = jira_cloud.validate_remote_link_global_id(expected_global_id)
+        if expected != self._expected_pr_global_id:
+            raise MutationRequestError("PR association does not match the armed sync")
+        existing = self.get_issue_property(issue_ref, PR_ASSOCIATION_PROPERTY_KEY)
+        if existing is not None:
+            return (
+                "already_acquired"
+                if _pr_association_global_id(existing) == expected
+                else "conflict"
+            )
+        quoted_key = urllib.parse.quote(PR_ASSOCIATION_PROPERTY_KEY, safe="")
+        self._pr_association_claim_write_active = True
+        try:
+            status, _ = self._request_status_parsed(
+                "PUT",
+                self._issue_path(issue_ref, f"properties/{quoted_key}"),
+                json_body={"schema": PR_ASSOCIATION_SCHEMA, "global_id": expected},
+                endpoint="prAssociationClaim",
+                allow_empty=True,
+            )
+        finally:
+            self._pr_association_claim_write_active = False
+        if status != 201:
+            return "conflict"
+        current = self.get_issue_property(issue_ref, PR_ASSOCIATION_PROPERTY_KEY)
+        return "acquired" if _pr_association_global_id(current) == expected else "conflict"
+
     def set_mutation_ledger(self, issue_ref: str, ledger: Mapping[str, Any]) -> None:
         """Write the bounded advisory ledger to this module's own property."""
         payload = _validated_ledger(ledger)
@@ -1256,6 +1325,18 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
 
 
 # -- Comment claims and the advisory ledger ------------------------------
+
+
+def _pr_association_global_id(claim: Mapping[str, Any] | None) -> str:
+    """Return one valid Code Mower PR association id, else an empty value."""
+    if not isinstance(claim, Mapping) or claim.get("schema") != PR_ASSOCIATION_SCHEMA:
+        return ""
+    candidate = str(claim.get("global_id") or "")
+    try:
+        validated = jira_cloud.validate_remote_link_global_id(candidate)
+    except ValueError:
+        return ""
+    return validated if validated.startswith("code-mower:github:") else ""
 
 
 def _claim_owner_token() -> str:
@@ -1756,6 +1837,14 @@ def _apply_link(
         operation.status = "already_applied"
         operation.reason = "already_linked"
         return _record(ledger, operation, "applied")
+    global_id = str(operation.detail.get("global_id") or "")
+    if client.requires_code_mower_pr_association(global_id):
+        claim = client.acquire_code_mower_pr_association(issue_ref, global_id)
+        operation.detail["association_claim"] = claim
+        if claim == "conflict":
+            operation.status = "blocked"
+            operation.reason = "already_linked_elsewhere"
+            return ledger
     client.link_pull_request(issue_ref, str(operation.detail.get("url") or ""))
     operation.status = "applied"
     operation.reason = "ok"
