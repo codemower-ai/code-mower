@@ -606,6 +606,7 @@ def _probe_jira_read(
 
     issues = result.get("issues") if isinstance(result, dict) else []
     transition_target_mismatches: list[dict[str, str]] = []
+    verified_transitions: set[tuple[str, str]] = set()
     transition_probe_error = ""
     mutations = block.get("mutations")
     configured_transitions = mutations.get("transitions") if isinstance(mutations, Mapping) else None
@@ -617,6 +618,7 @@ def _probe_jira_read(
                 for cat, tid in configured_transitions.items():
                     for t in available_transitions:
                         if t.get("id") == str(tid):
+                            verified_transitions.add((str(cat), str(tid)))
                             to_status = t.get("to_status_id", "")
                             cat_targets = (
                                 configured_map.get(cat, [])
@@ -633,6 +635,15 @@ def _probe_jira_read(
                                 )
             except jira_cloud_module.JiraApiError as exc:
                 transition_probe_error = exc.code
+    unverified_transitions = [
+        {"category": str(cat), "transition_id": str(tid)}
+        for cat, tid in (
+            configured_transitions.items()
+            if isinstance(configured_transitions, Mapping)
+            else ()
+        )
+        if (str(cat), str(tid)) not in verified_transitions
+    ]
 
     return DoctorCheck(
         name=JIRA_READ_CHECK,
@@ -651,6 +662,7 @@ def _probe_jira_read(
             "sample_issue_count": len(issues) if isinstance(issues, list) else 0,
             "known_status_ids": live_ids,
             "transition_target_mismatches": transition_target_mismatches,
+            "unverified_transitions": unverified_transitions,
             "transition_probe_error": transition_probe_error,
         },
     )
@@ -683,6 +695,7 @@ def _check_jira_mutations(
     permission_probe = dict(detail_in.get("permission_probe") or {})
     known_status_ids = set(detail_in.get("known_status_ids") or [])
     mismatches = list(detail_in.get("transition_target_mismatches") or [])
+    unverified = list(detail_in.get("unverified_transitions") or [])
     transition_probe_error = str(detail_in.get("transition_probe_error") or "")
 
     if transition_probe_error:
@@ -780,6 +793,24 @@ def _check_jira_mutations(
                                 f"from your Jira project workflow. See {_SETUP_JIRA_DOC}."
                             ),
                         )
+
+    if unverified:
+        return DoctorCheck(
+            name=JIRA_MUTATIONS_CHECK,
+            status=STATUS_FAIL if writes_enabled else STATUS_WARN,
+            message="Jira transition readiness is not fully verified",
+            detail={
+                "tracker_kind": "jira_cloud",
+                "reason": "transition_unverified",
+                "writes_enabled": writes_enabled,
+                "unverified_transitions": unverified,
+            },
+            remediation=(
+                "Verify each configured transition against an issue where it is available, "
+                "or update tracker.jira_cloud.mutations.transitions; then re-run "
+                f"`code-mower doctor --adoption`. See {_SETUP_JIRA_DOC}."
+            ),
+        )
 
     msg = (
         "Jira mutations configured (writes enabled)"
