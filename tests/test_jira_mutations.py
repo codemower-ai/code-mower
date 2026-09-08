@@ -11,6 +11,7 @@ asserted from a report field alone.
 from __future__ import annotations
 
 import json
+import re
 import unittest
 import urllib.parse
 from contextlib import redirect_stderr, redirect_stdout
@@ -33,9 +34,27 @@ OTHER_ACCOUNT_ID = "5b10ac8d82e05b22cc7d4ef9"
 PR_URL = "https://github.com/owner/repo/pull/12"
 PROSE = "private issue prose must never leave Jira"
 
+ISSUE_ID = "10101"
+
 ISSUE_PATH = f"/rest/api/3/issue/{ISSUE}"
 LEDGER_PATH = f"{ISSUE_PATH}/properties/{jira_mutations.LEDGER_PROPERTY_KEY}"
 MYSELF_PATH = "/rest/api/3/myself"
+
+
+def comment_fingerprint(template: str, pr_url: str = "", issue_id: str = ISSUE_ID) -> str:
+    """The replay fingerprint apply computes for one comment intent."""
+    detail: dict[str, Any] = {"template": template}
+    if pr_url:
+        detail["pr_url"] = pr_url
+    return jira_mutations._operation_fingerprint(
+        "comment", jira_mutations.fingerprint_subject(issue_id), detail
+    )
+
+
+def claim_path(template: str, pr_url: str = "", issue_ref: str = ISSUE) -> str:
+    """The dedicated claim property path for one comment intent."""
+    key = jira_mutations.comment_claim_property_key(comment_fingerprint(template, pr_url))
+    return f"/rest/api/3/issue/{issue_ref}/properties/{key}"
 
 
 def ok(payload: Any, status: int = 200, headers: Mapping[str, str] | None = None):
@@ -116,6 +135,183 @@ class ExplodingHttp:
 
     def __call__(self, *args: Any, **kwargs: Any):
         raise AssertionError("a Jira request was attempted when none was allowed")
+
+
+_ISSUE_ROUTE = re.compile(r"^/rest/api/3/issue/(?P<ref>[^/]+)(?P<suffix>/.*)?$")
+
+
+class FakeJira:
+    """A small stateful Jira for the endpoints this surface touches.
+
+    Issue properties follow the documented create-or-update contract: ``PUT``
+    answers 201 the first time a key is written and 200 for every write
+    afterwards. That distinction is the whole at-most-once primitive behind a
+    comment claim, so a fake that always answered 200 -- or always 201 --
+    would let a real double-post pass its tests.
+
+    The issue answers to both its key and its immutable id, which is what
+    makes a replay across the two spellings testable.
+    """
+
+    def __init__(
+        self,
+        *,
+        issue_id: str = ISSUE_ID,
+        key: str = ISSUE,
+        status_id: str = "3",
+        assignee: str | None = None,
+        project_id: str = PROJECT_ID,
+        transitions: Any = ({"id": "31", "name": "Start", "to": {"id": "3"}},),
+        account_id: str = ACCOUNT_ID,
+        global_ids: Any = (),
+        faults: Mapping[tuple[str, str], Any] | None = None,
+        before_request: Any = None,
+    ) -> None:
+        self.issue_id = issue_id
+        self.key = key
+        self.status_id = status_id
+        self.assignee = assignee
+        self.project_id = project_id
+        self.transitions = [dict(item) for item in transitions]
+        self.account_id = account_id
+        self.global_ids = list(global_ids)
+        self.faults = {key_: list(value) for key_, value in dict(faults or {}).items()}
+        self.before_request = before_request
+        self.properties: dict[str, Any] = {}
+        self.comments: list[Mapping[str, Any]] = []
+        self.calls: list[dict[str, Any]] = []
+
+    # -- helpers used by tests -------------------------------------------
+
+    def paths(self, method: str = "") -> list[str]:
+        return [
+            call["path"] for call in self.calls if not method or call["method"] == method
+        ]
+
+    def write_calls(self) -> list[dict[str, Any]]:
+        return [call for call in self.calls if call["method"] in ("PUT", "POST", "DELETE")]
+
+    def comment_posts(self) -> list[dict[str, Any]]:
+        return [
+            call
+            for call in self.calls
+            if call["method"] == "POST" and call["path"].endswith("/comment")
+        ]
+
+    def claim(self, template: str, pr_url: str = "") -> Any:
+        key = jira_mutations.comment_claim_property_key(
+            comment_fingerprint(template, pr_url)
+        )
+        return self.properties.get(key)
+
+    # -- transport --------------------------------------------------------
+
+    def _fault(self, method: str, suffix: str) -> Any:
+        queue = self.faults.get((method, suffix))
+        if not queue:
+            return None
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    def __call__(self, method: str, url: str, headers: Mapping[str, str], body: bytes | None):
+        parts = urllib.parse.urlsplit(url)
+        path = "/rest/api/3/" + parts.path.split("/rest/api/3/", 1)[-1]
+        parsed_body = json.loads(body.decode("utf-8")) if body else None
+        self.calls.append(
+            {
+                "method": method,
+                "path": path,
+                "query": dict(urllib.parse.parse_qsl(parts.query)),
+                "body": parsed_body,
+            }
+        )
+        if self.before_request is not None:
+            self.before_request(self, method, path)
+        return self._handle(method, path, parsed_body)
+
+    def _handle(self, method: str, path: str, body: Any):
+        if path == "/rest/api/3/myself":
+            fault = self._fault("GET", "myself")
+            if fault is not None:
+                return self._raise_or_return(fault)
+            return ok({"accountId": self.account_id, "emailAddress": EMAIL})
+
+        match = _ISSUE_ROUTE.fullmatch(path)
+        if match is None:
+            raise AssertionError(f"unrouted request: {method} {path}")
+        ref = urllib.parse.unquote(match.group("ref"))
+        # Jira resolves an issue key case-insensitively, and by its id too.
+        if ref != self.issue_id and ref.upper() != self.key.upper():
+            return error(404)
+        suffix = match.group("suffix") or ""
+
+        if suffix.startswith("/properties/"):
+            key = urllib.parse.unquote(suffix[len("/properties/"):])
+            return self._property(method, key, body)
+
+        label = suffix.lstrip("/") or "issue"
+        fault = self._fault(method, label)
+        if fault is not None:
+            return self._raise_or_return(fault)
+
+        if suffix == "" and method == "GET":
+            return ok(
+                issue_response(
+                    status_id=self.status_id,
+                    assignee=self.assignee,
+                    project_id=self.project_id,
+                )
+                | {"id": self.issue_id, "key": self.key}
+            )
+        if suffix == "/transitions" and method == "GET":
+            return ok({"transitions": self.transitions})
+        if suffix == "/transitions" and method == "POST":
+            chosen = next(
+                (
+                    item
+                    for item in self.transitions
+                    if item["id"] == body["transition"]["id"]
+                ),
+                None,
+            )
+            assert chosen is not None, "transition posted without being offered"
+            self.status_id = str(chosen.get("to", {}).get("id") or self.status_id)
+            return empty()
+        if suffix == "/assignee" and method == "PUT":
+            self.assignee = body["accountId"]
+            return empty()
+        if suffix == "/comment" and method == "POST":
+            self.comments.append(body)
+            return ok({"id": f"2000{len(self.comments)}"}, status=201)
+        if suffix == "/remotelink" and method == "GET":
+            return ok([{"id": 9, "globalId": gid} for gid in self.global_ids])
+        if suffix == "/remotelink" and method == "POST":
+            if body["globalId"] not in self.global_ids:
+                self.global_ids.append(body["globalId"])
+            return ok({"id": 9}, status=201)
+        raise AssertionError(f"unrouted request: {method} {path}")
+
+    def _property(self, method: str, key: str, body: Any):
+        fault = self._fault(method, f"properties/{key}")
+        if fault is None and key.startswith(jira_mutations.COMMENT_CLAIM_PREFIX):
+            fault = self._fault(method, "comment_claim")
+        if fault is not None:
+            return self._raise_or_return(fault)
+        if method == "GET":
+            if key not in self.properties:
+                return error(404)
+            return ok({"key": key, "value": self.properties[key]})
+        if method == "PUT":
+            created = key not in self.properties
+            self.properties[key] = body
+            # Jira: 201 Created on first write, 200 OK on replacement.
+            return empty(status=201 if created else 200)
+        raise AssertionError(f"unrouted property request: {method} {key}")
+
+    @staticmethod
+    def _raise_or_return(item: Any):
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
 
 def make_client(
@@ -312,7 +508,7 @@ class TransportAllowListTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 client._check_request_allowed(method, path)
 
-    def test_mutation_client_allows_only_the_four_operations_and_its_ledger(self) -> None:
+    def test_mutation_client_allows_only_the_four_operations_and_its_keys(self) -> None:
         client = make_client(ExplodingHttp())
         for method, path in (
             ("GET", ISSUE_PATH),
@@ -321,6 +517,7 @@ class TransportAllowListTests(unittest.TestCase):
             ("POST", f"{ISSUE_PATH}/comment"),
             ("POST", f"{ISSUE_PATH}/remotelink"),
             ("PUT", LEDGER_PATH),
+            ("PUT", claim_path("claimed")),
         ):
             client._check_request_allowed(method, path)
 
@@ -333,6 +530,11 @@ class TransportAllowListTests(unittest.TestCase):
             ("PUT", ISSUE_PATH),
             ("POST", f"{ISSUE_PATH}/attachments"),
             ("PUT", f"{ISSUE_PATH}/properties/other-key"),
+            # A claim key is only writable in this module's exact shape.
+            ("PUT", f"{ISSUE_PATH}/properties/code-mower-comment-v1."),
+            ("PUT", f"{ISSUE_PATH}/properties/code-mower-comment-v1.nothex"),
+            ("PUT", f"{ISSUE_PATH}/properties/code-mower-comment-v2.{'a' * 32}"),
+            ("PUT", f"{ISSUE_PATH}/properties/code-mower-comment-v1.{'a' * 33}"),
             ("POST", "/rest/api/3/issue"),
             ("PUT", "/rest/api/3/project/10001"),
             ("POST", "/rest/api/3/issueLink"),
@@ -420,7 +622,7 @@ class TransportRetryPolicyTests(unittest.TestCase):
                     call(client)
                 self.assertEqual(len(runner.calls), 4)
 
-    def test_the_retry_policy_seam_names_only_the_two_unsafe_writes(self) -> None:
+    def test_the_retry_policy_seam_names_only_the_unsafe_writes(self) -> None:
         client = make_client(ExplodingHttp(), max_attempts=4)
         for method, path in (
             ("POST", f"{ISSUE_PATH}/comment"),
@@ -434,6 +636,49 @@ class TransportRetryPolicyTests(unittest.TestCase):
             ("PUT", LEDGER_PATH),
         ):
             self.assertEqual(client._attempts_for(method, path), 4)
+
+    def test_acquiring_a_claim_is_single_attempt_but_finalizing_is_not(self) -> None:
+        """Only the acquire depends on a 201-versus-200 answer.
+
+        A retried acquire would meet its own 201 as a 200 and conclude that
+        some other apply owns the claim, so the comment would never post.
+        Rewriting a key this process already holds has no such signal left.
+        """
+        client = make_client(ExplodingHttp(), max_attempts=4)
+        path = claim_path("claimed")
+        self.assertEqual(client._attempts_for("PUT", path, "commentClaimAcquire"), 1)
+        self.assertEqual(client._attempts_for("PUT", path, "commentClaimFinalize"), 4)
+
+    def test_a_claim_acquire_is_attempted_once_after_an_ambiguous_failure(self) -> None:
+        for label, responses in self.AMBIGUOUS_FAILURES.items():
+            with self.subTest(failure=label):
+                attempts = self._attempt_count(
+                    ("PUT", claim_path("claimed")),
+                    responses(),
+                    lambda client: client.acquire_comment_claim(
+                        ISSUE,
+                        comment_fingerprint("claimed"),
+                        template="claimed",
+                        owner="0" * 16,
+                    ),
+                )
+                self.assertEqual(attempts, 1)
+
+    def test_only_a_created_property_acquires_the_claim(self) -> None:
+        """201 means this request created the key; 200 means it did not."""
+        fingerprint = comment_fingerprint("claimed")
+        for status, acquired in ((201, True), (200, False)):
+            with self.subTest(status=status):
+                runner = RouteHttp(
+                    {("PUT", claim_path("claimed")): empty(status=status)}
+                )
+                client = make_client(runner)
+                self.assertEqual(
+                    client.acquire_comment_claim(
+                        ISSUE, fingerprint, template="claimed", owner="0" * 16
+                    ),
+                    acquired,
+                )
 
     def test_the_read_client_retries_every_request_it_can_make(self) -> None:
         client = jira_cloud.JiraReadClient(
@@ -639,14 +884,7 @@ class ApplyTests(unittest.TestCase):
         self.assertNotIn(f"{ISSUE_PATH}/transitions", runner.paths("POST"))
 
     def test_templated_comment_posts_bounded_adf_with_a_replay_marker(self) -> None:
-        runner = RouteHttp(
-            {
-                ("GET", ISSUE_PATH): ok(issue_response()),
-                ("GET", LEDGER_PATH): error(404),
-                ("PUT", LEDGER_PATH): empty(),
-                ("POST", f"{ISSUE_PATH}/comment"): ok({"id": "20001", "body": PROSE}, status=201),
-            }
-        )
+        runner = FakeJira()
         code, report, _ = run_cli(
             [
                 "mutate",
@@ -662,7 +900,7 @@ class ApplyTests(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         self.assertEqual(operation(report, "comment")["status"], "applied")
-        post = next(call for call in runner.calls if call["path"].endswith("/comment"))
+        post = runner.comment_posts()[0]
         body = post["body"]["body"]
         self.assertEqual(body["type"], "doc")
         self.assertEqual(body["version"], 1)
@@ -741,187 +979,527 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(runner.write_calls(), [])
 
 
-class ReplayTests(unittest.TestCase):
-    def _ledger(self, template: str, state: str) -> dict[str, Any]:
-        fingerprint = jira_mutations.mutation_fingerprint(
-            "comment",
-            {
-                "issue": ISSUE,
-                "template": template,
-                "text": jira_mutations.render_comment(template),
-            },
-        )
-        return {
-            "value": {
-                "schema": jira_mutations.LEDGER_SCHEMA,
-                "entries": {
-                    fingerprint: {
-                        "operation": "comment",
-                        "state": state,
-                        "at": "2026-09-08T00:00:00+00:00",
-                    }
-                },
-            }
-        }
+class CommentClaimTests(unittest.TestCase):
+    """At-most-once comment delivery, keyed by a dedicated claim property.
 
-    def test_applied_comment_is_never_reposted(self) -> None:
-        runner = RouteHttp(
-            {
-                ("GET", ISSUE_PATH): ok(issue_response()),
-                ("GET", LEDGER_PATH): ok(self._ledger("claimed", "applied")),
-                ("PUT", LEDGER_PATH): empty(),
-            }
-        )
-        code, report, _ = run_cli(
-            ["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"], runner=runner
-        )
+    The shared ledger is deliberately not the primitive here. It is bounded
+    and evicting, and two applies that both read it absent would both post.
+    """
+
+    ARGS = ["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"]
+
+    def test_a_first_comment_claims_its_key_then_posts_then_finalizes(self) -> None:
+        jira = FakeJira()
+        code, report, _ = run_cli(self.ARGS, runner=jira)
         self.assertEqual(code, 0)
-        self.assertEqual(operation(report, "comment")["reason"], "already_commented")
-        self.assertNotIn(f"{ISSUE_PATH}/comment", runner.paths("POST"))
+        self.assertEqual(operation(report, "comment")["status"], "applied")
+        self.assertEqual(len(jira.comment_posts()), 1)
+        self.assertEqual(
+            [call["path"] for call in jira.write_calls()],
+            [claim_path("claimed"), f"{ISSUE_PATH}/comment", claim_path("claimed")],
+        )
+        claim = jira.claim("claimed")
+        self.assertEqual(claim["state"], "posted")
+        self.assertEqual(claim["schema"], jira_mutations.COMMENT_CLAIM_SCHEMA)
+        self.assertEqual(claim["template"], "claimed")
+        self.assertEqual(operation(report, "comment")["detail"]["claim_state"], "posted")
 
-    def test_interrupted_comment_is_unverified_rather_than_claimed_applied(self) -> None:
-        """A pending entry means "unknown", and the report must say so.
+    def test_the_claim_is_written_before_the_post(self) -> None:
+        order: list[str] = []
+        jira = FakeJira(
+            before_request=lambda _fake, method, path: order.append(f"{method} {path}")
+            if method in ("PUT", "POST")
+            else None
+        )
+        run_cli(self.ARGS, runner=jira)
+        self.assertEqual(order[0], f"PUT {claim_path('claimed')}")
+        self.assertEqual(order[1], f"POST {ISSUE_PATH}/comment")
+
+    def test_a_posted_claim_is_never_reposted(self) -> None:
+        jira = FakeJira()
+        run_cli(self.ARGS, runner=jira)
+        code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "comment")["status"], "already_applied")
+        self.assertEqual(operation(report, "comment")["reason"], "already_commented")
+        self.assertEqual(len(jira.comment_posts()), 1)
+
+    def test_an_unfinalized_claim_reports_unverified_and_never_reposts(self) -> None:
+        """A claim with no recorded post outcome means "unknown", truthfully.
 
         The comment may have committed, may have been lost in flight, or may
         never have left. Reposting risks a duplicate and claiming success
-        would be a guess, so the run reports ``unverified`` and hands the one
-        comment back to an owner.
+        would be a guess, so the run hands that one comment to an owner.
         """
-        runner = RouteHttp(
-            {
-                ("GET", ISSUE_PATH): ok(issue_response()),
-                ("GET", LEDGER_PATH): ok(self._ledger("claimed", "pending")),
-                ("PUT", LEDGER_PATH): empty(),
-            }
-        )
-        code, report, _ = run_cli(
-            ["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"], runner=runner
-        )
+        jira = FakeJira()
+        key = jira_mutations.comment_claim_property_key(comment_fingerprint("claimed"))
+        jira.properties[key] = {
+            "schema": jira_mutations.COMMENT_CLAIM_SCHEMA,
+            "operation": "comment",
+            "fingerprint": comment_fingerprint("claimed"),
+            "template": "claimed",
+            "state": "claimed",
+            "owner": "0" * 16,
+            "at": "2026-09-08T00:00:00+00:00",
+        }
+        code, report, _ = run_cli(self.ARGS, runner=jira)
         self.assertEqual(code, 1)
         self.assertEqual(report["status"], "unverified")
+        self.assertEqual(operation(report, "comment")["reason"], "comment_unverified")
+        self.assertEqual(jira.comment_posts(), [])
+        self.assertIn("by hand", report["next_action"])
+
+    def test_an_unreadable_claim_value_is_treated_as_held_not_absent(self) -> None:
+        jira = FakeJira()
+        key = jira_mutations.comment_claim_property_key(comment_fingerprint("claimed"))
+        jira.properties[key] = {"state": "something-else"}
+        code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "comment")["status"], "unverified")
+        self.assertEqual(operation(report, "comment")["detail"]["claim_state"], "unknown")
+        self.assertEqual(jira.comment_posts(), [])
+
+    def test_an_ambiguous_post_stays_claimed_unverified_and_is_never_retried(self) -> None:
+        jira = FakeJira(faults={("POST", "comment"): [TimeoutError("lost")] * 4})
+        code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 1)
         self.assertEqual(operation(report, "comment")["status"], "unverified")
         self.assertEqual(operation(report, "comment")["reason"], "comment_unverified")
-        self.assertNotIn(f"{ISSUE_PATH}/comment", runner.paths("POST"))
-        self.assertIn("by hand", report["next_action"])
-        final_ledger = runner.write_calls()[-1]["body"]
+        self.assertEqual(operation(report, "comment")["detail"]["post_error"], "unavailable")
+        # Exactly one post attempt: an ambiguous comment is never retried.
+        self.assertEqual(len(jira.comment_posts()), 1)
+        self.assertEqual(jira.claim("claimed")["state"], "unverified")
+
+        # And a later run reads that claim and still refuses to repost.
+        jira.faults = {}
+        code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "comment")["reason"], "comment_unverified")
+        self.assertEqual(len(jira.comment_posts()), 1)
+
+    def test_a_rejected_post_is_unverified_rather_than_silently_dropped(self) -> None:
+        jira = FakeJira(faults={("POST", "comment"): [error(403)]})
+        code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "comment")["status"], "unverified")
         self.assertEqual(
-            [entry["state"] for entry in final_ledger["entries"].values()], ["unverified"]
+            operation(report, "comment")["detail"]["post_error"], "permission_denied"
+        )
+        self.assertEqual(jira.claim("claimed")["state"], "unverified")
+
+    def test_a_failed_finalize_leaves_the_claim_and_never_reposts(self) -> None:
+        """Losing the record must never lose the protection."""
+        jira = FakeJira(
+            faults={("PUT", "comment_claim"): [None, *([error(500)] * 4)]}
+        )
+        code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "comment")["status"], "applied")
+        self.assertEqual(operation(report, "comment")["detail"]["claim_state"], "claimed")
+        self.assertEqual(jira.claim("claimed")["state"], "claimed")
+
+        jira.faults = {}
+        code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "comment")["reason"], "comment_unverified")
+        self.assertEqual(len(jira.comment_posts()), 1)
+
+    def test_an_ambiguous_claim_that_landed_is_recovered_by_its_owner_token(self) -> None:
+        """A lost 201 response is resolved by reading the claim back once.
+
+        The claim write is attempted exactly once, so its answer is
+        ambiguous rather than retried. Reading the stored owner token back
+        tells this process whether the write that vanished was its own.
+        """
+        jira = FakeJira()
+
+        def lose_the_response(fake: FakeJira, method: str, path: str) -> None:
+            if method == "PUT" and path == claim_path("claimed") and not fake.properties:
+                fake._property("PUT", path.split("/properties/")[1], fake.calls[-1]["body"])
+                raise TimeoutError("response lost after Jira committed")
+
+        jira.before_request = lose_the_response
+        code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "comment")["status"], "applied")
+        self.assertEqual(len(jira.comment_posts()), 1)
+
+    def test_an_ambiguous_claim_that_never_landed_posts_nothing(self) -> None:
+        jira = FakeJira(faults={("PUT", "comment_claim"): [TimeoutError("lost")]})
+        code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "comment")["reason"], "unavailable")
+        self.assertEqual(operation(report, "comment")["detail"]["claim_state"], "unknown")
+        self.assertEqual(jira.comment_posts(), [])
+
+        # Nothing was claimed, so a clean re-run posts exactly once.
+        jira.faults = {}
+        code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(jira.comment_posts()), 1)
+
+    def test_a_failed_earlier_operation_leaves_no_claim_behind(self) -> None:
+        """A never-attempted comment must not be suppressed on the retry."""
+        args = [
+            "mutate", "--issue", ISSUE,
+            "--transition", "in_progress",
+            "--comment", "claimed",
+            "--apply",
+        ]
+        jira = FakeJira(status_id="1", faults={("POST", "transitions"): [error(500)]})
+        code, report, _ = run_cli(args, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "comment")["status"], "skipped")
+        self.assertEqual(jira.properties, {})
+
+        jira.faults = {}
+        code, report, _ = run_cli(args, runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "comment")["status"], "applied")
+        self.assertEqual(len(jira.comment_posts()), 1)
+
+
+class CommentConcurrencyTests(unittest.TestCase):
+    """Two applies of the same comment intent produce at most one post.
+
+    Each test interleaves a second client inside the first client's request
+    stream against one shared Jira, which is the interleaving that made the
+    shared ledger unsafe: both runs read it absent, and both posted.
+    """
+
+    ARGS = ["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"]
+    MARKER = claim_path("claimed")
+
+    def _interleave(self, trigger_method: str, trigger_path: str) -> FakeJira:
+        jira = FakeJira()
+        state = {"reentered": False, "second": None}
+
+        def interleave(fake: FakeJira, method: str, path: str) -> None:
+            if state["reentered"] or method != trigger_method or path != trigger_path:
+                return
+            state["reentered"] = True
+            # The competing apply runs to completion against the same Jira
+            # before this one continues past the triggering request.
+            state["second"] = run_cli(self.ARGS, runner=fake)
+
+        jira.before_request = interleave
+        self.first = run_cli(self.ARGS, runner=jira)
+        self.second = state["second"]
+        self.assertIsNotNone(self.second, "the competing apply never ran")
+        return jira
+
+    def test_a_second_apply_between_the_claim_read_and_the_claim_write(self) -> None:
+        # The competing apply runs after this one has already read the claim
+        # as absent and is about to write it. Under the shared ledger this is
+        # the interleaving where both runs posted.
+        jira = self._interleave("PUT", self.MARKER)
+        # Exactly one comment reached Jira, and exactly one claim was created.
+        self.assertEqual(len(jira.comment_posts()), 1)
+        self.assertEqual(len(jira.properties), 1)
+        # The competing run won the claim and posted; this one lost it and
+        # never posted, and says so instead of guessing either way.
+        self.assertEqual(self.second[0], 0)
+        self.assertEqual(operation(self.second[1], "comment")["status"], "applied")
+        self.assertEqual(self.first[0], 1)
+        self.assertEqual(operation(self.first[1], "comment")["status"], "unverified")
+        self.assertEqual(
+            operation(self.first[1], "comment")["reason"], "comment_claim_held"
+        )
+        self.assertEqual(
+            operation(self.first[1], "comment")["detail"]["claim_state"],
+            "held_by_another_apply",
         )
 
-    def test_an_unverified_comment_stays_unverified_and_is_never_reposted(self) -> None:
+    def test_a_second_apply_between_the_claim_write_and_the_post(self) -> None:
+        jira = self._interleave("POST", f"{ISSUE_PATH}/comment")
+        self.assertEqual(len(jira.comment_posts()), 1)
+        # The competing run saw a claim it did not own and refused to post.
+        self.assertEqual(self.second[0], 1)
+        self.assertEqual(operation(self.second[1], "comment")["status"], "unverified")
+        self.assertEqual(self.first[0], 0)
+        self.assertEqual(operation(self.first[1], "comment")["status"], "applied")
+
+
+class CommentCapacityTests(unittest.TestCase):
+    """Replay protection must not evict, at any number of comments.
+
+    The shared ledger holds 32 entries and drops the oldest. With comment
+    protection living there, comment 33 evicted comment 1 and a replay of
+    comment 1 posted a duplicate. One property per intent cannot evict.
+    """
+
+    COUNT = jira_mutations.MAX_LEDGER_ENTRIES + 8
+
+    @staticmethod
+    def _args(index: int) -> list[str]:
+        return [
+            "mutate", "--issue", ISSUE,
+            "--comment", "pr_opened",
+            "--pr-url", f"https://github.com/owner/repo/pull/{index}",
+            "--apply",
+        ]
+
+    def test_replay_is_still_suppressed_far_past_the_ledger_bound(self) -> None:
+        jira = FakeJira()
+        for index in range(1, self.COUNT + 1):
+            code, report, _ = run_cli(self._args(index), runner=jira)
+            self.assertEqual(code, 0, f"comment {index} did not apply")
+            self.assertEqual(operation(report, "comment")["status"], "applied")
+        self.assertEqual(len(jira.comment_posts()), self.COUNT)
+        self.assertEqual(len(jira.properties), self.COUNT)
+
+        # The very first intent is far outside anything a 32-entry ledger
+        # could still remember, and it is still never reposted.
+        for index in (1, 2, self.COUNT):
+            code, report, _ = run_cli(self._args(index), runner=jira)
+            self.assertEqual(code, 0)
+            self.assertEqual(operation(report, "comment")["reason"], "already_commented")
+        self.assertEqual(len(jira.comment_posts()), self.COUNT)
+
+    def test_the_advisory_ledger_still_evicts_and_that_is_harmless(self) -> None:
+        """Nothing the ledger holds decides whether a write happens."""
+        self.assertEqual(
+            set(jira_mutations.LEDGER_OPERATIONS), {"assign", "transition", "link"}
+        )
+        entries = {
+            f"{index:032x}": {
+                "operation": "assign",
+                "state": "applied",
+                "at": f"2026-09-08T00:00:{index % 60:02d}+00:00",
+            }
+            for index in range(jira_mutations.MAX_LEDGER_ENTRIES + 5)
+        }
+        cleaned = jira_mutations._validated_ledger({"entries": entries})
+        self.assertEqual(len(cleaned["entries"]), jira_mutations.MAX_LEDGER_ENTRIES)
+        # Ties on the same timestamp evict in a defined order rather than
+        # whichever key the mapping happened to yield first.
+        again = jira_mutations._validated_ledger(
+            {"entries": dict(reversed(list(entries.items())))}
+        )
+        self.assertEqual(list(cleaned["entries"]), list(again["entries"]))
+
+    def test_a_comment_entry_never_enters_the_shared_ledger(self) -> None:
+        jira = FakeJira()
+        run_cli(["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"], runner=jira)
+        self.assertNotIn(jira_mutations.LEDGER_PROPERTY_KEY, jira.properties)
+        cleaned = jira_mutations._validated_ledger(
+            {
+                "entries": {
+                    "a" * 32: {"operation": "comment", "state": "applied", "at": "x"}
+                }
+            }
+        )
+        self.assertEqual(cleaned["entries"], {})
+
+
+class IssueIdentityReplayTests(unittest.TestCase):
+    """Fingerprints follow the immutable issue id, not the caller's spelling."""
+
+    def _args(self, ref: str) -> list[str]:
+        return ["mutate", "--issue", ref, "--comment", "claimed", "--apply"]
+
+    def test_the_same_issue_by_key_then_by_id_posts_once(self) -> None:
+        jira = FakeJira()
+        code, report, _ = run_cli(self._args(ISSUE), runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "comment")["status"], "applied")
+
+        code, report, _ = run_cli(self._args(ISSUE_ID), runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "comment")["reason"], "already_commented")
+        self.assertEqual(len(jira.comment_posts()), 1)
+
+    def test_a_lowercase_key_resolves_to_the_same_replay_identity(self) -> None:
+        jira = FakeJira(key="ABC-1")
+        run_cli(self._args("ABC-1"), runner=jira)
+        code, report, _ = run_cli(self._args("abc-1"), runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "comment")["reason"], "already_commented")
+        self.assertEqual(len(jira.comment_posts()), 1)
+
+    def test_a_plan_built_from_a_key_says_its_fingerprints_are_provisional(self) -> None:
+        by_key = jira_mutations.build_mutation_plan(
+            load_config(),
+            jira_mutations.MutationRequest(issue_ref=ISSUE, comment_template="claimed"),
+        )
+        by_id = jira_mutations.build_mutation_plan(
+            load_config(),
+            jira_mutations.MutationRequest(issue_ref=ISSUE_ID, comment_template="claimed"),
+        )
+        self.assertEqual(by_key["tracker"]["fingerprint_basis"], "issue_ref_provisional")
+        self.assertEqual(by_id["tracker"]["fingerprint_basis"], "issue_id")
+        # Planning performs no Jira call, so it is deterministic per input.
+        repeat = jira_mutations.build_mutation_plan(
+            load_config(),
+            jira_mutations.MutationRequest(issue_ref=ISSUE, comment_template="claimed"),
+        )
+        self.assertEqual(
+            operation(by_key, "comment")["fingerprint"],
+            operation(repeat, "comment")["fingerprint"],
+        )
+
+    def test_apply_rewrites_the_fingerprint_to_the_live_issue_id(self) -> None:
+        jira = FakeJira()
+        plan = jira_mutations.build_mutation_plan(
+            load_config(),
+            jira_mutations.MutationRequest(issue_ref=ISSUE, comment_template="claimed"),
+            apply_requested=True,
+        )
+        planned = operation(plan, "comment")["fingerprint"]
+        report = jira_mutations.apply_mutation_plan(plan, make_client(jira))
+        applied = operation(report, "comment")["fingerprint"]
+        self.assertNotEqual(planned, applied)
+        self.assertEqual(applied, comment_fingerprint("claimed"))
+        self.assertEqual(report["tracker"]["fingerprint_basis"], "issue_id")
+        self.assertEqual(report["tracker"]["issue_id"], ISSUE_ID)
+
+    def test_an_issue_with_no_resolvable_id_blocks_before_any_write(self) -> None:
         runner = RouteHttp(
             {
-                ("GET", ISSUE_PATH): ok(issue_response()),
-                ("GET", LEDGER_PATH): ok(self._ledger("claimed", "unverified")),
-                ("PUT", LEDGER_PATH): empty(),
+                ("GET", ISSUE_PATH): ok(
+                    {"key": ISSUE, "fields": {"project": {"id": PROJECT_ID}}}
+                ),
+                ("GET", LEDGER_PATH): error(404),
             }
         )
         code, report, _ = run_cli(
             ["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"], runner=runner
         )
         self.assertEqual(code, 1)
-        self.assertEqual(operation(report, "comment")["reason"], "comment_unverified")
-        self.assertNotIn(f"{ISSUE_PATH}/comment", runner.paths("POST"))
-
-    def test_a_failed_earlier_operation_leaves_no_pending_comment_behind(self) -> None:
-        """A never-attempted comment must not be suppressed on the retry.
-
-        The intent is recorded immediately before the post, so a transition
-        that fails first cannot leave a pending ledger entry that a later run
-        would read as an interrupted post.
-        """
-        first = RouteHttp(
-            {
-                ("GET", ISSUE_PATH): ok(issue_response(status_id="1")),
-                ("GET", LEDGER_PATH): error(404),
-                ("GET", f"{ISSUE_PATH}/transitions"): ok(
-                    {"transitions": [{"id": "31", "to": {"id": "3"}}]}
-                ),
-                ("POST", f"{ISSUE_PATH}/transitions"): error(500),
-            }
+        self.assertEqual(
+            operation(report, "comment")["reason"], "issue_identity_unresolved"
         )
-        args = [
-            "mutate",
-            "--issue",
-            ISSUE,
-            "--transition",
-            "in_progress",
-            "--comment",
-            "claimed",
-            "--apply",
-        ]
-        code, report, _ = run_cli(args, runner=first)
+        self.assertEqual(runner.write_calls(), [])
+
+    def test_comment_fingerprints_ignore_template_whitespace_reflow(self) -> None:
+        subject = jira_mutations.fingerprint_subject(ISSUE_ID)
+        text = jira_mutations.render_comment("claimed")
+        self.assertEqual(
+            jira_mutations.normalize_comment_text(text),
+            jira_mutations.normalize_comment_text(text.replace(" ", "\n  ")),
+        )
+        self.assertTrue(subject.isupper() or subject.isdigit())
+
+
+class WriteAttemptAccountingTests(unittest.TestCase):
+    """Every write attempt is counted, including the ones that failed.
+
+    An attempt Jira may have committed and then failed to acknowledge changed
+    Jira just as much as one that answered 201, so counting only successful
+    calls understates what a run may have done.
+    """
+
+    def test_a_successful_comment_counts_claim_post_and_finalize(self) -> None:
+        jira = FakeJira()
+        _, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"], runner=jira
+        )
+        self.assertEqual(report["write_request_count"], 3)
+        self.assertEqual(len(jira.write_calls()), 3)
+
+    def test_a_timed_out_write_counts_every_attempt_it_made(self) -> None:
+        jira = FakeJira(faults={("PUT", "assignee"): [TimeoutError("lost")] * 4})
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--claim", "--apply"], runner=jira
+        )
         self.assertEqual(code, 1)
-        self.assertEqual(operation(report, "transition")["reason"], "unavailable")
-        self.assertEqual(operation(report, "comment")["status"], "skipped")
-        # The only write attempted is the transition itself: no ledger entry
-        # was opened for a comment that never ran.
-        self.assertEqual(
-            [call["path"] for call in first.write_calls()],
-            [f"{ISSUE_PATH}/transitions"],
-        )
+        self.assertEqual(operation(report, "assign")["reason"], "unavailable")
+        # Four transport attempts left this process, and all four could have
+        # reached Jira. The report says four, not zero.
+        self.assertEqual(len(jira.paths("PUT")), 4)
+        self.assertEqual(report["write_request_count"], 4)
 
-        second = RouteHttp(
-            {
-                ("GET", ISSUE_PATH): ok(issue_response(status_id="1")),
-                ("GET", LEDGER_PATH): error(404),
-                ("GET", f"{ISSUE_PATH}/transitions"): ok(
-                    {"transitions": [{"id": "31", "to": {"id": "3"}}]}
-                ),
-                ("POST", f"{ISSUE_PATH}/transitions"): empty(),
-                ("POST", f"{ISSUE_PATH}/comment"): ok({"id": "20001"}, status=201),
-                ("PUT", LEDGER_PATH): empty(),
-            }
+    def test_a_retried_write_that_finally_succeeds_counts_each_attempt(self) -> None:
+        jira = FakeJira(faults={("PUT", "assignee"): [error(503), error(503), None]})
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--claim", "--apply"], runner=jira
         )
-        code, report, _ = run_cli(args, runner=second)
         self.assertEqual(code, 0)
-        self.assertEqual(operation(report, "transition")["status"], "applied")
-        self.assertEqual(operation(report, "comment")["status"], "applied")
-        self.assertEqual(
-            [call["path"] for call in second.write_calls()],
-            [
-                f"{ISSUE_PATH}/transitions",
-                LEDGER_PATH,
-                f"{ISSUE_PATH}/comment",
-                LEDGER_PATH,
-            ],
-        )
+        self.assertEqual(operation(report, "assign")["status"], "applied")
+        # Two failures, one success, then the ledger write.
+        self.assertEqual(report["write_request_count"], 4)
 
-    def test_comment_intent_is_recorded_before_the_post(self) -> None:
-        runner = RouteHttp(
-            {
-                ("GET", ISSUE_PATH): ok(issue_response()),
-                ("GET", LEDGER_PATH): error(404),
-                ("PUT", LEDGER_PATH): empty(),
-                ("POST", f"{ISSUE_PATH}/comment"): ok({"id": "20001"}, status=201),
-            }
+    def test_an_ambiguous_comment_post_is_counted_once_and_only_once(self) -> None:
+        jira = FakeJira(faults={("POST", "comment"): [TimeoutError("lost")] * 4})
+        _, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"], runner=jira
         )
-        run_cli(["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"], runner=runner)
-        write_paths = [call["path"] for call in runner.write_calls()]
-        self.assertEqual(
-            write_paths, [LEDGER_PATH, f"{ISSUE_PATH}/comment", LEDGER_PATH]
-        )
-        first_ledger = runner.write_calls()[0]["body"]
-        states = [entry["state"] for entry in first_ledger["entries"].values()]
-        self.assertEqual(states, ["pending"])
+        # Claim, the single post attempt, and the unverified finalize.
+        self.assertEqual(report["write_request_count"], 3)
+        self.assertEqual(len(jira.comment_posts()), 1)
 
-    def test_fingerprints_are_stable_across_runs(self) -> None:
-        payload = {"issue": ISSUE, "template": "claimed", "text": "x"}
+    def test_reads_are_never_counted_as_writes(self) -> None:
+        jira = FakeJira(assignee=ACCOUNT_ID, status_id="3")
+        args = ["mutate", "--issue", ISSUE, "--claim", "--apply"]
+        code, report, _ = run_cli(args, runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "assign")["reason"], "already_assigned")
+        # The issue was already claimed, so the only write is the advisory
+        # ledger noting that verified state for the first time.
+        self.assertEqual(report["write_request_count"], 1)
+
+        code, report, _ = run_cli(args, runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(report["ledger_status"], "unchanged")
+        # A second reconciliation reads the same live state and writes
+        # nothing at all, however many reads that took.
+        self.assertGreater(len(jira.paths("GET")), 0)
+        self.assertEqual(report["write_request_count"], 0)
+
+    def test_the_counter_lives_at_the_transport_attempt_boundary(self) -> None:
+        client = make_client(FakeJira())
+        self.assertEqual(client.write_attempts, 0)
+        client._on_request_attempt("GET", ISSUE_PATH)
+        client._on_request_attempt("POST", "/rest/api/3/search/jql")
+        self.assertEqual(client.write_attempts, 0)
+        client._on_request_attempt("POST", f"{ISSUE_PATH}/comment")
+        client._on_request_attempt("PUT", LEDGER_PATH)
+        self.assertEqual(client.write_attempts, 2)
+
+    def test_a_refusal_reports_zero_and_issues_no_request(self) -> None:
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--claim", "--apply"],
+            config_kwargs={"writes_enabled": False},
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(report["write_request_count"], 0)
+
+
+class FingerprintTests(unittest.TestCase):
+    def test_fingerprints_are_stable_across_key_order(self) -> None:
+        payload = {"issue": ISSUE_ID, "template": "claimed", "text": "x"}
         self.assertEqual(
             jira_mutations.mutation_fingerprint("comment", payload),
             jira_mutations.mutation_fingerprint("comment", dict(reversed(list(payload.items())))),
         )
 
+    def test_distinct_intents_get_distinct_claim_keys(self) -> None:
+        keys = {
+            jira_mutations.comment_claim_property_key(
+                comment_fingerprint("pr_opened", f"https://github.com/owner/repo/pull/{n}")
+            )
+            for n in range(1, 6)
+        }
+        self.assertEqual(len(keys), 5)
+        for key in keys:
+            self.assertEqual(key, jira_cloud.validate_property_key(key))
+            self.assertLessEqual(len(key), jira_cloud.MAX_PROPERTY_KEY_LENGTH)
+
+    def test_a_malformed_fingerprint_cannot_become_a_property_key(self) -> None:
+        for candidate in ("", "zz", "../admin", "A" * 32):
+            with self.assertRaises(jira_mutations.MutationRequestError):
+                jira_mutations.comment_claim_property_key(candidate)
+
     def test_ledger_drops_unknown_and_oversized_entries(self) -> None:
         entries = {
             f"{index:032x}": {
-                "operation": "comment",
+                "operation": "assign",
                 "state": "applied",
                 "at": f"2026-09-08T00:00:{index:02d}+00:00",
             }
             for index in range(jira_mutations.MAX_LEDGER_ENTRIES + 5)
         }
-        entries["not-a-fingerprint"] = {"operation": "comment", "state": "applied", "at": "x"}
+        entries["not-a-fingerprint"] = {"operation": "assign", "state": "applied", "at": "x"}
         entries["a" * 32] = {"operation": "delete", "state": "applied", "at": "x"}
         cleaned = jira_mutations._validated_ledger({"entries": entries, "extra": PROSE})
         self.assertEqual(set(cleaned), {"schema", "entries"})
@@ -947,70 +1525,51 @@ class FullRunTests(unittest.TestCase):
         PR_URL,
     ]
 
-    def test_first_apply_performs_each_operation_once(self) -> None:
-        runner = RouteHttp(
-            {
-                ("GET", ISSUE_PATH): ok(issue_response(status_id="1")),
-                ("GET", LEDGER_PATH): error(404),
-                ("GET", MYSELF_PATH): ok({"accountId": ACCOUNT_ID}),
-                ("PUT", f"{ISSUE_PATH}/assignee"): empty(),
-                ("GET", f"{ISSUE_PATH}/transitions"): ok(
-                    {"transitions": [{"id": "31", "to": {"id": "3"}}]}
-                ),
-                ("POST", f"{ISSUE_PATH}/transitions"): empty(),
-                ("GET", f"{ISSUE_PATH}/remotelink"): ok([]),
-                ("POST", f"{ISSUE_PATH}/remotelink"): ok({"id": 9}, status=201),
-                ("POST", f"{ISSUE_PATH}/comment"): ok({"id": "20001"}, status=201),
-                ("PUT", LEDGER_PATH): empty(),
-            }
-        )
+    def _first_apply(self) -> FakeJira:
+        runner = FakeJira(status_id="1")
         code, report, _ = run_cli([*self.ARGS, "--apply"], runner=runner)
         self.assertEqual(code, 0)
         self.assertEqual(report["status"], "applied")
         self.assertEqual(
             [item["status"] for item in report["operations"]], ["applied"] * 4
         )
-        effect_paths = [
-            call["path"] for call in runner.write_calls() if call["path"] != LEDGER_PATH
-        ]
+        return runner
+
+    def test_first_apply_performs_each_operation_once(self) -> None:
+        runner = self._first_apply()
+        claim = claim_path("pr_opened", PR_URL)
         self.assertEqual(
-            effect_paths,
+            [call["path"] for call in runner.write_calls()],
             [
                 f"{ISSUE_PATH}/assignee",
                 f"{ISSUE_PATH}/transitions",
                 f"{ISSUE_PATH}/remotelink",
+                claim,
                 f"{ISSUE_PATH}/comment",
+                claim,
+                LEDGER_PATH,
             ],
         )
-        self.final_ledger = runner.write_calls()[-1]["body"]
+        # The shared ledger records only the three live-reconcilable effects.
+        ledger = runner.properties[jira_mutations.LEDGER_PROPERTY_KEY]
+        self.assertEqual(
+            sorted(entry["operation"] for entry in ledger["entries"].values()),
+            ["assign", "link", "transition"],
+        )
 
     def test_replay_after_a_completed_run_writes_nothing(self) -> None:
-        self.test_first_apply_performs_each_operation_once()
-        global_id = jira_mutations.remote_link_global_id("owner", "repo", "12")
-        runner = RouteHttp(
-            {
-                # Live state now reflects the first run.
-                ("GET", ISSUE_PATH): ok(
-                    issue_response(status_id="3", assignee=ACCOUNT_ID)
-                ),
-                ("GET", LEDGER_PATH): ok({"value": self.final_ledger}),
-                ("GET", MYSELF_PATH): ok({"accountId": ACCOUNT_ID}),
-                ("GET", f"{ISSUE_PATH}/remotelink"): ok(
-                    {"id": 9, "globalId": global_id}
-                ),
-                ("PUT", LEDGER_PATH): empty(),
-            }
-        )
+        # The same Jira, carrying everything the first run left behind.
+        runner = self._first_apply()
+        before = len(runner.write_calls())
         code, report, _ = run_cli([*self.ARGS, "--apply"], runner=runner)
         self.assertEqual(code, 0)
         self.assertEqual(report["status"], "already_applied")
         self.assertEqual(
             [item["status"] for item in report["operations"]], ["already_applied"] * 4
         )
-        effect_paths = [
-            call["path"] for call in runner.write_calls() if call["path"] != LEDGER_PATH
-        ]
-        self.assertEqual(effect_paths, [])
+        self.assertEqual(report["write_request_count"], 0)
+        self.assertEqual(len(runner.write_calls()), before)
+        self.assertEqual(len(runner.comment_posts()), 1)
 
     def test_human_output_states_both_guards_and_the_gate_owner(self) -> None:
         report = jira_mutations.build_mutation_plan(
@@ -1020,7 +1579,7 @@ class FullRunTests(unittest.TestCase):
         text = jira_mutations._render_text(report)
         self.assertIn("Writes enabled (config): true", text)
         self.assertIn("Apply requested (runtime): false", text)
-        self.assertIn("Jira write requests: 0", text)
+        self.assertIn("Jira write attempts: 0", text)
         self.assertIn("Gate authority: github", text)
         self.assertIn("- assign: planned (ok)", text)
 
@@ -1171,29 +1730,32 @@ class FailureSemanticsTests(unittest.TestCase):
 
 class PrivacyTests(unittest.TestCase):
     def test_reports_carry_no_issue_prose_or_credentials(self) -> None:
-        runner = RouteHttp(
-            {
-                ("GET", ISSUE_PATH): ok(issue_response()),
-                ("GET", LEDGER_PATH): error(404),
-                ("GET", MYSELF_PATH): ok(
-                    {"accountId": ACCOUNT_ID, "emailAddress": EMAIL, "displayName": "QA Bot"}
-                ),
-                ("PUT", f"{ISSUE_PATH}/assignee"): empty(),
-                ("PUT", LEDGER_PATH): empty(),
-                ("POST", f"{ISSUE_PATH}/comment"): ok(
-                    {"id": "1", "body": PROSE, "author": {"emailAddress": EMAIL}}, status=201
-                ),
-            }
-        )
+        runner = FakeJira()
         code, report, stderr = run_cli(
             ["mutate", "--issue", ISSUE, "--claim", "--comment", "claimed", "--apply"],
             runner=runner,
         )
         self.assertEqual(code, 0)
         serialized = json.dumps(report)
-        for forbidden in (PROSE, EMAIL, TOKEN, ACCOUNT_ID, "QA Bot"):
+        for forbidden in (PROSE, EMAIL, TOKEN, ACCOUNT_ID):
             self.assertNotIn(forbidden, serialized)
             self.assertNotIn(forbidden, stderr)
+
+    def test_the_claim_property_carries_bounded_metadata_only(self) -> None:
+        """The claim is written to Jira, so it is held to the same bar."""
+        runner = FakeJira()
+        run_cli(
+            ["mutate", "--issue", ISSUE, "--comment", "pr_opened", "--pr-url", PR_URL, "--apply"],
+            runner=runner,
+        )
+        claim = runner.claim("pr_opened", PR_URL)
+        self.assertEqual(
+            set(claim),
+            {"schema", "operation", "fingerprint", "template", "state", "owner", "at"},
+        )
+        serialized = json.dumps(claim)
+        for forbidden in (PROSE, EMAIL, TOKEN, ACCOUNT_ID, PR_URL, "Code Mower claimed"):
+            self.assertNotIn(forbidden, serialized)
 
     def test_retained_plan_is_bounded_metadata_only(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -29,7 +29,9 @@ Transport rules:
   cancellation is cooperative through an injectable predicate.
   ``_attempts_for`` is the single retry-policy seam: reads keep the full
   budget, and a writing subclass narrows it for requests that cannot be
-  safely repeated.
+  safely repeated. ``_on_request_attempt`` is the transport-attempt seam,
+  fired once per real HTTP attempt so a writing subclass can count every
+  write attempt it made, including the ambiguous and retried ones.
 - Failures map to closed reason codes; raw response bodies never enter
   diagnostics, and only bounded metadata fields are ever requested or
   returned (never summary, description, comments, attachments, issue body,
@@ -760,7 +762,7 @@ class JiraReadClient:
         if not path.startswith("/rest/api/3/"):
             raise ValueError("jira_cloud client refuses paths outside /rest/api/3/")
 
-    def _attempts_for(self, method: str, path: str) -> int:
+    def _attempts_for(self, method: str, path: str, endpoint: str = "") -> int:
         """Return the retry budget for one request.
 
         This is the single retry-policy seam, and the counterpart of
@@ -771,8 +773,25 @@ class JiraReadClient:
         timeout, 429, or 5xx cannot be told apart from a request Jira already
         committed, so a blind retry there would double-apply (see
         ``jira_mutations.JiraMutationClient``).
+
+        ``endpoint`` is the caller's closed intent label. Two calls can share
+        a method and a path and still need different budgets: acquiring a
+        create-or-update claim depends on the 201-vs-200 distinction, which a
+        retry destroys, while rewriting that same key afterwards does not.
         """
         return max(1, self.max_attempts)
+
+    def _on_request_attempt(self, method: str, path: str) -> None:
+        """Transport-attempt hook, fired once per real HTTP attempt.
+
+        This runs immediately before the runner is invoked, so it sees every
+        attempt that actually leaves this process: successes, failures, and
+        each retry separately. The base client only reads, so it counts
+        nothing. A writing subclass overrides this to account for write
+        attempts whose outcome may be ambiguous, which is the only honest way
+        to report how much this process may have changed at Jira (see
+        ``jira_mutations.JiraMutationClient``).
+        """
 
     def _request_parsed(
         self,
@@ -784,6 +803,33 @@ class JiraReadClient:
         endpoint: str = "",
         allow_empty: bool = False,
     ) -> Any:
+        return self._request_status_parsed(
+            method,
+            path,
+            query=query,
+            json_body=json_body,
+            endpoint=endpoint,
+            allow_empty=allow_empty,
+        )[1]
+
+    def _request_status_parsed(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: Mapping[str, str] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        endpoint: str = "",
+        allow_empty: bool = False,
+    ) -> tuple[int, Any]:
+        """As ``_request_parsed``, also returning the successful status code.
+
+        Jira distinguishes create from update by status on some endpoints:
+        ``PUT`` of an issue property answers 201 when it created the value and
+        200 when it replaced an existing one. That distinction is the only
+        at-most-once signal those endpoints offer, so it must survive the
+        transport instead of being flattened into "2xx".
+        """
         self._check_request_allowed(method, path)
 
         url = self.base_url + path
@@ -801,11 +847,12 @@ class JiraReadClient:
                 raise ValueError("jira_cloud request body exceeds the read-request bound")
 
         runner = self.http_runner
-        attempts = self._attempts_for(method, path)
+        attempts = self._attempts_for(method, path, endpoint)
         last_code = "jira_unavailable"
         for attempt in range(attempts):
             if self.cancelled_fn():
                 raise JiraApiError("jira_cancelled", endpoint=endpoint)
+            self._on_request_attempt(method, path)
             try:
                 if runner is not None:
                     status, resp_headers, raw = runner(method, url, headers, body)
@@ -842,14 +889,14 @@ class JiraReadClient:
                 if len(raw) > self.max_response_bytes:
                     raise JiraApiError("jira_unavailable", endpoint=endpoint)
                 if allow_empty and not raw.strip():
-                    return {}
+                    return status, {}
                 try:
                     value = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, ValueError):
                     raise JiraApiError("jira_unavailable", endpoint=endpoint) from None
                 if not isinstance(value, (dict, list)):
                     raise JiraApiError("jira_unavailable", endpoint=endpoint)
-                return value
+                return status, value
             elif status == 401:
                 raise JiraApiError("jira_unauthorized", endpoint=endpoint)
             elif status == 403:

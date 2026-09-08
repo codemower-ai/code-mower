@@ -30,7 +30,8 @@ allow-list on :class:`JiraMutationClient`:
 Deliberately absent, and rejected by the transport allow-list: delete of any
 kind, attachments, arbitrary field updates, ``PUT /issue/{key}`` issue edits,
 project or workflow administration, raw issue-body replacement, and writing
-any issue property other than this module's own idempotency ledger.
+any issue property other than this module's own advisory ledger and its
+per-comment claim keys.
 
 Replay safety: assignment, transition, and remote link are reconciled from
 authoritative live state (current assignee, current status plus available
@@ -41,15 +42,29 @@ once, because an ambiguous timeout, 429, or 5xx cannot be told apart from a
 write Jira already committed.
 
 Comments have no server-side idempotency key and their bodies are never read
-back, so a bounded issue property ledger records a stable fingerprint
-immediately before the comment is posted and finalizes it afterwards. A
-later run that finds an unfinalized entry never reposts, and never claims
-the comment landed either: it reports ``unverified`` and asks an owner to
-reconcile that one comment by hand.
+back, so at-most-once comes from Jira's own create-or-update semantics on
+issue properties. Each comment intent has its own property key derived from
+its fingerprint; ``PUT`` answers 201 when it created that key and 200 when
+it replaced an existing one, so only a 201 acquires the right to post. That
+is per intent and never evicts, so neither a concurrent apply nor a 33rd
+comment on the same issue can produce a second copy. A claim that exists but
+was never finalized reports ``unverified`` and asks an owner to reconcile
+that one comment by hand; it is never reposted automatically.
+
+Fingerprints are computed over the immutable numeric issue id, not the
+caller's spelling of the issue key, so ``abc-1``, ``ABC-1``, and a key the
+issue has since been moved away from all resolve to one replay identity.
+Planning performs no Jira call, so a plan built from a key labels its
+fingerprints provisional and apply recomputes them from the live id.
 
 GitHub remains the sole pull request, check, review, and merge-gate
 authority. Nothing here reads or changes gate state, and a Jira refusal,
 conflict, rate limit, or outage cannot weaken a gate decision.
+
+``write_request_count`` is counted at the transport attempt boundary, so it
+reports every write attempt an apply made -- including attempts that timed
+out, were rejected, or were retried -- rather than only the ones that
+answered success. Reads are not counted.
 
 Every report field is bounded metadata: identity, closed reason codes, and
 counts. No issue description, comment body from Jira, raw response payload,
@@ -63,6 +78,7 @@ import argparse
 import hashlib
 import json
 import re
+import secrets
 import sys
 import urllib.parse
 from dataclasses import dataclass, field
@@ -78,16 +94,52 @@ from .tracker_contract import LIFECYCLE_CATEGORIES
 MUTATION_REPORT_SCHEMA = "code_mower.jiraMutationPlan.v1"
 LEDGER_SCHEMA = "code_mower.jiraMutationLedger.v1"
 
-#: Issue property that carries this module's replay ledger. It is the only
-#: property key the transport may write.
+#: Issue property that carries this module's advisory effect ledger.
+#:
+#: The ledger is a bounded, shared, evicting record of effects that are all
+#: reconcilable from live Jira state (assignee, status, remote-link
+#: ``globalId``). Losing an entry to eviction therefore costs nothing: the
+#: next apply re-reads live state and reaches the same answer. It is never a
+#: safety primitive and never gates a write. Comment replay protection used
+#: to live here and does not any more -- see ``COMMENT_CLAIM_PREFIX``.
 LEDGER_PROPERTY_KEY = "code-mower-mutations-v1"
 MAX_LEDGER_ENTRIES = 32
 
-#: Closed ledger states. ``pending`` is written immediately before a comment
-#: post; ``applied`` after a post this process saw succeed. ``unverified`` is
-#: terminal and honest: a later run found an unfinalized ``pending`` entry, so
-#: the comment may or may not exist in Jira and only an owner can say which.
-LEDGER_STATES = ("pending", "applied", "unverified")
+#: Operations the shared ledger records. Comments are deliberately absent:
+#: nothing about a comment can be reconciled from live state, so a bounded
+#: evicting store must never be the thing that decides whether one was
+#: already posted.
+LEDGER_OPERATIONS = ("assign", "transition", "link")
+
+#: Closed ledger states. Every recorded effect is one this apply verified
+#: against live Jira state, so ``applied`` is the only state it can hold.
+LEDGER_STATES = ("applied",)
+
+#: Per-comment claim property prefix. Each distinct comment intent gets its
+#: own issue property, keyed by that intent's fingerprint:
+#: ``code-mower-comment-v1.<fingerprint>``.
+#:
+#: Jira answers ``PUT`` of an issue property with 201 when it created the
+#: value and 200 when it replaced one, and that create/update distinction is
+#: the only at-most-once primitive Jira offers a comment post. Only a 201
+#: acquires the right to post. A 200, or a value that was already present,
+#: means some other apply holds the claim, and this one never posts.
+#:
+#: One property per intent is what makes this correct where the shared
+#: ledger was not: nothing evicts, so a 33rd comment on an issue cannot push
+#: an older comment's protection out and let it repost, and two concurrent
+#: applies of the same intent contend on one key instead of both reading an
+#: absent ledger and both posting.
+COMMENT_CLAIM_PREFIX = "code-mower-comment-v1."
+COMMENT_CLAIM_SCHEMA = "code_mower.jiraCommentClaim.v1"
+
+#: Closed comment-claim states. ``claimed`` is written by the 201 that
+#: acquired the claim, immediately before the post. ``posted`` is written
+#: after a post this process saw succeed. ``unverified`` records a post whose
+#: outcome this process could not determine. Only ``posted`` ever reads back
+#: as "the comment is there"; the other two need one owner reconciliation and
+#: are never reposted automatically.
+COMMENT_CLAIM_STATES = ("claimed", "posted", "unverified")
 
 #: Report/apply order. Claim first so a later failure still leaves the issue
 #: visibly owned; the pull request link lands before the comment that
@@ -131,6 +183,9 @@ REMOTE_LINK_APPLICATION_NAME = "GitHub"
 
 _ACCOUNT_ID_RE = re.compile(r"^[A-Za-z0-9:._-]{1,128}$")
 _TRANSITION_ID_RE = re.compile(r"^[0-9]{1,32}$")
+_ISSUE_ID_RE = re.compile(r"^[0-9]{1,32}$")
+_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{32}$")
+_CLAIM_OWNER_RE = re.compile(r"^[0-9a-f]{16,64}$")
 _PR_URL_RE = re.compile(
     r"^https://github\.com/(?P<owner>[A-Za-z0-9._-]{1,64})/"
     r"(?P<repo>[A-Za-z0-9._-]{1,100})/pull/(?P<number>[1-9][0-9]{0,9})$"
@@ -152,6 +207,8 @@ REASON_CODES = frozenset(
         "already_commented",
         "already_linked",
         "comment_unverified",
+        "comment_claim_held",
+        "issue_identity_unresolved",
         "account_unresolved",
         "issue_out_of_scope",
         "permission_denied",
@@ -258,6 +315,78 @@ def mutation_fingerprint(operation: str, payload: Mapping[str, Any]) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+
+
+def comment_claim_property_key(fingerprint: str) -> str:
+    """Return the dedicated issue-property key for one comment intent."""
+    if not _FINGERPRINT_RE.fullmatch(str(fingerprint or "")):
+        raise MutationRequestError("comment fingerprint must be 32 lowercase hex characters")
+    return jira_cloud.validate_property_key(COMMENT_CLAIM_PREFIX + fingerprint)
+
+
+def normalize_comment_text(text: str) -> str:
+    """Collapse a rendered comment to its canonical fingerprint form.
+
+    Template bodies are wrapped for readability in this file, so a reflow
+    that changes no words must not change the fingerprint and silently
+    unprotect an already-posted comment.
+    """
+    return " ".join(str(text or "").split())
+
+
+def fingerprint_subject(issue_id: str) -> str:
+    """Return the issue identity a fingerprint is computed over.
+
+    A Jira issue key is mutable: a project rename or a move rewrites it, and
+    an operator may type it in any case. Only the numeric issue id is
+    immutable, so it is what a replay key must be built from. Plan time may
+    not have it -- resolving one costs a Jira read, and planning performs no
+    Jira call at all -- so a plan built from a key carries a provisional
+    fingerprint and says so, and apply recomputes from the live id it read
+    immediately before writing.
+    """
+    subject = str(issue_id or "").strip()
+    return subject.upper()
+
+
+def _operation_fingerprint(
+    operation: str, subject: str, detail: Mapping[str, Any]
+) -> str:
+    """Return the replay fingerprint for one operation against one issue.
+
+    Returns ``""`` when the detail does not carry what the operation needs,
+    which is how a refused operation stays fingerprint-free.
+    """
+    if not subject:
+        return ""
+    if operation == "assign":
+        payload: dict[str, Any] = {"issue": subject, "assignee": "self"}
+    elif operation == "transition":
+        transition_id = str(detail.get("transition_id") or "")
+        if not transition_id:
+            return ""
+        payload = {"issue": subject, "transition_id": transition_id}
+    elif operation == "link":
+        global_id = str(detail.get("global_id") or "")
+        if not global_id:
+            return ""
+        payload = {"issue": subject, "global_id": global_id}
+    elif operation == "comment":
+        template = str(detail.get("template") or "")
+        if template not in COMMENT_TEMPLATES:
+            return ""
+        try:
+            text = render_comment(template, str(detail.get("pr_url") or ""))
+        except MutationRequestError:  # pragma: no cover - plan validated it
+            return ""
+        payload = {
+            "issue": subject,
+            "template": template,
+            "text": normalize_comment_text(text),
+        }
+    else:  # pragma: no cover - handlers are a closed table
+        return ""
+    return mutation_fingerprint(operation, payload)
 
 
 def parse_pull_request_url(pr_url: str) -> dict[str, str]:
@@ -419,9 +548,6 @@ def _plan_operations(
             status="planned",
             reason="ok",
             detail={"assignee": "authenticated_account"},
-            fingerprint=mutation_fingerprint(
-                "assign", {"issue": request.issue_ref, "assignee": "self"}
-            ),
         )
 
     if request.transition_category:
@@ -452,10 +578,6 @@ def _plan_operations(
                         settings.status_category_map.get(category, ())
                     ),
                 },
-                fingerprint=mutation_fingerprint(
-                    "transition",
-                    {"issue": request.issue_ref, "transition_id": transition_id},
-                ),
             )
 
     if request.link_pr:
@@ -470,9 +592,6 @@ def _plan_operations(
                 "url": parsed["url"],
                 "relationship": REMOTE_LINK_RELATIONSHIP,
             },
-            fingerprint=mutation_fingerprint(
-                "link", {"issue": request.issue_ref, "global_id": parsed["global_id"]}
-            ),
         )
 
     if request.comment_template:
@@ -488,10 +607,6 @@ def _plan_operations(
             status="planned",
             reason="ok",
             detail=comment_detail,
-            fingerprint=mutation_fingerprint(
-                "comment",
-                {"issue": request.issue_ref, "template": request.comment_template, "text": text},
-            ),
         )
 
     if not requested:
@@ -499,6 +614,7 @@ def _plan_operations(
             "request at least one of --claim, --transition, --comment, or --link-pr"
         )
 
+    subject = fingerprint_subject(request.issue_ref)
     operations: list[_Operation] = []
     for name in MUTATION_ORDER:
         operation = requested.get(name)
@@ -507,6 +623,7 @@ def _plan_operations(
         if name not in settings.allowed_operations and operation.status == "planned":
             operation.status = "refused"
             operation.reason = "operation_not_allowed"
+        operation.fingerprint = _operation_fingerprint(name, subject, operation.detail)
         operations.append(operation)
     return operations
 
@@ -544,9 +661,10 @@ def _next_action(
         return "Jira is synchronized. GitHub remains the only PR, check, and merge-gate authority."
     if status == "unverified":
         return (
-            "An earlier interrupted run recorded a comment intent that cannot be "
-            "confirmed either way, so Code Mower will never repost it. Open the issue "
-            "once, and add the note by hand only if it is missing. Every other "
+            "A comment intent on this issue is claimed but unconfirmed -- an "
+            "interrupted run, an ambiguous post, or another apply holding the "
+            "claim -- so Code Mower will never repost it. Open the issue once, "
+            "and add the note by hand only if it is missing. Every other "
             "operation in this report reflects verified live state."
         )
     if status == "blocked":
@@ -633,6 +751,15 @@ def build_mutation_plan(
             "project_key": settings.project_key,
             "issue_ref": issue_ref,
             "browse_url": browse_url,
+            # Fingerprints are only replay-safe when they are computed over
+            # the immutable numeric issue id. Planning performs no Jira call,
+            # so a plan given an issue *key* says its fingerprints are
+            # provisional; apply resolves the live id and recomputes them.
+            "fingerprint_basis": (
+                "issue_id"
+                if _ISSUE_ID_RE.fullmatch(issue_ref)
+                else "issue_ref_provisional"
+            ),
         },
         "gate_authority": "github",
         "gate_impact": "none",
@@ -661,6 +788,14 @@ _WRITE_ALLOW_LIST: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"^/rest/api/3/issue/[^/]+/properties/" + re.escape(LEDGER_PROPERTY_KEY) + r"$"
         ),
     ),
+    (
+        "PUT",
+        re.compile(
+            r"^/rest/api/3/issue/[^/]+/properties/"
+            + re.escape(COMMENT_CLAIM_PREFIX)
+            + r"[0-9a-f]{32}$"
+        ),
+    ),
 )
 
 #: Writes with no server-side idempotency key, attempted exactly once.
@@ -669,15 +804,23 @@ _WRITE_ALLOW_LIST: tuple[tuple[str, re.Pattern[str]], ...] = (
 #: write before the response was lost, so a transport-level retry can post a
 #: second comment or drive a second workflow step. These two are therefore
 #: never retried; the operator re-runs the command, and apply reconciles from
-#: live state (transition) or the replay ledger (comment) first.
+#: live state (transition) or the comment claim property (comment) first.
 #:
-#: The other three writes are genuinely idempotent and keep the full retry
-#: budget: assignee is a whole-value PUT, the remote link is upserted by its
-#: deterministic ``globalId``, and the ledger property is a whole-value PUT.
+#: The other writes are genuinely idempotent and keep the full retry budget:
+#: assignee is a whole-value PUT, the remote link is upserted by its
+#: deterministic ``globalId``, and both property writes are whole-value PUTs.
 _NON_IDEMPOTENT_WRITES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("POST", re.compile(r"^/rest/api/3/issue/[^/]+/transitions$")),
     ("POST", re.compile(r"^/rest/api/3/issue/[^/]+/comment$")),
 )
+
+#: Endpoint labels attempted exactly once for a different reason: the request
+#: is idempotent in effect, but its *answer* is not. Acquiring a comment claim
+#: reads meaning from 201-created versus 200-updated, and a retry after an
+#: ambiguous first attempt would see its own 201 as a 200 and conclude that
+#: some other apply owns the claim. One attempt keeps that signal true; an
+#: ambiguous acquire is resolved by reading the claim back instead.
+_SINGLE_ATTEMPT_ENDPOINTS = frozenset({"commentClaimAcquire"})
 
 
 class JiraMutationClient(jira_cloud.JiraReadClient):
@@ -706,18 +849,48 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
                 return
         raise ValueError("jira mutation client refuses a request outside its write allow-list")
 
-    def _attempts_for(self, method: str, path: str) -> int:
-        """Give non-idempotent writes exactly one attempt.
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        # Every write attempt this client makes, counted at the transport
+        # boundary rather than at the call site, so ambiguous and retried
+        # attempts are included. Apply reports the delta across one run.
+        self.write_attempts = 0
 
-        Reads and the three idempotent writes keep the inherited bounded
-        retry budget. A comment post or a transition post gets a single
-        attempt, so an ambiguous failure surfaces as one failed operation to
-        reconcile rather than a silent double apply.
+    @staticmethod
+    def _is_write_request(method: str, path: str) -> bool:
+        """Report whether one request can change Jira."""
+        if method == "GET":
+            return False
+        return not (method == "POST" and path in jira_cloud.READ_ONLY_POST_PATHS)
+
+    def _on_request_attempt(self, method: str, path: str) -> None:
+        """Count every write attempt that actually leaves this process.
+
+        This fires per HTTP attempt, before the outcome is known, so a write
+        that timed out, was rate limited, was rejected, or was retried is
+        counted every time it was tried. That is the only count an operator
+        can trust: an attempt Jira may have committed and then failed to
+        acknowledge changed Jira just as much as one that returned 201.
+        Reads are not counted -- they cannot change anything.
         """
+        if self._is_write_request(method, path):
+            self.write_attempts += 1
+
+    def _attempts_for(self, method: str, path: str, endpoint: str = "") -> int:
+        """Give writes that cannot be safely repeated exactly one attempt.
+
+        Reads and the idempotent writes keep the inherited bounded retry
+        budget. A comment post or a transition post gets a single attempt, so
+        an ambiguous failure surfaces as one operation to reconcile rather
+        than a silent double apply, and so does acquiring a comment claim,
+        whose 201-versus-200 answer a retry would corrupt.
+        """
+        if endpoint in _SINGLE_ATTEMPT_ENDPOINTS:
+            return 1
         for allowed_method, pattern in _NON_IDEMPOTENT_WRITES:
             if method == allowed_method and pattern.fullmatch(path):
                 return 1
-        return super()._attempts_for(method, path)
+        return super()._attempts_for(method, path, endpoint)
 
     def _auth_headers(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         headers = super()._auth_headers(extra)
@@ -787,7 +960,7 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         return jira_cloud._bounded_str(data.get("id"), 32)
 
     def set_mutation_ledger(self, issue_ref: str, ledger: Mapping[str, Any]) -> None:
-        """Write the bounded replay ledger to this module's own property."""
+        """Write the bounded advisory ledger to this module's own property."""
         payload = _validated_ledger(ledger)
         quoted_key = urllib.parse.quote(
             jira_cloud.validate_property_key(LEDGER_PROPERTY_KEY), safe=""
@@ -800,8 +973,121 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
             allow_empty=True,
         )
 
+    # -- Comment claim (at-most-once primitive) --------------------------
 
-# -- Idempotency ledger --------------------------------------------------
+    def get_comment_claim(
+        self, issue_ref: str, fingerprint: str
+    ) -> dict[str, Any] | None:
+        """Read one comment intent's claim property, or None when unclaimed."""
+        return self.get_issue_property(
+            issue_ref, comment_claim_property_key(fingerprint)
+        )
+
+    def _put_comment_claim(
+        self,
+        issue_ref: str,
+        fingerprint: str,
+        payload: Mapping[str, Any],
+        *,
+        endpoint: str,
+    ) -> int:
+        quoted_key = urllib.parse.quote(
+            comment_claim_property_key(fingerprint), safe=""
+        )
+        status, _ = self._request_status_parsed(
+            "PUT",
+            self._issue_path(issue_ref, f"properties/{quoted_key}"),
+            json_body=dict(payload),
+            endpoint=endpoint,
+            allow_empty=True,
+        )
+        return int(status)
+
+    def acquire_comment_claim(
+        self, issue_ref: str, fingerprint: str, *, template: str, owner: str
+    ) -> bool:
+        """Try to acquire the exclusive right to post one comment.
+
+        Returns True only when Jira answered 201, meaning this request is the
+        one that created the property. A 200 means the value was already
+        there, so another apply owns the claim and this one must never post.
+        """
+        payload = _comment_claim_payload(
+            fingerprint, template=template, owner=owner, state="claimed"
+        )
+        return self._put_comment_claim(
+            issue_ref, fingerprint, payload, endpoint="commentClaimAcquire"
+        ) == 201
+
+    def finalize_comment_claim(
+        self, issue_ref: str, fingerprint: str, *, template: str, owner: str, state: str
+    ) -> None:
+        """Record the outcome of a post on a claim this process already owns.
+
+        Rewriting a key this process holds is a whole-value PUT with no
+        create/update meaning left to lose, so it keeps the full retry budget.
+        """
+        payload = _comment_claim_payload(
+            fingerprint, template=template, owner=owner, state=state
+        )
+        self._put_comment_claim(
+            issue_ref, fingerprint, payload, endpoint="commentClaimFinalize"
+        )
+
+
+# -- Comment claims and the advisory ledger ------------------------------
+
+
+def _claim_owner_token() -> str:
+    """Return a fresh, meaningless owner token for one claim attempt.
+
+    The token identifies nothing about the machine, operator, repository, or
+    run beyond "this attempt": it exists only so a process whose claim write
+    failed ambiguously can read the property back and tell its own creation
+    apart from another apply's.
+    """
+    return secrets.token_hex(16)
+
+
+def _comment_claim_payload(
+    fingerprint: str, *, template: str, owner: str, state: str
+) -> dict[str, Any]:
+    """Build the bounded claim property value. Metadata only.
+
+    Deliberately absent: the rendered comment text, the pull request URL, any
+    issue prose, and any local identity. A reader learns which closed
+    template was intended, whether it posted, and nothing else.
+    """
+    if not _FINGERPRINT_RE.fullmatch(str(fingerprint or "")):
+        raise MutationRequestError("comment fingerprint must be 32 lowercase hex characters")
+    if template not in COMMENT_TEMPLATES:
+        raise MutationRequestError("comment template is not in the closed table")
+    if state not in COMMENT_CLAIM_STATES:
+        raise MutationRequestError("comment claim state is not a closed state")
+    if not _CLAIM_OWNER_RE.fullmatch(str(owner or "")):
+        raise MutationRequestError("comment claim owner token is malformed")
+    return {
+        "schema": COMMENT_CLAIM_SCHEMA,
+        "operation": "comment",
+        "fingerprint": fingerprint,
+        "template": template,
+        "state": state,
+        "owner": owner,
+        "at": _utc_now(),
+    }
+
+
+def _claim_state(claim: Mapping[str, Any] | None) -> str:
+    """Return a claim's closed state, or ``"unknown"`` for anything else.
+
+    An unreadable or hand-edited value is treated as a held claim in an
+    unknown state, never as an absent one: guessing "absent" here is the one
+    mistake that reposts a comment.
+    """
+    if not isinstance(claim, Mapping):
+        return ""
+    state = str(claim.get("state") or "")
+    return state if state in COMMENT_CLAIM_STATES else "unknown"
 
 
 def _validated_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
@@ -810,6 +1096,11 @@ def _validated_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
     The ledger is written to a Jira issue property, so it is held to the same
     metadata-only bar as every other emitted field: closed keys, closed
     states, fingerprints, and timestamps only.
+
+    Comment entries are dropped, including any written by an earlier build of
+    this module. Comment replay protection lives in a dedicated per-intent
+    claim property now, and leaving comment rows in a shared 32-entry store
+    that evicts by age would only invite them to be trusted again.
     """
     entries_in = ledger.get("entries")
     entries: dict[str, dict[str, str]] = {}
@@ -817,36 +1108,47 @@ def _validated_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
         for fingerprint, entry in entries_in.items():
             if not isinstance(entry, Mapping) or not isinstance(fingerprint, str):
                 continue
-            if not re.fullmatch(r"[0-9a-f]{32}", fingerprint):
+            if not _FINGERPRINT_RE.fullmatch(fingerprint):
                 continue
             operation = str(entry.get("operation") or "")
             state = str(entry.get("state") or "")
-            if operation not in MUTATION_ORDER or state not in LEDGER_STATES:
+            if operation not in LEDGER_OPERATIONS or state not in LEDGER_STATES:
                 continue
             entries[fingerprint] = {
                 "operation": operation,
                 "state": state,
                 "at": jira_cloud._bounded_str(entry.get("at"), 32),
             }
-    trimmed = sorted(entries.items(), key=lambda item: item[1]["at"], reverse=True)
+    # Newest first, with the fingerprint breaking ties, so two effects
+    # recorded in the same second evict in a defined order rather than
+    # whichever one the mapping happened to yield first.
+    trimmed = sorted(
+        entries.items(), key=lambda item: (item[1]["at"], item[0]), reverse=True
+    )
     return {
         "schema": LEDGER_SCHEMA,
         "entries": dict(trimmed[:MAX_LEDGER_ENTRIES]),
     }
 
 
-def _ledger_state(ledger: Mapping[str, Any], fingerprint: str) -> str:
+def _ledger_key(ledger: Mapping[str, Any]) -> str:
+    """Return a comparable form of the ledger, ignoring timestamps."""
     entries = ledger.get("entries")
-    if not isinstance(entries, Mapping):
-        return ""
-    entry = entries.get(fingerprint)
-    if not isinstance(entry, Mapping):
-        return ""
-    state = str(entry.get("state") or "")
-    return state if state in LEDGER_STATES else ""
+    rows = entries.items() if isinstance(entries, Mapping) else ()
+    return json.dumps(
+        sorted(
+            (fingerprint, str(entry.get("state") or ""))
+            for fingerprint, entry in rows
+            if isinstance(entry, Mapping)
+        ),
+        separators=(",", ":"),
+    )
 
 
 def _record(ledger: dict[str, Any], operation: _Operation, state: str) -> dict[str, Any]:
+    """Note one live-reconcilable effect in the advisory ledger."""
+    if operation.operation not in LEDGER_OPERATIONS or not operation.fingerprint:
+        return ledger
     entries = dict(ledger.get("entries") or {})
     entries[operation.fingerprint] = {
         "operation": operation.operation,
@@ -863,16 +1165,6 @@ def _record(ledger: dict[str, Any], operation: _Operation, state: str) -> dict[s
 #: so the ledger entry recording that unknown state is still persisted; the
 #: report status still carries it to the operator.
 _CONTINUING_STATUSES = ("applied", "already_applied", "unverified")
-
-
-class _WriteCounter:
-    """Counts network mutations so a report can prove zero-write refusals."""
-
-    def __init__(self) -> None:
-        self.count = 0
-
-    def bump(self) -> None:
-        self.count += 1
 
 
 def _fail_from_error(operation: _Operation, exc: jira_cloud.JiraApiError) -> None:
@@ -908,11 +1200,14 @@ def apply_mutation_plan(
         for item in report.get("operations") or []
     ]
     pending = [operation for operation in operations if operation.status == "planned"]
-    writes = _WriteCounter()
+    # Counted at the transport boundary, so the report covers every write
+    # attempt this apply made -- including ones that timed out, were
+    # rejected, or were retried -- not only the ones that answered success.
+    writes_before = client.write_attempts
 
     def _finish(ledger_status: str) -> dict[str, Any]:
         report["operations"] = [operation.as_dict() for operation in operations]
-        report["write_request_count"] = writes.count
+        report["write_request_count"] = client.write_attempts - writes_before
         report["ledger_status"] = ledger_status
         report["status"] = _report_status(operations)
         report["next_action"] = _next_action(
@@ -941,25 +1236,49 @@ def apply_mutation_plan(
             _fail_from_error(operation, exc)
         return _finish("unchanged")
 
+    ledger_before = _ledger_key(ledger)
+
     if state.get("project_id") and state["project_id"] != settings_project:
         for operation in pending:
             operation.status = "blocked"
             operation.reason = "issue_out_of_scope"
         return _finish("unchanged")
 
-    report["tracker"]["issue_id"] = state.get("id", "")
-    report["tracker"]["issue_key"] = state.get("key", "")
+    issue_id = str(state.get("id") or "")
+    if not _ISSUE_ID_RE.fullmatch(issue_id):
+        # Without the immutable id there is no replay-safe fingerprint, and
+        # guessing one from the caller's spelling of the key is exactly the
+        # mistake that lets a renamed or differently-cased issue repost.
+        for operation in pending:
+            operation.status = "blocked"
+            operation.reason = "issue_identity_unresolved"
+        return _finish("unchanged")
 
-    # Each handler owns its own idempotency, including the comment's pending
-    # ledger entry, which is written inside the handler immediately before the
-    # post. Recording that intent any earlier would let a failed assignment,
-    # transition, or link leave a pending entry behind for a comment that was
-    # never attempted, which a later run could not tell apart from an
-    # interrupted post and so would suppress forever.
+    report["tracker"]["issue_id"] = issue_id
+    report["tracker"]["issue_key"] = state.get("key", "")
+    report["tracker"]["fingerprint_basis"] = "issue_id"
+
+    # Recompute every fingerprint over the immutable live issue id. The plan
+    # may have been built from a key the operator typed -- "abc-1", "ABC-1",
+    # or a key this issue has since been moved away from -- and all of those
+    # must resolve to the one replay identity this issue actually has.
+    for operation in pending:
+        refreshed = _operation_fingerprint(
+            operation.operation, fingerprint_subject(issue_id), operation.detail
+        )
+        if refreshed:
+            operation.fingerprint = refreshed
+
+    # Each handler owns its own idempotency: assign, transition, and link
+    # reconcile from authoritative live state, and comment acquires its own
+    # per-intent claim property immediately before it posts. Nothing records
+    # a comment intent before the comment step runs, so an assignment,
+    # transition, or link that fails first cannot leave a claim behind for a
+    # comment that was never attempted.
     for operation in pending:
         try:
             handler = _HANDLERS[operation.operation]
-            ledger = handler(operation, client, issue_ref, state, ledger, writes)
+            ledger = handler(operation, client, issue_ref, state, ledger)
         except jira_cloud.JiraApiError as exc:
             _fail_from_error(operation, exc)
             return _abort()
@@ -970,14 +1289,19 @@ def apply_mutation_plan(
         if operation.status not in _CONTINUING_STATUSES:
             return _abort()
 
+    if _ledger_key(ledger) == ledger_before:
+        # Nothing live-reconcilable changed, so there is nothing to record.
+        # Rewriting an identical property would only spend a write attempt.
+        return _finish("unchanged")
+
     ledger_status = "written"
     try:
         client.set_mutation_ledger(issue_ref, ledger)
-        writes.bump()
     except jira_cloud.JiraApiError:
-        # Applied effects are reconciled from live state on the next run, and
-        # a comment left "pending" is never reposted, so a failed ledger write
-        # is a reporting gap rather than a duplication risk.
+        # Every effect the ledger records is reconciled from live state on
+        # the next run, and comment replay protection does not live here at
+        # all, so a failed ledger write is a reporting gap and never a
+        # duplication risk.
         ledger_status = "write_failed"
     return _finish(ledger_status)
 
@@ -988,7 +1312,6 @@ def _apply_assign(
     issue_ref: str,
     state: Mapping[str, Any],
     ledger: dict[str, Any],
-    writes: _WriteCounter,
 ) -> dict[str, Any]:
     account_id = client.get_my_account_id()
     if not account_id:
@@ -1000,7 +1323,6 @@ def _apply_assign(
         operation.reason = "already_assigned"
         return _record(ledger, operation, "applied")
     client.assign_issue(issue_ref, account_id)
-    writes.bump()
     operation.status = "applied"
     operation.reason = "ok"
     return _record(ledger, operation, "applied")
@@ -1012,7 +1334,6 @@ def _apply_transition(
     issue_ref: str,
     state: Mapping[str, Any],
     ledger: dict[str, Any],
-    writes: _WriteCounter,
 ) -> dict[str, Any]:
     transition_id = str(operation.detail.get("transition_id") or "")
     category = str(operation.detail.get("lifecycle_category") or "")
@@ -1054,7 +1375,6 @@ def _apply_transition(
         return ledger
 
     client.transition_issue(issue_ref, transition_id)
-    writes.bump()
     operation.status = "applied"
     operation.reason = "ok"
     operation.detail["lifecycle_category"] = category
@@ -1067,14 +1387,12 @@ def _apply_link(
     issue_ref: str,
     state: Mapping[str, Any],
     ledger: dict[str, Any],
-    writes: _WriteCounter,
 ) -> dict[str, Any]:
     if client.has_remote_link(issue_ref, str(operation.detail.get("global_id") or "")):
         operation.status = "already_applied"
         operation.reason = "already_linked"
         return _record(ledger, operation, "applied")
     client.link_pull_request(issue_ref, str(operation.detail.get("url") or ""))
-    writes.bump()
     operation.status = "applied"
     operation.reason = "ok"
     return _record(ledger, operation, "applied")
@@ -1086,45 +1404,138 @@ def _apply_comment(
     issue_ref: str,
     state: Mapping[str, Any],
     ledger: dict[str, Any],
-    writes: _WriteCounter,
 ) -> dict[str, Any]:
-    recorded = _ledger_state(ledger, operation.fingerprint)
-    if recorded == "applied":
-        operation.status = "already_applied"
-        operation.reason = "already_commented"
+    """Post one templated comment at most once, ever.
+
+    A comment is the only effect here with no server-side idempotency key and
+    nothing in live Jira to reconcile against: this module never reads
+    comment bodies back, so "is it already there?" cannot be answered by
+    looking. The answer instead comes from a dedicated issue property named
+    after this comment intent's fingerprint. Creating that property is the
+    claim, and Jira's 201-created versus 200-updated answer is what makes the
+    claim exclusive between two applies racing on the same intent.
+    """
+    fingerprint = operation.fingerprint
+    template = str(operation.detail.get("template") or "")
+    pr_url = str(operation.detail.get("pr_url") or "")
+    if not _FINGERPRINT_RE.fullmatch(fingerprint) or template not in COMMENT_TEMPLATES:
+        operation.status = "blocked"
+        operation.reason = "rejected"
         return ledger
-    if recorded in ("pending", "unverified"):
-        # An earlier run recorded this intent immediately before its post and
-        # never finalized it, so the post may have committed, may have been
-        # lost in flight, or may never have left. Jira gives comments no
-        # idempotency key and comment bodies are never read back, so this run
-        # cannot tell which. Reposting would risk a duplicate, and claiming it
-        # applied would be a guess: the outcome is reported as unverified for
-        # an owner to reconcile by hand, and the ledger keeps saying so.
+
+    claim = client.get_comment_claim(issue_ref, fingerprint)
+    if claim is not None:
+        claimed_state = _claim_state(claim)
+        operation.detail["claim_state"] = claimed_state
+        if claimed_state == "posted":
+            operation.status = "already_applied"
+            operation.reason = "already_commented"
+        else:
+            # The claim exists but no run ever recorded a completed post. It
+            # may have committed, been lost in flight, or never left. This
+            # tool cannot tell, so it says so and never reposts.
+            operation.status = "unverified"
+            operation.reason = "comment_unverified"
+        return ledger
+
+    owner = _claim_owner_token()
+    try:
+        acquired = client.acquire_comment_claim(
+            issue_ref, fingerprint, template=template, owner=owner
+        )
+    except jira_cloud.JiraApiError as exc:
+        outcome = _recover_comment_claim(client, issue_ref, fingerprint, owner)
+        if outcome == "unknown":
+            # The claim write is ambiguous and unreadable, so whether this
+            # process owns the right to post is unknown. Not posting is the
+            # only safe answer; a later run re-reads the claim and decides.
+            _fail_from_error(operation, exc)
+            operation.detail["claim_state"] = "unknown"
+            return ledger
+        acquired = outcome == "won"
+
+    if not acquired:
+        # Another apply created the property first. It owns this comment,
+        # including the duty to report whether it landed.
+        operation.status = "unverified"
+        operation.reason = "comment_claim_held"
+        operation.detail["claim_state"] = "held_by_another_apply"
+        return ledger
+
+    operation.detail["claim_state"] = "claimed"
+    try:
+        comment_id = client.add_templated_comment(
+            issue_ref, template, pr_url=pr_url, fingerprint=fingerprint
+        )
+    except jira_cloud.JiraApiError as exc:
+        # The post is attempted exactly once, so this may be a request Jira
+        # rejected outright or one it committed and failed to acknowledge.
+        # Both end here as unverified: the claim stays held, the closed
+        # transport code says why, and one owner reconciles this comment by
+        # hand rather than a rerun risking a second copy.
         operation.status = "unverified"
         operation.reason = "comment_unverified"
-        if recorded == "pending":
-            ledger = _record(ledger, operation, "unverified")
+        operation.detail["post_error"] = _ERROR_CODE_OUTCOMES.get(
+            exc.code, ("failed", "unavailable")
+        )[1]
+        operation.detail["claim_state"] = _finalize_claim_quietly(
+            client, issue_ref, fingerprint, template=template, owner=owner,
+            state="unverified",
+        )
         return ledger
 
-    # Record the intent immediately before the post, so an interruption
-    # anywhere from here on is recognizable on the next run.
-    ledger = _record(ledger, operation, "pending")
-    client.set_mutation_ledger(issue_ref, ledger)
-    writes.bump()
-
-    comment_id = client.add_templated_comment(
-        issue_ref,
-        str(operation.detail.get("template") or ""),
-        pr_url=str(operation.detail.get("pr_url") or ""),
-        fingerprint=operation.fingerprint,
-    )
-    writes.bump()
     operation.status = "applied"
     operation.reason = "ok"
     if comment_id:
         operation.detail["comment_id"] = comment_id
-    return _record(ledger, operation, "applied")
+    operation.detail["claim_state"] = _finalize_claim_quietly(
+        client, issue_ref, fingerprint, template=template, owner=owner, state="posted"
+    )
+    return ledger
+
+
+def _recover_comment_claim(
+    client: JiraMutationClient, issue_ref: str, fingerprint: str, owner: str
+) -> str:
+    """Resolve an ambiguous claim acquire by reading the claim back once.
+
+    Returns ``"won"`` when the stored owner token is this attempt's, so the
+    ambiguous write is the one that created the claim and posting is safe;
+    ``"lost"`` when another apply owns it; and ``"unknown"`` when the claim
+    is absent (the write never landed, so a later run may claim it cleanly)
+    or unreadable.
+    """
+    try:
+        claim = client.get_comment_claim(issue_ref, fingerprint)
+    except jira_cloud.JiraApiError:
+        return "unknown"
+    if not isinstance(claim, Mapping):
+        return "unknown"
+    return "won" if str(claim.get("owner") or "") == owner else "lost"
+
+
+def _finalize_claim_quietly(
+    client: JiraMutationClient,
+    issue_ref: str,
+    fingerprint: str,
+    *,
+    template: str,
+    owner: str,
+    state: str,
+) -> str:
+    """Record a post outcome on a held claim; report what was persisted.
+
+    A failure here loses only the record, never the protection: the claim
+    property still exists, so the comment is still never reposted. The next
+    run just reads the weaker ``claimed`` state and reports ``unverified``.
+    """
+    try:
+        client.finalize_comment_claim(
+            issue_ref, fingerprint, template=template, owner=owner, state=state
+        )
+    except jira_cloud.JiraApiError:
+        return "claimed"
+    return state
 
 
 _HANDLERS: Mapping[str, Callable[..., dict[str, Any]]] = {
@@ -1169,7 +1580,7 @@ def _render_text(report: Mapping[str, Any]) -> str:
         f"Apply requested (runtime): {str(guards['apply_requested']).lower()}",
         f"Issue: {tracker['issue_ref']} (project {tracker['project_id']})",
         f"Gate authority: {report['gate_authority']} (jira impact: {report['gate_impact']})",
-        f"Jira write requests: {report['write_request_count']}",
+        f"Jira write attempts: {report['write_request_count']}",
         "Operations:",
     ]
     for operation in report["operations"]:
