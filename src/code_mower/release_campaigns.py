@@ -6720,6 +6720,50 @@ def _load_requested_campaign(
     return found, identifier, ""
 
 
+def _release_pr_link_conflict(campaign: Mapping[str, Any], release_pr: str) -> str:
+    """Report why ``release_pr`` cannot be linked to ``campaign``, or "".
+
+    The linked release pull request is an allowed *result discovery surface*, so
+    it follows a fill-once rule: an empty stored value may be filled, but
+    repointing it on an in-flight campaign would start accepting provider
+    results from a pull request the campaign was never qualified against. A
+    malformed value is refused here for the same reason it is refused at the
+    command boundary -- it must never be stored, let alone polled.
+    """
+    if not release_pr:
+        return ""
+    try:
+        requested_release_pr = validate_release_pr(release_pr)
+    except ValueError as exc:
+        return str(exc)
+    stored_pr = stored_release_pr(campaign)
+    if stored_pr and requested_release_pr != stored_pr:
+        return (
+            f"--release-pr {requested_release_pr!r} does not match existing campaign "
+            f"release PR {stored_pr!r}; an existing campaign's linked release pull "
+            "request is fixed once set"
+        )
+    return ""
+
+
+def _link_release_pr(
+    campaign: dict[str, Any], release_pr: str, *, campaigns_dir: Path
+) -> None:
+    """Fill an existing campaign's empty linked release PR and persist it.
+
+    The release PR for a tag usually exists only after the campaign was created,
+    so an empty stored value is filled on the same fill-once terms as the
+    repository slug, and persisted *before* the caller advances or records, so
+    this run's own poll already reads the linked surface. A stored PR is never
+    rewritten -- a mismatch is rejected by :func:`_release_pr_link_conflict`
+    first -- so this can never repoint an in-flight campaign's discovery.
+    """
+    if not release_pr or stored_release_pr(campaign):
+        return
+    campaign["release_pr"] = release_pr
+    save_campaign(campaign, campaigns_dir)
+
+
 def _existing_campaign_conflict(
     campaign: Mapping[str, Any],
     *,
@@ -6766,18 +6810,9 @@ def _existing_campaign_conflict(
             f"--repo-slug {repo_slug!r} does not match existing campaign repo slug "
             f"{stored_slug!r}; an existing campaign's repository is fixed once set"
         )
-    if release_pr:
-        try:
-            requested_release_pr = validate_release_pr(release_pr)
-        except ValueError as exc:
-            return str(exc)
-        stored_pr = stored_release_pr(campaign)
-        if stored_pr and requested_release_pr != stored_pr:
-            return (
-                f"--release-pr {requested_release_pr!r} does not match existing campaign "
-                f"release PR {stored_pr!r}; an existing campaign's linked release pull "
-                "request is fixed once set"
-            )
+    release_pr_conflict = _release_pr_link_conflict(campaign, release_pr)
+    if release_pr_conflict:
+        return release_pr_conflict
     stored_context = str(campaign.get("qualification_context") or "cold_install")
     if qualification_context and qualification_context != stored_context:
         return (
@@ -7311,6 +7346,22 @@ def _campaign_command_impl(
         if not record_provider:
             print("error: --record-provider required when recording result", file=sys.stderr)
             return 1
+        # Recording a manual result is a campaign write, and so is linking the
+        # release pull request -- so a `--release-pr` spelled alongside
+        # `--record-result` is honored here on exactly the fill-once terms the
+        # resume/dispatch route below uses, rather than being accepted by
+        # validation and then dropped by this branch's early return. Linking
+        # first is what makes it useful: the provider recorded by hand is
+        # settled locally, and the *remaining* providers' results are then
+        # discoverable on the linked surface by the next watch. The link is an
+        # independently validated fact, so it stands whether or not the result
+        # file that follows turns out to be recordable -- exactly as the stored
+        # slug and PR stand ahead of an advance that may itself fail below.
+        release_pr_conflict = _release_pr_link_conflict(existing, release_pr)
+        if release_pr_conflict:
+            print(f"error: {release_pr_conflict}", file=sys.stderr)
+            return 1
+        _link_release_pr(existing, release_pr, campaigns_dir=campaigns_dir)
         try:
             updated = record_manual_result(
                 existing,
@@ -7436,15 +7487,10 @@ def _campaign_command_impl(
             # campaign's identity.
             existing["repo_slug"] = repo_slug
             save_campaign(existing, campaigns_dir)
-        if release_pr and not stored_release_pr(existing):
-            # The release PR for a tag usually exists only after the campaign
-            # was created, so an empty stored value is filled here on the same
-            # fill-once terms as the repository slug: persist it before
-            # advancing, so this run's own poll already reads the linked
-            # surface. A stored PR is never rewritten -- a mismatch was
-            # rejected as a conflict above.
-            existing["release_pr"] = release_pr
-            save_campaign(existing, campaigns_dir)
+        # A mismatch against a stored PR was already rejected as a conflict
+        # above, so this only ever fills an empty value -- before advancing, so
+        # this run's own poll already reads the linked surface.
+        _link_release_pr(existing, release_pr, campaigns_dir=campaigns_dir)
         updated = dispatch_or_advance_campaign(
             existing,
             apply=apply,

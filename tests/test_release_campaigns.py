@@ -15039,6 +15039,148 @@ class LinkedReleasePrIdentityTests(unittest.TestCase):
             assert unchanged is not None
             self.assertEqual(unchanged["release_pr"], "786")
 
+    def test_release_pr_links_when_recording_a_manual_result(self) -> None:
+        """`resume --release-pr N --record-result` links the PR *and* records.
+
+        The manual-result route returns before the resume/dispatch route below
+        it, so the linked release PR is validated and persisted inside that
+        route as well -- a valid option is never accepted by validation and then
+        silently dropped. Linking first is what makes the combination useful:
+        the hand-recorded provider is settled locally, and the providers still
+        outstanding stay discoverable on the linked surface for the next watch.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex", "cursor_cloud_agent"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            hosted = next(
+                p for p in campaign.providers if p["provider"] == "cursor_cloud_agent"
+            )
+            hosted["state"] = "running"
+            hosted["attempted_at"] = "2024-01-01T00:00:00Z"
+            hosted["dispatch_mode"] = "applied"
+            hosted["trigger_posted"] = True
+            hosted["dispatch_ref"] = {"issue_number": "784", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            result_path = Path(tmp) / "codex-result.json"
+            result_path.write_text(
+                json.dumps(_mock_adoption_result(provider="codex")), encoding="utf-8"
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    release_pr="786",
+                    record_result=result_path,
+                    record_provider="codex",
+                    env={},
+                )
+
+            self.assertEqual(ret, 0)
+            stored = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert stored is not None
+            # The option was honored, not ignored: the manual result recorded
+            # *and* the linked release PR persisted in the same invocation.
+            self.assertEqual(stored["release_pr"], "786")
+            recorded = next(p for p in stored["providers"] if p["provider"] == "codex")
+            self.assertEqual(recorded["state"], "complete")
+            self.assertEqual(recorded["adoption_result"]["provider"], "codex")
+
+            # A later watch reads the PR this run linked, so the provider still
+            # outstanding is answered from the linked release pull request.
+            pr_comment = _cursor_result_comment(
+                campaign,
+                next(
+                    p
+                    for p in stored["providers"]
+                    if p["provider"] == "cursor_cloud_agent"
+                ),
+            )
+            calls: list[tuple[str, ...]] = []
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=campaigns_dir,
+                interval=1.0,
+                timeout=30.0,
+                gh_json_runner=_surface_gh_runner(
+                    pr_comments=[pr_comment], calls=calls
+                ),
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
+                sleep_fn=lambda _seconds: None,
+            )
+
+            self.assertEqual(summary["stop_reason"], "complete")
+            self.assertIn(("pr", "view", "786"), [call[:3] for call in calls])
+            completed = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert completed is not None
+            hosted_entry = next(
+                p
+                for p in completed["providers"]
+                if p["provider"] == "cursor_cloud_agent"
+            )
+            self.assertEqual(hosted_entry["state"], "complete")
+            self.assertEqual(hosted_entry["result_source"]["surface"], "pull_request")
+            self.assertEqual(hosted_entry["result_source"]["number"], "786")
+
+    def test_recording_a_result_never_repoints_a_linked_release_pr(self) -> None:
+        """The fill-once rule holds on the manual-result route too.
+
+        A mismatch is refused before the result is recorded, so a stale or
+        mistyped `--release-pr` can neither repoint discovery at a pull request
+        the campaign was never qualified against nor half-apply the invocation.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+                repo_slug="owner/repo",
+                release_pr="786",
+            )
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            result_path = Path(tmp) / "codex-result.json"
+            result_path.write_text(
+                json.dumps(_mock_adoption_result(provider="codex")), encoding="utf-8"
+            )
+
+            err = io.StringIO()
+            # The impl route writes its bounded errors to the process stderr,
+            # so capture that rather than the pre-impl `stderr` parameter.
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                err
+            ):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    release_pr="999",
+                    record_result=result_path,
+                    record_provider="codex",
+                    env={},
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertIn("--release-pr", err.getvalue())
+            unchanged = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert unchanged is not None
+            self.assertEqual(unchanged["release_pr"], "786")
+            self.assertEqual(unchanged["providers"][0]["state"], "queued")
+
     def test_malformed_release_pr_is_refused_before_any_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"

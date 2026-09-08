@@ -409,7 +409,7 @@ code-mower release campaign dispatch \
   --apply
 ```
 
-`--release-pr` may also be supplied on a later `resume`/`dispatch` to fill a campaign created before the release PR existed. Like `--repo-slug`, it is fixed once set: a value that disagrees with the stored one is rejected rather than repointing an in-flight campaign at another pull request. It is a write, so it is refused on the read-only `status`, `watch`, and `upload` actions -- record it first, then watch. Only a positive pull request number is accepted (no URLs), and a stored value outside that grammar is ignored rather than polled.
+`--release-pr` may also be supplied on a later `resume`/`dispatch` to fill a campaign created before the release PR existed. Like `--repo-slug`, it is fixed once set: a value that disagrees with the stored one is rejected rather than repointing an in-flight campaign at another pull request. It is a write, so it is refused on the read-only `status`, `watch`, and `upload` actions -- record it first, then watch. Only a positive pull request number is accepted (no URLs), and a stored value outside that grammar is ignored rather than polled. Spelling it alongside `--record-result` is honored on the same terms rather than dropped: the pull request is validated and linked first, then the manual result is recorded, so a provider settled by hand and the providers still outstanding on the linked PR can be handled in one invocation.
 
 **Trusted authors:**
 - `cursor[bot]`, `cursor` (registry defaults)
