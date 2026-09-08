@@ -14558,5 +14558,715 @@ class ReleaseCampaignPostureTests(unittest.TestCase):
         self.assertTrue(c_explicit.to_dict()["provider_posture_configured"])
 
 
+def _surface_gh_runner(
+    *,
+    issue_comments: list[dict[str, Any]] | None = None,
+    pr_comments: list[dict[str, Any]] | None = None,
+    issue_error: str = "",
+    pr_error: str = "",
+    calls: list[tuple[str, ...]] | None = None,
+):
+    """A gh JSON runner that answers `issue view` and `pr view` separately."""
+
+    def _run(args, **kwargs):
+        argv = tuple(str(a) for a in args)
+        if calls is not None:
+            calls.append(argv)
+        if argv[:2] == ("issue", "view"):
+            if issue_error:
+                return None, issue_error
+            return {"comments": list(issue_comments or [])}, ""
+        if argv[:2] == ("pr", "view"):
+            if pr_error:
+                return None, pr_error
+            return {"comments": list(pr_comments or [])}, ""
+        return None, "unexpected gh invocation"
+
+    return _run
+
+
+def _cursor_result_comment(
+    campaign: Any,
+    provider_entry: dict[str, Any],
+    *,
+    outcome: str = "pass",
+    author: str = "cursor[bot]",
+    campaign_id: str | None = None,
+    release_tag: str | None = None,
+    result_release_tag: str | None = None,
+) -> dict[str, Any]:
+    """Build a trusted-shaped Cursor result comment for a campaign surface."""
+    resolved_release_tag = release_tag or campaign.release_tag
+    adoption_result = _mock_adoption_result(
+        release_tag=result_release_tag or resolved_release_tag,
+        provider="cursor_cloud_agent",
+        outcome=outcome,
+    )
+    if result_release_tag:
+        adoption_result["normalized_version"] = result_release_tag.lstrip("v")
+        adoption_result["ending_version"] = result_release_tag.lstrip("v")
+    wrapper = {
+        "schema": release_campaigns.RESULT_MARKER_SCHEMA,
+        "campaign_id": campaign_id or campaign.campaign_id,
+        "provider": "cursor_cloud_agent",
+        "release_tag": resolved_release_tag,
+        "idempotency_key": provider_entry["idempotency_key"],
+        "adoption_result": adoption_result,
+    }
+    return {
+        "author": {"login": author},
+        "body": (
+            "Qualification finished.\n\n"
+            f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+        ),
+    }
+
+
+class LinkedReleasePrResultDiscoveryTests(unittest.TestCase):
+    """A hosted result may arrive on the campaign issue or its linked release PR.
+
+    Discovery is limited to those two explicitly linked surfaces, and a result
+    found on either is held to exactly the same trusted-author, schema,
+    campaign, repository, and release checks.
+    """
+
+    def _seed(
+        self,
+        tmp: str,
+        *,
+        release_pr: str = "786",
+        repo_slug: str = "owner/repo",
+        trigger_posted: bool = True,
+    ) -> tuple[Path, Any, dict[str, Any]]:
+        campaigns_dir = Path(tmp) / "campaigns"
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_cloud_agent"],
+            repo_slug=repo_slug,
+            release_pr=release_pr,
+        )
+        provider = campaign.providers[0]
+        campaign.status = "running"
+        provider["state"] = "running"
+        provider["attempted_at"] = "2024-01-01T00:00:00Z"
+        provider["dispatch_mode"] = "applied"
+        provider["trigger_posted"] = trigger_posted
+        provider["dispatch_ref"] = {"issue_number": "784", "comment_posted": True}
+        release_campaigns.save_campaign(campaign, campaigns_dir)
+        return campaigns_dir, campaign, provider
+
+    def _resume(self, campaigns_dir: Path, gh_json_runner, bodies=None) -> dict[str, Any]:
+        release_campaigns.campaign_command(
+            release_tag="v1.0.0",
+            campaigns_dir=campaigns_dir,
+            resume=True,
+            command_runner=_capturing_dispatch_command_runner(
+                bodies if bodies is not None else []
+            ),
+            gh_json_runner=gh_json_runner,
+            env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
+        )
+        resumed = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+        assert resumed is not None
+        return resumed["providers"][0]
+
+    def test_result_on_campaign_issue_records_the_issue_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            runner = _surface_gh_runner(
+                issue_comments=[_cursor_result_comment(campaign, provider)],
+            )
+
+            entry = self._resume(campaigns_dir, runner)
+
+            self.assertEqual(entry["state"], "complete")
+            self.assertEqual(entry["error"], "")
+            self.assertEqual(entry["result_source"]["surface"], "issue")
+            self.assertEqual(entry["result_source"]["number"], "784")
+            self.assertEqual(entry["result_source"]["duplicate_surfaces"], 0)
+
+    def test_result_on_linked_release_pr_completes_the_campaign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            calls: list[tuple[str, ...]] = []
+            runner = _surface_gh_runner(
+                pr_comments=[_cursor_result_comment(campaign, provider)],
+                calls=calls,
+            )
+
+            entry = self._resume(campaigns_dir, runner)
+
+            self.assertEqual(entry["state"], "complete")
+            self.assertEqual(entry["error"], "")
+            self.assertEqual(entry["next_action"], "none")
+            self.assertEqual(entry["adoption_result"]["outcome"], "pass")
+            self.assertEqual(entry["result_source"]["surface"], "pull_request")
+            self.assertEqual(entry["result_source"]["number"], "786")
+            # Both surfaces are read in the campaign's own repository only.
+            self.assertEqual(
+                calls,
+                [
+                    ("issue", "view", "784", "--repo", "owner/repo", "--json", "comments"),
+                    ("pr", "view", "786", "--repo", "owner/repo", "--json", "comments"),
+                ],
+            )
+
+    def test_identical_result_on_both_surfaces_is_deduplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            comment = _cursor_result_comment(campaign, provider)
+            runner = _surface_gh_runner(
+                issue_comments=[comment],
+                pr_comments=[dict(comment)],
+            )
+
+            entry = self._resume(campaigns_dir, runner)
+
+            self.assertEqual(entry["state"], "complete")
+            # One completion, one stored result, and no superseded attempt: the
+            # same evidence on a second allowed surface is not a second attempt.
+            self.assertEqual(entry.get("attempt_history", []), [])
+            self.assertEqual(entry["result_source"]["surface"], "issue")
+            self.assertEqual(entry["result_source"]["duplicate_surfaces"], 1)
+            self.assertEqual(entry["result_source"]["conflicting_surfaces"], 0)
+
+            # A completed provider is neither re-polled nor re-attempted, so a
+            # second resume against the same two surfaces moves no chronology.
+            completed_at = entry["completed_at"]
+            again = self._resume(campaigns_dir, runner)
+            self.assertEqual(again["completed_at"], completed_at)
+            self.assertEqual(again.get("attempt_history", []), [])
+
+    def test_untrusted_author_on_release_pr_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            runner = _surface_gh_runner(
+                pr_comments=[
+                    _cursor_result_comment(campaign, provider, author="drive-by")
+                ],
+            )
+
+            entry = self._resume(campaigns_dir, runner)
+
+            self.assertEqual(entry["state"], "running")
+            self.assertIsNone(entry["adoption_result"])
+            self.assertNotIn("result_source", entry)
+
+    def test_release_pr_result_for_another_campaign_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            runner = _surface_gh_runner(
+                pr_comments=[
+                    _cursor_result_comment(
+                        campaign, provider, campaign_id="campaign-v9.9.9"
+                    )
+                ],
+            )
+
+            entry = self._resume(campaigns_dir, runner)
+
+            self.assertEqual(entry["state"], "running")
+            self.assertIsNone(entry["adoption_result"])
+
+    def test_release_pr_result_for_another_release_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            runner = _surface_gh_runner(
+                pr_comments=[
+                    _cursor_result_comment(
+                        campaign, provider, result_release_tag="v2.0.0"
+                    )
+                ],
+            )
+
+            entry = self._resume(campaigns_dir, runner)
+
+            self.assertEqual(entry["state"], "running")
+            self.assertIsNone(entry["adoption_result"])
+            self.assertEqual(entry["error"], "hosted_result_rejected")
+
+    def test_campaign_without_linked_release_pr_polls_only_the_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, _campaign, _provider = self._seed(tmp, release_pr="")
+            calls: list[tuple[str, ...]] = []
+            runner = _surface_gh_runner(calls=calls)
+
+            entry = self._resume(campaigns_dir, runner)
+
+            self.assertEqual(entry["state"], "running")
+            self.assertEqual([call[0] for call in calls], ["issue"])
+
+    def test_unavailable_github_api_is_non_fatal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, _campaign, _provider = self._seed(tmp)
+            runner = _surface_gh_runner(
+                issue_error="GitHub unavailable",
+                pr_error="GitHub unavailable",
+            )
+
+            entry = self._resume(campaigns_dir, runner)
+
+            self.assertEqual(entry["state"], "running")
+            self.assertEqual(entry["error"], "github_poll_unavailable")
+            self.assertIsNone(entry["adoption_result"])
+
+    def test_release_pr_result_survives_a_campaign_issue_outage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            runner = _surface_gh_runner(
+                issue_error="GitHub unavailable",
+                pr_comments=[_cursor_result_comment(campaign, provider)],
+            )
+
+            entry = self._resume(campaigns_dir, runner)
+
+            self.assertEqual(entry["state"], "complete")
+            self.assertEqual(entry["error"], "")
+            self.assertEqual(entry["result_source"]["surface"], "pull_request")
+
+    def test_unreadable_surface_outranks_a_rejected_marker(self) -> None:
+        """An unread surface reports the retryable poll failure, not a bad result."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            runner = _surface_gh_runner(
+                issue_error="GitHub unavailable",
+                pr_comments=[
+                    _cursor_result_comment(
+                        campaign, provider, result_release_tag="v2.0.0"
+                    )
+                ],
+            )
+
+            entry = self._resume(campaigns_dir, runner)
+
+            self.assertEqual(entry["state"], "running")
+            self.assertEqual(entry["error"], "github_poll_unavailable")
+
+    def test_recorded_source_metadata_carries_no_body_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            secret = "s3cret-transcript-line"
+            comment = _cursor_result_comment(campaign, provider)
+            comment["body"] = f"{secret}\n{comment['body']}"
+            runner = _surface_gh_runner(pr_comments=[comment])
+
+            entry = self._resume(campaigns_dir, runner)
+
+            self.assertEqual(entry["state"], "complete")
+            self.assertEqual(
+                sorted(entry["result_source"]),
+                ["conflicting_surfaces", "duplicate_surfaces", "number", "surface"],
+            )
+            stored = json.dumps(
+                release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            )
+            self.assertNotIn(secret, stored)
+
+    def test_superseded_attempt_keeps_its_result_source_in_history(self) -> None:
+        """A superseded attempt's surface survives in history, not on the entry.
+
+        A result discovered on the linked release PR and later superseded by a
+        manually recorded one must stay auditable: the archived metadata-only
+        summary keeps the pull-request provenance, while the live entry stops
+        naming a surface for evidence it no longer holds.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            runner = _surface_gh_runner(
+                pr_comments=[_cursor_result_comment(campaign, provider)],
+            )
+
+            entry = self._resume(campaigns_dir, runner)
+            self.assertEqual(entry["result_source"]["surface"], "pull_request")
+            self.assertEqual(entry["result_source"]["number"], "786")
+            self.assertEqual(entry.get("attempt_history", []), [])
+
+            stored = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert stored is not None
+            release_campaigns.record_manual_result(
+                stored,
+                "cursor_cloud_agent",
+                _mock_adoption_result(provider="cursor_cloud_agent", outcome="fail"),
+                campaigns_dir=campaigns_dir,
+            )
+            saved = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert saved is not None
+            superseded = saved["providers"][0]
+
+            self.assertEqual(superseded["adoption_result"]["outcome"], "fail")
+            history = superseded.get("attempt_history")
+            assert isinstance(history, list)
+            self.assertEqual(len(history), 1)
+            self.assertEqual(
+                history[0]["result_source"],
+                {
+                    "surface": "pull_request",
+                    "number": "786",
+                    "duplicate_surfaces": 0,
+                    "conflicting_surfaces": 0,
+                },
+            )
+            # The recorded result came from no polled surface, so the live
+            # entry names none: the earlier provenance lives in history alone.
+            self.assertNotIn("result_source", superseded)
+
+    def test_watch_completes_on_a_linked_release_pr_result(self) -> None:
+        """The acceptance path: watch alone finishes a PR-answered qualification."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir, campaign, provider = self._seed(tmp)
+            runner = _surface_gh_runner(
+                pr_comments=[_cursor_result_comment(campaign, provider)],
+            )
+
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=campaigns_dir,
+                interval=1.0,
+                timeout=30.0,
+                emit_json=True,
+                gh_json_runner=runner,
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
+                sleep_fn=lambda _seconds: None,
+            )
+
+            self.assertEqual(summary["stop_reason"], "complete")
+            stored = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert stored is not None
+            self.assertEqual(stored["providers"][0]["state"], "complete")
+            self.assertEqual(
+                stored["providers"][0]["result_source"]["surface"], "pull_request"
+            )
+
+
+class LinkedReleasePrIdentityTests(unittest.TestCase):
+    """The linked release PR is validated, recorded once, and never repointed."""
+
+    def test_validate_release_pr_accepts_only_positive_numbers(self) -> None:
+        self.assertEqual(release_campaigns.validate_release_pr(""), "")
+        self.assertEqual(release_campaigns.validate_release_pr(None), "")
+        self.assertEqual(release_campaigns.validate_release_pr(" 786 "), "786")
+        self.assertEqual(release_campaigns.validate_release_pr(786), "786")
+        for bad in ("0", "-3", "12a", "https://github.com/o/r/pull/786", "1 2", True):
+            with self.subTest(value=bad):
+                with self.assertRaises(ValueError):
+                    release_campaigns.validate_release_pr(bad)
+
+    def test_stored_release_pr_fails_closed_on_hand_edited_values(self) -> None:
+        for stored in ({"release_pr": "not-a-number"}, {"release_pr": ["786"]}, {}):
+            with self.subTest(stored=stored):
+                self.assertEqual(release_campaigns.stored_release_pr(stored), "")
+        self.assertEqual(
+            release_campaigns.stored_release_pr({"release_pr": "786"}), "786"
+        )
+
+    def test_hand_edited_release_pr_is_never_polled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_cloud_agent"],
+                repo_slug="owner/repo",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = True
+            provider["dispatch_ref"] = {"issue_number": "784", "comment_posted": True}
+            stored = campaign.to_dict()
+            stored["release_pr"] = "; rm -rf /"
+            release_campaigns.save_campaign(stored, campaigns_dir)
+            calls: list[tuple[str, ...]] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                command_runner=_capturing_dispatch_command_runner([]),
+                gh_json_runner=_surface_gh_runner(calls=calls),
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual([call[0] for call in calls], ["issue"])
+
+    def test_release_pr_fills_an_empty_stored_value_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_cloud_agent"],
+                repo_slug="owner/repo",
+            )
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                release_pr="786",
+                gh_json_runner=_surface_gh_runner(),
+                env={},
+            )
+            stored = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert stored is not None
+            self.assertEqual(stored["release_pr"], "786")
+
+            err = io.StringIO()
+            conflict_code = release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                release_pr="999",
+                gh_json_runner=_surface_gh_runner(),
+                env={},
+                stderr=err,
+            )
+            self.assertEqual(conflict_code, 1)
+            unchanged = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert unchanged is not None
+            self.assertEqual(unchanged["release_pr"], "786")
+
+    def test_release_pr_links_when_recording_a_manual_result(self) -> None:
+        """`resume --release-pr N --record-result` links the PR *and* records.
+
+        The manual-result route returns before the resume/dispatch route below
+        it, so the linked release PR is validated and persisted inside that
+        route as well -- a valid option is never accepted by validation and then
+        silently dropped. Linking first is what makes the combination useful:
+        the hand-recorded provider is settled locally, and the providers still
+        outstanding stay discoverable on the linked surface for the next watch.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex", "cursor_cloud_agent"],
+                repo_slug="owner/repo",
+            )
+            campaign.status = "running"
+            hosted = next(
+                p for p in campaign.providers if p["provider"] == "cursor_cloud_agent"
+            )
+            hosted["state"] = "running"
+            hosted["attempted_at"] = "2024-01-01T00:00:00Z"
+            hosted["dispatch_mode"] = "applied"
+            hosted["trigger_posted"] = True
+            hosted["dispatch_ref"] = {"issue_number": "784", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            result_path = Path(tmp) / "codex-result.json"
+            result_path.write_text(
+                json.dumps(_mock_adoption_result(provider="codex")), encoding="utf-8"
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    release_pr="786",
+                    record_result=result_path,
+                    record_provider="codex",
+                    env={},
+                )
+
+            self.assertEqual(ret, 0)
+            stored = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert stored is not None
+            # The option was honored, not ignored: the manual result recorded
+            # *and* the linked release PR persisted in the same invocation.
+            self.assertEqual(stored["release_pr"], "786")
+            recorded = next(p for p in stored["providers"] if p["provider"] == "codex")
+            self.assertEqual(recorded["state"], "complete")
+            self.assertEqual(recorded["adoption_result"]["provider"], "codex")
+
+            # A later watch reads the PR this run linked, so the provider still
+            # outstanding is answered from the linked release pull request.
+            pr_comment = _cursor_result_comment(
+                campaign,
+                next(
+                    p
+                    for p in stored["providers"]
+                    if p["provider"] == "cursor_cloud_agent"
+                ),
+            )
+            calls: list[tuple[str, ...]] = []
+            summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=campaigns_dir,
+                interval=1.0,
+                timeout=30.0,
+                gh_json_runner=_surface_gh_runner(
+                    pr_comments=[pr_comment], calls=calls
+                ),
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
+                sleep_fn=lambda _seconds: None,
+            )
+
+            self.assertEqual(summary["stop_reason"], "complete")
+            self.assertIn(("pr", "view", "786"), [call[:3] for call in calls])
+            completed = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert completed is not None
+            hosted_entry = next(
+                p
+                for p in completed["providers"]
+                if p["provider"] == "cursor_cloud_agent"
+            )
+            self.assertEqual(hosted_entry["state"], "complete")
+            self.assertEqual(hosted_entry["result_source"]["surface"], "pull_request")
+            self.assertEqual(hosted_entry["result_source"]["number"], "786")
+
+    def test_recording_a_result_never_repoints_a_linked_release_pr(self) -> None:
+        """The fill-once rule holds on the manual-result route too.
+
+        A mismatch is refused before the result is recorded, so a stale or
+        mistyped `--release-pr` can neither repoint discovery at a pull request
+        the campaign was never qualified against nor half-apply the invocation.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["codex"],
+                repo_slug="owner/repo",
+                release_pr="786",
+            )
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            result_path = Path(tmp) / "codex-result.json"
+            result_path.write_text(
+                json.dumps(_mock_adoption_result(provider="codex")), encoding="utf-8"
+            )
+
+            err = io.StringIO()
+            # The impl route writes its bounded errors to the process stderr,
+            # so capture that rather than the pre-impl `stderr` parameter.
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                err
+            ):
+                ret = release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    campaigns_dir=campaigns_dir,
+                    resume=True,
+                    release_pr="999",
+                    record_result=result_path,
+                    record_provider="codex",
+                    env={},
+                )
+
+            self.assertEqual(ret, 1)
+            self.assertIn("--release-pr", err.getvalue())
+            unchanged = release_campaigns.load_campaign_by_id(
+                "campaign-v1.0.0", campaigns_dir
+            )
+            assert unchanged is not None
+            self.assertEqual(unchanged["release_pr"], "786")
+            self.assertEqual(unchanged["providers"][0]["state"], "queued")
+
+    def test_malformed_release_pr_is_refused_before_any_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            err = io.StringIO()
+
+            exit_code = release_campaigns.campaign_command(
+                action="create",
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_cloud_agent"],
+                campaigns_dir=campaigns_dir,
+                release_pr="../786",
+                stderr=err,
+                env={},
+            )
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("release_pr", err.getvalue())
+            self.assertFalse(campaigns_dir.exists())
+
+    def test_release_pr_is_refused_for_read_only_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_cloud_agent"],
+                repo_slug="owner/repo",
+            )
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            for action in ("status", "watch", "upload"):
+                with self.subTest(action=action):
+                    err = io.StringIO()
+                    exit_code = release_campaigns.campaign_command(
+                        action=action,
+                        release_tag="v1.0.0",
+                        campaigns_dir=campaigns_dir,
+                        release_pr="786",
+                        stderr=err,
+                        env={},
+                    )
+                    self.assertEqual(exit_code, 1)
+                    self.assertIn("--release-pr", err.getvalue())
+
+    def test_release_pr_equal_to_the_campaign_issue_is_polled_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            campaign = release_campaigns.initialize_campaign(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["cursor_cloud_agent"],
+                repo_slug="owner/repo",
+                release_pr="784",
+            )
+            provider = campaign.providers[0]
+            campaign.status = "running"
+            provider["state"] = "running"
+            provider["attempted_at"] = "2024-01-01T00:00:00Z"
+            provider["trigger_posted"] = True
+            provider["dispatch_ref"] = {"issue_number": "784", "comment_posted": True}
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+            calls: list[tuple[str, ...]] = []
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                campaigns_dir=campaigns_dir,
+                resume=True,
+                command_runner=_capturing_dispatch_command_runner([]),
+                gh_json_runner=_surface_gh_runner(calls=calls),
+                env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "token"},
+            )
+
+            self.assertEqual([call[0] for call in calls], ["issue"])
+
+    def test_campaign_cli_documents_the_linked_release_pr(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            with self.assertRaises(SystemExit):
+                release_qualify.main(["campaign", "--help"])
+        # argparse rewraps help text, so compare on a whitespace-collapsed copy.
+        help_text = " ".join(stdout.getvalue().split())
+        self.assertIn("--release-pr", help_text)
+        self.assertIn("release pull request number linked to this campaign", help_text)
+        self.assertIn("can never change a linked PR", help_text)
+
+
 if __name__ == "__main__":
     unittest.main()

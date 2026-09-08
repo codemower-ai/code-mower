@@ -118,6 +118,12 @@ MAX_CAMPAIGN_ID_LENGTH = 64
 CAMPAIGNS_LOCK_FILENAME = ".campaigns.lock"
 CAMPAIGN_TEMP_PREFIX = ".tmp."
 
+# A campaign may record exactly one linked release pull request. It is a plain
+# GitHub number, so the stored value is held to a positive-integer grammar with
+# a bounded length: the value is interpolated into a `gh pr view` argv and into
+# metadata-only campaign state, and neither may ever carry an arbitrary string.
+RELEASE_PR_PATTERN = re.compile(r"^[1-9][0-9]{0,11}$")
+
 DEFAULT_CAMPAIGN_PROVIDERS = (
     "claude",
     "codex",
@@ -337,6 +343,14 @@ class ReleaseCampaign:
     next_detail: str
     providers: list[dict[str, Any]]
     provider_posture_configured: bool = False
+    # The one pull request explicitly linked to this campaign (the release PR
+    # for the tag being qualified), recorded as a bare number. It is an
+    # additional *allowed result discovery surface*, nothing more: a hosted
+    # provider that answers on the linked release PR instead of the campaign
+    # issue is still discovered. Campaigns written before this field existed
+    # lack the key; readers must use `stored_release_pr`, never direct
+    # indexing.
+    release_pr: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -388,6 +402,43 @@ def validate_campaign_id(campaign_id: Any) -> str:
 def campaign_filename(campaign_id: str) -> str:
     """Map a validated campaign id to its one and only storage filename."""
     return f"{validate_campaign_id(campaign_id)}.json"
+
+
+def validate_release_pr(release_pr: Any) -> str:
+    """Return ``release_pr`` normalized to a bare number, or raise ``ValueError``.
+
+    An empty value means "no linked release pull request" and is returned
+    unchanged. Anything else must be a positive GitHub pull request number:
+    the recorded value addresses a *result discovery surface*, so a campaign
+    can only ever name one explicitly linked pull request, never a URL, a
+    slug from another repository, or a shell-shaped string.
+    """
+    if release_pr is None:
+        return ""
+    if isinstance(release_pr, bool) or not isinstance(release_pr, (str, int)):
+        raise ValueError("release_pr must be a positive pull request number")
+    text = str(release_pr).strip()
+    if not text:
+        return ""
+    if RELEASE_PR_PATTERN.fullmatch(text) is None:
+        raise ValueError(
+            f"release_pr must be a positive pull request number, got {text!r}"
+        )
+    return text
+
+
+def stored_release_pr(campaign: Mapping[str, Any]) -> str:
+    """Read a stored campaign's linked release pull request, failing closed.
+
+    Storage is untrusted: a hand-edited campaign may carry anything at all in
+    ``release_pr``. A value outside the documented grammar degrades to "" (no
+    linked surface) rather than reaching a ``gh`` argv or campaign metadata,
+    so discovery stays limited to surfaces the campaign genuinely records.
+    """
+    try:
+        return validate_release_pr(campaign.get("release_pr"))
+    except ValueError:
+        return ""
 
 
 def resolve_provider_lane(name: str) -> tuple[str, ProviderLane]:
@@ -2111,17 +2162,38 @@ def _has_matching_release_marker(
     return False
 
 
-def _poll_github_comments(
+# The closed set of campaign result-discovery surfaces. `issue` is the campaign
+# issue a provider was dispatched on; `pull_request` is the single release pull
+# request the campaign manifest links. Nothing else is ever polled -- discovery
+# never walks arbitrary repository issues or pull requests.
+RESULT_SURFACE_KINDS = ("issue", "pull_request")
+
+_RESULT_SURFACE_GH_COMMAND = {
+    "issue": "issue",
+    "pull_request": "pr",
+}
+
+
+def _poll_github_surface_comments(
     repo_slug: str,
-    issue_number: int | str,
+    number: int | str,
     *,
+    surface: str = "issue",
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
 ) -> tuple[list[dict[str, Any]], str]:
-    if not repo_slug or not issue_number:
+    """Read one allowed surface's comments, or report a bounded poll failure.
+
+    ``surface`` selects the ``gh`` noun (`issue view` or `pr view`); both return
+    the same ``{"comments": [...]}`` shape. An unrecognized surface is refused
+    the same way an unreachable one is, so only :data:`RESULT_SURFACE_KINDS`
+    can ever be fetched.
+    """
+    gh_noun = _RESULT_SURFACE_GH_COMMAND.get(surface)
+    if not repo_slug or not number or gh_noun is None:
         return [], _safe_error("github_poll_unavailable")
     try:
         result = gh_json_runner(
-            ["issue", "view", str(issue_number), "--repo", repo_slug, "--json", "comments"]
+            [gh_noun, "view", str(number), "--repo", repo_slug, "--json", "comments"]
         )
     except (
         OSError,
@@ -2142,6 +2214,21 @@ def _poll_github_comments(
     if not isinstance(comments, list):
         return [], _safe_error("github_poll_unavailable")
     return [c for c in comments if isinstance(c, dict)], ""
+
+
+def _poll_github_comments(
+    repo_slug: str,
+    issue_number: int | str,
+    *,
+    gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
+) -> tuple[list[dict[str, Any]], str]:
+    """Read the campaign issue's comments (the default discovery surface)."""
+    return _poll_github_surface_comments(
+        repo_slug,
+        issue_number,
+        surface="issue",
+        gh_json_runner=gh_json_runner,
+    )
 
 
 def _normalize_github_login(login: str) -> str:
@@ -2698,6 +2785,7 @@ def initialize_campaign(
     required_providers: Sequence[str] | None = None,
     repo_slug: str = "",
     campaign_id: str = "",
+    release_pr: str = "",
 ) -> ReleaseCampaign:
     valid, normalized_version, error = _validate_tag_format(release_tag)
     if not valid:
@@ -2727,6 +2815,7 @@ def initialize_campaign(
     ):
         raise ValueError("starting_version must be lower than the target version")
     _validate_package_source(package_source)
+    normalized_release_pr = validate_release_pr(release_pr)
 
     if not campaign_id:
         campaign_id = f"campaign-{release_tag}"
@@ -2860,6 +2949,7 @@ def initialize_campaign(
         next_detail=next_detail,
         providers=campaign_providers,
         provider_posture_configured=required_providers is not None,
+        release_pr=normalized_release_pr,
     )
 
 
@@ -2930,6 +3020,56 @@ def _sanitize_history_timestamp(value: Any) -> str | None:
     return value
 
 
+# The only fields a discovered result's source record may carry, whether it
+# describes the current attempt or a superseded one archived in history:
+# which allowed surface carried the result, that surface's bounded GitHub
+# number, and how many additional surfaces carried identical (or differing)
+# evidence. Never issue, pull request, or comment body text.
+RESULT_SOURCE_FIELDS = frozenset(
+    {"surface", "number", "duplicate_surfaces", "conflicting_surfaces"}
+)
+
+# A result is discovered across the allowed surfaces only, so no count of
+# additional surfaces can exceed how many surfaces there are.
+MAX_RESULT_SOURCE_SURFACE_COUNT = len(_RESULT_SURFACE_GH_COMMAND)
+
+
+def _sanitize_result_source(value: Any) -> dict[str, Any] | None:
+    """Rebuild one result-source record from its closed bounded fields, or None.
+
+    Stored campaign files are untrusted input, so a source record -- like a
+    retained history entry -- is rebuilt rather than copied: the surface must
+    name one of the allowed discovery surfaces, the number must match the
+    bounded positive-number grammar every polled surface number is held to,
+    and the counts degrade to 0 and are capped. A record that cannot name
+    both a surface and its number carries no usable provenance and returns
+    None, which callers omit rather than store.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    surface = value.get("surface")
+    if not isinstance(surface, str) or surface not in _RESULT_SURFACE_GH_COMMAND:
+        return None
+    raw_number = value.get("number")
+    if isinstance(raw_number, bool) or not isinstance(raw_number, (str, int)):
+        return None
+    number = str(raw_number).strip()
+    if RELEASE_PR_PATTERN.fullmatch(number) is None:
+        return None
+    counts: dict[str, int] = {}
+    for count_field in ("duplicate_surfaces", "conflicting_surfaces"):
+        count = value.get(count_field)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            count = 0
+        counts[count_field] = min(count, MAX_RESULT_SOURCE_SURFACE_COUNT)
+    return {
+        "surface": surface,
+        "number": number,
+        "duplicate_surfaces": counts["duplicate_surfaces"],
+        "conflicting_surfaces": counts["conflicting_surfaces"],
+    }
+
+
 def _prior_attempt_summary(provider_data: Mapping[str, Any]) -> dict[str, Any] | None:
     """Summarize the stored attempt in metadata-only form, or None when no attempt exists."""
     stored_result = provider_data.get("adoption_result")
@@ -2955,7 +3095,7 @@ def _prior_attempt_summary(provider_data: Mapping[str, Any]) -> dict[str, Any] |
     if not isinstance(state, str) or state not in VALID_PROVIDER_STATES:
         state = ""
     dispatched_at = provider_data.get("dispatched_at")
-    return {
+    summary = {
         "attempted_at": _sanitize_history_timestamp(attempted_at),
         "dispatched_at": _sanitize_history_timestamp(dispatched_at),
         "completed_at": _sanitize_history_timestamp(completed_at),
@@ -2964,11 +3104,25 @@ def _prior_attempt_summary(provider_data: Mapping[str, Any]) -> dict[str, Any] |
         "error": error,
         "elapsed_seconds": round(float(elapsed), 2),
     }
+    # Which allowed surface carried this attempt's result is part of the
+    # attempt being superseded, so it is archived with it: once a later
+    # attempt replaces the stored result, history is the only place the
+    # earlier issue-versus-pull-request provenance survives. The key is
+    # omitted (not stored as None) for an attempt with no usable source
+    # record, so summaries for attempts that were never discovered on a
+    # surface -- local adapter output, a manually recorded result, campaigns
+    # written before result sources existed -- keep their existing shape.
+    source = _sanitize_result_source(provider_data.get("result_source"))
+    if source is not None:
+        summary["result_source"] = source
+    return summary
 
 
 # The only fields an attempt-history entry may carry. Everything else --
-# result bodies, output, paths, secrets, nested mappings -- is dropped when
-# retained entries are rebuilt.
+# result bodies, output, paths, secrets, unknown nested mappings -- is
+# dropped when retained entries are rebuilt. ``result_source`` is the one
+# nested field, and it is itself rebuilt from its own closed bounded
+# contract (see RESULT_SOURCE_FIELDS).
 ATTEMPT_HISTORY_FIELDS = frozenset(
     {
         "attempted_at",
@@ -2978,6 +3132,7 @@ ATTEMPT_HISTORY_FIELDS = frozenset(
         "outcome",
         "error",
         "elapsed_seconds",
+        "result_source",
     }
 )
 
@@ -2987,12 +3142,14 @@ def _sanitize_attempt_history_entry(entry: Any) -> dict[str, Any] | None:
 
     Stored campaign files are untrusted input: a retained entry may have been
     hand-edited to carry result bodies, output, paths, secrets, nested
-    values, or arbitrarily large strings. Only the bounded scalar history
-    fields survive, each validated and coerced exactly as
-    :func:`_prior_attempt_summary` validates fresh summaries; unknown and
-    nested fields are discarded. Returns None for malformed entries (not a
-    mapping, or a mapping with none of the allowed fields), which the caller
-    drops instead of preserving.
+    values, or arbitrarily large strings. Only the bounded history fields
+    survive, each validated and coerced exactly as
+    :func:`_prior_attempt_summary` validates fresh summaries -- including the
+    archived ``result_source``, which is rebuilt from its own closed contract
+    and omitted when it carries no usable provenance; unknown and nested
+    fields are discarded. Returns None for malformed entries (not a mapping,
+    or a mapping with none of the allowed fields), which the caller drops
+    instead of preserving.
     """
     if not isinstance(entry, Mapping):
         return None
@@ -3016,7 +3173,7 @@ def _sanitize_attempt_history_entry(entry: Any) -> dict[str, Any] | None:
         or elapsed < 0
     ):
         elapsed = 0.0
-    return {
+    sanitized: dict[str, Any] = {
         "attempted_at": _sanitize_history_timestamp(entry.get("attempted_at")),
         "dispatched_at": _sanitize_history_timestamp(entry.get("dispatched_at")),
         "completed_at": _sanitize_history_timestamp(entry.get("completed_at")),
@@ -3025,15 +3182,27 @@ def _sanitize_attempt_history_entry(entry: Any) -> dict[str, Any] | None:
         "error": error,
         "elapsed_seconds": round(float(elapsed), 2),
     }
+    source = _sanitize_result_source(entry.get("result_source"))
+    if source is not None:
+        sanitized["result_source"] = source
+    return sanitized
 
 
 def _record_attempt_history(provider_data: dict[str, Any]) -> None:
-    """Append the superseded attempt's bounded summary, keeping history bounded.
+    """Archive the superseded attempt's bounded summary, keeping history bounded.
 
     Retained history is always sanitized and capped, even when there is no
     new current-attempt summary to append: a queued provider with no
     timestamps/result can still carry hand-edited malicious or unbounded
     ``attempt_history``, and an explicit retry must not preserve it verbatim.
+
+    The live ``result_source`` describes the attempt being superseded, so it
+    moves into that attempt's summary rather than staying on the entry: every
+    caller either clears the stored result outright or replaces it with
+    evidence of its own (a hosted discovery restamps the source it just read;
+    a local result file or a manually recorded result has no surface
+    provenance at all), and a source left behind would describe a result the
+    entry no longer holds.
     """
     history = provider_data.get("attempt_history")
     if not isinstance(history, list):
@@ -3049,6 +3218,7 @@ def _record_attempt_history(provider_data: dict[str, Any]) -> None:
     summary = _prior_attempt_summary(provider_data)
     if summary is not None:
         history.append(summary)
+    provider_data.pop("result_source", None)
     provider_data["attempt_history"] = history[-MAX_ATTEMPT_HISTORY_ENTRIES:]
 
 
@@ -3082,6 +3252,146 @@ def _save_campaign_progress(
         2,
     )
     save_campaign(campaign, campaigns_dir)
+
+
+def _campaign_result_surfaces(
+    *,
+    repo_slug: str,
+    issue_number: int | str,
+    release_pr: str,
+    gh_json_runner: lane_status.GitHubJsonRunner,
+) -> list[dict[str, Any]]:
+    """Read every campaign surface a trusted result may legitimately appear on.
+
+    Exactly two surfaces are ever consulted, in precedence order: the campaign
+    issue this provider was dispatched on, and the one release pull request the
+    campaign manifest links. Both are *explicitly linked* by the campaign
+    itself -- discovery never searches arbitrary repository issues or pull
+    requests, and never follows a link found inside a comment.
+
+    Each returned entry carries the surface kind, its number, the fetched
+    comments, and whether the fetch failed. A surface that cannot be read is
+    reported, not raised: one unreachable surface must never discard a valid
+    result already visible on the other.
+    """
+    surfaces: list[dict[str, Any]] = []
+    if not repo_slug:
+        return surfaces
+    if issue_number:
+        comments, error = _poll_github_surface_comments(
+            repo_slug,
+            issue_number,
+            surface="issue",
+            gh_json_runner=gh_json_runner,
+        )
+        surfaces.append(
+            {
+                "surface": "issue",
+                "number": str(issue_number),
+                "comments": comments,
+                "error": error,
+            }
+        )
+    # GitHub numbers issues and pull requests from one sequence, so a linked
+    # release PR that repeats the campaign issue number is the same object --
+    # polling it again would only re-read the same comments under a second
+    # surface label.
+    if release_pr and release_pr != str(issue_number or ""):
+        comments, error = _poll_github_surface_comments(
+            repo_slug,
+            release_pr,
+            surface="pull_request",
+            gh_json_runner=gh_json_runner,
+        )
+        surfaces.append(
+            {
+                "surface": "pull_request",
+                "number": release_pr,
+                "comments": comments,
+                "error": error,
+            }
+        )
+    return surfaces
+
+
+def _discover_trusted_surface_result(
+    surfaces: Sequence[Mapping[str, Any]],
+    *,
+    trusted_authors: Sequence[str],
+    campaign_id: str,
+    provider: str,
+    release_tag: str,
+    idempotency_key: str,
+    qualification_context: str,
+    starting_version: str,
+    package_identity: str,
+    package_source: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str]:
+    """Find the one trusted, bound result across the campaign's allowed surfaces.
+
+    Returns ``(result, source_metadata, rejection_detail)``.
+
+    Every surface is held to exactly the same checks the campaign issue has
+    always applied: a trusted comment author from the lane's closed author set,
+    the bound result marker's schema, campaign id, provider, release tag,
+    idempotency key, repository-scoped package identity, qualification context,
+    and exact starting version. Being posted on a linked pull request grants a
+    result nothing.
+
+    Surfaces are consulted in precedence order (campaign issue first), and the
+    first accepted result wins. A provider that answers on both surfaces posts
+    the *same* result twice, so identical evidence is deduplicated rather than
+    recorded as a second attempt; the count of additional surfaces carrying
+    identical -- and, separately, differing -- evidence is kept as bounded
+    metadata so an operator can see where a result came from without any issue
+    or comment body text being read back.
+    """
+    found: list[tuple[str, str, dict[str, Any]]] = []
+    rejection_detail = ""
+    for surface in surfaces:
+        comments = surface.get("comments")
+        if not isinstance(comments, (list, tuple)):
+            continue
+        for comment in comments:
+            if not isinstance(comment, Mapping):
+                continue
+            if not _is_trusted_github_author(
+                _comment_author_login(comment), trusted_authors
+            ):
+                continue
+            candidate, candidate_rejection = _extract_bound_adoption_result_ex(
+                str(comment.get("body") or ""),
+                campaign_id=campaign_id,
+                provider=provider,
+                release_tag=release_tag,
+                idempotency_key=idempotency_key,
+                qualification_context=qualification_context,
+                starting_version=starting_version,
+                package_identity=package_identity,
+                package_source=package_source,
+            )
+            if candidate:
+                found.append(
+                    (
+                        str(surface.get("surface") or ""),
+                        str(surface.get("number") or ""),
+                        candidate,
+                    )
+                )
+                break
+            if candidate_rejection:
+                rejection_detail = candidate_rejection
+    if not found:
+        return None, None, rejection_detail
+    surface_kind, surface_number, accepted = found[0]
+    duplicates = sum(1 for _, _, other in found[1:] if other == accepted)
+    source = {
+        "surface": surface_kind,
+        "number": surface_number,
+        "duplicate_surfaces": duplicates,
+        "conflicting_surfaces": len(found) - 1 - duplicates,
+    }
+    return accepted, source, ""
 
 
 def dispatch_or_advance_campaign(
@@ -3144,6 +3454,10 @@ def dispatch_or_advance_campaign(
     # to the campaign, so observed provider transitions can be saved while the
     # campaign's repository identity remains unchanged.
     repo_slug = str(campaign.get("repo_slug") or repo_slug_override or "")
+    # The single linked release pull request, if this campaign records one. It
+    # only ever *widens result discovery* to that one explicitly linked
+    # surface; dispatch and trigger comments still go to the campaign issue.
+    release_pr = stored_release_pr(campaign)
 
     retry_canonical = ""
     if retry_provider:
@@ -3269,85 +3583,96 @@ def dispatch_or_advance_campaign(
             raw_dispatch_ref = provider_data.get("dispatch_ref", {})
             dispatch_ref = dict(raw_dispatch_ref) if isinstance(raw_dispatch_ref, Mapping) else {}
             ref_issue = dispatch_ref.get("issue_number") or issue_number
-            comments: list[dict[str, Any]] = []
-            poll_error = ""
-            if ref_issue and repo_slug:
-                comments, poll_error = _poll_github_comments(
-                    repo_slug,
-                    ref_issue,
-                    gh_json_runner=gh_json_runner,
-                )
-            else:
-                comments, poll_error = [], ""
+            # Result discovery reads every surface this campaign explicitly
+            # links (the campaign issue and the manifest's release PR); trigger
+            # reconciliation below stays bound to the campaign issue alone,
+            # which is the only surface a dispatch or trigger is ever posted on.
+            surfaces = _campaign_result_surfaces(
+                repo_slug=repo_slug,
+                issue_number=ref_issue,
+                release_pr=release_pr,
+                gh_json_runner=gh_json_runner,
+            )
+            issue_surface = next(
+                (s for s in surfaces if s.get("surface") == "issue"),
+                None,
+            )
+            comments: list[dict[str, Any]] = (
+                list(issue_surface["comments"]) if issue_surface else []
+            )
+            poll_error = str(issue_surface["error"]) if issue_surface else ""
+            surface_poll_failed = any(s.get("error") for s in surfaces)
 
             # A completed result is authoritative and must be consumed before
             # considering any retry side effect. Otherwise a missing trigger
             # marker could restart a provider that has already finished.
-            found_result = None
-            if poll_error:
-                provider_data["error"] = poll_error
+            found_result, result_source, rejection_detail = _discover_trusted_surface_result(
+                surfaces,
+                trusted_authors=_resolve_trusted_bot_authors(lane, env=current_env),
+                campaign_id=campaign_id,
+                provider=provider,
+                release_tag=release_tag,
+                idempotency_key=str(provider_data.get("idempotency_key") or ""),
+                qualification_context=context,
+                starting_version=starting_version,
+                package_identity=package_identity,
+                package_source=package_source,
+            )
+            if found_result:
+                prior_found = provider_data.get("adoption_result")
+                if prior_found != found_result:
+                    # Genuinely new evidence supersedes the stored attempt;
+                    # record history only when a prior stored result actually
+                    # existed (the first completion of a running attempt
+                    # supersedes nothing). Identical evidence must not move
+                    # chronology (see the drop-in path above) -- including the
+                    # same result observed on a second allowed surface, which
+                    # `_discover_trusted_surface_result` has already
+                    # deduplicated.
+                    if isinstance(prior_found, Mapping) and prior_found:
+                        _record_attempt_history(provider_data)
+                    provider_data["completed_at"] = now_utc
+                provider_data["adoption_result"] = found_result
+                if result_source is not None:
+                    provider_data["result_source"] = result_source
+                provider_data["elapsed_seconds"] = float(
+                    found_result.get("elapsed_seconds") or 0.0
+                )
+                provider_data["error"] = ""
+                outcome = found_result.get("outcome")
+                if outcome in {"pass", "pass_with_warnings"}:
+                    provider_data["state"] = "complete"
+                    provider_data["next_action"] = "none"
+                    provider_data["next_detail"] = ""
+                else:
+                    provider_data["state"] = "blocked"
+                    provider_data["next_action"] = (
+                        f"inspect {provider} qualification failures"
+                    )
+                    provider_data["next_detail"] = _extract_failure_detail(found_result)
+            elif surface_poll_failed:
+                # An unreadable surface means discovery was incomplete, not
+                # that the provider answered badly: report the retryable poll
+                # failure rather than the sharper `hosted_result_rejected`,
+                # whose next action would tell the operator to fix a result
+                # this tick never managed to read.
+                provider_data["error"] = _safe_error("github_poll_unavailable")
+            elif rejection_detail:
+                provider_data["error"] = _safe_error("hosted_result_rejected")
+                action, detail = _provider_next_action(
+                    provider,
+                    lane,
+                    "blocked",
+                    command_available=True,
+                    has_credentials=True,
+                    has_issue=True,
+                    dry_run=False,
+                    error=rejection_detail,
+                )
+                provider_data["next_action"] = action
+                provider_data["next_detail"] = detail
             else:
                 provider_data["error"] = ""
-                trusted_authors = _resolve_trusted_bot_authors(lane, env=current_env)
-                for comment in comments:
-                    if not _is_trusted_github_author(
-                        _comment_author_login(comment), trusted_authors
-                    ):
-                        continue
-                    found_result, rejection_detail = _extract_bound_adoption_result_ex(
-                        str(comment.get("body") or ""),
-                        campaign_id=campaign_id,
-                        provider=provider,
-                        release_tag=release_tag,
-                        idempotency_key=str(provider_data.get("idempotency_key") or ""),
-                        qualification_context=context,
-                        starting_version=starting_version,
-                        package_identity=package_identity,
-                        package_source=package_source,
-                    )
-                    if found_result:
-                        prior_found = provider_data.get("adoption_result")
-                        if prior_found != found_result:
-                            # Genuinely new evidence supersedes the stored
-                            # attempt; record history only when a prior
-                            # stored result actually existed (the first
-                            # completion of a running attempt supersedes
-                            # nothing). Identical evidence must not move
-                            # chronology (see the drop-in path above).
-                            if isinstance(prior_found, Mapping) and prior_found:
-                                _record_attempt_history(provider_data)
-                            provider_data["completed_at"] = now_utc
-                        provider_data["adoption_result"] = found_result
-                        provider_data["elapsed_seconds"] = float(
-                            found_result.get("elapsed_seconds") or 0.0
-                        )
-                        provider_data["error"] = ""
-                        outcome = found_result.get("outcome")
-                        if outcome in {"pass", "pass_with_warnings"}:
-                            provider_data["state"] = "complete"
-                            provider_data["next_action"] = "none"
-                            provider_data["next_detail"] = ""
-                        else:
-                            provider_data["state"] = "blocked"
-                            provider_data["next_action"] = (
-                                f"inspect {provider} qualification failures"
-                            )
-                            provider_data["next_detail"] = _extract_failure_detail(found_result)
-                        break
-                    if rejection_detail:
-                        provider_data["error"] = _safe_error("hosted_result_rejected")
-                        action, detail = _provider_next_action(
-                            provider,
-                            lane,
-                            "blocked",
-                            command_available=True,
-                            has_credentials=True,
-                            has_issue=True,
-                            dry_run=False,
-                            error=rejection_detail,
-                        )
-                        provider_data["next_action"] = action
-                        provider_data["next_detail"] = detail
             if found_result is not None:
                 continue
 
@@ -3545,7 +3870,11 @@ def dispatch_or_advance_campaign(
                     )
                     provider_data["response_deadline_at"] = deadline
                 if (
-                    not poll_error
+                    # Any unreadable allowed surface -- the campaign issue or
+                    # the linked release PR -- means this tick cannot conclude
+                    # the provider was silent, so the deadline is not enforced
+                    # on it.
+                    not surface_poll_failed
                     and not is_explicit_retry
                     and not deadline_was_missing
                     and _response_deadline_expired(deadline, now_utc)
@@ -6209,6 +6538,29 @@ def _required_providers_intent_conflict(
     return ""
 
 
+def _release_pr_intent_conflict(
+    *,
+    action: str | None,
+    status: bool,
+    release_pr: str = "",
+) -> str:
+    """Report an option-scope conflict when --release-pr is passed to a read-only action.
+
+    Recording the linked release pull request is a campaign *write*. Read-only
+    actions never persist it, so accepting the flag there would silently drop
+    the operator's intent and leave the next `watch` polling the campaign issue
+    alone. `watch` reads the linked surface from the stored campaign, so it
+    needs no flag of its own.
+    """
+    if release_pr and (status or action in {"status", "watch", "upload", "dispose"}):
+        return (
+            "--release-pr applies only to campaign creation, resume, and dispatch; "
+            "record it with `campaign create`, `campaign resume`, or "
+            "`campaign dispatch`, then watch the campaign"
+        )
+    return ""
+
+
 def _disposition_intent_conflict(
     *,
     action: str | None,
@@ -6256,6 +6608,7 @@ def _command_intent_conflict(
     required_providers: Any = None,
     dispose_provider: str = "",
     unavailable_reason: str = "",
+    release_pr: str = "",
 ) -> str:
     """Report the one bounded reason this invocation states conflicting intents.
 
@@ -6305,6 +6658,13 @@ def _command_intent_conflict(
         action=action,
         status=status,
         required_providers=required_providers,
+    )
+    if conflict:
+        return conflict
+    conflict = _release_pr_intent_conflict(
+        action=action,
+        status=status,
+        release_pr=release_pr,
     )
     if conflict:
         return conflict
@@ -6360,6 +6720,50 @@ def _load_requested_campaign(
     return found, identifier, ""
 
 
+def _release_pr_link_conflict(campaign: Mapping[str, Any], release_pr: str) -> str:
+    """Report why ``release_pr`` cannot be linked to ``campaign``, or "".
+
+    The linked release pull request is an allowed *result discovery surface*, so
+    it follows a fill-once rule: an empty stored value may be filled, but
+    repointing it on an in-flight campaign would start accepting provider
+    results from a pull request the campaign was never qualified against. A
+    malformed value is refused here for the same reason it is refused at the
+    command boundary -- it must never be stored, let alone polled.
+    """
+    if not release_pr:
+        return ""
+    try:
+        requested_release_pr = validate_release_pr(release_pr)
+    except ValueError as exc:
+        return str(exc)
+    stored_pr = stored_release_pr(campaign)
+    if stored_pr and requested_release_pr != stored_pr:
+        return (
+            f"--release-pr {requested_release_pr!r} does not match existing campaign "
+            f"release PR {stored_pr!r}; an existing campaign's linked release pull "
+            "request is fixed once set"
+        )
+    return ""
+
+
+def _link_release_pr(
+    campaign: dict[str, Any], release_pr: str, *, campaigns_dir: Path
+) -> None:
+    """Fill an existing campaign's empty linked release PR and persist it.
+
+    The release PR for a tag usually exists only after the campaign was created,
+    so an empty stored value is filled on the same fill-once terms as the
+    repository slug, and persisted *before* the caller advances or records, so
+    this run's own poll already reads the linked surface. A stored PR is never
+    rewritten -- a mismatch is rejected by :func:`_release_pr_link_conflict`
+    first -- so this can never repoint an in-flight campaign's discovery.
+    """
+    if not release_pr or stored_release_pr(campaign):
+        return
+    campaign["release_pr"] = release_pr
+    save_campaign(campaign, campaigns_dir)
+
+
 def _existing_campaign_conflict(
     campaign: Mapping[str, Any],
     *,
@@ -6370,6 +6774,7 @@ def _existing_campaign_conflict(
     providers: Sequence[str],
     required_providers: Sequence[str] | None = None,
     repo_slug: str = "",
+    release_pr: str = "",
 ) -> str:
     """Report a bounded conflict between an existing campaign and creation arguments.
 
@@ -6392,6 +6797,12 @@ def _existing_campaign_conflict(
     different matter -- it would repoint an in-flight campaign's dispatch and
     polling at another repository, so a mismatch against a non-empty stored slug
     is rejected here instead.
+
+    ``release_pr`` follows exactly the same fill-once rule, and for the same
+    reason: the linked release pull request is an allowed *result discovery
+    surface*, so repointing it on an in-flight campaign would start accepting
+    provider results from a pull request the campaign was never qualified
+    against.
     """
     stored_slug = str(campaign.get("repo_slug") or "")
     if repo_slug and stored_slug and repo_slug != stored_slug:
@@ -6399,6 +6810,9 @@ def _existing_campaign_conflict(
             f"--repo-slug {repo_slug!r} does not match existing campaign repo slug "
             f"{stored_slug!r}; an existing campaign's repository is fixed once set"
         )
+    release_pr_conflict = _release_pr_link_conflict(campaign, release_pr)
+    if release_pr_conflict:
+        return release_pr_conflict
     stored_context = str(campaign.get("qualification_context") or "cold_install")
     if qualification_context and qualification_context != stored_context:
         return (
@@ -6492,6 +6906,7 @@ def campaign_command(
     repo_path: Path | None = None,
     repo_slug: str = "",
     issue: str | int = "",
+    release_pr: str = "",
     apply: bool = False,
     resume: bool = False,
     status: bool = False,
@@ -6611,6 +7026,7 @@ def campaign_command(
         required_providers=required_providers,
         dispose_provider=dispose_provider,
         unavailable_reason=unavailable_reason,
+        release_pr=str(release_pr or ""),
     )
     if conflict:
         print(f"error: {conflict}", file=err)
@@ -6625,6 +7041,15 @@ def campaign_command(
     )
     if disposition_conflict:
         print(f"error: {disposition_conflict}", file=err)
+        return 1
+
+    # A malformed linked release PR is refused before any lock, lookup, or
+    # mutation, exactly like a malformed campaign id: the value becomes a
+    # polled discovery surface, so it is never stored unvalidated.
+    try:
+        release_pr = validate_release_pr(release_pr)
+    except ValueError as exc:
+        print(f"error: {exc}", file=err)
         return 1
 
     parsed_required_providers: tuple[str, ...] | None = None
@@ -6714,6 +7139,7 @@ def campaign_command(
             package_source=package_source,
             repo_slug=repo_slug,
             issue=issue,
+            release_pr=release_pr,
             apply=apply,
             resume=resume,
             status=status,
@@ -6769,6 +7195,7 @@ def _campaign_command_impl(
     package_source: str = "",
     repo_slug: str = "",
     issue: str | int = "",
+    release_pr: str = "",
     apply: bool = False,
     resume: bool = False,
     status: bool = False,
@@ -6919,6 +7346,22 @@ def _campaign_command_impl(
         if not record_provider:
             print("error: --record-provider required when recording result", file=sys.stderr)
             return 1
+        # Recording a manual result is a campaign write, and so is linking the
+        # release pull request -- so a `--release-pr` spelled alongside
+        # `--record-result` is honored here on exactly the fill-once terms the
+        # resume/dispatch route below uses, rather than being accepted by
+        # validation and then dropped by this branch's early return. Linking
+        # first is what makes it useful: the provider recorded by hand is
+        # settled locally, and the *remaining* providers' results are then
+        # discoverable on the linked surface by the next watch. The link is an
+        # independently validated fact, so it stands whether or not the result
+        # file that follows turns out to be recordable -- exactly as the stored
+        # slug and PR stand ahead of an advance that may itself fail below.
+        release_pr_conflict = _release_pr_link_conflict(existing, release_pr)
+        if release_pr_conflict:
+            print(f"error: {release_pr_conflict}", file=sys.stderr)
+            return 1
+        _link_release_pr(existing, release_pr, campaigns_dir=campaigns_dir)
         try:
             updated = record_manual_result(
                 existing,
@@ -7017,6 +7460,7 @@ def _campaign_command_impl(
             providers=providers,
             required_providers=required_providers,
             repo_slug=repo_slug,
+            release_pr=release_pr,
         )
         if conflict:
             print(f"error: {conflict}", file=sys.stderr)
@@ -7043,6 +7487,10 @@ def _campaign_command_impl(
             # campaign's identity.
             existing["repo_slug"] = repo_slug
             save_campaign(existing, campaigns_dir)
+        # A mismatch against a stored PR was already rejected as a conflict
+        # above, so this only ever fills an empty value -- before advancing, so
+        # this run's own poll already reads the linked surface.
+        _link_release_pr(existing, release_pr, campaigns_dir=campaigns_dir)
         updated = dispatch_or_advance_campaign(
             existing,
             apply=apply,
@@ -7099,6 +7547,7 @@ def _campaign_command_impl(
             required_providers=required_providers,
             repo_slug=repo_slug,
             campaign_id=campaign_id,
+            release_pr=release_pr,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

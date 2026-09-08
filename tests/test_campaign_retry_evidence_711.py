@@ -1658,5 +1658,81 @@ class HistoryTimestampValidationTests(unittest.TestCase):
         )
 
 
+class ArchivedResultSourceTests(unittest.TestCase):
+    """An archived result source keeps provenance and nothing else."""
+
+    def test_valid_source_survives_in_a_retained_entry(self) -> None:
+        entry = release_campaigns._sanitize_attempt_history_entry(
+            {
+                "attempted_at": OLD_TS,
+                "dispatched_at": OLD_TS,
+                "completed_at": OLD_DONE_TS,
+                "state": "complete",
+                "outcome": "pass",
+                "error": "",
+                "elapsed_seconds": 1.0,
+                "result_source": {
+                    "surface": "pull_request",
+                    "number": "786",
+                    "duplicate_surfaces": 1,
+                    "conflicting_surfaces": 0,
+                },
+            }
+        )
+        assert entry is not None
+        self.assertEqual(
+            entry["result_source"],
+            {
+                "surface": "pull_request",
+                "number": "786",
+                "duplicate_surfaces": 1,
+                "conflicting_surfaces": 0,
+            },
+        )
+
+    def test_hand_edited_sources_are_bounded_or_dropped(self) -> None:
+        """Storage is untrusted: a source is rebuilt, never copied verbatim."""
+        for unusable in (
+            None,
+            "pull_request#786",
+            ["pull_request", "786"],
+            {"surface": "wiki", "number": "786"},
+            {"surface": "pull_request", "number": "786 --repo owner/other"},
+            {"surface": "pull_request", "number": "0"},
+            {"surface": "pull_request", "number": "9" * 5000},
+            {"surface": "pull_request", "number": {"nested": "mapping"}},
+            {"number": "786"},
+        ):
+            self.assertIsNone(
+                release_campaigns._sanitize_result_source(unusable),
+                f"unusable source retained: {unusable!r}",
+            )
+
+        smuggled = release_campaigns._sanitize_result_source(
+            {
+                "surface": "issue",
+                "number": 784,
+                "duplicate_surfaces": -3,
+                "conflicting_surfaces": 10**9,
+                "body": "BEGIN PRIVATE TRANSCRIPT",
+                "secret_token": "[REDACTED]",
+            }
+        )
+        self.assertEqual(
+            smuggled,
+            {
+                "surface": "issue",
+                "number": "784",
+                "duplicate_surfaces": 0,
+                "conflicting_surfaces": (
+                    release_campaigns.MAX_RESULT_SOURCE_SURFACE_COUNT
+                ),
+            },
+        )
+        self.assertEqual(
+            set(smuggled), release_campaigns.RESULT_SOURCE_FIELDS
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

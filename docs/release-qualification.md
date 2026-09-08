@@ -296,7 +296,7 @@ Supported placeholders: `{command}` (resolved binary), `{release_tag}`, `{packag
 
 Codex campaign runs use an isolated `CODEX_HOME` at `~/.config/code-mower/provider-homes/codex` (override with `CODE_MOWER_CODEX_CAMPAIGN_HOME`). Code Mower creates its non-secret restricted config automatically and refuses a readable `auth.json`. Authenticate that home once with `CODEX_HOME="$HOME/.config/code-mower/provider-homes/codex" codex login --device-auth -c 'cli_auth_credentials_store="keyring"' --enable secret_auth_storage`; the explicit login flags make Codex store that home-specific credential in the OS keyring even before Code Mower has created the config file. The adapter preserves the real OS `HOME` only so the platform keyring can locate the user's login keychain; Codex configuration and state remain isolated under `CODEX_HOME`, ambient token variables are removed, and the root-deny policy lets the agent write only its disposable workspace. Network remains available for package installation. A previous result file is removed before every adapter attempt, and a failed run never leaves stale evidence for a caller to accept.
 
-An explicit `--retry-provider` never accepts a pre-existing result file for that provider -- the stale file is removed before the new attempt runs, so a retry can only be satisfied by fresh evidence. A retry advances only the retried provider: every other participant keeps its recorded state, evidence, and attempt, dispatch, and completion timestamps (aggregate campaign fields still recompute), and newly arrived evidence for them waits for the next ordinary resume. The superseded attempt leaves one bounded metadata-only summary per retry (`attempt_history`, most recent 5: timestamps, state, outcome, error code, and elapsed time -- never results, output, paths, or secrets). Retained entries are rebuilt from those allowed scalar fields on every retry, so a malformed or hand-edited stored history is sanitized (unknown/nested fields dropped, malformed entries discarded) rather than copied verbatim.
+An explicit `--retry-provider` never accepts a pre-existing result file for that provider -- the stale file is removed before the new attempt runs, so a retry can only be satisfied by fresh evidence. A retry advances only the retried provider: every other participant keeps its recorded state, evidence, and attempt, dispatch, and completion timestamps (aggregate campaign fields still recompute), and newly arrived evidence for them waits for the next ordinary resume. The superseded attempt leaves one bounded metadata-only summary per retry (`attempt_history`, most recent 5: timestamps, state, outcome, error code, elapsed time, and -- when the superseded result was discovered on a linked surface -- its `result_source` -- never results, output, paths, or secrets). Retained entries are rebuilt from those allowed fields on every retry, so a malformed or hand-edited stored history is sanitized (unknown/nested fields dropped, malformed entries discarded, an unusable `result_source` dropped) rather than copied verbatim.
 
 ### macOS Claude sandbox certificate path
 
@@ -335,7 +335,7 @@ Code Mower maintainers shipping a built-in adapter for a provider instead add `c
 
 Hosted / SaaS providers (`hosted_bridge`/`saas_event` driver: Devin, Cursor Cloud Agent) use provider-specific remote transports instead of a local adapter. Every hosted dispatch follows a closed five-check profile: auth, exact repository installation/scope, trigger, trusted result return, and a bounded response wait. Doctor reports each check independently, and a dry-run with an unverified transport or result-return path reports the provider `unavailable` with exact remediation instead of previewing it queued. Only an explicit `--apply` dispatches; silence past the deadline becomes `hosted_response_timeout` evidence, and only an explicit `--retry-provider` may dispatch again. Paid work is never retried automatically.
 
-- Cursor Cloud Agent uses a GitHub issue comment. Configure `CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN` (or `GITHUB_TOKEN`), supply `--issue <number>` and `--repo-slug <OWNER/REPO>`, and acknowledge its verified App transport as described below. Without both identifiers, no comment is posted. Dry-run judges the same prerequisite as `--apply`.
+- Cursor Cloud Agent uses a GitHub issue comment. Configure `CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN` (or `GITHUB_TOKEN`), supply `--issue <number>` and `--repo-slug <OWNER/REPO>`, and acknowledge its verified App transport as described below. Without both identifiers, no comment is posted. Dry-run judges the same prerequisite as `--apply`. Add `--release-pr <number>` to link the release pull request as a second allowed result surface (see below); dispatch and trigger comments still go only to the campaign issue.
 - Hosted Devin uses the Sessions API v3. Configure `DEVIN_API_KEY`, `DEVIN_ORG_ID`, and `CODE_MOWER_DEVIN_REPOSITORIES`; supply `--repo-slug <OWNER/REPO>`. An issue number is optional audit evidence and never triggers the session. See Devin Setup below.
 
 For issue-comment transports such as Cursor Cloud Agent:
@@ -343,6 +343,9 @@ For issue-comment transports such as Cursor Cloud Agent:
 - The dispatch comment states exactly what will be accepted. For an upgrade campaign it carries the campaign's exact `starting_version` in both the machine-readable `code_mower.releaseCampaignDispatch.v1` marker and the human-facing instructions, so a remote runner never has to guess which starting version to qualify from. Cold-install (and `unknown`) campaigns have no starting version and omit the field. An upgrade campaign whose stored `starting_version` is missing is never dispatched at all: the provider stays `unavailable` with the bounded `campaign_identity_incomplete` error code and no comment is posted.
 - The provider's reply comment must embed a `CODE_MOWER_ADOPTION_RESULT` marker as a single-line HTML comment on a line of its own (`<!-- CODE_MOWER_ADOPTION_RESULT: {...} -->`), wrapping schema `code_mower.releaseCampaignResult.v1` with `campaign_id`, `provider`, `release_tag`, and `idempotency_key` matching the original dispatch, plus a validated `adoption_result`. A bare or unbound result is ignored so a stale or unrelated comment can never be replayed as evidence. The embedded `adoption_result`'s own `qualification_context` and `starting_version` must also match the campaign's exactly, independent of the wrapper's idempotency key -- a cold-install result cannot complete an upgrade campaign, and an upgrade result from one starting version cannot complete a same-tag upgrade campaign from a different starting version. The marker line is matched end to end and its JSON is captured through the object's own final brace, so a literal `-->` inside a permitted string value cannot truncate an otherwise valid trusted result; a marker whose JSON is genuinely malformed is still ignored (fail-closed), never guessed at.
 - These identity fields are visible in the public dispatch comment, so binding alone does not prove authorship -- anyone could reply with a matching marker. A result marker is only ever accepted from a GitHub comment author present in the lane's `provider_config.bot_authors` list (and, if configured, the comma-separated login list in the environment variable named by `provider_config.bot_authors_env`). A lane with no trusted authors configured trusts nobody; an untrusted or spoofed author's comment is ignored and the provider keeps running.
+- A hosted provider may answer on the campaign issue **or** on the release pull request the campaign links with `--release-pr <number>`. Those two explicitly linked surfaces are the only places a result is ever looked for: discovery never searches other repository issues or pull requests, never follows a link found inside a comment, and always reads both surfaces in the campaign's own `--repo-slug` repository. A result found on the linked release PR is held to the identical trusted-author, marker schema, campaign id, provider, release tag, idempotency key, package identity, package source, qualification context, and exact starting-version checks as one found on the campaign issue -- being posted on the release PR grants it nothing.
+- The campaign issue takes precedence, and a provider that posts the same result on both surfaces is deduplicated: identical evidence completes the provider once and records no superseded attempt. The provider entry keeps a metadata-only `result_source` (`surface`, `number`, and the counts of additional surfaces carrying identical or differing evidence). No issue body, pull request body, or comment text is ever stored. `result_source` always describes the attempt whose result the entry currently holds: when a later attempt supersedes that result, the earlier source is archived with it in `attempt_history` rather than left behind, so issue-versus-pull-request provenance stays auditable across a retry, a redispatch, or a `--record-result` recovery.
+- Surface failures stay non-fatal and diagnosable. An unreadable surface is recorded as the retryable `github_poll_unavailable` error (which `watch` reports as `remote_unavailable`), never as a rejected result; a valid result visible on the other surface is still accepted even while one surface is unreachable. Unrelated comments on either surface are ignored, and a trusted-but-mismatched marker still reports `hosted_result_rejected` with its bounded field-level reason.
 
 #### Cursor Cloud Agent Setup
 
@@ -392,6 +395,21 @@ The campaign posts a GitHub issue comment with schema `code_mower.releaseCampaig
 - `idempotency_key`
 
 Cursor Cloud Agent replies with a comment containing `<!-- CODE_MOWER_ADOPTION_RESULT: {...} -->` wrapping schema `code_mower.releaseCampaignResult.v1`. The embedded `adoption_result` must match the campaign's provider, release tag, package identity, qualification context, and (for upgrades) starting version.
+
+**Linked release PR results:**
+The hosted agent sometimes answers on the release pull request linked to the campaign rather than on the campaign issue. Record that pull request with `--release-pr <number>` and `watch` discovers a trusted result on either surface, with no manual prompt copying or result transcription:
+
+```bash
+code-mower release campaign dispatch \
+  --release-tag v1.0.0 \
+  --providers cursor_cloud_agent \
+  --issue 123 \
+  --release-pr 124 \
+  --repo-slug owner/repo \
+  --apply
+```
+
+`--release-pr` may also be supplied on a later `resume`/`dispatch` to fill a campaign created before the release PR existed. Like `--repo-slug`, it is fixed once set: a value that disagrees with the stored one is rejected rather than repointing an in-flight campaign at another pull request. It is a write, so it is refused on the read-only `status`, `watch`, and `upload` actions -- record it first, then watch. Only a positive pull request number is accepted (no URLs), and a stored value outside that grammar is ignored rather than polled. Spelling it alongside `--record-result` is honored on the same terms rather than dropped: the pull request is validated and linked first, then the manual result is recorded, so a provider settled by hand and the providers still outstanding on the linked PR can be handled in one invocation.
 
 **Trusted authors:**
 - `cursor[bot]`, `cursor` (registry defaults)
@@ -600,8 +618,10 @@ The normal release qualification sequence consists of three steps: **dispatch**,
 Create and dispatch qualification tasks to automated local adapters and hosted providers:
 
 ```bash
-code-mower release campaign dispatch --release-tag v1.0.0 --apply --repo-slug OWNER/REPO --issue 123
+code-mower release campaign dispatch --release-tag v1.0.0 --apply --repo-slug OWNER/REPO --issue 123 --release-pr 124
 ```
+
+`--release-pr` is optional and links the release pull request for this tag as a second allowed result surface, so a hosted provider that answers there instead of on the campaign issue is still discovered by `watch`.
 
 Any provider without an automated adapter, credentials, or a bound remote result stays `unavailable`/manual. Record its verified result explicitly once qualification has occurred:
 
@@ -611,7 +631,7 @@ code-mower release campaign --release-tag v1.0.0 \
   --record-provider codex
 ```
 
-The recorded file is validated against the same closed schema as automated results.
+The recorded file is validated against the same closed schema as automated results. `--record-result` also remains the documented recovery path for a hosted result that neither linked surface carries -- for example one posted somewhere else entirely, or on a release PR the campaign never recorded. It preserves the provider-authored payload exactly and is never required just because the provider chose the linked release PR.
 
 #### 2. Watch
 
@@ -639,6 +659,7 @@ code-mower release campaign watch --release-tag v1.0.0 --json
   - `invalid_campaign` (exit 1): Campaign is missing, malformed, ambiguous, or invalid arguments were supplied.
 - **Clean output & no-change suppression:** Text mode prints the initial campaign state, real state transitions (ticks without state changes are suppressed), and a final result line with actionable retry guidance.
 - **Stable JSON contract:** `--json` mode emits one stable metadata-only final summary adhering to `code_mower.releaseCampaignWatch.v1` containing campaign metadata, duration metrics, transition records, provider statuses, and retry guidance.
+- **Linked surfaces:** Each poll reads the campaign issue and, when the campaign records one, the linked release pull request, under identical trusted-result checks. Watch itself takes no `--release-pr`: it reads the linked surface from the stored campaign, so record it on `create`, `resume`, or `dispatch` first.
 - **Safe polling:** Watching never executes adapters, posts dispatches, retries providers, or uploads, but it may persist newly observed remote provider transitions through the existing poll path. It takes the campaign directory lock only during each individual poll read/update rather than holding it continuously, preserving Board readability and directory accessibility.
 
 #### 3. Upload
