@@ -199,23 +199,51 @@ project automation rule can fire on the assignment this run just made and
 move the issue's status or move the issue to another project — so a single
 shared snapshot would let the transition act on state an earlier operation
 had already invalidated. A transition the live workflow no longer offers or
-a lost permission blocks with a closed reason instead of guessing, and a
-refresh that fails, leaves the configured project, or resolves to a
-different issue id stops the run: the remaining operations are skipped
-without another mutation.
+a lost permission blocks with a closed reason instead of guessing.
+
+#### The write scope invariant
+
+Per-operation validation is still not enough, because **one operation is not
+one write**. A comment acquires a claim property, posts, and then finalizes
+that claim, and an apply ends with the advisory ledger `PUT` after the last
+operation — so automation has windows to move the issue *between* two writes
+this run has already decided to make.
+
+The invariant therefore lives at the transport boundary rather than in the
+handlers. After preflight, the client is **armed** once with the validated
+issue reference, the immutable numeric issue id, and the configured project
+id. Immediately before every write attempt that would leave the process, the
+client performs a fresh bounded read of that issue and requires:
+
+- the live `fields.project.id` to be present and exactly equal to the
+  configured `tracker.jira_cloud.project_id`, and
+- the live issue id to still be the armed one, and
+- the write's own path to target the armed issue.
+
+Nothing is cached, and no handler opts in: the check sits between the
+transport and the HTTP runner, so it covers assignment, transition, remote
+link, the comment claim acquire, the comment `POST`, the claim finalization,
+and the ledger `PUT` alike. A client that was never armed refuses every
+write (`write_guard_unarmed`), and an apply disarms its client when it
+returns.
+
+A refused write is refused *before it is sent*: it never reaches Jira, it is
+not counted in `write_request_count`, the remaining operations are skipped,
+and the ledger `PUT` is not attempted either (`ledger_status:
+refused_<reason>`). The operation carries the closed reason in
+`detail.scope_refusal`; there is no source, prose, auth material, or raw
+response anywhere in it.
+
+Scope is proven, never assumed. An empty, absent, or unreadable project id is
+unauthorized (`issue_out_of_scope`) — it is not evidence that the issue sits
+in the configured project — and an unresolved configured project id blocks
+before the first operation, so such a run costs zero writes.
 
 Every write receives one transport attempt. Reads retain bounded retries,
 but a write is never retried inside the transport because its original scope
 authorization may already be stale. After an ambiguous timeout, rate limit,
 or server error, a later apply begins again with fresh identity and project
 validation and reconciles the live effect before deciding whether to write.
-
-Scope is proven, never assumed. Every one of those reads requires the live
-`fields.project.id` to be present and exactly equal to the configured
-`tracker.jira_cloud.project_id`. An empty, absent, or unreadable project id
-is unauthorized (`issue_out_of_scope`) — it is not evidence that the issue
-sits in the configured project — and an unresolved configured project id
-blocks before the first operation, so such a run costs zero writes.
 
 A lifecycle category configured with a transition id but with no ids under
 `status_category_map` is refused during **planning**, with
@@ -311,6 +339,18 @@ Sequence, and what each outcome means:
   `unverified` and the operation reports `comment_unverified` with the closed
   transport cause in `detail.post_error`. One owner reconciliation, never a
   repost.
+- the issue leaves scope after the claim landed but before the post → the
+  post never leaves this process, and the claim is neither released nor
+  replayed. Releasing it would trade a comment that was never posted for the
+  chance of one posted twice. The operation reports `comment_unverified` with
+  report status `unverified`, `detail.claim_state: claimed`, and
+  `detail.scope_refusal`, and every later run reads that held claim back and
+  still refuses to post.
+- the issue leaves scope after the post but before the finalization → the
+  comment reports `applied` (it did land) with `detail.claim_state: claimed`,
+  the finalization and the ledger `PUT` are both refused, and a later run
+  reads the weaker `claimed` state and reports `unverified` rather than
+  reposting.
 
 Nothing records a comment intent before the comment step runs, so an
 assignment, transition, or link that fails first cannot leave a claim behind

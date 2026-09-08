@@ -563,12 +563,19 @@ class TransportRetryPolicyTests(unittest.TestCase):
 
     def _attempt_count(self, route: tuple[str, str], responses: Any, call: Any) -> int:
         sleeps: list[float] = []
-        runner = RouteHttp({route: responses})
+        # Every write re-proves its armed scope with a fresh read first, so
+        # the runner answers that read too; only the write route is counted.
+        runner = RouteHttp(
+            {("GET", ISSUE_PATH): ok(issue_response()), route: responses}
+        )
         client = make_client(runner, sleeps=sleeps, max_attempts=4)
+        client.arm_for_issue(issue_ref=ISSUE, issue_id=ISSUE_ID, project_id=PROJECT_ID)
         with self.assertRaises(jira_cloud.JiraApiError):
             call(client)
         self.assertEqual(sleeps, [], "a single-attempt write must not back off")
-        return len(runner.calls)
+        return len(
+            [call_ for call_ in runner.calls if (call_["method"], call_["path"]) == route]
+        )
 
     def test_comment_post_is_attempted_once_after_an_ambiguous_failure(self) -> None:
         for label, responses in self.AMBIGUOUS_FAILURES.items():
@@ -615,11 +622,23 @@ class TransportRetryPolicyTests(unittest.TestCase):
         )
         for route, call in writes:
             with self.subTest(route=route):
-                runner = RouteHttp({route: [error(503)] * 4})
+                runner = RouteHttp(
+                    {("GET", ISSUE_PATH): ok(issue_response()), route: [error(503)] * 4}
+                )
                 client = make_client(runner, sleeps=[], max_attempts=4)
+                client.arm_for_issue(
+                    issue_ref=ISSUE, issue_id=ISSUE_ID, project_id=PROJECT_ID
+                )
                 with self.assertRaises(jira_cloud.JiraApiError):
                     call(client)
-                self.assertEqual(len(runner.calls), 1)
+                self.assertEqual(
+                    [
+                        (item["method"], item["path"])
+                        for item in runner.calls
+                        if (item["method"], item["path"]) == route
+                    ],
+                    [route],
+                )
 
     def test_the_retry_policy_seam_retries_only_reads(self) -> None:
         client = make_client(ExplodingHttp(), max_attempts=4)
@@ -663,9 +682,15 @@ class TransportRetryPolicyTests(unittest.TestCase):
         for status, acquired in ((201, True), (200, False)):
             with self.subTest(status=status):
                 runner = RouteHttp(
-                    {("PUT", claim_path("claimed")): empty(status=status)}
+                    {
+                        ("GET", ISSUE_PATH): ok(issue_response()),
+                        ("PUT", claim_path("claimed")): empty(status=status),
+                    }
                 )
                 client = make_client(runner)
+                client.arm_for_issue(
+                    issue_ref=ISSUE, issue_id=ISSUE_ID, project_id=PROJECT_ID
+                )
                 self.assertEqual(
                     client.acquire_comment_claim(
                         ISSUE, fingerprint, template="claimed", owner="0" * 16
@@ -1270,10 +1295,12 @@ class PerOperationStateRefreshTests(unittest.TestCase):
         self.assertEqual(self._transition_posts(jira), [])
 
     def test_a_failed_refresh_after_assignment_stops_without_another_write(self) -> None:
-        # The first issue read succeeds; every later one is unavailable, so
-        # the transition never learns whether its snapshot still holds.
+        # Preflight, the assignment's own state read, and the transport's
+        # scope re-read immediately before the assignee PUT all succeed;
+        # every later read is unavailable, so the transition never learns
+        # whether its snapshot still holds.
         jira = FakeJira(
-            status_id="1", faults={("GET", "issue"): [None, None, error(503)]}
+            status_id="1", faults={("GET", "issue"): [None, None, None, error(503)]}
         )
         code, report, _ = run_cli(self.COMBINED, runner=jira)
         self.assertEqual(code, 1)
@@ -1346,6 +1373,311 @@ class ProjectScopeTests(unittest.TestCase):
         self.assertEqual(
             jira_mutations._issue_scope_violation({"id": ISSUE_ID, "project_id": ""}, ""),
             ("blocked", "issue_out_of_scope"),
+        )
+
+
+class ScopeChangeAfter:
+    """Move the issue out of scope the moment one physical write reaches Jira.
+
+    Real automation fires on a write, and one operation is several writes: a
+    comment acquires a claim property, posts, and finalizes that claim, and
+    an apply ends with an advisory ledger PUT. Each gap between two of those
+    is a window a per-operation check leaves open, so each is triggered here
+    by the write that opens it.
+    """
+
+    def __init__(
+        self, method: str, suffix: str, *, project_id: str = "", issue_id: str = ""
+    ) -> None:
+        self.method = method
+        self.suffix = suffix
+        self.project_id = project_id
+        self.issue_id = issue_id
+        self.fired = False
+
+    def __call__(self, jira: FakeJira, method: str, path: str) -> None:
+        if self.fired or method != self.method or not path.endswith(self.suffix):
+            return
+        self.fired = True
+        if self.project_id:
+            jira.project_id = self.project_id
+        if self.issue_id:
+            jira.issue_id = self.issue_id
+
+
+class TransportWriteScopeTests(unittest.TestCase):
+    """Scope is re-proven before every physical write, not once per operation.
+
+    Validating once per operation is not enough, because a handler performs
+    several writes and the apply performs one more after the last handler.
+    The invariant therefore lives on the transport attempt path: the client
+    is armed once with the proven issue identity and configured project, and
+    every write attempt re-reads that issue first. These tests drive the
+    windows a per-operation check cannot see, and assert against the Jira
+    call log that the out-of-scope write never happened.
+    """
+
+    COMMENT = ["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"]
+    CLAIM_AND_COMMENT = [
+        "mutate", "--issue", ISSUE, "--claim", "--comment", "claimed", "--apply",
+    ]
+    FULL = [
+        "mutate", "--issue", ISSUE,
+        "--claim",
+        "--transition", "in_progress",
+        "--link-pr",
+        "--comment", "pr_opened",
+        "--pr-url", PR_URL,
+        "--apply",
+    ]
+
+    def test_every_write_is_immediately_preceded_by_a_scope_read(self) -> None:
+        """The systemic invariant, asserted over a whole four-operation run.
+
+        No handler opts in and none can forget: the check sits between the
+        transport and the runner, so it is the last thing that happens before
+        any write leaves this process.
+        """
+        jira = FakeJira(status_id="1")
+        code, _, _ = run_cli(self.FULL, runner=jira)
+        self.assertEqual(code, 0)
+        writes = [
+            index
+            for index, call in enumerate(jira.calls)
+            if call["method"] in ("PUT", "POST")
+        ]
+        # All four operations wrote, plus the claim finalize and the ledger.
+        self.assertEqual(len(writes), 7)
+        for index in writes:
+            self.assertGreater(index, 0, "a write was the very first request")
+            previous = jira.calls[index - 1]
+            self.assertEqual(
+                (previous["method"], previous["path"]),
+                ("GET", ISSUE_PATH),
+                f"{jira.calls[index]['method']} {jira.calls[index]['path']} "
+                "was not preceded by a fresh scope read",
+            )
+
+    # -- After the claim acquire, before the comment post -----------------
+
+    def test_a_project_move_after_the_claim_never_posts_the_comment(self) -> None:
+        jira = FakeJira(
+            before_request=ScopeChangeAfter(
+                "PUT", claim_path("claimed"), project_id="99999"
+            )
+        )
+        code, report, _ = run_cli(self.COMMENT, runner=jira)
+        self.assertEqual(code, 1)
+        # The post never left this process, and nothing else did either: the
+        # claim acquire is the only write that ever reached Jira.
+        self.assertEqual(jira.comment_posts(), [])
+        self.assertEqual(
+            [call["path"] for call in jira.write_calls()], [claim_path("claimed")]
+        )
+        self.assertEqual(report["write_request_count"], 1)
+        self.assertEqual(report["ledger_status"], "refused_issue_out_of_scope")
+        # The claim did land, so it is reported held rather than released or
+        # replayed -- releasing it is what would let a later run post twice.
+        self.assertEqual(jira.claim("claimed")["state"], "claimed")
+        comment = operation(report, "comment")
+        self.assertEqual(comment["status"], "unverified")
+        self.assertEqual(comment["reason"], "comment_unverified")
+        self.assertEqual(comment["detail"]["claim_state"], "claimed")
+        self.assertEqual(comment["detail"]["scope_refusal"], "issue_out_of_scope")
+        self.assertIn("by hand", report["next_action"])
+
+    def test_the_held_claim_still_suppresses_every_later_run(self) -> None:
+        jira = FakeJira(
+            before_request=ScopeChangeAfter(
+                "PUT", claim_path("claimed"), project_id="99999"
+            )
+        )
+        run_cli(self.COMMENT, runner=jira)
+        # The issue comes back into scope and the automation is gone.
+        jira.before_request = None
+        jira.project_id = PROJECT_ID
+        code, report, _ = run_cli(self.COMMENT, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "comment")["reason"], "comment_unverified")
+        self.assertEqual(jira.comment_posts(), [])
+
+    def test_an_identity_change_after_the_claim_never_posts_the_comment(self) -> None:
+        jira = FakeJira(
+            before_request=ScopeChangeAfter(
+                "PUT", claim_path("claimed"), issue_id="20202"
+            )
+        )
+        code, report, _ = run_cli(self.COMMENT, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(jira.comment_posts(), [])
+        self.assertEqual(
+            [call["path"] for call in jira.write_calls()], [claim_path("claimed")]
+        )
+        comment = operation(report, "comment")
+        self.assertEqual(comment["status"], "unverified")
+        self.assertEqual(comment["detail"]["claim_state"], "claimed")
+        self.assertEqual(
+            comment["detail"]["scope_refusal"], "issue_identity_unresolved"
+        )
+
+    # -- After the comment post, before the claim finalize ----------------
+
+    def test_a_project_move_after_the_post_finalizes_nothing(self) -> None:
+        jira = FakeJira(
+            before_request=ScopeChangeAfter(
+                "POST", "/comment", project_id="99999"
+            )
+        )
+        code, report, _ = run_cli(self.CLAIM_AND_COMMENT, runner=jira)
+        # Every operation the operator asked for did complete while the issue
+        # was in scope, so they report honestly as applied. What the refusal
+        # stopped is the bookkeeping that would have followed.
+        self.assertEqual(code, 0)
+        self.assertEqual(len(jira.comment_posts()), 1)
+        self.assertEqual(
+            [call["path"] for call in jira.write_calls()],
+            [
+                f"{ISSUE_PATH}/assignee",
+                claim_path("claimed"),
+                f"{ISSUE_PATH}/comment",
+            ],
+        )
+        # No second claim PUT and no ledger PUT, however much the assignment
+        # gave the ledger to say.
+        self.assertNotIn(LEDGER_PATH, jira.paths("PUT"))
+        self.assertEqual(report["ledger_status"], "refused_issue_out_of_scope")
+        comment = operation(report, "comment")
+        self.assertEqual(comment["status"], "applied")
+        self.assertEqual(comment["detail"]["claim_state"], "claimed")
+        self.assertEqual(comment["detail"]["scope_refusal"], "issue_out_of_scope")
+        # The claim keeps the weaker state, which is what a later run reads.
+        self.assertEqual(jira.claim("claimed")["state"], "claimed")
+
+    def test_an_identity_change_after_the_post_finalizes_nothing(self) -> None:
+        jira = FakeJira(
+            before_request=ScopeChangeAfter("POST", "/comment", issue_id="20202")
+        )
+        code, report, _ = run_cli(self.COMMENT, runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(jira.comment_posts()), 1)
+        self.assertEqual(
+            [call["path"] for call in jira.write_calls()],
+            [claim_path("claimed"), f"{ISSUE_PATH}/comment"],
+        )
+        self.assertEqual(jira.claim("claimed")["state"], "claimed")
+        self.assertEqual(
+            operation(report, "comment")["detail"]["scope_refusal"],
+            "issue_identity_unresolved",
+        )
+
+    # -- After the last operation, before the ledger PUT -------------------
+
+    def test_a_project_move_before_the_ledger_write_refuses_it(self) -> None:
+        jira = FakeJira(
+            before_request=ScopeChangeAfter("PUT", "/assignee", project_id="99999")
+        )
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--claim", "--apply"], runner=jira
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "assign")["status"], "applied")
+        # The assignment is the only write that ever reached Jira: the ledger
+        # PUT sits outside every per-operation check and is guarded anyway.
+        self.assertEqual(
+            [call["path"] for call in jira.write_calls()],
+            [f"{ISSUE_PATH}/assignee"],
+        )
+        self.assertEqual(jira.properties, {})
+        self.assertEqual(report["ledger_status"], "refused_issue_out_of_scope")
+        self.assertEqual(report["write_request_count"], 1)
+
+    def test_an_identity_change_before_the_ledger_write_refuses_it(self) -> None:
+        jira = FakeJira(
+            before_request=ScopeChangeAfter("PUT", "/assignee", issue_id="20202")
+        )
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--claim", "--apply"], runner=jira
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(jira.properties, {})
+        self.assertEqual(report["ledger_status"], "refused_issue_identity_unresolved")
+
+    # -- Arming ------------------------------------------------------------
+
+    def test_an_unarmed_client_refuses_every_write_without_a_request(self) -> None:
+        jira = FakeJira()
+        client = make_client(jira)
+        fingerprint = comment_fingerprint("claimed")
+        owner = "0" * 16
+        attempts = (
+            lambda: client.assign_issue(ISSUE, ACCOUNT_ID),
+            lambda: client.transition_issue(ISSUE, "31"),
+            lambda: client.link_pull_request(ISSUE, PR_URL),
+            lambda: client.acquire_comment_claim(
+                ISSUE, fingerprint, template="claimed", owner=owner
+            ),
+            lambda: client.add_templated_comment(
+                ISSUE, "claimed", pr_url="", fingerprint=fingerprint
+            ),
+            lambda: client.finalize_comment_claim(
+                ISSUE, fingerprint, template="claimed", owner=owner, state="posted"
+            ),
+            lambda: client.set_mutation_ledger(ISSUE, {"entries": {}}),
+        )
+        for attempt in attempts:
+            with self.assertRaises(jira_mutations.WriteScopeRefused) as caught:
+                attempt()
+            self.assertEqual(caught.exception.reason, "write_guard_unarmed")
+        # Not one request left the process, so not even the guard read ran.
+        self.assertEqual(jira.calls, [])
+        self.assertEqual(client.write_attempts, 0)
+        # Reads are unaffected: they cannot change anything.
+        self.assertEqual(client.get_issue_state(ISSUE)["id"], ISSUE_ID)
+
+    def test_a_write_aimed_at_another_issue_is_refused(self) -> None:
+        jira = FakeJira()
+        client = make_client(jira)
+        client.arm_for_issue(
+            issue_ref=ISSUE, issue_id=ISSUE_ID, project_id=PROJECT_ID
+        )
+        with self.assertRaises(jira_mutations.WriteScopeRefused) as caught:
+            client.assign_issue("ABC-2", ACCOUNT_ID)
+        self.assertEqual(caught.exception.reason, "issue_out_of_scope")
+        self.assertEqual(jira.calls, [])
+
+    def test_the_client_is_disarmed_once_the_apply_returns(self) -> None:
+        """One armed scope belongs to one apply, and does not outlive it."""
+        jira = FakeJira()
+        client = make_client(jira)
+        report = jira_mutations.apply_mutation_plan(
+            jira_mutations.build_mutation_plan(
+                load_config(),
+                jira_mutations.MutationRequest(issue_ref=ISSUE, claim=True),
+                apply_requested=True,
+            ),
+            client,
+        )
+        self.assertEqual(operation(report, "assign")["status"], "applied")
+        with self.assertRaises(jira_mutations.WriteScopeRefused) as caught:
+            client.assign_issue(ISSUE, ACCOUNT_ID)
+        self.assertEqual(caught.exception.reason, "write_guard_unarmed")
+
+    def test_arming_rejects_anything_but_proven_immutable_identity(self) -> None:
+        client = make_client(FakeJira())
+        for kwargs in (
+            {"issue_ref": "../admin", "issue_id": ISSUE_ID, "project_id": PROJECT_ID},
+            {"issue_ref": ISSUE, "issue_id": "", "project_id": PROJECT_ID},
+            {"issue_ref": ISSUE, "issue_id": ISSUE, "project_id": PROJECT_ID},
+            {"issue_ref": ISSUE, "issue_id": ISSUE_ID, "project_id": ""},
+            {"issue_ref": ISSUE, "issue_id": ISSUE_ID, "project_id": "ABC"},
+        ):
+            with self.assertRaises(jira_mutations.MutationRequestError):
+                client.arm_for_issue(**kwargs)
+
+    def test_a_refusal_reason_outside_the_closed_set_widens_to_out_of_scope(self) -> None:
+        self.assertEqual(
+            jira_mutations.WriteScopeRefused("something else").reason,
+            "issue_out_of_scope",
         )
 
 
@@ -1972,6 +2304,11 @@ class WriteAttemptAccountingTests(unittest.TestCase):
 
     def test_the_counter_lives_at_the_transport_attempt_boundary(self) -> None:
         client = make_client(FakeJira())
+        # Counting happens on the same hook that re-proves the write scope,
+        # so the client has to be armed before a write can be counted.
+        client.arm_for_issue(
+            issue_ref=ISSUE, issue_id=ISSUE_ID, project_id=PROJECT_ID
+        )
         self.assertEqual(client.write_attempts, 0)
         client._on_request_attempt("GET", ISSUE_PATH)
         client._on_request_attempt("POST", "/rest/api/3/search/jql")

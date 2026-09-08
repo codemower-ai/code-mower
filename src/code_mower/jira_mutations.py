@@ -54,15 +54,28 @@ comment on the same issue can produce a second copy. A claim that exists but
 was never finalized reports ``unverified`` and asks an owner to reconcile
 that one comment by hand; it is never reposted automatically.
 
-Scope and state are re-established before every operation, not once per
-apply. An apply reads authoritative issue state immediately before each
-write and requires the live project id to be present and exactly equal to
-the configured ``project_id`` -- an empty or unreadable project id is
-unauthorized, never permission -- and the live issue id to still be the one
-this apply started against. So a Jira automation rule that fires on the
-assignment and moves the issue's status or project cannot be written over
-from the stale snapshot the run began with: the next operation blocks and
-the rest are skipped without another mutation.
+Scope is re-established before every *physical write*, not once per apply
+and not once per operation. One operation is not one write: a comment
+acquires a claim property, posts, and finalizes that claim, and the apply
+ends with an advisory ledger PUT, so a per-operation check still leaves
+windows where a Jira automation rule can move the issue between two writes
+this module has already decided to make.
+
+The invariant therefore lives at the transport boundary rather than in the
+handlers. :class:`JiraMutationClient` is armed once, after preflight, with
+the validated issue reference, the immutable numeric issue id, and the
+configured project id. Immediately before every write attempt that would
+leave the process, the client re-reads that issue and requires the live
+project id to be present and exactly equal to the configured ``project_id``
+-- an empty or unreadable project id is unauthorized, never permission --
+and the live issue id to still be the armed one. A write aimed at any other
+issue, or attempted on a client that was never armed, is refused before it
+is sent. No handler has to remember to ask.
+
+A refused write stops the run: the pending write never happens, the
+remaining operations are skipped, and the report carries a closed reason
+code. Because the refusal happens before the attempt leaves this process,
+it is not counted as a write attempt.
 
 Fingerprints are computed over the immutable numeric issue id, not the
 caller's spelling of the issue key, so ``abc-1``, ``ABC-1``, and a key the
@@ -225,6 +238,7 @@ REASON_CODES = frozenset(
         "issue_identity_unresolved",
         "account_unresolved",
         "issue_out_of_scope",
+        "write_guard_unarmed",
         "permission_denied",
         "unauthorized",
         "not_found",
@@ -268,6 +282,29 @@ _STATUS_SEVERITY = (
 
 class MutationRequestError(ValueError):
     """A malformed config or request, carrying a bounded operator message."""
+
+
+#: Closed vocabulary for a transport-boundary write refusal. Anything else
+#: collapses to ``issue_out_of_scope``, so an unexpected value can only ever
+#: make the refusal broader, never narrower.
+SCOPE_REFUSAL_REASONS = frozenset(
+    {"issue_out_of_scope", "issue_identity_unresolved", "write_guard_unarmed"}
+)
+
+
+class WriteScopeRefused(Exception):
+    """One physical write refused by the transport before it was sent.
+
+    Deliberately not a :class:`ValueError` and not a
+    :class:`~code_mower.jira_cloud.JiraApiError`: it is neither a malformed
+    request nor a transport failure, and it must not be swallowed by the
+    handlers that absorb either. It carries one closed reason code and
+    nothing else -- no path, no live Jira value, no response.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason if reason in SCOPE_REFUSAL_REASONS else "issue_out_of_scope"
+        super().__init__(self.reason)
 
 
 @dataclass(frozen=True)
@@ -837,18 +874,33 @@ _WRITE_ALLOW_LIST: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
+#: Every write this surface can issue is scoped to one issue by its path.
+#: The armed issue reference is matched against that segment so a write can
+#: never land on an issue other than the one preflight authorized.
+_ISSUE_WRITE_PATH_RE = re.compile(r"^/rest/api/3/issue/(?P<ref>[^/]+)(?:/.*)?$")
+
+
 class JiraMutationClient(jira_cloud.JiraReadClient):
     """Read client widened to a closed, guarded Jira write allow-list.
 
     Constructing this class does not authorize anything: callers reach it
     only after :func:`build_mutation_plan` reports ``mode == "apply"``, which
-    requires both the repository write guard and the runtime apply flag.
+    requires both the repository write guard and the runtime apply flag, and
+    then only after :meth:`arm_for_issue` binds this client to one proven
+    issue identity. An unarmed client refuses every write.
 
-    The allow-list is the last line of defence. DELETE is rejected for every
-    path, issue edits and attachments have no entry, and the only writable
-    issue property is this module's ledger. Comment and remote-link bodies
-    are built inside this class from a template id and a validated GitHub
-    pull request URL, so no caller-supplied prose can reach Jira.
+    The allow-list is the last line of defence on *what* may be written.
+    DELETE is rejected for every path, issue edits and attachments have no
+    entry, and the only writable issue property is this module's ledger.
+    Comment and remote-link bodies are built inside this class from a
+    template id and a validated GitHub pull request URL, so no caller-supplied
+    prose can reach Jira.
+
+    The armed write scope is the last line of defence on *where*: it is
+    re-proven with a fresh read immediately before every write attempt, so
+    an issue that leaves the configured project, or a reference that starts
+    resolving to a different issue, costs zero further writes -- whether it
+    happens between two operations or between two writes of one operation.
     """
 
     def _check_request_allowed(self, method: str, path: str) -> None:
@@ -869,6 +921,76 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         # boundary rather than at the call site, so ambiguous and retried
         # attempts are included. Apply reports the delta across one run.
         self.write_attempts = 0
+        # The armed write scope: (issue_ref, issue_id, project_id), or None.
+        # A fresh client is unarmed, so it can only read.
+        self._write_scope: tuple[str, str, str] | None = None
+        # Set while the scope re-read is in flight. The re-read is a GET and
+        # therefore unguarded, but the flag keeps the invariant from being
+        # able to recurse even if that ever stops being true.
+        self._scope_check_active = False
+
+    # -- Armed write scope -----------------------------------------------
+
+    def arm_for_issue(self, *, issue_ref: str, issue_id: str, project_id: str) -> None:
+        """Authorize writes against exactly one issue in one project.
+
+        Called once, after preflight has read live state and proved all
+        three values. Every later write attempt is re-checked against them,
+        so this is the single place a run says which issue it may touch.
+        """
+        try:
+            ref = jira_cloud.validate_issue_ref(issue_ref)
+        except ValueError:
+            raise MutationRequestError("armed issue reference is malformed") from None
+        if not _ISSUE_ID_RE.fullmatch(str(issue_id or "")):
+            raise MutationRequestError(
+                "armed issue id must be the immutable numeric issue id"
+            )
+        if not jira_cloud._PROJECT_ID_RE.fullmatch(str(project_id or "")):
+            raise MutationRequestError(
+                "armed project id must be the immutable numeric project id"
+            )
+        self._write_scope = (ref, str(issue_id), str(project_id))
+
+    def disarm(self) -> None:
+        """Withdraw write authorization; every later write is refused."""
+        self._write_scope = None
+
+    def _require_write_scope(self, path: str) -> None:
+        """Re-prove the armed scope, or refuse, before one physical write.
+
+        This runs on the attempt path itself rather than in a handler, which
+        is the whole point: a handler makes several writes (a comment claims,
+        posts, and finalizes) and the apply ends with a ledger PUT, so an
+        invariant each handler had to remember would be one handler away from
+        being wrong again.
+
+        The read is fresh every time -- nothing here is cached -- because the
+        window this closes is exactly the one where Jira changed underneath a
+        value this process already read. Reads keep their bounded retry
+        budget, so a flaky refresh does not refuse a write on its own; a read
+        that ultimately fails raises its closed transport code and the write
+        still never leaves.
+        """
+        scope = self._write_scope
+        if scope is None:
+            raise WriteScopeRefused("write_guard_unarmed")
+        issue_ref, issue_id, project_id = scope
+        match = _ISSUE_WRITE_PATH_RE.fullmatch(path)
+        if match is None or urllib.parse.unquote(match.group("ref")) != issue_ref:
+            # A write aimed anywhere but the armed issue is out of scope by
+            # construction, and no amount of reading could bring it in.
+            raise WriteScopeRefused("issue_out_of_scope")
+        if self._scope_check_active:  # pragma: no cover - the re-read is a GET
+            return
+        self._scope_check_active = True
+        try:
+            state = self.get_issue_state(issue_ref)
+        finally:
+            self._scope_check_active = False
+        violation = _issue_scope_violation(state, project_id, issue_id)
+        if violation is not None:
+            raise WriteScopeRefused(violation[1])
 
     @staticmethod
     def _is_write_request(method: str, path: str) -> bool:
@@ -878,17 +1000,27 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         return not (method == "POST" and path in jira_cloud.READ_ONLY_POST_PATHS)
 
     def _on_request_attempt(self, method: str, path: str) -> None:
-        """Count every write attempt that actually leaves this process.
+        """Guard, then count, every write attempt leaving this process.
 
-        This fires per HTTP attempt, before the outcome is known, so a write
-        that timed out, was rate limited, was rejected, or was retried is
-        counted every time it was tried. That is the only count an operator
-        can trust: an attempt Jira may have committed and then failed to
-        acknowledge changed Jira just as much as one that returned 201.
-        Reads are not counted -- they cannot change anything.
+        This fires per HTTP attempt, immediately before the runner is
+        invoked, which is the only place that sees *every* physical write --
+        including the second and third write of one operation, and the
+        advisory ledger PUT that happens after the last one. So it is where
+        the armed scope is re-proven: a refusal here means the attempt never
+        left, and it is not counted, because nothing at Jira could have
+        changed.
+
+        Once the write is authorized it is counted before its outcome is
+        known, so a write that timed out, was rate limited, was rejected, or
+        was retried is counted every time it was tried. That is the only
+        count an operator can trust: an attempt Jira may have committed and
+        then failed to acknowledge changed Jira just as much as one that
+        returned 201. Reads are not counted -- they cannot change anything.
         """
-        if self._is_write_request(method, path):
-            self.write_attempts += 1
+        if not self._is_write_request(method, path):
+            return
+        self._require_write_scope(path)
+        self.write_attempts += 1
 
     def _attempts_for(self, method: str, path: str, endpoint: str = "") -> int:
         """Retry reads only; every write requires fresh authorization."""
@@ -1273,12 +1405,12 @@ def apply_mutation_plan(
     if not pending:
         return _finish("unchanged")
 
-    def _abort() -> dict[str, Any]:
+    def _abort(ledger_status: str = "unchanged") -> dict[str, Any]:
         for operation in pending:
             if operation.status == "planned":
                 operation.status = "skipped"
                 operation.reason = "aborted_after_failure"
-        return _finish("unchanged")
+        return _finish(ledger_status)
 
     # Whole-plan preflight: resolve the immutable identity, prove the issue is
     # in scope, and read the ledger once -- all before the first write, so a
@@ -1317,12 +1449,54 @@ def apply_mutation_plan(
         if refreshed:
             operation.fingerprint = refreshed
 
-    # Each handler owns its own idempotency: assign, transition, and link
-    # reconcile from authoritative live state, and comment acquires its own
-    # per-intent claim property immediately before it posts. Nothing records
-    # a comment intent before the comment step runs, so an assignment,
-    # transition, or link that fails first cannot leave a claim behind for a
-    # comment that was never attempted.
+    # Arm the transport. Until this call the client can only read, and from
+    # here every physical write it makes -- each of an operation's several
+    # writes, and the advisory ledger PUT after the last operation -- re-reads
+    # this issue and refuses unless the immutable id and the configured
+    # project id both still match. The invariant lives there, at the attempt
+    # boundary, precisely so no handler has to remember to ask.
+    try:
+        client.arm_for_issue(
+            issue_ref=issue_ref, issue_id=issue_id, project_id=settings_project
+        )
+    except MutationRequestError:
+        # Preflight matched a project id this transport will not accept as an
+        # immutable numeric id, so nothing here is authorized to write.
+        for operation in pending:
+            operation.status = "blocked"
+            operation.reason = "issue_out_of_scope"
+        return _finish("unchanged")
+    try:
+        return _apply_pending(
+            client, issue_ref, settings_project, issue_id,
+            pending, ledger, ledger_before, _finish, _abort,
+        )
+    finally:
+        # One armed scope belongs to one apply. A client handed to a second
+        # run must be armed again from that run's own preflight.
+        client.disarm()
+
+
+def _apply_pending(
+    client: JiraMutationClient,
+    issue_ref: str,
+    settings_project: str,
+    issue_id: str,
+    pending: Sequence[_Operation],
+    ledger: dict[str, Any],
+    ledger_before: str,
+    _finish: Callable[[str], dict[str, Any]],
+    _abort: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    """Run the armed operations, then persist the advisory ledger.
+
+    Each handler owns its own idempotency: assign, transition, and link
+    reconcile from authoritative live state, and comment acquires its own
+    per-intent claim property immediately before it posts. Nothing records a
+    comment intent before the comment step runs, so an assignment,
+    transition, or link that fails first cannot leave a claim behind for a
+    comment that was never attempted.
+    """
     for operation in pending:
         # One plan's operations are not one atomic Jira change, and Jira does
         # not hold still between them: a project automation rule can fire on
@@ -1345,6 +1519,20 @@ def apply_mutation_plan(
         try:
             handler = _HANDLERS[operation.operation]
             ledger = handler(operation, client, issue_ref, state, ledger)
+        except WriteScopeRefused as refusal:
+            # The transport refused a write because the issue left the armed
+            # scope after this operation's own state read -- possibly between
+            # two writes this operation was already making. Nothing was sent.
+            # A handler that had already recorded a truthful outcome, such as
+            # a comment holding a claim it did acquire, keeps it; anything
+            # still merely planned becomes the refusal itself.
+            if operation.status == "planned":
+                operation.status = "blocked"
+                operation.reason = refusal.reason
+            operation.detail["scope_refusal"] = refusal.reason
+            # The advisory ledger PUT is a write too, and it is exactly as
+            # out of scope as the one just refused, so it is not attempted.
+            return _abort(f"refused_{refusal.reason}")
         except jira_cloud.JiraApiError as exc:
             _fail_from_error(operation, exc)
             return _abort()
@@ -1363,6 +1551,12 @@ def apply_mutation_plan(
     ledger_status = "written"
     try:
         client.set_mutation_ledger(issue_ref, ledger)
+    except WriteScopeRefused as refusal:
+        # The ledger PUT is a physical write like any other and sits outside
+        # every per-operation check, so it is guarded by the same transport
+        # invariant. An issue that left scope after the last operation does
+        # not get one more write on the way out.
+        ledger_status = f"refused_{refusal.reason}"
     except jira_cloud.JiraApiError:
         # Every effect the ledger records is reconciled from live state on
         # the next run, and comment replay protection does not live here at
@@ -1558,11 +1752,26 @@ def _apply_comment(
         operation.detail["claim_state"] = "held_by_another_apply"
         return ledger
 
+    # Recorded before the post, and before the finalization that follows it,
+    # because both are guarded writes that can be refused. Whatever happens
+    # from here, "this process holds the claim" is the fact that stands
+    # unless something later proves a stronger one.
     operation.detail["claim_state"] = "claimed"
     try:
         comment_id = client.add_templated_comment(
             issue_ref, template, pr_url=pr_url, fingerprint=fingerprint
         )
+    except WriteScopeRefused:
+        # The claim landed and then the issue left scope, so the post never
+        # left this process. The claim is deliberately not released: it is
+        # what keeps any later run from posting this intent, and releasing it
+        # here would trade a comment that was never posted for the chance of
+        # one posted twice. Nothing is replayed either. The truthful report
+        # is a held, unconfirmed claim, which is exactly what a later run
+        # will read back off the property.
+        operation.status = "unverified"
+        operation.reason = "comment_unverified"
+        raise
     except jira_cloud.JiraApiError as exc:
         # The post is attempted exactly once, so this may be a request Jira
         # rejected outright or one it committed and failed to acknowledge.
@@ -1632,6 +1841,11 @@ def _finalize_claim_quietly(
     A failure here loses only the record, never the protection: the claim
     property still exists, so the comment is still never reposted. The next
     run just reads the weaker ``claimed`` state and reports ``unverified``.
+
+    A :class:`WriteScopeRefused` is deliberately *not* absorbed. It means the
+    issue left scope after the post, which is a fact about the whole run and
+    not about this one property, so it propagates and stops the apply --
+    notably before the advisory ledger PUT that would otherwise follow.
     """
     try:
         client.finalize_comment_claim(

@@ -34,7 +34,16 @@ later entries are regular releases.
   the assignment and moves the issue's status or project cannot be written
   over from a stale snapshot; a refresh that fails, leaves the configured
   project, or resolves to a different issue id skips the remaining operations
-  without another mutation. Scope is proven, never assumed: every such read
+  without another mutation. Because one operation is not one write — a
+  comment claims, posts, and finalizes, and an apply ends with an advisory
+  ledger `PUT` — the scope check lives at the transport boundary rather than
+  in the handlers: the client is armed once after preflight with the
+  validated issue reference, the immutable issue id, and the configured
+  project id, and every write attempt re-reads that issue first and refuses
+  unless both still match. A client that was never armed refuses every write.
+  A refusal happens before the request is sent, so the pending write never
+  reaches Jira, is not counted, stops the remaining mutations, and reports a
+  closed reason. Scope is proven, never assumed: every such read
   requires the live project id to be present and exactly equal to the
   configured `project_id`, so an empty or unreadable project id is
   unauthorized and an unresolved one costs zero writes. Every write now gets
@@ -75,7 +84,10 @@ later entries are regular releases.
   comment, and no number of comments on an issue can push an older comment's
   protection out of a bounded store. An interrupted, ambiguous, or contended
   comment is reported `unverified` for one owner reconciliation and is never
-  reposted automatically. Fingerprints are computed over the immutable Jira
+  reposted automatically. An issue that leaves scope after the claim landed
+  is the same case: the post never leaves this process, and the claim is
+  neither released nor replayed, so the run reports the held claim truthfully
+  and every later run still refuses to post. Fingerprints are computed over the immutable Jira
   issue id rather than the caller's spelling of the key, so the same issue
   addressed by key, by lowercase key, or by id resolves to one replay
   identity, and a comment fingerprint is semantic — the closed template id
