@@ -1649,8 +1649,10 @@ def _parse_queue_search_issue(
                             else "",
                             32,
                         )
-                    },
-                }
+                        },
+                    }
+            elif value is not None:
+                return None
     return {"id": parsed["id"], "key": parsed["key"], "fields": fields}
 
 

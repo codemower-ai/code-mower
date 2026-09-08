@@ -291,6 +291,31 @@ class TrackerQueueTests(unittest.TestCase):
                 next_page_token=None,
             )
 
+    def test_queue_page_rejects_unsupported_custom_field_value(self):
+        raw_issue = issue()
+        raw_issue["fields"]["customfield_123"] = 42
+        runner = Mock(
+            return_value=(
+                200,
+                {},
+                json.dumps({"issues": [raw_issue], "isLast": True}).encode("utf-8"),
+            )
+        )
+        client = jira_cloud.JiraReadClient(
+            cloud_id="cloud-example",
+            email="operator@example.com",
+            token="token-value",
+            site_url="https://example.atlassian.net",
+            http_runner=runner,
+        )
+        with self.assertRaises(jira_cloud.JiraApiError):
+            client.search_page(
+                jql="project = 10001",
+                fields=["customfield_123", "project", "status"],
+                max_results=1,
+                next_page_token=None,
+            )
+
     def test_controller_cli_wires_profile_to_live_jira_queue(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "code-mower.yml"
