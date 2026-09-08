@@ -503,6 +503,9 @@ code-mower cloud repo-sync --repo OWNER/REPO=/path/to/repo \
 
 The OSS uploader converts each observation into a `productivity_summary` event
 with `dimensions.productivity_window_schema=code_mower.productivityWindow.v1`.
+An observation that omits `repo_slug` is filled from `--repo-slug` (export)
+or the detected repo (dogfood, and repo-sync per synced repo); an explicit
+observation slug that disagrees with the repo-sync target is rejected.
 The converter separates elapsed time (`cycle_time_seconds`, always the
 `window_end` minus `window_start` span), observed active agent time
 (`active_time_seconds`), queue/wait (`queue_wait_seconds`, with an explicit

@@ -206,12 +206,16 @@ def build_cloud_bundle(
     # Deferred import: productivity_windows only needs events lazily, and
     # export must not import it at module load (see events.py).
     from .productivity_windows import count_normalized_productivity_window_events
-
-    productivity_window_event_count = count_normalized_productivity_window_events(
-        included_events
-    )
     upload_ready = not anonymous and bool(included_reports or included_events)
     upload_status = "ready_for_dry_run" if upload_ready else "local_export_only"
+    # The window count is derived from the manifest events actually included
+    # in the bundle, so anonymous bundles (which suppress all event data)
+    # report zero and repo-sync summaries cannot claim baseline events that
+    # were excluded from the bundle.
+    manifest_events = [] if anonymous else included_events
+    productivity_window_event_count = count_normalized_productivity_window_events(
+        manifest_events
+    )
     manifest = {
         "schema": BUNDLE_SCHEMA,
         "privacy_mode": "anonymous" if anonymous else "metadata_and_reports",
@@ -221,7 +225,7 @@ def build_cloud_bundle(
         "team_id": "" if anonymous else team_id,
         "install_id": "" if anonymous else install_id,
         "included_reports": included_reports,
-        "events": [] if anonymous else included_events,
+        "events": manifest_events,
         "provenance": {} if anonymous else build_provenance_summary(included_events),
         "excluded_content": list(EXCLUDED_CONTENT),
         "notes": [

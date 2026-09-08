@@ -23,10 +23,12 @@ from code_mower.cloud_client import (
     PRODUCTIVITY_WINDOW_DIMENSION,
     PRODUCTIVITY_WINDOW_INPUT_SCHEMA,
     CloudBundleError,
+    build_cloud_bundle,
     is_normalized_productivity_window_event,
     load_event_file,
     load_productivity_window_events,
     normalize_event,
+    parse_event_args,
     productivity_window_to_event,
     repo_sync_window_events,
     validate_cloud_event,
@@ -889,6 +891,188 @@ class ProductivityWindowArtifactFallbackTests(unittest.TestCase):
             self.assertEqual(synced[0]["event_type"], "adoption_run")
             self.assertEqual(synced[0]["event_id"], dogfood_events[0]["event_id"])
             validate_cloud_event(synced[0])
+
+
+class NormalizedBoundaryPrivacyTests(unittest.TestCase):
+    """Already-normalized window events must face the text privacy boundary.
+
+    These events bypass ``normalize_window_observation`` (both the window
+    loader and the generic loader pass them straight to ``normalize_event``),
+    so ``validate_productivity_window_event`` re-applies the single-line and
+    local-path checks to every text dimension.
+    """
+
+    def _valid_event(self) -> dict[str, object]:
+        return productivity_window_to_event(  # type: ignore[return-value]
+            _fixture()["release_window"], source="unit-test"
+        )
+
+    def test_rejects_multiline_release_on_normalized_event(self) -> None:
+        event = self._valid_event()
+        event["dimensions"]["release"] = "v1.0.0\nsecond output line"  # type: ignore[index]
+        with self.assertRaisesRegex(CloudBundleError, "single-line"):
+            validate_cloud_event(event)
+
+    def test_rejects_raw_output_like_text_on_normalized_event(self) -> None:
+        event = self._valid_event()
+        event["dimensions"]["aggregation_key"] = (  # type: ignore[index]
+            "week-32\nTraceback: command failed with exit 1"
+        )
+        with self.assertRaisesRegex(CloudBundleError, "single-line"):
+            validate_cloud_event(event)
+
+    def test_rejects_local_path_in_release_dimension(self) -> None:
+        for bad in ("/opt/company/private-repo", "C:/work/private-repo"):
+            event = self._valid_event()
+            event["dimensions"]["release"] = bad  # type: ignore[index]
+            with self.assertRaisesRegex(CloudBundleError, "local paths"):
+                validate_cloud_event(event)
+
+    def test_rejects_tainted_normalized_event_through_file_loaders(self) -> None:
+        event = self._valid_event()
+        event["dimensions"]["release"] = "/opt/company/private-repo"  # type: ignore[index]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tainted.json"
+            path.write_text(json.dumps(event), encoding="utf-8")
+            with self.assertRaisesRegex(CloudBundleError, "local paths"):
+                load_productivity_window_events(path, PRODUCTIVITY_EVENT_TYPE)
+            with self.assertRaisesRegex(CloudBundleError, "local paths"):
+                load_event_file(path, PRODUCTIVITY_EVENT_TYPE)
+
+    def test_ordinary_labels_still_validate(self) -> None:
+        event = self._valid_event()
+        validate_cloud_event(event)
+        self.assertEqual(event["dimensions"]["release"], "v1.0.0")  # type: ignore[index]
+
+
+class AbsolutePathDetectionTests(unittest.TestCase):
+    def test_rejects_general_absolute_unix_paths(self) -> None:
+        observation = copy.deepcopy(_fixture()["repo_window"])
+        observation["aggregation_key"] = "/opt/company/private-repo"
+        with self.assertRaisesRegex(CloudBundleError, "local paths"):
+            productivity_window_to_event(observation)
+
+    def test_rejects_forward_slash_windows_paths(self) -> None:
+        observation = copy.deepcopy(_fixture()["release_window"])
+        observation["release"] = "C:/work/private-repo"
+        with self.assertRaisesRegex(CloudBundleError, "local paths"):
+            productivity_window_to_event(observation)
+
+    def test_accepts_ordinary_release_labels(self) -> None:
+        observation = copy.deepcopy(_fixture()["release_window"])
+        observation["release"] = "v1.0.0"
+        event = productivity_window_to_event(observation, source="unit-test")
+        validate_cloud_event(event)
+        self.assertEqual(event["dimensions"]["release"], "v1.0.0")
+
+
+class AnonymousBundleWindowCountTests(unittest.TestCase):
+    def _window_event(self) -> dict[str, object]:
+        return productivity_window_to_event(  # type: ignore[return-value]
+            _fixture()["repo_window"], source="unit-test"
+        )
+
+    def test_anonymous_bundle_reports_zero_window_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = build_cloud_bundle(
+                reports=[],
+                events=[self._window_event()],  # type: ignore[list-item]
+                output_dir=Path(tmp) / "bundle",
+                repo_slug="owner/repo",
+                team_id="t",
+                install_id="i",
+                anonymous=True,
+            )
+            self.assertEqual(result["event_count"], 0)
+            self.assertEqual(result["productivity_window_event_count"], 0)
+            manifest = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["events"], [])
+            self.assertEqual(manifest["privacy_mode"], "anonymous")
+
+    def test_non_anonymous_bundle_still_counts_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = build_cloud_bundle(
+                reports=[],
+                events=[self._window_event()],  # type: ignore[list-item]
+                output_dir=Path(tmp) / "bundle",
+                repo_slug="owner/repo",
+                team_id="t",
+                install_id="i",
+                anonymous=False,
+            )
+            self.assertEqual(result["event_count"], 1)
+            self.assertEqual(result["productivity_window_event_count"], 1)
+
+    def test_repo_sync_summary_cannot_claim_excluded_baseline_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            anonymous = build_cloud_bundle(
+                reports=[],
+                events=[self._window_event()],  # type: ignore[list-item]
+                output_dir=Path(tmp) / "bundle",
+                repo_slug="owner/repo",
+                team_id="t",
+                install_id="i",
+                anonymous=True,
+            )
+            summary = build_repo_sync_data_class_summary(
+                [
+                    {
+                        "steps": [
+                            {
+                                "mode": "cloud-dogfood",
+                                "export": {
+                                    "event_count": anonymous["event_count"],
+                                    "productivity_window_event_count": anonymous[
+                                        "productivity_window_event_count"
+                                    ],
+                                },
+                            }
+                        ]
+                    }
+                ]
+            )
+            baseline = summary["productivity_baseline"]
+            self.assertEqual((baseline["steps"], baseline["events"]), (0, 0))
+
+
+class GenericExportSlugFillTests(unittest.TestCase):
+    """Generic export/dogfood fills slugless observations like repo-sync."""
+
+    def _slugless_path(self, tmp: str) -> Path:
+        observation = copy.deepcopy(_fixture()["repo_window"])
+        del observation["repo_slug"]
+        path = Path(tmp) / "slugless.json"
+        path.write_text(json.dumps(observation), encoding="utf-8")
+        return path
+
+    def test_parse_event_args_fills_slugless_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._slugless_path(tmp)
+            events = parse_event_args(
+                [f"{PRODUCTIVITY_EVENT_TYPE}={path}"],
+                repo_slug="owner/repo",
+                team_id="t",
+                install_id="i",
+                source="unit-test",
+            )
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["repo_slug"], "owner/repo")
+            validate_cloud_event(events[0])
+
+    def test_load_event_file_fills_slugless_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._slugless_path(tmp)
+            events = load_event_file(
+                path, PRODUCTIVITY_EVENT_TYPE, repo_slug="owner/repo"
+            )
+            self.assertEqual(events[0]["repo_slug"], "owner/repo")
+            validate_cloud_event(events[0])
+
+    def test_slugless_observation_without_context_still_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._slugless_path(tmp)
+            with self.assertRaisesRegex(CloudBundleError, "repo_slug"):
+                parse_event_args([f"{PRODUCTIVITY_EVENT_TYPE}={path}"])
 
 
 class ProductivityWindowFractionalDurationTests(unittest.TestCase):

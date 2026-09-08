@@ -32,6 +32,7 @@ if __package__ in {None, ""}:
         default_setup_path as _default_setup_path,
         build_upload_payload,
         default_dogfood_reports as _default_dogfood_reports,
+        detect_repo_slug as _detect_repo_slug,
         dogfood_upload as _dogfood_upload,
         event_id_from_github_run as _event_id_from_github_run,
         is_local_http_endpoint,
@@ -87,6 +88,7 @@ else:  # pragma: no cover - exercised after package extraction.
         default_setup_path as _default_setup_path,
         build_upload_payload,
         default_dogfood_reports as _default_dogfood_reports,
+        detect_repo_slug as _detect_repo_slug,
         dogfood_upload as _dogfood_upload,
         event_id_from_github_run as _event_id_from_github_run,
         is_local_http_endpoint,
@@ -752,7 +754,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "export":
             events = [
-                *_parse_event_args(args.event),
+                *_parse_event_args(
+                    args.event,
+                    repo_slug=args.repo_slug,
+                    team_id=args.team_id,
+                    install_id=args.install_id,
+                ),
                 *_spend_events(
                     args.spend,
                     repo_slug=args.repo_slug,
@@ -848,11 +855,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_cloud_doctor_text(report), end="")
             return 1 if report["failures"] else 0
         if args.command == "dogfood":
+            # Resolve the slug before loading window events so a slugless
+            # observation is filled from --repo-slug or the detected repo,
+            # exactly as dogfood_upload and repo-sync resolve it below.
+            dogfood_repo_slug = args.repo_slug or _detect_repo_slug(args.repo_path)
             result = _dogfood_upload(
                 repo_path=args.repo_path,
                 output_dir=args.output_dir,
                 reports=_parse_report_args(args.report),
-                events=_parse_event_args(args.event),
+                events=_parse_event_args(
+                    args.event,
+                    repo_slug=dogfood_repo_slug,
+                    team_id=args.team_id,
+                    install_id=args.install_id,
+                    source=args.source,
+                ),
                 spend_path=args.spend,
                 repo_slug=args.repo_slug,
                 team_id=args.team_id,

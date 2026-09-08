@@ -939,22 +939,38 @@ def parse_event_file_candidates(text: str, path: Path) -> list[Any]:
     )
 
 
-def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
-    source = path.expanduser()
-    if not source.is_file():
-        raise CloudBundleError(f"event file does not exist or is not a file: {source}")
+def load_event_file(
+    path: Path,
+    event_type: str,
+    *,
+    repo_slug: str = "",
+    team_id: str = "",
+    install_id: str = "",
+    source: str = "",
+) -> list[dict[str, Any]]:
+    """Load normalized events from a JSON/JSONL file.
+
+    Window observations (``code_mower.productivityWindow.v1``) convert
+    deterministically, filling an empty observation repo slug from
+    ``repo_slug`` exactly as repo-sync does; already-normalized events pass
+    through unchanged.
+    """
+
+    resolved = path.expanduser()
+    if not resolved.is_file():
+        raise CloudBundleError(f"event file does not exist or is not a file: {resolved}")
     try:
-        text = source.read_text(encoding="utf-8")
+        text = resolved.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
-        raise CloudBundleError(f"event file is not UTF-8 text: {source}") from exc
+        raise CloudBundleError(f"event file is not UTF-8 text: {resolved}") from exc
     except OSError as exc:
-        raise CloudBundleError(f"unable to read event file {source}: {exc}") from exc
-    parsed_events = parse_event_file_candidates(text, source)
+        raise CloudBundleError(f"unable to read event file {resolved}: {exc}") from exc
+    parsed_events = parse_event_file_candidates(text, resolved)
     events: list[dict[str, Any]] = []
     for item in parsed_events:
         if not isinstance(item, dict):
             raise CloudBundleError(
-                f"event file contains a non-object event: {source}"
+                f"event file contains a non-object event: {resolved}"
             )
         # Deferred import: productivity_windows only needs events lazily, and
         # events must not import it at module load.
@@ -962,13 +978,27 @@ def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
 
         events.append(
             artifact_event_from_dict(item, event_type)
-            or productivity_window_event_from_dict(item, event_type)
+            or productivity_window_event_from_dict(
+                item,
+                event_type,
+                repo_slug=repo_slug,
+                team_id=team_id,
+                install_id=install_id,
+                source=source,
+            )
             or normalize_event(item, event_type)
         )
     return events
 
 
-def parse_event_args(values: list[str]) -> list[dict[str, Any]]:
+def parse_event_args(
+    values: list[str],
+    *,
+    repo_slug: str = "",
+    team_id: str = "",
+    install_id: str = "",
+    source: str = "",
+) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for raw in values:
         if "=" not in raw:
@@ -976,7 +1006,16 @@ def parse_event_args(values: list[str]) -> list[dict[str, Any]]:
                 "--event entries must use EVENT_TYPE=PATH, for example reviewer_run=run.json"
             )
         event_type, path_text = raw.split("=", 1)
-        events.extend(load_event_file(Path(path_text), safe_event_type(event_type)))
+        events.extend(
+            load_event_file(
+                Path(path_text),
+                safe_event_type(event_type),
+                repo_slug=repo_slug,
+                team_id=team_id,
+                install_id=install_id,
+                source=source,
+            )
+        )
     if len(events) > MAX_EVENT_COUNT:
         raise CloudBundleError(
             f"too many events: {len(events)}; max {MAX_EVENT_COUNT}"

@@ -147,7 +147,13 @@ WINDOW_ALLOWED_DIMENSIONS = frozenset(
 )
 
 _PATH_LIKE_PATTERN = re.compile(
-    r"/(home|Users|tmp|var|etc|root|code-mower)/|^[A-Za-z]:\\|~/|\.\.[/\\]"
+    # Principled absolute-path rejection (Unix leading "/", Windows drive
+    # "X:/" or "X:\\", UNC "\\\\") plus home/parent-relative markers and the
+    # retained well-known-directory segments for relative paths that embed
+    # them. Ordinary labels ("v1.0.0", "OWNER/REPO") never match.
+    r"^/|^[A-Za-z]:[/\\]|^\\\\"
+    r"|/(home|Users|tmp|var|etc|root|code-mower)/"
+    r"|~/|\.\.[/\\]"
 )
 
 
@@ -626,6 +632,18 @@ def validate_productivity_window_event(event: Mapping[str, Any]) -> None:
         )
     if subject == "release" and not str(dimensions.get("release") or "").strip():
         raise CloudBundleError("productivity_window release windows require 'release'")
+    # Already-normalized events bypass normalize_window_observation, so the
+    # metadata-only text privacy checks (single-line, no local paths) are
+    # re-applied here at the normalized-event boundary.
+    for field in ("repo_slug", *WINDOW_OPTIONAL_TEXT_FIELDS):
+        raw = dimensions.get(field)
+        if raw in (None, ""):
+            continue
+        if not isinstance(raw, str):
+            raise CloudBundleError(
+                f"productivity_window dimension {field!r} must be a string"
+            )
+        _single_line(raw, repr(field))
     for scoped in ("pr_number", "issue_number", "branch"):
         if str(dimensions.get(scoped) or "").strip():
             raise CloudBundleError(
