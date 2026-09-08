@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
@@ -42,6 +43,11 @@ PR_OUTCOME_COST_METRICS = ("reported_cost_usd",)
 # evidence could not be read or attributed.  It is a fixed constant so it can
 # never carry paths, file contents, or secrets.
 UNATTRIBUTED_EVIDENCE_LANE = "unreadable-evidence"
+# Fallback for lane/provider identifiers that do not match the bounded
+# categorical format.  It is a fixed constant so invalid paths, commands,
+# whitespace, and secret-like text can never be placed in uploadable fields.
+UNKNOWN_EVIDENCE_SOURCE = "unknown-source"
+_LANE_IDENTIFIER_RE = re.compile(r"^[a-z0-9]+(?:[_.-][a-z0-9]+)*$")
 PR_OUTCOME_DIMENSIONS = (
     "pr_outcome_schema",
     "pr_number",
@@ -109,6 +115,24 @@ def _run_event_identity(event: Mapping[str, Any]) -> str:
     return str(event.get("event_id") or "").strip()
 
 
+def _canonical_lane_identifier(value: object) -> str:
+    """Return a bounded lane/provider identifier or the fixed fallback.
+
+    Only lowercase alphanumerics with internal ``._-`` separators and a
+    reasonable length are allowed, matching existing lane names.  Paths,
+    command strings, whitespace-heavy strings, and secret-like text are
+    replaced with ``UNKNOWN_EVIDENCE_SOURCE`` so they never reach an upload.
+    """
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.lower()
+    if len(text) <= 64 and _LANE_IDENTIFIER_RE.match(text):
+        return text
+    return UNKNOWN_EVIDENCE_SOURCE
+
+
 def _run_event_canonical(event: Mapping[str, Any]) -> dict[str, Any]:
     """Return a stable, metadata-only representation for evidence versioning."""
 
@@ -117,13 +141,15 @@ def _run_event_canonical(event: Mapping[str, Any]) -> dict[str, Any]:
     item: dict[str, Any] = {
         "event_id": _run_event_identity(event),
         "event_type": str(event.get("event_type") or "").strip(),
-        "provider": str(event.get("provider") or "").strip(),
-        "lens": str(event.get("lens") or "").strip(),
+        "provider": _canonical_lane_identifier(event.get("provider")),
+        "lens": _canonical_lane_identifier(event.get("lens")),
         "status": str(event.get("status") or "").strip(),
         "repo_slug": str(event.get("repo_slug") or "").strip(),
         "pr_number": str(dimensions.get("pr_number") or "").strip(),
-        "builder_provider": str(dimensions.get("builder_provider") or "").strip(),
-        "lane": str(dimensions.get("lane") or "").strip(),
+        "builder_provider": _canonical_lane_identifier(
+            dimensions.get("builder_provider")
+        ),
+        "lane": _canonical_lane_identifier(dimensions.get("lane")),
         "head_sha": str(dimensions.get("head_sha") or "").strip(),
     }
     if "cost_usd" in metrics:
@@ -329,20 +355,20 @@ def _lane_for_run_event(event: Mapping[str, Any]) -> str:
     event_type = str(event.get("event_type") or "").strip()
     dimensions = _as_mapping(event.get("dimensions"))
     if event_type == "builder_run":
-        return str(
+        return _canonical_lane_identifier(
             dimensions.get("builder_provider")
             or event.get("provider")
             or ""
-        ).strip()
+        )
     if event_type == "reviewer_run":
-        return str(
+        return _canonical_lane_identifier(
             dimensions.get("lane")
             or dimensions.get("lane_id")
             or dimensions.get("audit_comment_lane_id")
             or event.get("lens")
             or event.get("provider")
             or ""
-        ).strip()
+        )
     return ""
 
 

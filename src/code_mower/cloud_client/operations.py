@@ -824,7 +824,10 @@ def _builder_run_events(
     except FileNotFoundError:
         return [], []
     except NotADirectoryError:
-        return [], []
+        # ``builder-runs`` exists but is not a directory (e.g. a regular file
+        # or a symlink to one).  Record a single bounded unattributable
+        # failure so this is never treated as empty evidence.
+        return [], [""]
     except OSError:
         # The builder-run directory exists but cannot be enumerated.  Record
         # a single bounded unattributable failure so no PR can be reported
@@ -899,88 +902,7 @@ def pr_outcomes_upload(
         limit=limit,
         repo_path=repo_path,
     )
-    builder_events, unreadable_builder_prs = _builder_run_events(repo_path)
-    spend_events = _reviewer_spend_events(
-        repo_path=repo_path,
-        spend_path=spend_path,
-        repo_slug=detected_repo_slug,
-        team_id=resolved_team_id,
-        install_id=resolved_install_id,
-        source=f"{source}-spend",
-        # pr-outcomes fails closed: malformed or unattributable reviewer
-        # spend rows are preserved as unattributed evidence so they suppress
-        # ``complete`` coverage instead of being silently dropped.
-        preserve_unattributable=True,
-    )
 
-    run_events: list[dict[str, Any]] = []
-    unattributable_evidence_count = 0
-    for event in [*builder_events, *spend_events]:
-        event_repo = str(event.get("repo_slug") or "").strip()
-        event_pr = _pr_number_from_run_event(event)
-        if not _is_positive_int_pr_number(event_pr):
-            unattributable_evidence_count += 1
-            continue
-        if event_repo != detected_repo_slug:
-            unattributable_evidence_count += 1
-            continue
-        run_events.append(event)
-
-    events_by_pr: dict[str, list[dict[str, Any]]] = {}
-    for event in run_events:
-        pr_number = _pr_number_from_run_event(event)
-        events_by_pr.setdefault(pr_number, []).append(event)
-
-    events: list[dict[str, Any]] = []
-    errors: list[str] = []
-    # Fail closed on unreadable builder evidence.  A failure attributed to a
-    # PR is represented on that PR as an expected attempt with unknown cost
-    # (plus a bounded per-PR error), so ``complete`` coverage cannot be
-    # emitted while other healthy PRs are still processed.  An unattributable
-    # failure suppresses ``complete`` coverage for every emitted outcome
-    # because the missing attempt cannot be proven to belong elsewhere.
-    attributed_failures: set[str] = set()
-    unattributed_failures = 0
-    for failed_pr_number in unreadable_builder_prs:
-        if not failed_pr_number:
-            unattributed_failures += 1
-            continue
-        if failed_pr_number not in attributed_failures:
-            attributed_failures.add(failed_pr_number)
-            errors.append(
-                f"PR {failed_pr_number}: builder evidence unreadable or "
-                "malformed; attempt counted with unknown cost"
-            )
-        events_by_pr.setdefault(failed_pr_number, []).append(
-            {
-                "event_id": "",
-                "event_type": "builder_run",
-                "repo_slug": detected_repo_slug,
-                "dimensions": {
-                    "builder_provider": UNATTRIBUTED_EVIDENCE_LANE,
-                    "pr_number": failed_pr_number,
-                },
-            }
-        )
-    if unattributed_failures:
-        errors.append(
-            f"{unattributed_failures} builder evidence file(s) unreadable or "
-            "malformed and not attributable to a PR; complete spend coverage "
-            "suppressed"
-        )
-    if unattributable_evidence_count:
-        errors.append(
-            f"{unattributable_evidence_count} parsed attempt(s) could not be "
-            "attributed to a PR; complete spend coverage suppressed"
-        )
-    # Local metadata-only observation state keeps retries idempotent and makes
-    # corrected evidence chronologically newer even when no source timestamp
-    # (GitHub ``updatedAt`` or run ``created_at``) advanced.  The read,
-    # per-PR update, and atomic write are serialized on the repository's
-    # exclusive file lock so overlapping ``pr-outcomes`` commands cannot
-    # interleave the read-modify-write and lose ordering state.  Lock or
-    # state-access failures abort before export/upload with a bounded,
-    # path-free error.
     observation_state_path = repo_path / DEFAULT_OBSERVATION_STATE_PATH
     observation_lock_path = observation_state_path.with_name(
         f"{observation_state_path.name}.lock"
@@ -993,8 +915,97 @@ def pr_outcomes_upload(
         "merged": "merged",
         "closed": "closed_unmerged",
     }
+
+    events: list[dict[str, Any]] = []
+    errors: list[str] = []
     try:
+        # Local metadata-only observation state keeps retries idempotent and makes
+        # corrected evidence chronologically newer even when no source timestamp
+        # (GitHub ``updatedAt`` or run ``created_at``) advanced.  The read,
+        # per-PR update, and atomic write are serialized on the repository's
+        # exclusive file lock so overlapping ``pr-outcomes`` commands cannot
+        # interleave the read-modify-write and lose ordering state.  All local
+        # evidence (builder runs and reviewer spend) is loaded, grouped, and
+        # fail-closed accounted for inside that same lock so an older local cost
+        # snapshot can never be used after a newer correction has already been
+        # committed.  Lock or state-access failures abort before export/upload
+        # with a bounded, path-free error.
         with exclusive_file_lock(observation_lock_path):
+            builder_events, unreadable_builder_prs = _builder_run_events(repo_path)
+            spend_events = _reviewer_spend_events(
+                repo_path=repo_path,
+                spend_path=spend_path,
+                repo_slug=detected_repo_slug,
+                team_id=resolved_team_id,
+                install_id=resolved_install_id,
+                source=f"{source}-spend",
+                # pr-outcomes fails closed: malformed or unattributable reviewer
+                # spend rows are preserved as unattributed evidence so they
+                # suppress ``complete`` coverage instead of being silently
+                # dropped.
+                preserve_unattributable=True,
+            )
+
+            run_events: list[dict[str, Any]] = []
+            unattributable_evidence_count = 0
+            for event in [*builder_events, *spend_events]:
+                event_repo = str(event.get("repo_slug") or "").strip()
+                event_pr = _pr_number_from_run_event(event)
+                if not _is_positive_int_pr_number(event_pr):
+                    unattributable_evidence_count += 1
+                    continue
+                if event_repo != detected_repo_slug:
+                    unattributable_evidence_count += 1
+                    continue
+                run_events.append(event)
+
+            events_by_pr: dict[str, list[dict[str, Any]]] = {}
+            for event in run_events:
+                pr_number = _pr_number_from_run_event(event)
+                events_by_pr.setdefault(pr_number, []).append(event)
+
+            # Fail closed on unreadable builder evidence.  A failure attributed
+            # to a PR is represented on that PR as an expected attempt with
+            # unknown cost (plus a bounded per-PR error), so ``complete``
+            # coverage cannot be emitted while other healthy PRs are still
+            # processed.  An unattributable failure suppresses ``complete``
+            # coverage for every emitted outcome because the missing attempt
+            # cannot be proven to belong elsewhere.
+            attributed_failures: set[str] = set()
+            unattributed_failures = 0
+            for failed_pr_number in unreadable_builder_prs:
+                if not failed_pr_number:
+                    unattributed_failures += 1
+                    continue
+                if failed_pr_number not in attributed_failures:
+                    attributed_failures.add(failed_pr_number)
+                    errors.append(
+                        f"PR {failed_pr_number}: builder evidence unreadable or "
+                        "malformed; attempt counted with unknown cost"
+                    )
+                events_by_pr.setdefault(failed_pr_number, []).append(
+                    {
+                        "event_id": "",
+                        "event_type": "builder_run",
+                        "repo_slug": detected_repo_slug,
+                        "dimensions": {
+                            "builder_provider": UNATTRIBUTED_EVIDENCE_LANE,
+                            "pr_number": failed_pr_number,
+                        },
+                    }
+                )
+            if unattributed_failures:
+                errors.append(
+                    f"{unattributed_failures} builder evidence file(s) unreadable or "
+                    "malformed and not attributable to a PR; complete spend coverage "
+                    "suppressed"
+                )
+            if unattributable_evidence_count:
+                errors.append(
+                    f"{unattributable_evidence_count} parsed attempt(s) could not be "
+                    "attributed to a PR; complete spend coverage suppressed"
+                )
+
             observations = load_pr_outcome_observations(observation_state_path)
             candidate_records: list[tuple[dict[str, Any], str, str]] = []
             for pr in pr_records:

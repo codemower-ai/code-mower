@@ -2350,5 +2350,187 @@ class PrOutcomeAuditP2Tests(unittest.TestCase):
         validate_cloud_event(reopened)
 
 
+class PrOutcomeInvalidBuilderDirP2Tests(unittest.TestCase):
+    def _merged_pr(self, number: str) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": "MERGED",
+            "createdAt": "2026-09-03T10:00:00Z",
+            "mergedAt": "2026-09-03T12:00:00Z",
+            "updatedAt": "2026-09-03T13:00:00Z",
+        }
+
+    def test_regular_file_builder_runs_cannot_report_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_path = repo_path / ".code-mower" / "builder-runs"
+            builder_path.parent.mkdir(parents=True)
+            builder_path.write_text("not a directory", encoding="utf-8")
+
+            with mock.patch(
+                "code_mower.cloud_client.operations.run_gh_pr_list",
+                return_value=[self._merged_pr("1")],
+            ):
+                out = StringIO()
+                with redirect_stdout(out):
+                    code = cloud_module.main(
+                        [
+                            "pr-outcomes",
+                            "--repo-path",
+                            str(repo_path),
+                            "--repo-slug",
+                            "owner/repo",
+                            "--output-dir",
+                            str(repo_path / "bundle"),
+                            "--endpoint",
+                            "https://codemower.example.com/api/upload",
+                            "--json",
+                        ]
+                    )
+            self.assertEqual(code, 0, out.getvalue())
+            result = json.loads(out.getvalue())
+            manifest = json.loads(
+                Path(result["export"]["manifest"]).read_text(encoding="utf-8")
+            )
+            pr = manifest["events"][0]
+            self.assertNotEqual(pr["dimensions"]["cost_coverage"], "complete")
+            self.assertIn(
+                "unreadable-evidence",
+                pr["dimensions"]["missing_cost_sources"],
+            )
+            self.assertTrue(pr["dimensions"]["evidence_incomplete"])
+
+
+class PrOutcomePrivacyP2Tests(unittest.TestCase):
+    def test_paths_and_secrets_are_canonicalized_before_upload(self) -> None:
+        home_path = "/home/user/.code-mower/builder-runs"
+        secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz/"
+        event = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="97",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[
+                {
+                    "event_id": "b1",
+                    "event_type": "builder_run",
+                    "created_at": "2026-09-03T11:00:00Z",
+                    "repo_slug": "owner/repo",
+                    "provider": secret,
+                    "lens": "implementation",
+                    "status": "pr-opened",
+                    "dimensions": {
+                        "builder_provider": home_path,
+                        "pr_number": "97",
+                    },
+                },
+                {
+                    "event_id": "r1",
+                    "event_type": "reviewer_run",
+                    "created_at": "2026-09-03T11:00:00Z",
+                    "repo_slug": "owner/repo",
+                    "provider": "claude",
+                    "lens": "claude-audit",
+                    "status": "pass",
+                    "dimensions": {
+                        "lane": secret,
+                        "pr_number": "97",
+                    },
+                },
+            ],
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertEqual(event["dimensions"]["cost_coverage"], "unknown")
+        self.assertEqual(
+            event["dimensions"]["missing_cost_sources"],
+            ["unknown-source"],
+        )
+        rendered = json.dumps(event)
+        self.assertNotIn(home_path, rendered)
+        self.assertNotIn(secret, rendered)
+        validate_cloud_event(event)
+
+
+class PrOutcomeConcurrencyP2Tests(unittest.TestCase):
+    def test_local_evidence_is_loaded_under_observation_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            state = {"locked": False}
+
+            class TrackingLock:
+                def __init__(self, path: Path) -> None:
+                    self.path = path
+
+                def __enter__(self) -> "TrackingLock":
+                    state["locked"] = True
+                    return self
+
+                def __exit__(self, *exc: object) -> bool:
+                    state["locked"] = False
+                    return False
+
+            def assert_builder_locked(*args: object, **kwargs: object) -> tuple[list, list]:
+                self.assertTrue(state["locked"])
+                return [], []
+
+            def assert_spend_locked(*args: object, **kwargs: object) -> list:
+                self.assertTrue(state["locked"])
+                return []
+
+            with mock.patch(
+                "code_mower.cloud_client.operations.exclusive_file_lock",
+                TrackingLock,
+            ), mock.patch(
+                "code_mower.cloud_client.operations._builder_run_events",
+                side_effect=assert_builder_locked,
+            ) as builder_mock, mock.patch(
+                "code_mower.cloud_client.operations._reviewer_spend_events",
+                side_effect=assert_spend_locked,
+            ) as spend_mock, mock.patch(
+                "code_mower.cloud_client.operations.run_gh_pr_list",
+                return_value=[
+                    {
+                        "number": "1",
+                        "state": "MERGED",
+                        "createdAt": "2026-09-03T10:00:00Z",
+                        "mergedAt": "2026-09-03T12:00:00Z",
+                        "updatedAt": "2026-09-03T13:00:00Z",
+                    }
+                ],
+            ), mock.patch(
+                "code_mower.cloud_client.operations.build_cloud_bundle"
+            ) as bundle_mock, mock.patch(
+                "code_mower.cloud_client.operations.run_cloud_doctor",
+                return_value={"failures": []},
+            ), mock.patch(
+                "code_mower.cloud_client.operations.build_upload_payload",
+                return_value={},
+            ), mock.patch(
+                "code_mower.cloud_client.operations.build_dogfood_dry_run_preview",
+                return_value={},
+            ):
+                bundle_mock.return_value = {
+                    "manifest": str(repo_path / "bundle" / "manifest.json")
+                }
+                pr_outcomes_upload(
+                    repo_path=repo_path,
+                    output_dir=repo_path / "bundle",
+                    repo_slug="owner/repo",
+                    team_id="",
+                    install_id="",
+                    source="unit-test",
+                    limit=10,
+                    endpoint="https://codemower.example.com/api/upload",
+                    token_env="CODE_MOWER_TEST_TOKEN",
+                    yes=False,
+                    timeout=1.0,
+                )
+
+            self.assertTrue(builder_mock.called)
+            self.assertTrue(spend_mock.called)
+
+
 if __name__ == "__main__":
     unittest.main()
