@@ -938,6 +938,7 @@ class ReadPrimitiveTests(unittest.TestCase):
                 "EDIT_ISSUES": False,
                 "TRANSITION_ISSUES": False,
                 "ADD_COMMENTS": False,
+                "LINK_ISSUES": False,
             },
         )
         bodies = runner.request_bodies()
@@ -951,6 +952,7 @@ class ReadPrimitiveTests(unittest.TestCase):
                 "EDIT_ISSUES",
                 "TRANSITION_ISSUES",
                 "ADD_COMMENTS",
+                "LINK_ISSUES",
             ],
         )
         self.assertEqual(entry["projects"], [int(PROJECT_ID)])

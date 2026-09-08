@@ -729,7 +729,7 @@ def _check_jira_mutations(
         "transition": ("TRANSITION_ISSUES",),
         # Replay-safe comments claim an issue property before posting.
         "comment": ("ADD_COMMENTS", "EDIT_ISSUES"),
-        "link": ("EDIT_ISSUES",),
+        "link": ("LINK_ISSUES",),
     }
     missing_perms: list[str] = []
     for op in sorted(needed_ops):

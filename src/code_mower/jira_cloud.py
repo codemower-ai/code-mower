@@ -149,6 +149,7 @@ DEFAULT_PROBE_PERMISSIONS = (
     "EDIT_ISSUES",
     "TRANSITION_ISSUES",
     "ADD_COMMENTS",
+    "LINK_ISSUES",
 )
 
 JiraHttpRunner = Callable[
