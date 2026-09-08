@@ -21,8 +21,10 @@ if __package__ in {None, "", "tools"}:
         from tools import audit_limits
     except ImportError:  # pragma: no cover - direct script execution fallback.
         import audit_limits  # type: ignore
+    import tracker_contract  # type: ignore
 else:  # pragma: no cover - exercised after package extraction.
     from . import audit_limits
+    from . import tracker_contract
 
 
 ALLOWED_LANE_TYPES = {"audit", "review"}
@@ -513,6 +515,139 @@ def required_secret_entries_for_lane(lane: Mapping[str, Any]) -> tuple[str, ...]
     return tuple(secrets)
 
 
+def _validate_tracker_jira_cloud(
+    jira_cloud: Any,
+    issues: list[ConfigIssue],
+) -> None:
+    path = "tracker.jira_cloud"
+    jira_map = _as_mapping(jira_cloud, path, issues)
+    site_url = _require_string(jira_map.get("site_url"), f"{path}.site_url", issues)
+    if site_url is not None and not site_url.startswith("https://"):
+        issues.append(ConfigIssue(f"{path}.site_url", "must be an HTTPS Jira Cloud site URL"))
+    _require_string(jira_map.get("cloud_id"), f"{path}.cloud_id", issues)
+    _require_string(jira_map.get("project_id"), f"{path}.project_id", issues)
+    if jira_map.get("project_key") is not None:
+        _require_identifier(jira_map.get("project_key"), f"{path}.project_key", issues)
+    if jira_map.get("issue_type_id") is not None:
+        _require_string(jira_map.get("issue_type_id"), f"{path}.issue_type_id", issues)
+    if jira_map.get("jql") is not None:
+        jql = _require_string(jira_map.get("jql"), f"{path}.jql", issues)
+        if jql is not None and (len(jql) > 2000 or "\n" in jql or "\r" in jql):
+            issues.append(ConfigIssue(f"{path}.jql", "must be a single line of at most 2000 characters"))
+
+    status_category_map = jira_map.get("status_category_map")
+    if status_category_map is not None:
+        category_path = f"{path}.status_category_map"
+        for category, status_ids in _as_mapping(status_category_map, category_path, issues).items():
+            if category not in tracker_contract.LIFECYCLE_CATEGORIES:
+                issues.append(
+                    ConfigIssue(
+                        f"{category_path}.{category}",
+                        f"must be one of {sorted(tracker_contract.LIFECYCLE_CATEGORIES)}",
+                    )
+                )
+            for index, status_id in enumerate(
+                _as_sequence(status_ids, f"{category_path}.{category}", issues)
+            ):
+                if not isinstance(status_id, str) or not status_id:
+                    issues.append(
+                        ConfigIssue(
+                            f"{category_path}.{category}[{index}]",
+                            "must be a non-empty string status id",
+                        )
+                    )
+
+    field_mappings = jira_map.get("field_mappings")
+    if field_mappings is not None:
+        mapping_path = f"{path}.field_mappings"
+        for target, source_field_id in _as_mapping(field_mappings, mapping_path, issues).items():
+            if target not in tracker_contract.SAFE_FIELD_MAPPING_TARGETS:
+                issues.append(
+                    ConfigIssue(
+                        f"{mapping_path}.{target}",
+                        "must map to a safe normalized contract field: "
+                        f"{sorted(tracker_contract.SAFE_FIELD_MAPPING_TARGETS)}",
+                    )
+                )
+            _require_string(source_field_id, f"{mapping_path}.{target}", issues)
+
+    mutations = jira_map.get("mutations")
+    if mutations is not None:
+        mutation_path = f"{path}.mutations"
+        mutation_map = _as_mapping(mutations, mutation_path, issues)
+        extra_mutation_keys = set(mutation_map) - {"writes_enabled", "allowed_operations"}
+        for key in extra_mutation_keys:
+            issues.append(
+                ConfigIssue(
+                    f"{mutation_path}.{key}",
+                    "must be writes_enabled or allowed_operations",
+                )
+            )
+        if "writes_enabled" in mutation_map and not isinstance(
+            mutation_map.get("writes_enabled"), bool
+        ):
+            issues.append(ConfigIssue(f"{mutation_path}.writes_enabled", "must be true or false"))
+        allowed_operations = mutation_map.get("allowed_operations")
+        if allowed_operations is not None:
+            for index, operation in enumerate(
+                _as_sequence(allowed_operations, f"{mutation_path}.allowed_operations", issues)
+            ):
+                if operation not in tracker_contract.ALLOWED_MUTATION_OPERATIONS:
+                    issues.append(
+                        ConfigIssue(
+                            f"{mutation_path}.allowed_operations[{index}]",
+                            "must be one of "
+                            f"{sorted(tracker_contract.ALLOWED_MUTATION_OPERATIONS)}",
+                        )
+                    )
+
+    extra_keys = set(jira_map) - {
+        "site_url",
+        "cloud_id",
+        "project_id",
+        "project_key",
+        "issue_type_id",
+        "jql",
+        "status_category_map",
+        "field_mappings",
+        "mutations",
+    }
+    for key in extra_keys:
+        issues.append(ConfigIssue(f"{path}.{key}", "unknown tracker.jira_cloud configuration key"))
+
+
+def _validate_tracker(tracker: Any, issues: list[ConfigIssue]) -> None:
+    if tracker is None:
+        return
+    tracker_map = _as_mapping(tracker, "tracker", issues)
+    extra_keys = set(tracker_map) - {"kind", "jira_cloud"}
+    for key in extra_keys:
+        issues.append(ConfigIssue(f"tracker.{key}", "unknown tracker configuration key"))
+
+    kind = tracker_map.get("kind", "github")
+    if kind not in tracker_contract.TRACKER_KINDS:
+        issues.append(
+            ConfigIssue("tracker.kind", f"must be one of {sorted(tracker_contract.TRACKER_KINDS)}")
+        )
+        return
+
+    jira_cloud = tracker_map.get("jira_cloud")
+    if kind == "jira_cloud":
+        if jira_cloud is None:
+            issues.append(
+                ConfigIssue(
+                    "tracker.jira_cloud",
+                    "jira_cloud kind requires a tracker.jira_cloud block",
+                )
+            )
+        else:
+            _validate_tracker_jira_cloud(jira_cloud, issues)
+    elif jira_cloud is not None:
+        issues.append(
+            ConfigIssue("tracker.jira_cloud", "must be omitted unless tracker.kind is jira_cloud")
+        )
+
+
 def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
     issues: list[ConfigIssue] = []
     if config.get("version") not in {1, "1"}:
@@ -567,6 +702,8 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
                 else:
                     _require_string(str(key), f"{section_path}.{key}", issues)
                 _require_identifier(lane_name, f"{section_path}.{key}", issues)
+
+    _validate_tracker(config.get("tracker"), issues)
 
     owner_surface = config.get("owner_surface")
     if owner_surface is not None:
