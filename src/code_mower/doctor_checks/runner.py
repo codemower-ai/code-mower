@@ -106,6 +106,9 @@ def run_doctor(
     actionlint_bin: str = "actionlint",
     supervised_pilot: bool = False,
     pilot_mode: str = "manual",
+    provider_credential_file: Path | None = None,
+    provider_profile: str = "",
+    provider_config_dir: Path | None = None,
 ) -> DoctorReport:
     plan = build_doctor_run_plan(
         github=github,
@@ -279,6 +282,9 @@ def run_doctor(
                 repo_root=repo_root,
                 repo_slug=trusted_author_repo_slug,
                 adoption_posture=adoption_posture,
+                provider_credential_file=provider_credential_file,
+                provider_profile=provider_profile,
+                provider_config_dir=provider_config_dir,
             )
         )
 

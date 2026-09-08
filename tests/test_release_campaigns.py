@@ -17,13 +17,20 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from code_mower import board, file_locks, release_campaigns, release_qualify
+from code_mower import (
+    board,
+    campaign_adapters,
+    file_locks,
+    provider_credentials,
+    release_campaigns,
+    release_qualify,
+)
 from code_mower.provider_registry import LaneLabels, ProviderLane
 
 
@@ -1618,6 +1625,8 @@ class ReleaseCampaignTests(unittest.TestCase):
         """Missing prerequisites degrade gracefully to unavailable with actionable next steps."""
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
+            empty_config_dir = Path(tmp) / "empty_config"
+            empty_config_dir.mkdir()
 
             # Neither a configured adapter, CLI binary, nor tokens are available
             release_campaigns.campaign_command(
@@ -1625,6 +1634,7 @@ class ReleaseCampaignTests(unittest.TestCase):
                 package_spec="code-mower==1.0.0",
                 providers=["antigravity", "devin"],
                 campaigns_dir=campaigns_dir,
+                provider_config_dir=empty_config_dir,
                 apply=True,
                 which_fn=lambda _cmd: None,
                 env={},
@@ -1644,6 +1654,587 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             self.assertEqual(providers_by_name["devin"]["state"], "unavailable")
             self.assertIn("DEVIN_API_KEY", providers_by_name["devin"]["next_action"])
+
+    def test_campaign_devin_insecure_profile_fails_closed(self) -> None:
+        """Insecurely permissioned profile fails closed with chmod 600 next action."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text("DEVIN_API_KEY=dummy-key\nDEVIN_ORG_ID=org-test\n")
+            profile.chmod(0o644)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry["state"], "unavailable")
+            self.assertIn("chmod 600", entry["next_action"])
+
+    def test_campaign_devin_ambiguous_profiles_fails_closed(self) -> None:
+        """Multiple candidate profiles without selector fail closed with profile next action."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            (config_dir / "devin.alpha.env").write_text("DEVIN_API_KEY=alpha\n")
+            (config_dir / "devin.alpha.env").chmod(0o600)
+            (config_dir / "devin.beta.env").write_text("DEVIN_API_KEY=beta\n")
+            (config_dir / "devin.beta.env").chmod(0o600)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry["state"], "unavailable")
+            self.assertIn("--provider-profile", entry["next_action"])
+
+    def test_campaign_devin_stored_profile_resolves_and_no_secrets_in_json(self) -> None:
+        """Stored profile resolves credentials and campaign state JSON never persists secrets."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text(
+                "DEVIN_API_KEY=dummy-token\n"
+                "DEVIN_ORG_ID=org-stored\n"
+                "CODE_MOWER_DEVIN_REPOSITORIES=owner/repo\n"
+            )
+            profile.chmod(0o600)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved_path = campaigns_dir / "campaign-v1.0.0.json"
+            self.assertTrue(saved_path.is_file())
+            raw_json = saved_path.read_text(encoding="utf-8")
+            self.assertNotIn("dummy-token", raw_json)
+            self.assertNotIn("org-stored", raw_json)
+            self.assertNotIn(str(config_dir), raw_json)
+
+    def test_campaign_devin_insecure_profile_applied_dispatch_fails_closed(self) -> None:
+        """Applied Devin dispatch with insecure permissions fails closed with chmod 600 remediation without asking for ambient key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text("DEVIN_API_KEY=applied-token\nDEVIN_ORG_ID=org-test\n")
+            profile.chmod(0o644)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+                apply=True,
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry["state"], "unavailable")
+            self.assertEqual(entry["error"], "missing_credentials")
+            self.assertIn("chmod 600", entry["next_action"])
+            self.assertNotIn("DEVIN_API_KEY", entry["next_action"])
+            self.assertEqual(entry["next_detail"], "insecure_permissions")
+
+            raw_json = (campaigns_dir / "campaign-v1.0.0.json").read_text(encoding="utf-8")
+            self.assertNotIn("applied-token", raw_json)
+            self.assertNotIn(str(config_dir), raw_json)
+
+    def test_campaign_devin_ambiguous_profiles_applied_dispatch_fails_closed(self) -> None:
+        """Applied Devin dispatch with ambiguous profiles fails closed with profile remediation without asking for ambient key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            (config_dir / "devin.alpha.env").write_text("DEVIN_API_KEY=alpha-secret-tok\nDEVIN_ORG_ID=org-a\n")
+            (config_dir / "devin.alpha.env").chmod(0o600)
+            (config_dir / "devin.beta.env").write_text("DEVIN_API_KEY=beta-secret-tok\nDEVIN_ORG_ID=org-b\n")
+            (config_dir / "devin.beta.env").chmod(0o600)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+                apply=True,
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry["state"], "unavailable")
+            self.assertEqual(entry["error"], "missing_credentials")
+            self.assertIn("--provider-profile", entry["next_action"])
+            self.assertNotIn("DEVIN_API_KEY", entry["next_action"])
+            self.assertEqual(entry["next_detail"], "ambiguous")
+
+            raw_json = (campaigns_dir / "campaign-v1.0.0.json").read_text(encoding="utf-8")
+            self.assertNotIn("alpha-secret-tok", raw_json)
+            self.assertNotIn("beta-secret-tok", raw_json)
+            self.assertNotIn(str(config_dir), raw_json)
+
+    def test_campaign_devin_insecure_profile_polling_and_watch_recovery(self) -> None:
+        """Resumed polling and watch recovery for running Devin session preserves chmod 600 diagnostics and recovers when fixed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text(
+                "DEVIN_API_KEY=poll-key-secret\n"
+                "DEVIN_ORG_ID=org-poll\n"
+                "CODE_MOWER_DEVIN_REPOSITORIES=owner/repo\n"
+            )
+            profile.chmod(0o644)
+
+            # Seed a campaign with Devin in running state and an active session
+            campaign = {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-v1.0.0",
+                "release_tag": "v1.0.0",
+                "package_identity": "code-mower",
+                "package_spec": "code-mower==1.0.0",
+                "normalized_version": "1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "package_source": "pypi",
+                "repo_slug": "owner/repo",
+                "status": "running",
+                "dry_run": False,
+                "elapsed_seconds": 0.0,
+                "created_at": "2026-09-07T12:00:00Z",
+                "updated_at": "2026-09-07T12:00:00Z",
+                "next_action": "poll running providers: devin",
+                "next_detail": "1 provider(s) currently running",
+                "providers": [
+                    {
+                        "provider": "devin",
+                        "lane_id": "devin",
+                        "driver": "hosted_bridge",
+                        "state": "running",
+                        "environment": "local/python_3.12",
+                        "elapsed_seconds": 0.0,
+                        "idempotency_key": "idemp-devin",
+                        "dispatch_mode": "applied",
+                        "error": "",
+                        "posture": "required",
+                        "next_action": "poll devin API session",
+                        "next_detail": "",
+                        "attempted_at": "2026-09-07T12:00:00Z",
+                        "dispatch_ref": {
+                            "session_id": "ses_poll_123",
+                            "transport_kind": "devin_api_v3",
+                            "repo_slug": "owner/repo",
+                            "issue_marker_posted": False,
+                        },
+                    }
+                ],
+            }
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            # 1. Advance/poll with insecure permissions: reports chmod 600 without asking for DEVIN_API_KEY
+            release_campaigns.campaign_command(
+                action="resume",
+                campaign_id="campaign-v1.0.0",
+                apply=True,
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry_polled = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry_polled["state"], "running")
+            self.assertEqual(entry_polled["error"], "missing_credentials")
+            self.assertIn("chmod 600", entry_polled["next_action"])
+            self.assertNotIn("DEVIN_API_KEY", entry_polled["next_action"])
+            self.assertEqual(entry_polled["next_detail"], "insecure_permissions")
+
+            # Also check campaign_watch output
+            watch_summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                provider_config_dir=config_dir,
+                interval=0.1,
+                timeout=0.1,
+                emit_json=True,
+                env={},
+            )
+            devin_watch = next(p for p in watch_summary["providers"] if p["provider"] == "devin")
+            self.assertEqual(devin_watch["state"], "running")
+            self.assertEqual(devin_watch["error"], "missing_credentials")
+            self.assertIn("chmod 600", devin_watch["next_action"])
+            self.assertNotIn("DEVIN_API_KEY", devin_watch["next_action"])
+            self.assertEqual(devin_watch["next_detail"], "insecure_permissions")
+
+            # 2. Recovery: operator fixes permissions (chmod 600)
+            profile.chmod(0o600)
+
+            called_urls: list[str] = []
+
+            def fake_api_runner(method: str, url: str, body: Any = None, headers: Any = None) -> dict[str, Any]:
+                called_urls.append(url)
+                return {"status_enum": "running"}
+
+            release_campaigns.campaign_command(
+                action="resume",
+                campaign_id="campaign-v1.0.0",
+                apply=True,
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+                api_runner=fake_api_runner,
+            )
+
+            saved_recovered = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved_recovered is not None
+            entry_recovered = next(p for p in saved_recovered["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry_recovered["state"], "running")
+            self.assertEqual(entry_recovered["error"], "")
+            self.assertEqual(entry_recovered["next_action"], "poll devin API session")
+            self.assertTrue(len(called_urls) > 0)
+            self.assertIn("ses_poll_123", called_urls[0])
+
+    def test_campaign_devin_ambiguous_profiles_polling_and_watch_recovery(self) -> None:
+        """Resumed polling and watch recovery for running Devin session preserves ambiguous diagnostics and recovers with selector."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            (config_dir / "devin.alpha.env").write_text(
+                "DEVIN_API_KEY=alpha-tok-sec\nDEVIN_ORG_ID=org-a\nCODE_MOWER_DEVIN_REPOSITORIES=owner/repo\n"
+            )
+            (config_dir / "devin.alpha.env").chmod(0o600)
+            (config_dir / "devin.beta.env").write_text(
+                "DEVIN_API_KEY=beta-tok-sec\nDEVIN_ORG_ID=org-b\nCODE_MOWER_DEVIN_REPOSITORIES=owner/repo\n"
+            )
+            (config_dir / "devin.beta.env").chmod(0o600)
+
+            campaign = {
+                "schema": release_campaigns.CAMPAIGN_SCHEMA,
+                "campaign_id": "campaign-v1.0.0",
+                "release_tag": "v1.0.0",
+                "package_identity": "code-mower",
+                "package_spec": "code-mower==1.0.0",
+                "normalized_version": "1.0.0",
+                "qualification_context": "cold_install",
+                "starting_version": "",
+                "package_source": "pypi",
+                "repo_slug": "owner/repo",
+                "status": "running",
+                "dry_run": False,
+                "elapsed_seconds": 0.0,
+                "created_at": "2026-09-07T12:00:00Z",
+                "updated_at": "2026-09-07T12:00:00Z",
+                "next_action": "poll running providers: devin",
+                "next_detail": "1 provider(s) currently running",
+                "providers": [
+                    {
+                        "provider": "devin",
+                        "lane_id": "devin",
+                        "driver": "hosted_bridge",
+                        "state": "running",
+                        "environment": "local/python_3.12",
+                        "elapsed_seconds": 0.0,
+                        "idempotency_key": "idemp-devin-amb",
+                        "dispatch_mode": "applied",
+                        "error": "",
+                        "posture": "required",
+                        "next_action": "poll devin API session",
+                        "next_detail": "",
+                        "attempted_at": "2026-09-07T12:00:00Z",
+                        "dispatch_ref": {
+                            "session_id": "ses_amb_456",
+                            "transport_kind": "devin_api_v3",
+                            "repo_slug": "owner/repo",
+                            "issue_marker_posted": False,
+                        },
+                    }
+                ],
+            }
+            release_campaigns.save_campaign(campaign, campaigns_dir)
+
+            # 1. Advance/poll with ambiguous profiles: reports --provider-profile without asking for DEVIN_API_KEY
+            release_campaigns.campaign_command(
+                action="resume",
+                campaign_id="campaign-v1.0.0",
+                apply=True,
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry_polled = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry_polled["state"], "running")
+            self.assertEqual(entry_polled["error"], "missing_credentials")
+            self.assertIn("--provider-profile", entry_polled["next_action"])
+            self.assertNotIn("DEVIN_API_KEY", entry_polled["next_action"])
+            self.assertEqual(entry_polled["next_detail"], "ambiguous")
+
+            # Also check campaign_watch output
+            watch_summary = release_campaigns.campaign_watch(
+                campaign_id="campaign-v1.0.0",
+                campaigns_dir=campaigns_dir,
+                repo_slug="owner/repo",
+                provider_config_dir=config_dir,
+                interval=0.1,
+                timeout=0.1,
+                emit_json=True,
+                env={},
+            )
+            devin_watch = next(p for p in watch_summary["providers"] if p["provider"] == "devin")
+            self.assertEqual(devin_watch["state"], "running")
+            self.assertEqual(devin_watch["error"], "missing_credentials")
+            self.assertIn("--provider-profile", devin_watch["next_action"])
+            self.assertNotIn("DEVIN_API_KEY", devin_watch["next_action"])
+            self.assertEqual(devin_watch["next_detail"], "ambiguous")
+
+            # 2. Recovery: operator specifies --provider-profile devin.alpha
+            called_urls: list[str] = []
+
+            def fake_api_runner(method: str, url: str, body: Any = None, headers: Any = None) -> dict[str, Any]:
+                called_urls.append(url)
+                return {"status_enum": "running"}
+
+            release_campaigns.campaign_command(
+                action="resume",
+                campaign_id="campaign-v1.0.0",
+                apply=True,
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_profile="devin.alpha",
+                provider_config_dir=config_dir,
+                env={},
+                api_runner=fake_api_runner,
+            )
+
+            saved_recovered = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved_recovered is not None
+            entry_recovered = next(p for p in saved_recovered["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry_recovered["state"], "running")
+            self.assertEqual(entry_recovered["error"], "")
+            self.assertEqual(entry_recovered["next_action"], "poll devin API session")
+            self.assertTrue(len(called_urls) > 0)
+            self.assertIn("ses_amb_456", called_urls[0])
+
+    def test_campaign_without_devin_does_no_devin_credential_discovery(self) -> None:
+        """A campaign that does not select Devin does no Devin credential discovery or disk reads."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            # An insecure devin.env would fail closed with insecure_permissions if discovered
+            profile = config_dir / "devin.env"
+            profile.write_text("DEVIN_API_KEY=token\nDEVIN_ORG_ID=org-test\n")
+            profile.chmod(0o644)
+
+            with mock.patch(
+                "code_mower.provider_credentials.resolve_provider_credentials",
+                wraps=provider_credentials.resolve_provider_credentials,
+            ) as mock_resolve:
+                release_campaigns.campaign_command(
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    providers=["codex"],
+                    campaigns_dir=campaigns_dir,
+                    provider_config_dir=config_dir,
+                    env={},
+                )
+                # Devin credentials must never be queried or discovered
+                for call in mock_resolve.call_args_list:
+                    prov = call.args[0] if call.args else call.kwargs.get("provider")
+                    self.assertNotEqual(prov, "devin")
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "codex")
+            self.assertNotIn("insecure_permissions", entry.get("error", ""))
+            self.assertNotIn("chmod 600", entry.get("next_action", ""))
+
+    def test_unrelated_local_provider_subprocess_cannot_see_devin_credentials(self) -> None:
+        """Unrelated local provider subprocess environments cannot see Devin credentials from disk or profiles."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text(
+                "DEVIN_API_KEY=devin-token\n"
+                "DEVIN_ORG_ID=org-secret\n"
+                "CODE_MOWER_DEVIN_REPOSITORIES=owner/repo\n"
+            )
+            profile.chmod(0o600)
+
+            seen_env: dict[str, str] = {}
+
+            def spying_adapter_runner(argv: Sequence[str], timeout: int) -> subprocess.CompletedProcess[str]:
+                proc = subprocess.run(
+                    [sys.executable, "-c", "import json, os; print(json.dumps(dict(os.environ)))"],
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
+                )
+                child_env = json.loads(proc.stdout)
+                seen_env.update(child_env)
+
+                out_idx = argv.index("--output")
+                out_path = Path(argv[out_idx + 1])
+                out_path.write_text(
+                    json.dumps(_mock_adoption_result("v1.0.0", provider="codex", outcome="pass")),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            # Even in a campaign containing both devin and codex with --apply
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin", "codex"],
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                apply=True,
+                adapter_runner=spying_adapter_runner,
+                api_runner=lambda method, url, body, headers: {"session_id": "devin-test"},
+                env={},
+            )
+
+            # The subprocess that ran for Codex must NOT see Devin credentials
+            self.assertNotIn("DEVIN_API_KEY", seen_env)
+            self.assertNotIn("DEVIN_ORG_ID", seen_env)
+            self.assertNotIn("devin-token", str(seen_env))
+            self.assertNotIn("org-secret", str(seen_env))
+
+            # Additionally verify build_adapter_child_env strips them even if in ambient env
+            for prov in ("codex", "claude", "antigravity", "muse"):
+                with mock.patch.dict(
+                    os.environ,
+                    {"DEVIN_API_KEY": "devin-token", "DEVIN_ORG_ID": "org-secret"},
+                ):
+                    child_env = campaign_adapters.build_adapter_child_env(prov)
+                    self.assertNotIn("DEVIN_API_KEY", child_env)
+                    self.assertNotIn("DEVIN_ORG_ID", child_env)
+
+    def test_devin_org_id_invalid_fails_campaign_preview_auth(self) -> None:
+        """Invalid DEVIN_ORG_ID fails campaign readiness preview and identifies DEVIN_ORG_ID."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text(
+                "DEVIN_API_KEY=token\nDEVIN_ORG_ID=org-bad/path\nCODE_MOWER_DEVIN_REPOSITORIES=owner/repo\n"
+            )
+            profile.chmod(0o600)
+
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="owner/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env={},
+            )
+
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry["state"], "unavailable")
+            self.assertIn("DEVIN_ORG_ID", entry.get("error", "") + entry.get("next_action", ""))
+
+    def test_devin_conflicting_repository_aliases_ambient_precedence_in_campaign(self) -> None:
+        """Ambient repository scope overrides stored profile across alias names in campaign preview."""
+        with tempfile.TemporaryDirectory() as tmp:
+            campaigns_dir = Path(tmp) / "campaigns"
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            profile = config_dir / "devin.env"
+            profile.write_text(
+                "DEVIN_API_KEY=token\nDEVIN_ORG_ID=org-valid\nCODE_MOWER_DEVIN_REPOSITORIES=disk/repo\n"
+            )
+            profile.chmod(0o600)
+
+            # Ambient DEVIN_REPOSITORIES specifies ambient/repo
+            ambient_env = {"DEVIN_REPOSITORIES": "ambient/repo"}
+
+            # 1. Targeting ambient/repo succeeds: target acknowledged
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="ambient/repo",
+                campaigns_dir=campaigns_dir,
+                provider_config_dir=config_dir,
+                env=ambient_env,
+            )
+            saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir)
+            assert saved is not None
+            entry = next(p for p in saved["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry["state"], "queued")
+            self.assertIn("run with --apply", entry.get("next_action", ""))
+
+            # 2. Targeting disk/repo fails: ambient scope overrode disk scope, so disk/repo is rejected
+            campaigns_dir2 = Path(tmp) / "campaigns2"
+            release_campaigns.campaign_command(
+                release_tag="v1.0.0",
+                package_spec="code-mower==1.0.0",
+                providers=["devin"],
+                repo_slug="disk/repo",
+                campaigns_dir=campaigns_dir2,
+                provider_config_dir=config_dir,
+                env=ambient_env,
+            )
+            saved2 = release_campaigns.load_campaign_by_id("campaign-v1.0.0", campaigns_dir2)
+            assert saved2 is not None
+            entry2 = next(p for p in saved2["providers"] if p["provider"] == "devin")
+            self.assertEqual(entry2["state"], "unavailable")
+            self.assertEqual(entry2.get("error"), "hosted_transport_unverified")
+            self.assertIn("add the exact OWNER/REPO target to CODE_MOWER_DEVIN_REPOSITORIES", entry2.get("next_action", ""))
 
     def test_github_dispatch_failure_persists_only_a_safe_error_code(self) -> None:
         """GitHub dispatch failure leaves useful local status without persisting raw gh output."""
