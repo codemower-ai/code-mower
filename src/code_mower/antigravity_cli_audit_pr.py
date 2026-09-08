@@ -12,6 +12,8 @@ import sys
 import urllib.error
 from pathlib import Path
 
+from typing import Mapping
+
 if __package__ in {None, ""}:
     module_dir = Path(__file__).resolve().parent
     sys.path.insert(0, str(module_dir.parent))
@@ -34,6 +36,11 @@ DEFAULT_ANTIGRAVITY_DISPLAY_NAME = "Antigravity CLI"
 ANTIGRAVITY_SETTINGS_SUBDIRS = (".gemini", ".gemini/antigravity-cli")
 ANTIGRAVITY_ALTERNATE_COMMANDS = ("antigravity",)
 ANTIGRAVITY_AMBIENT_HOME_ENV = "ANTIGRAVITY_CLI_USE_AMBIENT_HOME"
+ANTIGRAVITY_REQUIRED_FLAGS = ("--dangerously-skip-permissions",)
+ANTIGRAVITY_HELP_SENTINELS = (
+    *gemini_cli_audit_pr.PROMPT_FILE_HELP_SENTINELS,
+    *ANTIGRAVITY_REQUIRED_FLAGS,
+)
 
 AntigravityCliHeadChangedError = gemini_cli_audit_pr.GeminiCliHeadChangedError
 AntigravityCliUnsupportedError = gemini_cli_audit_pr.GeminiCliUnsupportedError
@@ -59,6 +66,43 @@ def resolve_antigravity_command(command: str) -> str:
             if shutil.which(alternate):
                 return alternate
     return command
+
+
+def build_antigravity_audit_argv(
+    *,
+    command: str = DEFAULT_ANTIGRAVITY_COMMAND,
+    workspace_dir: Path,
+    prompt_instruction: str,
+    timeout_seconds: int = gemini_cli_audit_pr.DEFAULT_TIMEOUT_SECONDS,
+    model: str = "",
+) -> list[str]:
+    """Build structured argv for headless Antigravity CLI audit inside sandbox."""
+    return gemini_cli_audit_pr.build_prompt_file_argv(
+        resolve_antigravity_command(command),
+        workspace_dir=workspace_dir,
+        prompt_instruction=prompt_instruction,
+        timeout_seconds=timeout_seconds,
+        model=model,
+        extra_args=ANTIGRAVITY_REQUIRED_FLAGS,
+    )
+
+
+def verify_antigravity_cli_contract(
+    command: str,
+    *,
+    cwd: Path,
+    env: Mapping[str, str] | None = None,
+    display_name: str = DEFAULT_ANTIGRAVITY_DISPLAY_NAME,
+) -> None:
+    """Verify that the Antigravity CLI supports required audit flags."""
+    resolved_env = env if env is not None else os.environ
+    gemini_cli_audit_pr.verify_prompt_file_contract(
+        resolve_antigravity_command(command),
+        cwd=cwd,
+        env=resolved_env,
+        display_name=display_name,
+        required_sentinels=ANTIGRAVITY_HELP_SENTINELS,
+    )
 
 
 def run_antigravity_cli_audit(
@@ -120,6 +164,8 @@ def run_antigravity_cli_audit(
         cli_transport="prompt_file",
         preserve_ambient_home=use_ambient_home,
         context_pack_text=context_pack_text,
+        extra_args=ANTIGRAVITY_REQUIRED_FLAGS,
+        required_help_sentinels=ANTIGRAVITY_HELP_SENTINELS,
     )
 
 
