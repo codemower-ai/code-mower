@@ -77,7 +77,7 @@ _MILESTONE_POLICY: Mapping[str, Mapping[str, str]] = {
     "closed_unmerged": {"transition_category": "", "comment_template": ""},
 }
 
-_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*-[0-9]+")
+_KEY_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]*-[0-9]+(?![A-Za-z0-9_])")
 _TITLE_LEADING_RE = re.compile(r"^([A-Z][A-Z0-9_]*-[0-9]+)\b")
 _MAX_KEY_LENGTH = 64
 _MAX_INPUT_LENGTH = 256
@@ -210,7 +210,7 @@ def _owner_action_report(
         "schema": SYNC_REPORT_SCHEMA,
         "status": "blocked",
         "reason": reason,
-        "milestone": milestone,
+        "milestone": milestone if milestone in PR_MILESTONES else "",
         "issue_key": "",
         "pr": dict(pr),
         "transition_category": "",
@@ -314,6 +314,21 @@ def build_sync_plan(
     plan = jira_mutations.build_mutation_plan(
         config, request, apply_requested=bool(apply_requested)
     )
+    stale_categories = {
+        "opened": ("blocked", "done"),
+        "blocked": ("done",),
+    }.get(milestone, ())
+    stale_status_ids = sorted(
+        {
+            status_id
+            for category in stale_categories
+            for status_id in settings.status_category_map.get(category, ())
+        }
+    )
+    if stale_status_ids:
+        for operation in plan.get("operations") or []:
+            if operation.get("operation") in {"transition", "comment"}:
+                operation.setdefault("detail", {})["skip_if_status_ids"] = stale_status_ids
     return {
         "schema": SYNC_REPORT_SCHEMA,
         "status": plan["status"],
@@ -435,41 +450,42 @@ def reconcile_missed_events(
     metadata only.
     """
     received = 0
-    results: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
-    pr_markers: dict[str, set[str]] = {}
-    for event in events:
-        if not isinstance(event, Mapping):
-            continue
-        pr_url = str(event.get("pr_url") or "").strip().lower()
-        marker = str(
-            event.get("issue_ref")
-            or event.get("issue_key")
-            or parse_jira_marker(
-                branch=str(event.get("branch") or ""),
-                pr_title=str(event.get("pr_title") or ""),
-            ).get("issue_key", "")
-        ).upper()
-        if pr_url and marker:
-            pr_markers.setdefault(pr_url, set()).add(marker)
-    conflicted_prs = {
-        pr_url for pr_url, markers in pr_markers.items() if len(markers) > 1
-    }
+    planned_events: list[dict[str, Any]] = []
     for event in events:
         if not isinstance(event, Mapping):
             continue
         received += 1
-        milestone = str(event.get("milestone") or "")
-        pr_url = str(event.get("pr_url") or "")
-        marker = str(
-            event.get("issue_ref")
-            or event.get("issue_key")
-            or parse_jira_marker(
+        planned_events.append(
+            build_sync_plan(
+                config,
+                milestone=str(event.get("milestone") or ""),
+                pr_url=str(event.get("pr_url") or ""),
                 branch=str(event.get("branch") or ""),
                 pr_title=str(event.get("pr_title") or ""),
-            ).get("issue_key", "")
+                issue_ref=str(event.get("issue_ref") or event.get("issue_key") or ""),
+                apply_requested=bool(apply_requested),
+            )
         )
-        if pr_url.strip().lower() in conflicted_prs:
+
+    pr_markers: dict[str, set[str]] = {}
+    for report in planned_events:
+        pr = report.get("pr") if isinstance(report.get("pr"), Mapping) else {}
+        pr_url = str(pr.get("url") or "").lower()
+        issue_key = str(report.get("issue_key") or "")
+        if pr_url and issue_key:
+            pr_markers.setdefault(pr_url, set()).add(issue_key)
+    conflicted_prs = {
+        pr_url for pr_url, markers in pr_markers.items() if len(markers) > 1
+    }
+
+    results: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for report in planned_events:
+        milestone = str(report.get("milestone") or "")
+        issue_key = str(report.get("issue_key") or "")
+        pr = report.get("pr") if isinstance(report.get("pr"), Mapping) else {}
+        pr_url = str(pr.get("url") or "").lower()
+        if pr_url in conflicted_prs:
             results.append({
                 "status": "blocked",
                 "reason": "ambiguous_jira_identity",
@@ -478,22 +494,28 @@ def reconcile_missed_events(
                 "write_request_count": 0,
             })
             continue
-        key = (marker.upper(), pr_url.strip().lower(), milestone)
+        if report.get("status") == "blocked":
+            results.append({
+                "status": "blocked",
+                "reason": str(report.get("reason") or "invalid_request"),
+                "milestone": milestone,
+                "issue_key": issue_key,
+                "write_request_count": 0,
+            })
+            continue
+        key = (issue_key, pr_url, milestone)
         if key in seen:
-            results.append({"status": "duplicate_skipped", "reason": "ok",
-                            "milestone": milestone, "issue_key": marker.upper(),
-                            "write_request_count": 0})
+            results.append(
+                {
+                    "status": "duplicate_skipped",
+                    "reason": "ok",
+                    "milestone": milestone,
+                    "issue_key": issue_key,
+                    "write_request_count": 0,
+                }
+            )
             continue
         seen.add(key)
-        report = build_sync_plan(
-            config,
-            milestone=milestone,
-            pr_url=pr_url,
-            branch=str(event.get("branch") or ""),
-            pr_title=str(event.get("pr_title") or ""),
-            issue_ref=str(event.get("issue_ref") or event.get("issue_key") or ""),
-            apply_requested=bool(apply_requested),
-        )
         if (
             apply_requested
             and apply_fn is not None

@@ -239,6 +239,7 @@ REASON_CODES = frozenset(
         "account_unresolved",
         "issue_out_of_scope",
         "write_guard_unarmed",
+        "stale_milestone",
         "permission_denied",
         "unauthorized",
         "not_found",
@@ -288,7 +289,12 @@ class MutationRequestError(ValueError):
 #: collapses to ``issue_out_of_scope``, so an unexpected value can only ever
 #: make the refusal broader, never narrower.
 SCOPE_REFUSAL_REASONS = frozenset(
-    {"issue_out_of_scope", "issue_identity_unresolved", "write_guard_unarmed"}
+    {
+        "issue_out_of_scope",
+        "issue_identity_unresolved",
+        "write_guard_unarmed",
+        "stale_milestone",
+    }
 )
 
 
@@ -928,6 +934,11 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         # therefore unguarded, but the flag keeps the invariant from being
         # able to recurse even if that ever stops being true.
         self._scope_check_active = False
+        # Optional closed status ids that make the current operation stale.
+        # The apply loop sets this immediately around one operation so the
+        # transport's own fresh scope read closes the race between the
+        # handler's state check and the physical write.
+        self._write_forbidden_status_ids: tuple[str, ...] = ()
 
     # -- Armed write scope -----------------------------------------------
 
@@ -955,6 +966,19 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
     def disarm(self) -> None:
         """Withdraw write authorization; every later write is refused."""
         self._write_scope = None
+        self._write_forbidden_status_ids = ()
+
+    def refuse_writes_in_statuses(self, status_ids: Sequence[Any]) -> None:
+        """Refuse the current operation if Jira has reached a later status."""
+        self._write_forbidden_status_ids = tuple(
+            sorted(
+                {
+                    str(status_id)
+                    for status_id in status_ids
+                    if _TRANSITION_ID_RE.fullmatch(str(status_id or ""))
+                }
+            )
+        )
 
     def _require_write_scope(self, path: str) -> None:
         """Re-prove the armed scope, or refuse, before one physical write.
@@ -991,6 +1015,8 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         violation = _issue_scope_violation(state, project_id, issue_id)
         if violation is not None:
             raise WriteScopeRefused(violation[1])
+        if str(state.get("status_id") or "") in self._write_forbidden_status_ids:
+            raise WriteScopeRefused("stale_milestone")
 
     @staticmethod
     def _is_write_request(method: str, path: str) -> bool:
@@ -1521,6 +1547,12 @@ def _apply_pending(
         if violation is not None:
             operation.status, operation.reason = violation
             return _abort()
+        skip_status_ids = tuple(operation.detail.get("skip_if_status_ids") or ())
+        if str(state.get("status_id") or "") in skip_status_ids:
+            operation.status = "already_applied"
+            operation.reason = "stale_milestone"
+            continue
+        client.refuse_writes_in_statuses(skip_status_ids)
         try:
             handler = _HANDLERS[operation.operation]
             ledger = handler(operation, client, issue_ref, state, ledger)
@@ -1545,6 +1577,8 @@ def _apply_pending(
             operation.status = "blocked"
             operation.reason = "rejected"
             return _abort()
+        finally:
+            client.refuse_writes_in_statuses(())
         if operation.status not in _CONTINUING_STATUSES:
             return _abort()
 

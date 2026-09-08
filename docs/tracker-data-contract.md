@@ -416,7 +416,10 @@ token (never bodies, comments, source, or diffs); every milestone verifies
 the single PR remote link, comments go out only on opened/blocked/merged,
 and ambiguous or mismatched identity fails closed to an owner action.
 Duplicate events and missed-event recovery converge to `already_applied`;
-Jira failures stay in the sync report and never touch gate state. Offline
+an `opened` event cannot move a blocked or done issue backward, and a
+`blocked` event cannot move a done issue backward. Those stale-event guards
+are rechecked at the transport boundary before each physical write. Jira
+failures stay in the sync report and never touch gate state. Offline
 tests (`tests/test_jira_pr_sync.py`) cover every milestone, retry, and
 recovery. Sync reports are bounded metadata only.
 

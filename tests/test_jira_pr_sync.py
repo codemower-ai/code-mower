@@ -95,11 +95,14 @@ class FakeJira:
             {"id": "91", "to": {"id": "9"}},
         ),
         faults: Mapping[tuple[str, str], Any] | None = None,
+        status_changes_on_issue_reads: Mapping[int, str] | None = None,
     ) -> None:
         self.status_id = status_id
         self.project_id = project_id
         self.transitions = [dict(item) for item in transitions]
         self.faults = {key: list(value) for key, value in dict(faults or {}).items()}
+        self.status_changes_on_issue_reads = dict(status_changes_on_issue_reads or {})
+        self.issue_reads = 0
         self.properties: dict[str, Any] = {}
         self.global_ids: list[str] = []
         self.comments: list[Any] = []
@@ -152,6 +155,10 @@ class FakeJira:
         if fault is not None:
             return self._raise_or_return(fault)
         if suffix == "" and method == "GET":
+            self.issue_reads += 1
+            self.status_id = self.status_changes_on_issue_reads.get(
+                self.issue_reads, self.status_id
+            )
             return ok({
                 "id": ISSUE_ID,
                 "key": ISSUE_KEY,
@@ -249,6 +256,10 @@ class MarkerParsingTest(unittest.TestCase):
     def test_two_branch_markers_are_ambiguous(self) -> None:
         parsed = jira_pr_sync.parse_jira_marker(branch="ABC-1-x-DEF-2-y")
         self.assertEqual(parsed["reason"], "ambiguous_jira_identity")
+
+    def test_embedded_branch_marker_is_rejected(self) -> None:
+        parsed = jira_pr_sync.parse_jira_marker(branch="feature/notABC-123x-work")
+        self.assertEqual(parsed["reason"], "missing_jira_identity")
 
     def test_branch_title_disagreement_is_ambiguous(self) -> None:
         parsed = jira_pr_sync.parse_jira_marker(
@@ -391,6 +402,40 @@ class ApplyIdempotencyTest(unittest.TestCase):
         self.assertEqual(len(runner.comment_posts()), 2)
         self.assertEqual(len(runner.transition_posts()), 2)
 
+    def test_delayed_opened_event_cannot_regress_merged_issue(self) -> None:
+        config, runner = sync_config(), FakeJira()
+        plan_and_apply(config, "opened", runner)
+        plan_and_apply(config, "merged", runner)
+
+        replay = plan_and_apply(config, "opened", runner)
+
+        self.assertEqual(replay["status"], "already_applied")
+        self.assertEqual(runner.status_id, "9")
+        self.assertEqual(len(runner.comment_posts()), 2)
+        self.assertEqual(len(runner.transition_posts()), 2)
+        stale = [
+            item
+            for item in replay["mutation_plan"]["operations"]
+            if item["reason"] == "stale_milestone"
+        ]
+        self.assertEqual(
+            [item["operation"] for item in stale], ["transition", "comment"]
+        )
+
+    def test_transport_guard_closes_status_change_race(self) -> None:
+        config = sync_config()
+        runner = FakeJira(status_changes_on_issue_reads={3: "9"})
+
+        report = plan_and_apply(config, "opened", runner)
+
+        self.assertEqual(report["status"], "blocked")
+        transition = report["mutation_plan"]["operations"][0]
+        self.assertEqual(transition["reason"], "stale_milestone")
+        self.assertEqual(report["write_request_count"], 0)
+        self.assertEqual(runner.status_id, "9")
+        self.assertEqual(runner.comment_posts(), [])
+        self.assertEqual(runner.transition_posts(), [])
+
     def test_jira_outage_never_marks_gate(self) -> None:
         from code_mower import jira_cloud
 
@@ -481,6 +526,27 @@ class RecoveryTest(unittest.TestCase):
         )
         self.assertEqual(applied, [])
         self.assertEqual(runner.calls, [])
+
+    def test_reconcile_sanitizes_invalid_identity_and_milestone(self) -> None:
+        private_input = "private arbitrary payload"
+        summary = jira_pr_sync.reconcile_missed_events(
+            [
+                {"milestone": "opened", "pr_url": PR_URL,
+                 "branch": "feature/ABC-123-work", "issue_ref": private_input},
+                {"milestone": private_input, "pr_url": PR_URL,
+                 "branch": "feature/ABC-123-work"},
+            ],
+            sync_config(),
+        )
+
+        self.assertEqual(summary["events_replayed"], 0)
+        self.assertEqual(summary["events_blocked"], 2)
+        self.assertEqual(
+            [item["reason"] for item in summary["results"]],
+            ["jira_identity_mismatch", "invalid_milestone"],
+        )
+        self.assertEqual(summary["results"][1]["milestone"], "")
+        self.assertNotIn(private_input, json.dumps(summary))
 
 
 class DiscoverLinksTest(unittest.TestCase):
