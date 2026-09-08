@@ -391,3 +391,132 @@ class LaneStatusTests(TestCase):
         )
         self.assertEqual(payload["next_action"], "no active lanes")
         self.assertEqual(payload["next_detail"], "")
+
+    def test_collect_lane_processes_identifies_muse_and_versioned_muse_bin(self) -> None:
+        ps_output = (
+            "101 /usr/local/bin/muse exec --prompt-file /tmp/secret-prompt.md --token secret-token-123\n"
+            "102 /opt/local/bin/muse-bin-0.4.2 --sandbox --permission-mode autonomous\n"
+            "103 muse-bin-v1.0.0-rc1 --prompt-path /tmp/prompt2.md\n"
+        )
+
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["ps"] and "-axo" in args:
+                return _completed(ps_output)
+            if args[:1] == ["lsof"]:
+                return _completed("n/tmp/muse-lane\n")
+            return _completed("", returncode=1)
+
+        report = lane_status.collect_lane_processes(command_runner)
+
+        self.assertTrue(report["available"])
+        self.assertEqual(len(report["processes"]), 3)
+        for proc in report["processes"]:
+            self.assertEqual(proc["provider"], "muse")
+            self.assertEqual(proc["process"], "muse")
+            self.assertEqual(proc["cwd"], "/tmp/muse-lane")
+        serialized = json.dumps(report)
+        self.assertNotIn("0.4.2", serialized)
+        self.assertNotIn("v1.0.0", serialized)
+        self.assertNotIn("muse-bin-", serialized)
+        self.assertNotIn("secret-prompt", serialized)
+        self.assertNotIn("secret-token", serialized)
+        self.assertNotIn("/usr/local/bin", serialized)
+        self.assertNotIn("/opt/local/bin", serialized)
+
+    def test_collect_lane_processes_identifies_supervised_child_provider(self) -> None:
+        ps_output = (
+            "201 code-mower lane-delivery supervise --log /tmp/secret.log "
+            "--timeout-seconds 1800 --cwd /tmp/muse-lane --status-file /tmp/status.json "
+            "-- muse exec --prompt-file /tmp/prompt.md\n"
+            "202 python3 -m code_mower.lane_delivery supervise --log /tmp/secret2.log "
+            "--timeout-seconds 1800 --cwd /tmp/muse-lane -- /usr/local/bin/muse-bin-0.4.2 --sandbox\n"
+            "203 code-mower lane-delivery supervise --log /tmp/codex.log "
+            "--timeout-seconds 1800 --cwd /tmp/codex-lane -- codex exec --prompt-file /tmp/codex.md\n"
+        )
+
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["ps"] and "-axo" in args:
+                return _completed(ps_output)
+            if args[:1] == ["lsof"]:
+                return _completed("n/tmp/work-lane\n")
+            return _completed("", returncode=1)
+
+        report = lane_status.collect_lane_processes(command_runner)
+
+        self.assertTrue(report["available"])
+        self.assertEqual(len(report["processes"]), 3)
+        self.assertEqual(report["processes"][0]["provider"], "muse")
+        self.assertEqual(report["processes"][0]["process"], "muse")
+        self.assertEqual(report["processes"][1]["provider"], "muse")
+        self.assertEqual(report["processes"][1]["process"], "muse")
+        self.assertEqual(report["processes"][2]["provider"], "codex")
+        self.assertEqual(report["processes"][2]["process"], "codex")
+
+        serialized = json.dumps(report)
+        self.assertNotIn("secret.log", serialized)
+        self.assertNotIn("secret2.log", serialized)
+        self.assertNotIn("codex.log", serialized)
+        self.assertNotIn("timeout-seconds", serialized)
+        self.assertNotIn("prompt.md", serialized)
+        self.assertNotIn("0.4.2", serialized)
+        self.assertNotIn("muse-bin-", serialized)
+
+    def test_collect_lane_processes_muse_false_positive_boundaries(self) -> None:
+        ps_output = (
+            "301 /usr/bin/museum --exhibit modern-art\n"
+            "302 /usr/bin/amuse --joke funny\n"
+            "303 muse-bin\n"
+            "304 muse-bin-\n"
+            "305 /usr/bin/mused\n"
+            "306 /usr/bin/muse-tools\n"
+            "307 code-mower lane-delivery supervise --log /tmp/l --timeout-seconds 10 -- museum --exhibit\n"
+            "308 code-mower lane-delivery supervise --log /tmp/l --timeout-seconds 10 -- echo hello\n"
+        )
+
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["ps"] and "-axo" in args:
+                return _completed(ps_output)
+            if args[:1] == ["lsof"]:
+                return _completed("n/tmp/lane\n")
+            return _completed("", returncode=1)
+
+        report = lane_status.collect_lane_processes(command_runner)
+
+        self.assertTrue(report["available"])
+        self.assertEqual(report["processes"], [])
+
+    def test_collect_status_discovers_supervised_muse_lane_with_redacted_paths(self) -> None:
+        def gh_json(_args: list[str]) -> object:
+            raise lane_status.LaneStatusUnavailable("gh pr failed")
+
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:4] == ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]:
+                return _completed("")
+            if args == ["ps", "-axo", "pid=,command="]:
+                return _completed(
+                    " 806 code-mower lane-delivery supervise --log /tmp/secret.log "
+                    "--timeout-seconds 1800 --cwd /tmp/muse-lane -- muse exec\n"
+                )
+            if args == ["lsof", "-a", "-p", "806", "-d", "cwd", "-Fn"]:
+                return _completed("p806\nn/tmp/muse-lane\n")
+            return _completed("", returncode=1)
+
+        report = lane_status.collect_status(
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=command_runner,
+            now=NOW,
+        )
+
+        self.assertEqual(len(report["local_processes"]["processes"]), 1)
+        proc = report["local_processes"]["processes"][0]
+        self.assertEqual(proc["provider"], "muse")
+        self.assertEqual(proc["process"], "muse")
+        self.assertEqual(proc["cwd"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertTrue(proc["cwd_redacted"])
+        self.assertEqual(report["next_action"], "remote unavailable; inspect local lanes")
+        rendered = lane_status.render_text(report)
+        self.assertIn("Local lane processes:\n- muse pid=806 process=muse cwd=[local path hidden]", rendered)
+        self.assertNotIn("/tmp/muse-lane", rendered)
+        self.assertNotIn("secret.log", rendered)
+        self.assertNotIn("timeout-seconds", rendered)
