@@ -1969,7 +1969,134 @@ def _parser() -> argparse.ArgumentParser:
     mutate.add_argument("--provider-profile", default="")
     mutate.add_argument("--provider-config-dir", default="")
     mutate.add_argument("--http-timeout", type=float, default=jira_cloud.REQUEST_TIMEOUT_SECONDS)
+    sync = subparsers.add_parser(
+        "pr-sync",
+        help="sync one Jira issue with one GitHub PR milestone (issue #802)",
+    )
+    sync.add_argument("config", nargs="?", default="code-mower.yml")
+    sync.add_argument(
+        "--milestone",
+        required=True,
+        choices=("opened", "updated", "blocked", "green", "merged", "closed_unmerged"),
+        help="GitHub/Code Mower lifecycle milestone to synchronize",
+    )
+    sync.add_argument("--pr-url", required=True, help="GitHub pull request URL")
+    sync.add_argument(
+        "--branch", default="",
+        help="PR branch name carrying the Jira marker (bounded metadata only)",
+    )
+    sync.add_argument(
+        "--pr-title", default="",
+        help="PR title whose leading token may carry the Jira marker",
+    )
+    sync.add_argument(
+        "--issue", default="",
+        help="explicit Jira issue id or key; must match the PR marker",
+    )
+    sync.add_argument(
+        "--apply",
+        action="store_true",
+        help="perform the plan; also requires tracker.jira_cloud.mutations.writes_enabled",
+    )
+    sync.add_argument("--json", action="store_true")
+    sync.add_argument(
+        "--plan-out", default="", help="retain the bounded sync report at this path"
+    )
+    sync.add_argument("--provider-credential-file", default="")
+    sync.add_argument("--provider-profile", default="")
+    sync.add_argument("--provider-config-dir", default="")
+    sync.add_argument("--http-timeout", type=float, default=jira_cloud.REQUEST_TIMEOUT_SECONDS)
     return parser
+
+
+def _render_sync_text(report: Mapping[str, Any]) -> str:
+    pr = report.get("pr") if isinstance(report.get("pr"), Mapping) else {}
+    lines = [
+        "Code Mower Jira PR sync",
+        f"Milestone: {report.get('milestone')}",
+        f"Status: {report.get('status')} ({report.get('reason')})",
+        f"Issue: {report.get('issue_key') or '-'}",
+        f"PR: {pr.get('url') or '-'}",
+        f"Transition category: {report.get('transition_category') or '-'}",
+        f"Comment template: {report.get('comment_template') or '-'}",
+        f"Gate authority: {report.get('gate_authority')} (jira impact: {report.get('gate_impact')})",
+        f"Jira write attempts: {report.get('write_request_count')}",
+        f"Next action: {report.get('next_action')}",
+    ]
+    return "\n".join(lines)
+
+
+def _run_pr_sync(args: argparse.Namespace, env: Mapping[str, str] | None,
+                 client_factory: ClientFactory | None) -> int:
+    from . import jira_pr_sync as pr_sync
+
+    try:
+        config = code_mower_config.load_config(Path(args.config))
+    except code_mower_config.ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        settings = resolve_mutation_settings(config)
+        report = pr_sync.build_sync_plan(
+            config,
+            milestone=args.milestone,
+            pr_url=args.pr_url,
+            branch=args.branch or "",
+            pr_title=args.pr_title or "",
+            issue_ref=args.issue or "",
+            apply_requested=bool(args.apply),
+        )
+    except MutationRequestError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    plan = report.get("mutation_plan")
+    has_pending = isinstance(plan, Mapping) and any(
+        operation.get("status") == "planned" for operation in plan.get("operations") or []
+    )
+    if isinstance(plan, Mapping) and plan.get("mode") == "apply" and has_pending:
+        resolution = jira_cloud.resolve_jira_credentials(
+            credential_file=Path(args.provider_credential_file)
+            if args.provider_credential_file
+            else None,
+            profile=args.provider_profile,
+            config_dir=Path(args.provider_config_dir) if args.provider_config_dir else None,
+            env=env,
+        )
+        if not resolution.has_credentials:
+            print(f"error: {resolution.message}", file=sys.stderr)
+            print(f"remediation: {resolution.remediation}", file=sys.stderr)
+            return 1
+        factory = client_factory or _default_client_factory
+        try:
+            client = factory(
+                cloud_id=settings.cloud_id,
+                email=resolution.email,
+                token=resolution.token,
+                site_url=settings.site_url,
+                timeout_seconds=float(args.http_timeout),
+            )
+        except (TypeError, ValueError):
+            print("error: Jira tracker identity is malformed", file=sys.stderr)
+            return 1
+        report = pr_sync.apply_sync_plan(report, client)
+
+    if args.plan_out:
+        try:
+            Path(args.plan_out).write_text(
+                json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            report["plan_retained"] = True
+        except OSError:
+            report["plan_retained"] = False
+            print("error: unable to retain the plan at the requested path", file=sys.stderr)
+
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(_render_sync_text(report))
+    return 0 if report["status"] in ("planned", "ready", "applied", "already_applied") else 1
 
 
 def main(
@@ -1979,6 +2106,9 @@ def main(
     env: Mapping[str, str] | None = None,
 ) -> int:
     args = _parser().parse_args(list(sys.argv[1:] if argv is None else argv))
+
+    if args.command == "pr-sync":
+        return _run_pr_sync(args, env, client_factory)
 
     try:
         config = code_mower_config.load_config(Path(args.config))
