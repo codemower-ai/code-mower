@@ -864,6 +864,13 @@ def _builder_run_events(
         with os.scandir(builder_dir) as it:
             entries = sorted(it, key=lambda entry: entry.name)
     except FileNotFoundError:
+        # A genuinely missing inventory is not a failure, but a dangling
+        # symlink or otherwise present-but-unreachable path is unusable
+        # evidence.  Use an lstat-based check (``is_symlink`` does not follow
+        # the final path component) so a dangling symlink still counts as one
+        # bounded unattributable failure and prevents complete coverage.
+        if builder_dir.is_symlink():
+            return [], [""]
         return [], []
     except NotADirectoryError:
         # ``builder-runs`` exists but is not a directory (e.g. a regular file

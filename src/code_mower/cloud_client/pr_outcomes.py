@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from .bundle import _unsafe_metadata_value_reason
 from .errors import CloudBundleError
 
 
@@ -122,13 +123,22 @@ def _canonical_lane_identifier(value: object) -> str:
     reasonable length are allowed, matching existing lane names.  Paths,
     command strings, whitespace-heavy strings, and secret-like text are
     replaced with ``UNKNOWN_EVIDENCE_SOURCE`` so they never reach an upload.
+
+    The project's metadata secret-value detector is reused before the plain
+    identifier regex is accepted, so token-, password-, and key-shaped values
+    that otherwise match the bounded format (e.g. ``ghp_...``) are normalized
+    to the fixed unknown-source label.
     """
 
     text = str(value or "").strip()
     if not text:
         return ""
     text = text.lower()
-    if len(text) <= 64 and _LANE_IDENTIFIER_RE.match(text):
+    if (
+        len(text) <= 64
+        and _LANE_IDENTIFIER_RE.match(text)
+        and not _unsafe_metadata_value_reason(text)
+    ):
         return text
     return UNKNOWN_EVIDENCE_SOURCE
 

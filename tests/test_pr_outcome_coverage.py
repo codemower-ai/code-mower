@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import code_mower.cloud as cloud_module
+from code_mower.cloud_client.operations import _builder_run_events
 from code_mower import reviewer_spend
 from code_mower.file_locks import FileLockError, exclusive_file_lock
 from code_mower.cloud_client import (
@@ -2797,6 +2798,98 @@ class PrOutcomeConcurrencyP2Tests(unittest.TestCase):
 
             self.assertTrue(builder_mock.called)
             self.assertTrue(spend_mock.called)
+
+
+class PrOutcomeBuilderRunsP2Tests(unittest.TestCase):
+    def test_absent_builder_runs_is_not_a_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            events, unreadable = _builder_run_events(repo_path)
+            self.assertEqual(events, [])
+            self.assertEqual(unreadable, [])
+
+    def test_dangling_builder_runs_symlink_counts_as_unattributable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.parent.mkdir(parents=True)
+            builder_dir.symlink_to("nowhere-missing")
+
+            events, unreadable = _builder_run_events(repo_path)
+            self.assertEqual(events, [])
+            self.assertEqual(unreadable, [""])
+            # No path leakage: entries are PR numbers or the empty marker.
+            self.assertNotIn(str(builder_dir), " ".join(unreadable))
+            self.assertNotIn(str(repo_path), " ".join(unreadable))
+
+    def test_valid_builder_runs_directory_returns_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (builder_dir / "devin-local-pr-1-aa11.cloud-event.json").write_text(
+                json.dumps(_builder_run_event("b1", "1", 0.10)),
+                encoding="utf-8",
+            )
+
+            events, unreadable = _builder_run_events(repo_path)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["event_id"], "b1")
+            self.assertEqual(unreadable, [])
+
+
+class PrOutcomeIdentifierP2Tests(unittest.TestCase):
+    def test_secret_like_lane_identifiers_become_unknown_source(self) -> None:
+        # fmt: off
+        cases = [
+            # (raw identifier, kind, is_secret)
+            ("ghp_0123456789abcdefghijklmnopqrstuvwxyz", "github_token", True),
+            ("github_pat_0123456789abcdefghijklmnopqrstuvwxyz", "github_pat", True),
+            ("sk-abcdefghijklmnopqrstuvwxyz123456789", "sk_key", True),
+            ("Bearer abcdef0123456789abcdefghij", "bearer", True),
+            ("bearer abcdef0123456789abcdefghij", "bearer_lowercase", True),
+            ("cat /etc/passwd", "command", True),
+            ("/home/user/.code-mower/builder-runs", "path", True),
+            ("claude-audit", "valid_lane", False),
+            ("codex-audit", "valid_lane", False),
+        ]
+        # fmt: on
+        for raw, _kind, is_secret in cases:
+            for event_kind in ("builder", "reviewer"):
+                with self.subTest(identifier=raw, kind=event_kind):
+                    if event_kind == "builder":
+                        run_events = [
+                            _builder_run_event("b1", "99", None, provider=raw)
+                        ]
+                    else:
+                        run_events = [
+                            _reviewer_run_event("r1", "99", None, lane=raw)
+                        ]
+
+                    event = build_pr_outcome_event(
+                        repo_slug="owner/repo",
+                        pr_number="99",
+                        outcome="merged",
+                        opened_at="2026-09-03T10:00:00Z",
+                        merged_at="2026-09-03T12:00:00Z",
+                        run_events=run_events,
+                        created_at="2026-09-03T13:00:00Z",
+                    )
+
+                    # Invalid identifier input must not drop the whole event.
+                    validate_cloud_event(event)
+                    self.assertEqual(event["dimensions"]["cost_coverage"], "unknown")
+                    if is_secret:
+                        self.assertEqual(
+                            event["dimensions"]["missing_cost_sources"],
+                            ["unknown-source"],
+                        )
+                        self.assertNotIn(raw, json.dumps(event))
+                    else:
+                        self.assertEqual(
+                            event["dimensions"]["missing_cost_sources"],
+                            [raw],
+                        )
 
 
 if __name__ == "__main__":
