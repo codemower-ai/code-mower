@@ -17,6 +17,7 @@ from code_mower.cloud_client import (
     CloudBundleError,
     build_pr_outcome_event,
     load_pr_outcome_observations,
+    max_source_freshness,
     pr_outcome_observation_key,
     pr_outcome_observation_record,
     pr_outcomes_upload,
@@ -647,6 +648,80 @@ class PrOutcomeIdentityTests(unittest.TestCase):
         self.assertGreater(corrected["created_at"], original["created_at"])
         self.assertAlmostEqual(corrected["metrics"]["reported_cost_usd"], 0.25)
         validate_cloud_event(corrected)
+
+    def test_stale_unchanged_retry_cannot_regress_source_watermark(self) -> None:
+        run_events = [
+            _builder_run_event(
+                "b1", "70", 0.15, created_at="2027-01-02T11:00:00Z"
+            )
+        ]
+        original = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="70",
+            outcome="open",
+            opened_at="2027-01-02T10:00:00Z",
+            run_events=run_events,
+            created_at="2027-01-10T00:00:00Z",
+        )
+        prior = pr_outcome_observation_record(original)
+        self.assertEqual(prior["source_freshness"], "2027-01-10T00:00:00Z")
+
+        # An unchanged retry built from an older (January 5) source snapshot
+        # is rejected before the idempotent early return, so its lower
+        # source_freshness can never replace the recorded watermark.
+        with self.assertRaises(CloudBundleError):
+            build_pr_outcome_event(
+                repo_slug="owner/repo",
+                pr_number="70",
+                outcome="open",
+                opened_at="2027-01-02T10:00:00Z",
+                run_events=run_events,
+                created_at="2027-01-05T00:00:00Z",
+                prior_observation=prior,
+            )
+
+        # The January 10 watermark is preserved, so a stale January 6 state
+        # transition cannot supersede the newer observation.
+        with self.assertRaises(CloudBundleError):
+            build_pr_outcome_event(
+                repo_slug="owner/repo",
+                pr_number="70",
+                outcome="closed_unmerged",
+                opened_at="2027-01-02T10:00:00Z",
+                closed_at="2027-01-06T12:00:00Z",
+                run_events=run_events,
+                created_at="2027-01-06T00:00:00Z",
+                prior_observation=prior,
+            )
+
+        # A non-stale unchanged retry stays byte-for-byte idempotent.
+        retry = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="70",
+            outcome="open",
+            opened_at="2027-01-02T10:00:00Z",
+            run_events=run_events,
+            created_at="2027-01-10T00:00:00Z",
+            prior_observation=prior,
+        )
+        self.assertEqual(retry, original)
+        validate_cloud_event(retry)
+
+    def test_source_freshness_watermark_never_regresses(self) -> None:
+        self.assertEqual(
+            max_source_freshness("2027-01-10T00:00:00Z", "2027-01-05T00:00:00Z"),
+            "2027-01-10T00:00:00Z",
+        )
+        self.assertEqual(
+            max_source_freshness("2027-01-05T00:00:00Z", "2027-01-10T00:00:00Z"),
+            "2027-01-10T00:00:00Z",
+        )
+        self.assertEqual(
+            max_source_freshness(
+                "2027-01-10T03:00:00+03:00", "2027-01-10T00:30:00Z"
+            ),
+            "2027-01-10T00:30:00Z",
+        )
 
     def test_nonzero_offset_run_timestamp_converts_to_utc(self) -> None:
         event = build_pr_outcome_event(

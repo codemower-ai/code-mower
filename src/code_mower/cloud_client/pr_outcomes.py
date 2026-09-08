@@ -218,6 +218,32 @@ def _parse_utc(text: str, field: str) -> dt.datetime:
     return parsed.astimezone(dt.UTC).replace(microsecond=0)
 
 
+def max_source_freshness(first: str, second: str) -> str:
+    """Return the later of two source-freshness timestamps.
+
+    The persisted observation watermark must never regress, so state writes
+    keep the maximum of the stored and newly emitted freshness.  Values that
+    fail to parse lose to parseable ones; if neither parses, ``second`` (the
+    newly emitted value) wins.
+    """
+
+    best_text = ""
+    best_at: dt.datetime | None = None
+    for text in (str(first or "").strip(), str(second or "").strip()):
+        if not text:
+            continue
+        try:
+            parsed = _parse_utc(text, "source_freshness")
+        except CloudBundleError:
+            continue
+        if best_at is None or parsed > best_at:
+            best_at = parsed
+            best_text = text
+    if best_at is None:
+        return str(second or first or "").strip()
+    return best_text
+
+
 def _observed_at(
     source_freshness: str,
     run_events: list[Mapping[str, Any]],
@@ -239,9 +265,12 @@ def _observed_at(
     observation for this PR.  An unchanged fingerprint reproduces the prior
     ``created_at`` so retries stay byte-for-byte idempotent; a changed
     fingerprint with an unchanged source timestamp still receives a later
-    observation timestamp.  A stale snapshot whose source evidence is older
-    than the prior source, or whose outcome regressed without a newer source,
-    is rejected before an observation timestamp can be assigned.
+    observation timestamp.  Source freshness is compared before the
+    idempotent early return so a stale retry can never be accepted and its
+    older ``source_freshness`` can never be persisted over the recorded
+    watermark.  A stale snapshot whose source evidence is older than the
+    prior source, or whose outcome regressed without a newer source, is
+    rejected before an observation timestamp can be assigned.
     """
 
     fresh = _parse_utc(source_freshness, "source_freshness")
@@ -271,12 +300,12 @@ def _observed_at(
             )
         except CloudBundleError:
             return latest.isoformat().replace("+00:00", "Z")
-        if prior_fingerprint == fingerprint:
-            return prior_at.isoformat().replace("+00:00", "Z")
         if fresh < prior_fresh:
             raise CloudBundleError(
                 "stale pr_outcome source evidence cannot supersede a newer observation"
             )
+        if prior_fingerprint == fingerprint:
+            return prior_at.isoformat().replace("+00:00", "Z")
         if fresh == prior_fresh:
             current_rank = _outcome_rank(outcome)
             prior_rank = _outcome_rank(prior_outcome)

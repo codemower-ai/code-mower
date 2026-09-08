@@ -309,6 +309,7 @@ def test_spend_runs_to_events_missing_lane_counts_as_unknown_attempt() -> None:
         team_id="team",
         install_id="install",
         source="unit-test",
+        preserve_unattributable=True,
     )
 
     assert len(events) == 1
@@ -336,6 +337,7 @@ def test_spend_runs_to_events_non_mapping_run_is_not_silently_skipped() -> None:
     events = reviewer_spend.spend_runs_to_events(
         payload,
         repo_slug="owner/repo",
+        preserve_unattributable=True,
     )
 
     assert len(events) == 2
@@ -345,3 +347,68 @@ def test_spend_runs_to_events_non_mapping_run_is_not_silently_skipped() -> None:
     assert events[1]["dimensions"]["pr_number"] == "42"
     validate_cloud_event(events[0])
     validate_cloud_event(events[1])
+
+
+def test_spend_runs_to_events_default_keeps_shared_semantics() -> None:
+    # Shared callers (dogfood, catch-up, repo-sync, reviewer-runs) keep the
+    # historical behavior: malformed rows are skipped, lane-less rows are
+    # dropped, and cost is reported as recorded.
+    payload = {
+        "runs": [
+            "not-a-mapping",
+            {
+                "repo": "owner/repo",
+                "pr_number": 42,
+                "verdict": "PASS",
+                "wall_seconds": 1.0,
+                "cost_usd": 0.05,
+            },
+            {
+                "lane": "claude-audit",
+                "repo": "owner/repo",
+                "head_sha": "abc123",
+                "verdict": "PASS",
+                "wall_seconds": 2.0,
+                "cost_usd": 0.07,
+            },
+        ]
+    }
+    events = reviewer_spend.spend_runs_to_events(
+        payload,
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        source="unit-test",
+    )
+
+    assert len(events) == 1
+    assert events[0]["lens"] == "claude-audit"
+    assert events[0]["dimensions"]["pr_number"] == ""
+    assert events[0]["metrics"]["cost_usd"] == 0.07
+    validate_cloud_event(events[0])
+
+
+def test_spend_runs_to_events_opt_in_preserves_unattributable_without_cost() -> None:
+    payload = {
+        "runs": [
+            {
+                "lane": "claude-audit",
+                "repo": "owner/repo",
+                "head_sha": "abc123",
+                "verdict": "PASS",
+                "wall_seconds": 2.0,
+                "cost_usd": 0.07,
+            }
+        ]
+    }
+    events = reviewer_spend.spend_runs_to_events(
+        payload,
+        repo_slug="owner/repo",
+        preserve_unattributable=True,
+    )
+
+    assert len(events) == 1
+    assert events[0]["lens"] == "claude-audit"
+    assert events[0]["dimensions"]["pr_number"] == ""
+    assert "cost_usd" not in events[0]["metrics"]
+    validate_cloud_event(events[0])

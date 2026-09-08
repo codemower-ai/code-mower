@@ -31,6 +31,7 @@ from .pr_outcomes import (
     UNATTRIBUTED_EVIDENCE_LANE,
     build_pr_outcome_event,
     load_pr_outcome_observations,
+    max_source_freshness,
     pr_outcome_observation_key,
     pr_outcome_observation_record,
     save_pr_outcome_observations,
@@ -133,6 +134,7 @@ def _reviewer_spend_events(
     team_id: str,
     install_id: str,
     source: str,
+    preserve_unattributable: bool = False,
 ) -> list[dict[str, Any]]:
     resolved_spend_path = spend_path or repo_path / reviewer_spend.DEFAULT_SPEND_PATH
     if not resolved_spend_path.is_file():
@@ -143,6 +145,7 @@ def _reviewer_spend_events(
         team_id=team_id,
         install_id=install_id,
         source=source,
+        preserve_unattributable=preserve_unattributable,
     )
 
 
@@ -904,6 +907,10 @@ def pr_outcomes_upload(
         team_id=resolved_team_id,
         install_id=resolved_install_id,
         source=f"{source}-spend",
+        # pr-outcomes fails closed: malformed or unattributable reviewer
+        # spend rows are preserved as unattributed evidence so they suppress
+        # ``complete`` coverage instead of being silently dropped.
+        preserve_unattributable=True,
     )
 
     run_events: list[dict[str, Any]] = []
@@ -1035,9 +1042,19 @@ def pr_outcomes_upload(
             emitted = candidate_records[:MAX_EVENT_COUNT]
             for event, observation_key, source_freshness in emitted:
                 events.append(event)
-                observations[observation_key] = pr_outcome_observation_record(
+                record = pr_outcome_observation_record(
                     event, source_freshness=source_freshness
                 )
+                prior_record = observations.get(observation_key)
+                if prior_record:
+                    # The source-freshness watermark must never regress,
+                    # even if an unchanged retry is emitted for an older
+                    # snapshot.
+                    record["source_freshness"] = max_source_freshness(
+                        str(prior_record.get("source_freshness") or ""),
+                        record["source_freshness"],
+                    )
+                observations[observation_key] = record
 
             if events:
                 try:

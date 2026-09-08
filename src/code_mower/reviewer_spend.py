@@ -238,25 +238,48 @@ def spend_runs_to_events(
     team_id: str = "",
     install_id: str = "",
     source: str = "reviewer-spend",
+    preserve_unattributable: bool = False,
 ) -> list[dict[str, Any]]:
+    """Convert reviewer spend rows to ``reviewer_run`` events.
+
+    By default this keeps the historical shared semantics: non-mapping rows
+    are skipped and rows without a ``lane`` are dropped, with ``cost_usd``
+    reported as recorded.  ``preserve_unattributable=True`` opts in to the
+    fail-closed behavior used by pr-outcomes: malformed or lane-less rows
+    are preserved as ``unreadable-evidence`` events so the caller can count
+    them as unattributable incomplete evidence, and their ``cost_usd`` is
+    withheld because it cannot be attributed to a specific lane and PR.
+    """
+
     events: list[dict[str, Any]] = []
-    raw_runs = payload.get("runs")
-    if raw_runs is None:
-        raw_runs = []
-    if not isinstance(raw_runs, list):
-        raise ValueError("reviewer spend runs must be a list")
-    for raw in raw_runs:
-        run = raw if isinstance(raw, Mapping) else {}
+    if preserve_unattributable:
+        raw_runs = payload.get("runs")
+        if raw_runs is None:
+            raw_runs = []
+        if not isinstance(raw_runs, list):
+            raise ValueError("reviewer spend runs must be a list")
+        runs: list[Mapping[str, Any]] = [
+            raw if isinstance(raw, Mapping) else {} for raw in raw_runs
+        ]
+    else:
+        runs = spend_runs(payload)
+    for run in runs:
         lane = str(run.get("lane") or "").strip()
         pr_number = str(run.get("pr_number") or "").strip()
         identity_complete = bool(lane and pr_number)
         if not lane:
+            if not preserve_unattributable:
+                continue
             lane = UNATTRIBUTED_EVIDENCE_LANE
         provider = provider_from_lane(lane)
         metrics: dict[str, Any] = {}
         for key in ("wall_seconds", "cost_usd", *sorted(TOKEN_KEYS)):
             if key in run:
-                if key == "cost_usd" and not identity_complete:
+                if (
+                    preserve_unattributable
+                    and key == "cost_usd"
+                    and not identity_complete
+                ):
                     continue
                 metrics[key] = run[key]
         model = str(run.get("model") or "")
