@@ -9,7 +9,7 @@ same provider warnings.
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.14
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.0.15
 code-mower --version
 ```
 
@@ -17,7 +17,7 @@ Expected shape:
 
 ```text
 Python 3.12.x
-code-mower 1.0.14
+code-mower 1.0.15
 ```
 
 ## Generate Local Setup

@@ -7,8 +7,19 @@ later entries are regular releases.
 
 ## Unreleased
 
+## v1.0.15
+
+This release makes current-state reporting, provider credentials, release
+qualification, and productivity evidence more reliable. It preserves the
+supervised-pilot gate semantics, Python 3.12+ requirement, provider posture,
+and metadata-only privacy boundary.
+
 ### Added
 
+- Provider credentials can be resolved after process restarts from strict local
+  profiles. Resolution is deterministic and fail closed: environment, explicit
+  selector, then unambiguous discovery; insecure or ambiguous files are rejected
+  without printing secrets or private paths (issue #785, PR #789).
 - Release campaigns can record the linked release pull request with
   `--release-pr <number>`. Hosted result discovery now reads that one
   explicitly linked pull request alongside the campaign issue, under the
@@ -25,6 +36,26 @@ later entries are regular releases.
   dropped or left describing evidence the entry no longer holds, so earlier
   issue-versus-pull-request provenance stays auditable across a retry,
   redispatch, or `--record-result` recovery.
+- Reviewer evidence can include blocker-scoped `reviewer_finding_outcome`
+  events with explicit dispositions, stable opaque identifiers, and defensible
+  fix or owner-decision linkage, without finding prose or source material
+  (issue #736, PR #787).
+- Deterministic `productivity_summary` events can carry normalized elapsed,
+  active, queue, review, green, merge, and owner-wait observations with explicit
+  coverage and provenance instead of treating unavailable measurements as zero
+  (issue #738, PR #788).
+- `code-mower cloud pr-outcomes` joins local builder and reviewer evidence with
+  live GitHub PR metadata and reports cost coverage as complete, partial, or
+  unknown, including metadata-only missing-cost source identifiers (issue #737,
+  PR #790).
+
+### Fixed
+
+- `productivity report` now prefers live GitHub for current open-PR and gate
+  state. Board history remains available for trends and quality evidence, while
+  historical fallback is explicitly labeled with source, observation time, and
+  provenance; `--offline` selects that fallback deliberately (issue #793,
+  PR #794).
 
 ## v1.0.14
 
