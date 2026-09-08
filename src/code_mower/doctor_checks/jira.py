@@ -580,10 +580,11 @@ def _probe_jira_read(
         )
 
     try:
-        jql = block.get("jql")
-        query = str(jql).strip() if isinstance(jql, str) and jql.strip() else None
-        if query is None:
-            query = jira_cloud_module.build_project_jql(project_id=project_id)
+        configured_jql = block.get("jql")
+        query = jira_cloud_module.build_project_probe_jql(
+            project_id,
+            str(configured_jql) if isinstance(configured_jql, str) else "",
+        )
         result = client.search_issues(query, max_issues=5)
     except (ValueError, jira_cloud_module.JiraApiError) as exc:
         if isinstance(exc, ValueError):

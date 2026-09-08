@@ -1582,8 +1582,12 @@ def _parse_queue_search_issue(
 ) -> dict[str, Any] | None:
     """Shape one search hit for queue normalization without retaining prose."""
     raw_fields = entry.get("fields") if isinstance(entry, Mapping) else {}
-    raw_labels = raw_fields.get("labels") if isinstance(raw_fields, Mapping) else []
-    if not isinstance(raw_labels, (list, tuple)) or len(raw_labels) > MAX_LABELS:
+    raw_labels = raw_fields.get("labels", []) if isinstance(raw_fields, Mapping) else []
+    if (
+        not isinstance(raw_labels, (list, tuple))
+        or len(raw_labels) > MAX_LABELS
+        or not all(isinstance(label, str) for label in raw_labels)
+    ):
         return None
     parsed = _parse_search_issue(entry)
     if parsed is None:
@@ -1628,7 +1632,9 @@ def _parse_queue_search_issue(
             elif isinstance(value, str):
                 fields[name] = _bounded_str(value, 128)
             elif isinstance(value, list):
-                if len(value) > MAX_LABELS:
+                if len(value) > MAX_LABELS or not all(
+                    isinstance(label, str) for label in value
+                ):
                     return None
                 fields[name] = _bounded_labels(value)
             elif isinstance(value, Mapping):
@@ -1682,6 +1688,44 @@ def build_project_jql(
     if len(clause) > 2000:
         raise ValueError("project JQL exceeds the bounded length")
     return clause
+
+
+def build_project_probe_jql(project_id: str, query: str = "") -> str:
+    """Scope an optional queue query to one project for readiness probes.
+
+    A top-level ORDER BY clause is omitted because probe ordering is irrelevant.
+    Quoted text and nested expressions are preserved.
+    """
+    text = query.strip()
+    if not text:
+        return build_project_jql(project_id=project_id)
+    if len(text) > 2000 or "\n" in text or "\r" in text:
+        raise ValueError("JQL must be a bounded single line")
+    quoted: str | None = None
+    escaped = False
+    depth = 0
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quoted:
+            escaped = True
+        elif quoted:
+            if char == quoted:
+                quoted = None
+        elif char in "\"'":
+            quoted = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("JQL parentheses are unbalanced")
+        elif depth == 0 and re.match(r"(?i)order\s+by\b", text[index:]):
+            text = text[:index].strip()
+            break
+    if quoted or depth:
+        raise ValueError("JQL is unbalanced")
+    return build_project_jql(project_id=project_id, extra=text)
 
 
 def map_status_to_lifecycle(
