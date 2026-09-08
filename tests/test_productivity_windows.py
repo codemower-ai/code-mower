@@ -568,6 +568,34 @@ class ProductivityWindowRejectionTests(unittest.TestCase):
         validate_cloud_event(legacy)
 
 class ProductivityWindowRepoSyncTests(unittest.TestCase):
+    def test_repo_sync_accepts_same_slug_with_differing_case(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "window.json"
+            path.write_text(json.dumps(_fixture()["repo_window"]), encoding="utf-8")
+            events = repo_sync_window_events(
+                [f"{PRODUCTIVITY_EVENT_TYPE}={path}"],
+                repo_slug="Owner/Repo",
+                team_id="t",
+                install_id="i",
+                source="s",
+            )
+            self.assertEqual(events[0]["repo_slug"], "owner/repo")
+
+    def test_repo_sync_rejects_truly_different_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "window.json"
+            path.write_text(json.dumps(_fixture()["repo_window"]), encoding="utf-8")
+            with self.assertRaisesRegex(
+                CloudBundleError, "does not match repo-sync target"
+            ):
+                repo_sync_window_events(
+                    [f"{PRODUCTIVITY_EVENT_TYPE}={path}"],
+                    repo_slug="owner/different",
+                    team_id="t",
+                    install_id="i",
+                    source="s",
+                )
+
     def test_repo_sync_rejects_mismatched_repo_slug(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "window.json"

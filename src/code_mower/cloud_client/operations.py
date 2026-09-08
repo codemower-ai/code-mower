@@ -1419,7 +1419,7 @@ def repo_sync_window_events(
         if repo_slug:
             for event in loaded:
                 observed_slug = str(event.get("repo_slug") or "")
-                if observed_slug and observed_slug != repo_slug:
+                if observed_slug and observed_slug.lower() != repo_slug.lower():
                     raise CloudBundleError(
                         f"--event window observation repo_slug {observed_slug!r} "
                         f"does not match repo-sync target {repo_slug!r}; "
