@@ -928,6 +928,19 @@ class NormalizedBoundaryPrivacyTests(unittest.TestCase):
             with self.assertRaisesRegex(CloudBundleError, "local paths"):
                 validate_cloud_event(event)
 
+    def test_rejects_leading_whitespace_local_path_on_normalized_event(self) -> None:
+        for bad in (" /opt/company/private-repo", "  C:/work/private-repo"):
+            event = self._valid_event()
+            event["dimensions"]["release"] = bad  # type: ignore[index]
+            with self.assertRaisesRegex(CloudBundleError, "local paths"):
+                validate_cloud_event(event)
+
+    def test_trailing_newline_still_rejected_on_normalized_event(self) -> None:
+        event = self._valid_event()
+        event["dimensions"]["release"] = "v1.0.0\n"  # type: ignore[index]
+        with self.assertRaisesRegex(CloudBundleError, "single-line"):
+            validate_cloud_event(event)
+
     def test_rejects_tainted_normalized_event_through_file_loaders(self) -> None:
         event = self._valid_event()
         event["dimensions"]["release"] = "/opt/company/private-repo"  # type: ignore[index]
@@ -1073,6 +1086,67 @@ class GenericExportSlugFillTests(unittest.TestCase):
             path = self._slugless_path(tmp)
             with self.assertRaisesRegex(CloudBundleError, "repo_slug"):
                 parse_event_args([f"{PRODUCTIVITY_EVENT_TYPE}={path}"])
+
+
+class DogfoodTildeRepoPathTests(unittest.TestCase):
+    def test_dogfood_expands_tilde_repo_path_for_slug_detection(self) -> None:
+        import os
+        import subprocess
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from code_mower import cloud as cloud_cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = home / "repo"
+            repo.mkdir(parents=True)
+            subprocess.run(
+                ["git", "init"], cwd=repo, check=True, capture_output=True
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://github.com/owner/repo.git",
+                ],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+            observation = copy.deepcopy(_fixture()["repo_window"])
+            del observation["repo_slug"]
+            window_path = Path(tmp) / "window.json"
+            window_path.write_text(json.dumps(observation), encoding="utf-8")
+            old_home = os.environ.get("HOME")
+            os.environ["HOME"] = str(home)
+            try:
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    code = cloud_cli.main(
+                        [
+                            "dogfood",
+                            "--repo-path",
+                            "~/repo",
+                            "--output-dir",
+                            str(Path(tmp) / "out"),
+                            "--event",
+                            f"{PRODUCTIVITY_EVENT_TYPE}={window_path}",
+                            "--json",
+                        ]
+                    )
+            finally:
+                if old_home is None:
+                    del os.environ["HOME"]
+                else:
+                    os.environ["HOME"] = old_home
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(
+                payload["export"]["productivity_window_event_count"], 1
+            )
 
 
 class ProductivityWindowFractionalDurationTests(unittest.TestCase):

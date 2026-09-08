@@ -858,7 +858,9 @@ def main(argv: list[str] | None = None) -> int:
             # Resolve the slug before loading window events so a slugless
             # observation is filled from --repo-slug or the detected repo,
             # exactly as dogfood_upload and repo-sync resolve it below.
-            dogfood_repo_slug = args.repo_slug or _detect_repo_slug(args.repo_path)
+            dogfood_repo_slug = args.repo_slug or _detect_repo_slug(
+                args.repo_path.expanduser().resolve()
+            )
             result = _dogfood_upload(
                 repo_path=args.repo_path,
                 output_dir=args.output_dir,

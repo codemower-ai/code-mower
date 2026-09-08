@@ -643,7 +643,11 @@ def validate_productivity_window_event(event: Mapping[str, Any]) -> None:
             raise CloudBundleError(
                 f"productivity_window dimension {field!r} must be a string"
             )
-        _single_line(raw, repr(field))
+        if "\n" in raw or "\r" in raw:
+            raise CloudBundleError(
+                f"productivity_window {field!r} must be single-line metadata, not prose or output"
+            )
+        _single_line(raw.strip(), repr(field))
     for scoped in ("pr_number", "issue_number", "branch"):
         if str(dimensions.get(scoped) or "").strip():
             raise CloudBundleError(
