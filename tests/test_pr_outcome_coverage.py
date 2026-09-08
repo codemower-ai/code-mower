@@ -1900,5 +1900,102 @@ class PrOutcomeObservationLockTests(unittest.TestCase):
             self.assertNotIn(str(repo_path), message)
 
 
+class PrOutcomeStaleSnapshotTests(unittest.TestCase):
+    def test_old_open_snapshot_cannot_supersede_newer_merged(self) -> None:
+        merged = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="90",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[_builder_run_event("b1", "90", 0.15)],
+            created_at="2026-09-03T13:00:00Z",
+        )
+        prior = pr_outcome_observation_record(merged)
+        with self.assertRaises(CloudBundleError):
+            build_pr_outcome_event(
+                repo_slug="owner/repo",
+                pr_number="90",
+                outcome="open",
+                opened_at="2026-09-03T10:00:00Z",
+                run_events=[],
+                created_at="2026-09-03T12:00:00Z",
+                prior_observation=prior,
+            )
+
+    def test_old_open_snapshot_with_late_run_cannot_supersede_merged(self) -> None:
+        merged = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="91",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[_builder_run_event("b1", "91", 0.15)],
+            created_at="2026-09-03T13:00:00Z",
+        )
+        prior = pr_outcome_observation_record(merged)
+        with self.assertRaises(CloudBundleError):
+            build_pr_outcome_event(
+                repo_slug="owner/repo",
+                pr_number="91",
+                outcome="open",
+                opened_at="2026-09-03T10:00:00Z",
+                run_events=[
+                    _reviewer_run_event(
+                        "r1",
+                        "91",
+                        0.05,
+                        created_at="2026-09-03T14:00:00Z",
+                    )
+                ],
+                created_at="2026-09-03T12:00:00Z",
+                prior_observation=prior,
+            )
+
+
+class PrOutcomeStateTimestampTests(unittest.TestCase):
+    def test_naive_observation_created_at_aborts_before_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pr-outcome-observations.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "code_mower.prOutcomeObservations.v1",
+                        "observations": {
+                            "owner/repo#1": {
+                                "fingerprint": "abc",
+                                "created_at": "2026-09-03T10:00:00",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(CloudBundleError) as ctx:
+                load_pr_outcome_observations(path)
+            self.assertIn("malformed", str(ctx.exception).lower())
+
+    def test_malformed_observation_created_at_aborts_before_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pr-outcome-observations.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "code_mower.prOutcomeObservations.v1",
+                        "observations": {
+                            "owner/repo#1": {
+                                "fingerprint": "abc",
+                                "created_at": "not-a-timestamp",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(CloudBundleError) as ctx:
+                load_pr_outcome_observations(path)
+            self.assertIn("malformed", str(ctx.exception).lower())
+
+
 if __name__ == "__main__":
     unittest.main()

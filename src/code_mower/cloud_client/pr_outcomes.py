@@ -21,6 +21,12 @@ DEFAULT_OBSERVATION_STATE_PATH = Path(".code-mower") / "pr-outcome-observations.
 # ``reverted`` is reserved for producers that hold rollback evidence.
 # GitHub's PR-list ``state`` field can only prove open, merged, or closed.
 PR_OUTCOME_VALUES = ("open", "merged", "closed_unmerged", "reverted")
+PR_OUTCOME_RANK = {
+    "open": 0,
+    "closed_unmerged": 1,
+    "merged": 2,
+    "reverted": 3,
+}
 PR_COST_COVERAGE_VALUES = ("complete", "partial", "unknown")
 PR_OUTCOME_COUNT_METRICS = (
     "pr_count",
@@ -74,6 +80,10 @@ def _timestamp(value: object, field: str) -> dt.datetime:
     if parsed.tzinfo is None:
         raise CloudBundleError(f"pr_outcome {field} must include a UTC offset")
     return parsed
+
+
+def _outcome_rank(value: object) -> int | None:
+    return PR_OUTCOME_RANK.get(str(value or "").strip())
 
 
 def _count(metrics: Mapping[str, Any], field: str, *, required: bool = False) -> int | None:
@@ -185,6 +195,7 @@ def _observed_at(
     run_events: list[Mapping[str, Any]],
     *,
     fingerprint: str,
+    outcome: str,
     prior_observation: Mapping[str, Any] | None = None,
 ) -> str:
     """Return a deterministic observation timestamp for this pr_outcome.
@@ -194,12 +205,16 @@ def _observed_at(
     late-arriving local spend evidence a later ``created_at`` even when the
     GitHub ``updatedAt`` did not change.
 
-    ``prior_observation`` carries the locally recorded ``fingerprint`` and
-    ``created_at`` of the last emitted observation for this PR, when known.
-    An unchanged fingerprint reproduces the prior ``created_at`` so retries
-    stay byte-for-byte idempotent; a changed fingerprint never moves the
+    ``prior_observation`` carries the locally recorded ``fingerprint``,
+    ``created_at``, and ``outcome`` of the last emitted observation for this PR,
+    when known.  An unchanged fingerprint reproduces the prior ``created_at`` so
+    retries stay byte-for-byte idempotent; a changed fingerprint never moves the
     timestamp backwards, so corrected evidence with unchanged source
     timestamps is still chronologically selectable by greatest ``created_at``.
+    A stale snapshot whose outcome is less advanced than the prior observation,
+    or whose source timestamps are older than the prior observation, is rejected
+    before a correction timestamp can be assigned so an older open snapshot can
+    never be promoted above a newer merged one.
     """
 
     base_text = created_at or _utc_now()
@@ -225,6 +240,7 @@ def _observed_at(
     prior = _as_mapping(prior_observation) if prior_observation else {}
     prior_fingerprint = str(prior.get("fingerprint") or "").strip()
     prior_text = str(prior.get("created_at") or "").strip()
+    prior_outcome = str(prior.get("outcome") or "").strip()
     if prior_fingerprint and prior_text:
         try:
             prior_at = _timestamp(prior_text, "prior observation created_at")
@@ -234,6 +250,25 @@ def _observed_at(
             prior_at = prior_at.astimezone(dt.UTC).replace(microsecond=0)
             if prior_fingerprint == fingerprint:
                 return prior_at.isoformat().replace("+00:00", "Z")
+            current_rank = _outcome_rank(outcome)
+            prior_rank = _outcome_rank(prior_outcome)
+            if (
+                current_rank is not None
+                and prior_rank is not None
+                and current_rank < prior_rank
+            ):
+                raise CloudBundleError(
+                    "stale pr_outcome snapshot cannot supersede a newer observation"
+                )
+            if current_rank is not None and prior_rank is not None:
+                if current_rank <= prior_rank and latest < prior_at:
+                    raise CloudBundleError(
+                        "stale pr_outcome snapshot cannot supersede a newer observation"
+                    )
+            elif latest < prior_at:
+                raise CloudBundleError(
+                    "stale pr_outcome snapshot cannot supersede a newer observation"
+                )
             if prior_at >= latest:
                 latest = prior_at + dt.timedelta(seconds=1)
 
@@ -462,6 +497,7 @@ def build_pr_outcome_event(
         created_at,
         run_events,
         fingerprint=fingerprint,
+        outcome=outcome,
         prior_observation=prior_observation,
     )
     event_id_seed = (
@@ -521,6 +557,7 @@ def pr_outcome_observation_record(event: Mapping[str, Any]) -> dict[str, str]:
     return {
         "fingerprint": fingerprint,
         "created_at": str(event.get("created_at") or ""),
+        "outcome": str(dimensions.get("outcome") or ""),
     }
 
 
@@ -577,9 +614,17 @@ def load_pr_outcome_observations(path: Path) -> dict[str, dict[str, str]]:
         created_at = str(item.get("created_at") or "").strip()
         if not fingerprint or not created_at:
             raise _malformed_observation_state_error()
+        try:
+            _timestamp(created_at, "prior observation created_at")
+        except CloudBundleError as exc:
+            raise _malformed_observation_state_error() from exc
+        outcome = str(item.get("outcome") or "").strip()
+        if outcome and outcome not in PR_OUTCOME_VALUES:
+            raise _malformed_observation_state_error()
         result[str(key)] = {
             "fingerprint": fingerprint,
             "created_at": created_at,
+            "outcome": outcome,
         }
     return result
 
@@ -598,6 +643,7 @@ def save_pr_outcome_observations(
             str(key): {
                 "fingerprint": str(item.get("fingerprint") or ""),
                 "created_at": str(item.get("created_at") or ""),
+                "outcome": str(item.get("outcome") or ""),
             }
             for key, item in sorted(observations.items())
         },

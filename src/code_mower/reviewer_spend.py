@@ -30,6 +30,7 @@ TOKEN_KEYS = {
     "reasoning_tokens",
 }
 COST_KEYS = {"cost_usd", "total_cost_usd", "usd"}
+UNATTRIBUTED_EVIDENCE_LANE = "unreadable-evidence"
 LOCK_TIMEOUT_SECONDS = 30.0
 LOCK_POLL_SECONDS = 0.05
 
@@ -239,14 +240,24 @@ def spend_runs_to_events(
     source: str = "reviewer-spend",
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for run in spend_runs(payload):
+    raw_runs = payload.get("runs")
+    if raw_runs is None:
+        raw_runs = []
+    if not isinstance(raw_runs, list):
+        raise ValueError("reviewer spend runs must be a list")
+    for raw in raw_runs:
+        run = raw if isinstance(raw, Mapping) else {}
         lane = str(run.get("lane") or "").strip()
+        pr_number = str(run.get("pr_number") or "").strip()
+        identity_complete = bool(lane and pr_number)
         if not lane:
-            continue
+            lane = UNATTRIBUTED_EVIDENCE_LANE
         provider = provider_from_lane(lane)
         metrics: dict[str, Any] = {}
         for key in ("wall_seconds", "cost_usd", *sorted(TOKEN_KEYS)):
             if key in run:
+                if key == "cost_usd" and not identity_complete:
+                    continue
                 metrics[key] = run[key]
         model = str(run.get("model") or "")
         event = {
@@ -274,7 +285,7 @@ def spend_runs_to_events(
             "metrics": metrics,
             "dimensions": {
                 "lane": lane,
-                "pr_number": str(run.get("pr_number") or ""),
+                "pr_number": pr_number,
                 "head_sha": str(run.get("head_sha") or ""),
                 "spend_run_id": str(run.get("run_id") or ""),
             },
