@@ -409,8 +409,9 @@ text, credential, account email, or absolute path is printed or retained.
 with one GitHub PR milestone (issue #802) through the guarded mutation
 surface above — `code-mower tracker pr-sync --milestone
 opened|updated|blocked|green|merged|closed_unmerged --pr-url ... --branch
-... [--apply]` — so both write guards, the configured transition-id map, the
-closed comment templates, and the replay protection apply unchanged. The
+... --pr-author LOGIN [--apply]` — so both write guards, the configured
+transition-id map, the `tracker.jira_cloud.sync.trusted_pr_authors` allow-list,
+the closed comment templates, and the replay protection apply unchanged. The
 authoritative marker comes only from the branch name or the leading PR title
 token (never bodies, comments, source, or diffs); every milestone verifies
 the single PR remote link, comments go out only on opened/blocked/merged,
@@ -418,8 +419,9 @@ and ambiguous or mismatched identity fails closed to an owner action.
 Duplicate events and missed-event recovery converge to `already_applied`;
 an `opened` event cannot move a blocked or done issue backward, and a
 `blocked` event cannot move a done issue backward. Those stale-event guards
-are rechecked at the transport boundary before each physical write. Jira
-failures stay in the sync report and never touch gate state. Offline
+require complete later-state mappings and are rechecked at the transport
+boundary before each physical write. Jira failures stay in the sync report
+and never touch gate state. Offline
 tests (`tests/test_jira_pr_sync.py`) cover every milestone, retry, and
 recovery. Sync reports are bounded metadata only.
 

@@ -92,8 +92,10 @@ SYNC_REASONS = frozenset(
         "invalid_pr_url",
         "invalid_milestone",
         "invalid_request",
+        "stale_guard_unconfigured",
+        "untrusted_pr_author",
     }
-)
+) | jira_mutations.REASON_CODES
 
 
 def _bounded_input(value: Any) -> str:
@@ -138,6 +140,11 @@ def parse_jira_marker(*, branch: str = "", pr_title: str = "") -> dict[str, str]
     sources disagree or either source carries more than one distinct key.
     Carries no input text back to the caller.
     """
+    if (
+        len(str(branch or "")) > _MAX_INPUT_LENGTH
+        or len(str(pr_title or "")) > _MAX_INPUT_LENGTH
+    ):
+        return {"status": "invalid", "reason": "invalid_request"}
     branch_keys = _markers_in_branch(branch)
     title_key = _marker_in_title(pr_title)
     distinct = list(branch_keys)
@@ -168,12 +175,23 @@ def _configured_project_key(config: Mapping[str, Any] | None) -> str:
     return str(key or "")
 
 
+def _trusted_pr_authors(config: Mapping[str, Any] | None) -> frozenset[str]:
+    tracker = config.get("tracker") if isinstance(config, Mapping) else None
+    block = tracker.get("jira_cloud") if isinstance(tracker, Mapping) else None
+    sync = block.get("sync") if isinstance(block, Mapping) else None
+    authors = sync.get("trusted_pr_authors") if isinstance(sync, Mapping) else None
+    if not isinstance(authors, Sequence) or isinstance(authors, (str, bytes)):
+        return frozenset()
+    return frozenset(str(author).strip().lower() for author in authors if str(author).strip())
+
+
 def resolve_sync_identity(
     config: Mapping[str, Any] | None,
     *,
     branch: str = "",
     pr_title: str = "",
     issue_ref: str = "",
+    pr_author: str = "",
 ) -> dict[str, str]:
     """Resolve and cross-check the sync target, failing closed on mismatch.
 
@@ -188,14 +206,17 @@ def resolve_sync_identity(
         return {"status": "mismatch", "reason": "jira_identity_mismatch"}
     if parsed["status"] != "ok":
         reason = str(parsed.get("reason") or "missing_jira_identity")
-        return {"status": "missing" if reason == "missing_jira_identity" else "ambiguous",
-                "reason": reason}
+        status = "missing" if reason == "missing_jira_identity" else str(parsed["status"])
+        return {"status": status, "reason": reason}
     key = str(parsed["issue_key"])
     if explicit and explicit != key.upper():
         return {"status": "mismatch", "reason": "jira_identity_mismatch"}
     project_key = _configured_project_key(config)
     if project_key and key.split("-", 1)[0] != project_key.upper():
         return {"status": "mismatch", "reason": "jira_identity_mismatch"}
+    author = str(pr_author or "").strip().lower()
+    if not author or author not in _trusted_pr_authors(config):
+        return {"status": "untrusted", "reason": "untrusted_pr_author"}
     return {"status": "ok", "issue_key": key, "reason": "ok"}
 
 
@@ -231,6 +252,7 @@ def build_sync_plan(
     branch: str = "",
     pr_title: str = "",
     issue_ref: str = "",
+    pr_author: str = "",
     apply_requested: bool = False,
 ) -> dict[str, Any]:
     """Build the bounded sync report for one milestone. No network call.
@@ -269,7 +291,11 @@ def build_sync_plan(
                "number": pr["number"], "url": pr["url"]}
 
     identity = resolve_sync_identity(
-        config, branch=branch, pr_title=pr_title, issue_ref=issue_ref
+        config,
+        branch=branch,
+        pr_title=pr_title,
+        issue_ref=issue_ref,
+        pr_author=pr_author,
     )
     if identity["status"] != "ok":
         reason = str(identity.get("reason") or "missing_jira_identity")
@@ -286,6 +312,19 @@ def build_sync_plan(
                 "issue with the PR author, correct the metadata or config, "
                 "and re-run. No Jira write was attempted."
             )
+        elif identity["status"] == "invalid":
+            action = (
+                "Owner action required: branch or PR-title identity metadata "
+                "exceeded the supported bound. Shorten it, keep one Jira "
+                "marker, and re-run. No Jira write was attempted."
+            )
+        elif identity["status"] == "untrusted":
+            action = (
+                "Owner action required: the PR author is not in "
+                "tracker.jira_cloud.sync.trusted_pr_authors. Confirm the "
+                "author and update the allow-list before re-running. No Jira "
+                "write was attempted."
+            )
         else:
             action = (
                 "Owner action required: no Jira marker was found in the "
@@ -298,6 +337,27 @@ def build_sync_plan(
         )
 
     settings = jira_mutations.resolve_mutation_settings(config)
+    stale_categories = {
+        "opened": ("blocked", "done"),
+        "blocked": ("done",),
+    }.get(milestone, ())
+    missing_stale_categories = [
+        category
+        for category in stale_categories
+        if not settings.status_category_map.get(category)
+    ]
+    if missing_stale_categories:
+        return _owner_action_report(
+            milestone=milestone,
+            pr=pr_meta,
+            reason="stale_guard_unconfigured",
+            next_action=(
+                "Owner action required: configure nonempty status_category_map "
+                "entries for every later lifecycle category before enabling "
+                "this milestone. No Jira write was attempted."
+            ),
+        )
+
     transition_category = policy["transition_category"]
     if transition_category and transition_category not in settings.transitions:
         # A milestone whose category has no configured transition id
@@ -314,10 +374,6 @@ def build_sync_plan(
     plan = jira_mutations.build_mutation_plan(
         config, request, apply_requested=bool(apply_requested)
     )
-    stale_categories = {
-        "opened": ("blocked", "done"),
-        "blocked": ("done",),
-    }.get(milestone, ())
     stale_status_ids = sorted(
         {
             status_id
@@ -332,7 +388,7 @@ def build_sync_plan(
     return {
         "schema": SYNC_REPORT_SCHEMA,
         "status": plan["status"],
-        "reason": "ok",
+        "reason": _mutation_plan_reason(plan),
         "milestone": milestone,
         "issue_key": str(identity["issue_key"]),
         "pr": pr_meta,
@@ -367,9 +423,23 @@ def apply_sync_plan(
     applied = jira_mutations.apply_mutation_plan(plan, client)
     report["mutation_plan"] = applied
     report["status"] = str(applied.get("status") or report.get("status"))
+    report["reason"] = _mutation_plan_reason(applied)
     report["write_request_count"] = int(applied.get("write_request_count") or 0)
     report["next_action"] = str(applied.get("next_action") or report.get("next_action"))
     return report
+
+
+def _mutation_plan_reason(plan: Mapping[str, Any]) -> str:
+    """Return one closed reason matching a mutation plan's worst status."""
+    status = str(plan.get("status") or "")
+    if status in {"planned", "ready", "applied", "already_applied"}:
+        return "ok"
+    for operation in plan.get("operations") or []:
+        if not isinstance(operation, Mapping) or operation.get("status") != status:
+            continue
+        reason = str(operation.get("reason") or "")
+        return reason if reason in SYNC_REASONS else "invalid_request"
+    return "invalid_request"
 
 
 def _pr_number(value: Any) -> int | None:
@@ -463,6 +533,7 @@ def reconcile_missed_events(
                 branch=str(event.get("branch") or ""),
                 pr_title=str(event.get("pr_title") or ""),
                 issue_ref=str(event.get("issue_ref") or event.get("issue_key") or ""),
+                pr_author=str(event.get("pr_author") or ""),
                 apply_requested=bool(apply_requested),
             )
         )

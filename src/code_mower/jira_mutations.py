@@ -2024,6 +2024,11 @@ def _parser() -> argparse.ArgumentParser:
         help="PR title whose leading token may carry the Jira marker",
     )
     sync.add_argument(
+        "--pr-author",
+        required=True,
+        help="GitHub login to verify against tracker.jira_cloud.sync.trusted_pr_authors",
+    )
+    sync.add_argument(
         "--issue", default="",
         help="explicit Jira issue id or key; must match the PR marker",
     )
@@ -2079,6 +2084,7 @@ def _run_pr_sync(args: argparse.Namespace, env: Mapping[str, str] | None,
             branch=args.branch or "",
             pr_title=args.pr_title or "",
             issue_ref=args.issue or "",
+            pr_author=args.pr_author,
             apply_requested=bool(args.apply),
         )
     except MutationRequestError as exc:

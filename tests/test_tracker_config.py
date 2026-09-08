@@ -141,12 +141,40 @@ class TrackerConfigTests(unittest.TestCase):
                 },
                 "field_mappings": {"lifecycle_category": "status"},
                 "mutations": {"writes_enabled": False, "allowed_operations": []},
+                "sync": {"trusted_pr_authors": ["trusted-builder", "cursor[bot]"]},
             },
         }
 
         issues = code_mower_config.validate_config(cfg)
 
         self.assertFalse(any(issue.path.startswith("tracker") for issue in issues))
+
+    def test_jira_sync_rejects_unknown_keys_and_invalid_authors(self) -> None:
+        cfg = _base_config()
+        cfg["tracker"] = {
+            "kind": "jira_cloud",
+            "jira_cloud": {
+                "site_url": "https://example.atlassian.net",
+                "cloud_id": "11111111-2222-3333-4444-555555555555",
+                "project_id": "10001",
+                "sync": {
+                    "trusted_pr_authors": ["not a login"],
+                    "trust_everyone": True,
+                },
+            },
+        }
+
+        issues = code_mower_config.validate_config(cfg)
+
+        self.assertTrue(
+            any(issue.path == "tracker.jira_cloud.sync.trust_everyone" for issue in issues)
+        )
+        self.assertTrue(
+            any(
+                issue.path == "tracker.jira_cloud.sync.trusted_pr_authors[0]"
+                for issue in issues
+            )
+        )
 
 
 if __name__ == "__main__":

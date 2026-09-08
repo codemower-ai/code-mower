@@ -54,6 +54,7 @@ def sync_config(
                 "cloud_id": CLOUD_ID,
                 "project_id": PROJECT_ID,
                 "project_key": "ABC",
+                "sync": {"trusted_pr_authors": ["trusted-builder"]},
                 "status_category_map": {
                     "in_progress": ["3"],
                     "blocked": ["7"],
@@ -220,6 +221,7 @@ def plan(config: Mapping[str, Any], milestone: str, **kwargs: Any) -> dict[str, 
         milestone=milestone,
         pr_url=kwargs.pop("pr_url", PR_URL),
         branch=kwargs.pop("branch", "feature/ABC-123-work"),
+        pr_author=kwargs.pop("pr_author", "trusted-builder"),
         **kwargs,
     )
 
@@ -261,6 +263,13 @@ class MarkerParsingTest(unittest.TestCase):
         parsed = jira_pr_sync.parse_jira_marker(branch="feature/notABC-123x-work")
         self.assertEqual(parsed["reason"], "missing_jira_identity")
 
+    def test_oversized_branch_cannot_be_discarded_for_title_marker(self) -> None:
+        branch = "feature/ABC-456/" + ("x" * 260)
+        parsed = jira_pr_sync.parse_jira_marker(
+            branch=branch, pr_title="ABC-123: conflicting marker"
+        )
+        self.assertEqual(parsed, {"status": "invalid", "reason": "invalid_request"})
+
     def test_branch_title_disagreement_is_ambiguous(self) -> None:
         parsed = jira_pr_sync.parse_jira_marker(
             branch="feature/ABC-123-work", pr_title="DEF-456: other work")
@@ -288,6 +297,15 @@ class MarkerParsingTest(unittest.TestCase):
         identity = jira_pr_sync.resolve_sync_identity(
             sync_config(), branch="feature/XYZ-9-work")
         self.assertEqual(identity["reason"], "jira_identity_mismatch")
+
+    def test_untrusted_pr_author_is_refused(self) -> None:
+        identity = jira_pr_sync.resolve_sync_identity(
+            sync_config(),
+            branch="feature/ABC-123-work",
+            pr_author="outside-contributor",
+        )
+        self.assertEqual(identity, {"status": "untrusted",
+                                    "reason": "untrusted_pr_author"})
 
 
 class MilestonePlansTest(unittest.TestCase):
@@ -350,6 +368,17 @@ class MilestonePlansTest(unittest.TestCase):
                       for item in report["mutation_plan"]["operations"]]
         self.assertEqual(operations, [("link", "planned"), ("comment", "planned")])
 
+    def test_missing_later_status_mapping_refuses_backward_capable_plan(self) -> None:
+        config = sync_config()
+        del config["tracker"]["jira_cloud"]["status_category_map"]["done"]
+
+        report = plan(config, "opened")
+
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual(report["reason"], "stale_guard_unconfigured")
+        self.assertIsNone(report["mutation_plan"])
+        self.assertEqual(report["write_request_count"], 0)
+
 
 class FailClosedTest(unittest.TestCase):
     def test_missing_identity_is_owner_action_with_zero_calls(self) -> None:
@@ -370,6 +399,13 @@ class FailClosedTest(unittest.TestCase):
         report = plan(sync_config(), "opened", branch="feature/XYZ-9-work")
         self.assertEqual(report["reason"], "jira_identity_mismatch")
         self.assertIsNone(report["mutation_plan"])
+
+    def test_untrusted_pr_author_fails_closed(self) -> None:
+        report = plan(sync_config(), "opened", pr_author="outside-contributor")
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual(report["reason"], "untrusted_pr_author")
+        self.assertIsNone(report["mutation_plan"])
+        self.assertEqual(report["write_request_count"], 0)
 
 
 class ApplyIdempotencyTest(unittest.TestCase):
@@ -443,6 +479,7 @@ class ApplyIdempotencyTest(unittest.TestCase):
         runner = FakeJira(faults={("GET", "issue"): [jira_cloud.JiraApiError("jira_unavailable")]})
         report = plan_and_apply(config, "merged", runner)
         self.assertIn(report["status"], ("failed", "blocked"))
+        self.assertEqual(report["reason"], "unavailable")
         self.assertEqual(report["gate_authority"], "github")
         self.assertEqual(report["gate_impact"], "none")
         self.assertEqual(len(runner.comment_posts()), 0)
@@ -472,10 +509,14 @@ class RecoveryTest(unittest.TestCase):
             return result
 
         events = [
-            {"milestone": "opened", "pr_url": PR_URL, "branch": "feature/ABC-123-work"},
-            {"milestone": "opened", "pr_url": PR_URL, "branch": "feature/ABC-123-work"},
-            {"milestone": "merged", "pr_url": PR_URL, "branch": "feature/ABC-123-work"},
-            {"milestone": "merged", "pr_url": PR_URL, "branch": "feature/ABC-123-work"},
+            {"milestone": "opened", "pr_url": PR_URL,
+             "branch": "feature/ABC-123-work", "pr_author": "trusted-builder"},
+            {"milestone": "opened", "pr_url": PR_URL,
+             "branch": "feature/ABC-123-work", "pr_author": "trusted-builder"},
+            {"milestone": "merged", "pr_url": PR_URL,
+             "branch": "feature/ABC-123-work", "pr_author": "trusted-builder"},
+            {"milestone": "merged", "pr_url": PR_URL,
+             "branch": "feature/ABC-123-work", "pr_author": "trusted-builder"},
         ]
         summary = jira_pr_sync.reconcile_missed_events(
             events, config, apply_requested=True, apply_fn=apply_fn)
@@ -490,7 +531,8 @@ class RecoveryTest(unittest.TestCase):
     def test_reconcile_without_apply_fn_is_dry_run(self) -> None:
         config = sync_config()
         summary = jira_pr_sync.reconcile_missed_events(
-            [{"milestone": "green", "pr_url": PR_URL, "branch": "feature/ABC-123-work"}],
+            [{"milestone": "green", "pr_url": PR_URL,
+              "branch": "feature/ABC-123-work", "pr_author": "trusted-builder"}],
             config,
             apply_requested=False,
         )
@@ -509,9 +551,9 @@ class RecoveryTest(unittest.TestCase):
         summary = jira_pr_sync.reconcile_missed_events(
             [
                 {"milestone": "opened", "pr_url": PR_URL,
-                 "branch": "feature/ABC-123-work"},
+                 "branch": "feature/ABC-123-work", "pr_author": "trusted-builder"},
                 {"milestone": "merged", "pr_url": PR_URL,
-                 "branch": "feature/ABC-456-other"},
+                 "branch": "feature/ABC-456-other", "pr_author": "trusted-builder"},
             ],
             config,
             apply_requested=True,
@@ -532,9 +574,10 @@ class RecoveryTest(unittest.TestCase):
         summary = jira_pr_sync.reconcile_missed_events(
             [
                 {"milestone": "opened", "pr_url": PR_URL,
-                 "branch": "feature/ABC-123-work", "issue_ref": private_input},
+                 "branch": "feature/ABC-123-work", "issue_ref": private_input,
+                 "pr_author": "trusted-builder"},
                 {"milestone": private_input, "pr_url": PR_URL,
-                 "branch": "feature/ABC-123-work"},
+                 "branch": "feature/ABC-123-work", "pr_author": "trusted-builder"},
             ],
             sync_config(),
         )
@@ -547,6 +590,18 @@ class RecoveryTest(unittest.TestCase):
         )
         self.assertEqual(summary["results"][1]["milestone"], "")
         self.assertNotIn(private_input, json.dumps(summary))
+
+    def test_reconcile_counts_invalid_pr_url_as_blocked(self) -> None:
+        summary = jira_pr_sync.reconcile_missed_events(
+            [{"milestone": "opened", "pr_url": "not a pull request",
+              "branch": "feature/ABC-123-work", "pr_author": "trusted-builder"}],
+            sync_config(),
+        )
+
+        self.assertEqual(summary["events_replayed"], 0)
+        self.assertEqual(summary["events_blocked"], 1)
+        self.assertEqual(summary["results"][0]["reason"], "invalid_pr_url")
+        self.assertEqual(summary["results"][0]["issue_key"], "")
 
 
 class DiscoverLinksTest(unittest.TestCase):
@@ -614,9 +669,16 @@ class CliTest(unittest.TestCase):
                 f'    cloud_id: "{CLOUD_ID}"\n'
                 f'    project_id: "{PROJECT_ID}"\n'
                 '    project_key: "ABC"\n'
+                "    sync:\n"
+                "      trusted_pr_authors:\n"
+                "        - trusted-builder\n"
                 "    status_category_map:\n"
                 "      in_progress:\n"
                 '        - "3"\n'
+                "      blocked:\n"
+                '        - "7"\n'
+                "      done:\n"
+                '        - "9"\n'
                 "    mutations:\n"
                 "      writes_enabled: true\n"
                 "      allowed_operations:\n"
@@ -635,6 +697,7 @@ class CliTest(unittest.TestCase):
                 code = jira_mutations.main(
                     ["pr-sync", str(path), "--milestone", "opened",
                      "--pr-url", PR_URL, "--branch", "feature/ABC-123-work",
+                     "--pr-author", "trusted-builder",
                      "--provider-config-dir", str(profiles), "--json"],
                     client_factory=lambda **kwargs: make_client(FakeJira()),
                     env={"JIRA_API_EMAIL": EMAIL, "JIRA_API_TOKEN": TOKEN},
