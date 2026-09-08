@@ -2,9 +2,9 @@
 """Offline tests for the Jira PR sync surface (issue #802).
 
 Every test is deterministic and performs no live network call: Jira HTTP
-goes through a small stateful fake honoring Jira's 201-created versus
-200-replaced property contract, so "no duplicate comment/link/transition"
-is proven from fake state rather than asserted from a report field alone.
+goes through a small stateful fake honoring Jira's property and transactional
+filtered-update contracts, so "no duplicate comment/link/transition" is proven
+from fake state rather than asserted from a report field alone.
 Fixtures use synthetic ids and example.atlassian.net only.
 """
 
@@ -110,6 +110,7 @@ class FakeJira:
         self.global_ids: list[str] = []
         self.comments: list[Any] = []
         self.calls: list[dict[str, Any]] = []
+        self.before_association_claim_commit: Any = None
         self.before_remote_link_post: Any = None
 
     def _fault(self, method: str, label: str) -> Any:
@@ -132,6 +133,25 @@ class FakeJira:
         return self._handle(method, path, parsed_body)
 
     def _handle(self, method: str, path: str, body: Any):
+        if method == "PUT" and path == jira_mutations.PR_ASSOCIATION_BULK_PATH:
+            fault = self._fault(method, "pr_association_claim")
+            if fault is not None:
+                return self._raise_or_return(fault)
+            assert body["filter"] == {
+                "entityIds": [int(ISSUE_ID)],
+                "hasProperty": False,
+            }
+            hook, self.before_association_claim_commit = (
+                self.before_association_claim_commit,
+                None,
+            )
+            if hook is not None:
+                hook()
+            if jira_mutations.PR_ASSOCIATION_PROPERTY_KEY not in self.properties:
+                self.properties[jira_mutations.PR_ASSOCIATION_PROPERTY_KEY] = body["value"]
+            return (303, {"Location": "/rest/api/3/task/claim-1"}, b"")
+        if method == "GET" and path == "/rest/api/3/task/claim-1":
+            return ok({"status": "COMPLETE"})
         match = re.fullmatch(r"^/rest/api/3/issue/(?P<ref>[^/]+)(?P<suffix>/.*)?$", path)
         if match is None:
             raise AssertionError(f"unrouted request: {method} {path}")
@@ -528,16 +548,19 @@ class ApplyIdempotencyTest(unittest.TestCase):
             pr_url="https://github.com/owner/repo/pull/19",
         )
         second_result: list[dict[str, Any]] = []
-        runner.before_remote_link_post = lambda: second_result.append(
+        runner.before_association_claim_commit = lambda: second_result.append(
             jira_pr_sync.apply_sync_plan(second_plan, make_client(runner))
         )
 
         first = jira_pr_sync.apply_sync_plan(first_plan, make_client(runner))
 
-        self.assertEqual(first["status"], "applied")
-        self.assertEqual(second_result[0]["status"], "blocked")
-        self.assertEqual(second_result[0]["reason"], "already_linked_elsewhere")
-        self.assertEqual(runner.global_ids, [GLOBAL_ID])
+        self.assertEqual(first["status"], "blocked")
+        self.assertEqual(first["reason"], "already_linked_elsewhere")
+        self.assertEqual(second_result[0]["status"], "applied")
+        self.assertEqual(
+            runner.global_ids,
+            ["code-mower:github:owner/repo/pull/19"],
+        )
         self.assertEqual(len(runner.transition_posts()), 1)
 
     def test_unrelated_remote_link_does_not_block_pr_association(self) -> None:

@@ -164,6 +164,10 @@ COMMENT_CLAIM_SCHEMA = "code_mower.jiraCommentClaim.v1"
 #: prose, PR title, branch, account, or local identity is retained.
 PR_ASSOCIATION_PROPERTY_KEY = "code-mower-pr-association-v1"
 PR_ASSOCIATION_SCHEMA = "code_mower.jiraPrAssociation.v1"
+PR_ASSOCIATION_BULK_PATH = (
+    "/rest/api/3/issue/properties/" + PR_ASSOCIATION_PROPERTY_KEY
+)
+_JIRA_TASK_PATH_RE = re.compile(r"^/rest/api/3/task/[A-Za-z0-9-]{1,128}$")
 
 #: Closed comment-claim states. ``claimed`` is written by the 201 that
 #: acquired the claim, immediately before the post. ``posted`` is written
@@ -891,6 +895,7 @@ _WRITE_ALLOW_LIST: tuple[tuple[str, re.Pattern[str]], ...] = (
             + r"$"
         ),
     ),
+    ("PUT", re.compile(r"^" + re.escape(PR_ASSOCIATION_BULK_PATH) + r"$")),
     (
         "PUT",
         re.compile(
@@ -1043,8 +1048,14 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         if scope is None:
             raise WriteScopeRefused("write_guard_unarmed")
         issue_ref, issue_id, project_id = scope
+        bulk_claim = (
+            self._pr_association_claim_write_active
+            and path == PR_ASSOCIATION_BULK_PATH
+        )
         match = _ISSUE_WRITE_PATH_RE.fullmatch(path)
-        if match is None or urllib.parse.unquote(match.group("ref")) != issue_ref:
+        if not bulk_claim and (
+            match is None or urllib.parse.unquote(match.group("ref")) != issue_ref
+        ):
             # A write aimed anywhere but the armed issue is out of scope by
             # construction, and no amount of reading could bring it in.
             raise WriteScopeRefused("issue_out_of_scope")
@@ -1064,6 +1075,8 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
             issue_ref, self._expected_pr_global_id
         ):
             raise WriteScopeRefused("already_linked_elsewhere")
+        if bulk_claim:
+            return
         if self._expected_pr_global_id and not self.has_remote_link(
             issue_ref, self._expected_pr_global_id
         ):
@@ -1216,10 +1229,11 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
     ) -> str:
         """Acquire one issue-level PR association claim without guessing.
 
-        Jira returns 201 only to the request that created an issue property;
-        a competing PUT returns 200. The creator rereads the value, and the
-        transport rechecks it before the link POST, so interleaved different
-        PRs cannot both proceed. An interrupted owner can retry the same PR.
+        Jira's transactional bulk-property API applies ``hasProperty=false``
+        atomically, unlike the ordinary create-or-replace property PUT. Two
+        competing PRs therefore cannot overwrite one another. The async task
+        is polled to completion and the winner is verified by rereading the
+        property. An interrupted owner can retry the same PR.
         """
         expected = jira_cloud.validate_remote_link_global_id(expected_global_id)
         if expected != self._expected_pr_global_id:
@@ -1231,22 +1245,67 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
                 if _pr_association_global_id(existing) == expected
                 else "conflict"
             )
-        quoted_key = urllib.parse.quote(PR_ASSOCIATION_PROPERTY_KEY, safe="")
+        scope = self._write_scope
+        if scope is None:
+            raise WriteScopeRefused("write_guard_unarmed")
+        _, issue_id, _ = scope
         self._pr_association_claim_write_active = True
         try:
-            status, _ = self._request_status_parsed(
+            status, headers, _ = self._request_status_headers_parsed(
                 "PUT",
-                self._issue_path(issue_ref, f"properties/{quoted_key}"),
-                json_body={"schema": PR_ASSOCIATION_SCHEMA, "global_id": expected},
+                PR_ASSOCIATION_BULK_PATH,
+                json_body={
+                    "filter": {
+                        "entityIds": [int(issue_id)],
+                        "hasProperty": False,
+                    },
+                    "value": {
+                        "schema": PR_ASSOCIATION_SCHEMA,
+                        "global_id": expected,
+                    },
+                },
                 endpoint="prAssociationClaim",
                 allow_empty=True,
+                accepted_statuses=frozenset({303}),
             )
         finally:
             self._pr_association_claim_write_active = False
-        if status != 201:
-            return "conflict"
+        if status == 303:
+            task_path = self._jira_task_path(headers)
+            for _ in range(20):
+                task = self.request_json("GET", task_path, endpoint="jiraTask")
+                task_status = str(task.get("status") or "").upper()
+                if task_status == "COMPLETE":
+                    break
+                if task_status in {"CANCELLED", "DEAD", "FAILED"}:
+                    raise jira_cloud.JiraApiError(
+                        "jira_conflict", endpoint="prAssociationClaim"
+                    )
+                self.sleep_fn(0.25)
+            else:
+                raise jira_cloud.JiraApiError(
+                    "jira_unavailable", endpoint="prAssociationClaim"
+                )
         current = self.get_issue_property(issue_ref, PR_ASSOCIATION_PROPERTY_KEY)
         return "acquired" if _pr_association_global_id(current) == expected else "conflict"
+
+    def _jira_task_path(self, headers: Mapping[str, str]) -> str:
+        location = next(
+            (str(value) for key, value in headers.items() if key.lower() == "location"),
+            "",
+        )
+        if location.startswith(self.base_url):
+            path = location[len(self.base_url):]
+        else:
+            path = location
+        gateway_prefix = f"/ex/jira/{self.cloud_id}"
+        if path.startswith(gateway_prefix):
+            path = path[len(gateway_prefix):]
+        if not _JIRA_TASK_PATH_RE.fullmatch(path):
+            raise jira_cloud.JiraApiError(
+                "jira_unavailable", endpoint="prAssociationClaim"
+            )
+        return path
 
     def set_mutation_ledger(self, issue_ref: str, ledger: Mapping[str, Any]) -> None:
         """Write the bounded advisory ledger to this module's own property."""

@@ -520,6 +520,19 @@ class JiraRedirectRejected(OSError):
     retrying, so a redirect can never forward Basic Authorization.
     """
 
+    def __init__(self, status: int | str, location: str = "") -> None:
+        try:
+            parsed_status = int(status)
+        except (TypeError, ValueError):
+            parsed_status = 0
+        self.status = parsed_status
+        self.location = str(location or "")[:1024]
+        super().__init__(
+            f"refusing HTTP redirect ({parsed_status})"
+            if parsed_status
+            else "refusing HTTP redirect"
+        )
+
 
 class _RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Redirect handler that rejects every redirect before following it.
@@ -540,7 +553,12 @@ class _RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
         headers: Any,
         newurl: str,
     ) -> Any:
-        raise JiraRedirectRejected(f"refusing HTTP redirect ({int(code)})")
+        location = ""
+        try:
+            location = str(headers.get("Location") or headers.get("location") or "")
+        except (AttributeError, TypeError, ValueError):
+            pass
+        raise JiraRedirectRejected(int(code), location)
 
 
 def default_http_runner(
@@ -551,11 +569,14 @@ def default_http_runner(
     *,
     timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
     max_response_bytes: int = MAX_RESPONSE_BYTES,
+    return_redirect: bool = False,
 ) -> tuple[int, Mapping[str, str], bytes]:
     """Perform one bounded HTTPS request without following secrets anywhere.
 
     Redirects are rejected before urllib can forward the Authorization
-    header (see _RejectRedirectHandler). HTTP error statuses are returned
+    header (see _RejectRedirectHandler). When ``return_redirect`` is true,
+    the original status and bounded Location header are returned without a
+    second request; otherwise the rejection propagates. HTTP error statuses are returned
     as data (never raised) so the caller maps them to closed codes.
     Transport failures raise OSError/ValueError subclasses, which the
     caller maps to ``jira_unavailable``.
@@ -572,6 +593,14 @@ def default_http_runner(
                 {str(k): str(v) for k, v in response.headers.items()},
                 raw,
             )
+    except JiraRedirectRejected as exc:
+        if not return_redirect:
+            raise
+        return (
+            exc.status,
+            {"Location": exc.location} if exc.location else {},
+            b"",
+        )
     except urllib.error.HTTPError as exc:
         try:
             raw_error = exc.read(max_response_bytes + 1)
@@ -830,6 +859,33 @@ class JiraReadClient:
         at-most-once signal those endpoints offer, so it must survive the
         transport instead of being flattened into "2xx".
         """
+        status, _, value = self._request_status_headers_parsed(
+            method,
+            path,
+            query=query,
+            json_body=json_body,
+            endpoint=endpoint,
+            allow_empty=allow_empty,
+        )
+        return status, value
+
+    def _request_status_headers_parsed(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: Mapping[str, str] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        endpoint: str = "",
+        allow_empty: bool = False,
+        accepted_statuses: frozenset[int] = frozenset(),
+    ) -> tuple[int, Mapping[str, str], Any]:
+        """As :meth:`_request_status_parsed`, preserving safe headers.
+
+        ``accepted_statuses`` is for documented asynchronous endpoints that
+        answer with a redirect carrying a task location. Redirects are never
+        followed here, so credentials cannot leave the configured gateway.
+        """
         self._check_request_allowed(method, path)
 
         url = self.base_url + path
@@ -856,6 +912,16 @@ class JiraReadClient:
             try:
                 if runner is not None:
                     status, resp_headers, raw = runner(method, url, headers, body)
+                elif accepted_statuses:
+                    status, resp_headers, raw = default_http_runner(
+                        method,
+                        url,
+                        headers,
+                        body,
+                        timeout_seconds=self.timeout_seconds,
+                        max_response_bytes=self.max_response_bytes,
+                        return_redirect=True,
+                    )
                 else:
                     status, resp_headers, raw = default_http_runner(
                         method,
@@ -885,18 +951,20 @@ class JiraReadClient:
                 raw = b""
             if status == -1:
                 pass  # transport failure mapped below; may retry
-            elif 200 <= status < 300:
+            elif 200 <= status < 300 or status in accepted_statuses:
                 if len(raw) > self.max_response_bytes:
                     raise JiraApiError("jira_unavailable", endpoint=endpoint)
                 if allow_empty and not raw.strip():
-                    return status, {}
+                    return status, dict(resp_headers), {}
                 try:
                     value = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, ValueError):
                     raise JiraApiError("jira_unavailable", endpoint=endpoint) from None
                 if not isinstance(value, (dict, list)):
                     raise JiraApiError("jira_unavailable", endpoint=endpoint)
-                return status, value
+                return status, dict(resp_headers), value
+            elif 300 <= status < 400:
+                raise JiraApiError("jira_unavailable", endpoint=endpoint)
             elif status == 401:
                 raise JiraApiError("jira_unauthorized", endpoint=endpoint)
             elif status == 403:

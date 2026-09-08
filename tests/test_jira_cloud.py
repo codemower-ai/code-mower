@@ -1610,6 +1610,27 @@ class RedirectRejectionTests(unittest.TestCase):
             )
         )
 
+    def test_default_runner_can_return_a_redirect_without_following_it(self) -> None:
+        class FakeOpener:
+            def open(self, request: Any, timeout: Any = None) -> Any:
+                raise jira_cloud.JiraRedirectRejected(
+                    303, "/rest/api/3/task/claim-1"
+                )
+
+        with mock.patch.object(
+            urllib.request, "build_opener", return_value=FakeOpener()
+        ):
+            status, headers, raw = jira_cloud.default_http_runner(
+                "PUT",
+                "https://api.atlassian.com/ex/jira/x/rest/api/3/issue/properties/key",
+                {"Authorization": "Basic REDACTED"},
+                b"{}",
+                return_redirect=True,
+            )
+        self.assertEqual(status, 303)
+        self.assertEqual(headers, {"Location": "/rest/api/3/task/claim-1"})
+        self.assertEqual(raw, b"")
+
     def test_same_host_redirect_is_not_followed(self) -> None:
         handler_cls = redirect_handler_for("/target")
         handler_cls.hits = []

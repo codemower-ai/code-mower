@@ -418,8 +418,10 @@ refuses a conflicting Code Mower PR association with zero writes, then verifies
 the single PR remote link before applying any transition or comment. The
 association is rechecked at the transport
 boundary immediately before every physical write. A fixed, metadata-only Jira
-issue-property claim serializes initially unlinked competing PRs; an
-interrupted claim can be resumed only by that same PR identity. Comments go out only on
+issue-property claim uses Jira's transactional bulk-property filter to set the
+owner only when the property is absent, serializing initially unlinked competing
+PRs without last-writer-wins replacement; an interrupted claim can be resumed
+only by that same PR identity. Comments go out only on
 opened/blocked/merged,
 and ambiguous or mismatched identity fails closed to an owner action.
 Duplicate events and missed-event recovery converge to `already_applied`;
