@@ -8,8 +8,6 @@ import time
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 from code_mower import claude_audit_pr, codex_audit_pr, reviewer_spend
 from code_mower.cloud_client import validate_cloud_event
 
@@ -417,13 +415,15 @@ def test_spend_runs_to_events_opt_in_preserves_unattributable_without_cost() -> 
 
 
 def test_spend_runs_to_events_strict_requires_runs_array() -> None:
-    with pytest.raises(ValueError, match="reviewer spend runs must be an array"):
-        reviewer_spend.spend_runs_to_events({}, preserve_unattributable=True)
-
-    with pytest.raises(ValueError, match="reviewer spend runs must be an array"):
-        reviewer_spend.spend_runs_to_events(
-            {"runs": None}, preserve_unattributable=True
-        )
+    for payload in ({}, {"runs": None}):
+        try:
+            reviewer_spend.spend_runs_to_events(
+                payload, preserve_unattributable=True
+            )
+        except ValueError as exc:
+            assert "reviewer spend runs must be an array" in str(exc)
+        else:
+            raise AssertionError("Expected ValueError")
 
 
 def test_spend_runs_to_events_strict_empty_runs_is_valid() -> None:
