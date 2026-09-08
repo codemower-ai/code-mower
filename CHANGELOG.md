@@ -39,6 +39,12 @@ later entries are regular releases.
   The two writes Jira gives no idempotency key — the comment post and the
   transition post — are attempted exactly once, so an ambiguous timeout,
   429, or 5xx can never be retried into a double apply.
+  A request is authorized as a whole or not at all: if any requested
+  operation is already refused, blocked, cancelled, or failed — an
+  unconfigured transition category alongside an allowed comment, say — the
+  apply fails closed before its first Jira read, its still-planned siblings
+  are reported `skipped` with reason `aborted_before_apply`, and no partial
+  write the operator never asked for reaches Jira.
 
   Comment delivery is at most once by construction. Each comment intent
   claims its own `code-mower-comment-v1.<fingerprint>` issue property, and

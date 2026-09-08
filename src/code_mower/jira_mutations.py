@@ -221,6 +221,7 @@ REASON_CODES = frozenset(
         "rejected",
         "cancelled",
         "aborted_after_failure",
+        "aborted_before_apply",
     }
 )
 
@@ -1170,6 +1171,11 @@ def _record(ledger: dict[str, Any], operation: _Operation, state: str) -> dict[s
 #: report status still carries it to the operator.
 _CONTINUING_STATUSES = ("applied", "already_applied", "unverified")
 
+#: Operation outcomes that condemn the whole apply before it starts. Any one
+#: of these on any requested operation means the plan was never authorized
+#: in full, so no sibling operation may be written.
+_PREFLIGHT_ABORT_STATUSES = ("refused", "blocked", "cancelled", "failed")
+
 
 def _fail_from_error(operation: _Operation, exc: jira_cloud.JiraApiError) -> None:
     status, reason = _ERROR_CODE_OUTCOMES.get(exc.code, ("failed", "unavailable"))
@@ -1183,9 +1189,11 @@ def apply_mutation_plan(
     """Execute an authorized plan against live Jira, idempotently.
 
     ``plan`` must have ``mode == "apply"``; anything else is returned
-    unchanged so a refusal can never be escalated into a write. Live issue
-    state and available transitions are re-read immediately before the
-    write, so workflow or permission drift blocks instead of guessing.
+    unchanged so a refusal can never be escalated into a write. A plan whose
+    requested operations are not all still applicable fails closed as a
+    whole, before any Jira call. Live issue state and available transitions
+    are re-read immediately before the write, so workflow or permission
+    drift blocks instead of guessing.
     """
     report = json.loads(json.dumps(dict(plan)))
     if report.get("mode") != "apply":
@@ -1218,6 +1226,19 @@ def apply_mutation_plan(
             "apply", report["status"], writes_enabled=True, apply_requested=True
         )
         return report
+
+    # A plan is authorized as a whole or not at all. One operation the plan
+    # already refused -- an unconfigured transition, an operation outside
+    # allowed_operations -- or one carried over as blocked, cancelled, or
+    # failed condemns the whole request, so the allowed remainder must not
+    # be executed as a partial apply the operator never asked for. Fail
+    # closed here, before the first Jira read, so a refused request costs
+    # zero HTTP calls.
+    if any(operation.status in _PREFLIGHT_ABORT_STATUSES for operation in operations):
+        for operation in pending:
+            operation.status = "skipped"
+            operation.reason = "aborted_before_apply"
+        return _finish("unchanged")
 
     if not pending:
         return _finish("unchanged")

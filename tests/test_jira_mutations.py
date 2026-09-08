@@ -777,6 +777,60 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(operation(report, "transition")["reason"], "transition_not_configured")
         self.assertEqual(report["write_request_count"], 0)
 
+    def test_one_refused_operation_fails_the_whole_combined_apply_closed(self) -> None:
+        """A combined request is authorized whole, or not at all.
+
+        The transition names a category this repository never configured, so
+        the plan refuses it; the comment beside it was planned and allowed.
+        Applying the allowed remainder would turn a refused request into a
+        partial Jira write the operator never asked for, so the apply fails
+        closed before its first read. The fake here serves every endpoint the
+        comment path needs, so a comment reaching Jira would succeed -- what
+        this proves is that nothing was ever sent.
+        """
+        jira = FakeJira()
+        args = [
+            "mutate",
+            "--issue",
+            ISSUE,
+            "--transition",
+            "done",
+            "--comment",
+            "claimed",
+            "--apply",
+        ]
+        code, report, _ = run_cli(args, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(report["mode"], "apply")
+        self.assertEqual(report["status"], "refused")
+        self.assertEqual(operation(report, "transition")["status"], "refused")
+        self.assertEqual(
+            operation(report, "transition")["reason"], "transition_not_configured"
+        )
+        self.assertEqual(operation(report, "comment")["status"], "skipped")
+        self.assertEqual(operation(report, "comment")["reason"], "aborted_before_apply")
+        self.assertEqual(report["write_request_count"], 0)
+        self.assertEqual(jira.calls, [])
+        self.assertEqual(jira.comment_posts(), [])
+        self.assertIsNone(jira.claim("claimed"))
+
+        # The same guard holds at the library seam Codex named, not only
+        # behind the CLI: apply_mutation_plan is what must fail closed.
+        client = make_client(jira)
+        plan = jira_mutations.build_mutation_plan(
+            load_config(),
+            jira_mutations.MutationRequest(
+                issue_ref=ISSUE, transition_category="done", comment_template="claimed"
+            ),
+            apply_requested=True,
+        )
+        self.assertEqual(plan["mode"], "apply")
+        applied = jira_mutations.apply_mutation_plan(plan, client)
+        self.assertEqual(applied["status"], "refused")
+        self.assertEqual(operation(applied, "comment")["status"], "skipped")
+        self.assertEqual(client.write_attempts, 0)
+        self.assertEqual(jira.calls, [])
+
     def test_workflow_drift_blocks_instead_of_guessing(self) -> None:
         runner = RouteHttp(
             {
