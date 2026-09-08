@@ -84,6 +84,7 @@ SEARCH_MAX_PAGES = 20
 #: Create-metadata page size and maximum page fetches per discovery call.
 CREATEMETA_PAGE_SIZE = 50
 CREATEMETA_MAX_PAGES = 8
+MAX_REQUIRED_CREATE_FIELDS = 64
 KEYCHAIN_TIMEOUT_SECONDS = 10
 MAX_METADATA_VALUE_LENGTH = 128
 MAX_LABEL_LENGTH = 128
@@ -962,7 +963,9 @@ class JiraReadClient:
             start_at = next_start
         else:
             raise JiraApiError("jira_unavailable", endpoint="createMeta")
-        return sorted(required)[:64]
+        if len(required) > MAX_REQUIRED_CREATE_FIELDS:
+            raise JiraApiError("jira_unavailable", endpoint="createMeta")
+        return sorted(required)
 
     def get_status_categories(self) -> list[dict[str, str]]:
         """List status categories; bounded id/key/name triples only."""

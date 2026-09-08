@@ -731,6 +731,37 @@ class ReadPrimitiveTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "jira_unavailable")
         self.assertEqual(len(runner.calls), jira_cloud.CREATEMETA_MAX_PAGES)
 
+    def test_create_fields_result_cap_fails_closed(self) -> None:
+        fields = [
+            {"fieldId": f"customfield_{index:05d}", "required": True}
+            for index in range(jira_cloud.MAX_REQUIRED_CREATE_FIELDS + 1)
+        ]
+        runner = FakeHttp(
+            [
+                http_response(
+                    {
+                        "fields": fields[:50],
+                        "startAt": 0,
+                        "maxResults": 50,
+                        "total": len(fields),
+                    }
+                ),
+                http_response(
+                    {
+                        "fields": fields[50:],
+                        "startAt": 50,
+                        "maxResults": 50,
+                        "total": len(fields),
+                    }
+                ),
+            ]
+        )
+        client = make_client(runner)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_required_create_fields(PROJECT_ID, "10001")
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(len(runner.calls), 2)
+
     def test_create_fields_startat_mismatch_fails_closed(self) -> None:
         runner = FakeHttp(
             [
