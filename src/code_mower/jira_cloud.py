@@ -4,8 +4,11 @@
 This module is the single bounded Jira Cloud client for issue #800. It is
 read-only by construction: every primitive issues an HTTP GET, except the
 JQL search and the bulk permission check, which use POST endpoints that only
-read. There is no mutation/apply surface here; writes belong to a future
-guarded issue and must never be added without an explicit runtime flag.
+read. There is no mutation/apply surface here. ``_check_request_allowed`` is
+the single request-policy seam: the guarded plan/apply surface in
+``jira_mutations`` subclasses this client to widen it to a closed write
+allow-list, and only after both the repository write guard and the runtime
+apply flag are present. Nothing may write through this class itself.
 
 Transport rules:
 
@@ -24,6 +27,11 @@ Transport rules:
   no live Jira calls. Responses are size-bounded, retries use bounded
   exponential backoff plus jitter with injectable sleep/random helpers, and
   cancellation is cooperative through an injectable predicate.
+  ``_attempts_for`` is the single retry-policy seam: reads keep the full
+  budget, and a writing subclass narrows it for requests that cannot be
+  safely repeated. ``_on_request_attempt`` is the transport-attempt seam,
+  fired once per real HTTP attempt so a writing subclass can count every
+  write attempt it made, including the ambiguous and retried ones.
 - Failures map to closed reason codes; raw response bodies never enter
   diagnostics, and only bounded metadata fields are ever requested or
   returned (never summary, description, comments, attachments, issue body,
@@ -89,9 +97,16 @@ KEYCHAIN_TIMEOUT_SECONDS = 10
 MAX_METADATA_VALUE_LENGTH = 128
 MAX_LABEL_LENGTH = 128
 
+#: Jira documents 255 characters for both remote-link global ids and issue
+#: property keys; Code Mower stays inside that bound and only builds tokens.
+MAX_GLOBAL_ID_LENGTH = 255
+MAX_PROPERTY_KEY_LENGTH = 255
+
 _CLOUD_ID_RE = re.compile(r"^[A-Za-z0-9-]{8,128}$")
 _PROJECT_ID_RE = re.compile(r"^[0-9]{1,32}$")
 _TOKEN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_PROPERTY_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,255}$")
+_GLOBAL_ID_RE = re.compile(r"^[A-Za-z0-9_.:/#-]{1,255}$")
 
 #: Closed transport reason codes. A JiraApiError only ever carries one of
 #: these -- never a response body, token, path, or exception message.
@@ -100,6 +115,7 @@ SAFE_ERROR_CODES = frozenset(
         "jira_unauthorized",  # 401: expired, revoked, or invalid token
         "jira_forbidden",  # 403: authenticated but not permitted
         "jira_not_found",  # 404: wrong cloud id, project, or issue reference
+        "jira_conflict",  # 409: workflow/state changed under the request
         "jira_rate_limited",  # 429 after bounded retries
         "jira_unavailable",  # transient 5xx, network, timeout, or oversize body
         "jira_rejected",  # other 4xx client errors
@@ -108,6 +124,12 @@ SAFE_ERROR_CODES = frozenset(
 )
 
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+#: The only non-GET endpoints the read client may call. Both read despite
+#: using POST; neither creates, updates, or deletes anything.
+READ_ONLY_POST_PATHS = frozenset(
+    {"/rest/api/3/search/jql", "/rest/api/3/permissions/check"}
+)
 
 #: The only JQL search fields this client ever requests: bounded metadata.
 #: Status, issue type, labels, assignee presence, and timestamps. Search
@@ -179,6 +201,39 @@ def display_site_url(site_url: str) -> str:
     if parsed.scheme != "https" or not parsed.netloc:
         raise ValueError("site_url must be an HTTPS Jira Cloud site URL")
     return site_url
+
+
+def validate_issue_ref(issue_id_or_key: str) -> str:
+    """Return one bounded issue id/key token, or raise ValueError.
+
+    Issue references reach URL paths, so they stay a closed token shape:
+    no slashes, query separators, whitespace, or path traversal.
+    """
+    ref = str(issue_id_or_key or "").strip()
+    if not ref or len(ref) > 64 or not _TOKEN_ID_RE.fullmatch(ref):
+        raise ValueError("issue reference must be a bounded id or key token")
+    return ref
+
+
+def validate_property_key(property_key: str) -> str:
+    """Return one bounded issue-property key token, or raise ValueError."""
+    key = str(property_key or "").strip()
+    if not key or len(key) > MAX_PROPERTY_KEY_LENGTH or not _PROPERTY_KEY_RE.fullmatch(key):
+        raise ValueError("property key must be a bounded token")
+    return key
+
+
+def validate_remote_link_global_id(global_id: str) -> str:
+    """Return one bounded remote-link global id, or raise ValueError.
+
+    Jira documents a 255-character maximum. Code Mower only ever builds its
+    own deterministic ids, so the shape stays a closed token: a global id is
+    the idempotency key that keeps replay from creating a second link.
+    """
+    value = str(global_id or "").strip()
+    if not value or len(value) > MAX_GLOBAL_ID_LENGTH or not _GLOBAL_ID_RE.fullmatch(value):
+        raise ValueError("remote link global id must be a bounded token")
+    return value
 
 
 def _bounded_str(value: Any, limit: int = MAX_METADATA_VALUE_LENGTH) -> str:
@@ -656,14 +711,22 @@ class JiraReadClient:
         query: Mapping[str, str] | None = None,
         json_body: Mapping[str, Any] | None = None,
         endpoint: str = "",
+        allow_empty: bool = False,
     ) -> dict[str, Any]:
         """Perform one read request with bounded retries, mapped to codes.
 
         Only GET is allowed, plus the read-only search and permission-check
         POST endpoints declared below. Raw bodies never cross this boundary.
+        ``allow_empty`` accepts an empty 2xx body as ``{}`` for endpoints that
+        answer 204 No Content.
         """
         value = self._request_parsed(
-            method, path, query=query, json_body=json_body, endpoint=endpoint
+            method,
+            path,
+            query=query,
+            json_body=json_body,
+            endpoint=endpoint,
+            allow_empty=allow_empty,
         )
         if not isinstance(value, dict):
             raise JiraApiError("jira_unavailable", endpoint=endpoint)
@@ -685,6 +748,51 @@ class JiraReadClient:
             raise JiraApiError("jira_unavailable", endpoint=endpoint)
         return list(value)
 
+    def _check_request_allowed(self, method: str, path: str) -> None:
+        """Reject any request outside this client's closed request policy.
+
+        The base client is read-only by construction: GET, plus the two
+        read-only POST endpoints above. A guarded mutation surface must
+        subclass and widen this allow-list deliberately (see
+        ``jira_mutations.JiraMutationClient``); nothing else may write.
+        """
+        allowed_post = method == "POST" and path in READ_ONLY_POST_PATHS
+        if method != "GET" and not allowed_post:
+            raise ValueError("jira_cloud client is read-only: refusing non-read request")
+        if not path.startswith("/rest/api/3/"):
+            raise ValueError("jira_cloud client refuses paths outside /rest/api/3/")
+
+    def _attempts_for(self, method: str, path: str, endpoint: str = "") -> int:
+        """Return the retry budget for one request.
+
+        This is the single retry-policy seam, and the counterpart of
+        ``_check_request_allowed``. Every request this client can issue is a
+        read, and a repeated read cannot change Jira, so all of them keep the
+        full bounded budget. A subclass that can write must narrow this for
+        any request without a server-side idempotency key: an ambiguous
+        timeout, 429, or 5xx cannot be told apart from a request Jira already
+        committed, so a blind retry there would double-apply (see
+        ``jira_mutations.JiraMutationClient``).
+
+        ``endpoint`` is the caller's closed intent label. Two calls can share
+        a method and a path and still need different budgets: acquiring a
+        create-or-update claim depends on the 201-vs-200 distinction, which a
+        retry destroys, while rewriting that same key afterwards does not.
+        """
+        return max(1, self.max_attempts)
+
+    def _on_request_attempt(self, method: str, path: str) -> None:
+        """Transport-attempt hook, fired once per real HTTP attempt.
+
+        This runs immediately before the runner is invoked, so it sees every
+        attempt that actually leaves this process: successes, failures, and
+        each retry separately. The base client only reads, so it counts
+        nothing. A writing subclass overrides this to account for write
+        attempts whose outcome may be ambiguous, which is the only honest way
+        to report how much this process may have changed at Jira (see
+        ``jira_mutations.JiraMutationClient``).
+        """
+
     def _request_parsed(
         self,
         method: str,
@@ -693,15 +801,36 @@ class JiraReadClient:
         query: Mapping[str, str] | None = None,
         json_body: Mapping[str, Any] | None = None,
         endpoint: str = "",
+        allow_empty: bool = False,
     ) -> Any:
-        allowed_post = (
-            method == "POST"
-            and path in ("/rest/api/3/search/jql", "/rest/api/3/permissions/check")
-        )
-        if method != "GET" and not allowed_post:
-            raise ValueError("jira_cloud client is read-only: refusing non-read request")
-        if not path.startswith("/rest/api/3/"):
-            raise ValueError("jira_cloud client refuses paths outside /rest/api/3/")
+        return self._request_status_parsed(
+            method,
+            path,
+            query=query,
+            json_body=json_body,
+            endpoint=endpoint,
+            allow_empty=allow_empty,
+        )[1]
+
+    def _request_status_parsed(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: Mapping[str, str] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        endpoint: str = "",
+        allow_empty: bool = False,
+    ) -> tuple[int, Any]:
+        """As ``_request_parsed``, also returning the successful status code.
+
+        Jira distinguishes create from update by status on some endpoints:
+        ``PUT`` of an issue property answers 201 when it created the value and
+        200 when it replaced an existing one. That distinction is the only
+        at-most-once signal those endpoints offer, so it must survive the
+        transport instead of being flattened into "2xx".
+        """
+        self._check_request_allowed(method, path)
 
         url = self.base_url + path
         if query:
@@ -718,11 +847,12 @@ class JiraReadClient:
                 raise ValueError("jira_cloud request body exceeds the read-request bound")
 
         runner = self.http_runner
-        attempts = max(1, self.max_attempts)
+        attempts = self._attempts_for(method, path, endpoint)
         last_code = "jira_unavailable"
         for attempt in range(attempts):
             if self.cancelled_fn():
                 raise JiraApiError("jira_cancelled", endpoint=endpoint)
+            self._on_request_attempt(method, path)
             try:
                 if runner is not None:
                     status, resp_headers, raw = runner(method, url, headers, body)
@@ -758,19 +888,25 @@ class JiraReadClient:
             elif 200 <= status < 300:
                 if len(raw) > self.max_response_bytes:
                     raise JiraApiError("jira_unavailable", endpoint=endpoint)
+                if allow_empty and not raw.strip():
+                    return status, {}
                 try:
                     value = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, ValueError):
                     raise JiraApiError("jira_unavailable", endpoint=endpoint) from None
                 if not isinstance(value, (dict, list)):
                     raise JiraApiError("jira_unavailable", endpoint=endpoint)
-                return value
+                return status, value
             elif status == 401:
                 raise JiraApiError("jira_unauthorized", endpoint=endpoint)
             elif status == 403:
                 raise JiraApiError("jira_forbidden", endpoint=endpoint)
             elif status == 404:
                 raise JiraApiError("jira_not_found", endpoint=endpoint)
+            elif status == 409:
+                # The issue/workflow changed under this request. Retrying
+                # cannot fix drift, and a blind retry could double-apply.
+                raise JiraApiError("jira_conflict", endpoint=endpoint)
             elif status == 429:
                 last_code = "jira_rate_limited"
             elif status in RETRYABLE_STATUS_CODES:
@@ -1080,10 +1216,7 @@ class JiraReadClient:
 
     def get_transitions(self, issue_id_or_key: str) -> list[dict[str, str]]:
         """List available transitions for one issue; bounded metadata only."""
-        ref = issue_id_or_key.strip()
-        if not ref or len(ref) > 64 or not _TOKEN_ID_RE.fullmatch(ref):
-            raise ValueError("issue reference must be a bounded id or key token")
-        quoted = urllib.parse.quote(ref, safe="")
+        quoted = urllib.parse.quote(validate_issue_ref(issue_id_or_key), safe="")
         data = self.request_json(
             "GET", f"/rest/api/3/issue/{quoted}/transitions", endpoint="transitions"
         )
@@ -1105,6 +1238,96 @@ class JiraReadClient:
                 }
             )
         return transitions[:64]
+
+    def get_my_account_id(self) -> str:
+        """Return only the authenticated Atlassian account id.
+
+        The endpoint also returns display name, email, locale, and avatars.
+        None of that is read here: an account id is the minimum needed to
+        recognize a self-claim, and the account email never leaves the
+        response buffer.
+        """
+        data = self.request_json("GET", "/rest/api/3/myself", endpoint="myself")
+        return _bounded_str(data.get("accountId"), 128)
+
+    def get_issue_state(self, issue_id_or_key: str) -> dict[str, Any]:
+        """Read one issue's bounded lifecycle state before a guarded write.
+
+        Only ``status``, ``assignee``, ``project``, and ``issuetype`` are
+        requested, so no summary, description, comment, or attachment prose
+        is ever fetched. ``assignee_account_id`` stays for local comparison
+        only and must not reach operator output.
+        """
+        quoted = urllib.parse.quote(validate_issue_ref(issue_id_or_key), safe="")
+        data = self.request_json(
+            "GET",
+            f"/rest/api/3/issue/{quoted}",
+            query={"fields": "status,assignee,project,issuetype"},
+            endpoint="issue",
+        )
+        raw_fields = data.get("fields")
+        fields = raw_fields if isinstance(raw_fields, Mapping) else {}
+
+        def _sub(name: str) -> Mapping[str, Any]:
+            value = fields.get(name)
+            return value if isinstance(value, Mapping) else {}
+
+        assignee = _sub("assignee")
+        return {
+            "id": _bounded_str(data.get("id"), 32),
+            "key": _bounded_str(data.get("key"), 32),
+            "project_id": _bounded_str(_sub("project").get("id"), 32),
+            "status_id": _bounded_str(_sub("status").get("id"), 32),
+            "status_name": _bounded_str(_sub("status").get("name")),
+            "issue_type_id": _bounded_str(_sub("issuetype").get("id"), 32),
+            "assigned": bool(fields.get("assignee")),
+            "assignee_account_id": _bounded_str(assignee.get("accountId"), 128),
+        }
+
+    def get_issue_property(
+        self, issue_id_or_key: str, property_key: str
+    ) -> dict[str, Any] | None:
+        """Read one issue property value, or None when it is not set.
+
+        A missing property is normal first-run state, so 404 maps to None.
+        Every other transport failure still raises a closed reason code.
+        """
+        quoted = urllib.parse.quote(validate_issue_ref(issue_id_or_key), safe="")
+        key = validate_property_key(property_key)
+        try:
+            data = self.request_json(
+                "GET",
+                f"/rest/api/3/issue/{quoted}/properties/{urllib.parse.quote(key, safe='')}",
+                endpoint="issueProperty",
+            )
+        except JiraApiError as exc:
+            if exc.code == "jira_not_found":
+                return None
+            raise
+        value = data.get("value")
+        return dict(value) if isinstance(value, Mapping) else None
+
+    def has_remote_link(self, issue_id_or_key: str, global_id: str) -> bool:
+        """Report whether a remote link with ``global_id`` already exists."""
+        quoted = urllib.parse.quote(validate_issue_ref(issue_id_or_key), safe="")
+        wanted = validate_remote_link_global_id(global_id)
+        try:
+            value = self._request_parsed(
+                "GET",
+                f"/rest/api/3/issue/{quoted}/remotelink",
+                query={"globalId": wanted},
+                endpoint="remoteLink",
+            )
+        except JiraApiError as exc:
+            if exc.code == "jira_not_found":
+                return False
+            raise
+        entries = value if isinstance(value, list) else [value]
+        return any(
+            isinstance(entry, Mapping)
+            and _bounded_str(entry.get("globalId"), MAX_GLOBAL_ID_LENGTH) == wanted
+            for entry in entries
+        )
 
     def check_permissions(
         self,

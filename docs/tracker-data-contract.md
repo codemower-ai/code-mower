@@ -30,9 +30,9 @@ secret field. Identity and label values are bounded single-line strings.
 denylist of known-unsafe field names with a distinct message each.
 
 `TrackerCapabilities` models read support separately from mutation planning
-and apply support. `can_apply_mutations` is always `False` here: applying a
-mutation needs an explicit runtime flag from a future guarded mutation
-surface (issue #799).
+and apply support. `can_apply_mutations` is `False` unless the caller passes
+`apply_requested=True` *and* the config enables writes: configuration alone
+never grants apply authority (see the guarded mutation surface below).
 
 ## Configuration
 
@@ -57,6 +57,8 @@ tracker:
     mutations:
       writes_enabled: false
       allowed_operations: []   # subset of assign, transition, comment, link
+      transitions:             # lifecycle category -> Jira transition id
+        in_progress: "31"
 ```
 
 `field_mappings` targets are restricted to safe normalized fields
@@ -142,3 +144,275 @@ POST endpoints. Writes are unimplemented here.
   returned. Public examples use `example.atlassian.net` and synthetic
   ids such as cloud id `11111111-2222-3333-4444-555555555555`, project
   id `10001`, and issue keys like `ABC-1`.
+
+## Guarded Jira mutation plan/apply
+
+`src/code_mower/jira_mutations.py` is the only Jira write surface (issue
+#799). `code-mower tracker mutate` plans by default and performs no Jira
+call at all in that mode. A network mutation happens only when **both**
+guards are present:
+
+1. `tracker.jira_cloud.mutations.writes_enabled: true` in the repository
+   config, and
+2. an explicit `--apply` at runtime.
+
+With either guard absent the command emits a plan or a refusal with
+`write_request_count: 0` and issues zero Jira requests. `doctor`, tests, and
+normal dry runs therefore cannot write.
+
+```bash
+code-mower tracker mutate --issue ABC-1 --claim --transition in_progress \
+  --link-pr --comment pr_opened --pr-url https://github.com/owner/repo/pull/12
+code-mower tracker mutate --issue ABC-1 --claim --apply    # both guards
+```
+
+Four operations exist, each allow-listed twice: by
+`mutations.allowed_operations` in config, and by the closed transport
+allow-list on `JiraMutationClient`.
+
+- `assign` — claim for the authenticated account
+  (`PUT /rest/api/3/issue/{key}/assignee`).
+- `transition` — one *configured* transition id resolved from
+  `mutations.transitions[<lifecycle category>]`
+  (`POST /rest/api/3/issue/{key}/transitions`). The command line never
+  supplies a raw transition id.
+- `comment` — one bounded comment from a closed template table
+  (`claimed`, `pr_opened`, `pr_merged`, `pr_blocked`), rendered inside the
+  transport from a template id plus a validated GitHub pull request URL, so
+  no free-form text can reach Jira
+  (`POST /rest/api/3/issue/{key}/comment`, Atlassian Document Format).
+- `link` — one pull request remote link
+  (`POST /rest/api/3/issue/{key}/remotelink`).
+
+Deliberately absent and rejected by the transport allow-list: every delete,
+attachments, arbitrary field updates, `PUT /issue/{key}` issue edits, raw
+issue-body replacement, project/workflow administration, and writing any
+issue property other than this module's advisory ledger and its per-comment
+claim keys. `DELETE` is refused for every path.
+
+Apply re-reads live state immediately before **each** operation, not once
+per run: the issue's project, status, and assignee
+(`fields=status,assignee,project,issuetype` only, so no summary,
+description, comment, or attachment prose is fetched) plus the available
+transitions. One plan's operations are not one atomic Jira change — a
+project automation rule can fire on the assignment this run just made and
+move the issue's status or move the issue to another project — so a single
+shared snapshot would let the transition act on state an earlier operation
+had already invalidated. A transition the live workflow no longer offers or
+a lost permission blocks with a closed reason instead of guessing.
+
+#### The write scope invariant
+
+Per-operation validation is still not enough, because **one operation is not
+one write**. A comment acquires a claim property, posts, and then finalizes
+that claim, and an apply ends with the advisory ledger `PUT` after the last
+operation — so automation has windows to move the issue *between* two writes
+this run has already decided to make.
+
+The invariant therefore lives at the transport boundary rather than in the
+handlers. After preflight, the client is **armed** once with the validated
+issue reference, the immutable numeric issue id, and the configured project
+id. Immediately before every write attempt that would leave the process, the
+client performs a fresh bounded read of that issue and requires:
+
+- the live `fields.project.id` to be present and exactly equal to the
+  configured `tracker.jira_cloud.project_id`, and
+- the live issue id to still be the armed one, and
+- the write's own path to target the armed issue.
+
+Nothing is cached, and no handler opts in: the check sits between the
+transport and the HTTP runner, so it covers assignment, transition, remote
+link, the comment claim acquire, the comment `POST`, the claim finalization,
+and the ledger `PUT` alike. A client that was never armed refuses every
+write (`write_guard_unarmed`), and an apply disarms its client when it
+returns.
+
+A refused write is refused *before it is sent*: it never reaches Jira, it is
+not counted in `write_request_count`, the remaining operations are skipped,
+and the ledger `PUT` is not attempted either (`ledger_status:
+refused_<reason>`). The operation carries the closed reason in
+`detail.scope_refusal`; there is no source, prose, auth material, or raw
+response anywhere in it.
+
+Scope is proven, never assumed. An empty, absent, or unreadable project id is
+unauthorized (`issue_out_of_scope`) — it is not evidence that the issue sits
+in the configured project — and an unresolved configured project id blocks
+before the first operation, so such a run costs zero writes.
+
+Every write receives one transport attempt. Reads retain bounded retries,
+but a write is never retried inside the transport because its original scope
+authorization may already be stale. After an ambiguous timeout, rate limit,
+or server error, a later apply begins again with fresh identity and project
+validation and reconciles the live effect before deciding whether to write.
+
+A lifecycle category configured with a transition id but with no ids under
+`status_category_map` is refused during **planning**, with
+`target_status_not_configured` and no Jira request at all: which statuses a
+category means is config, so that gap is knowable before the first read.
+Whole-plan preflight then aborts the run, which is what keeps a combined
+`--claim --transition in_progress --apply` from assigning the issue and only
+afterwards discovering it has no target to transition toward.
+
+Given configured ids, a transition is blocked unless the live transition's
+destination status id is one of them (`transition_target_mismatch`; apply
+keeps its own `target_status_not_configured` check as a last line of defence
+for a plan supplied directly to `apply_mutation_plan`). A
+configured transition id names a workflow edge, and a workflow can be
+re-pointed under it; verifying the destination before the write keeps a
+`--transition in_progress` from moving an issue somewhere that category
+never meant.
+
+The configured status ids and the destination are both checked before any
+already-at-target answer. `already_at_target_status` means the issue's
+current status is one of the category's configured ids — nothing else earns
+it. In particular a self-transition, an edge whose destination is the status
+the issue already holds, is only reached when that status is outside the
+configured ids, so it is a non-target destination and blocks with
+`transition_target_mismatch`. Calling it already-at-target would report a
+status the category never names as the category's target, and would let a
+re-pointed workflow read as success.
+
+Idempotency is reconciled from authoritative state where it exists:
+assignment from the current assignee, transition from the current status
+(against `status_category_map` and the transition's target status), and the
+remote link from its deterministic `globalId`
+(`code-mower:github:<owner>/<repo>/pull/<number>`), which makes Jira upsert
+rather than duplicate.
+
+Retries follow the same rule. Reads, the assignee PUT, the `globalId`
+remote-link upsert, and the property PUTs are all safe to repeat and keep
+the bounded budget (exponential backoff plus jitter, capped `Retry-After`).
+The comment POST and the transition POST have no server-side idempotency
+key, so they are attempted exactly once: an ambiguous timeout, 429, or 5xx
+cannot be told apart from a write Jira already committed, and a transport
+retry there would double-apply. 409 conflicts fail fast for the same reason,
+and a failing operation aborts the rest of the run instead of continuing.
+
+### Comment claims
+
+A comment is the one effect with nothing in live Jira to reconcile against:
+this surface never reads comment bodies back, so "is it already there?"
+cannot be answered by looking. At-most-once therefore comes from Jira's own
+create-or-update contract on issue properties. Each comment intent has its
+own property key, `code-mower-comment-v1.<fingerprint>`, and `PUT` of an
+issue property answers **201 when it created the key and 200 when it
+replaced an existing value**. Only a 201 acquires the right to post. A 200,
+or a value that was already there, means another apply owns that comment,
+and this run never posts.
+
+The claim is per intent and never evicts, which is what a bounded shared
+ledger could not offer: two applies racing the same intent contend on one
+key instead of both reading an absent ledger and both posting, and the 33rd
+comment on an issue cannot push an older comment's protection out of a
+32-entry store and let it repost.
+
+The claim value is bounded metadata — schema, `comment`, the fingerprint,
+the closed template id, a closed state, an opaque per-attempt owner token,
+and a timestamp. The rendered text, the pull request URL, and any local
+identity are all absent.
+
+Sequence, and what each outcome means:
+
+- claim absent, `PUT` answers 201 → this run owns the post, posts once, then
+  rewrites the key to `posted`.
+- claim present as `posted` → `already_commented`, no post.
+- claim present as `claimed` or `unverified`, or unreadable → the comment may
+  have committed, been lost in flight, or never left, and this tool cannot
+  tell. It reports `comment_unverified` with report status `unverified` and a
+  non-zero exit, and asks an owner to look once and add the note by hand only
+  if it is missing. It is never reposted automatically.
+- `PUT` answers 200 → `comment_claim_held`, also `unverified`: another apply
+  owns this comment, including the duty to report whether it landed.
+- the claim `PUT` itself fails ambiguously → **no post, ever.** The answer
+  that authorizes a post is 201-created rather than 200-replaced, and that
+  is precisely the answer an ambiguous acquire lost; a readback cannot
+  recover it. The claim is read back once only to describe the outcome. A
+  stored owner token matching this attempt proves the write landed and
+  nothing more — it is equally consistent with a 200 that overwrote a claim
+  another apply already held for a comment that apply had posted — so it
+  reports `comment_claim_unconfirmed` with report status `unverified` and
+  leaves the claim held, which keeps every later run from reposting too. Any
+  other owner reports `comment_claim_held`. No readable claim means nothing
+  was claimed, the run fails with the transport reason, and a later run may
+  claim it cleanly.
+- the post fails, ambiguously or outright → the claim is finalized to
+  `unverified` and the operation reports `comment_unverified` with the closed
+  transport cause in `detail.post_error`. One owner reconciliation, never a
+  repost.
+- the issue leaves scope after the claim landed but before the post → the
+  post never leaves this process, and the claim is neither released nor
+  replayed. Releasing it would trade a comment that was never posted for the
+  chance of one posted twice. The operation reports `comment_unverified` with
+  report status `unverified`, `detail.claim_state: claimed`, and
+  `detail.scope_refusal`, and every later run reads that held claim back and
+  still refuses to post.
+- the issue leaves scope after the post but before the finalization → the
+  comment reports `applied` (it did land) with `detail.claim_state: claimed`,
+  the finalization and the ledger `PUT` are both refused, and a later run
+  reads the weaker `claimed` state and reports `unverified` rather than
+  reposting.
+
+Nothing records a comment intent before the comment step runs, so an
+assignment, transition, or link that fails first cannot leave a claim behind
+for a comment that was never attempted.
+
+### Fingerprints and the advisory ledger
+
+A comment fingerprint is computed over what the comment *means*: the closed
+template id plus the canonical identity of the pull request it refers to
+(`code-mower:github:<owner>/<repo>/pull/<number>`, the same case-folded
+identity the remote link uses). The rendered sentence is not part of it.
+Hashing the rendered text would put two things in the replay key that do not
+belong there: how an operator spelled the URL, so that
+`github.com/Owner/Repo` and `github.com/owner/repo` would claim two keys and
+post one comment twice; and the wording of a template, so that reflowing a
+sentence would change every key and silently unprotect comments an earlier
+build already posted.
+
+Fingerprints are computed over the **immutable numeric issue id**, not the
+caller's spelling of the issue key. A key is mutable — a project move or
+rename rewrites it, and an operator may type it in any case — so `abc-1`,
+`ABC-1`, and the id all resolve to one replay identity. Planning performs no
+Jira call and so may not have the id: a plan built from a key reports
+`tracker.fingerprint_basis: issue_ref_provisional` and carries provisional
+fingerprints, and apply recomputes them from the live id it read immediately
+before writing, reporting `issue_id`.
+
+The `code-mower-mutations-v1` property remains as a bounded advisory ledger
+of the three effects that *are* reconcilable from live state (assign,
+transition, link). It is capped at 32 entries and evicts oldest-first, which
+costs nothing because every entry it can lose is re-derived from live Jira
+on the next run. It never gates a write, and comment entries — including any
+written by an earlier build — are dropped from it.
+
+### Write accounting
+
+`write_request_count` is counted at the transport attempt boundary, so it
+reports **every write attempt one apply made**, including attempts that
+timed out, were rejected, or were retried, and reports the delta for that
+apply. An attempt Jira may have committed and then failed to acknowledge
+changed Jira as much as one that answered 201, so counting only successful
+calls would understate what a run may have done. Reads are never counted, and
+a refusal still reports `0` against zero issued requests.
+
+GitHub remains the sole pull request, check, review, and merge-gate
+authority. This surface reads no gate state and changes none; a Jira
+refusal, conflict, rate limit, timeout, or outage cannot weaken a gate
+decision. Reports (`code_mower.jiraMutationPlan.v1`) and anything retained
+with `--plan-out` are bounded metadata only: identity, closed reason codes,
+fingerprints, and counts. No issue prose, Jira response payload, exception
+text, credential, account email, or absolute path is printed or retained.
+
+A live write remains owner-authorized and disposable: enable
+`writes_enabled` on a scratch repository config pointed at a disposable Jira
+issue, run the command once without `--apply` to review the plan, then once
+with `--apply`, and re-run the same command to confirm the replay reports
+`already_applied` with no new effect. Offline tests
+(`tests/test_jira_mutations.py`) cover both guards, every operation, replay,
+drift, conflict, retry, timeout, cancellation, and the no-delete allow-list.
+They also interleave two applies of one comment intent against a single
+stateful fake Jira that honours the 201/200 property contract and prove at
+most one comment POST, drive more comments than the ledger bound to prove
+replay protection does not evict, replay one issue by key and by id, and
+account for write attempts across timeout, retry, and success. No live Jira
+write occurs in CI.

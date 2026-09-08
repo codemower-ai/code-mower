@@ -96,9 +96,17 @@ class TrackerCapabilities:
 
 
 def tracker_capabilities(
-    kind: str, jira_cloud_config: Mapping[str, Any] | None = None
+    kind: str,
+    jira_cloud_config: Mapping[str, Any] | None = None,
+    *,
+    apply_requested: bool = False,
 ) -> TrackerCapabilities:
-    """Return declared capabilities for a tracker kind; no network call."""
+    """Return declared capabilities for a tracker kind; no network call.
+
+    ``apply_requested`` is the runtime half of the write guard (the
+    ``--apply`` flag on the guarded mutation surface). It defaults to False,
+    so configuration alone never reports apply authority.
+    """
     if kind == "github":
         return TrackerCapabilities(
             kind="github",
@@ -122,7 +130,9 @@ def tracker_capabilities(
             kind="jira_cloud",
             can_read=True,
             can_plan_mutations=can_plan,
-            can_apply_mutations=False,
+            # Both guards, never one: configured write enablement AND an
+            # explicit runtime apply flag.
+            can_apply_mutations=can_plan and bool(apply_requested),
             allowed_mutation_operations=allowed_ops,
         )
     raise ValueError(f"unsupported tracker kind: {kind!r}")

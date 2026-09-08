@@ -23,6 +23,84 @@ later entries are regular releases.
   gateway, performs no mutation call, and keeps all diagnostics
   metadata-only (issue #800).
 
+- A guarded, idempotent Jira mutation surface, `code-mower tracker mutate`.
+  Planning is the default and performs no Jira call; a write needs both
+  `tracker.jira_cloud.mutations.writes_enabled: true` and an explicit
+  `--apply`. Only claim, configured transition ids, bounded templated
+  comments, and one pull request remote link are possible — no delete,
+  attachment, arbitrary field update, or free-form comment. Live state and
+  available transitions are re-read and revalidated immediately before each
+  operation rather than once per run, so a Jira automation rule that fires on
+  the assignment and moves the issue's status or project cannot be written
+  over from a stale snapshot; a refresh that fails, leaves the configured
+  project, or resolves to a different issue id skips the remaining operations
+  without another mutation. Because one operation is not one write — a
+  comment claims, posts, and finalizes, and an apply ends with an advisory
+  ledger `PUT` — the scope check lives at the transport boundary rather than
+  in the handlers: the client is armed once after preflight with the
+  validated issue reference, the immutable issue id, and the configured
+  project id, and every write attempt re-reads that issue first and refuses
+  unless both still match. A client that was never armed refuses every write.
+  A refusal happens before the request is sent, so the pending write never
+  reaches Jira, is not counted, stops the remaining mutations, and reports a
+  closed reason. Scope is proven, never assumed: every such read
+  requires the live project id to be present and exactly equal to the
+  configured `project_id`, so an empty or unreadable project id is
+  unauthorized and an unresolved one costs zero writes. Every write now gets
+  one transport attempt; only reads retry automatically, so a write retry can
+  never outlive the scope check that authorized its first attempt. A
+  transition is blocked unless its live destination status is configured for
+  the requested lifecycle category — including an edge re-pointed back onto
+  the status the issue already holds, which is a non-target destination like
+  any other and blocks rather than reporting success — and stable idempotency
+  markers make restart or replay report already-applied instead of
+  duplicating an effect.
+  The two writes Jira gives no idempotency key — the comment post and the
+  transition post — are attempted exactly once, so an ambiguous timeout,
+  429, or 5xx can never be retried into a double apply.
+  A request is authorized as a whole or not at all: if any requested
+  operation is already refused, blocked, cancelled, or failed — an
+  unconfigured transition category alongside an allowed comment, say — the
+  apply fails closed before its first Jira read, its still-planned siblings
+  are reported `skipped` with reason `aborted_before_apply`, and no partial
+  write the operator never asked for reaches Jira.
+  Every configuration error that gap can be read from is settled during
+  planning, so preflight actually catches it: a lifecycle category holding a
+  transition id but no `status_category_map` ids is refused with
+  `target_status_not_configured` before any Jira request, rather than after a
+  `--claim` beside it has already assigned the issue.
+
+  Comment delivery is at most once by construction. Each comment intent
+  claims its own `code-mower-comment-v1.<fingerprint>` issue property, and
+  only Jira's documented 201-created answer to that `PUT` acquires the right
+  to post; a 200, an existing value, or an unreadable one means another apply
+  owns the comment and this run never posts. An acquire whose response is
+  lost is never recovered into a right to post either: the create-or-update
+  answer is what authorizes the post, a readback can only show who holds the
+  claim now, and a claim carrying this attempt's own owner token is equally
+  consistent with having overwritten a claim another apply already used to
+  post. Because the claim is per intent
+  and never evicts, two concurrent applies of one intent produce a single
+  comment, and no number of comments on an issue can push an older comment's
+  protection out of a bounded store. An interrupted, ambiguous, or contended
+  comment is reported `unverified` for one owner reconciliation and is never
+  reposted automatically. An issue that leaves scope after the claim landed
+  is the same case: the post never leaves this process, and the claim is
+  neither released nor replayed, so the run reports the held claim truthfully
+  and every later run still refuses to post. Fingerprints are computed over the immutable Jira
+  issue id rather than the caller's spelling of the key, so the same issue
+  addressed by key, by lowercase key, or by id resolves to one replay
+  identity, and a comment fingerprint is semantic — the closed template id
+  plus the canonical pull request identity, with GitHub owner and repository
+  casing folded — rather than the rendered sentence, so mixed-case spellings
+  of one pull request URL claim one key and template wording can be edited
+  without unprotecting comments already posted; a plan built from a key marks its fingerprints provisional and
+  apply recomputes them from the live id. `write_request_count` is counted at
+  the transport attempt boundary and reports every write attempt an apply
+  made — including timed-out, rejected, and retried attempts — not only the
+  successful calls. GitHub remains the only PR, check, and merge-gate
+  authority (issue #799).
+
 ### Fixed
 
 - Code Mower Board recognizes active supervised Muse lanes running under `muse`
