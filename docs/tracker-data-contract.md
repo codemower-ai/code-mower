@@ -413,8 +413,11 @@ opened|updated|blocked|green|merged|closed_unmerged --pr-url ... --branch
 transition-id map, the `tracker.jira_cloud.sync.trusted_pr_authors` allow-list,
 the closed comment templates, and the replay protection apply unchanged. The
 authoritative marker comes only from the branch name or the leading PR title
-token (never bodies, comments, source, or diffs); every milestone verifies
-the single PR remote link, comments go out only on opened/blocked/merged,
+token (never bodies, comments, source, or diffs); every live milestone first
+refuses a conflicting Code Mower PR association with zero writes, then verifies
+the single PR remote link. The association is rechecked at the transport
+boundary immediately before every physical write. Comments go out only on
+opened/blocked/merged,
 and ambiguous or mismatched identity fails closed to an owner action.
 Duplicate events and missed-event recovery converge to `already_applied`;
 an `opened` event cannot move a blocked or done issue backward, and a

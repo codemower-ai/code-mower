@@ -97,12 +97,14 @@ class FakeJira:
         ),
         faults: Mapping[tuple[str, str], Any] | None = None,
         status_changes_on_issue_reads: Mapping[int, str] | None = None,
+        links_on_issue_reads: Mapping[int, list[str]] | None = None,
     ) -> None:
         self.status_id = status_id
         self.project_id = project_id
         self.transitions = [dict(item) for item in transitions]
         self.faults = {key: list(value) for key, value in dict(faults or {}).items()}
         self.status_changes_on_issue_reads = dict(status_changes_on_issue_reads or {})
+        self.links_on_issue_reads = dict(links_on_issue_reads or {})
         self.issue_reads = 0
         self.properties: dict[str, Any] = {}
         self.global_ids: list[str] = []
@@ -160,6 +162,8 @@ class FakeJira:
             self.status_id = self.status_changes_on_issue_reads.get(
                 self.issue_reads, self.status_id
             )
+            if self.issue_reads in self.links_on_issue_reads:
+                self.global_ids = list(self.links_on_issue_reads[self.issue_reads])
             return ok({
                 "id": ISSUE_ID,
                 "key": ISSUE_KEY,
@@ -427,6 +431,53 @@ class ApplyIdempotencyTest(unittest.TestCase):
         self.assertEqual(len(runner.comment_posts()), 1)
         self.assertEqual(len(runner.transition_posts()), 1)
         self.assertEqual(runner.global_ids, [GLOBAL_ID])
+
+    def test_second_pr_cannot_take_over_existing_issue_association(self) -> None:
+        config, runner = sync_config(), FakeJira()
+        plan_and_apply(config, "opened", runner)
+        calls_before = len(runner.calls)
+        comments_before = len(runner.comment_posts())
+        transitions_before = len(runner.transition_posts())
+
+        conflicting = plan_and_apply(
+            config,
+            "merged",
+            runner,
+            pr_url="https://github.com/owner/repo/pull/19",
+        )
+
+        self.assertEqual(conflicting["status"], "blocked")
+        self.assertEqual(conflicting["reason"], "already_linked_elsewhere")
+        self.assertEqual(conflicting["write_request_count"], 0)
+        self.assertEqual(runner.status_id, "3")
+        self.assertEqual(len(runner.comment_posts()), comments_before)
+        self.assertEqual(len(runner.transition_posts()), transitions_before)
+        self.assertEqual(runner.global_ids, [GLOBAL_ID])
+        new_calls = runner.calls[calls_before:]
+        self.assertEqual([call["method"] for call in new_calls], ["GET"])
+
+    def test_unrelated_remote_link_does_not_block_pr_association(self) -> None:
+        config, runner = sync_config(), FakeJira()
+        runner.global_ids.append("external-system:unrelated")
+
+        report = plan_and_apply(config, "opened", runner)
+
+        self.assertEqual(report["status"], "applied")
+        self.assertEqual(runner.global_ids, ["external-system:unrelated", GLOBAL_ID])
+
+    def test_transport_rechecks_association_before_first_write(self) -> None:
+        config = sync_config()
+        competing = "code-mower:github:owner/repo/pull/19"
+        runner = FakeJira(links_on_issue_reads={3: [competing]})
+
+        report = plan_and_apply(config, "opened", runner)
+
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual(report["reason"], "already_linked_elsewhere")
+        self.assertEqual(report["write_request_count"], 0)
+        self.assertEqual(runner.comment_posts(), [])
+        self.assertEqual(runner.transition_posts(), [])
+        self.assertEqual(runner.global_ids, [competing])
 
     def test_blocked_then_merged_posts_each_template_once(self) -> None:
         config, runner = sync_config(), FakeJira()

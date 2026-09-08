@@ -240,6 +240,7 @@ REASON_CODES = frozenset(
         "issue_out_of_scope",
         "write_guard_unarmed",
         "stale_milestone",
+        "already_linked_elsewhere",
         "permission_denied",
         "unauthorized",
         "not_found",
@@ -263,6 +264,11 @@ _ERROR_CODE_OUTCOMES: Mapping[str, tuple[str, str]] = {
     "jira_cancelled": ("cancelled", "cancelled"),
     "jira_unavailable": ("failed", "unavailable"),
 }
+
+
+def jira_error_outcome(exc: jira_cloud.JiraApiError) -> tuple[str, str]:
+    """Map one closed Jira transport code to a bounded report outcome."""
+    return _ERROR_CODE_OUTCOMES.get(exc.code, ("failed", "unavailable"))
 
 #: Worst-first, so a report status is the most severe operation outcome.
 #: ``unverified`` outranks ``refused`` because it is the only outcome that
@@ -294,6 +300,7 @@ SCOPE_REFUSAL_REASONS = frozenset(
         "issue_identity_unresolved",
         "write_guard_unarmed",
         "stale_milestone",
+        "already_linked_elsewhere",
     }
 )
 
@@ -939,6 +946,10 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         # transport's own fresh scope read closes the race between the
         # handler's state check and the physical write.
         self._write_forbidden_status_ids: tuple[str, ...] = ()
+        # PR sync can additionally bind this apply to one Code Mower PR
+        # association. The transport rechecks it immediately before every
+        # write so a competing link added after preflight still fails closed.
+        self._expected_pr_global_id = ""
 
     # -- Armed write scope -----------------------------------------------
 
@@ -967,6 +978,13 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         """Withdraw write authorization; every later write is refused."""
         self._write_scope = None
         self._write_forbidden_status_ids = ()
+        self._expected_pr_global_id = ""
+
+    def require_code_mower_pr_link(self, expected_global_id: str) -> None:
+        """Bind this apply to one expected Code Mower PR association."""
+        self._expected_pr_global_id = jira_cloud.validate_remote_link_global_id(
+            expected_global_id
+        )
 
     def refuse_writes_in_statuses(self, status_ids: Sequence[Any]) -> None:
         """Refuse the current operation if Jira has reached a later status."""
@@ -1017,6 +1035,10 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
             raise WriteScopeRefused(violation[1])
         if str(state.get("status_id") or "") in self._write_forbidden_status_ids:
             raise WriteScopeRefused("stale_milestone")
+        if self._expected_pr_global_id and self.has_conflicting_code_mower_pr_link(
+            issue_ref, self._expected_pr_global_id
+        ):
+            raise WriteScopeRefused("already_linked_elsewhere")
 
     @staticmethod
     def _is_write_request(method: str, path: str) -> bool:
@@ -1125,6 +1147,33 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
             endpoint="remoteLink",
         )
         return jira_cloud._bounded_str(data.get("id"), 32)
+
+    def has_conflicting_code_mower_pr_link(
+        self, issue_ref: str, expected_global_id: str
+    ) -> bool:
+        """Refuse a second Code Mower PR association for one Jira issue.
+
+        Jira issues may carry unrelated remote links, so only Code Mower's
+        closed GitHub global-id namespace participates in this check. Link
+        values are compared in memory and never returned or retained.
+        """
+        quoted = urllib.parse.quote(jira_cloud.validate_issue_ref(issue_ref), safe="")
+        expected = jira_cloud.validate_remote_link_global_id(expected_global_id)
+        value = self._request_parsed(
+            "GET",
+            f"/rest/api/3/issue/{quoted}/remotelink",
+            endpoint="remoteLink",
+        )
+        entries = value if isinstance(value, list) else [value]
+        prefix = "code-mower:github:"
+        return any(
+            isinstance(entry, Mapping)
+            and (candidate := jira_cloud._bounded_str(
+                entry.get("globalId"), jira_cloud.MAX_GLOBAL_ID_LENGTH
+            )).startswith(prefix)
+            and candidate != expected
+            for entry in entries
+        )
 
     def set_mutation_ledger(self, issue_ref: str, ledger: Mapping[str, Any]) -> None:
         """Write the bounded advisory ledger to this module's own property."""
@@ -1340,7 +1389,7 @@ _PREFLIGHT_ABORT_STATUSES = ("refused", "blocked", "cancelled", "failed")
 
 
 def _fail_from_error(operation: _Operation, exc: jira_cloud.JiraApiError) -> None:
-    status, reason = _ERROR_CODE_OUTCOMES.get(exc.code, ("failed", "unavailable"))
+    status, reason = jira_error_outcome(exc)
     operation.status = status
     operation.reason = reason
 

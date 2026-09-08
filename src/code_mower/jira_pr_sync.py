@@ -18,7 +18,9 @@ descriptions, comments, source, diffs, and transcripts are never searched.
 Zero markers means missing identity, two different markers means ambiguous
 identity, and a marker whose project prefix disagrees with the configured
 ``project_key`` (or with an explicitly passed ``--issue``) means mismatched
-identity. All three fail closed to an owner action with zero Jira calls.
+identity. The PR author must also appear in the repository's explicit
+``tracker.jira_cloud.sync.trusted_pr_authors`` allow-list. Every failure
+closes to an owner action with zero Jira calls.
 
 Every milestone verifies the single PR remote link (Jira upserts on the
 deterministic ``globalId``, so replays update instead of duplicating).
@@ -94,6 +96,7 @@ SYNC_REASONS = frozenset(
         "invalid_request",
         "stale_guard_unconfigured",
         "untrusted_pr_author",
+        "already_linked_elsewhere",
     }
 ) | jira_mutations.REASON_CODES
 
@@ -420,12 +423,95 @@ def apply_sync_plan(
     plan = report.get("mutation_plan")
     if not isinstance(plan, Mapping):
         return report
+    tracker = plan.get("tracker") if isinstance(plan.get("tracker"), Mapping) else {}
+    operations = plan.get("operations") or []
+    link = next(
+        (
+            operation
+            for operation in operations
+            if isinstance(operation, Mapping) and operation.get("operation") == "link"
+        ),
+        None,
+    )
+    link_detail = link.get("detail") if isinstance(link, Mapping) else {}
+    try:
+        conflict = client.has_conflicting_code_mower_pr_link(
+            str(tracker.get("issue_ref") or ""),
+            str(link_detail.get("global_id") or "")
+            if isinstance(link_detail, Mapping)
+            else "",
+        )
+    except (jira_mutations.MutationRequestError, ValueError):
+        conflict = True
+    except jira_mutations.jira_cloud.JiraApiError as exc:
+        failure_status, failure_reason = jira_mutations.jira_error_outcome(exc)
+        return _preapply_refusal(
+            report,
+            status=failure_status,
+            reason=failure_reason,
+            next_action=(
+                "Jira could not verify the existing PR association. Re-run after "
+                "Jira is available. No Jira write was attempted."
+            ),
+        )
+    if conflict:
+        return _preapply_refusal(
+            report,
+            status="blocked",
+            reason="already_linked_elsewhere",
+            next_action=(
+                "Owner action required: this Jira issue is already associated with "
+                "another Code Mower pull request. Reconcile the association before "
+                "re-running. No Jira write was attempted."
+            ),
+        )
+    client.require_code_mower_pr_link(str(link_detail.get("global_id") or ""))
     applied = jira_mutations.apply_mutation_plan(plan, client)
     report["mutation_plan"] = applied
     report["status"] = str(applied.get("status") or report.get("status"))
     report["reason"] = _mutation_plan_reason(applied)
     report["write_request_count"] = int(applied.get("write_request_count") or 0)
     report["next_action"] = str(applied.get("next_action") or report.get("next_action"))
+    return report
+
+
+def _preapply_refusal(
+    sync_report: Mapping[str, Any],
+    *,
+    status: str,
+    reason: str,
+    next_action: str,
+) -> dict[str, Any]:
+    """Return a bounded no-write report for a failed live association check."""
+    report = dict(sync_report)
+    original_plan = report.get("mutation_plan")
+    if not isinstance(original_plan, Mapping):
+        return report
+    plan = dict(original_plan)
+    operations: list[dict[str, Any]] = []
+    refusal_recorded = False
+    for value in original_plan.get("operations") or []:
+        if not isinstance(value, Mapping):
+            continue
+        operation = dict(value)
+        if operation.get("status") == "planned":
+            if operation.get("operation") == "link" and not refusal_recorded:
+                operation["status"] = status
+                operation["reason"] = reason
+                refusal_recorded = True
+            else:
+                operation["status"] = "skipped"
+                operation["reason"] = "aborted_before_apply"
+        operations.append(operation)
+    plan["operations"] = operations
+    plan["status"] = status
+    plan["write_request_count"] = 0
+    plan["next_action"] = next_action
+    report["mutation_plan"] = plan
+    report["status"] = status
+    report["reason"] = reason
+    report["write_request_count"] = 0
+    report["next_action"] = next_action
     return report
 
 
