@@ -29,7 +29,15 @@ later entries are regular releases.
   `--apply`. Only claim, configured transition ids, bounded templated
   comments, and one pull request remote link are possible — no delete,
   attachment, arbitrary field update, or free-form comment. Live state and
-  available transitions are re-checked immediately before each write, a
+  available transitions are re-read and revalidated immediately before each
+  operation rather than once per run, so a Jira automation rule that fires on
+  the assignment and moves the issue's status or project cannot be written
+  over from a stale snapshot; a refresh that fails, leaves the configured
+  project, or resolves to a different issue id skips the remaining operations
+  without another mutation. Scope is proven, never assumed: every such read
+  requires the live project id to be present and exactly equal to the
+  configured `project_id`, so an empty or unreadable project id is
+  unauthorized and an unresolved one costs zero writes. A
   transition is blocked unless its live destination status is configured for
   the requested lifecycle category — including an edge re-pointed back onto
   the status the issue already holds, which is a non-target destination like

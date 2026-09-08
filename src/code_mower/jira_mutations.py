@@ -54,6 +54,16 @@ comment on the same issue can produce a second copy. A claim that exists but
 was never finalized reports ``unverified`` and asks an owner to reconcile
 that one comment by hand; it is never reposted automatically.
 
+Scope and state are re-established before every operation, not once per
+apply. An apply reads authoritative issue state immediately before each
+write and requires the live project id to be present and exactly equal to
+the configured ``project_id`` -- an empty or unreadable project id is
+unauthorized, never permission -- and the live issue id to still be the one
+this apply started against. So a Jira automation rule that fires on the
+assignment and moves the issue's status or project cannot be written over
+from the stale snapshot the run began with: the next operation blocks and
+the rest are skipped without another mutation.
+
 Fingerprints are computed over the immutable numeric issue id, not the
 caller's spelling of the issue key, so ``abc-1``, ``ABC-1``, and a key the
 issue has since been moved away from all resolve to one replay identity.
@@ -1207,6 +1217,36 @@ def _fail_from_error(operation: _Operation, exc: jira_cloud.JiraApiError) -> Non
     operation.reason = reason
 
 
+def _issue_scope_violation(
+    state: Mapping[str, Any], project_id: str, expected_issue_id: str = ""
+) -> tuple[str, str] | None:
+    """Say why this live issue may not be written, or ``None`` when it may.
+
+    Authorization here is proven, never assumed. An absent, empty, or
+    unreadable live project id is *not* evidence that the issue sits in the
+    configured project, so it is refused rather than waved through: a field
+    that did not come back, or an issue Jira moved to a project this
+    repository never configured, must both cost zero writes. The configured
+    project id must itself be present and match exactly.
+
+    ``expected_issue_id`` is supplied once identity is established, so a
+    refresh that resolves the same reference to a different issue -- a key
+    reused after a move -- stops the run instead of writing to a stranger.
+    """
+    live_project = str(state.get("project_id") or "")
+    if not project_id or live_project != project_id:
+        return ("blocked", "issue_out_of_scope")
+    live_id = str(state.get("id") or "")
+    if not _ISSUE_ID_RE.fullmatch(live_id):
+        # Without the immutable id there is no replay-safe fingerprint, and
+        # guessing one from the caller's spelling of the key is exactly the
+        # mistake that lets a renamed or differently-cased issue repost.
+        return ("blocked", "issue_identity_unresolved")
+    if expected_issue_id and live_id != expected_issue_id:
+        return ("blocked", "issue_identity_unresolved")
+    return None
+
+
 def apply_mutation_plan(
     plan: Mapping[str, Any], client: JiraMutationClient
 ) -> dict[str, Any]:
@@ -1216,8 +1256,9 @@ def apply_mutation_plan(
     unchanged so a refusal can never be escalated into a write. A plan whose
     requested operations are not all still applicable fails closed as a
     whole, before any Jira call. Live issue state and available transitions
-    are re-read immediately before the write, so workflow or permission
-    drift blocks instead of guessing.
+    are re-read immediately before *each* operation, not once per apply, so
+    workflow or permission drift -- including drift an earlier operation in
+    this same plan provoked -- blocks instead of guessing.
     """
     report = json.loads(json.dumps(dict(plan)))
     if report.get("mode") != "apply":
@@ -1274,7 +1315,9 @@ def apply_mutation_plan(
                 operation.reason = "aborted_after_failure"
         return _finish("unchanged")
 
-    # Validate live issue state immediately before any write.
+    # Whole-plan preflight: resolve the immutable identity, prove the issue is
+    # in scope, and read the ledger once -- all before the first write, so a
+    # request this apply may not perform costs zero write attempts.
     try:
         state = client.get_issue_state(issue_ref)
         ledger = _validated_ledger(
@@ -1287,22 +1330,13 @@ def apply_mutation_plan(
 
     ledger_before = _ledger_key(ledger)
 
-    if state.get("project_id") and state["project_id"] != settings_project:
+    violation = _issue_scope_violation(state, settings_project)
+    if violation is not None:
         for operation in pending:
-            operation.status = "blocked"
-            operation.reason = "issue_out_of_scope"
+            operation.status, operation.reason = violation
         return _finish("unchanged")
 
     issue_id = str(state.get("id") or "")
-    if not _ISSUE_ID_RE.fullmatch(issue_id):
-        # Without the immutable id there is no replay-safe fingerprint, and
-        # guessing one from the caller's spelling of the key is exactly the
-        # mistake that lets a renamed or differently-cased issue repost.
-        for operation in pending:
-            operation.status = "blocked"
-            operation.reason = "issue_identity_unresolved"
-        return _finish("unchanged")
-
     report["tracker"]["issue_id"] = issue_id
     report["tracker"]["issue_key"] = state.get("key", "")
     report["tracker"]["fingerprint_basis"] = "issue_id"
@@ -1325,6 +1359,24 @@ def apply_mutation_plan(
     # transition, or link that fails first cannot leave a claim behind for a
     # comment that was never attempted.
     for operation in pending:
+        # One plan's operations are not one atomic Jira change, and Jira does
+        # not hold still between them: a project automation rule can fire on
+        # the assignment this loop just made and move the issue's status, or
+        # move the issue into another project entirely. So authoritative state
+        # is re-read and re-validated immediately before every operation, and
+        # no handler ever decides from a snapshot an earlier write may have
+        # invalidated. A refresh that fails, leaves the configured project, or
+        # resolves to a different issue stops the run here -- the remaining
+        # operations are skipped without another mutation.
+        try:
+            state = client.get_issue_state(issue_ref)
+        except jira_cloud.JiraApiError as exc:
+            _fail_from_error(operation, exc)
+            return _abort()
+        violation = _issue_scope_violation(state, settings_project, issue_id)
+        if violation is not None:
+            operation.status, operation.reason = violation
+            return _abort()
         try:
             handler = _HANDLERS[operation.operation]
             ledger = handler(operation, client, issue_ref, state, ledger)

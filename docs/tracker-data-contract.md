@@ -190,12 +190,26 @@ issue-body replacement, project/workflow administration, and writing any
 issue property other than this module's advisory ledger and its per-comment
 claim keys. `DELETE` is refused for every path.
 
-Apply re-reads live state immediately before writing: the issue's project,
-status, and assignee (`fields=status,assignee,project,issuetype` only, so no
-summary, description, comment, or attachment prose is fetched) plus the
-available transitions. An issue outside the configured project, a
-transition the live workflow no longer offers, or a lost permission blocks
-with a closed reason instead of guessing.
+Apply re-reads live state immediately before **each** operation, not once
+per run: the issue's project, status, and assignee
+(`fields=status,assignee,project,issuetype` only, so no summary,
+description, comment, or attachment prose is fetched) plus the available
+transitions. One plan's operations are not one atomic Jira change — a
+project automation rule can fire on the assignment this run just made and
+move the issue's status or move the issue to another project — so a single
+shared snapshot would let the transition act on state an earlier operation
+had already invalidated. A transition the live workflow no longer offers or
+a lost permission blocks with a closed reason instead of guessing, and a
+refresh that fails, leaves the configured project, or resolves to a
+different issue id stops the run: the remaining operations are skipped
+without another mutation.
+
+Scope is proven, never assumed. Every one of those reads requires the live
+`fields.project.id` to be present and exactly equal to the configured
+`tracker.jira_cloud.project_id`. An empty, absent, or unreadable project id
+is unauthorized (`issue_out_of_scope`) — it is not evidence that the issue
+sits in the configured project — and an unresolved configured project id
+blocks before the first operation, so such a run costs zero writes.
 
 A lifecycle category configured with a transition id but with no ids under
 `status_category_map` is refused during **planning**, with

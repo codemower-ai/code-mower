@@ -1173,6 +1173,189 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(runner.write_calls(), [])
 
 
+class AutomationAfterAssign:
+    """Simulate a Jira automation rule that fires on the assignment.
+
+    Real projects routinely run rules on assignee change: "when assigned,
+    move to In Progress", or a move to another project. The rule lands
+    between two operations of one plan, which is exactly the window a single
+    shared snapshot would paper over.
+    """
+
+    def __init__(self, *, status_id: str = "", project_id: str = "") -> None:
+        self.status_id = status_id
+        self.project_id = project_id
+
+    def __call__(self, jira: FakeJira, method: str, path: str) -> None:
+        if method == "PUT" and path.endswith("/assignee"):
+            if self.status_id:
+                jira.status_id = self.status_id
+            if self.project_id:
+                jira.project_id = self.project_id
+
+
+class PerOperationStateRefreshTests(unittest.TestCase):
+    """Every operation reads and revalidates live state before it writes.
+
+    One plan's operations are not one atomic Jira change. Deciding the
+    transition from the snapshot the run opened with means acting on state
+    the assignment may already have invalidated, so each of these proves the
+    stale value is not the one that was used.
+    """
+
+    COMBINED = ["mutate", "--issue", ISSUE, "--claim", "--transition", "in_progress", "--apply"]
+
+    @staticmethod
+    def _transition_posts(jira: FakeJira) -> list[dict[str, Any]]:
+        return [
+            call
+            for call in jira.calls
+            if call["method"] == "POST" and call["path"].endswith("/transitions")
+        ]
+
+    @staticmethod
+    def _index_of(jira: FakeJira, method: str, suffix: str) -> int:
+        for index, call in enumerate(jira.calls):
+            if call["method"] == method and call["path"].endswith(suffix):
+                return index
+        raise AssertionError(f"no {method} {suffix} call was made")
+
+    def test_a_status_change_after_assignment_is_observed_before_the_transition(self) -> None:
+        # The issue starts outside the target status, so the plan's snapshot
+        # would say "transition it". The assignment fires a rule that moves it
+        # to the configured target instead.
+        jira = FakeJira(status_id="1", before_request=AutomationAfterAssign(status_id="3"))
+        code, report, _ = run_cli(self.COMBINED, runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "assign")["status"], "applied")
+        # Read from the stale snapshot this would have been a live transition
+        # POST against a status the issue had already left.
+        self.assertEqual(operation(report, "transition")["status"], "already_applied")
+        self.assertEqual(
+            operation(report, "transition")["reason"], "already_at_target_status"
+        )
+        self.assertEqual(self._transition_posts(jira), [])
+        # The answer came from a read taken after the assignment, not before.
+        assign_index = self._index_of(jira, "PUT", "/assignee")
+        refresh_indexes = [
+            index
+            for index, call in enumerate(jira.calls)
+            if call["method"] == "GET" and call["path"].endswith(f"/issue/{ISSUE}")
+        ]
+        self.assertTrue(any(index > assign_index for index in refresh_indexes))
+
+    def test_a_stale_snapshot_alone_would_have_transitioned(self) -> None:
+        """Control: without the automation the same plan does transition."""
+        jira = FakeJira(status_id="1")
+        code, report, _ = run_cli(self.COMBINED, runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "transition")["status"], "applied")
+        self.assertEqual(len(self._transition_posts(jira)), 1)
+
+    def test_a_project_move_after_assignment_blocks_the_transition(self) -> None:
+        jira = FakeJira(status_id="1", before_request=AutomationAfterAssign(project_id="99999"))
+        code, report, _ = run_cli(self.COMBINED, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "assign")["status"], "applied")
+        self.assertEqual(operation(report, "transition")["status"], "blocked")
+        self.assertEqual(operation(report, "transition")["reason"], "issue_out_of_scope")
+        self.assertEqual(self._transition_posts(jira), [])
+
+    def test_an_identity_change_after_assignment_blocks_the_transition(self) -> None:
+        """A reference that resolves to a different issue is not this issue."""
+
+        def swap_identity(jira: FakeJira, method: str, path: str) -> None:
+            if method == "PUT" and path.endswith("/assignee"):
+                jira.issue_id = "20202"
+
+        jira = FakeJira(status_id="1", before_request=swap_identity)
+        code, report, _ = run_cli(self.COMBINED, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            operation(report, "transition")["reason"], "issue_identity_unresolved"
+        )
+        self.assertEqual(self._transition_posts(jira), [])
+
+    def test_a_failed_refresh_after_assignment_stops_without_another_write(self) -> None:
+        # The first issue read succeeds; every later one is unavailable, so
+        # the transition never learns whether its snapshot still holds.
+        jira = FakeJira(
+            status_id="1", faults={("GET", "issue"): [None, None, error(503)]}
+        )
+        code, report, _ = run_cli(self.COMBINED, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "assign")["status"], "applied")
+        self.assertEqual(operation(report, "transition")["status"], "failed")
+        self.assertEqual(operation(report, "transition")["reason"], "unavailable")
+        self.assertEqual(self._transition_posts(jira), [])
+        self.assertEqual(
+            [call["path"] for call in jira.write_calls()],
+            [f"/rest/api/3/issue/{ISSUE}/assignee"],
+        )
+
+
+class ProjectScopeTests(unittest.TestCase):
+    """An unproven project id is unauthorized, never permission.
+
+    An empty or absent project id is not evidence that the issue sits in the
+    configured project. Reading it as "no objection" is how a write reaches
+    an issue this repository was never authorized to touch.
+    """
+
+    def test_an_empty_live_project_id_blocks_before_any_write(self) -> None:
+        runner = RouteHttp(
+            {
+                ("GET", ISSUE_PATH): ok(issue_response(project_id="")),
+                ("GET", LEDGER_PATH): error(404),
+            }
+        )
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--claim", "--apply"], runner=runner
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "assign")["reason"], "issue_out_of_scope")
+        self.assertEqual(runner.write_calls(), [])
+        self.assertEqual(report["write_request_count"], 0)
+
+    def test_a_missing_project_field_blocks_before_any_write(self) -> None:
+        runner = RouteHttp(
+            {
+                ("GET", ISSUE_PATH): ok(
+                    {"id": ISSUE_ID, "key": ISSUE, "fields": {"status": {"id": "3"}}}
+                ),
+                ("GET", LEDGER_PATH): error(404),
+            }
+        )
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--claim", "--apply"], runner=runner
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "assign")["reason"], "issue_out_of_scope")
+        self.assertEqual(runner.write_calls(), [])
+
+    def test_an_unresolved_configured_project_id_blocks_every_write(self) -> None:
+        """A plan handed in without a project id authorizes nothing."""
+        plan = jira_mutations.build_mutation_plan(
+            load_config(),
+            jira_mutations.MutationRequest(issue_ref=ISSUE, claim=True),
+            apply_requested=True,
+        )
+        plan["tracker"]["project_id"] = ""
+        jira = FakeJira()
+        report = jira_mutations.apply_mutation_plan(plan, make_client(jira))
+        self.assertEqual(operation(report, "assign")["status"], "blocked")
+        self.assertEqual(operation(report, "assign")["reason"], "issue_out_of_scope")
+        self.assertEqual(jira.write_calls(), [])
+        self.assertEqual(report["write_request_count"], 0)
+
+    def test_an_empty_project_id_on_both_sides_is_still_out_of_scope(self) -> None:
+        """Two blanks are not a match; nothing was ever proven."""
+        self.assertEqual(
+            jira_mutations._issue_scope_violation({"id": ISSUE_ID, "project_id": ""}, ""),
+            ("blocked", "issue_out_of_scope"),
+        )
+
+
 class CommentClaimTests(unittest.TestCase):
     """At-most-once comment delivery, keyed by a dedicated claim property.
 
