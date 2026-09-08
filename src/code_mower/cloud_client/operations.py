@@ -969,6 +969,7 @@ def pr_outcomes_upload(
 
     events: list[dict[str, Any]] = []
     errors: list[str] = []
+    lock_acquired = False
     try:
         # Local metadata-only observation state keeps retries idempotent and makes
         # corrected evidence chronologically newer even when no source timestamp
@@ -979,9 +980,14 @@ def pr_outcomes_upload(
         # evidence (builder runs and reviewer spend) is loaded, grouped, and
         # fail-closed accounted for inside that same lock so an older local cost
         # snapshot can never be used after a newer correction has already been
-        # committed.  Lock or state-access failures abort before export/upload
-        # with a bounded, path-free error.
+        # committed.  The lock is held through bundle creation and payload
+        # loading as well: the bundle directory is shared staging, so
+        # releasing it early could let a concurrent invocation overwrite the
+        # manifest between export and payload assembly and make this command
+        # upload the other invocation's observation.  Lock or state-access
+        # failures abort before export/upload with a bounded, path-free error.
         with exclusive_file_lock(observation_lock_path):
+            lock_acquired = True
             builder_events, unreadable_builder_prs = _builder_run_events(repo_path)
             spend_events = _reviewer_spend_events(
                 repo_path=repo_path,
@@ -1141,6 +1147,56 @@ def pr_outcomes_upload(
                         "correction cannot tie on created_at. Restore write "
                         "access to the repository state directory and retry."
                     ) from exc
+
+            if not events:
+                return {
+                    "mode": "cloud-pr-outcomes",
+                    "status": "no_events",
+                    "repo_slug": detected_repo_slug,
+                    "event_count": 0,
+                    "pr_count": len(pr_records),
+                    "errors": errors,
+                }
+
+            if len(events) > MAX_EVENT_COUNT:
+                events = events[:MAX_EVENT_COUNT]
+
+            export_result = build_cloud_bundle(
+                reports=[],
+                events=events,
+                output_dir=output_dir,
+                repo_slug=detected_repo_slug,
+                team_id=resolved_team_id,
+                install_id=resolved_install_id,
+                anonymous=False,
+            )
+            doctor_result = run_cloud_doctor(
+                bundle_dir=output_dir,
+                endpoint=resolved_endpoint,
+                token_env=token_env,
+                token_file=token_file,
+                token_dir=token_dir,
+                install_id=install_id,
+                require_token=yes,
+            )
+            if doctor_result["failures"]:
+                return {
+                    "mode": "cloud-pr-outcomes",
+                    "status": "doctor_failed",
+                    "repo_slug": detected_repo_slug,
+                    "event_count": len(events),
+                    "pr_count": len(pr_records),
+                    "errors": errors,
+                    "export": export_result,
+                    "doctor": doctor_result,
+                }
+            # The upload payload is assembled from the on-disk bundle while
+            # the observation lock is still held, so a concurrent invocation
+            # sharing this output directory cannot swap the manifest out from
+            # under it.
+            payload = build_upload_payload(
+                bundle_dir=output_dir, include_reports=False
+            )
     except FileLockError as exc:
         raise CloudBundleError(
             "unable to lock pr_outcome observation state; aborting "
@@ -1148,6 +1204,12 @@ def pr_outcomes_upload(
             "ordering state. Retry once the other command finishes."
         ) from exc
     except OSError as exc:
+        if lock_acquired:
+            # Raised inside the critical section (evidence loading, export,
+            # doctor, or payload assembly), not while opening or acquiring
+            # the lock file; keep the original failure instead of
+            # mislabeling it as a state-access error.
+            raise
         # Covers lock-file creation/opening failures (for example a state
         # directory that cannot be created).  ``strerror`` is path-free.
         reason = getattr(exc, "strerror", None) or "I/O failure"
@@ -1157,49 +1219,6 @@ def pr_outcomes_upload(
             "repository state directory and retry."
         ) from exc
 
-    if not events:
-        return {
-            "mode": "cloud-pr-outcomes",
-            "status": "no_events",
-            "repo_slug": detected_repo_slug,
-            "event_count": 0,
-            "pr_count": len(pr_records),
-            "errors": errors,
-        }
-
-    if len(events) > MAX_EVENT_COUNT:
-        events = events[:MAX_EVENT_COUNT]
-
-    export_result = build_cloud_bundle(
-        reports=[],
-        events=events,
-        output_dir=output_dir,
-        repo_slug=detected_repo_slug,
-        team_id=resolved_team_id,
-        install_id=resolved_install_id,
-        anonymous=False,
-    )
-    doctor_result = run_cloud_doctor(
-        bundle_dir=output_dir,
-        endpoint=resolved_endpoint,
-        token_env=token_env,
-        token_file=token_file,
-        token_dir=token_dir,
-        install_id=install_id,
-        require_token=yes,
-    )
-    if doctor_result["failures"]:
-        return {
-            "mode": "cloud-pr-outcomes",
-            "status": "doctor_failed",
-            "repo_slug": detected_repo_slug,
-            "event_count": len(events),
-            "pr_count": len(pr_records),
-            "errors": errors,
-            "export": export_result,
-            "doctor": doctor_result,
-        }
-    payload = build_upload_payload(bundle_dir=output_dir, include_reports=False)
     if not yes:
         return {
             "mode": "cloud-pr-outcomes",

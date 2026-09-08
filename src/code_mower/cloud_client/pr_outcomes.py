@@ -945,3 +945,14 @@ def validate_pr_outcome_payload(event: Mapping[str, Any]) -> None:
         raise CloudBundleError(
             "unknown pr_outcome cost coverage must omit reported cost and have zero covered/reported counts"
         )
+    # ``evidence_incomplete`` records that part of the attempt inventory could
+    # not be loaded or attributed, so it can never coexist with a fully
+    # cost-covered observation.  ``covered_prs`` is required and already
+    # validated as a non-negative integer.
+    if dimensions.get("evidence_incomplete") is True and (
+        coverage == "complete" or covered_prs not in (None, 0)
+    ):
+        raise CloudBundleError(
+            "pr_outcome dimension 'evidence_incomplete' cannot accompany "
+            "complete cost coverage or a positive 'cost_covered_pr_count'"
+        )

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import code_mower.cloud as cloud_module
+import code_mower.cloud_client.operations as cloud_operations
 from code_mower.cloud_client.operations import _builder_run_events
 from code_mower import reviewer_spend
 from code_mower.file_locks import FileLockError, exclusive_file_lock
@@ -25,6 +26,7 @@ from code_mower.cloud_client import (
     run_gh_pr_list,
     save_pr_outcome_observations,
     validate_cloud_event,
+    validate_pr_outcome_payload,
 )
 
 
@@ -3174,6 +3176,225 @@ class PrNumberCanonicalizationTests(unittest.TestCase):
             loaded = load_pr_outcome_observations(state_path)
             self.assertIn("owner/repo#42", loaded)
             self.assertEqual(loaded["owner/repo#42"]["fingerprint"], record["fingerprint"])
+
+
+class PrOutcomeEvidenceIncompleteContractTests(unittest.TestCase):
+    """``evidence_incomplete`` can never accompany full cost coverage."""
+
+    def _complete_event(self) -> dict:
+        return build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="42",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[_builder_run_event("b1", "42", 0.15)],
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+    def test_historical_v1_event_without_new_dimensions_validates(self) -> None:
+        event = self._complete_event()
+        # Historical valid v1 events predate the optional dimensions added
+        # later; they must keep passing the validator unchanged.
+        event["dimensions"].pop("pr_outcome_observation_version", None)
+        self.assertNotIn("evidence_incomplete", event["dimensions"])
+        self.assertEqual(event["dimensions"]["cost_coverage"], "complete")
+        validate_pr_outcome_payload(event)
+        validate_cloud_event(event)
+
+    def test_evidence_incomplete_with_complete_coverage_rejected(self) -> None:
+        event = self._complete_event()
+        event["dimensions"]["evidence_incomplete"] = True
+        with self.assertRaises(CloudBundleError):
+            validate_pr_outcome_payload(event)
+        with self.assertRaises(CloudBundleError):
+            validate_cloud_event(event)
+
+    def test_evidence_incomplete_false_with_complete_coverage_validates(
+        self,
+    ) -> None:
+        event = self._complete_event()
+        event["dimensions"]["evidence_incomplete"] = False
+        validate_pr_outcome_payload(event)
+        validate_cloud_event(event)
+
+    def test_evidence_incomplete_event_with_partial_coverage_validates(
+        self,
+    ) -> None:
+        event = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="42",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[_builder_run_event("b1", "42", 0.15)],
+            created_at="2026-09-03T13:00:00Z",
+            evidence_incomplete=True,
+        )
+        self.assertTrue(event["dimensions"]["evidence_incomplete"])
+        self.assertEqual(event["dimensions"]["cost_coverage"], "partial")
+        self.assertEqual(event["metrics"]["cost_covered_pr_count"], 0)
+        validate_pr_outcome_payload(event)
+        validate_cloud_event(event)
+
+
+class PrOutcomeExportSerializationTests(unittest.TestCase):
+    """The observation lock must cover bundle creation and payload loading."""
+
+    def _merged_pr(self, number: str) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": "MERGED",
+            "createdAt": "2026-09-03T10:00:00Z",
+            "mergedAt": "2026-09-03T12:00:00Z",
+            "updatedAt": "2026-09-03T13:00:00Z",
+        }
+
+    def _run_upload(
+        self,
+        repo_path: Path,
+        output_dir: Path,
+        pr_records: list[dict[str, object]],
+    ) -> dict[str, object]:
+        with mock.patch(
+            "code_mower.cloud_client.operations.run_gh_pr_list",
+            return_value=pr_records,
+        ):
+            return pr_outcomes_upload(
+                repo_path=repo_path,
+                output_dir=output_dir,
+                repo_slug="owner/repo",
+                team_id="",
+                install_id="",
+                source="unit-test",
+                limit=10,
+                endpoint="https://codemower.example.com/api/upload",
+                token_env="CODE_MOWER_TEST_TOKEN",
+                yes=False,
+                timeout=1.0,
+            )
+
+    def _observation_lock_path(self, repo_path: Path) -> Path:
+        state_path = (
+            repo_path / ".code-mower" / "pr-outcome-observations.json"
+        )
+        return state_path.with_name(f"{state_path.name}.lock")
+
+    def _assert_lock_held(self, lock_path: Path) -> None:
+        # A non-blocking acquire on a second descriptor must fail while the
+        # invoking critical section still holds the lock.
+        with self.assertRaises(FileLockError):
+            with exclusive_file_lock(lock_path, timeout_seconds=0.0):
+                pass
+
+    def test_observation_lock_held_during_export_and_payload_load(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            output_dir = repo_path / "bundle"
+            lock_path = self._observation_lock_path(repo_path)
+
+            real_build_bundle = cloud_operations.build_cloud_bundle
+            real_build_payload = cloud_operations.build_upload_payload
+            seen: list[str] = []
+
+            def build_bundle(**kwargs):
+                seen.append("bundle")
+                self._assert_lock_held(lock_path)
+                return real_build_bundle(**kwargs)
+
+            def build_payload(**kwargs):
+                seen.append("payload")
+                self._assert_lock_held(lock_path)
+                return real_build_payload(**kwargs)
+
+            with mock.patch.object(
+                cloud_operations,
+                "build_cloud_bundle",
+                side_effect=build_bundle,
+            ), mock.patch.object(
+                cloud_operations,
+                "build_upload_payload",
+                side_effect=build_payload,
+            ):
+                result = self._run_upload(
+                    repo_path, output_dir, [self._merged_pr("7")]
+                )
+
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(seen, ["bundle", "payload"])
+
+    def test_overlapping_invocation_cannot_contaminate_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            output_dir = repo_path / "bundle"
+            real_build_bundle = cloud_operations.build_cloud_bundle
+            real_build_payload = cloud_operations.build_upload_payload
+            real_lock = cloud_operations.exclusive_file_lock
+            nested_attempt: dict[str, object] = {}
+            payloads: list[dict] = []
+            invoked: list[bool] = []
+
+            def quick_lock(path, **kwargs):
+                # Bound the nested invocation's wait so the test cannot hang
+                # on the production retry schedule.
+                kwargs.setdefault("timeout_seconds", 2.0)
+                return real_lock(path, **kwargs)
+
+            def build_bundle(**kwargs):
+                result = real_build_bundle(**kwargs)
+                if not invoked:
+                    invoked.append(True)
+                    # Simulate an overlapping second invocation on the same
+                    # repo and output directory while this export's bundle is
+                    # still on disk.  Under the fixed critical section it must
+                    # be blocked by the observation lock; before the fix it
+                    # ran to completion and rewrote the manifest out from
+                    # under the first invocation.
+                    try:
+                        nested_attempt["result"] = self._run_upload(
+                            repo_path, output_dir, [self._merged_pr("8")]
+                        )
+                    except CloudBundleError as exc:
+                        nested_attempt["error"] = str(exc)
+                return result
+
+            def build_payload(**kwargs):
+                payload = real_build_payload(**kwargs)
+                payloads.append(payload)
+                return payload
+
+            with mock.patch.object(
+                cloud_operations,
+                "exclusive_file_lock",
+                side_effect=quick_lock,
+            ), mock.patch.object(
+                cloud_operations,
+                "build_cloud_bundle",
+                side_effect=build_bundle,
+            ), mock.patch.object(
+                cloud_operations,
+                "build_upload_payload",
+                side_effect=build_payload,
+            ):
+                result = self._run_upload(
+                    repo_path, output_dir, [self._merged_pr("7")]
+                )
+
+            self.assertEqual(result["status"], "dry_run")
+            # The overlapping invocation was serialized out by the lock
+            # rather than allowed to rewrite the shared bundle directory.
+            self.assertNotIn("result", nested_attempt)
+            self.assertIn("unable to lock", str(nested_attempt.get("error")))
+            # The payload this invocation assembled is its own observation,
+            # not the overlapping invocation's.
+            self.assertEqual(len(payloads), 1)
+            pr_numbers = {
+                event["dimensions"]["pr_number"]
+                for event in payloads[0]["events"]
+            }
+            self.assertEqual(pr_numbers, {"7"})
 
 
 if __name__ == "__main__":
