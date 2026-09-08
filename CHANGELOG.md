@@ -7,6 +7,14 @@ later entries are regular releases.
 
 ## Unreleased
 
+## v1.1.0
+
+Code Mower v1.1.0 adds opt-in Jira Cloud work tracking without changing the
+default GitHub-only path. GitHub pull requests, checks, and merge gates remain
+authoritative; Jira reads are bounded and Jira writes require both explicit
+configuration and an explicit apply command. The metadata-only privacy
+boundary is unchanged.
+
 ### Added
 
 - Read-only Jira queue policy with injectable enhanced-JQL reads, bounded
@@ -30,6 +38,11 @@ later entries are regular releases.
   adoption rehearsal runbook (`docs/jira-adoption-rehearsal.md`). Default setup
   remains purely GitHub-based; generated workflows and default init plans are
   strictly preserved (issue #803).
+- Trusted GitHub pull request and Code Mower gate milestones can be synchronized
+  to an associated Jira issue through the guarded mutation layer. Association
+  is explicit and transactional, untrusted authors cannot establish it, and
+  GitHub remains the source of truth for pull requests and merge readiness
+  (issue #802).
 
 - A guarded, idempotent Jira mutation surface, `code-mower tracker mutate`.
   Planning is the default and performs no Jira call; a write needs both
@@ -114,6 +127,8 @@ later entries are regular releases.
 - Code Mower Board recognizes active supervised Muse lanes running under `muse`
   or versioned `muse-bin-*` executables without exposing raw arguments, versions,
   or private paths (issue #806).
+- Antigravity audits use sandbox-compatible working paths and preserve the
+  closed, metadata-only verdict contract when run headlessly (issue #811).
 
 ## v1.0.15
 
