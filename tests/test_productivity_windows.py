@@ -772,5 +772,152 @@ class ProductivityWindowRepoSyncTests(unittest.TestCase):
             self.assertGreaterEqual(summary["current_dogfood"]["events"], 2)
 
 
+class ProductivityWindowArtifactFallbackTests(unittest.TestCase):
+    def _builder_run_artifact(self) -> dict[str, object]:
+        return {
+            "schema": "code_mower.authoringRun.v1",
+            "run_id": "run-1",
+            "experiment_id": "experiment-1",
+            "repo": "owner/repo",
+            "task_id": "task-1",
+            "task_class": "general",
+            "builder": {"provider": "codex", "tool": "codex", "model": "m1"},
+            "started_at": "2026-08-01T00:00:00Z",
+            "ended_at": "2026-08-01T00:01:00Z",
+            "elapsed_seconds": 60.0,
+            "status": "completed",
+            "branch": "branch-1",
+            "pull_request": "",
+            "executor": {
+                "type": "subprocess",
+                "dry_run": False,
+                "exit_code": 0,
+                "command": {"arg_count": 1, "argv_sha256": "abc"},
+            },
+            "privacy": {},
+        }
+
+    def _adoption_result_artifact(self) -> dict[str, object]:
+        return {
+            "schema": "code_mower.adoptionResult.v1",
+            "timestamp_utc": "2026-09-04T01:00:00Z",
+            "release_tag": "v1.0.4",
+            "package_identity": "code-mower",
+            "normalized_version": "1.0.4",
+            "qualification_context": "cold_install",
+            "starting_version": "",
+            "ending_version": "1.0.4",
+            "provider": "local_cli",
+            "executor": "release_qualify",
+            "host_class": "local",
+            "runtime_class": "python_3.12",
+            "execution_state": "executed",
+            "elapsed_seconds": 12.5,
+            "outcome": "pass",
+            "steps": [
+                {
+                    "id": "doctor",
+                    "status": "pass",
+                    "elapsed_seconds": 1.0,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                },
+                {
+                    "id": "package_install",
+                    "status": "pass",
+                    "elapsed_seconds": 11.5,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                },
+            ],
+        }
+
+    def test_repo_sync_event_loading_accepts_builder_run_artifact(self) -> None:
+        from code_mower.cloud_client import parse_event_args
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "builder-run.json"
+            path.write_text(json.dumps(self._builder_run_artifact()), encoding="utf-8")
+
+            dogfood_events = parse_event_args([f"builder_run={path}"])
+            self.assertEqual(dogfood_events[0]["event_type"], "builder_run")
+
+            direct = load_productivity_window_events(
+                path, "builder_run", repo_slug="owner/repo", source="unit-test"
+            )
+            self.assertEqual(direct[0]["event_type"], "builder_run")
+            self.assertEqual(direct[0]["event_id"], dogfood_events[0]["event_id"])
+            validate_cloud_event(direct[0])
+
+            synced = repo_sync_window_events(
+                [f"builder_run={path}"],
+                repo_slug="owner/repo",
+                team_id="t",
+                install_id="i",
+                source="s",
+            )
+            self.assertEqual(synced[0]["event_type"], "builder_run")
+            self.assertEqual(synced[0]["event_id"], dogfood_events[0]["event_id"])
+            validate_cloud_event(synced[0])
+
+    def test_repo_sync_event_loading_accepts_adoption_result_artifact(self) -> None:
+        from code_mower.cloud_client import parse_event_args
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "adoption-result.json"
+            path.write_text(
+                json.dumps(self._adoption_result_artifact()), encoding="utf-8"
+            )
+
+            dogfood_events = parse_event_args([f"adoption_run={path}"])
+            self.assertEqual(dogfood_events[0]["event_type"], "adoption_run")
+
+            direct = load_productivity_window_events(
+                path, "adoption_run", repo_slug="owner/repo", source="unit-test"
+            )
+            self.assertEqual(direct[0]["event_type"], "adoption_run")
+            self.assertEqual(direct[0]["event_id"], dogfood_events[0]["event_id"])
+            validate_cloud_event(direct[0])
+
+            synced = repo_sync_window_events(
+                [f"adoption_run={path}"],
+                repo_slug="owner/repo",
+                team_id="t",
+                install_id="i",
+                source="s",
+            )
+            self.assertEqual(synced[0]["event_type"], "adoption_run")
+            self.assertEqual(synced[0]["event_id"], dogfood_events[0]["event_id"])
+            validate_cloud_event(synced[0])
+
+
+class ProductivityWindowFractionalDurationTests(unittest.TestCase):
+    def test_fractional_duration_window_preserved(self) -> None:
+        observation = {
+            "schema": PRODUCTIVITY_WINDOW_INPUT_SCHEMA,
+            "repo_slug": "owner/repo",
+            "window_start": "2026-08-01T00:00:00.250Z",
+            "window_end": "2026-08-01T00:00:01.750Z",
+            "window_granularity": "custom",
+            "aggregation_subject": "repo",
+        }
+        event = productivity_window_to_event(observation, source="unit-test")
+        self.assertEqual(event["metrics"]["cycle_time_seconds"], 1.5)
+        validate_cloud_event(event)
+
+    def test_sub_second_fractional_duration_not_truncated_to_zero(self) -> None:
+        observation = {
+            "schema": PRODUCTIVITY_WINDOW_INPUT_SCHEMA,
+            "repo_slug": "owner/repo",
+            "window_start": "2026-08-01T00:00:00Z",
+            "window_end": "2026-08-01T00:00:00.500Z",
+            "window_granularity": "custom",
+            "aggregation_subject": "repo",
+        }
+        event = productivity_window_to_event(observation, source="unit-test")
+        self.assertEqual(event["metrics"]["cycle_time_seconds"], 0.5)
+        validate_cloud_event(event)
+
+
 if __name__ == "__main__":
     unittest.main()

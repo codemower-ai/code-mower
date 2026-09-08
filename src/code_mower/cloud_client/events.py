@@ -831,6 +831,24 @@ def _builder_event_from_authoring_run(
     return validate_cloud_event(event)
 
 
+def artifact_event_from_dict(
+    value: Mapping[str, Any],
+    event_type: str,
+) -> dict[str, Any] | None:
+    """Convert a local artifact dict via the generic artifact chain.
+
+    Covers ``code_mower.authoringRun.v1`` builder-run artifacts and
+    ``code_mower.adoptionResult.v1`` adoption results, the two artifact
+    formats cloud dogfood already converts. Window observations are not
+    handled here; callers try the window converter separately. Returns
+    ``None`` when the input is not a recognized artifact for ``event_type``.
+    """
+
+    return _builder_event_from_authoring_run(
+        value, event_type
+    ) or adoption_event_from_result_dict(value, event_type)
+
+
 def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
     validate_metadata_payload(value)
     normalized = dict(value)
@@ -943,8 +961,7 @@ def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
         from .productivity_windows import productivity_window_event_from_dict
 
         events.append(
-            _builder_event_from_authoring_run(item, event_type)
-            or adoption_event_from_result_dict(item, event_type)
+            artifact_event_from_dict(item, event_type)
             or productivity_window_event_from_dict(item, event_type)
             or normalize_event(item, event_type)
         )

@@ -359,7 +359,7 @@ def normalize_window_observation(
             f"unsupported productivity_window timing {unknown_timings[0]!r}"
         )
     metrics: dict[str, float | int] = {
-        "cycle_time_seconds": int((end - start).total_seconds())
+        "cycle_time_seconds": (end - start).total_seconds()
     }
     active_observed = False
     for field in WINDOW_TIMING_FIELDS:
@@ -536,11 +536,13 @@ def load_productivity_window_events(
     """Load window observations (and raw events) from a JSON/JSONL file.
 
     Window observations convert deterministically with sync-supplied repo
-    context; entries that are already normalized events pass through the
-    standard event normalizer unchanged.
+    context; recognized local artifacts (builder-run authoring runs and
+    adoption results, the same chain cloud dogfood converts) convert via
+    the shared artifact loader; entries that are already normalized events
+    pass through the standard event normalizer unchanged.
     """
 
-    from .events import normalize_event, safe_event_type
+    from .events import artifact_event_from_dict, normalize_event, safe_event_type
 
     safe_event_type(event_type)
     resolved = path.expanduser()
@@ -563,7 +565,7 @@ def load_productivity_window_events(
             team_id=team_id,
             install_id=install_id,
             source=source,
-        )
+        ) or artifact_event_from_dict(item, event_type)
         if converted is not None:
             events.append(converted)
         else:
@@ -687,7 +689,7 @@ def validate_productivity_window_event(event: Mapping[str, Any]) -> None:
             "productivity_window metric 'cycle_time_seconds' must be finite "
             "and non-negative"
         )
-    expected_span = int((window_end - window_start).total_seconds())
+    expected_span = (window_end - window_start).total_seconds()
     if cycle != expected_span:
         raise CloudBundleError(
             f"productivity_window cycle_time_seconds {cycle!r} must match "
