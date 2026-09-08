@@ -66,6 +66,7 @@ from . import gate_health as code_mower_gate_health
 from . import grok_build_audit_pr
 from . import hermes_cli_audit_pr
 from . import init as code_mower_init
+from . import jira_mutations as code_mower_jira_mutations
 from . import lane_delivery as code_mower_lane_delivery
 from . import lane_status as code_mower_lane_status
 from . import local_llm_audit_pr
@@ -478,6 +479,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "saas-reviewer-labeler": "Apply labels from hosted reviewer comments.",
     "telemetry": "Inspect benchmark telemetry/event helpers.",
     "trailer-comment-labeler": "Apply labels from structured audit trailers.",
+    "tracker": "Plan or apply guarded, idempotent Jira Cloud work-tracker mutations.",
     "work-order": "Draft implementation work orders and builder experiment seeds.",
 }
 
@@ -626,6 +628,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "session": code_mower_session.main,
     "telemetry": code_mower_telemetry.main,
     "trailer-comment-labeler": trailer_comment_labeler.main,
+    "tracker": code_mower_jira_mutations.main,
     "work-order": code_mower_work_orders.work_order_main,
 }
 

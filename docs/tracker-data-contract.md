@@ -30,9 +30,9 @@ secret field. Identity and label values are bounded single-line strings.
 denylist of known-unsafe field names with a distinct message each.
 
 `TrackerCapabilities` models read support separately from mutation planning
-and apply support. `can_apply_mutations` is always `False` here: applying a
-mutation needs an explicit runtime flag from a future guarded mutation
-surface (issue #799).
+and apply support. `can_apply_mutations` is `False` unless the caller passes
+`apply_requested=True` *and* the config enables writes: configuration alone
+never grants apply authority (see the guarded mutation surface below).
 
 ## Configuration
 
@@ -57,6 +57,8 @@ tracker:
     mutations:
       writes_enabled: false
       allowed_operations: []   # subset of assign, transition, comment, link
+      transitions:             # lifecycle category -> Jira transition id
+        in_progress: "31"
 ```
 
 `field_mappings` targets are restricted to safe normalized fields
@@ -142,3 +144,86 @@ POST endpoints. Writes are unimplemented here.
   returned. Public examples use `example.atlassian.net` and synthetic
   ids such as cloud id `11111111-2222-3333-4444-555555555555`, project
   id `10001`, and issue keys like `ABC-1`.
+
+## Guarded Jira mutation plan/apply
+
+`src/code_mower/jira_mutations.py` is the only Jira write surface (issue
+#799). `code-mower tracker mutate` plans by default and performs no Jira
+call at all in that mode. A network mutation happens only when **both**
+guards are present:
+
+1. `tracker.jira_cloud.mutations.writes_enabled: true` in the repository
+   config, and
+2. an explicit `--apply` at runtime.
+
+With either guard absent the command emits a plan or a refusal with
+`write_request_count: 0` and issues zero Jira requests. `doctor`, tests, and
+normal dry runs therefore cannot write.
+
+```bash
+code-mower tracker mutate --issue ABC-1 --claim --transition in_progress \
+  --link-pr --comment pr_opened --pr-url https://github.com/owner/repo/pull/12
+code-mower tracker mutate --issue ABC-1 --claim --apply    # both guards
+```
+
+Four operations exist, each allow-listed twice: by
+`mutations.allowed_operations` in config, and by the closed transport
+allow-list on `JiraMutationClient`.
+
+- `assign` — claim for the authenticated account
+  (`PUT /rest/api/3/issue/{key}/assignee`).
+- `transition` — one *configured* transition id resolved from
+  `mutations.transitions[<lifecycle category>]`
+  (`POST /rest/api/3/issue/{key}/transitions`). The command line never
+  supplies a raw transition id.
+- `comment` — one bounded comment from a closed template table
+  (`claimed`, `pr_opened`, `pr_merged`, `pr_blocked`), rendered inside the
+  transport from a template id plus a validated GitHub pull request URL, so
+  no free-form text can reach Jira
+  (`POST /rest/api/3/issue/{key}/comment`, Atlassian Document Format).
+- `link` — one pull request remote link
+  (`POST /rest/api/3/issue/{key}/remotelink`).
+
+Deliberately absent and rejected by the transport allow-list: every delete,
+attachments, arbitrary field updates, `PUT /issue/{key}` issue edits, raw
+issue-body replacement, project/workflow administration, and writing any
+issue property other than this module's ledger. `DELETE` is refused for
+every path.
+
+Apply re-reads live state immediately before writing: the issue's project,
+status, and assignee (`fields=status,assignee,project,issuetype` only, so no
+summary, description, comment, or attachment prose is fetched) plus the
+available transitions. An issue outside the configured project, a
+transition the live workflow no longer offers, or a lost permission blocks
+with a closed reason instead of guessing.
+
+Idempotency is reconciled from authoritative state where it exists:
+assignment from the current assignee, transition from the current status
+(against `status_category_map` and the transition's target status), and the
+remote link from its deterministic `globalId`
+(`code-mower:github:<owner>/<repo>/pull/<number>`), which makes Jira upsert
+rather than duplicate. Comments have no server-side idempotency key and
+their bodies are never read back, so a bounded `code-mower-mutations-v1`
+issue property records a stable fingerprint *before* the comment is posted
+and finalizes it afterwards. An interrupted run therefore replays as
+`replay_not_reposted` and never posts a second comment. Retries stay bounded
+(exponential backoff plus jitter, capped `Retry-After`); 409 conflicts fail
+fast rather than retrying into a double apply, and a failing operation
+aborts the rest of the run instead of continuing.
+
+GitHub remains the sole pull request, check, review, and merge-gate
+authority. This surface reads no gate state and changes none; a Jira
+refusal, conflict, rate limit, timeout, or outage cannot weaken a gate
+decision. Reports (`code_mower.jiraMutationPlan.v1`) and anything retained
+with `--plan-out` are bounded metadata only: identity, closed reason codes,
+fingerprints, and counts. No issue prose, Jira response payload, exception
+text, credential, account email, or absolute path is printed or retained.
+
+A live write remains owner-authorized and disposable: enable
+`writes_enabled` on a scratch repository config pointed at a disposable Jira
+issue, run the command once without `--apply` to review the plan, then once
+with `--apply`, and re-run the same command to confirm the replay reports
+`already_applied` with no new effect. Offline tests
+(`tests/test_jira_mutations.py`) cover both guards, every operation, replay,
+drift, conflict, retry, timeout, cancellation, and the no-delete allow-list,
+so no live Jira write occurs in CI.

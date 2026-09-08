@@ -408,6 +408,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "session",
                 "telemetry",
                 "trailer-comment-labeler",
+                "tracker",
                 "work-order",
             ),
         )

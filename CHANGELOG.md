@@ -23,6 +23,17 @@ later entries are regular releases.
   gateway, performs no mutation call, and keeps all diagnostics
   metadata-only (issue #800).
 
+- A guarded, idempotent Jira mutation surface, `code-mower tracker mutate`.
+  Planning is the default and performs no Jira call; a write needs both
+  `tracker.jira_cloud.mutations.writes_enabled: true` and an explicit
+  `--apply`. Only claim, configured transition ids, bounded templated
+  comments, and one pull request remote link are possible — no delete,
+  attachment, arbitrary field update, or free-form comment. Live state and
+  available transitions are re-checked immediately before each write, and
+  stable idempotency markers make restart or replay report already-applied
+  instead of duplicating an effect. GitHub remains the only PR, check, and
+  merge-gate authority (issue #799).
+
 ### Fixed
 
 - Code Mower Board recognizes active supervised Muse lanes running under `muse`

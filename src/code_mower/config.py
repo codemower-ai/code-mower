@@ -575,12 +575,16 @@ def _validate_tracker_jira_cloud(
     if mutations is not None:
         mutation_path = f"{path}.mutations"
         mutation_map = _as_mapping(mutations, mutation_path, issues)
-        extra_mutation_keys = set(mutation_map) - {"writes_enabled", "allowed_operations"}
+        extra_mutation_keys = set(mutation_map) - {
+            "writes_enabled",
+            "allowed_operations",
+            "transitions",
+        }
         for key in extra_mutation_keys:
             issues.append(
                 ConfigIssue(
                     f"{mutation_path}.{key}",
-                    "must be writes_enabled or allowed_operations",
+                    "must be writes_enabled, allowed_operations, or transitions",
                 )
             )
         if "writes_enabled" in mutation_map and not isinstance(
@@ -598,6 +602,32 @@ def _validate_tracker_jira_cloud(
                             f"{mutation_path}.allowed_operations[{index}]",
                             "must be one of "
                             f"{sorted(tracker_contract.ALLOWED_MUTATION_OPERATIONS)}",
+                        )
+                    )
+        transitions = mutation_map.get("transitions")
+        if transitions is not None:
+            # Write transitions are configured by immutable transition id and
+            # re-verified against the live issue before any apply.
+            transition_path = f"{mutation_path}.transitions"
+            for category, transition_id in _as_mapping(
+                transitions, transition_path, issues
+            ).items():
+                if category not in tracker_contract.LIFECYCLE_CATEGORIES:
+                    issues.append(
+                        ConfigIssue(
+                            f"{transition_path}.{category}",
+                            "must be one of "
+                            f"{sorted(tracker_contract.LIFECYCLE_CATEGORIES)}",
+                        )
+                    )
+                    continue
+                if not isinstance(transition_id, str) or not re.fullmatch(
+                    r"[0-9]{1,32}", transition_id
+                ):
+                    issues.append(
+                        ConfigIssue(
+                            f"{transition_path}.{category}",
+                            "must be a numeric Jira transition id string",
                         )
                     )
 
