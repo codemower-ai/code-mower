@@ -38,11 +38,11 @@ per-comment claim keys.
 
 Replay safety: assignment, transition, and remote link are reconciled from
 authoritative live state (current assignee, current status plus available
-transitions, and remote-link ``globalId``), and each of those three writes
-is idempotent at Jira, so the transport may retry them. The two writes that
-are not -- the comment post and the transition post -- are attempted exactly
-once, because an ambiguous timeout, 429, or 5xx cannot be told apart from a
-write Jira already committed.
+transitions, and remote-link ``globalId``). Every write gets exactly one
+transport attempt. Even an idempotent write cannot be retried under stale
+authorization: after an ambiguous timeout, 429, or 5xx, the operator re-runs
+the apply so scope and live state are established again first. Reads retain
+their bounded retry budget.
 
 Comments have no server-side idempotency key and their bodies are never read
 back, so at-most-once comes from Jira's own create-or-update semantics on
@@ -837,31 +837,6 @@ _WRITE_ALLOW_LIST: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
-#: Writes with no server-side idempotency key, attempted exactly once.
-#:
-#: A timeout, 429, or 5xx is ambiguous: Jira may already have committed the
-#: write before the response was lost, so a transport-level retry can post a
-#: second comment or drive a second workflow step. These two are therefore
-#: never retried; the operator re-runs the command, and apply reconciles from
-#: live state (transition) or the comment claim property (comment) first.
-#:
-#: The other writes are genuinely idempotent and keep the full retry budget:
-#: assignee is a whole-value PUT, the remote link is upserted by its
-#: deterministic ``globalId``, and both property writes are whole-value PUTs.
-_NON_IDEMPOTENT_WRITES: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("POST", re.compile(r"^/rest/api/3/issue/[^/]+/transitions$")),
-    ("POST", re.compile(r"^/rest/api/3/issue/[^/]+/comment$")),
-)
-
-#: Endpoint labels attempted exactly once for a different reason: the request
-#: is idempotent in effect, but its *answer* is not. Acquiring a comment claim
-#: reads meaning from 201-created versus 200-updated, and a retry after an
-#: ambiguous first attempt would see its own 201 as a 200 and conclude that
-#: some other apply owns the claim. One attempt keeps that signal true; an
-#: ambiguous acquire is resolved by reading the claim back instead.
-_SINGLE_ATTEMPT_ENDPOINTS = frozenset({"commentClaimAcquire"})
-
-
 class JiraMutationClient(jira_cloud.JiraReadClient):
     """Read client widened to a closed, guarded Jira write allow-list.
 
@@ -916,19 +891,9 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
             self.write_attempts += 1
 
     def _attempts_for(self, method: str, path: str, endpoint: str = "") -> int:
-        """Give writes that cannot be safely repeated exactly one attempt.
-
-        Reads and the idempotent writes keep the inherited bounded retry
-        budget. A comment post or a transition post gets a single attempt, so
-        an ambiguous failure surfaces as one operation to reconcile rather
-        than a silent double apply, and so does acquiring a comment claim,
-        whose 201-versus-200 answer a retry would corrupt.
-        """
-        if endpoint in _SINGLE_ATTEMPT_ENDPOINTS:
+        """Retry reads only; every write requires fresh authorization."""
+        if self._is_write_request(method, path):
             return 1
-        for allowed_method, pattern in _NON_IDEMPOTENT_WRITES:
-            if method == allowed_method and pattern.fullmatch(path):
-                return 1
         return super()._attempts_for(method, path, endpoint)
 
     def _auth_headers(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -1063,8 +1028,8 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
     ) -> None:
         """Record the outcome of a post on a claim this process already owns.
 
-        Rewriting a key this process holds is a whole-value PUT with no
-        create/update meaning left to lose, so it keeps the full retry budget.
+        Rewriting a key this process holds is a whole-value PUT, but it still
+        gets one transport attempt so a retry cannot outlive its scope check.
         """
         payload = _comment_claim_payload(
             fingerprint, template=template, owner=owner, state=state

@@ -37,7 +37,9 @@ later entries are regular releases.
   without another mutation. Scope is proven, never assumed: every such read
   requires the live project id to be present and exactly equal to the
   configured `project_id`, so an empty or unreadable project id is
-  unauthorized and an unresolved one costs zero writes. A
+  unauthorized and an unresolved one costs zero writes. Every write now gets
+  one transport attempt; only reads retry automatically, so a write retry can
+  never outlive the scope check that authorized its first attempt. A
   transition is blocked unless its live destination status is configured for
   the requested lifecycle category — including an edge re-pointed back onto
   the status the issue already holds, which is a non-target destination like

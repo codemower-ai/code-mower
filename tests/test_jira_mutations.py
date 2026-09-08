@@ -592,15 +592,14 @@ class TransportRetryPolicyTests(unittest.TestCase):
                 )
                 self.assertEqual(attempts, 1)
 
-    def test_reads_and_idempotent_writes_keep_the_retry_budget(self) -> None:
-        """The narrowing is surgical: everything else still retries.
+    def test_reads_retry_but_every_write_is_single_attempt(self) -> None:
+        read_runner = RouteHttp({("GET", ISSUE_PATH): [error(503)] * 4})
+        read_client = make_client(read_runner, sleeps=[], max_attempts=4)
+        with self.assertRaises(jira_cloud.JiraApiError):
+            read_client.get_issue_state(ISSUE)
+        self.assertEqual(len(read_runner.calls), 4)
 
-        Assignee is a whole-value PUT, the remote link is upserted by its
-        deterministic globalId, and the ledger property is a whole-value PUT,
-        so repeating any of them cannot produce a second effect.
-        """
-        cases = (
-            (("GET", ISSUE_PATH), lambda client: client.get_issue_state(ISSUE)),
+        writes = (
             (
                 ("PUT", f"{ISSUE_PATH}/assignee"),
                 lambda client: client.assign_issue(ISSUE, ACCOUNT_ID),
@@ -614,15 +613,15 @@ class TransportRetryPolicyTests(unittest.TestCase):
                 lambda client: client.set_mutation_ledger(ISSUE, {"entries": {}}),
             ),
         )
-        for route, call in cases:
+        for route, call in writes:
             with self.subTest(route=route):
                 runner = RouteHttp({route: [error(503)] * 4})
                 client = make_client(runner, sleeps=[], max_attempts=4)
                 with self.assertRaises(jira_cloud.JiraApiError):
                     call(client)
-                self.assertEqual(len(runner.calls), 4)
+                self.assertEqual(len(runner.calls), 1)
 
-    def test_the_retry_policy_seam_names_only_the_unsafe_writes(self) -> None:
+    def test_the_retry_policy_seam_retries_only_reads(self) -> None:
         client = make_client(ExplodingHttp(), max_attempts=4)
         for method, path in (
             ("POST", f"{ISSUE_PATH}/comment"),
@@ -630,24 +629,18 @@ class TransportRetryPolicyTests(unittest.TestCase):
         ):
             self.assertEqual(client._attempts_for(method, path), 1)
         for method, path in (
-            ("GET", ISSUE_PATH),
             ("PUT", f"{ISSUE_PATH}/assignee"),
             ("POST", f"{ISSUE_PATH}/remotelink"),
             ("PUT", LEDGER_PATH),
         ):
-            self.assertEqual(client._attempts_for(method, path), 4)
+            self.assertEqual(client._attempts_for(method, path), 1)
+        self.assertEqual(client._attempts_for("GET", ISSUE_PATH), 4)
 
-    def test_acquiring_a_claim_is_single_attempt_but_finalizing_is_not(self) -> None:
-        """Only the acquire depends on a 201-versus-200 answer.
-
-        A retried acquire would meet its own 201 as a 200 and conclude that
-        some other apply owns the claim, so the comment would never post.
-        Rewriting a key this process already holds has no such signal left.
-        """
+    def test_acquiring_and_finalizing_a_claim_are_single_attempt(self) -> None:
         client = make_client(ExplodingHttp(), max_attempts=4)
         path = claim_path("claimed")
         self.assertEqual(client._attempts_for("PUT", path, "commentClaimAcquire"), 1)
-        self.assertEqual(client._attempts_for("PUT", path, "commentClaimFinalize"), 4)
+        self.assertEqual(client._attempts_for("PUT", path, "commentClaimFinalize"), 1)
 
     def test_a_claim_acquire_is_attempted_once_after_an_ambiguous_failure(self) -> None:
         for label, responses in self.AMBIGUOUS_FAILURES.items():
@@ -1917,27 +1910,38 @@ class WriteAttemptAccountingTests(unittest.TestCase):
         self.assertEqual(report["write_request_count"], 3)
         self.assertEqual(len(jira.write_calls()), 3)
 
-    def test_a_timed_out_write_counts_every_attempt_it_made(self) -> None:
+    def test_a_timed_out_write_is_attempted_and_counted_once(self) -> None:
         jira = FakeJira(faults={("PUT", "assignee"): [TimeoutError("lost")] * 4})
         code, report, _ = run_cli(
             ["mutate", "--issue", ISSUE, "--claim", "--apply"], runner=jira
         )
         self.assertEqual(code, 1)
         self.assertEqual(operation(report, "assign")["reason"], "unavailable")
-        # Four transport attempts left this process, and all four could have
-        # reached Jira. The report says four, not zero.
-        self.assertEqual(len(jira.paths("PUT")), 4)
-        self.assertEqual(report["write_request_count"], 4)
+        self.assertEqual(len(jira.paths("PUT")), 1)
+        self.assertEqual(report["write_request_count"], 1)
 
-    def test_a_retried_write_that_finally_succeeds_counts_each_attempt(self) -> None:
+    def test_an_idempotent_write_is_not_retried_after_server_error(self) -> None:
         jira = FakeJira(faults={("PUT", "assignee"): [error(503), error(503), None]})
         code, report, _ = run_cli(
             ["mutate", "--issue", ISSUE, "--claim", "--apply"], runner=jira
         )
-        self.assertEqual(code, 0)
-        self.assertEqual(operation(report, "assign")["status"], "applied")
-        # Two failures, one success, then the ledger write.
-        self.assertEqual(report["write_request_count"], 4)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "assign")["reason"], "unavailable")
+        self.assertEqual(report["write_request_count"], 1)
+
+    def test_a_write_retry_cannot_outlive_its_project_scope_check(self) -> None:
+        jira = FakeJira(
+            faults={("PUT", "assignee"): [error(503), None]},
+            before_request=AutomationAfterAssign(project_id="99999"),
+        )
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--claim", "--apply"], runner=jira
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "assign")["reason"], "unavailable")
+        self.assertEqual(jira.project_id, "99999")
+        self.assertEqual(len(jira.paths("PUT")), 1)
+        self.assertEqual(report["write_request_count"], 1)
 
     def test_an_ambiguous_comment_post_is_counted_once_and_only_once(self) -> None:
         jira = FakeJira(faults={("POST", "comment"): [TimeoutError("lost")] * 4})
@@ -2147,7 +2151,7 @@ class FailureSemanticsTests(unittest.TestCase):
         ]
         self.assertEqual(len(transition_posts), 1)
 
-    def test_rate_limit_retries_then_succeeds(self) -> None:
+    def test_rate_limited_write_is_not_retried(self) -> None:
         sleeps: list[float] = []
         runner = RouteHttp(
             {
@@ -2170,10 +2174,11 @@ class FailureSemanticsTests(unittest.TestCase):
             ),
             client,
         )
-        self.assertEqual(operation(report, "assign")["status"], "applied")
-        self.assertEqual(sleeps, [1.0])
+        self.assertEqual(operation(report, "assign")["status"], "failed")
+        self.assertEqual(operation(report, "assign")["reason"], "rate_limited")
+        self.assertEqual(sleeps, [])
         assign_calls = [call for call in runner.calls if call["path"].endswith("/assignee")]
-        self.assertEqual(len(assign_calls), 2)
+        self.assertEqual(len(assign_calls), 1)
 
     def test_exhausted_rate_limit_fails_without_applying(self) -> None:
         runner = self._claim_runner([error(429), error(429), error(429), error(429)])
@@ -2182,11 +2187,11 @@ class FailureSemanticsTests(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
         self.assertEqual(operation(report, "assign")["reason"], "rate_limited")
 
-    def test_server_error_retries_then_succeeds(self) -> None:
+    def test_server_error_write_is_not_retried(self) -> None:
         runner = self._claim_runner([error(503), empty()])
         code, report, _ = run_cli(["mutate", "--issue", ISSUE, "--claim", "--apply"], runner=runner)
-        self.assertEqual(code, 0)
-        self.assertEqual(operation(report, "assign")["status"], "applied")
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "assign")["reason"], "unavailable")
 
     def test_timeout_fails_closed(self) -> None:
         runner = RouteHttp(

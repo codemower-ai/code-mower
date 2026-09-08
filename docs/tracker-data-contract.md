@@ -204,6 +204,12 @@ refresh that fails, leaves the configured project, or resolves to a
 different issue id stops the run: the remaining operations are skipped
 without another mutation.
 
+Every write receives one transport attempt. Reads retain bounded retries,
+but a write is never retried inside the transport because its original scope
+authorization may already be stale. After an ambiguous timeout, rate limit,
+or server error, a later apply begins again with fresh identity and project
+validation and reconciles the live effect before deciding whether to write.
+
 Scope is proven, never assumed. Every one of those reads requires the live
 `fields.project.id` to be present and exactly equal to the configured
 `tracker.jira_cloud.project_id`. An empty, absent, or unreadable project id
