@@ -1997,5 +1997,283 @@ class PrOutcomeStateTimestampTests(unittest.TestCase):
             self.assertIn("malformed", str(ctx.exception).lower())
 
 
+class PrOutcomeAuditP2Tests(unittest.TestCase):
+    def _run_upload(
+        self,
+        repo_path: Path,
+        output_dir: Path,
+        pr_records: list[dict[str, object]],
+        *,
+        max_event_count: int | None = None,
+        limit: int = 10,
+    ) -> tuple[int, str]:
+        with mock.patch(
+            "code_mower.cloud_client.operations.run_gh_pr_list",
+            return_value=pr_records,
+        ):
+            out = StringIO()
+            with redirect_stdout(out):
+                if max_event_count is not None:
+                    with mock.patch(
+                        "code_mower.cloud_client.operations.MAX_EVENT_COUNT",
+                        max_event_count,
+                    ):
+                        code = cloud_module.main(
+                            [
+                                "pr-outcomes",
+                                "--repo-path",
+                                str(repo_path),
+                                "--repo-slug",
+                                "owner/repo",
+                                "--output-dir",
+                                str(output_dir),
+                                "--endpoint",
+                                "https://codemower.example.com/api/upload",
+                                "--limit",
+                                str(limit),
+                                "--json",
+                            ]
+                        )
+                else:
+                    code = cloud_module.main(
+                        [
+                            "pr-outcomes",
+                            "--repo-path",
+                            str(repo_path),
+                            "--repo-slug",
+                            "owner/repo",
+                            "--output-dir",
+                            str(output_dir),
+                            "--endpoint",
+                            "https://codemower.example.com/api/upload",
+                            "--limit",
+                            str(limit),
+                            "--json",
+                        ]
+                    )
+            return code, out.getvalue()
+
+    def _merged_pr(
+        self, number: str, updated_at: str = "2026-09-03T13:00:00Z"
+    ) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": "MERGED",
+            "createdAt": "2026-09-03T10:00:00Z",
+            "mergedAt": "2026-09-03T12:00:00Z",
+            "updatedAt": updated_at,
+        }
+
+    def _emitted_events(self, result: dict[str, object]) -> dict[str, dict]:
+        manifest = json.loads(
+            Path(result["export"]["manifest"]).read_text(encoding="utf-8")
+        )
+        return {
+            event["dimensions"]["pr_number"]: event
+            for event in manifest["events"]
+        }
+
+    def test_unattributable_reviewer_spend_suppresses_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            spend_path = repo_path / ".code-mower" / "reviewer-spend.json"
+            spend_path.parent.mkdir(parents=True)
+            spend_path.write_text(
+                json.dumps(
+                    {
+                        "schema": reviewer_spend.SPEND_SCHEMA,
+                        "runs": [
+                            {
+                                "lane": "claude-audit",
+                                "repo": "owner/repo",
+                                "pr_number": 2,
+                                "head_sha": "abc123",
+                                "model": "sonnet",
+                                "wall_seconds": 1.0,
+                                "verdict": "PASS",
+                                "created_at": "2026-09-03T11:00:00Z",
+                                "cost_usd": 0.05,
+                            },
+                            {
+                                "lane": "claude-audit",
+                                "repo": "owner/repo",
+                                "pr_number": "",
+                                "head_sha": "def456",
+                                "model": "sonnet",
+                                "wall_seconds": 1.0,
+                                "verdict": "PASS",
+                                "created_at": "2026-09-03T11:00:00Z",
+                                "cost_usd": 0.05,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (
+                builder_dir / "devin-local-pr-2-bb22.cloud-event.json"
+            ).write_text(
+                json.dumps(_builder_run_event("b2", "2", 0.10)),
+                encoding="utf-8",
+            )
+
+            code, raw = self._run_upload(
+                repo_path, repo_path / "bundle", [self._merged_pr("2")]
+            )
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            events = self._emitted_events(result)
+            pr2 = events["2"]
+            self.assertEqual(pr2["dimensions"]["cost_coverage"], "partial")
+            self.assertEqual(pr2["metrics"]["cost_expected_run_count"], 3)
+            self.assertIn(
+                "unreadable-evidence",
+                pr2["dimensions"]["missing_cost_sources"],
+            )
+            self.assertTrue(pr2["dimensions"]["evidence_incomplete"])
+            self.assertTrue(
+                any("parsed attempt(s)" in e for e in result["errors"])
+            )
+            self.assertNotIn(str(repo_path), " ".join(result["errors"]))
+
+    def test_mismatched_repo_slug_suppresses_complete_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (
+                builder_dir / "devin-local-pr-2-aa22.cloud-event.json"
+            ).write_text(
+                json.dumps(
+                    {
+                        **_builder_run_event("b2a", "2", 0.10),
+                        "repo_slug": "other/repo",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (
+                builder_dir / "devin-local-pr-2-bb22.cloud-event.json"
+            ).write_text(
+                json.dumps(_builder_run_event("b2b", "2", 0.10)),
+                encoding="utf-8",
+            )
+
+            code, raw = self._run_upload(
+                repo_path, repo_path / "bundle", [self._merged_pr("2")]
+            )
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            events = self._emitted_events(result)
+            pr2 = events["2"]
+            self.assertEqual(pr2["dimensions"]["cost_coverage"], "partial")
+            self.assertEqual(pr2["metrics"]["cost_expected_run_count"], 2)
+            self.assertIn(
+                "unreadable-evidence",
+                pr2["dimensions"]["missing_cost_sources"],
+            )
+            self.assertTrue(pr2["dimensions"]["evidence_incomplete"])
+            self.assertTrue(
+                any("parsed attempt(s)" in e for e in result["errors"])
+            )
+            self.assertNotIn(str(repo_path), " ".join(result["errors"]))
+
+    def test_truncated_pr_can_retry_and_emit_later(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            state_path = (
+                repo_path / ".code-mower" / "pr-outcome-observations.json"
+            )
+            pr_records = [
+                self._merged_pr("1", "2026-09-03T10:00:00Z"),
+                self._merged_pr("2", "2026-09-03T11:00:00Z"),
+                self._merged_pr("3", "2026-09-03T12:00:00Z"),
+            ]
+
+            code, raw = self._run_upload(
+                repo_path,
+                repo_path / "bundle-1",
+                pr_records,
+                max_event_count=2,
+                limit=2,
+            )
+            self.assertEqual(code, 0, raw)
+            first = json.loads(raw)
+            self.assertEqual(first["event_count"], 2)
+            self.assertEqual(len(load_pr_outcome_observations(state_path)), 2)
+
+            code, raw = self._run_upload(
+                repo_path, repo_path / "bundle-2", pr_records
+            )
+            self.assertEqual(code, 0, raw)
+            second = json.loads(raw)
+            self.assertEqual(second["event_count"], 3)
+            self.assertEqual(len(load_pr_outcome_observations(state_path)), 3)
+
+    def test_unchanged_source_cost_sequence_emits_monotonic(self) -> None:
+        base = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="95",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[_builder_run_event("b1", "95", 1.0)],
+            created_at="2026-09-03T13:00:00Z",
+        )
+        prior = pr_outcome_observation_record(base)
+        second = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="95",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[_builder_run_event("b1", "95", 2.0)],
+            created_at="2026-09-03T13:00:00Z",
+            prior_observation=prior,
+        )
+        self.assertGreater(second["created_at"], base["created_at"])
+        validate_cloud_event(second)
+
+        prior2 = pr_outcome_observation_record(second)
+        third = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="95",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=[_builder_run_event("b1", "95", 3.0)],
+            created_at="2026-09-03T13:00:00Z",
+            prior_observation=prior2,
+        )
+        self.assertGreater(third["created_at"], second["created_at"])
+        validate_cloud_event(third)
+
+    def test_newer_reopen_supersedes_closed_unmerged(self) -> None:
+        closed = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="96",
+            outcome="closed_unmerged",
+            opened_at="2026-09-03T10:00:00Z",
+            closed_at="2026-09-03T12:00:00Z",
+            run_events=[],
+            created_at="2026-09-03T13:00:00Z",
+        )
+        prior = pr_outcome_observation_record(closed)
+        reopened = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="96",
+            outcome="open",
+            opened_at="2026-09-03T10:00:00Z",
+            run_events=[],
+            created_at="2026-09-03T14:00:00Z",
+            prior_observation=prior,
+        )
+        self.assertEqual(reopened["dimensions"]["outcome"], "open")
+        self.assertGreater(reopened["created_at"], closed["created_at"])
+        validate_cloud_event(reopened)
+
+
 if __name__ == "__main__":
     unittest.main()

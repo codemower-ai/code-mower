@@ -42,7 +42,8 @@
         "opened_at": "2026-09-03T10:00:00Z",
         "outcome": "merged",
         "pr_number": "101",
-        "pr_outcome_schema": "code_mower.prOutcome.v1"
+        "pr_outcome_schema": "code_mower.prOutcome.v1",
+        "pr_outcome_observation_version": "fixture-digest"
       },
       "event_id": "pr-101-complete",
       "event_type": "pr_outcome",
@@ -86,7 +87,8 @@
         "opened_at": "2026-09-03T11:00:00Z",
         "outcome": "open",
         "pr_number": "102",
-        "pr_outcome_schema": "code_mower.prOutcome.v1"
+        "pr_outcome_schema": "code_mower.prOutcome.v1",
+        "pr_outcome_observation_version": "fixture-digest"
       },
       "event_id": "pr-102-partial",
       "event_type": "pr_outcome",
@@ -132,7 +134,8 @@
         "opened_at": "2026-09-03T09:00:00Z",
         "outcome": "merged",
         "pr_number": "103",
-        "pr_outcome_schema": "code_mower.prOutcome.v1"
+        "pr_outcome_schema": "code_mower.prOutcome.v1",
+        "pr_outcome_observation_version": "fixture-digest"
       },
       "event_id": "pr-103-unknown-cost",
       "event_type": "pr_outcome",

@@ -907,16 +907,21 @@ def pr_outcomes_upload(
     )
 
     run_events: list[dict[str, Any]] = []
+    unattributable_evidence_count = 0
     for event in [*builder_events, *spend_events]:
-        if str(event.get("repo_slug") or "").strip() != detected_repo_slug:
+        event_repo = str(event.get("repo_slug") or "").strip()
+        event_pr = _pr_number_from_run_event(event)
+        if not _is_positive_int_pr_number(event_pr):
+            unattributable_evidence_count += 1
+            continue
+        if event_repo != detected_repo_slug:
+            unattributable_evidence_count += 1
             continue
         run_events.append(event)
 
     events_by_pr: dict[str, list[dict[str, Any]]] = {}
     for event in run_events:
         pr_number = _pr_number_from_run_event(event)
-        if not pr_number:
-            continue
         events_by_pr.setdefault(pr_number, []).append(event)
 
     events: list[dict[str, Any]] = []
@@ -956,6 +961,11 @@ def pr_outcomes_upload(
             "malformed and not attributable to a PR; complete spend coverage "
             "suppressed"
         )
+    if unattributable_evidence_count:
+        errors.append(
+            f"{unattributable_evidence_count} parsed attempt(s) could not be "
+            "attributed to a PR; complete spend coverage suppressed"
+        )
     # Local metadata-only observation state keeps retries idempotent and makes
     # corrected evidence chronologically newer even when no source timestamp
     # (GitHub ``updatedAt`` or run ``created_at``) advanced.  The read,
@@ -979,6 +989,7 @@ def pr_outcomes_upload(
     try:
         with exclusive_file_lock(observation_lock_path):
             observations = load_pr_outcome_observations(observation_state_path)
+            candidate_records: list[tuple[dict[str, Any], str, str]] = []
             for pr in pr_records:
                 pr_number = str(pr.get("number") or "").strip()
                 if not pr_number:
@@ -1009,15 +1020,23 @@ def pr_outcomes_upload(
                         source=source,
                         created_at=str(pr.get("updatedAt") or opened_at).strip(),
                         prior_observation=observations.get(observation_key),
-                        evidence_incomplete=unattributed_failures > 0,
+                        evidence_incomplete=(
+                            unattributed_failures > 0
+                            or unattributable_evidence_count > 0
+                        ),
                     )
                     validate_cloud_event(event)
                 except CloudBundleError as exc:
                     errors.append(f"PR {pr_number}: {exc}")
                     continue
+                source_freshness = str(event.pop("source_freshness", ""))
+                candidate_records.append((event, observation_key, source_freshness))
+
+            emitted = candidate_records[:MAX_EVENT_COUNT]
+            for event, observation_key, source_freshness in emitted:
                 events.append(event)
                 observations[observation_key] = pr_outcome_observation_record(
-                    event
+                    event, source_freshness=source_freshness
                 )
 
             if events:

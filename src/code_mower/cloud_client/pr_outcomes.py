@@ -190,8 +190,36 @@ def _observation_fingerprint(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _source_freshness(created_at: str) -> str:
+    """Return the canonical source-freshness timestamp for a pr_outcome.
+
+    The source freshness is the GitHub-side evidence timestamp (``updatedAt``
+    for the PR list, supplied as ``created_at``).  It is kept separate from
+    the synthetic ``created_at`` emitted on the event so that monotonic
+    ordering can be enforced by source advancement while corrected spend
+    evidence with an unchanged source timestamp still receives a later
+    observation timestamp.
+    """
+
+    text = str(created_at or "").strip()
+    if not text:
+        return _utc_now()
+    try:
+        parsed = _timestamp(text, "source_freshness")
+    except CloudBundleError:
+        return _utc_now()
+    return parsed.astimezone(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc(text: str, field: str) -> dt.datetime:
+    """Parse a UTC-normalized timestamp for ordering comparisons."""
+
+    parsed = _timestamp(text, field)
+    return parsed.astimezone(dt.UTC).replace(microsecond=0)
+
+
 def _observed_at(
-    created_at: str,
+    source_freshness: str,
     run_events: list[Mapping[str, Any]],
     *,
     fingerprint: str,
@@ -200,56 +228,56 @@ def _observed_at(
 ) -> str:
     """Return a deterministic observation timestamp for this pr_outcome.
 
-    The observation timestamp is the latest of the supplied ``created_at`` and
-    the latest run event ``created_at``, converted to UTC.  This gives
-    late-arriving local spend evidence a later ``created_at`` even when the
-    GitHub ``updatedAt`` did not change.
+    The synthetic observation timestamp is the latest of the source
+    freshness, the latest run event ``created_at``, and one second after the
+    prior observation's synthetic timestamp.  This gives late-arriving local
+    spend evidence a later ``created_at`` even when the GitHub ``updatedAt``
+    did not change, while keeping the source-freshness ordering independent.
 
     ``prior_observation`` carries the locally recorded ``fingerprint``,
-    ``created_at``, and ``outcome`` of the last emitted observation for this PR,
-    when known.  An unchanged fingerprint reproduces the prior ``created_at`` so
-    retries stay byte-for-byte idempotent; a changed fingerprint never moves the
-    timestamp backwards, so corrected evidence with unchanged source
-    timestamps is still chronologically selectable by greatest ``created_at``.
-    A stale snapshot whose outcome is less advanced than the prior observation,
-    or whose source timestamps are older than the prior observation, is rejected
-    before a correction timestamp can be assigned so an older open snapshot can
-    never be promoted above a newer merged one.
+    ``created_at``, ``source_freshness``, and ``outcome`` of the last emitted
+    observation for this PR.  An unchanged fingerprint reproduces the prior
+    ``created_at`` so retries stay byte-for-byte idempotent; a changed
+    fingerprint with an unchanged source timestamp still receives a later
+    observation timestamp.  A stale snapshot whose source evidence is older
+    than the prior source, or whose outcome regressed without a newer source,
+    is rejected before an observation timestamp can be assigned.
     """
 
-    base_text = created_at or _utc_now()
-    try:
-        base = _timestamp(base_text, "created_at")
-    except CloudBundleError:
-        base = dt.datetime.now(dt.UTC)
+    fresh = _parse_utc(source_freshness, "source_freshness")
 
-    latest = base
+    latest = fresh
     for event in run_events:
         ts_text = str(event.get("created_at") or "").strip()
         if not ts_text:
             continue
         try:
-            parsed = _timestamp(ts_text, "run event created_at")
+            parsed = _parse_utc(ts_text, "run event created_at")
         except CloudBundleError:
             continue
         if parsed > latest:
             latest = parsed
 
-    latest = latest.astimezone(dt.UTC).replace(microsecond=0)
-
     prior = _as_mapping(prior_observation) if prior_observation else {}
     prior_fingerprint = str(prior.get("fingerprint") or "").strip()
     prior_text = str(prior.get("created_at") or "").strip()
+    prior_fresh_text = str(prior.get("source_freshness") or "").strip()
     prior_outcome = str(prior.get("outcome") or "").strip()
-    if prior_fingerprint and prior_text:
+    if prior_fingerprint and prior_text and prior_fresh_text:
         try:
-            prior_at = _timestamp(prior_text, "prior observation created_at")
+            prior_at = _parse_utc(prior_text, "prior observation created_at")
+            prior_fresh = _parse_utc(
+                prior_fresh_text, "prior observation source_freshness"
+            )
         except CloudBundleError:
-            prior_at = None
-        if prior_at is not None:
-            prior_at = prior_at.astimezone(dt.UTC).replace(microsecond=0)
-            if prior_fingerprint == fingerprint:
-                return prior_at.isoformat().replace("+00:00", "Z")
+            return latest.isoformat().replace("+00:00", "Z")
+        if prior_fingerprint == fingerprint:
+            return prior_at.isoformat().replace("+00:00", "Z")
+        if fresh < prior_fresh:
+            raise CloudBundleError(
+                "stale pr_outcome source evidence cannot supersede a newer observation"
+            )
+        if fresh == prior_fresh:
             current_rank = _outcome_rank(outcome)
             prior_rank = _outcome_rank(prior_outcome)
             if (
@@ -260,17 +288,8 @@ def _observed_at(
                 raise CloudBundleError(
                     "stale pr_outcome snapshot cannot supersede a newer observation"
                 )
-            if current_rank is not None and prior_rank is not None:
-                if current_rank <= prior_rank and latest < prior_at:
-                    raise CloudBundleError(
-                        "stale pr_outcome snapshot cannot supersede a newer observation"
-                    )
-            elif latest < prior_at:
-                raise CloudBundleError(
-                    "stale pr_outcome snapshot cannot supersede a newer observation"
-                )
-            if prior_at >= latest:
-                latest = prior_at + dt.timedelta(seconds=1)
+        if prior_at + dt.timedelta(seconds=1) > latest:
+            latest = prior_at + dt.timedelta(seconds=1)
 
     return latest.isoformat().replace("+00:00", "Z")
 
@@ -493,8 +512,9 @@ def build_pr_outcome_event(
         evidence_incomplete=evidence_incomplete,
         missing_sources=missing_sources,
     )
+    source_freshness = _source_freshness(created_at)
     created_at_value = _observed_at(
-        created_at,
+        source_freshness,
         run_events,
         fingerprint=fingerprint,
         outcome=outcome,
@@ -526,6 +546,7 @@ def build_pr_outcome_event(
         "metrics": metrics,
         "dimensions": dimensions,
     }
+    event["source_freshness"] = source_freshness
     return event
 
 
@@ -535,7 +556,10 @@ def pr_outcome_observation_key(repo_slug: str, pr_number: str) -> str:
     return f"{repo_slug}#{pr_number}"
 
 
-def pr_outcome_observation_record(event: Mapping[str, Any]) -> dict[str, str]:
+def pr_outcome_observation_record(
+    event: Mapping[str, Any],
+    source_freshness: str = "",
+) -> dict[str, str]:
     """Return the local metadata-only state entry for an emitted event."""
 
     dimensions = _as_mapping(event.get("dimensions"))
@@ -554,10 +578,14 @@ def pr_outcome_observation_record(event: Mapping[str, Any]) -> dict[str, str]:
         evidence_incomplete=bool(dimensions.get("evidence_incomplete", False)),
         missing_sources=missing_sources,
     )
+    fresh = source_freshness or str(
+        event.get("source_freshness") or event.get("created_at") or ""
+    )
     return {
         "fingerprint": fingerprint,
         "created_at": str(event.get("created_at") or ""),
         "outcome": str(dimensions.get("outcome") or ""),
+        "source_freshness": fresh,
     }
 
 
@@ -618,12 +646,18 @@ def load_pr_outcome_observations(path: Path) -> dict[str, dict[str, str]]:
             _timestamp(created_at, "prior observation created_at")
         except CloudBundleError as exc:
             raise _malformed_observation_state_error() from exc
+        source_freshness = str(item.get("source_freshness") or created_at).strip()
+        try:
+            _timestamp(source_freshness, "prior observation source_freshness")
+        except CloudBundleError as exc:
+            raise _malformed_observation_state_error() from exc
         outcome = str(item.get("outcome") or "").strip()
         if outcome and outcome not in PR_OUTCOME_VALUES:
             raise _malformed_observation_state_error()
         result[str(key)] = {
             "fingerprint": fingerprint,
             "created_at": created_at,
+            "source_freshness": source_freshness,
             "outcome": outcome,
         }
     return result
@@ -643,6 +677,9 @@ def save_pr_outcome_observations(
             str(key): {
                 "fingerprint": str(item.get("fingerprint") or ""),
                 "created_at": str(item.get("created_at") or ""),
+                "source_freshness": str(
+                    item.get("source_freshness") or item.get("created_at") or ""
+                ),
                 "outcome": str(item.get("outcome") or ""),
             }
             for key, item in sorted(observations.items())
@@ -676,6 +713,21 @@ def validate_pr_outcome_payload(event: Mapping[str, Any]) -> None:
     unknown_dimensions = [str(key) for key in dimensions if key not in PR_OUTCOME_DIMENSIONS]
     if unknown_dimensions:
         raise CloudBundleError(f"unsupported pr_outcome dimension {unknown_dimensions[0]!r}")
+
+    if "evidence_incomplete" in dimensions and not isinstance(
+        dimensions["evidence_incomplete"], bool
+    ):
+        raise CloudBundleError(
+            "pr_outcome dimension 'evidence_incomplete' must be a boolean"
+        )
+    observation_version = dimensions.get("pr_outcome_observation_version")
+    if (
+        not isinstance(observation_version, str)
+        or not observation_version.strip()
+    ):
+        raise CloudBundleError(
+            "pr_outcome dimension 'pr_outcome_observation_version' must be a non-empty string"
+        )
 
     pr_number = _required_text(dimensions.get("pr_number"), "dimension 'pr_number'")
     if not pr_number.isdigit() or int(pr_number) < 1:

@@ -52,6 +52,7 @@ class PrOutcomeContractTests(unittest.TestCase):
                     "opened_at": "2026-09-03T12:00:00Z",
                     "outcome": "open",
                     "cost_coverage": "unknown",
+                    "pr_outcome_observation_version": "fixture-digest",
                 },
             },
             PR_OUTCOME_EVENT_TYPE,
@@ -129,3 +130,29 @@ class PrOutcomeContractTests(unittest.TestCase):
 
         with self.assertRaisesRegex(CloudBundleError, "cannot precede merged_at"):
             validate_cloud_event(event)
+
+    def test_rejects_malformed_observation_version(self) -> None:
+        base = copy.deepcopy(_fixture()["pr_outcome_events"][0])
+        del base["dimensions"]["pr_outcome_observation_version"]
+        with self.assertRaisesRegex(
+            CloudBundleError, "pr_outcome_observation_version"
+        ):
+            validate_cloud_event(base)
+
+        base["dimensions"]["pr_outcome_observation_version"] = ""
+        with self.assertRaisesRegex(
+            CloudBundleError, "pr_outcome_observation_version"
+        ):
+            validate_cloud_event(base)
+
+        base["dimensions"]["pr_outcome_observation_version"] = 123
+        with self.assertRaisesRegex(
+            CloudBundleError, "pr_outcome_observation_version"
+        ):
+            validate_cloud_event(base)
+
+    def test_rejects_non_boolean_evidence_incomplete(self) -> None:
+        base = copy.deepcopy(_fixture()["pr_outcome_events"][0])
+        base["dimensions"]["evidence_incomplete"] = "yes"
+        with self.assertRaisesRegex(CloudBundleError, "evidence_incomplete"):
+            validate_cloud_event(base)
