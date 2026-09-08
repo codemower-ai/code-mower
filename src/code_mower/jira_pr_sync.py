@@ -423,8 +423,24 @@ def apply_sync_plan(
     plan = report.get("mutation_plan")
     if not isinstance(plan, Mapping):
         return report
-    tracker = plan.get("tracker") if isinstance(plan.get("tracker"), Mapping) else {}
     operations = plan.get("operations") or []
+    pending = [
+        operation
+        for operation in operations
+        if isinstance(operation, Mapping) and operation.get("status") == "planned"
+    ]
+    preflight_refused = any(
+        isinstance(operation, Mapping)
+        and operation.get("status") in {"refused", "blocked", "cancelled", "failed"}
+        for operation in operations
+    )
+    if plan.get("mode") != "apply":
+        return report
+    if preflight_refused or not pending:
+        return _report_with_mutation_plan(
+            report, jira_mutations.apply_mutation_plan(plan, client)
+        )
+    tracker = plan.get("tracker") if isinstance(plan.get("tracker"), Mapping) else {}
     link = next(
         (
             operation
@@ -466,7 +482,18 @@ def apply_sync_plan(
             ),
         )
     client.require_code_mower_pr_link(str(link_detail.get("global_id") or ""))
-    applied = jira_mutations.apply_mutation_plan(plan, client)
+    try:
+        applied = jira_mutations.apply_mutation_plan(plan, client)
+    finally:
+        client.clear_code_mower_pr_link_requirement()
+    return _report_with_mutation_plan(report, applied)
+
+
+def _report_with_mutation_plan(
+    sync_report: Mapping[str, Any], applied: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Replace one sync report's embedded plan with a bounded outcome."""
+    report = dict(sync_report)
     report["mutation_plan"] = applied
     report["status"] = str(applied.get("status") or report.get("status"))
     report["reason"] = _mutation_plan_reason(applied)

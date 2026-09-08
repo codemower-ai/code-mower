@@ -413,6 +413,26 @@ class FailClosedTest(unittest.TestCase):
 
 
 class ApplyIdempotencyTest(unittest.TestCase):
+    def test_dry_run_apply_helper_performs_no_jira_call(self) -> None:
+        runner = FakeJira()
+        report = plan(sync_config(), "opened", apply_requested=False)
+
+        returned = jira_pr_sync.apply_sync_plan(report, make_client(runner))
+
+        self.assertEqual(returned, report)
+        self.assertEqual(runner.calls, [])
+
+    def test_whole_plan_refusal_performs_no_jira_call(self) -> None:
+        config = sync_config(allowed_operations=("link", "comment"))
+        report = plan(config, "opened", apply_requested=True)
+        runner = FakeJira()
+
+        refused = jira_pr_sync.apply_sync_plan(report, make_client(runner))
+
+        self.assertEqual(refused["status"], "refused")
+        self.assertEqual(refused["write_request_count"], 0)
+        self.assertEqual(runner.calls, [])
+
     def test_opened_retry_reports_already_applied_once(self) -> None:
         config, runner = sync_config(), FakeJira()
         first = plan_and_apply(config, "opened", runner)
@@ -478,6 +498,34 @@ class ApplyIdempotencyTest(unittest.TestCase):
         self.assertEqual(runner.comment_posts(), [])
         self.assertEqual(runner.transition_posts(), [])
         self.assertEqual(runner.global_ids, [competing])
+
+    def test_failed_sync_clears_association_guard_on_reused_client(self) -> None:
+        from code_mower import jira_cloud
+
+        config = sync_config()
+        runner = FakeJira(
+            faults={
+                ("GET", "issue"): [jira_cloud.JiraApiError("jira_forbidden"), None]
+            }
+        )
+        client = make_client(runner)
+        failed = jira_pr_sync.apply_sync_plan(
+            plan(config, "opened", apply_requested=True), client
+        )
+        self.assertEqual(failed["status"], "blocked")
+
+        runner.global_ids = ["code-mower:github:owner/repo/pull/19"]
+        ordinary = jira_mutations.build_mutation_plan(
+            config,
+            jira_mutations.MutationRequest(
+                issue_ref=ISSUE_KEY, transition_category="in_progress"
+            ),
+            apply_requested=True,
+        )
+        applied = jira_mutations.apply_mutation_plan(ordinary, client)
+
+        self.assertEqual(applied["status"], "applied")
+        self.assertEqual(len(runner.transition_posts()), 1)
 
     def test_blocked_then_merged_posts_each_template_once(self) -> None:
         config, runner = sync_config(), FakeJira()

@@ -986,6 +986,10 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
             expected_global_id
         )
 
+    def clear_code_mower_pr_link_requirement(self) -> None:
+        """Clear a PR-sync-only guard without changing other client state."""
+        self._expected_pr_global_id = ""
+
     def refuse_writes_in_statuses(self, status_ids: Sequence[Any]) -> None:
         """Refuse the current operation if Jira has reached a later status."""
         self._write_forbidden_status_ids = tuple(
