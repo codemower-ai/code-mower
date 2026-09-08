@@ -20,7 +20,10 @@ allow-list on :class:`JiraMutationClient`:
 - ``transition``: one *configured* transition id, verified against the live
   issue's available transitions immediately before the write, and blocked
   unless that transition's live destination status is one of the status ids
-  configured for the requested lifecycle category.
+  configured for the requested lifecycle category. A category configured
+  with a transition id but no such status ids is refused during planning,
+  because that gap is knowable from config alone and must not be found only
+  after a sibling operation has already written.
 - ``comment``: one bounded comment rendered from a closed template table.
   There is no free-form comment passthrough: the transport builds the body
   itself from a template id and a validated GitHub pull request URL.
@@ -562,12 +565,34 @@ def _plan_operations(
                 f"--transition must be one of {sorted(LIFECYCLE_CATEGORIES)}"
             )
         transition_id = settings.transitions.get(category, "")
+        target_status_ids = tuple(settings.status_category_map.get(category, ()))
         if not transition_id:
             requested["transition"] = _Operation(
                 operation="transition",
                 status="refused",
                 reason="transition_not_configured",
                 detail={"lifecycle_category": category},
+            )
+        elif not target_status_ids:
+            # A transition id with no configured target status ids is only
+            # half a configuration, and which half is missing is knowable
+            # here -- from config alone, before any Jira request. The
+            # category's configured status ids are what "the requested
+            # lifecycle category" means, so without them there is nothing to
+            # verify the edge's destination against and no target to already
+            # be at. Refusing at plan time is what keeps a combined
+            # ``--claim --transition <category> --apply`` from assigning the
+            # issue and only then discovering the gap: whole-plan preflight
+            # aborts the run before its first read. Apply keeps the same
+            # check as a last line of defence for a hand-supplied plan.
+            requested["transition"] = _Operation(
+                operation="transition",
+                status="refused",
+                reason="target_status_not_configured",
+                detail={
+                    "lifecycle_category": category,
+                    "target_status_ids": [],
+                },
             )
         else:
             requested["transition"] = _Operation(
@@ -579,9 +604,7 @@ def _plan_operations(
                     "transition_id": transition_id,
                     # Configured status ids for this category let apply
                     # recognize an issue that is already at the target.
-                    "target_status_ids": list(
-                        settings.status_category_map.get(category, ())
-                    ),
+                    "target_status_ids": list(target_status_ids),
                 },
             )
 
@@ -653,7 +676,8 @@ def _next_action(
         return (
             "Add the refused operations to "
             "tracker.jira_cloud.mutations.allowed_operations (and configure a "
-            "transition id where required), then re-run."
+            "transition id, plus the status_category_map ids that lifecycle "
+            "category means, where required), then re-run."
         )
     if mode == "plan":
         if not writes_enabled:
@@ -1368,7 +1392,9 @@ def _apply_transition(
     # The configured target status ids are what "the requested lifecycle
     # category" means here, so nothing -- not a write, and not an
     # already-at-target answer -- may be decided before them. Without them
-    # there is no target to be at.
+    # there is no target to be at. Planning already refuses this case, so a
+    # plan built by this module never arrives here; the check stays as the
+    # last line of defence for a plan supplied directly to this function.
     if not target_ids:
         operation.status = "blocked"
         operation.reason = "target_status_not_configured"

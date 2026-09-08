@@ -880,26 +880,131 @@ class ApplyTests(unittest.TestCase):
         )
         self.assertEqual(runner.write_calls(), [])
 
-    def test_a_transition_with_no_configured_target_status_is_blocked(self) -> None:
-        runner = RouteHttp(
-            {
-                ("GET", ISSUE_PATH): ok(issue_response(status_id="1")),
-                ("GET", LEDGER_PATH): error(404),
-                ("GET", f"{ISSUE_PATH}/transitions"): ok(
-                    {"transitions": [{"id": "31", "to": {"id": "3"}}]}
-                ),
-            }
-        )
+    def test_a_transition_with_no_configured_target_status_is_refused_in_planning(
+        self,
+    ) -> None:
+        """A configured transition id needs configured target status ids.
+
+        Which status ids a lifecycle category means is config, so a category
+        with a transition id and no ids is a deterministic configuration
+        error knowable before any Jira request. Planning refuses it, so the
+        apply never opens a connection.
+        """
+        jira = FakeJira()
         code, report, _ = run_cli(
             ["mutate", "--issue", ISSUE, "--transition", "in_progress", "--apply"],
-            runner=runner,
+            runner=jira,
             config_kwargs={"status_category_map": {}},
         )
         self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "refused")
+        self.assertEqual(operation(report, "transition")["status"], "refused")
         self.assertEqual(
             operation(report, "transition")["reason"], "target_status_not_configured"
         )
-        self.assertEqual(runner.write_calls(), [])
+        self.assertEqual(report["write_request_count"], 0)
+        self.assertEqual(jira.calls, [])
+
+        # Planning alone refuses identically and stays fingerprint-free, so a
+        # refused transition never claims a replay identity.
+        plan = jira_mutations.build_mutation_plan(
+            load_config(status_category_map={}),
+            jira_mutations.MutationRequest(
+                issue_ref=ISSUE, transition_category="in_progress"
+            ),
+        )
+        self.assertEqual(operation(plan, "transition")["status"], "refused")
+        self.assertEqual(
+            operation(plan, "transition")["reason"], "target_status_not_configured"
+        )
+        self.assertEqual(operation(plan, "transition")["fingerprint"], "")
+
+    def test_an_unmapped_transition_category_aborts_a_combined_apply_unwritten(
+        self,
+    ) -> None:
+        """The missing mapping must be found before a sibling writes.
+
+        ``--claim --transition in_progress --apply`` pairs an allowed,
+        planned assignment with a transition whose lifecycle category has a
+        transition id but no configured target status ids. Discovering that
+        only inside the transition handler would leave the issue already
+        assigned for work the apply then refused to start. The fake here
+        would happily serve the assignee PUT, so what this proves is that
+        nothing was ever sent.
+        """
+        jira = FakeJira(status_id="1")
+        code, report, _ = run_cli(
+            [
+                "mutate",
+                "--issue",
+                ISSUE,
+                "--claim",
+                "--transition",
+                "in_progress",
+                "--apply",
+            ],
+            runner=jira,
+            config_kwargs={"status_category_map": {}},
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(report["mode"], "apply")
+        self.assertEqual(report["status"], "refused")
+        self.assertEqual(
+            operation(report, "transition")["reason"], "target_status_not_configured"
+        )
+        self.assertEqual(operation(report, "assign")["status"], "skipped")
+        self.assertEqual(operation(report, "assign")["reason"], "aborted_before_apply")
+        self.assertEqual(report["write_request_count"], 0)
+        self.assertEqual(jira.calls, [])
+        self.assertIsNone(jira.assignee)
+        self.assertEqual(jira.status_id, "1")
+
+        # The same guard holds at the library seam, not only behind the CLI.
+        client = make_client(jira)
+        plan = jira_mutations.build_mutation_plan(
+            load_config(status_category_map={}),
+            jira_mutations.MutationRequest(
+                issue_ref=ISSUE, claim=True, transition_category="in_progress"
+            ),
+            apply_requested=True,
+        )
+        self.assertEqual(plan["mode"], "apply")
+        applied = jira_mutations.apply_mutation_plan(plan, client)
+        self.assertEqual(applied["status"], "refused")
+        self.assertEqual(operation(applied, "assign")["status"], "skipped")
+        self.assertEqual(client.write_attempts, 0)
+        self.assertEqual(jira.calls, [])
+        self.assertIsNone(jira.assignee)
+
+    def test_apply_still_blocks_a_supplied_plan_with_no_target_status_ids(self) -> None:
+        """Apply keeps the check as its own last line of defence.
+
+        Planning refuses this case now, so a plan this module built never
+        reaches the transition handler with an empty target set. A plan
+        handed straight to ``apply_mutation_plan`` can, and it must still
+        block rather than transition an issue with no target to verify.
+        """
+        jira = FakeJira(status_id="1")
+        client = make_client(jira)
+        plan = jira_mutations.build_mutation_plan(
+            load_config(),
+            jira_mutations.MutationRequest(
+                issue_ref=ISSUE, transition_category="in_progress"
+            ),
+            apply_requested=True,
+        )
+        for item in plan["operations"]:
+            if item["operation"] == "transition":
+                item["detail"]["target_status_ids"] = []
+
+        applied = jira_mutations.apply_mutation_plan(plan, client)
+        self.assertEqual(applied["status"], "blocked")
+        self.assertEqual(
+            operation(applied, "transition")["reason"], "target_status_not_configured"
+        )
+        self.assertEqual(applied["write_request_count"], 0)
+        self.assertEqual(jira.write_calls(), [])
+        self.assertEqual(jira.status_id, "1")
 
     def test_a_transition_with_an_unknown_destination_is_blocked(self) -> None:
         runner = RouteHttp(

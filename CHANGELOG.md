@@ -45,6 +45,11 @@ later entries are regular releases.
   apply fails closed before its first Jira read, its still-planned siblings
   are reported `skipped` with reason `aborted_before_apply`, and no partial
   write the operator never asked for reaches Jira.
+  Every configuration error that gap can be read from is settled during
+  planning, so preflight actually catches it: a lifecycle category holding a
+  transition id but no `status_category_map` ids is refused with
+  `target_status_not_configured` before any Jira request, rather than after a
+  `--claim` beside it has already assigned the issue.
 
   Comment delivery is at most once by construction. Each comment intent
   claims its own `code-mower-comment-v1.<fingerprint>` issue property, and

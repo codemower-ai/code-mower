@@ -197,10 +197,18 @@ available transitions. An issue outside the configured project, a
 transition the live workflow no longer offers, or a lost permission blocks
 with a closed reason instead of guessing.
 
-A transition is blocked unless the live transition's destination status id
-is one of the ids `status_category_map` configures for the requested
-lifecycle category (`transition_target_mismatch`, or
-`target_status_not_configured` when the category has no configured ids). A
+A lifecycle category configured with a transition id but with no ids under
+`status_category_map` is refused during **planning**, with
+`target_status_not_configured` and no Jira request at all: which statuses a
+category means is config, so that gap is knowable before the first read.
+Whole-plan preflight then aborts the run, which is what keeps a combined
+`--claim --transition in_progress --apply` from assigning the issue and only
+afterwards discovering it has no target to transition toward.
+
+Given configured ids, a transition is blocked unless the live transition's
+destination status id is one of them (`transition_target_mismatch`; apply
+keeps its own `target_status_not_configured` check as a last line of defence
+for a plan supplied directly to `apply_mutation_plan`). A
 configured transition id names a workflow edge, and a workflow can be
 re-pointed under it; verifying the destination before the write keeps a
 `--transition in_progress` from moving an issue somewhere that category
