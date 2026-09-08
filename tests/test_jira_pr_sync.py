@@ -20,7 +20,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Mapping
 
-from code_mower import jira_mutations, jira_pr_sync
+from code_mower import jira_cloud, jira_mutations, jira_pr_sync
 
 
 CLOUD_ID = "11111111-2222-3333-4444-555555555555"
@@ -438,6 +438,21 @@ class FailClosedTest(unittest.TestCase):
 
 
 class ApplyIdempotencyTest(unittest.TestCase):
+    def test_task_location_accepts_only_the_configured_jira_origins(self) -> None:
+        client = make_client(FakeJira())
+        task = "/rest/api/3/task/claim-1"
+        for location in (task, f"{SITE_URL}{task}", f"{client.base_url}{task}"):
+            with self.subTest(location=location):
+                self.assertEqual(client._jira_task_path({"Location": location}), task)
+        for location in (
+            f"https://collector.example{task}",
+            f"http://example.atlassian.net{task}",
+            f"{SITE_URL}{task}?token=unexpected",
+        ):
+            with self.subTest(location=location):
+                with self.assertRaises(jira_cloud.JiraApiError):
+                    client._jira_task_path({"Location": location})
+
     def test_dry_run_apply_helper_performs_no_jira_call(self) -> None:
         runner = FakeJira()
         report = plan(sync_config(), "opened", apply_requested=False)

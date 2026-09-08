@@ -1294,10 +1294,50 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
             (str(value) for key, value in headers.items() if key.lower() == "location"),
             "",
         )
-        if location.startswith(self.base_url):
-            path = location[len(self.base_url):]
+        try:
+            parsed = urllib.parse.urlsplit(location)
+        except ValueError:
+            raise jira_cloud.JiraApiError(
+                "jira_unavailable", endpoint="prAssociationClaim"
+            ) from None
+        if parsed.query or parsed.fragment or parsed.username or parsed.password:
+            raise jira_cloud.JiraApiError(
+                "jira_unavailable", endpoint="prAssociationClaim"
+            )
+        if parsed.scheme or parsed.netloc:
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise jira_cloud.JiraApiError(
+                    "jira_unavailable", endpoint="prAssociationClaim"
+                )
+            try:
+                gateway = urllib.parse.urlsplit(self.base_url)
+                site = urllib.parse.urlsplit(self.site_url) if self.site_url else None
+                origin = (parsed.hostname.lower(), parsed.port)
+                gateway_origin = (str(gateway.hostname or "").lower(), gateway.port)
+                site_origin = (
+                    (str(site.hostname or "").lower(), site.port)
+                    if site is not None
+                    else None
+                )
+            except ValueError:
+                raise jira_cloud.JiraApiError(
+                    "jira_unavailable", endpoint="prAssociationClaim"
+                ) from None
+            if origin == gateway_origin:
+                prefix = gateway.path.rstrip("/")
+            elif site_origin is not None and origin == site_origin:
+                prefix = site.path.rstrip("/") if site is not None else ""
+            else:
+                raise jira_cloud.JiraApiError(
+                    "jira_unavailable", endpoint="prAssociationClaim"
+                )
+            if prefix and not parsed.path.startswith(prefix + "/"):
+                raise jira_cloud.JiraApiError(
+                    "jira_unavailable", endpoint="prAssociationClaim"
+                )
+            path = parsed.path[len(prefix):] if prefix else parsed.path
         else:
-            path = location
+            path = parsed.path
         gateway_prefix = f"/ex/jira/{self.cloud_id}"
         if path.startswith(gateway_prefix):
             path = path[len(gateway_prefix):]
