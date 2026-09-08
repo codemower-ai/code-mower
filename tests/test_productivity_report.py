@@ -152,6 +152,16 @@ def _status(*, verdict_label: str, owner_actions: int = 0) -> dict[str, object]:
     }
 
 
+def _empty_live_status() -> dict[str, object]:
+    status = _status(verdict_label="")
+    remote = status["remote"]
+    assert isinstance(remote, dict)
+    remote["pull_requests"] = []
+    remote["gate_health"] = {"status": "pass", "alerts": []}
+    status["next_action"] = "no active lanes"
+    return status
+
+
 class ProductivityReportTests(TestCase):
     def test_report_combines_board_spend_and_cloud_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -376,6 +386,63 @@ class ProductivityReportTests(TestCase):
         self.assertIn(lane_status.LOCAL_PATH_REDACTION, serialized)
         self.assertNotIn(str(Path(tmp)), serialized)
 
+    def test_live_remote_zero_takes_precedence_over_historical_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store_path = root / "events.jsonl"
+            board_store.append_snapshot(
+                _status(verdict_label="codex-audit-blocked"),
+                path=store_path,
+                now=NOW,
+            )
+
+            report = productivity_report.build_report(
+                repo="owner/repo",
+                repo_path=root,
+                store_path=store_path,
+                current_status=_empty_live_status(),
+                now=NOW,
+            )
+
+        self.assertEqual(report["current"]["open_pr_count"], 0)
+        self.assertEqual(report["current"]["gate_alert_count"], 0)
+        self.assertEqual(report["current"]["source"], "live_remote")
+        self.assertFalse(report["current"]["historical"])
+        self.assertEqual(report["source"]["current_state"]["source"], "live_remote")
+        self.assertEqual(report["source"]["board_events"]["used_events"], 1)
+
+    def test_historical_fallback_is_explicit_when_live_remote_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store_path = root / "events.jsonl"
+            historical = _status(verdict_label="codex-audit-blocked")
+            historical_remote = historical["remote"]
+            assert isinstance(historical_remote, dict)
+            historical_remote["gate_health"] = {
+                "status": "warn",
+                "alerts": [{"kind": "blocked-audit", "pr_number": 42}],
+            }
+            board_store.append_snapshot(historical, path=store_path, now=NOW)
+            unavailable = _empty_live_status()
+            unavailable_remote = unavailable["remote"]
+            assert isinstance(unavailable_remote, dict)
+            unavailable_remote["available"] = False
+
+            report = productivity_report.build_report(
+                repo="owner/repo",
+                repo_path=root,
+                store_path=store_path,
+                current_status=unavailable,
+                now=NOW,
+            )
+
+        self.assertEqual(report["current"]["open_pr_count"], 1)
+        self.assertEqual(report["current"]["gate_alert_count"], 1)
+        self.assertEqual(report["current"]["source"], "historical_board_snapshot")
+        self.assertTrue(report["current"]["historical"])
+        self.assertFalse(report["source"]["remote_available"])
+        self.assertIn("historical Board snapshot", productivity_report.render_text(report))
+
     def test_known_zero_spend_counts_stay_zero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -519,25 +586,76 @@ class ProductivityReportTests(TestCase):
         self.assertEqual(report["cloud_aggregate"]["summary_event_count"], 1)
 
     def test_cli_report_outputs_json_and_text(self) -> None:
+        collector_calls: list[dict[str, object]] = []
+
+        def collect_status(**kwargs: object) -> dict[str, object]:
+            collector_calls.append(kwargs)
+            return _empty_live_status()
+
         with tempfile.TemporaryDirectory() as tmp:
             stdout = StringIO()
             with redirect_stdout(stdout):
                 code = productivity_report.main(
-                    ["report", "--repo", "owner/repo", "--repo-path", tmp, "--json"]
+                    ["report", "--repo", "owner/repo", "--repo-path", tmp, "--json"],
+                    status_collector=collect_status,
                 )
             parsed = json.loads(stdout.getvalue())
 
             text_out = StringIO()
             with redirect_stdout(text_out):
                 text_code = productivity_report.main(
-                    ["report", "--repo", "owner/repo", "--repo-path", tmp]
+                    ["report", "--repo", "owner/repo", "--repo-path", tmp],
+                    status_collector=collect_status,
                 )
 
         self.assertEqual(code, 0)
         self.assertEqual(text_code, 0)
         self.assertEqual(parsed["repo"], "owner/repo")
+        self.assertEqual(parsed["current"]["source"], "live_remote")
+        self.assertEqual(
+            collector_calls,
+            [
+                {"repo": "owner/repo", "repo_path": tmp},
+                {"repo": "owner/repo", "repo_path": tmp},
+            ],
+        )
         self.assertIn("Code Mower productivity report for owner/repo", text_out.getvalue())
+        self.assertIn("Current source: live GitHub", text_out.getvalue())
         self.assertIn("Next:", text_out.getvalue())
+
+    def test_cli_offline_uses_labeled_historical_fallback_without_collection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store_path = root / "events.jsonl"
+            board_store.append_snapshot(
+                _status(verdict_label="codex-audit-blocked"),
+                path=store_path,
+                now=NOW,
+            )
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                code = productivity_report.main(
+                    [
+                        "report",
+                        "--repo",
+                        "owner/repo",
+                        "--repo-path",
+                        tmp,
+                        "--store-path",
+                        str(store_path),
+                        "--offline",
+                        "--json",
+                    ],
+                    status_collector=lambda **_kwargs: self.fail(
+                        "offline report called live status collector"
+                    ),
+                )
+            parsed = json.loads(stdout.getvalue())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(parsed["current"]["source"], "historical_board_snapshot")
+        self.assertTrue(parsed["current"]["historical"])
+        self.assertFalse(parsed["current"]["remote_available"])
 
     def test_invalid_cloud_event_warning_uses_filename_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

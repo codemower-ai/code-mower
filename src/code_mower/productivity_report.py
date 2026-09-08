@@ -7,7 +7,7 @@ import argparse
 import json
 import sys
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -85,10 +85,18 @@ PUBLIC_SPEND_LANE_KEYS = (
     "cost_usd",
     "total_tokens",
 )
+StatusCollector = Callable[..., Mapping[str, Any]]
 
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
+
+
+def _collect_live_status(*, repo: str, repo_path: str | Path) -> Mapping[str, Any]:
+    """Collect live remote state while preserving the report collector contract."""
+
+    del repo_path  # Lane status inventories machine-wide processes and Boards.
+    return lane_status.collect_status(repo=repo)
 
 
 def _timestamp(value: datetime) -> str:
@@ -819,14 +827,26 @@ def _prefer(*values: object) -> object:
 def _latest_snapshot(
     current_status: Mapping[str, Any] | None,
     events: Sequence[Mapping[str, Any]],
-) -> Mapping[str, Any] | None:
+) -> tuple[Mapping[str, Any] | None, str, str]:
     if current_status:
-        return current_status
-    if not events:
-        return None
-    latest = max(events, key=lambda event: str(event.get("created_at") or ""))
-    snapshot = latest.get("snapshot")
-    return snapshot if isinstance(snapshot, Mapping) else None
+        remote = (
+            current_status.get("remote")
+            if isinstance(current_status.get("remote"), Mapping)
+            else {}
+        )
+        if remote.get("available"):
+            return current_status, "live_remote", str(current_status.get("generated_at") or "")
+    if events:
+        latest = max(events, key=lambda event: str(event.get("created_at") or ""))
+        snapshot = latest.get("snapshot")
+        if isinstance(snapshot, Mapping):
+            observed_at = str(latest.get("created_at") or snapshot.get("generated_at") or "")
+            return snapshot, "historical_board_snapshot", observed_at
+    if current_status:
+        return current_status, "live_remote_unavailable", str(
+            current_status.get("generated_at") or ""
+        )
+    return None, "unavailable", ""
 
 
 def build_report(
@@ -848,8 +868,19 @@ def build_report(
     store_report = board_store.event_report(path=event_store_path, limit=event_limit)
     board_events = [event for event in store_report.get("events") or [] if isinstance(event, Mapping)]
     board_metrics = _board_observations(board_events)
-    latest_status = _latest_snapshot(current_status, board_events)
+    latest_status, current_source, current_observed_at = _latest_snapshot(
+        current_status, board_events
+    )
     current = _current_state(latest_status)
+    live_remote_available = current_source == "live_remote"
+    current.update(
+        {
+            "source": current_source,
+            "observed_at": current_observed_at,
+            "historical": current_source == "historical_board_snapshot",
+            "remote_available": live_remote_available,
+        }
+    )
     spend, spend_warnings = _spend_summary(repo, reviewer_spend_path)
     cloud_events, cloud_warnings = _load_productivity_events(cloud_event_paths)
     cloud = _cloud_summary(cloud_events)
@@ -1023,7 +1054,12 @@ def build_report(
                 "available": bool(cloud.get("available")),
                 "event_count": int(cloud.get("event_count") or 0),
             },
-            "remote_available": bool(current.get("remote_available")),
+            "remote_available": live_remote_available,
+            "current_state": {
+                "source": current_source,
+                "observed_at": current_observed_at,
+                "historical": current_source == "historical_board_snapshot",
+            },
         },
         "window": {
             "local_history": {
@@ -1206,6 +1242,12 @@ def render_text(report: Mapping[str, Any]) -> str:
     scorecards = providers.get("scorecards") if isinstance(providers.get("scorecards"), list) else []
     warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
     evidence = report.get("evidence") if isinstance(report.get("evidence"), Mapping) else {}
+    current_source = {
+        "live_remote": "live GitHub",
+        "historical_board_snapshot": "historical Board snapshot",
+        "live_remote_unavailable": "live GitHub unavailable",
+    }.get(str(current.get("source") or ""), "unavailable")
+    current_observed_at = str(current.get("observed_at") or "unknown")
     lines = [
         f"Code Mower productivity report for {report.get('repo') or ''}",
         f"Status: {report.get('status') or 'warn'}",
@@ -1218,6 +1260,7 @@ def render_text(report: Mapping[str, Any]) -> str:
             f"stale PRs {_known_number(current.get('stale_pr_count'))}, "
             f"owner actions {_known_number(current.get('owner_action_count'))}"
         ),
+        f"Current source: {current_source}; observed {current_observed_at}",
         (
             "Window: "
             f"{local_window.get('start') or 'unknown'} to {local_window.get('end') or 'unknown'} "
@@ -1273,7 +1316,11 @@ def render_text(report: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    status_collector: StatusCollector = _collect_live_status,
+) -> int:
     parser = argparse.ArgumentParser(prog="code-mower productivity")
     subparsers = parser.add_subparsers(dest="command", required=True)
     report_parser = subparsers.add_parser("report")
@@ -1290,18 +1337,29 @@ def main(argv: list[str] | None = None) -> int:
         help="metadata-only productivity_summary event file; may be repeated",
     )
     report_parser.add_argument("--event-limit", type=int, default=500)
+    report_parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="skip live GitHub collection and use an explicitly labeled Board snapshot fallback",
+    )
     report_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(list(argv or ()))
     if args.command == "report":
         if args.event_limit < 0:
             print("error: --event-limit must be non-negative", file=sys.stderr)
             return 2
+        current_status = (
+            None
+            if args.offline
+            else status_collector(repo=args.repo, repo_path=args.repo_path)
+        )
         report = build_report(
             repo=args.repo,
             repo_path=args.repo_path,
             store_path=args.store_path,
             spend_path=args.spend_path,
             cloud_event_paths=args.cloud_events,
+            current_status=current_status,
             event_limit=args.event_limit,
         )
         output = json.dumps(report, indent=2, sort_keys=True) + "\n" if args.json else render_text(report)
