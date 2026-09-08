@@ -330,8 +330,10 @@ Top-level report fields include:
 - `window.local_history`: start, end, and duration for the local Board history
   used in the report;
 - `current`: current open PR, active lane, blocked PR, stale PR, owner-action,
-  and gate-alert counts. `source`, `observed_at`, and `historical` distinguish
-  live GitHub state from an explicitly labeled historical Board fallback;
+  gate-alert, and `remote_available` state. `source`, `observed_at`, and
+  `historical` distinguish live GitHub state from an explicitly labeled
+  historical Board fallback. Pass `--offline` to skip live collection and use
+  that labeled fallback deliberately;
 - `metrics`: contract-aligned productivity names such as
   `cycle_time_seconds`, `active_time_seconds`, `wait_time_seconds`,
   `reviewer_run_count`, `audit_pass_count`, `audit_blocked_count`,

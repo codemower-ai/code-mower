@@ -92,6 +92,13 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
+def _collect_live_status(*, repo: str, repo_path: str | Path) -> Mapping[str, Any]:
+    """Collect live remote state while preserving the report collector contract."""
+
+    del repo_path  # Lane status inventories machine-wide processes and Boards.
+    return lane_status.collect_status(repo=repo)
+
+
 def _timestamp(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
@@ -1312,7 +1319,7 @@ def render_text(report: Mapping[str, Any]) -> str:
 def main(
     argv: list[str] | None = None,
     *,
-    status_collector: StatusCollector = lane_status.collect_status,
+    status_collector: StatusCollector = _collect_live_status,
 ) -> int:
     parser = argparse.ArgumentParser(prog="code-mower productivity")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1330,13 +1337,22 @@ def main(
         help="metadata-only productivity_summary event file; may be repeated",
     )
     report_parser.add_argument("--event-limit", type=int, default=500)
+    report_parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="skip live GitHub collection and use an explicitly labeled Board snapshot fallback",
+    )
     report_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(list(argv or ()))
     if args.command == "report":
         if args.event_limit < 0:
             print("error: --event-limit must be non-negative", file=sys.stderr)
             return 2
-        current_status = status_collector(repo=args.repo)
+        current_status = (
+            None
+            if args.offline
+            else status_collector(repo=args.repo, repo_path=args.repo_path)
+        )
         report = build_report(
             repo=args.repo,
             repo_path=args.repo_path,

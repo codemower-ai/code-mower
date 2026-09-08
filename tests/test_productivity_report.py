@@ -586,12 +586,18 @@ class ProductivityReportTests(TestCase):
         self.assertEqual(report["cloud_aggregate"]["summary_event_count"], 1)
 
     def test_cli_report_outputs_json_and_text(self) -> None:
+        collector_calls: list[dict[str, object]] = []
+
+        def collect_status(**kwargs: object) -> dict[str, object]:
+            collector_calls.append(kwargs)
+            return _empty_live_status()
+
         with tempfile.TemporaryDirectory() as tmp:
             stdout = StringIO()
             with redirect_stdout(stdout):
                 code = productivity_report.main(
                     ["report", "--repo", "owner/repo", "--repo-path", tmp, "--json"],
-                    status_collector=lambda **_kwargs: _empty_live_status(),
+                    status_collector=collect_status,
                 )
             parsed = json.loads(stdout.getvalue())
 
@@ -599,16 +605,57 @@ class ProductivityReportTests(TestCase):
             with redirect_stdout(text_out):
                 text_code = productivity_report.main(
                     ["report", "--repo", "owner/repo", "--repo-path", tmp],
-                    status_collector=lambda **_kwargs: _empty_live_status(),
+                    status_collector=collect_status,
                 )
 
         self.assertEqual(code, 0)
         self.assertEqual(text_code, 0)
         self.assertEqual(parsed["repo"], "owner/repo")
         self.assertEqual(parsed["current"]["source"], "live_remote")
+        self.assertEqual(
+            collector_calls,
+            [
+                {"repo": "owner/repo", "repo_path": tmp},
+                {"repo": "owner/repo", "repo_path": tmp},
+            ],
+        )
         self.assertIn("Code Mower productivity report for owner/repo", text_out.getvalue())
         self.assertIn("Current source: live GitHub", text_out.getvalue())
         self.assertIn("Next:", text_out.getvalue())
+
+    def test_cli_offline_uses_labeled_historical_fallback_without_collection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store_path = root / "events.jsonl"
+            board_store.append_snapshot(
+                _status(verdict_label="codex-audit-blocked"),
+                path=store_path,
+                now=NOW,
+            )
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                code = productivity_report.main(
+                    [
+                        "report",
+                        "--repo",
+                        "owner/repo",
+                        "--repo-path",
+                        tmp,
+                        "--store-path",
+                        str(store_path),
+                        "--offline",
+                        "--json",
+                    ],
+                    status_collector=lambda **_kwargs: self.fail(
+                        "offline report called live status collector"
+                    ),
+                )
+            parsed = json.loads(stdout.getvalue())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(parsed["current"]["source"], "historical_board_snapshot")
+        self.assertTrue(parsed["current"]["historical"])
+        self.assertFalse(parsed["current"]["remote_available"])
 
     def test_invalid_cloud_event_warning_uses_filename_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
