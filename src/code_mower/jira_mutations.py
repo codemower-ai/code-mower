@@ -159,6 +159,16 @@ LEDGER_STATES = ("applied",)
 COMMENT_CLAIM_PREFIX = "code-mower-comment-v1."
 COMMENT_CLAIM_SCHEMA = "code_mower.jiraCommentClaim.v1"
 
+#: One fixed issue property serializes competing PR associations. Its value
+#: contains only the deterministic Code Mower remote-link global id; no issue
+#: prose, PR title, branch, account, or local identity is retained.
+PR_ASSOCIATION_PROPERTY_KEY = "code-mower-pr-association-v1"
+PR_ASSOCIATION_SCHEMA = "code_mower.jiraPrAssociation.v1"
+PR_ASSOCIATION_BULK_PATH = (
+    "/rest/api/3/issue/properties/" + PR_ASSOCIATION_PROPERTY_KEY
+)
+_JIRA_TASK_PATH_RE = re.compile(r"^/rest/api/3/task/[A-Za-z0-9-]{1,128}$")
+
 #: Closed comment-claim states. ``claimed`` is written by the 201 that
 #: acquired the claim, immediately before the post. ``posted`` is written
 #: after a post this process saw succeed. ``unverified`` records a post whose
@@ -197,8 +207,8 @@ COMMENT_TEMPLATES: Mapping[str, str] = {
     ),
     "pr_merged": ("The GitHub pull request {pr_url} for this issue merged."),
     "pr_blocked": (
-        "Code Mower paused this issue: GitHub pull request {pr_url} is not "
-        "gate-ready. No Jira state was changed beyond this note."
+        "Code Mower recorded that GitHub pull request {pr_url} is not "
+        "gate-ready. Review and merge decisions remain on GitHub."
     ),
 }
 TEMPLATES_REQUIRING_PR = frozenset({"pr_opened", "pr_merged", "pr_blocked"})
@@ -239,6 +249,8 @@ REASON_CODES = frozenset(
         "account_unresolved",
         "issue_out_of_scope",
         "write_guard_unarmed",
+        "stale_milestone",
+        "already_linked_elsewhere",
         "permission_denied",
         "unauthorized",
         "not_found",
@@ -262,6 +274,11 @@ _ERROR_CODE_OUTCOMES: Mapping[str, tuple[str, str]] = {
     "jira_cancelled": ("cancelled", "cancelled"),
     "jira_unavailable": ("failed", "unavailable"),
 }
+
+
+def jira_error_outcome(exc: jira_cloud.JiraApiError) -> tuple[str, str]:
+    """Map one closed Jira transport code to a bounded report outcome."""
+    return _ERROR_CODE_OUTCOMES.get(exc.code, ("failed", "unavailable"))
 
 #: Worst-first, so a report status is the most severe operation outcome.
 #: ``unverified`` outranks ``refused`` because it is the only outcome that
@@ -288,7 +305,13 @@ class MutationRequestError(ValueError):
 #: collapses to ``issue_out_of_scope``, so an unexpected value can only ever
 #: make the refusal broader, never narrower.
 SCOPE_REFUSAL_REASONS = frozenset(
-    {"issue_out_of_scope", "issue_identity_unresolved", "write_guard_unarmed"}
+    {
+        "issue_out_of_scope",
+        "issue_identity_unresolved",
+        "write_guard_unarmed",
+        "stale_milestone",
+        "already_linked_elsewhere",
+    }
 )
 
 
@@ -868,6 +891,15 @@ _WRITE_ALLOW_LIST: tuple[tuple[str, re.Pattern[str]], ...] = (
         "PUT",
         re.compile(
             r"^/rest/api/3/issue/[^/]+/properties/"
+            + re.escape(PR_ASSOCIATION_PROPERTY_KEY)
+            + r"$"
+        ),
+    ),
+    ("PUT", re.compile(r"^" + re.escape(PR_ASSOCIATION_BULK_PATH) + r"$")),
+    (
+        "PUT",
+        re.compile(
+            r"^/rest/api/3/issue/[^/]+/properties/"
             + re.escape(COMMENT_CLAIM_PREFIX)
             + r"[0-9a-f]{32}$"
         ),
@@ -928,6 +960,16 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         # therefore unguarded, but the flag keeps the invariant from being
         # able to recurse even if that ever stops being true.
         self._scope_check_active = False
+        # Optional closed status ids that make the current operation stale.
+        # The apply loop sets this immediately around one operation so the
+        # transport's own fresh scope read closes the race between the
+        # handler's state check and the physical write.
+        self._write_forbidden_status_ids: tuple[str, ...] = ()
+        # PR sync can additionally bind this apply to one Code Mower PR
+        # association. The transport rechecks it immediately before every
+        # write so a competing link added after preflight still fails closed.
+        self._expected_pr_global_id = ""
+        self._pr_association_claim_write_active = False
 
     # -- Armed write scope -----------------------------------------------
 
@@ -955,6 +997,36 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
     def disarm(self) -> None:
         """Withdraw write authorization; every later write is refused."""
         self._write_scope = None
+        self._write_forbidden_status_ids = ()
+        self._expected_pr_global_id = ""
+        self._pr_association_claim_write_active = False
+
+    def require_code_mower_pr_link(self, expected_global_id: str) -> None:
+        """Bind this apply to one expected Code Mower PR association."""
+        self._expected_pr_global_id = jira_cloud.validate_remote_link_global_id(
+            expected_global_id
+        )
+
+    def clear_code_mower_pr_link_requirement(self) -> None:
+        """Clear a PR-sync-only guard without changing other client state."""
+        self._expected_pr_global_id = ""
+        self._pr_association_claim_write_active = False
+
+    def requires_code_mower_pr_association(self, global_id: str) -> bool:
+        """Report whether this apply armed PR-sync association semantics."""
+        return bool(self._expected_pr_global_id == str(global_id or ""))
+
+    def refuse_writes_in_statuses(self, status_ids: Sequence[Any]) -> None:
+        """Refuse the current operation if Jira has reached a later status."""
+        self._write_forbidden_status_ids = tuple(
+            sorted(
+                {
+                    str(status_id)
+                    for status_id in status_ids
+                    if _TRANSITION_ID_RE.fullmatch(str(status_id or ""))
+                }
+            )
+        )
 
     def _require_write_scope(self, path: str) -> None:
         """Re-prove the armed scope, or refuse, before one physical write.
@@ -976,8 +1048,14 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         if scope is None:
             raise WriteScopeRefused("write_guard_unarmed")
         issue_ref, issue_id, project_id = scope
+        bulk_claim = (
+            self._pr_association_claim_write_active
+            and path == PR_ASSOCIATION_BULK_PATH
+        )
         match = _ISSUE_WRITE_PATH_RE.fullmatch(path)
-        if match is None or urllib.parse.unquote(match.group("ref")) != issue_ref:
+        if not bulk_claim and (
+            match is None or urllib.parse.unquote(match.group("ref")) != issue_ref
+        ):
             # A write aimed anywhere but the armed issue is out of scope by
             # construction, and no amount of reading could bring it in.
             raise WriteScopeRefused("issue_out_of_scope")
@@ -991,6 +1069,25 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         violation = _issue_scope_violation(state, project_id, issue_id)
         if violation is not None:
             raise WriteScopeRefused(violation[1])
+        if str(state.get("status_id") or "") in self._write_forbidden_status_ids:
+            raise WriteScopeRefused("stale_milestone")
+        if self._expected_pr_global_id and self.has_conflicting_code_mower_pr_link(
+            issue_ref, self._expected_pr_global_id
+        ):
+            raise WriteScopeRefused("already_linked_elsewhere")
+        if bulk_claim:
+            return
+        if self._expected_pr_global_id and not self.has_remote_link(
+            issue_ref, self._expected_pr_global_id
+        ):
+            claim_path = self._issue_path(
+                issue_ref, f"properties/{PR_ASSOCIATION_PROPERTY_KEY}"
+            )
+            if self._pr_association_claim_write_active and path == claim_path:
+                return
+            claim = self.get_issue_property(issue_ref, PR_ASSOCIATION_PROPERTY_KEY)
+            if _pr_association_global_id(claim) != self._expected_pr_global_id:
+                raise WriteScopeRefused("already_linked_elsewhere")
 
     @staticmethod
     def _is_write_request(method: str, path: str) -> bool:
@@ -1100,6 +1197,156 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         )
         return jira_cloud._bounded_str(data.get("id"), 32)
 
+    def has_conflicting_code_mower_pr_link(
+        self, issue_ref: str, expected_global_id: str
+    ) -> bool:
+        """Refuse a second Code Mower PR association for one Jira issue.
+
+        Jira issues may carry unrelated remote links, so only Code Mower's
+        closed GitHub global-id namespace participates in this check. Link
+        values are compared in memory and never returned or retained.
+        """
+        quoted = urllib.parse.quote(jira_cloud.validate_issue_ref(issue_ref), safe="")
+        expected = jira_cloud.validate_remote_link_global_id(expected_global_id)
+        value = self._request_parsed(
+            "GET",
+            f"/rest/api/3/issue/{quoted}/remotelink",
+            endpoint="remoteLink",
+        )
+        entries = value if isinstance(value, list) else [value]
+        prefix = "code-mower:github:"
+        return any(
+            isinstance(entry, Mapping)
+            and (candidate := jira_cloud._bounded_str(
+                entry.get("globalId"), jira_cloud.MAX_GLOBAL_ID_LENGTH
+            )).startswith(prefix)
+            and candidate != expected
+            for entry in entries
+        )
+
+    def acquire_code_mower_pr_association(
+        self, issue_ref: str, expected_global_id: str
+    ) -> str:
+        """Acquire one issue-level PR association claim without guessing.
+
+        Jira's transactional bulk-property API applies ``hasProperty=false``
+        atomically, unlike the ordinary create-or-replace property PUT. Two
+        competing PRs therefore cannot overwrite one another. The async task
+        is polled to completion and the winner is verified by rereading the
+        property. An interrupted owner can retry the same PR.
+        """
+        expected = jira_cloud.validate_remote_link_global_id(expected_global_id)
+        if expected != self._expected_pr_global_id:
+            raise MutationRequestError("PR association does not match the armed sync")
+        existing = self.get_issue_property(issue_ref, PR_ASSOCIATION_PROPERTY_KEY)
+        if existing is not None:
+            return (
+                "already_acquired"
+                if _pr_association_global_id(existing) == expected
+                else "conflict"
+            )
+        scope = self._write_scope
+        if scope is None:
+            raise WriteScopeRefused("write_guard_unarmed")
+        _, issue_id, _ = scope
+        self._pr_association_claim_write_active = True
+        try:
+            status, headers, _ = self._request_status_headers_parsed(
+                "PUT",
+                PR_ASSOCIATION_BULK_PATH,
+                json_body={
+                    "filter": {
+                        "entityIds": [int(issue_id)],
+                        "hasProperty": False,
+                    },
+                    "value": {
+                        "schema": PR_ASSOCIATION_SCHEMA,
+                        "global_id": expected,
+                    },
+                },
+                endpoint="prAssociationClaim",
+                allow_empty=True,
+                accepted_statuses=frozenset({303}),
+            )
+        finally:
+            self._pr_association_claim_write_active = False
+        if status == 303:
+            task_path = self._jira_task_path(headers)
+            for _ in range(20):
+                task = self.request_json("GET", task_path, endpoint="jiraTask")
+                task_status = str(task.get("status") or "").upper()
+                if task_status == "COMPLETE":
+                    break
+                if task_status in {"CANCELLED", "DEAD", "FAILED"}:
+                    raise jira_cloud.JiraApiError(
+                        "jira_conflict", endpoint="prAssociationClaim"
+                    )
+                self.sleep_fn(0.25)
+            else:
+                raise jira_cloud.JiraApiError(
+                    "jira_unavailable", endpoint="prAssociationClaim"
+                )
+        current = self.get_issue_property(issue_ref, PR_ASSOCIATION_PROPERTY_KEY)
+        return "acquired" if _pr_association_global_id(current) == expected else "conflict"
+
+    def _jira_task_path(self, headers: Mapping[str, str]) -> str:
+        location = next(
+            (str(value) for key, value in headers.items() if key.lower() == "location"),
+            "",
+        )
+        try:
+            parsed = urllib.parse.urlsplit(location)
+        except ValueError:
+            raise jira_cloud.JiraApiError(
+                "jira_unavailable", endpoint="prAssociationClaim"
+            ) from None
+        if parsed.query or parsed.fragment or parsed.username or parsed.password:
+            raise jira_cloud.JiraApiError(
+                "jira_unavailable", endpoint="prAssociationClaim"
+            )
+        if parsed.scheme or parsed.netloc:
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise jira_cloud.JiraApiError(
+                    "jira_unavailable", endpoint="prAssociationClaim"
+                )
+            try:
+                gateway = urllib.parse.urlsplit(self.base_url)
+                site = urllib.parse.urlsplit(self.site_url) if self.site_url else None
+                origin = (parsed.hostname.lower(), parsed.port)
+                gateway_origin = (str(gateway.hostname or "").lower(), gateway.port)
+                site_origin = (
+                    (str(site.hostname or "").lower(), site.port)
+                    if site is not None
+                    else None
+                )
+            except ValueError:
+                raise jira_cloud.JiraApiError(
+                    "jira_unavailable", endpoint="prAssociationClaim"
+                ) from None
+            if origin == gateway_origin:
+                prefix = gateway.path.rstrip("/")
+            elif site_origin is not None and origin == site_origin:
+                prefix = site.path.rstrip("/") if site is not None else ""
+            else:
+                raise jira_cloud.JiraApiError(
+                    "jira_unavailable", endpoint="prAssociationClaim"
+                )
+            if prefix and not parsed.path.startswith(prefix + "/"):
+                raise jira_cloud.JiraApiError(
+                    "jira_unavailable", endpoint="prAssociationClaim"
+                )
+            path = parsed.path[len(prefix):] if prefix else parsed.path
+        else:
+            path = parsed.path
+        gateway_prefix = f"/ex/jira/{self.cloud_id}"
+        if path.startswith(gateway_prefix):
+            path = path[len(gateway_prefix):]
+        if not _JIRA_TASK_PATH_RE.fullmatch(path):
+            raise jira_cloud.JiraApiError(
+                "jira_unavailable", endpoint="prAssociationClaim"
+            )
+        return path
+
     def set_mutation_ledger(self, issue_ref: str, ledger: Mapping[str, Any]) -> None:
         """Write the bounded advisory ledger to this module's own property."""
         payload = _validated_ledger(ledger)
@@ -1177,6 +1424,18 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
 
 
 # -- Comment claims and the advisory ledger ------------------------------
+
+
+def _pr_association_global_id(claim: Mapping[str, Any] | None) -> str:
+    """Return one valid Code Mower PR association id, else an empty value."""
+    if not isinstance(claim, Mapping) or claim.get("schema") != PR_ASSOCIATION_SCHEMA:
+        return ""
+    candidate = str(claim.get("global_id") or "")
+    try:
+        validated = jira_cloud.validate_remote_link_global_id(candidate)
+    except ValueError:
+        return ""
+    return validated if validated.startswith("code-mower:github:") else ""
 
 
 def _claim_owner_token() -> str:
@@ -1314,7 +1573,7 @@ _PREFLIGHT_ABORT_STATUSES = ("refused", "blocked", "cancelled", "failed")
 
 
 def _fail_from_error(operation: _Operation, exc: jira_cloud.JiraApiError) -> None:
-    status, reason = _ERROR_CODE_OUTCOMES.get(exc.code, ("failed", "unavailable"))
+    status, reason = jira_error_outcome(exc)
     operation.status = status
     operation.reason = reason
 
@@ -1521,6 +1780,12 @@ def _apply_pending(
         if violation is not None:
             operation.status, operation.reason = violation
             return _abort()
+        skip_status_ids = tuple(operation.detail.get("skip_if_status_ids") or ())
+        if str(state.get("status_id") or "") in skip_status_ids:
+            operation.status = "already_applied"
+            operation.reason = "stale_milestone"
+            continue
+        client.refuse_writes_in_statuses(skip_status_ids)
         try:
             handler = _HANDLERS[operation.operation]
             ledger = handler(operation, client, issue_ref, state, ledger)
@@ -1545,6 +1810,8 @@ def _apply_pending(
             operation.status = "blocked"
             operation.reason = "rejected"
             return _abort()
+        finally:
+            client.refuse_writes_in_statuses(())
         if operation.status not in _CONTINUING_STATUSES:
             return _abort()
 
@@ -1669,6 +1936,14 @@ def _apply_link(
         operation.status = "already_applied"
         operation.reason = "already_linked"
         return _record(ledger, operation, "applied")
+    global_id = str(operation.detail.get("global_id") or "")
+    if client.requires_code_mower_pr_association(global_id):
+        claim = client.acquire_code_mower_pr_association(issue_ref, global_id)
+        operation.detail["association_claim"] = claim
+        if claim == "conflict":
+            operation.status = "blocked"
+            operation.reason = "already_linked_elsewhere"
+            return ledger
     client.link_pull_request(issue_ref, str(operation.detail.get("url") or ""))
     operation.status = "applied"
     operation.reason = "ok"
@@ -1969,7 +2244,140 @@ def _parser() -> argparse.ArgumentParser:
     mutate.add_argument("--provider-profile", default="")
     mutate.add_argument("--provider-config-dir", default="")
     mutate.add_argument("--http-timeout", type=float, default=jira_cloud.REQUEST_TIMEOUT_SECONDS)
+    sync = subparsers.add_parser(
+        "pr-sync",
+        help="sync one Jira issue with one GitHub PR milestone (issue #802)",
+    )
+    sync.add_argument("config", nargs="?", default="code-mower.yml")
+    sync.add_argument(
+        "--milestone",
+        required=True,
+        choices=("opened", "updated", "blocked", "green", "merged", "closed_unmerged"),
+        help="GitHub/Code Mower lifecycle milestone to synchronize",
+    )
+    sync.add_argument("--pr-url", required=True, help="GitHub pull request URL")
+    sync.add_argument(
+        "--branch", default="",
+        help="PR branch name carrying the Jira marker (bounded metadata only)",
+    )
+    sync.add_argument(
+        "--pr-title", default="",
+        help="PR title whose leading token may carry the Jira marker",
+    )
+    sync.add_argument(
+        "--pr-author",
+        required=True,
+        help="GitHub login to verify against tracker.jira_cloud.sync.trusted_pr_authors",
+    )
+    sync.add_argument(
+        "--issue", default="",
+        help="explicit Jira issue id or key; must match the PR marker",
+    )
+    sync.add_argument(
+        "--apply",
+        action="store_true",
+        help="perform the plan; also requires tracker.jira_cloud.mutations.writes_enabled",
+    )
+    sync.add_argument("--json", action="store_true")
+    sync.add_argument(
+        "--plan-out", default="", help="retain the bounded sync report at this path"
+    )
+    sync.add_argument("--provider-credential-file", default="")
+    sync.add_argument("--provider-profile", default="")
+    sync.add_argument("--provider-config-dir", default="")
+    sync.add_argument("--http-timeout", type=float, default=jira_cloud.REQUEST_TIMEOUT_SECONDS)
     return parser
+
+
+def _render_sync_text(report: Mapping[str, Any]) -> str:
+    pr = report.get("pr") if isinstance(report.get("pr"), Mapping) else {}
+    lines = [
+        "Code Mower Jira PR sync",
+        f"Milestone: {report.get('milestone')}",
+        f"Status: {report.get('status')} ({report.get('reason')})",
+        f"Issue: {report.get('issue_key') or '-'}",
+        f"PR: {pr.get('url') or '-'}",
+        f"Transition category: {report.get('transition_category') or '-'}",
+        f"Comment template: {report.get('comment_template') or '-'}",
+        f"Gate authority: {report.get('gate_authority')} (jira impact: {report.get('gate_impact')})",
+        f"Jira write attempts: {report.get('write_request_count')}",
+        f"Next action: {report.get('next_action')}",
+    ]
+    return "\n".join(lines)
+
+
+def _run_pr_sync(args: argparse.Namespace, env: Mapping[str, str] | None,
+                 client_factory: ClientFactory | None) -> int:
+    from . import jira_pr_sync as pr_sync
+
+    try:
+        config = code_mower_config.load_config(Path(args.config))
+    except code_mower_config.ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        settings = resolve_mutation_settings(config)
+        report = pr_sync.build_sync_plan(
+            config,
+            milestone=args.milestone,
+            pr_url=args.pr_url,
+            branch=args.branch or "",
+            pr_title=args.pr_title or "",
+            issue_ref=args.issue or "",
+            pr_author=args.pr_author,
+            apply_requested=bool(args.apply),
+        )
+    except MutationRequestError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    plan = report.get("mutation_plan")
+    has_pending = isinstance(plan, Mapping) and any(
+        operation.get("status") == "planned" for operation in plan.get("operations") or []
+    )
+    if isinstance(plan, Mapping) and plan.get("mode") == "apply" and has_pending:
+        resolution = jira_cloud.resolve_jira_credentials(
+            credential_file=Path(args.provider_credential_file)
+            if args.provider_credential_file
+            else None,
+            profile=args.provider_profile,
+            config_dir=Path(args.provider_config_dir) if args.provider_config_dir else None,
+            env=env,
+        )
+        if not resolution.has_credentials:
+            print(f"error: {resolution.message}", file=sys.stderr)
+            print(f"remediation: {resolution.remediation}", file=sys.stderr)
+            return 1
+        factory = client_factory or _default_client_factory
+        try:
+            client = factory(
+                cloud_id=settings.cloud_id,
+                email=resolution.email,
+                token=resolution.token,
+                site_url=settings.site_url,
+                timeout_seconds=float(args.http_timeout),
+            )
+        except (TypeError, ValueError):
+            print("error: Jira tracker identity is malformed", file=sys.stderr)
+            return 1
+        report = pr_sync.apply_sync_plan(report, client)
+
+    if args.plan_out:
+        try:
+            Path(args.plan_out).write_text(
+                json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            report["plan_retained"] = True
+        except OSError:
+            report["plan_retained"] = False
+            print("error: unable to retain the plan at the requested path", file=sys.stderr)
+
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(_render_sync_text(report))
+    return 0 if report["status"] in ("planned", "ready", "applied", "already_applied") else 1
 
 
 def main(
@@ -1979,6 +2387,9 @@ def main(
     env: Mapping[str, str] | None = None,
 ) -> int:
     args = _parser().parse_args(list(sys.argv[1:] if argv is None else argv))
+
+    if args.command == "pr-sync":
+        return _run_pr_sync(args, env, client_factory)
 
     try:
         config = code_mower_config.load_config(Path(args.config))

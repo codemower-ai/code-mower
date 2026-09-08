@@ -403,6 +403,36 @@ with `--plan-out` are bounded metadata only: identity, closed reason codes,
 fingerprints, and counts. No issue prose, Jira response payload, exception
 text, credential, account email, or absolute path is printed or retained.
 
+## Jira PR sync
+
+`src/code_mower/jira_pr_sync.py` synchronizes one configured Jira work item
+with one GitHub PR milestone (issue #802) through the guarded mutation
+surface above — `code-mower tracker pr-sync --milestone
+opened|updated|blocked|green|merged|closed_unmerged --pr-url ... --branch
+... --pr-author LOGIN [--apply]` — so both write guards, the configured
+transition-id map, the `tracker.jira_cloud.sync.trusted_pr_authors` allow-list,
+the closed comment templates, and the replay protection apply unchanged. The
+authoritative marker comes only from the branch name or the leading PR title
+token (never bodies, comments, source, or diffs); every live milestone first
+refuses a conflicting Code Mower PR association with zero writes, then verifies
+the single PR remote link before applying any transition or comment. The
+association is rechecked at the transport
+boundary immediately before every physical write. A fixed, metadata-only Jira
+issue-property claim uses Jira's transactional bulk-property filter to set the
+owner only when the property is absent, serializing initially unlinked competing
+PRs without last-writer-wins replacement; an interrupted claim can be resumed
+only by that same PR identity. Comments go out only on
+opened/blocked/merged,
+and ambiguous or mismatched identity fails closed to an owner action.
+Duplicate events and missed-event recovery converge to `already_applied`;
+an `opened` event cannot move a blocked or done issue backward, and a
+`blocked` event cannot move a done issue backward. Those stale-event guards
+require complete later-state mappings and are rechecked at the transport
+boundary before each physical write. Jira failures stay in the sync report
+and never touch gate state. Offline
+tests (`tests/test_jira_pr_sync.py`) cover every milestone, retry, and
+recovery. Sync reports are bounded metadata only.
+
 A live write remains owner-authorized and disposable: enable
 `writes_enabled` on a scratch repository config pointed at a disposable Jira
 issue, run the command once without `--apply` to review the plan, then once

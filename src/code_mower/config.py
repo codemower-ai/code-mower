@@ -631,6 +631,24 @@ def _validate_tracker_jira_cloud(
                         )
                     )
 
+    sync = jira_map.get("sync")
+    if sync is not None:
+        sync_path = f"{path}.sync"
+        sync_map = _as_mapping(sync, sync_path, issues)
+        for key in set(sync_map) - {"trusted_pr_authors"}:
+            issues.append(
+                ConfigIssue(
+                    f"{sync_path}.{key}",
+                    "must be trusted_pr_authors",
+                )
+            )
+        if "trusted_pr_authors" in sync_map:
+            _validate_github_login_items(
+                sync_map.get("trusted_pr_authors"),
+                f"{sync_path}.trusted_pr_authors",
+                issues,
+            )
+
     extra_keys = set(jira_map) - {
         "site_url",
         "cloud_id",
@@ -641,6 +659,7 @@ def _validate_tracker_jira_cloud(
         "status_category_map",
         "field_mappings",
         "mutations",
+        "sync",
     }
     for key in extra_keys:
         issues.append(ConfigIssue(f"{path}.{key}", "unknown tracker.jira_cloud configuration key"))
