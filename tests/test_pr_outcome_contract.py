@@ -131,14 +131,28 @@ class PrOutcomeContractTests(unittest.TestCase):
         with self.assertRaisesRegex(CloudBundleError, "cannot precede merged_at"):
             validate_cloud_event(event)
 
+    def test_accepts_legacy_v1_without_observation_version(self) -> None:
+        # Historical valid v1 events predate the observation-version
+        # dimension; its omission must remain valid.
+        event = copy.deepcopy(_fixture()["pr_outcome_events"][0])
+        del event["dimensions"]["pr_outcome_observation_version"]
+        validate_cloud_event(event)
+
+        legacy = _fixture()["legacy_pr_outcome_events"][0]
+        self.assertNotIn(
+            "pr_outcome_observation_version", legacy["dimensions"]
+        )
+        validate_cloud_event(legacy)
+
+    def test_accepts_producer_supplied_observation_version(self) -> None:
+        event = copy.deepcopy(_fixture()["pr_outcome_events"][0])
+        self.assertIn(
+            "pr_outcome_observation_version", event["dimensions"]
+        )
+        validate_cloud_event(event)
+
     def test_rejects_malformed_observation_version(self) -> None:
         base = copy.deepcopy(_fixture()["pr_outcome_events"][0])
-        del base["dimensions"]["pr_outcome_observation_version"]
-        with self.assertRaisesRegex(
-            CloudBundleError, "pr_outcome_observation_version"
-        ):
-            validate_cloud_event(base)
-
         base["dimensions"]["pr_outcome_observation_version"] = ""
         with self.assertRaisesRegex(
             CloudBundleError, "pr_outcome_observation_version"

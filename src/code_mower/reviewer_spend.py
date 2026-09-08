@@ -39,10 +39,12 @@ def utc_now() -> str:
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 
-def load_spend_file(path: Path) -> dict[str, Any]:
+def load_spend_file(path: Path, *, required: bool = False) -> dict[str, Any]:
     try:
         payload = json.loads(path.expanduser().read_text(encoding="utf-8"))
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
+        if required:
+            raise ValueError("reviewer spend file is missing") from exc
         return {"schema": SPEND_SCHEMA, "profiles": {}, "runs": []}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"unable to read reviewer spend file {path}: {exc}") from exc

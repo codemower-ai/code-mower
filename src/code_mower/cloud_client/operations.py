@@ -126,6 +126,17 @@ def build_catch_up_summary(
     }
 
 
+def _invalid_spend_ledger_error() -> CloudBundleError:
+    """Return the bounded, path-free error for an unusable explicit ledger."""
+
+    return CloudBundleError(
+        "the explicitly requested reviewer spend ledger could not provide "
+        "spend evidence; aborting export/upload rather than reporting "
+        "coverage without it. Supply a readable, regular JSON ledger file "
+        "or omit the ledger path to use the optional default ledger."
+    )
+
+
 def _reviewer_spend_events(
     *,
     repo_path: Path,
@@ -135,18 +146,39 @@ def _reviewer_spend_events(
     install_id: str,
     source: str,
     preserve_unattributable: bool = False,
+    require_valid_spend: bool = False,
 ) -> list[dict[str, Any]]:
-    resolved_spend_path = spend_path or repo_path / reviewer_spend.DEFAULT_SPEND_PATH
-    if not resolved_spend_path.is_file():
-        return []
-    return reviewer_spend.spend_runs_to_events(
-        reviewer_spend.load_spend_file(resolved_spend_path),
-        repo_slug=repo_slug,
-        team_id=team_id,
-        install_id=install_id,
-        source=source,
-        preserve_unattributable=preserve_unattributable,
+    explicit_spend = spend_path is not None
+    resolved_spend_path = (
+        Path(spend_path).expanduser()
+        if explicit_spend
+        else repo_path / reviewer_spend.DEFAULT_SPEND_PATH
     )
+    if explicit_spend and require_valid_spend:
+        # An explicitly requested ledger must fail closed: a missing path,
+        # directory, symlink, or other non-regular file cannot silently
+        # degrade to "no reviewer evidence" and report complete coverage.
+        if resolved_spend_path.is_symlink() or not resolved_spend_path.is_file():
+            raise _invalid_spend_ledger_error()
+    elif not resolved_spend_path.is_file():
+        return []
+    try:
+        return reviewer_spend.spend_runs_to_events(
+            reviewer_spend.load_spend_file(
+                resolved_spend_path, required=explicit_spend and require_valid_spend
+            ),
+            repo_slug=repo_slug,
+            team_id=team_id,
+            install_id=install_id,
+            source=source,
+            preserve_unattributable=preserve_unattributable,
+        )
+    except (OSError, ValueError) as exc:
+        if explicit_spend and require_valid_spend:
+            # ``load_spend_file`` diagnostics embed the raw path; the
+            # fail-closed error stays bounded and path-free.
+            raise _invalid_spend_ledger_error() from exc
+        raise
 
 
 def _mapping(value: object) -> Mapping[str, Any]:
@@ -942,8 +974,13 @@ def pr_outcomes_upload(
                 # pr-outcomes fails closed: malformed or unattributable reviewer
                 # spend rows are preserved as unattributed evidence so they
                 # suppress ``complete`` coverage instead of being silently
-                # dropped.
+                # dropped.  An explicitly requested ledger path that is
+                # missing, non-regular, unreadable, or malformed aborts the
+                # command rather than silently reporting coverage without it;
+                # only the absent optional default ledger may mean "no
+                # reviewer evidence".
                 preserve_unattributable=True,
+                require_valid_spend=True,
             )
 
             run_events: list[dict[str, Any]] = []

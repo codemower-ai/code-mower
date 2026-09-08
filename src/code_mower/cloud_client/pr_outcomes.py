@@ -775,8 +775,11 @@ def validate_pr_outcome_payload(event: Mapping[str, Any]) -> None:
         raise CloudBundleError(
             "pr_outcome dimension 'evidence_incomplete' must be a boolean"
         )
+    # ``pr_outcome_observation_version`` did not exist on historical valid v1
+    # events, so it remains optional for backward compatibility: absent is
+    # accepted, but a present value must be a non-empty string.
     observation_version = dimensions.get("pr_outcome_observation_version")
-    if (
+    if observation_version is not None and (
         not isinstance(observation_version, str)
         or not observation_version.strip()
     ):

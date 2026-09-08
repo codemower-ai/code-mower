@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -1224,6 +1224,183 @@ class PrOutcomeFailClosedTests(unittest.TestCase):
             message = str(ctx.exception)
             self.assertIn("observation state", message)
             self.assertNotIn(str(repo_path), message)
+
+    def _upload_with_spend(
+        self,
+        repo_path: Path,
+        spend_path: Path | None,
+    ) -> dict[str, object]:
+        with mock.patch(
+            "code_mower.cloud_client.operations.run_gh_pr_list",
+            return_value=[self._merged_pr("1")],
+        ):
+            return pr_outcomes_upload(
+                repo_path=repo_path,
+                output_dir=repo_path / "bundle",
+                repo_slug="owner/repo",
+                team_id="",
+                install_id="",
+                source="unit-test",
+                limit=10,
+                endpoint="https://codemower.example.com/api/upload",
+                token_env="CODE_MOWER_TEST_TOKEN",
+                yes=False,
+                timeout=1.0,
+                spend_path=spend_path,
+            )
+
+    def _assert_invalid_spend_aborts(
+        self, repo_path: Path, spend_path: Path
+    ) -> None:
+        with mock.patch(
+            "code_mower.cloud_client.operations.run_gh_pr_list",
+            return_value=[self._merged_pr("1")],
+        ), mock.patch(
+            "code_mower.cloud_client.operations.build_cloud_bundle"
+        ) as bundle:
+            with self.assertRaises(CloudBundleError) as ctx:
+                pr_outcomes_upload(
+                    repo_path=repo_path,
+                    output_dir=repo_path / "bundle",
+                    repo_slug="owner/repo",
+                    team_id="",
+                    install_id="",
+                    source="unit-test",
+                    limit=10,
+                    endpoint="https://codemower.example.com/api/upload",
+                    token_env="CODE_MOWER_TEST_TOKEN",
+                    yes=False,
+                    timeout=1.0,
+                    spend_path=spend_path,
+                )
+        bundle.assert_not_called()
+        message = str(ctx.exception)
+        self.assertIn("spend ledger", message)
+        self.assertNotIn(str(repo_path), message)
+        self.assertNotIn(str(spend_path), message)
+
+    def test_explicit_missing_spend_ledger_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            self._assert_invalid_spend_aborts(
+                repo_path, repo_path / "missing-spend.json"
+            )
+
+    def test_explicit_directory_spend_ledger_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            spend_dir = repo_path / "spend-dir"
+            spend_dir.mkdir()
+            self._assert_invalid_spend_aborts(repo_path, spend_dir)
+
+    def test_explicit_symlink_spend_ledger_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            target = repo_path / "real-spend.json"
+            target.write_text(
+                json.dumps({"schema": reviewer_spend.SPEND_SCHEMA, "runs": []}),
+                encoding="utf-8",
+            )
+            link = repo_path / "spend-link.json"
+            link.symlink_to(target)
+            self._assert_invalid_spend_aborts(repo_path, link)
+
+    def test_explicit_malformed_spend_ledger_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            spend_path = repo_path / "bad-spend.json"
+            spend_path.write_text("{not json", encoding="utf-8")
+            self._assert_invalid_spend_aborts(repo_path, spend_path)
+
+    def test_explicit_non_object_spend_ledger_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            spend_path = repo_path / "list-spend.json"
+            spend_path.write_text('["not", "an", "object"]', encoding="utf-8")
+            self._assert_invalid_spend_aborts(repo_path, spend_path)
+
+    def test_cli_explicit_missing_spend_ledger_exits_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            spend_path = repo_path / "missing-spend.json"
+            with mock.patch(
+                "code_mower.cloud_client.operations.run_gh_pr_list",
+                return_value=[self._merged_pr("1")],
+            ):
+                out = StringIO()
+                err = StringIO()
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = cloud_module.main(
+                        [
+                            "pr-outcomes",
+                            "--repo-path",
+                            str(repo_path),
+                            "--repo-slug",
+                            "owner/repo",
+                            "--output-dir",
+                            str(repo_path / "bundle"),
+                            "--endpoint",
+                            "https://codemower.example.com/api/upload",
+                            "--spend",
+                            str(spend_path),
+                            "--json",
+                        ]
+                    )
+            self.assertEqual(code, 1)
+            self.assertEqual(out.getvalue().strip(), "")
+            self.assertIn("spend ledger", err.getvalue())
+            self.assertNotIn(str(spend_path), err.getvalue())
+            self.assertNotIn(str(repo_path), err.getvalue())
+
+    def test_omitted_spend_ledger_uses_absent_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (builder_dir / "devin-local-pr-1-aa11.cloud-event.json").write_text(
+                json.dumps(_builder_run_event("b1", "1", 0.10)),
+                encoding="utf-8",
+            )
+
+            result = self._upload_with_spend(repo_path, None)
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["errors"], [])
+            events = self._emitted_events(result)
+            self.assertEqual(
+                events["1"]["dimensions"]["cost_coverage"], "complete"
+            )
+
+    def test_explicit_valid_spend_ledger_is_included(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            spend_path = repo_path / "custom-spend.json"
+            spend_path.write_text(
+                json.dumps(
+                    {
+                        "schema": reviewer_spend.SPEND_SCHEMA,
+                        "runs": [
+                            {
+                                "run_id": "run-1",
+                                "lane": "claude-audit",
+                                "repo": "owner/repo",
+                                "pr_number": 1,
+                                "head_sha": "abc123",
+                                "created_at": "2026-09-03T11:00:00Z",
+                                "cost_usd": 0.05,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = self._upload_with_spend(repo_path, spend_path)
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["errors"], [])
+            events = self._emitted_events(result)
+            self.assertEqual(
+                events["1"]["dimensions"]["cost_coverage"], "complete"
+            )
 
 
 class PrOutcomeIdentityP2Tests(unittest.TestCase):

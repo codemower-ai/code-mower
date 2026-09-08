@@ -215,6 +215,9 @@ still counted as expected attempts with unknown cost so they cannot inflate
 observation content, making repeated uploads idempotent, while a deterministic
 digest of the observed run evidence is reported as
 `dimensions.pr_outcome_observation_version` and included in the `event_id`.
+The observation-version dimension is optional: historical valid
+`code_mower.prOutcome.v1` events predate it, so consumers must accept its
+absence, though a present value must be a non-empty string.
 The command records a local metadata-only observation state
 (`.code-mower/pr-outcome-observations.json`, fingerprints and timestamps only)
 so an unchanged retry reproduces the same `created_at` and `event_id`, and
