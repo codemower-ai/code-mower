@@ -2396,6 +2396,13 @@ def config_with_jira_tracker(config: Mapping[str, Any]) -> dict[str, Any]:
     return data
 
 
+def config_with_github_tracker(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a copy using the default GitHub issue queue."""
+    data = dict(config)
+    data.pop("tracker", None)
+    return data
+
+
 PACKAGED_STARTER_CONFIG_NAME = "code-mower.example.yml"
 
 
@@ -2458,6 +2465,8 @@ def render_init_plan(
         )
     if tracker == "jira_cloud":
         config = config_with_jira_tracker(config)
+    elif tracker == "github":
+        config = config_with_github_tracker(config)
     issues = validate_config(config)
     if issues:
         raise ConfigError(f"invalid Code Mower config:\n{_format_issues(issues)}")
@@ -2552,7 +2561,7 @@ def render_init_plan(
         }
         if Path(config_path).name == "code-mower.example.yml":
             adoption_config_entry["package_copy_from"] = "templates/code-mower.example.yml"
-        if participants is not None or tracker == "jira_cloud":
+        if participants is not None or tracker is not None:
             adoption_config_entry["config_data"] = config
         generated_files.append(adoption_config_entry)
 
@@ -2969,7 +2978,7 @@ def render_init_plan(
         "merge_authority_lanes": merge_authority_lanes,
         "informational_lanes": informational_lanes,
         "merge_authority_excludes_author": json.loads(author_exclusion_json)["enabled"],
-        "tracker": tracker or (
+        "tracker": (
             "jira_cloud"
             if isinstance(config.get("tracker"), Mapping)
             and config["tracker"].get("kind") == "jira_cloud"

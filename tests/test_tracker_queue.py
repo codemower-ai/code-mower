@@ -93,6 +93,35 @@ class TrackerQueueTests(unittest.TestCase):
             tracker_queue.resolve_jira_queue_reader(config(), env={})
         )
 
+    def test_default_jira_client_reads_a_sanitized_queue_page(self):
+        raw = issue()
+        runner = Mock(
+            return_value=(
+                200,
+                {},
+                json.dumps({"issues": [raw], "isLast": True}).encode("utf-8"),
+            )
+        )
+        reader = tracker_queue.resolve_jira_queue_reader(
+            config(),
+            env={
+                jira_cloud.JIRA_EMAIL_ENV: "operator@example.com",
+                jira_cloud.JIRA_TOKEN_ENV: "token-value",
+            },
+            client_factory=lambda **kwargs: jira_cloud.JiraReadClient(
+                **kwargs, http_runner=runner
+            ),
+        )
+
+        result = queue(reader)
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["freshness"], "live")
+        self.assertEqual(result["items"][0]["identity"]["issue_key"], "ABC-1")
+        request_body = json.loads(runner.call_args.args[3])
+        self.assertNotIn("summary", request_body["fields"])
+        self.assertNotIn(PROSE, json.dumps(result))
+
     def test_controller_cli_wires_profile_to_live_jira_queue(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "code-mower.yml"

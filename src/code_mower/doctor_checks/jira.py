@@ -706,7 +706,7 @@ def _check_jira_mutations(
     if transitions:
         needed_ops.add("transition")
     op_permissions = {
-        "assign": "EDIT_ISSUES",
+        "assign": "ASSIGN_ISSUES",
         "transition": "TRANSITION_ISSUES",
         "comment": "ADD_COMMENTS",
         "link": "EDIT_ISSUES",

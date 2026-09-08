@@ -923,6 +923,7 @@ class ReadPrimitiveTests(unittest.TestCase):
             {
                 "BROWSE_PROJECTS": True,
                 "CREATE_ISSUES": True,
+                "ASSIGN_ISSUES": False,
                 "EDIT_ISSUES": False,
                 "TRANSITION_ISSUES": False,
                 "ADD_COMMENTS": False,
@@ -935,6 +936,7 @@ class ReadPrimitiveTests(unittest.TestCase):
             [
                 "BROWSE_PROJECTS",
                 "CREATE_ISSUES",
+                "ASSIGN_ISSUES",
                 "EDIT_ISSUES",
                 "TRANSITION_ISSUES",
                 "ADD_COMMENTS",

@@ -718,9 +718,12 @@ def collect_controller_report(
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     jira_reader: tracker_queue.JiraQueueReader | None = None,
     tracker_links: Mapping[tuple[str, str, str], int] | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    config = code_mower_config.load_config(config_path)
-    issues = code_mower_config.validate_config(config)
+    resolved_config = (
+        config if config is not None else code_mower_config.load_config(config_path)
+    )
+    issues = code_mower_config.validate_config(resolved_config)
     if issues:
         issue_text = "; ".join(f"{issue.path}: {issue.message}" for issue in issues)
         raise code_mower_config.ConfigError(f"invalid Code Mower config: {issue_text}")
@@ -728,13 +731,13 @@ def collect_controller_report(
         repo=options.repo,
         gh_json_runner=gh_json_runner,
         command_runner=command_runner,
-        tracker_config=config,
+        tracker_config=resolved_config,
         jira_reader=jira_reader,
         tracker_links=tracker_links,
     )
     ready_issues = _collect_ready_issues(
         repo=options.repo,
-        config=config,
+        config=resolved_config,
         gh_json_runner=gh_json_runner,
         issue_limit=options.issue_limit,
         tracker_view=status_report.get("tracker"),
@@ -742,7 +745,7 @@ def collect_controller_report(
     return evaluate_controller_report(
         status_report=status_report,
         ready_issues=ready_issues,
-        config=config,
+        config=resolved_config,
         options=options,
     )
 
@@ -892,6 +895,7 @@ def main(
             gh_json_runner=gh_json_runner,
             command_runner=command_runner,
             jira_reader=jira_reader,
+            config=config,
         )
         event = build_controller_event(
             report=report,

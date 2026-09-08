@@ -178,7 +178,8 @@ The adoption check evaluates four Jira readiness checks:
    matching, checks project access, fetches status categories, and validates
    `BROWSE_PROJECTS` permission.
 4. **`tracker.jira.mutations`**: Checks write guards, verifies permissions for
-   allowed operations (`EDIT_ISSUES`, `TRANSITION_ISSUES`, `ADD_COMMENTS`), and
+   allowed operations (`ASSIGN_ISSUES`, `EDIT_ISSUES`, `TRANSITION_ISSUES`,
+   `ADD_COMMENTS`), and
    confirms transition targets match `status_category_map`.
 
 ### Read-only queue and controller preview
@@ -265,7 +266,7 @@ To revert Jira integration at any time:
 |---|---|---|
 | `tracker.jira.credentials: fail` | Missing or insecure credential file | Verify `JIRA_API_EMAIL` and `JIRA_API_TOKEN` are exported, or check `chmod 0600 ~/.config/code-mower/jira.env`. |
 | `tracker.jira.read: fail (forbidden)` | Account lacks project access | Grant the Atlassian user account `BROWSE_PROJECTS` on the target project. |
-| `tracker.jira.mutations: fail (permission_denied)` | Missing edit or transition permissions | Grant `EDIT_ISSUES`, `TRANSITION_ISSUES`, and `ADD_COMMENTS` permissions in the project permission scheme. |
+| `tracker.jira.mutations: fail (permission_denied)` | Missing assignment, edit, transition, or comment permissions | Grant the listed `ASSIGN_ISSUES`, `EDIT_ISSUES`, `TRANSITION_ISSUES`, or `ADD_COMMENTS` permissions in the project permission scheme. |
 | `target_status_not_configured` | Configured transition lacks destination status mapping | Ensure `status_category_map` defines status IDs for the transition's lifecycle category. |
 | `transition_target_mismatch` | Jira workflow leads to an unmapped status | Update `status_category_map` to include the target status ID of the workflow transition. |
 | `rate_limited` | Jira gateway capacity reached | Doctor logs a warning and defers probes without writing. Wait briefly and retry. |

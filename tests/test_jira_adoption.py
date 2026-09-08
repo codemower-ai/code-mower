@@ -171,6 +171,21 @@ class JiraInitTests(unittest.TestCase):
         self.assertEqual(plan.data.get("tracker"), "jira_cloud")
         self.assertIn("Work tracker:", plan.text)
 
+    def test_explicit_github_tracker_removes_existing_jira_config(self) -> None:
+        base_cfg = code_mower_config.load_config(CONFIG_TEMPLATE)
+        configured = code_mower_init.config_with_jira_tracker(base_cfg)
+
+        plan = code_mower_init.render_init_plan(configured, tracker="github")
+
+        self.assertEqual(plan.data.get("tracker"), "github")
+        self.assertNotIn("Work tracker:", plan.text)
+        config_entry = next(
+            item
+            for item in plan.data["generated_files"]
+            if item["path"] == "code-mower.yml"
+        )
+        self.assertNotIn("tracker", config_entry["config_data"])
+
     def test_init_apply_writes_valid_config_and_next_steps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             orig = os.getcwd()
@@ -201,7 +216,7 @@ class JiraInitTests(unittest.TestCase):
 
 
 class JiraDoctorAdoptionTests(unittest.TestCase):
-    def test_plain_doctor_includes_configured_jira_without_github_stage(self) -> None:
+    def test_plain_doctor_does_not_probe_configured_jira(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "code-mower.yml"
             configured = code_mower_init.config_with_jira_tracker(
@@ -220,8 +235,8 @@ class JiraDoctorAdoptionTests(unittest.TestCase):
             )
 
         by_name = {check.name: check for check in report.checks}
-        self.assertEqual(by_name[jira_doctor.JIRA_CONFIG_CHECK].status, "pass")
-        self.assertEqual(by_name[jira_doctor.JIRA_CREDENTIALS_CHECK].status, "fail")
+        self.assertNotIn(jira_doctor.JIRA_CONFIG_CHECK, by_name)
+        self.assertNotIn(jira_doctor.JIRA_CREDENTIALS_CHECK, by_name)
         self.assertNotIn("github.repo", by_name)
 
     def test_doctor_adoption_four_jira_checks_pass(self) -> None:
@@ -258,6 +273,7 @@ class JiraDoctorAdoptionTests(unittest.TestCase):
             "globalPermissions": [],
             "projectPermissions": [
                 {"issues": [], "permission": "BROWSE_PROJECTS", "projects": [10001]},
+                {"issues": [], "permission": "ASSIGN_ISSUES", "projects": [10001]},
                 {"issues": [], "permission": "EDIT_ISSUES", "projects": [10001]},
                 {"issues": [], "permission": "TRANSITION_ISSUES", "projects": [10001]},
             ],
@@ -283,6 +299,44 @@ class JiraDoctorAdoptionTests(unittest.TestCase):
         mut = by_name[jira_doctor.JIRA_MUTATIONS_CHECK]
         self.assertEqual(mut.status, "pass")
         self.assertIn("writes disabled by config guard", mut.message)
+
+    def test_doctor_assign_requires_assign_issues_permission(self) -> None:
+        cfg = sample_jira_config(
+            mutations={
+                "writes_enabled": False,
+                "allowed_operations": ["assign"],
+                "transitions": {},
+            },
+        )
+        permissions = {
+            "globalPermissions": [],
+            "projectPermissions": [
+                {"issues": [], "permission": "BROWSE_PROJECTS", "projects": [10001]},
+                {"issues": [], "permission": "EDIT_ISSUES", "projects": [10001]},
+            ],
+        }
+        runner = FakeHttp(
+            [
+                http_response(load_fixture("server_info.json")),
+                http_response(load_fixture("project.json")),
+                http_response(load_fixture("statuses.json")),
+                http_response(load_fixture("status_categories.json")),
+                http_response(permissions),
+                http_response(load_fixture("search_page2.json")),
+            ]
+        )
+        checks = jira_doctor.check_jira_tracker_readiness(
+            config=cfg,
+            env={jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN},
+            client_factory=make_client_factory(runner),
+        )
+        mutation_check = {
+            check.name: check for check in checks
+        }[jira_doctor.JIRA_MUTATIONS_CHECK]
+        self.assertEqual(mutation_check.status, "fail")
+        self.assertEqual(
+            mutation_check.detail.get("missing_permissions"), ["ASSIGN_ISSUES"]
+        )
 
     def test_doctor_mutations_fails_on_missing_permission(self) -> None:
         cfg = sample_jira_config(
@@ -449,6 +503,7 @@ class JiraAdoptionRehearsalFlowTests(unittest.TestCase):
             "globalPermissions": [],
             "projectPermissions": [
                 {"issues": [], "permission": "BROWSE_PROJECTS", "projects": [10001]},
+                {"issues": [], "permission": "ASSIGN_ISSUES", "projects": [10001]},
                 {"issues": [], "permission": "EDIT_ISSUES", "projects": [10001]},
                 {"issues": [], "permission": "TRANSITION_ISSUES", "projects": [10001]},
                 {"issues": [], "permission": "ADD_COMMENTS", "projects": [10001]},
