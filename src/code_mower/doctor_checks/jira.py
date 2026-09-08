@@ -605,6 +605,7 @@ def _probe_jira_read(
 
     issues = result.get("issues") if isinstance(result, dict) else []
     transition_target_mismatches: list[dict[str, str]] = []
+    transition_probe_error = ""
     mutations = block.get("mutations")
     configured_transitions = mutations.get("transitions") if isinstance(mutations, Mapping) else None
     if isinstance(configured_transitions, Mapping) and configured_transitions and issues:
@@ -629,8 +630,8 @@ def _probe_jira_read(
                                         "to_status_id": to_status,
                                     }
                                 )
-            except jira_cloud_module.JiraApiError:
-                pass
+            except jira_cloud_module.JiraApiError as exc:
+                transition_probe_error = exc.code
 
     return DoctorCheck(
         name=JIRA_READ_CHECK,
@@ -649,6 +650,7 @@ def _probe_jira_read(
             "sample_issue_count": len(issues) if isinstance(issues, list) else 0,
             "known_status_ids": live_ids,
             "transition_target_mismatches": transition_target_mismatches,
+            "transition_probe_error": transition_probe_error,
         },
     )
 
@@ -680,6 +682,23 @@ def _check_jira_mutations(
     permission_probe = dict(detail_in.get("permission_probe") or {})
     known_status_ids = set(detail_in.get("known_status_ids") or [])
     mismatches = list(detail_in.get("transition_target_mismatches") or [])
+    transition_probe_error = str(detail_in.get("transition_probe_error") or "")
+
+    if transition_probe_error:
+        return DoctorCheck(
+            name=JIRA_MUTATIONS_CHECK,
+            status=STATUS_FAIL,
+            message="Jira transition readiness probe failed",
+            detail={
+                "tracker_kind": "jira_cloud",
+                "reason": "transition_probe_failed",
+                "probe_error": transition_probe_error,
+            },
+            remediation=(
+                "Restore Jira transition-read access and re-run "
+                f"`code-mower doctor --adoption`; see {_SETUP_JIRA_DOC}."
+            ),
+        )
 
     if mismatches:
         m = mismatches[0]

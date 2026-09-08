@@ -25,6 +25,17 @@ class JiraQueueReader(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
+def _site_identity(value: str) -> tuple[str, str, int | None, str] | None:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        return None
+    return ("https", parsed.hostname.lower(), port, parsed.path.rstrip("/"))
+
+
 def resolve_jira_queue_reader(
     config: Mapping[str, Any],
     *,
@@ -58,14 +69,27 @@ def resolve_jira_queue_reader(
         return None
     factory = client_factory or jira_cloud.JiraReadClient
     try:
-        return factory(
+        client = factory(
             cloud_id=str(jira.get("cloud_id") or ""),
             email=resolution.email,
             token=resolution.token,
             site_url=str(jira.get("site_url") or ""),
             timeout_seconds=float(timeout_seconds),
         )
-    except (TypeError, ValueError):
+        if hasattr(client, "get_server_info") and hasattr(client, "get_project"):
+            server_info = client.get_server_info()
+            if _site_identity(str(server_info.get("base_url") or "")) != _site_identity(
+                str(jira.get("site_url") or "")
+            ):
+                return None
+            project = client.get_project(str(jira.get("project_id") or ""))
+            if str(project.get("id") or "") != str(jira.get("project_id") or ""):
+                return None
+            configured_key = str(jira.get("project_key") or "")
+            if configured_key and str(project.get("key") or "") != configured_key:
+                return None
+        return client
+    except (TypeError, ValueError, jira_cloud.JiraApiError):
         return None
 
 

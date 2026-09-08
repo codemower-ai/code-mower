@@ -96,11 +96,25 @@ class TrackerQueueTests(unittest.TestCase):
     def test_default_jira_client_reads_a_sanitized_queue_page(self):
         raw = issue()
         runner = Mock(
-            return_value=(
-                200,
-                {},
-                json.dumps({"issues": [raw], "isLast": True}).encode("utf-8"),
-            )
+            side_effect=[
+                (
+                    200,
+                    {},
+                    json.dumps(
+                        {"baseUrl": "https://example.atlassian.net"}
+                    ).encode("utf-8"),
+                ),
+                (
+                    200,
+                    {},
+                    json.dumps({"id": "10001", "key": "ORDER"}).encode("utf-8"),
+                ),
+                (
+                    200,
+                    {},
+                    json.dumps({"issues": [raw], "isLast": True}).encode("utf-8"),
+                ),
+            ]
         )
         reader = tracker_queue.resolve_jira_queue_reader(
             config(),
@@ -121,6 +135,57 @@ class TrackerQueueTests(unittest.TestCase):
         request_body = json.loads(runner.call_args.args[3])
         self.assertNotIn("summary", request_body["fields"])
         self.assertNotIn(PROSE, json.dumps(result))
+
+    def test_default_jira_client_rejects_wrong_tenant_before_queue_read(self):
+        runner = Mock(
+            return_value=(
+                200,
+                {},
+                json.dumps({"baseUrl": "https://other.atlassian.net"}).encode(
+                    "utf-8"
+                ),
+            )
+        )
+
+        reader = tracker_queue.resolve_jira_queue_reader(
+            config(),
+            env={
+                jira_cloud.JIRA_EMAIL_ENV: "operator@example.com",
+                jira_cloud.JIRA_TOKEN_ENV: "token-value",
+            },
+            client_factory=lambda **kwargs: jira_cloud.JiraReadClient(
+                **kwargs, http_runner=runner
+            ),
+        )
+
+        self.assertIsNone(reader)
+        self.assertEqual(runner.call_count, 1)
+
+    def test_queue_page_rejects_invalid_or_oversized_issue_sets(self):
+        for raw_issues in ([{}], [issue(1), issue(2)]):
+            runner = Mock(
+                return_value=(
+                    200,
+                    {},
+                    json.dumps({"issues": raw_issues, "isLast": True}).encode(
+                        "utf-8"
+                    ),
+                )
+            )
+            client = jira_cloud.JiraReadClient(
+                cloud_id="cloud-example",
+                email="operator@example.com",
+                token="token-value",
+                site_url="https://example.atlassian.net",
+                http_runner=runner,
+            )
+            with self.assertRaises(jira_cloud.JiraApiError):
+                client.search_page(
+                    jql="project = 10001",
+                    fields=["project", "status"],
+                    max_results=1,
+                    next_page_token=None,
+                )
 
     def test_controller_cli_wires_profile_to_live_jira_queue(self):
         with tempfile.TemporaryDirectory() as directory:

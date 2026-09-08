@@ -1322,13 +1322,14 @@ class JiraReadClient:
             "POST", "/rest/api/3/search/jql", json_body=body, endpoint="search"
         )
         raw_issues = data.get("issues")
-        if not isinstance(raw_issues, list):
+        if not isinstance(raw_issues, list) or len(raw_issues) > bounded_max:
             raise JiraApiError("jira_unavailable", endpoint="search")
-        issues = [
-            parsed
-            for entry in raw_issues[:bounded_max]
-            if (parsed := _parse_queue_search_issue(entry, requested)) is not None
-        ]
+        issues = []
+        for entry in raw_issues:
+            parsed = _parse_queue_search_issue(entry, requested)
+            if parsed is None:
+                raise JiraApiError("jira_unavailable", endpoint="search")
+            issues.append(parsed)
         page: dict[str, Any] = {"issues": issues}
         is_last = data.get("isLast")
         if is_last is not None:
