@@ -9,6 +9,9 @@ later entries are regular releases.
 
 ### Added
 
+- Read-only Jira queue policy with injectable enhanced-JQL reads, bounded
+  metadata normalization, and controller/status/Board visibility; GitHub PRs
+  and gates remain authoritative when Jira is unavailable (issue #804).
 - A provider-neutral work-tracker contract (`code_mower.trackerWorkItem.v1`)
   and an additive, opt-in `tracker` config block for a future Jira Cloud
   tracker. Configs that omit `tracker` are unchanged and still mean GitHub.

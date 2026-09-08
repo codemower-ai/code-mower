@@ -14,7 +14,7 @@ from typing import Any
 
 from . import __version__
 from . import config as code_mower_config
-from . import lane_status
+from . import lane_status, tracker_queue
 from .cloud_client.errors import CloudBundleError
 from .cloud_client.events import EVENT_SCHEMA, normalize_event, utc_now, validate_cloud_event
 from .providers import build_code_mower_tool_provenance
@@ -177,7 +177,26 @@ def _collect_ready_issues(
     config: Mapping[str, Any],
     gh_json_runner: lane_status.GitHubJsonRunner,
     issue_limit: int,
+    jira_reader: tracker_queue.JiraQueueReader | None = None,
+    tracker_view: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if tracker_queue.jira_enabled(config):
+        view = tracker_view if tracker_view is not None else tracker_queue.queue_view(
+            tracker_queue.collect_queue(config, reader=jira_reader, page_size=issue_limit),
+            config=config, remote={},
+        )
+        return {
+            "available": view["available"] and view["complete"] and view["freshness"] == "live",
+            "errors": list(view["errors"]), "tracker": view,
+            "issues": [
+                {"work_item": row["work_item"], "source_kind": row["work_item"]["source_kind"],
+                 "url": row["work_item"]["url"], "builder_lane": row["lane_id"],
+                 "assigned": row["work_item"]["assigned"],
+                 "dispatched": any(label.startswith(DISPATCHED_PREFIX) for label in row["work_item"]["labels"]),
+                 "owner_action": _owner_label(config) in row["work_item"]["labels"]}
+                for row in view["items"] if row["eligible"]
+            ],
+        }
     if not repo:
         return {"available": False, "errors": ["repo is required"], "issues": []}
     ready_label = _ready_label(config)
@@ -303,6 +322,15 @@ def _ready_issue_decision(
             continue
         if active_counts.get(lane, 0) >= cap:
             continue
+        if issue.get("source_kind") == "jira_cloud":
+            item = issue["work_item"]
+            return {
+                "decision_state": "dispatch_builder", "next_action": "dispatch builder lane",
+                "next_detail": "Jira work is ready; read-only controller will not dispatch",
+                "work_item": item, "source_kind": "jira_cloud", "lane_id": lane,
+                "issue_url": item["url"], "stop_condition": "", "owner_action_kind": "",
+                "merge_method": "", "would_mutate": False,
+            }
         return {
             "decision_state": "dispatch_builder",
             "next_action": "dispatch builder lane",
@@ -553,6 +581,13 @@ def evaluate_controller_report(
         }
     elif selected_pr is not None:
         decision = _pr_decision(pr=selected_pr, config=config, options=options)
+    elif tracker_queue.jira_enabled(config) and not issue_payload.get("available"):
+        decision = {
+            "decision_state": "owner_action", "next_action": "refresh Jira queue",
+            "next_detail": "Jira queue is unavailable, partial, or historical; GitHub remains authoritative",
+            "stop_condition": "jira_unavailable", "owner_action_kind": "tracker_access",
+            "would_mutate": False,
+        }
     elif dispatch_decision := _ready_issue_decision(issues=issues, prs=prs, config=config):
         decision = dispatch_decision
     else:
@@ -582,6 +617,8 @@ def evaluate_controller_report(
             "ready_issue_errors": list(issue_payload.get("errors") or []),
         },
     }
+    if tracker_queue.jira_enabled(config) and "tracker" in issue_payload:
+        report["tracker"] = issue_payload["tracker"]
     return report
 
 
@@ -678,6 +715,8 @@ def collect_controller_report(
     options: ControllerOptions,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
+    jira_reader: tracker_queue.JiraQueueReader | None = None,
+    tracker_links: Mapping[tuple[str, str, str], int] | None = None,
 ) -> dict[str, Any]:
     config = code_mower_config.load_config(config_path)
     issues = code_mower_config.validate_config(config)
@@ -688,12 +727,16 @@ def collect_controller_report(
         repo=options.repo,
         gh_json_runner=gh_json_runner,
         command_runner=command_runner,
+        tracker_config=config,
+        jira_reader=jira_reader,
+        tracker_links=tracker_links,
     )
     ready_issues = _collect_ready_issues(
         repo=options.repo,
         config=config,
         gh_json_runner=gh_json_runner,
         issue_limit=options.issue_limit,
+        tracker_view=status_report.get("tracker"),
     )
     return evaluate_controller_report(
         status_report=status_report,
@@ -770,6 +813,8 @@ def render_text(report: Mapping[str, Any]) -> str:
             "Mutation: none unless a future explicit apply command uses this decision.",
         ]
     )
+    if "tracker" in report:
+        lines.extend(tracker_queue.render_text(report["tracker"]))
     return "\n".join(lines) + "\n"
 
 

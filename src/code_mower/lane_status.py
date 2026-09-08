@@ -12,7 +12,11 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
+
+from . import config as code_mower_config
+from . import tracker_queue
 
 
 LANE_STATUS_SCHEMA = "code_mower.laneStatus.v1"
@@ -602,6 +606,9 @@ def collect_status(
     workflow_limit: int = 20,
     stale_minutes: int = 30,
     show_local_paths: bool = False,
+    tracker_config: Mapping[str, Any] | None = None,
+    jira_reader: tracker_queue.JiraQueueReader | None = None,
+    tracker_links: Mapping[tuple[str, str, str], int] | None = None,
 ) -> dict[str, Any]:
     observed_at = now or _now()
     report = {
@@ -615,6 +622,12 @@ def collect_status(
     if not show_local_paths:
         _redact_local_paths(report)
     report["next_action"], report["next_detail"] = _global_next(report)
+    if tracker_config is not None and tracker_queue.jira_enabled(tracker_config):
+        report["tracker"] = tracker_queue.queue_view(
+            tracker_queue.collect_queue(tracker_config, reader=jira_reader, now=observed_at),
+            config=tracker_config, remote=report["remote"], now=observed_at,
+            stale_minutes=stale_minutes, links=tracker_links,
+        )
     return report
 
 
@@ -685,6 +698,8 @@ def render_text(report: Mapping[str, Any]) -> str:
         cwd = f" cwd={process['cwd']}" if process.get("cwd") else ""
         lines.append(f"- {process['provider']} pid={process['pid']} process={process['process']}{cwd}")
     lines.extend(["", f"Next: {report['next_action']}"])
+    if "tracker" in report:
+        lines.extend(tracker_queue.render_text(report["tracker"]))
     if report.get("next_detail"):
         lines.append(f"Detail: {report['next_detail']}")
     return "\n".join(lines) + "\n"
@@ -700,6 +715,7 @@ def main(
     subparsers = parser.add_subparsers(dest="command", required=True)
     status = subparsers.add_parser("status")
     status.add_argument("--repo", required=True)
+    status.add_argument("--config", type=Path, default=Path("code-mower.yml"))
     status.add_argument("--json", action="store_true")
     status.add_argument("--pr-limit", type=int, default=50)
     status.add_argument("--workflow-limit", type=int, default=20)
@@ -712,6 +728,15 @@ def main(
     args = parser.parse_args(list(argv or ()))
     if args.command != "status":  # pragma: no cover - argparse validates choices.
         raise AssertionError(f"unhandled lanes command: {args.command}")
+    tracker_config = None
+    if args.config.is_file():
+        try:
+            tracker_config = code_mower_config.load_config(args.config)
+            if tracker_queue.jira_enabled(tracker_config) and code_mower_config.validate_config(tracker_config):
+                raise ValueError("invalid config")
+        except (OSError, ValueError, code_mower_config.ConfigError):
+            print("invalid Code Mower config; run code-mower config validate", file=sys.stderr)
+            return 2
     report = collect_status(
         repo=args.repo,
         gh_json_runner=gh_json_runner,
@@ -720,6 +745,7 @@ def main(
         workflow_limit=args.workflow_limit,
         stale_minutes=args.stale_minutes,
         show_local_paths=args.show_local_paths,
+        tracker_config=tracker_config,
     )
     output = json.dumps(report, indent=2, sort_keys=True) + "\n" if args.json else render_text(report)
     print(output, end="")

@@ -212,6 +212,8 @@ def status_payload(
     *,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
+    jira_reader: controller.tracker_queue.JiraQueueReader | None = None,
+    tracker_links: Mapping[tuple[str, str, str], int] | None = None,
 ) -> dict[str, Any]:
     payload = lane_status.collect_status(
         repo=config.repo,
@@ -240,6 +242,8 @@ def status_payload(
         config,
         payload,
         gh_json_runner=gh_json_runner,
+        jira_reader=jira_reader,
+        tracker_links=tracker_links,
     )
     payload["productivity"] = productivity_report.board_payload(
         repo=config.repo,
@@ -771,6 +775,9 @@ def _supervised_pr_payload(pr: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _supervised_issue_payload(issue: Mapping[str, Any]) -> dict[str, Any]:
+    if issue.get("source_kind") == "jira_cloud":
+        return {"source_kind": "jira_cloud", "work_item": issue["work_item"],
+                "builder_lane": _safe_text(issue.get("builder_lane"), limit=60)}
     payload: dict[str, Any] = {
         "number": _int(issue.get("number")) or 0,
         "url": _http_url(issue.get("url")),
@@ -790,6 +797,8 @@ def supervised_pilot_payload(
     status: dict[str, Any],
     *,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
+    jira_reader: controller.tracker_queue.JiraQueueReader | None = None,
+    tracker_links: Mapping[tuple[str, str, str], int] | None = None,
 ) -> dict[str, Any]:
     config_path = Path(config.repo_path) / "code-mower.yml"
     if not config_path.is_file():
@@ -803,12 +812,19 @@ def supervised_pilot_payload(
         return _supervised_disabled("Code Mower config is invalid; run code-mower config validate")
 
     remote = status.get("remote") if isinstance(status.get("remote"), Mapping) else {}
+    if controller.tracker_queue.jira_enabled(raw_config):
+        status["tracker"] = controller.tracker_queue.queue_view(
+            controller.tracker_queue.collect_queue(raw_config, reader=jira_reader),
+            config=raw_config, remote=remote, links=tracker_links,
+            stale_minutes=config.stale_minutes,
+        )
     if remote.get("available"):
         ready_issues = controller._collect_ready_issues(  # noqa: SLF001 - shared package policy surface for Board.
             repo=config.repo,
             config=raw_config,
             gh_json_runner=gh_json_runner,
             issue_limit=min(config.pr_limit, 50),
+            tracker_view=status.get("tracker"),
         )
     else:
         ready_issues = {"available": False, "errors": ["remote unavailable"], "issues": []}
@@ -1396,10 +1412,11 @@ def render_board_html(config: BoardConfig) -> str:
         supervisedDecision.pr_number ? `<div class="row"><div class="line"><a href="${{esc(href(supervisedDecision.pr_url))}}">Selected PR #${{esc(supervisedDecision.pr_number)}}</a>${{supervisedDecision.lane_id ? pill(supervisedDecision.lane_id) : ""}}${{supervisedDecision.gate_status ? pill(`gate ${{supervisedDecision.gate_status}}`) : ""}}${{supervisedDecision.author_lane_excluded ? pill("author excluded") : ""}}</div><div class="muted">${{esc(supervisedDecision.branch || "")}}${{supervisedDecision.head_sha_prefix ? ` @ ${{esc(supervisedDecision.head_sha_prefix)}}` : ""}}</div></div>` : "",
         supervisedDecision.issue_number ? `<div class="row"><div class="line"><a href="${{esc(href(supervisedDecision.issue_url))}}">Selected issue #${{esc(supervisedDecision.issue_number)}}</a>${{supervisedDecision.lane_id ? pill(supervisedDecision.lane_id) : ""}}</div></div>` : "",
         reviewerOutcomes.length ? `<div class="row"><b>Reviewer Evidence</b><div class="muted">${{reviewerOutcomes.map(outcome => `${{esc(outcome.lane_id || outcome.config_lane_id)}}=${{esc(outcome.verdict)}}`).join(", ")}}</div></div>` : "",
-        supervisedIssues.length ? `<div class="row"><b>Ready Issues</b><div class="muted">${{supervisedIssues.slice(0, 5).map(issue => `#${{esc(issue.number)}} ${{esc(issue.builder_lane || "")}}`).join(", ")}}</div></div>` : "",
+        supervisedIssues.length ? `<div class="row"><b>Ready Issues</b><div class="muted">${{supervisedIssues.slice(0, 5).map(issue => `${{esc(issue.work_item?.identity?.issue_key || `#${{issue.number}}`)}} ${{esc(issue.builder_lane || "")}}`).join(", ")}}</div></div>` : "",
         supervisedPRs.length ? `<div class="row"><b>Active PRs</b><div class="muted">${{supervisedPRs.slice(0, 5).map(pr => `#${{esc(pr.number)}} ${{esc(pr.merge_state || "")}}${{pr.stale ? " stale" : ""}}${{pr.is_draft ? " draft" : ""}}`).join(", ")}}</div></div>` : ""
       ].filter(Boolean).join("") : empty(supervised.message || "Supervised pilot state unavailable.");
-      put("supervised", supervisedRows || empty(supervised.message || "No supervised pilot activity."));
+      const trackerRows = data.tracker ? `<div class="row"><b>Tracker: ${{esc(data.tracker.source_kind)}}</b> ${{pill(data.tracker.freshness)}}<div>${{esc((data.tracker.errors || []).join(", "))}}</div></div>` + (data.tracker.items || []).map(row => `<div class="row"><a href="${{esc(href(row.work_item.url))}}">${{esc(row.work_item.identity.issue_key || row.work_item.identity.issue_id)}}</a> ${{pill(row.work_item.lifecycle_category)}} ${{pill(row.freshness)}} ${{pill(row.lane_id || "unassigned")}}<div>PR ${{esc(row.linked_pr_number || "-")}} gate=${{esc(row.gate_status)}} (${{esc(row.pr_freshness)}})</div><div>next: ${{esc(row.next_action)}}</div></div>`).join("") : "";
+      put("supervised", trackerRows + supervisedRows || empty(supervised.message || "No supervised pilot activity."));
       const productivityRows = [
         `<div class="row"><div>next: <b>${{esc(productivity.next_action || "inspect")}}</b></div></div>`,
         `<div class="row"><b>Current</b><div class="line">${{pill(`open PRs ${{display(productivityCurrent.open_pr_count)}}`)}}${{pill(`active lanes ${{display(productivityCurrent.active_lane_count)}}`)}}${{pill(`blocked ${{display(productivityCurrent.blocked_pr_count)}}`)}}${{pill(`owner actions ${{display(productivityCurrent.owner_action_count)}}`)}}</div></div>`,
@@ -1906,6 +1923,13 @@ def make_handler(
                 snapshot, cache_metadata = status_cache.get()
                 payload = copy.deepcopy(snapshot) if snapshot is not None else _pending_status_payload(config)
                 payload["board"]["cache"] = cache_metadata
+                if "tracker" in payload and cache_metadata["state"] == "stale":
+                    payload["tracker"]["freshness"] = "historical"
+                    for row in payload["tracker"]["items"]:
+                        row["freshness"] = "historical"
+                        row["pr_freshness"] = "historical"
+                        row["eligible"] = False
+                        row["next_action"] = "refresh current state"
                 if config.record_events:
                     # Recording identity is the cache generation, not cache freshness.
                     # ``snapshot`` and ``generation`` are read together under the cache
