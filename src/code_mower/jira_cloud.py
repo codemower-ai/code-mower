@@ -96,6 +96,8 @@ MAX_REQUIRED_CREATE_FIELDS = 64
 KEYCHAIN_TIMEOUT_SECONDS = 10
 MAX_METADATA_VALUE_LENGTH = 128
 MAX_LABEL_LENGTH = 128
+MAX_LABELS = 64
+MAX_STATUSES = 256
 
 #: Jira documents 255 characters for both remote-link global ids and issue
 #: property keys; Code Mower stays inside that bound and only builds tokens.
@@ -255,7 +257,7 @@ def _bounded_labels(value: Any) -> list[str]:
         name = name.strip().replace("\n", " ").replace("\r", " ")
         if name:
             names.append(name[:MAX_LABEL_LENGTH])
-    return sorted(set(names))[:64]
+    return sorted(set(names))[:MAX_LABELS]
 
 
 def default_keychain_runner(argv: Sequence[str], env: Mapping[str, str]) -> str:
@@ -1182,6 +1184,8 @@ class JiraReadClient:
     def get_statuses(self) -> list[dict[str, str]]:
         """List statuses with their category; bounded metadata only."""
         raw = self.request_list("GET", "/rest/api/3/status", endpoint="status")
+        if len(raw) > MAX_STATUSES:
+            raise JiraApiError("jira_unavailable", endpoint="status")
         statuses: list[dict[str, str]] = []
         for entry in raw if isinstance(raw, list) else []:
             if not isinstance(entry, Mapping):
@@ -1200,7 +1204,7 @@ class JiraReadClient:
                     "category_key": _bounded_str(category.get("key"), 32),
                 }
             )
-        return statuses[:256]
+        return statuses
 
     def search_issues(
         self,
@@ -1576,11 +1580,14 @@ def _parse_queue_search_issue(
     entry: Any, requested_fields: Sequence[str]
 ) -> dict[str, Any] | None:
     """Shape one search hit for queue normalization without retaining prose."""
+    raw_fields = entry.get("fields") if isinstance(entry, Mapping) else {}
+    raw_labels = raw_fields.get("labels") if isinstance(raw_fields, Mapping) else []
+    if not isinstance(raw_labels, (list, tuple)) or len(raw_labels) > MAX_LABELS:
+        return None
     parsed = _parse_search_issue(entry)
     if parsed is None:
         return None
     compact = parsed["fields"]
-    raw_fields = entry.get("fields") if isinstance(entry, Mapping) else {}
     raw_status = (
         raw_fields.get("status") if isinstance(raw_fields, Mapping) else {}
     )

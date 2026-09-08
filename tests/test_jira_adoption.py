@@ -338,6 +338,44 @@ class JiraDoctorAdoptionTests(unittest.TestCase):
             mutation_check.detail.get("missing_permissions"), ["ASSIGN_ISSUES"]
         )
 
+    def test_doctor_comment_requires_edit_permission_for_replay_claim(self) -> None:
+        cfg = sample_jira_config(
+            mutations={
+                "writes_enabled": False,
+                "allowed_operations": ["comment"],
+                "transitions": {},
+            },
+        )
+        permissions = {
+            "globalPermissions": [],
+            "projectPermissions": [
+                {"issues": [], "permission": "BROWSE_PROJECTS", "projects": [10001]},
+                {"issues": [], "permission": "ADD_COMMENTS", "projects": [10001]},
+            ],
+        }
+        runner = FakeHttp(
+            [
+                http_response(load_fixture("server_info.json")),
+                http_response(load_fixture("project.json")),
+                http_response(load_fixture("statuses.json")),
+                http_response(load_fixture("status_categories.json")),
+                http_response(permissions),
+                http_response(load_fixture("search_page2.json")),
+            ]
+        )
+        checks = jira_doctor.check_jira_tracker_readiness(
+            config=cfg,
+            env={jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN},
+            client_factory=make_client_factory(runner),
+        )
+        mutation_check = {
+            check.name: check for check in checks
+        }[jira_doctor.JIRA_MUTATIONS_CHECK]
+        self.assertEqual(mutation_check.status, "fail")
+        self.assertEqual(
+            mutation_check.detail.get("missing_permissions"), ["EDIT_ISSUES"]
+        )
+
     def test_doctor_mutations_fails_on_missing_permission(self) -> None:
         cfg = sample_jira_config(
             status_category_map={"in_progress": ["10001"]},

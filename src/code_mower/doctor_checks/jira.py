@@ -725,16 +725,16 @@ def _check_jira_mutations(
     if transitions:
         needed_ops.add("transition")
     op_permissions = {
-        "assign": "ASSIGN_ISSUES",
-        "transition": "TRANSITION_ISSUES",
-        "comment": "ADD_COMMENTS",
-        "link": "EDIT_ISSUES",
+        "assign": ("ASSIGN_ISSUES",),
+        "transition": ("TRANSITION_ISSUES",),
+        # Replay-safe comments claim an issue property before posting.
+        "comment": ("ADD_COMMENTS", "EDIT_ISSUES"),
+        "link": ("EDIT_ISSUES",),
     }
     missing_perms: list[str] = []
     for op in sorted(needed_ops):
-        perm = op_permissions.get(op)
-        if perm and permission_probe.get(perm) is not True:
-            if perm not in missing_perms:
+        for perm in op_permissions.get(op, ()):
+            if permission_probe.get(perm) is not True and perm not in missing_perms:
                 missing_perms.append(perm)
 
     if missing_perms:

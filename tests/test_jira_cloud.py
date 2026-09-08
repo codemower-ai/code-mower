@@ -867,6 +867,17 @@ class ReadPrimitiveTests(unittest.TestCase):
         )
         self.assertIsNone(jira_cloud.map_status_to_lifecycle("10000", statuses, {}))
 
+    def test_oversized_status_inventory_fails_closed(self) -> None:
+        raw = [
+            {"id": str(index), "name": f"Status {index}", "statusCategory": {}}
+            for index in range(jira_cloud.MAX_STATUSES + 1)
+        ]
+        client = make_client(FakeHttp([http_response(raw)]))
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_statuses()
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(ctx.exception.endpoint, "status")
+
     def test_search_pagination_with_next_page_token(self) -> None:
         runner = FakeHttp(
             [
