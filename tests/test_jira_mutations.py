@@ -1645,6 +1645,29 @@ class TransportWriteScopeTests(unittest.TestCase):
         self.assertEqual(caught.exception.reason, "issue_out_of_scope")
         self.assertEqual(jira.calls, [])
 
+    def test_cancellation_during_scope_refresh_prevents_the_write(self) -> None:
+        cancelled = [False]
+
+        def cancel_after_scope_read(
+            _jira: FakeJira, method: str, path: str
+        ) -> None:
+            if method == "GET" and path == ISSUE_PATH:
+                cancelled[0] = True
+
+        jira = FakeJira(before_request=cancel_after_scope_read)
+        client = make_client(jira, cancelled=lambda: cancelled[0])
+        client.arm_for_issue(
+            issue_ref=ISSUE, issue_id=ISSUE_ID, project_id=PROJECT_ID
+        )
+        with self.assertRaises(jira_cloud.JiraApiError) as caught:
+            client.assign_issue(ISSUE, ACCOUNT_ID)
+        self.assertEqual(caught.exception.code, "jira_cancelled")
+        self.assertEqual(
+            [(call["method"], call["path"]) for call in jira.calls],
+            [("GET", ISSUE_PATH)],
+        )
+        self.assertEqual(client.write_attempts, 0)
+
     def test_the_client_is_disarmed_once_the_apply_returns(self) -> None:
         """One armed scope belongs to one apply, and does not outlive it."""
         jira = FakeJira()

@@ -1020,6 +1020,11 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
         if not self._is_write_request(method, path):
             return
         self._require_write_scope(path)
+        # Cancellation can arrive while the scope-refresh GET is in flight.
+        # The base transport checked before invoking this hook, so check again
+        # after the nested read and before the mutation can leave the process.
+        if self.cancelled_fn():
+            raise jira_cloud.JiraApiError("jira_cancelled")
         self.write_attempts += 1
 
     def _attempts_for(self, method: str, path: str, endpoint: str = "") -> int:
