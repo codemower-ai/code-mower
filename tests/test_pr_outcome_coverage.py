@@ -2892,5 +2892,197 @@ class PrOutcomeIdentifierP2Tests(unittest.TestCase):
                         )
 
 
+class PrNumberCanonicalizationTests(unittest.TestCase):
+    def _pr_record(self, number: object) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": "MERGED",
+            "createdAt": "2026-09-03T10:00:00Z",
+            "mergedAt": "2026-09-03T12:00:00Z",
+            "updatedAt": "2026-09-03T13:00:00Z",
+        }
+
+    def _run_upload(
+        self,
+        repo_path: Path,
+        pr_records: list[dict[str, object]],
+    ) -> dict[str, object]:
+        with mock.patch(
+            "code_mower.cloud_client.operations.run_gh_pr_list",
+            return_value=pr_records,
+        ):
+            return pr_outcomes_upload(
+                repo_path=repo_path,
+                output_dir=repo_path / "bundle",
+                repo_slug="owner/repo",
+                team_id="",
+                install_id="",
+                source="unit-test",
+                limit=10,
+                endpoint="https://codemower.example.com/api/upload",
+                token_env="CODE_MOWER_TEST_TOKEN",
+                yes=False,
+                timeout=1.0,
+            )
+
+    def _emitted_events(self, result: dict[str, object]) -> dict[str, dict]:
+        manifest = json.loads(
+            Path(result["export"]["manifest"]).read_text(encoding="utf-8")
+        )
+        return {
+            event["dimensions"]["pr_number"]: event
+            for event in manifest["events"]
+        }
+
+    def test_builder_record_with_leading_zeros_joins_github_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (builder_dir / "devin-local-pr-042-aa11.cloud-event.json").write_text(
+                json.dumps(_builder_run_event("b1", "042", 0.15)),
+                encoding="utf-8",
+            )
+
+            result = self._run_upload(repo_path, [self._pr_record(42)])
+
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["event_count"], 1)
+            self.assertEqual(result["errors"], [])
+            events = self._emitted_events(result)
+            self.assertIn("42", events)
+            self.assertEqual(events["42"]["dimensions"]["pr_number"], "42")
+            self.assertEqual(events["42"]["dimensions"]["cost_coverage"], "complete")
+
+    def test_reviewer_evidence_leading_zeros_joins_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (builder_dir / "devin-local-pr-42-aa11.cloud-event.json").write_text(
+                json.dumps(_builder_run_event("b1", "42", 0.15)),
+                encoding="utf-8",
+            )
+            spend_path = repo_path / ".code-mower" / "reviewer-spend.json"
+            spend_path.parent.mkdir(parents=True, exist_ok=True)
+            spend_path.write_text(
+                json.dumps({
+                    "schema": reviewer_spend.SPEND_SCHEMA,
+                    "runs": [{
+                        "run_id": "r1",
+                        "created_at": "2026-09-03T11:00:00Z",
+                        "lane": "claude-audit",
+                        "repo": "owner/repo",
+                        "pr_number": "042",
+                        "head_sha": "abcd1234",
+                        "model": "claude",
+                        "wall_seconds": 1.0,
+                        "verdict": "pass",
+                        "cost_usd": 0.10,
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            result = self._run_upload(repo_path, [self._pr_record(42)])
+
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["event_count"], 1)
+            self.assertEqual(result["errors"], [])
+            events = self._emitted_events(result)
+            self.assertIn("42", events)
+            self.assertEqual(events["42"]["dimensions"]["pr_number"], "42")
+            self.assertEqual(events["42"]["dimensions"]["cost_coverage"], "complete")
+            self.assertEqual(events["42"]["metrics"]["cost_reported_run_count"], 2)
+
+    def test_filename_attributed_failure_with_leading_zeros_suppresses_complete(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (builder_dir / "devin-local-pr-42-good.cloud-event.json").write_text(
+                json.dumps(_builder_run_event("b1", "42", 0.15)),
+                encoding="utf-8",
+            )
+            (builder_dir / "devin-local-pr-042-bad.cloud-event.json").write_text(
+                "not valid json {",
+                encoding="utf-8",
+            )
+
+            result = self._run_upload(repo_path, [self._pr_record(42)])
+
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["event_count"], 1)
+            events = self._emitted_events(result)
+            self.assertIn("42", events)
+            pr42 = events["42"]
+            self.assertEqual(pr42["dimensions"]["pr_number"], "42")
+            self.assertEqual(pr42["dimensions"]["cost_coverage"], "partial")
+            self.assertEqual(pr42["metrics"]["cost_reported_run_count"], 1)
+            self.assertEqual(pr42["metrics"]["cost_expected_run_count"], 2)
+            self.assertIn(
+                "unreadable-evidence",
+                pr42["dimensions"].get("missing_cost_sources", []),
+            )
+            self.assertTrue(any("PR 42" in e for e in result["errors"]))
+
+    def test_event_and_state_identity_stable_under_equivalent_representations(
+        self,
+    ) -> None:
+        run_events = [_builder_run_event("b1", "42", 0.15)]
+        first = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="42",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=run_events,
+            created_at="2026-09-03T13:00:00Z",
+        )
+        second = build_pr_outcome_event(
+            repo_slug="owner/repo",
+            pr_number="042",
+            outcome="merged",
+            opened_at="2026-09-03T10:00:00Z",
+            merged_at="2026-09-03T12:00:00Z",
+            run_events=run_events,
+            created_at="2026-09-03T13:00:00Z",
+        )
+
+        self.assertEqual(first["event_id"], second["event_id"])
+        self.assertEqual(first["created_at"], second["created_at"])
+        self.assertEqual(
+            first["dimensions"]["pr_number"],
+            second["dimensions"]["pr_number"],
+        )
+        self.assertEqual(
+            pr_outcome_observation_key("owner/repo", "042"),
+            pr_outcome_observation_key("owner/repo", "42"),
+        )
+        self.assertEqual(
+            pr_outcome_observation_key("owner/repo", 42),
+            "owner/repo#42",
+        )
+
+        # A state file keyed with leading zeros loads under the canonical key.
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "observations.json"
+            record = pr_outcome_observation_record(first)
+            state_path.write_text(
+                json.dumps({
+                    "schema": "code_mower.prOutcomeObservations.v1",
+                    "observations": {
+                        "owner/repo#042": record,
+                    },
+                }),
+                encoding="utf-8",
+            )
+            loaded = load_pr_outcome_observations(state_path)
+            self.assertIn("owner/repo#42", loaded)
+            self.assertEqual(loaded["owner/repo#42"]["fingerprint"], record["fingerprint"])
+
+
 if __name__ == "__main__":
     unittest.main()

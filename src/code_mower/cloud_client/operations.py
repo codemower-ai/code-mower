@@ -30,6 +30,7 @@ from .pr_outcomes import (
     DEFAULT_OBSERVATION_STATE_PATH,
     UNATTRIBUTED_EVIDENCE_LANE,
     build_pr_outcome_event,
+    canonical_pr_number,
     load_pr_outcome_observations,
     max_source_freshness,
     pr_outcome_observation_key,
@@ -207,7 +208,7 @@ def _event_match_values(event: Mapping[str, Any]) -> tuple[str, str, str, str]:
     ).strip()
     return (
         str(event.get("repo_slug") or "").strip(),
-        str(dimensions.get("pr_number") or "").strip(),
+        canonical_pr_number(dimensions.get("pr_number")),
         lane,
         str(dimensions.get("head_sha") or "").strip(),
     )
@@ -802,29 +803,30 @@ _BUILDER_EVIDENCE_PR_PATTERN = re.compile(r"(?:^|-)pr-([0-9]+)")
 
 
 def _builder_evidence_pr_number(filename: str) -> str:
-    """Return the PR number encoded in a builder evidence filename, or ""."""
+    """Return the canonical PR number encoded in a builder evidence filename, or ""."""
 
     match = _BUILDER_EVIDENCE_PR_PATTERN.search(filename)
-    return match.group(1) if match else ""
+    if not match:
+        return ""
+    return canonical_pr_number(match.group(1))
 
 
 def _pr_number_from_run_event(event: Mapping[str, Any]) -> str:
-    dimensions = event.get("dimensions")
-    if isinstance(dimensions, Mapping):
-        number = str(dimensions.get("pr_number") or "").strip()
-        if number:
-            return number
-    return str(event.get("pr_number") or "").strip()
+    dimensions = _mapping(event.get("dimensions"))
+    number = canonical_pr_number(dimensions.get("pr_number"))
+    if number:
+        return number
+    return canonical_pr_number(event.get("pr_number"))
 
 
 def _is_positive_int_pr_number(number: str) -> bool:
-    """Return True only for a decimal string naming a positive integer PR.
+    """Return True only for a canonical positive integer PR number.
 
-    Values such as ``unknown``, ``0``, ``-1``, booleans, or non-integral
-    numerics must not associate evidence with a PR.
+    Kept as a thin wrapper over the shared canonicalizer for any call sites
+    that still need a boolean check.
     """
 
-    return number.isdigit() and int(number) >= 1
+    return bool(canonical_pr_number(number))
 
 
 def _is_associable_builder_run(payload: Any) -> bool:
@@ -1063,7 +1065,7 @@ def pr_outcomes_upload(
             observations = load_pr_outcome_observations(observation_state_path)
             candidate_records: list[tuple[dict[str, Any], str, str]] = []
             for pr in pr_records:
-                pr_number = str(pr.get("number") or "").strip()
+                pr_number = canonical_pr_number(pr.get("number"))
                 if not pr_number:
                     continue
                 state = str(pr.get("state") or "").strip().lower()

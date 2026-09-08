@@ -102,6 +102,32 @@ def _count(metrics: Mapping[str, Any], field: str, *, required: bool = False) ->
     return value
 
 
+def canonical_pr_number(value: object) -> str:
+    """Return the canonical decimal string for an accepted positive PR number.
+
+    Leading zeros, positive integer strings, and Python ints all map to a
+    string with no leading zeros (e.g. ``"042"`` and ``42`` both become
+    ``"42"``).  Values that are not positive integers, including ``0``,
+    negatives, non-numerics, and booleans, return ``""`` so they remain
+    unattributable under the fail-closed contract.
+    """
+
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        if value > 0:
+            return str(value)
+        return ""
+    if isinstance(value, float):
+        if not math.isfinite(value) or value <= 0 or not value.is_integer():
+            return ""
+        return str(int(value))
+    text = str(value or "").strip()
+    if not text or not text.isascii() or not text.isdigit() or int(text) < 1:
+        return ""
+    return str(int(text))
+
+
 def _run_event_identity(event: Mapping[str, Any]) -> str:
     """Return the source identity used for dedup and evidence versioning.
 
@@ -155,7 +181,7 @@ def _run_event_canonical(event: Mapping[str, Any]) -> dict[str, Any]:
         "lens": _canonical_lane_identifier(event.get("lens")),
         "status": str(event.get("status") or "").strip(),
         "repo_slug": str(event.get("repo_slug") or "").strip(),
-        "pr_number": str(dimensions.get("pr_number") or "").strip(),
+        "pr_number": canonical_pr_number(dimensions.get("pr_number")),
         "builder_provider": _canonical_lane_identifier(
             dimensions.get("builder_provider")
         ),
@@ -522,6 +548,10 @@ def build_pr_outcome_event(
     from code_mower import __version__
     from code_mower.providers.provenance import build_code_mower_tool_provenance
 
+    pr_number = canonical_pr_number(pr_number)
+    if not pr_number:
+        raise CloudBundleError("pr_number must be a positive integer")
+
     expected, reported, total_cost, missing_sources = _aggregate_run_costs(
         run_events
     )
@@ -618,7 +648,16 @@ def build_pr_outcome_event(
 def pr_outcome_observation_key(repo_slug: str, pr_number: str) -> str:
     """Return the local observation-state key for one repository PR."""
 
-    return f"{repo_slug}#{pr_number}"
+    return f"{repo_slug}#{canonical_pr_number(pr_number)}"
+
+
+def _canonical_observation_key(key: str) -> str:
+    """Canonicalize the PR-number part of an observation-state key."""
+
+    if "#" not in key:
+        return key
+    repo_part, pr_part = key.rsplit("#", 1)
+    return f"{repo_part}#{canonical_pr_number(pr_part)}"
 
 
 def pr_outcome_observation_record(
@@ -719,7 +758,7 @@ def load_pr_outcome_observations(path: Path) -> dict[str, dict[str, str]]:
         outcome = str(item.get("outcome") or "").strip()
         if outcome and outcome not in PR_OUTCOME_VALUES:
             raise _malformed_observation_state_error()
-        result[str(key)] = {
+        result[_canonical_observation_key(str(key))] = {
             "fingerprint": fingerprint,
             "created_at": created_at,
             "source_freshness": source_freshness,
@@ -798,7 +837,7 @@ def validate_pr_outcome_payload(event: Mapping[str, Any]) -> None:
         )
 
     pr_number = _required_text(dimensions.get("pr_number"), "dimension 'pr_number'")
-    if not pr_number.isdigit() or int(pr_number) < 1:
+    if not canonical_pr_number(pr_number):
         raise CloudBundleError("pr_outcome dimension 'pr_number' must be a positive integer string")
 
     opened_at = _timestamp(dimensions.get("opened_at"), "dimension 'opened_at'")
