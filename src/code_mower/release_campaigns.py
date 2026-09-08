@@ -452,13 +452,13 @@ def _check_credentials(
 ) -> tuple[bool, str]:
     current_env = os.environ if env is None else env
     if lane.provider_config.get("campaign_transport") == "devin_api_v3":
-        _api_key, _org_id, missing = devin_api.credentials_from_env(
+        creds = devin_api.credentials_from_env(
             current_env,
             credential_file=credential_file,
             profile=profile,
             config_dir=config_dir,
         )
-        return not missing, missing
+        return bool(creds.api_key and creds.org_id and not creds.missing), creds.missing
     if lane.token_env:
         found = any(current_env.get(token) for token in lane.token_env)
         if not found:
@@ -1602,18 +1602,32 @@ def _poll_devin_running(
         provider_data["next_detail"] = "session creation outcome is unknown"
         return
 
-    api_key, org_id, missing = devin_api.credentials_from_env(
+    creds = devin_api.credentials_from_env(
         env,
         credential_file=credential_file,
         profile=profile,
         config_dir=config_dir,
     )
-    if missing:
+    if creds.missing or not creds.api_key:
         provider_data["state"] = "running"
         provider_data["error"] = _safe_error("missing_credentials")
-        provider_data["next_action"] = f"set {missing} to poll the Devin API session"
-        provider_data["next_detail"] = "the paid attempt remains active and was not retried"
+        rem = getattr(creds, "remediation", "")
+        status = getattr(creds, "status", "")
+        source = getattr(creds, "source", "")
+        if rem and status in {"insecure_permissions", "ambiguous", "malformed"}:
+            provider_data["next_action"] = rem
+            provider_data["next_detail"] = status
+        elif rem and source != "missing" and status != "ok":
+            provider_data["next_action"] = rem
+            provider_data["next_detail"] = status or "the paid attempt remains active and was not retried"
+        else:
+            missing_var = creds.missing or "DEVIN_API_KEY"
+            provider_data["next_action"] = f"set {missing_var} to poll the Devin API session"
+            provider_data["next_detail"] = "the paid attempt remains active and was not retried"
         return
+
+    api_key = creds.api_key
+    org_id = creds.org_id
 
     poll_state, result, err = devin_api.poll_devin_session(
         org_id,
@@ -1737,14 +1751,22 @@ def _dispatch_devin_api(
     after POST but before the session id is saved, ordinary resume reports an
     unknown creation outcome and never repeats paid work.
     """
-    api_key, org_id, missing = devin_api.credentials_from_env(
+    creds = devin_api.credentials_from_env(
         env,
         credential_file=credential_file,
         profile=profile,
         config_dir=config_dir,
     )
-    if missing:
+    if creds.missing or not creds.api_key:
+        rem = getattr(creds, "remediation", "")
+        status = getattr(creds, "status", "")
+        msg = getattr(creds, "message", "")
+        if rem:
+            provider_data["next_action"] = f"{rem} or record manual result"
+            provider_data["next_detail"] = status or msg or creds.missing
         return _safe_error("missing_credentials")
+    api_key = creds.api_key
+    org_id = creds.org_id
     if not devin_api.repository_scope_acknowledged(
         repo_slug,
         env=env,
@@ -3911,18 +3933,24 @@ def dispatch_or_advance_campaign(
                         )
                         provider_data["next_detail"] = err
                     else:
-                        provider_data["next_action"], provider_data["next_detail"] = (
-                            _provider_next_action(
-                                "devin",
-                                lane,
-                                "unavailable",
-                                command_available=True,
-                                has_credentials=has_creds,
-                                has_issue=True,
-                                dry_run=False,
-                                error=missing_cred or err,
-                            )
+                        auth_rem = str(dispatch_profile.get("auth", {}).get("remediation") or "")
+                        auth_err = str(dispatch_profile.get("auth", {}).get("status") or "")
+                        action, detail = _provider_next_action(
+                            "devin",
+                            lane,
+                            "unavailable",
+                            command_available=True,
+                            has_credentials=has_creds,
+                            has_issue=True,
+                            dry_run=False,
+                            error=auth_err or missing_cred or err,
+                            remediation=auth_rem,
                         )
+                        if not auth_rem and provider_data.get("next_action"):
+                            pass
+                        else:
+                            provider_data["next_action"] = action
+                            provider_data["next_detail"] = detail
                     _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
                 continue
             if not has_creds:

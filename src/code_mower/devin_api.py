@@ -115,13 +115,53 @@ def repository_scope_acknowledged(
     return repo_slug.casefold() in configured
 
 
+class DevinCredentials(tuple):
+    """3-tuple of ``(api_key, org_id, missing_variable)`` preserving resolver diagnostics."""
+
+    api_key: str
+    org_id: str
+    missing: str
+    status: str
+    message: str
+    remediation: str
+    source: str
+    resolution: Any
+
+    def __new__(
+        cls,
+        api_key: str,
+        org_id: str,
+        missing: str,
+        *,
+        status: str = "ok",
+        message: str = "",
+        remediation: str = "",
+        source: str = "",
+        resolution: Any = None,
+    ) -> DevinCredentials:
+        obj = super().__new__(cls, (api_key, org_id, missing))
+        obj.api_key = api_key
+        obj.org_id = org_id
+        obj.missing = missing
+        obj.status = status
+        obj.message = message
+        obj.remediation = remediation
+        obj.source = source
+        obj.resolution = resolution
+        return obj
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(self.status == "ok" and self.api_key and self.org_id and not self.missing)
+
+
 def credentials_from_env(
     env: Mapping[str, str] | None = None,
     *,
     credential_file: Path | str | None = None,
     profile: str = "",
     config_dir: Path | str | None = None,
-) -> tuple[str, str, str]:
+) -> DevinCredentials:
     """Return ``(api_key, org_id, missing_variable)`` without logging values."""
     current_env = os.environ if env is None else env
     from .provider_credentials import resolve_provider_credentials
@@ -139,14 +179,43 @@ def credentials_from_env(
         r_key = str(resolution.credentials.get(DEVIN_API_KEY_ENV) or "").strip()
         r_org = str(resolution.credentials.get(DEVIN_ORG_ID_ENV) or "").strip()
         if r_key and r_org and _validate_org_id(r_org):
-            return r_key, r_org, ""
+            return DevinCredentials(
+                r_key,
+                r_org,
+                "",
+                status="ok",
+                message=resolution.message,
+                remediation="",
+                source=resolution.source,
+                resolution=resolution,
+            )
+        missing_var = DEVIN_API_KEY_ENV if not r_key else DEVIN_ORG_ID_ENV
+        return DevinCredentials(
+            "",
+            "",
+            missing_var,
+            status="malformed",
+            message=resolution.message or f"Devin credential profile does not define a valid {missing_var}",
+            remediation=resolution.remediation or f"Set a valid {missing_var} in profile or environment.",
+            source=resolution.source,
+            resolution=resolution,
+        )
 
     missing = (
         resolution.missing_variables[0]
         if resolution.missing_variables
-        else DEVIN_API_KEY_ENV
+        else (DEVIN_API_KEY_ENV if resolution.status == "missing" else resolution.status)
     )
-    return "", "", missing
+    return DevinCredentials(
+        "",
+        "",
+        missing,
+        status=resolution.status,
+        message=resolution.message,
+        remediation=resolution.remediation,
+        source=resolution.source,
+        resolution=resolution,
+    )
 
 
 def make_api_request(

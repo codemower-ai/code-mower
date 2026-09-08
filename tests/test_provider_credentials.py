@@ -283,6 +283,54 @@ class ProviderCredentialsTests(unittest.TestCase):
                 )
                 self.assertFalse(ack_unmatched)
 
+    def test_devin_api_credentials_from_env_insecure_profile(self) -> None:
+        """devin_api.credentials_from_env preserves insecure_permissions without collapsing to missing key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            profile_file = config_dir / "devin.env"
+            profile_file.write_text("DEVIN_API_KEY=my-key\nDEVIN_ORG_ID=org-test\n")
+            profile_file.chmod(0o644)
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                creds = devin_api.credentials_from_env(config_dir=config_dir)
+                self.assertFalse(creds.has_credentials)
+                self.assertEqual(creds.status, "insecure_permissions")
+                self.assertEqual(creds.missing, "insecure_permissions")
+                self.assertNotEqual(creds.missing, "DEVIN_API_KEY")
+                self.assertIn("chmod 600", creds.remediation)
+                self.assertNotIn(str(config_dir), creds.message)
+                self.assertNotIn(str(config_dir), creds.remediation)
+
+                # Unpacking behavior remains fully compatible
+                key, org, missing = creds
+                self.assertEqual(key, "")
+                self.assertEqual(org, "")
+                self.assertEqual(missing, "insecure_permissions")
+
+    def test_devin_api_credentials_from_env_ambiguous_profiles(self) -> None:
+        """devin_api.credentials_from_env preserves ambiguous status without collapsing to missing key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            (config_dir / "devin.alpha.env").write_text("DEVIN_API_KEY=alpha\nDEVIN_ORG_ID=org-a\n")
+            (config_dir / "devin.alpha.env").chmod(0o600)
+            (config_dir / "devin.beta.env").write_text("DEVIN_API_KEY=beta\nDEVIN_ORG_ID=org-b\n")
+            (config_dir / "devin.beta.env").chmod(0o600)
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                creds = devin_api.credentials_from_env(config_dir=config_dir)
+                self.assertFalse(creds.has_credentials)
+                self.assertEqual(creds.status, "ambiguous")
+                self.assertEqual(creds.missing, "ambiguous")
+                self.assertNotEqual(creds.missing, "DEVIN_API_KEY")
+                self.assertIn("--provider-profile", creds.remediation)
+                self.assertNotIn(str(config_dir), creds.message)
+                self.assertNotIn(str(config_dir), creds.remediation)
+
+                key, org, missing = creds
+                self.assertEqual(key, "")
+                self.assertEqual(org, "")
+                self.assertEqual(missing, "ambiguous")
+
     def test_permission_check_non_posix_bypasses(self) -> None:
         """On non-posix systems, permission checking does not reject files."""
         with tempfile.TemporaryDirectory() as tmp:
