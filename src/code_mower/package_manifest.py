@@ -203,6 +203,11 @@ PACKAGE_FILES = (
         "core",
     ),
     (
+        "src/code_mower/doctor_checks/jira.py",
+        "src/code_mower/doctor_checks/jira.py",
+        "core",
+    ),
+    (
         "src/code_mower/doctor_checks/provider_local_cli_probe_config.py",
         "src/code_mower/doctor_checks/provider_local_cli_probe_config.py",
         "core",
@@ -285,6 +290,7 @@ PACKAGE_FILES = (
     ("src/code_mower/release_qualify.py", "src/code_mower/release_qualify.py", "core"),
     ("src/code_mower/release_campaigns.py", "src/code_mower/release_campaigns.py", "core"),
     ("src/code_mower/devin_api.py", "src/code_mower/devin_api.py", "core"),
+    ("src/code_mower/jira_cloud.py", "src/code_mower/jira_cloud.py", "core"),
     ("src/code_mower/provider_credentials.py", "src/code_mower/provider_credentials.py", "core"),
     ("src/code_mower/campaign_discovery.py", "src/code_mower/campaign_discovery.py", "core"),
     ("src/code_mower/campaign_adapters.py", "src/code_mower/campaign_adapters.py", "core"),

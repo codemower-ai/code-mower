@@ -16,6 +16,12 @@ later entries are regular releases.
   and an additive, opt-in `tracker` config block for a future Jira Cloud
   tracker. Configs that omit `tracker` are unchanged and still mean GitHub.
   No Jira network calls or writes are added by this change (issue #798).
+- A read-only Jira Cloud client, fail-closed credential resolver (including
+  macOS Keychain service profiles), and `doctor --adoption` checks
+  (`tracker.jira.config`, `tracker.jira.credentials`, `tracker.jira.read`)
+  with deterministic offline fixtures. The client uses the scoped-token API
+  gateway, performs no mutation call, and keeps all diagnostics
+  metadata-only (issue #800).
 
 ### Fixed
 

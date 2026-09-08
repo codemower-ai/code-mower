@@ -1,0 +1,1 @@
+{"projectPermissions": [{"permissions": [{"havePermission": true, "permission": "BROWSE_PROJECTS"}, {"havePermission": true, "permission": "CREATE_ISSUES"}, {"havePermission": false, "permission": "EDIT_ISSUES"}, {"havePermission": false, "permission": "TRANSITION_ISSUES"}, {"havePermission": false, "permission": "ADD_COMMENTS"}], "projectId": "10001"}]}
