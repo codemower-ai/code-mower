@@ -22,6 +22,14 @@ later entries are regular releases.
   with deterministic offline fixtures. The client uses the scoped-token API
   gateway, performs no mutation call, and keeps all diagnostics
   metadata-only (issue #800).
+- Optional Jira init surface (`code-mower init --jira` and `init --tracker jira_cloud`),
+  commented-out example configuration in `code-mower.example.yml`, extended
+  `doctor --adoption` readiness checks (`tracker.jira.config`,
+  `tracker.jira.credentials`, `tracker.jira.read`, `tracker.jira.mutations`),
+  public setup documentation (`docs/jira-cloud-setup.md`), and an offline/live
+  adoption rehearsal runbook (`docs/jira-adoption-rehearsal.md`). Default setup
+  remains purely GitHub-based; generated workflows and default init plans are
+  strictly preserved (issue #803).
 
 - A guarded, idempotent Jira mutation surface, `code-mower tracker mutate`.
   Planning is the default and performs no Jira call; a write needs both

@@ -204,6 +204,10 @@ after reinstalling, especially when switching between pipx and uv.
 | B. Build loop in 30 minutes | You want builders plus an orchestrator pattern after the reviewer gate works. | Complete path A, then add the automation token, require `code-mower/gate` from Any source, enable repository auto-merge, prove the self-hosted Mac lane runner with `doctor --runner`, run `init --builders`, and dispatch the first issue. | [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md) |
 | C. Builder experiment | You want to compare authoring loops before trusting them broadly. | Use a work order or experiment spec, run `code-mower builder-experiment run` around an explicit command, then review the source-free `authoringRun` artifact and normal audit evidence. | [Builder Experiments](docs/builder-experiments.md) |
 
+For Jira Cloud work tracking instead of the default GitHub Issues path, see
+[Jira Cloud Setup](docs/jira-cloud-setup.md) and
+[Jira Adoption Rehearsal](docs/jira-adoption-rehearsal.md).
+
 When you ask another agent to install, upgrade, orchestrate, build, or review,
 start from the universal prompt in
 [Orchestrator Prompt Pack](docs/orchestrator-prompt-pack.md). It makes the
@@ -569,6 +573,8 @@ first so local work exercises the same package entrypoint users install.
 - [Provider Matrix](docs/provider-matrix.md)
 - [Provider Calibration Scorecard](docs/provider-calibration-scorecard.md)
 - [GitHub Setup](docs/github-setup.md)
+- [Jira Cloud Setup](docs/jira-cloud-setup.md)
+- [Jira Adoption Rehearsal](docs/jira-adoption-rehearsal.md)
 - [First Run Transcript](docs/first-run-transcript.md)
 - [First-User Demo Transcript](docs/first-user-demo-transcript.md)
 - [First-User Install Rehearsal](docs/first-user-install-rehearsal.md)

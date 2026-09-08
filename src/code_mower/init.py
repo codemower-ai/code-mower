@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -2348,6 +2349,50 @@ def ensure_github_labels(
     }
 
 
+EXAMPLE_JIRA_TRACKER_CONFIG: dict[str, Any] = {
+    "kind": "jira_cloud",
+    "jira_cloud": {
+        "site_url": "https://example.atlassian.net",
+        "cloud_id": "11111111-2222-3333-4444-555555555555",
+        "project_id": "10001",
+        "project_key": "ABC",
+        "issue_type_id": "10001",
+        "jql": "project = 10001 ORDER BY updated DESC",
+        "status_category_map": {
+            "new": ["10000"],
+            "in_progress": ["10001"],
+            "blocked": ["10002"],
+            "done": ["10003"],
+        },
+        "field_mappings": {
+            "lifecycle_category": "status",
+        },
+        "mutations": {
+            "writes_enabled": False,
+            "allowed_operations": [
+                "assign",
+                "transition",
+                "comment",
+                "link",
+            ],
+            "transitions": {
+                "in_progress": "31",
+            },
+        },
+    },
+}
+
+
+def config_with_jira_tracker(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a copy of config with example Jira Cloud tracker configuration if omitted."""
+    data = dict(config)
+    existing_tracker = data.get("tracker")
+    if isinstance(existing_tracker, Mapping) and existing_tracker.get("kind") == "jira_cloud":
+        return data
+    data["tracker"] = copy.deepcopy(EXAMPLE_JIRA_TRACKER_CONFIG)
+    return data
+
+
 PACKAGED_STARTER_CONFIG_NAME = "code-mower.example.yml"
 
 
@@ -2400,6 +2445,7 @@ def render_init_plan(
     repo_root: str | Path | None = None,
     source_kind: str | None = None,
     participants: tuple[str, ...] | None = None,
+    tracker: str | None = None,
 ) -> RenderedPlan:
     previous_profile_lanes: tuple[str, ...] = ()
     if participants is not None:
@@ -2407,6 +2453,8 @@ def render_init_plan(
         config = code_mower_participants.config_with_participants(
             config, participants, profile=profile_id,
         )
+    if tracker == "jira_cloud":
+        config = config_with_jira_tracker(config)
     issues = validate_config(config)
     if issues:
         raise ConfigError(f"invalid Code Mower config:\n{_format_issues(issues)}")
@@ -2501,7 +2549,7 @@ def render_init_plan(
         }
         if Path(config_path).name == "code-mower.example.yml":
             adoption_config_entry["package_copy_from"] = "templates/code-mower.example.yml"
-        if participants is not None:
+        if participants is not None or tracker == "jira_cloud":
             adoption_config_entry["config_data"] = config
         generated_files.append(adoption_config_entry)
 
@@ -2918,6 +2966,12 @@ def render_init_plan(
         "merge_authority_lanes": merge_authority_lanes,
         "informational_lanes": informational_lanes,
         "merge_authority_excludes_author": json.loads(author_exclusion_json)["enabled"],
+        "tracker": tracker or (
+            "jira_cloud"
+            if isinstance(config.get("tracker"), Mapping)
+            and config["tracker"].get("kind") == "jira_cloud"
+            else "github"
+        ),
         "smoke_tests": smoke_tests,
         "warnings": warnings,
     }
@@ -2964,6 +3018,10 @@ def render_init_plan(
         f"- review {ADOPTION_CONFIG_PATH}, edit it for this repository, then commit it at the repo root"
     )
     lines.append("- fields to edit: " + ", ".join(ADOPTION_CONFIG_FIELDS))
+    if data.get("tracker") == "jira_cloud":
+        lines.append(
+            "- Jira Cloud: review tracker.jira_cloud in code-mower.yml, verify with doctor --adoption, and keep writes_enabled: false until verified"
+        )
     if trusted_author_variables:
         lines.append(
             "- trusted audit author variables: "
@@ -2972,6 +3030,15 @@ def render_init_plan(
     else:
         lines.append("- trusted audit author variables: none")
     lines.append("- verify: code-mower doctor --adoption --repo OWNER/REPO --json")
+    if data.get("tracker") == "jira_cloud":
+        lines.extend([
+            "",
+            "Work tracker:",
+            "- kind: jira_cloud (optional Jira Cloud integration)",
+            "- example configuration generated in code-mower.yml",
+            "- doctor check: code-mower doctor --adoption --repo OWNER/REPO",
+            "- mutation writes: disabled by default (writes_enabled: false)",
+        ])
 
     lines.extend(["", "Configured repositories:"])
     if data["repositories"]:
@@ -3120,6 +3187,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="render the init plan")
     parser.add_argument("--apply", action="store_true", help="write generated files to --output-dir")
     parser.add_argument(
+        "--jira",
+        action="store_true",
+        help=(
+            "include optional Jira Cloud tracker configuration in "
+            "generated code-mower.yml (defaults to GitHub-only)"
+        ),
+    )
+    parser.add_argument(
+        "--tracker",
+        choices=("github", "jira_cloud"),
+        default=None,
+        help="work-tracker kind (default: github)",
+    )
+    parser.add_argument(
         "--add-repo",
         action="append",
         default=[],
@@ -3205,6 +3286,11 @@ def main(argv: list[str] | None = None) -> int:
                     config, profile=args.profile,
                 ),
             )
+        tracker_choice = (
+            "jira_cloud"
+            if (args.jira or args.tracker == "jira_cloud")
+            else (args.tracker or "github")
+        )
         plan = render_init_plan(
             config,
             profile_id=args.profile,
@@ -3214,6 +3300,7 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=Path.cwd(),
             source_kind="packaged_starter" if packaged_fallback else "explicit_repository_config",
             participants=selected_participants,
+            tracker=tracker_choice,
         )
         label_repo = ""
         should_ensure_github_labels = bool(
@@ -3275,6 +3362,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"- set variable CODE_MOWER_MAX_WIP or use default {builder_loop['wip_cap']}")
             if builder_loop["runner_enabled_var"] in plan.data["required_variables"]:
                 print(f"- set variable {builder_loop['runner_enabled_var']}=true after the Mac runner is ready")
+        if args.jira or args.tracker == "jira_cloud":
+            print("Jira Cloud next steps:")
+            print("- review tracker.jira_cloud in code-mower.yml with your Jira site URL, cloud ID, and project ID")
+            print("- store credentials in JIRA_API_EMAIL and JIRA_API_TOKEN (or macOS Keychain via JIRA_KEYCHAIN_SERVICE)")
+            print("- run code-mower doctor --adoption to verify read-only readiness before enabling writes")
         label_result = apply_result.get("github_labels")
         if isinstance(label_result, Mapping):
             label_repo = label_result.get("repo")

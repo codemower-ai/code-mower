@@ -9,6 +9,39 @@ repositories:
     default_branch: main
     local_path_env: EXAMPLE_REPO_PATH
 
+# Optional work-tracker configuration. GitHub Issues is the default when omitted.
+# To adopt Jira Cloud, set kind: jira_cloud and configure your tenant and project.
+# See docs/jira-cloud-setup.md for setup, credential storage, and doctor checks.
+# tracker:
+#   kind: jira_cloud
+#   jira_cloud:
+#     site_url: "https://example.atlassian.net"
+#     cloud_id: "11111111-2222-3333-4444-555555555555"
+#     project_id: "10001"
+#     project_key: "ABC"
+#     issue_type_id: "10001"
+#     jql: "project = 10001 ORDER BY updated DESC"
+#     status_category_map:
+#       new:
+#         - "10000"
+#       in_progress:
+#         - "10001"
+#       blocked:
+#         - "10002"
+#       done:
+#         - "10003"
+#     field_mappings:
+#       lifecycle_category: "status"
+#     mutations:
+#       writes_enabled: false
+#       allowed_operations:
+#         - "assign"
+#         - "transition"
+#         - "comment"
+#         - "link"
+#       transitions:
+#         in_progress: "31"
+
 audit:
   # Leave blank to use the size-aware default: $2 base, +$1 per 150 KB
   # above max_diff_bytes, capped at $10.

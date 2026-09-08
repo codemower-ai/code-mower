@@ -37,6 +37,7 @@ from .github_config import check_repository_posture
 from .jira import (
     JIRA_CONFIG_CHECK,
     JIRA_CREDENTIALS_CHECK,
+    JIRA_MUTATIONS_CHECK,
     JIRA_READ_CHECK,
     check_jira_tracker_readiness,
 )
@@ -145,6 +146,7 @@ __all__ = [
     "check_github_setup",
     "JIRA_CONFIG_CHECK",
     "JIRA_CREDENTIALS_CHECK",
+    "JIRA_MUTATIONS_CHECK",
     "JIRA_READ_CHECK",
     "check_jira_tracker_readiness",
     "check_gate_automerge_token",
