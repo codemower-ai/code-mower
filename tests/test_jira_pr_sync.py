@@ -320,8 +320,9 @@ class MilestonePlansTest(unittest.TestCase):
         self.assertEqual(report["comment_template"], "pr_opened")
         operations = [(item["operation"], item["status"])
                       for item in report["mutation_plan"]["operations"]]
-        self.assertEqual(operations, [("transition", "planned"),
-                                      ("link", "planned"), ("comment", "planned")])
+        self.assertEqual(operations, [("link", "planned"),
+                                      ("transition", "planned"),
+                                      ("comment", "planned")])
         self.assertEqual(report["gate_authority"], "github")
         self.assertEqual(report["gate_impact"], "none")
 
@@ -476,6 +477,39 @@ class ApplyIdempotencyTest(unittest.TestCase):
         new_calls = runner.calls[calls_before:]
         self.assertEqual([call["method"] for call in new_calls], ["GET"])
 
+    def test_failed_link_cannot_change_lifecycle_or_yield_to_second_pr(self) -> None:
+        from code_mower import jira_cloud
+
+        config = sync_config()
+        runner = FakeJira(
+            faults={
+                ("POST", "remotelink"): [
+                    jira_cloud.JiraApiError("jira_forbidden"),
+                    None,
+                ]
+            }
+        )
+
+        failed = plan_and_apply(config, "merged", runner)
+
+        self.assertEqual(failed["status"], "blocked")
+        self.assertEqual(runner.status_id, "1")
+        self.assertEqual(runner.global_ids, [])
+        self.assertEqual(runner.comment_posts(), [])
+        self.assertEqual(runner.transition_posts(), [])
+
+        replacement = plan_and_apply(
+            config,
+            "merged",
+            runner,
+            pr_url="https://github.com/owner/repo/pull/19",
+        )
+        self.assertEqual(replacement["status"], "applied")
+        self.assertEqual(runner.status_id, "9")
+        self.assertEqual(
+            runner.global_ids, ["code-mower:github:owner/repo/pull/19"]
+        )
+
     def test_unrelated_remote_link_does_not_block_pr_association(self) -> None:
         config, runner = sync_config(), FakeJira()
         runner.global_ids.append("external-system:unrelated")
@@ -563,13 +597,20 @@ class ApplyIdempotencyTest(unittest.TestCase):
 
         report = plan_and_apply(config, "opened", runner)
 
-        self.assertEqual(report["status"], "blocked")
-        transition = report["mutation_plan"]["operations"][0]
-        self.assertEqual(transition["reason"], "stale_milestone")
-        self.assertEqual(report["write_request_count"], 0)
+        self.assertEqual(report["status"], "applied")
+        stale = [
+            operation
+            for operation in report["mutation_plan"]["operations"]
+            if operation["reason"] == "stale_milestone"
+        ]
+        self.assertEqual(
+            [operation["operation"] for operation in stale],
+            ["transition", "comment"],
+        )
         self.assertEqual(runner.status_id, "9")
         self.assertEqual(runner.comment_posts(), [])
         self.assertEqual(runner.transition_posts(), [])
+        self.assertEqual(runner.global_ids, [GLOBAL_ID])
 
     def test_jira_outage_never_marks_gate(self) -> None:
         from code_mower import jira_cloud

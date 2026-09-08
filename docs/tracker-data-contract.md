@@ -415,7 +415,8 @@ the closed comment templates, and the replay protection apply unchanged. The
 authoritative marker comes only from the branch name or the leading PR title
 token (never bodies, comments, source, or diffs); every live milestone first
 refuses a conflicting Code Mower PR association with zero writes, then verifies
-the single PR remote link. The association is rechecked at the transport
+the single PR remote link before applying any transition or comment. The
+association is rechecked at the transport
 boundary immediately before every physical write. Comments go out only on
 opened/blocked/merged,
 and ambiguous or mismatched identity fails closed to an owner action.

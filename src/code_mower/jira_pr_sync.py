@@ -377,6 +377,13 @@ def build_sync_plan(
     plan = jira_mutations.build_mutation_plan(
         config, request, apply_requested=bool(apply_requested)
     )
+    # Association is the ownership primitive for this surface. Establish or
+    # verify it before any lifecycle transition or comment so a failed link
+    # can never leave Jira changed but unowned.
+    plan["operations"] = sorted(
+        plan.get("operations") or [],
+        key=lambda operation: 0 if operation.get("operation") == "link" else 1,
+    )
     stale_status_ids = sorted(
         {
             status_id
