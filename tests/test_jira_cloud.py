@@ -9,6 +9,7 @@ example.atlassian.net only.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import stat
@@ -518,6 +519,18 @@ class TransportErrorTests(unittest.TestCase):
         info = client.get_server_info()
         self.assertEqual(info["base_url"], SITE_URL)
         self.assertEqual(len(runner.calls), 3)
+
+    def test_incomplete_http_response_retries_then_succeeds(self) -> None:
+        runner = FakeHttp(
+            [
+                http.client.IncompleteRead(b"partial", 10),
+                http_response(load_fixture("server_info.json")),
+            ]
+        )
+        client = make_client(runner, max_attempts=2)
+        info = client.get_server_info()
+        self.assertEqual(info["base_url"], SITE_URL)
+        self.assertEqual(len(runner.calls), 2)
 
     def test_oversize_response_is_rejected(self) -> None:
         big = b'{"baseUrl": "' + b"x" * 4096 + b'"}'

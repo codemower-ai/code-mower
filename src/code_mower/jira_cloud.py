@@ -34,6 +34,7 @@ Transport rules:
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import random as _random
@@ -739,7 +740,14 @@ class JiraReadClient:
                 # Rejected redirects fail fast with the request endpoint:
                 # retrying cannot help and must never forward credentials.
                 raise JiraApiError("jira_unavailable", endpoint=endpoint) from None
-            except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ValueError):
+            except (
+                urllib.error.URLError,
+                http.client.HTTPException,
+                socket.timeout,
+                TimeoutError,
+                OSError,
+                ValueError,
+            ):
                 last_code = "jira_unavailable"
                 status = -1
                 resp_headers = {}
