@@ -40,6 +40,7 @@ src/code_mower/
   reviewer_metrics.py            reviewer value/report calculations
   cloud.py                       thin cloud CLI adapter
   cloud_client/                  export, upload, setup, doctor, events, operations
+  tracker_contract.py            provider-neutral work-tracker contract
   package_paths.py               package materializer provider-template path helpers
   migration.py                   thin migration CLI adapter
   migration_install.py           venv, pip, command, and toy-repo helpers
@@ -63,6 +64,14 @@ unless they are part of the declared provider contract.
 provider wrappers. Keep broad prompt execution, parser behavior, and provider
 quirks in the Codex/Claude/Gemini/Antigravity modules until tests prove a
 smaller primitive is stable enough to share.
+
+## Work Tracker Contract
+
+`code_mower.trackerWorkItem.v1` is a provider-neutral normalized work item.
+GitHub Issues is the only implemented tracker and the default when a config
+omits `tracker`; an opt-in `jira_cloud` kind adds identity, status-category,
+and capability config validation only, with no network calls or writes. See
+`docs/tracker-data-contract.md`.
 
 ## Local Runner And Optional Cloud
 

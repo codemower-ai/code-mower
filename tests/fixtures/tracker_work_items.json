@@ -1,0 +1,31 @@
+{
+  "github": {
+    "schema": "code_mower.trackerWorkItem.v1",
+    "source_kind": "github",
+    "identity": {"repo": "owner/example", "number": "42"},
+    "url": "https://github.com/owner/example/issues/42",
+    "lifecycle_category": "new",
+    "labels": ["tier:R"],
+    "assigned": false,
+    "created_at": "2026-01-05T12:00:00Z",
+    "updated_at": "2026-01-06T09:30:00Z",
+    "provider_metadata": {}
+  },
+  "jira_cloud": {
+    "schema": "code_mower.trackerWorkItem.v1",
+    "source_kind": "jira_cloud",
+    "identity": {
+      "cloud_id": "11111111-2222-3333-4444-555555555555",
+      "project_id": "10001",
+      "issue_id": "20045",
+      "issue_key": "ABC-123"
+    },
+    "url": "https://example.atlassian.net/browse/ABC-123",
+    "lifecycle_category": "in_progress",
+    "labels": ["tier:R"],
+    "assigned": true,
+    "created_at": "2026-01-05T12:00:00Z",
+    "updated_at": "2026-01-06T09:30:00Z",
+    "provider_metadata": {"status_name": "In Progress", "issue_type": "Task"}
+  }
+}

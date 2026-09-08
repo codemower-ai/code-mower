@@ -7,6 +7,13 @@ later entries are regular releases.
 
 ## Unreleased
 
+### Added
+
+- A provider-neutral work-tracker contract (`code_mower.trackerWorkItem.v1`)
+  and an additive, opt-in `tracker` config block for a future Jira Cloud
+  tracker. Configs that omit `tracker` are unchanged and still mean GitHub.
+  No Jira network calls or writes are added by this change (issue #798).
+
 ## v1.0.15
 
 This release makes current-state reporting, provider credentials, release
