@@ -9,6 +9,7 @@ and auth output are never persisted in campaign files, printed, or uploaded.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import stat
 from dataclasses import dataclass, field
@@ -19,6 +20,17 @@ from .devin_api import validate_devin_org_id
 
 DEFAULT_CONFIG_DIR = Path("~/.config/code-mower")
 SAFE_CONFIG_DIR = "~/.config/code-mower"
+
+# Bounded account-email check for the Jira Cloud API-token path. This is a
+# shape check only; delivery and revocation state are verified by the live
+# read probe in jira_cloud, never by guessing here.
+_JIRA_EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,128}\.[^@\s]{1,32}$")
+
+
+def validate_jira_email(email: str) -> bool:
+    """Validate that an account email has a bounded user@domain shape."""
+    return bool(_JIRA_EMAIL_RE.fullmatch(email))
+
 
 # Registry of supported providers, their required variables, optional variables, and validators.
 # Extensible for other providers, with hosted Devin as the first consumer.
@@ -31,7 +43,19 @@ PROVIDER_CREDENTIAL_SPECS: dict[str, dict[str, Any]] = {
             "DEVIN_ORG_ID": validate_devin_org_id,
         },
         "file_prefix": "devin",
-    }
+    },
+    "jira": {
+        "required_env": ("JIRA_API_EMAIL", "JIRA_API_TOKEN"),
+        "optional_env": ("JIRA_KEYCHAIN_SERVICE",),
+        # Backward-compatible alias: long-standing local setups store the
+        # account email under JIRA_ACCOUNT_EMAIL. The primary name wins when
+        # both are set; only the primary name ever appears in diagnostics.
+        "alias_groups": (("JIRA_API_EMAIL", "JIRA_ACCOUNT_EMAIL"),),
+        "validators": {
+            "JIRA_API_EMAIL": validate_jira_email,
+        },
+        "file_prefix": "jira",
+    },
 }
 
 
@@ -113,6 +137,32 @@ def normalize_provider_aliases(
             for alias in group:
                 result[alias] = effective
     return result
+
+
+def alias_group_for(provider: str, var: str) -> tuple[str, ...]:
+    """Return the alias group containing var (primary first), or (var,)."""
+    spec = PROVIDER_CREDENTIAL_SPECS.get(provider, {})
+    for group in spec.get("alias_groups", ()):
+        if var in group:
+            return tuple(group)
+    return (var,)
+
+
+def effective_env_value(
+    provider: str,
+    env: Mapping[str, str],
+    var: str,
+) -> str:
+    """Return the first non-empty value across var's alias group.
+
+    The primary name wins when several members are set. Values are
+    stripped; the caller decides whether the result is valid.
+    """
+    for name in alias_group_for(provider, var):
+        val = str(env.get(name) or "").strip()
+        if val:
+            return val
+    return ""
 
 
 def default_config_dir() -> Path:
@@ -320,16 +370,23 @@ def resolve_provider_credentials(
     optional_vars = tuple(spec.get("optional_env", ()))
     validators: dict[str, Callable[[str], bool]] = spec.get("validators", {})
 
-    # 1. Ambient environment check
+    # 1. Ambient environment check. Required variables resolve through
+    # their alias groups (primary name first), so a backward-compatible
+    # alias counts as ambient presence and stays authoritative.
     ambient_present: list[str] = [
-        var for var in required_vars if var in current_env and current_env[var] is not None
+        var
+        for var in required_vars
+        if any(
+            name in current_env and current_env[name] is not None
+            for name in alias_group_for(provider, var)
+        )
     ]
     ambient_missing: list[str] = []
     ambient_invalid: list[str] = []
     ambient_creds: dict[str, str] = {}
 
     for var in required_vars:
-        val = str(current_env.get(var) or "").strip()
+        val = effective_env_value(provider, current_env, var)
         if not val:
             ambient_missing.append(var)
         else:
@@ -531,8 +588,11 @@ def resolve_provider_credentials(
         missing_vars = [
             var
             for var in required_vars
-            if not current_env.get(var)
-            or (validators.get(var) and not validators[var](str(current_env.get(var)).strip()))
+            if not effective_env_value(provider, current_env, var)
+            or (
+                validators.get(var)
+                and not validators[var](effective_env_value(provider, current_env, var))
+            )
         ]
         missing_name = (
             missing_vars[0]

@@ -34,6 +34,12 @@ from .common import (
 )
 from .github import check_github_setup
 from .github_config import check_repository_posture
+from .jira import (
+    JIRA_CONFIG_CHECK,
+    JIRA_CREDENTIALS_CHECK,
+    JIRA_READ_CHECK,
+    check_jira_tracker_readiness,
+)
 from .github_human_token import (
     check_gate_automerge_token,
     check_human_automation_token,
@@ -137,6 +143,10 @@ __all__ = [
     "check_github_auth_surface",
     "check_macos_runner_launchagent",
     "check_github_setup",
+    "JIRA_CONFIG_CHECK",
+    "JIRA_CREDENTIALS_CHECK",
+    "JIRA_READ_CHECK",
+    "check_jira_tracker_readiness",
     "check_gate_automerge_token",
     "check_human_automation_token",
     "trusted_author_variable_probe",

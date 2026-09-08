@@ -108,3 +108,37 @@ Board history may retain these metadata-only rows, but history is never merged
 into the live queue. Existing cloud-event allowlists omit the new tracker
 payload entirely. This read adapter adds no dispatch, assignment, transition,
 comment, link, or issue-update operation.
+
+## Read-only Jira Cloud probe
+
+`src/code_mower/jira_cloud.py` is the single bounded read-only transport
+(issue #800). It performs no mutation call: every primitive is an HTTP GET,
+except the JQL search and the bulk permission check, which use read-only
+POST endpoints. Writes are unimplemented here.
+
+- Scoped API tokens go through the gateway
+  `https://api.atlassian.com/ex/jira/{cloud_id}`. The configured
+  `site_url` (for example `https://example.atlassian.net`) is
+  browse/display identity only, never the REST gateway.
+- Credentials resolve fail-closed: `JIRA_API_EMAIL` + `JIRA_API_TOKEN`
+  from the environment first, then an explicit credential file or profile
+  (`--provider-credential-file`, `--provider-profile`,
+  `--provider-config-dir`), then exactly one secure discovered
+  `jira*.env` profile. Files broader than mode 0600 on POSIX are
+  rejected, and diagnostics carry filenames only.
+- A profile may name a macOS Keychain generic-password service through
+  `JIRA_KEYCHAIN_SERVICE` instead of storing the token on disk. The token
+  is read from Keychain stdout only and never appears in argv, logs,
+  exceptions, JSON diagnostics, Board data, or cloud data. Where Keychain
+  is unavailable, set `JIRA_API_TOKEN` directly.
+- `code-mower doctor --adoption` reports stable checks
+  `tracker.jira.config`, `tracker.jira.credentials`, and
+  `tracker.jira.read`, distinguishing missing, malformed, ambiguous,
+  insecure, expired/unauthorized, forbidden, wrong-cloud, wrong-project,
+  and rate-limited posture with safe remediation. GitHub-only
+  repositories get no new checks.
+- Retries are bounded (exponential backoff plus jitter, capped
+  `Retry-After`); only bounded metadata fields are requested and
+  returned. Public examples use `example.atlassian.net` and synthetic
+  ids such as cloud id `11111111-2222-3333-4444-555555555555`, project
+  id `10001`, and issue keys like `ABC-1`.

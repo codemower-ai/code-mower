@@ -1,0 +1,1 @@
+{"fields":[{"fieldId":"customfield_10001","key":"customfield_10001","name":"Team","required":true},{"fieldId":"labels","key":"labels","name":"Labels","required":false},{"fieldId":"priority","key":"priority","name":"Priority","required":true}],"maxResults":50,"startAt":0,"total":3}

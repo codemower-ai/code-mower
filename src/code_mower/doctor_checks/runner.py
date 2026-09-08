@@ -20,6 +20,7 @@ from .audit_limits import check_effective_audit_limits
 from .cloud import check_cloud_token_surface
 from .common import ACTIONS_COST_SAMPLE_DEFAULT, load_inputs
 from .github import check_github_setup
+from .jira import check_jira_tracker_readiness
 from .github_config import check_repository_posture
 from .github_trusted_authors import trusted_author_variable_probe
 from .models import STATUS_FAIL, STATUS_PASS, DoctorCheck, DoctorReport
@@ -285,6 +286,17 @@ def run_doctor(
                 provider_credential_file=provider_credential_file,
                 provider_profile=provider_profile,
                 provider_config_dir=provider_config_dir,
+            )
+        )
+        # Read-only Jira tracker posture rides the existing generic
+        # provider selector flags; GitHub-only configs produce no checks.
+        checks.extend(
+            check_jira_tracker_readiness(
+                config=config,
+                credential_file=provider_credential_file,
+                profile=provider_profile,
+                config_dir=provider_config_dir,
+                http_timeout=http_timeout,
             )
         )
 

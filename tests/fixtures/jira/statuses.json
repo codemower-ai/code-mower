@@ -1,0 +1,1 @@
+[{"id": "10000", "name": "To Do", "statusCategory": {"id": "2", "key": "new", "name": "To Do"}}, {"id": "10001", "name": "In Review", "statusCategory": {"id": "4", "key": "indeterminate", "name": "In Progress"}}, {"id": "10002", "name": "Done", "statusCategory": {"id": "3", "key": "done", "name": "Done"}}]
