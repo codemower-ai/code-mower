@@ -53,7 +53,7 @@ directory so this offline stage cannot auto-load an existing Jira profile:
 ```bash
 EMPTY_PROFILES="$(mktemp -d)"
 code-mower doctor .code-mower.generated/code-mower.yml \
-  --provider-config-dir "$EMPTY_PROFILES" --json
+  --provider-config-dir "$EMPTY_PROFILES" --adoption --json
 ```
 
 In an offline environment without credentials:

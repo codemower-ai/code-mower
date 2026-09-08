@@ -1627,6 +1627,8 @@ def _parse_queue_search_issue(
             elif isinstance(value, str):
                 fields[name] = _bounded_str(value, 128)
             elif isinstance(value, list):
+                if len(value) > MAX_LABELS:
+                    return None
                 fields[name] = _bounded_labels(value)
             elif isinstance(value, Mapping):
                 status_category = value.get("statusCategory")
