@@ -710,6 +710,8 @@ def main(
     *,
     gh_json_runner: GitHubJsonRunner = _run_gh_json,
     command_runner: CommandRunner = _run_command,
+    env: Mapping[str, str] | None = None,
+    jira_client_factory: Any = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="code-mower lanes")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -720,6 +722,10 @@ def main(
     status.add_argument("--pr-limit", type=int, default=50)
     status.add_argument("--workflow-limit", type=int, default=20)
     status.add_argument("--stale-minutes", type=int, default=30)
+    status.add_argument("--provider-credential-file", default="")
+    status.add_argument("--provider-profile", default="")
+    status.add_argument("--provider-config-dir", default="")
+    status.add_argument("--http-timeout", type=float, default=20.0)
     status.add_argument(
         "--show-local-paths",
         action="store_true",
@@ -740,6 +746,25 @@ def main(
                 print("invalid Code Mower config; run code-mower config validate", file=sys.stderr)
                 return 2
             tracker_config = None
+    jira_reader = (
+        tracker_queue.resolve_jira_queue_reader(
+            tracker_config,
+            credential_file=(
+                Path(args.provider_credential_file)
+                if args.provider_credential_file
+                else None
+            ),
+            profile=args.provider_profile,
+            config_dir=(
+                Path(args.provider_config_dir) if args.provider_config_dir else None
+            ),
+            env=os.environ if env is None else env,
+            timeout_seconds=args.http_timeout,
+            client_factory=jira_client_factory,
+        )
+        if tracker_config is not None
+        else None
+    )
     report = collect_status(
         repo=args.repo,
         gh_json_runner=gh_json_runner,
@@ -749,6 +774,7 @@ def main(
         stale_minutes=args.stale_minutes,
         show_local_paths=args.show_local_paths,
         tracker_config=tracker_config,
+        jira_reader=jira_reader,
     )
     output = json.dumps(report, indent=2, sort_keys=True) + "\n" if args.json else render_text(report)
     print(output, end="")

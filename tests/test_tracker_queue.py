@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import subprocess
 import tempfile
@@ -13,7 +14,8 @@ from unittest.mock import Mock, patch
 
 import yaml
 
-from code_mower import board, board_store, controller, lane_status, tracker_queue
+from code_mower import board, board_store, controller, jira_cloud, lane_status, tracker_queue
+from code_mower import init as code_mower_init
 from code_mower.cloud_client.events import build_board_snapshot_event
 from code_mower.tracker_contract import validate_tracker_work_item
 from test_board import _write_board_config
@@ -68,6 +70,338 @@ def view(payload, *, prs=(), **kwargs):
 
 
 class TrackerQueueTests(unittest.TestCase):
+    def test_queue_reader_resolves_credentials_without_exposing_them(self):
+        captured = {}
+        reader = Reader()
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return reader
+
+        resolved = tracker_queue.resolve_jira_queue_reader(
+            config(),
+            env={
+                jira_cloud.JIRA_EMAIL_ENV: "operator@example.com",
+                jira_cloud.JIRA_TOKEN_ENV: "token-value",
+            },
+            client_factory=factory,
+        )
+        self.assertIs(resolved, reader)
+        self.assertEqual(captured["cloud_id"], "cloud-example")
+        self.assertEqual(captured["site_url"], "https://example.atlassian.net")
+        self.assertIsNone(
+            tracker_queue.resolve_jira_queue_reader(config(), env={})
+        )
+
+    def test_default_jira_client_reads_a_sanitized_queue_page(self):
+        raw = issue()
+        runner = Mock(
+            side_effect=[
+                (
+                    200,
+                    {},
+                    json.dumps(
+                        {"baseUrl": "https://example.atlassian.net"}
+                    ).encode("utf-8"),
+                ),
+                (
+                    200,
+                    {},
+                    json.dumps({"id": "10001", "key": "ORDER"}).encode("utf-8"),
+                ),
+                (
+                    200,
+                    {},
+                    json.dumps({"issues": [raw], "isLast": True}).encode("utf-8"),
+                ),
+            ]
+        )
+        reader = tracker_queue.resolve_jira_queue_reader(
+            config(),
+            env={
+                jira_cloud.JIRA_EMAIL_ENV: "operator@example.com",
+                jira_cloud.JIRA_TOKEN_ENV: "token-value",
+            },
+            client_factory=lambda **kwargs: jira_cloud.JiraReadClient(
+                **kwargs, http_runner=runner
+            ),
+        )
+
+        result = queue(reader)
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["freshness"], "live")
+        self.assertEqual(result["items"][0]["identity"]["issue_key"], "ABC-1")
+        request_body = json.loads(runner.call_args.args[3])
+        self.assertNotIn("summary", request_body["fields"])
+        self.assertNotIn(PROSE, json.dumps(result))
+
+    def test_default_jira_client_rejects_wrong_tenant_before_queue_read(self):
+        runner = Mock(
+            return_value=(
+                200,
+                {},
+                json.dumps({"baseUrl": "https://other.atlassian.net"}).encode(
+                    "utf-8"
+                ),
+            )
+        )
+
+        reader = tracker_queue.resolve_jira_queue_reader(
+            config(),
+            env={
+                jira_cloud.JIRA_EMAIL_ENV: "operator@example.com",
+                jira_cloud.JIRA_TOKEN_ENV: "token-value",
+            },
+            client_factory=lambda **kwargs: jira_cloud.JiraReadClient(
+                **kwargs, http_runner=runner
+            ),
+        )
+
+        self.assertIsNone(reader)
+        self.assertEqual(runner.call_count, 1)
+
+    def test_queue_page_rejects_invalid_or_oversized_issue_sets(self):
+        for raw_issues in ([{}], [issue(1), issue(2)]):
+            runner = Mock(
+                return_value=(
+                    200,
+                    {},
+                    json.dumps({"issues": raw_issues, "isLast": True}).encode(
+                        "utf-8"
+                    ),
+                )
+            )
+            client = jira_cloud.JiraReadClient(
+                cloud_id="cloud-example",
+                email="operator@example.com",
+                token="token-value",
+                site_url="https://example.atlassian.net",
+                http_runner=runner,
+            )
+            with self.assertRaises(jira_cloud.JiraApiError):
+                client.search_page(
+                    jql="project = 10001",
+                    fields=["project", "status"],
+                    max_results=1,
+                    next_page_token=None,
+                )
+
+    def test_queue_page_rejects_truncated_labels(self):
+        raw_issue = issue()
+        raw_issue["fields"]["labels"] = [
+            f"label-{index}" for index in range(jira_cloud.MAX_LABELS)
+        ] + ["needs-owner"]
+        runner = Mock(
+            return_value=(
+                200,
+                {},
+                json.dumps({"issues": [raw_issue], "isLast": True}).encode("utf-8"),
+            )
+        )
+        client = jira_cloud.JiraReadClient(
+            cloud_id="cloud-example",
+            email="operator@example.com",
+            token="token-value",
+            site_url="https://example.atlassian.net",
+            http_runner=runner,
+        )
+        with self.assertRaises(jira_cloud.JiraApiError):
+            client.search_page(
+                jql="project = 10001",
+                fields=["labels", "project", "status"],
+                max_results=1,
+                next_page_token=None,
+            )
+
+    def test_queue_page_rejects_truncated_custom_labels(self):
+        raw_issue = issue()
+        raw_issue["fields"]["customfield_123"] = [
+            f"label-{index}" for index in range(jira_cloud.MAX_LABELS)
+        ] + ["needs-owner"]
+        runner = Mock(
+            return_value=(
+                200,
+                {},
+                json.dumps({"issues": [raw_issue], "isLast": True}).encode("utf-8"),
+            )
+        )
+        client = jira_cloud.JiraReadClient(
+            cloud_id="cloud-example",
+            email="operator@example.com",
+            token="token-value",
+            site_url="https://example.atlassian.net",
+            http_runner=runner,
+        )
+        with self.assertRaises(jira_cloud.JiraApiError):
+            client.search_page(
+                jql="project = 10001",
+                fields=["customfield_123", "project", "status"],
+                max_results=1,
+                next_page_token=None,
+            )
+
+    def test_queue_page_accepts_missing_native_labels(self):
+        raw_issue = issue()
+        raw_issue["fields"].pop("labels")
+        runner = Mock(
+            return_value=(
+                200,
+                {},
+                json.dumps({"issues": [raw_issue], "isLast": True}).encode("utf-8"),
+            )
+        )
+        client = jira_cloud.JiraReadClient(
+            cloud_id="cloud-example",
+            email="operator@example.com",
+            token="token-value",
+            site_url="https://example.atlassian.net",
+            http_runner=runner,
+        )
+        page = client.search_page(
+            jql="project = 10001",
+            fields=["labels", "project", "status"],
+            max_results=1,
+            next_page_token=None,
+        )
+        self.assertEqual(page["issues"][0]["fields"]["labels"], [])
+
+    def test_queue_page_rejects_nested_custom_labels(self):
+        raw_issue = issue()
+        raw_issue["fields"]["customfield_123"] = [[PROSE]]
+        runner = Mock(
+            return_value=(
+                200,
+                {},
+                json.dumps({"issues": [raw_issue], "isLast": True}).encode("utf-8"),
+            )
+        )
+        client = jira_cloud.JiraReadClient(
+            cloud_id="cloud-example",
+            email="operator@example.com",
+            token="token-value",
+            site_url="https://example.atlassian.net",
+            http_runner=runner,
+        )
+        with self.assertRaises(jira_cloud.JiraApiError):
+            client.search_page(
+                jql="project = 10001",
+                fields=["customfield_123", "project", "status"],
+                max_results=1,
+                next_page_token=None,
+            )
+
+    def test_queue_page_rejects_unsupported_custom_field_value(self):
+        raw_issue = issue()
+        raw_issue["fields"]["customfield_123"] = 42
+        runner = Mock(
+            return_value=(
+                200,
+                {},
+                json.dumps({"issues": [raw_issue], "isLast": True}).encode("utf-8"),
+            )
+        )
+        client = jira_cloud.JiraReadClient(
+            cloud_id="cloud-example",
+            email="operator@example.com",
+            token="token-value",
+            site_url="https://example.atlassian.net",
+            http_runner=runner,
+        )
+        with self.assertRaises(jira_cloud.JiraApiError):
+            client.search_page(
+                jql="project = 10001",
+                fields=["customfield_123", "project", "status"],
+                max_results=1,
+                next_page_token=None,
+            )
+
+    def test_controller_cli_wires_profile_to_live_jira_queue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "code-mower.yml"
+            rendered_config = config()
+            rendered_config["tracker"]["jira_cloud"]["jql"] = "labels = ready"
+            config_path.write_text(
+                code_mower_init._render_provider_catalog(rendered_config),
+                encoding="utf-8",
+            )
+
+            def gh_json(args):
+                if args[:2] in (["pr", "list"], ["run", "list"]):
+                    return []
+                self.fail(f"unexpected GitHub call: {args}")
+
+            def local(args):
+                return subprocess.CompletedProcess(args, 1, "", "")
+
+            with patch.object(
+                tracker_queue,
+                "resolve_jira_queue_reader",
+                return_value=Reader(),
+            ) as resolver:
+                with patch("sys.stdout", new_callable=io.StringIO) as out:
+                    code = controller.main(
+                        [
+                            "run",
+                            "--repo",
+                            "owner/repo",
+                            "--config",
+                            str(config_path),
+                            "--provider-profile",
+                            "jira.env",
+                            "--mode",
+                            "dry_run",
+                            "--json",
+                        ],
+                        gh_json_runner=gh_json,
+                        command_runner=local,
+                    )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["decision"]["decision_state"], "dispatch_builder")
+        self.assertEqual(resolver.call_args.kwargs["profile"], "jira.env")
+
+    def test_lanes_cli_wires_profile_to_live_jira_queue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "code-mower.yml"
+            rendered_config = config()
+            rendered_config["tracker"]["jira_cloud"]["jql"] = "labels = ready"
+            config_path.write_text(
+                code_mower_init._render_provider_catalog(rendered_config),
+                encoding="utf-8",
+            )
+
+            def gh_json(args):
+                if args[:2] in (["pr", "list"], ["run", "list"]):
+                    return []
+                self.fail(f"unexpected GitHub call: {args}")
+
+            def local(args):
+                return subprocess.CompletedProcess(args, 1, "", "")
+
+            with patch.object(
+                tracker_queue,
+                "resolve_jira_queue_reader",
+                return_value=Reader(),
+            ) as resolver:
+                with patch("sys.stdout", new_callable=io.StringIO) as out:
+                    code = lane_status.main(
+                        [
+                            "status",
+                            "--repo",
+                            "owner/repo",
+                            "--config",
+                            str(config_path),
+                            "--provider-profile",
+                            "jira.env",
+                            "--json",
+                        ],
+                        gh_json_runner=gh_json,
+                        command_runner=local,
+                    )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["tracker"]["freshness"], "live")
+        self.assertEqual(resolver.call_args.kwargs["profile"], "jira.env")
+
     def test_empty_and_paginated_stable_identity_and_scope(self):
         self.assertEqual(queue(Reader({"issues": [], "isLast": True}))["items"], [])
         reader = Reader({"issues": [issue(2)], "nextPageToken": "page-two"},

@@ -96,6 +96,8 @@ MAX_REQUIRED_CREATE_FIELDS = 64
 KEYCHAIN_TIMEOUT_SECONDS = 10
 MAX_METADATA_VALUE_LENGTH = 128
 MAX_LABEL_LENGTH = 128
+MAX_LABELS = 64
+MAX_STATUSES = 256
 
 #: Jira documents 255 characters for both remote-link global ids and issue
 #: property keys; Code Mower stays inside that bound and only builds tokens.
@@ -143,9 +145,11 @@ SAFE_SEARCH_FIELDS = frozenset(
 DEFAULT_PROBE_PERMISSIONS = (
     "BROWSE_PROJECTS",
     "CREATE_ISSUES",
+    "ASSIGN_ISSUES",
     "EDIT_ISSUES",
     "TRANSITION_ISSUES",
     "ADD_COMMENTS",
+    "LINK_ISSUES",
 )
 
 JiraHttpRunner = Callable[
@@ -254,7 +258,7 @@ def _bounded_labels(value: Any) -> list[str]:
         name = name.strip().replace("\n", " ").replace("\r", " ")
         if name:
             names.append(name[:MAX_LABEL_LENGTH])
-    return sorted(set(names))[:64]
+    return sorted(set(names))[:MAX_LABELS]
 
 
 def default_keychain_runner(argv: Sequence[str], env: Mapping[str, str]) -> str:
@@ -1181,6 +1185,8 @@ class JiraReadClient:
     def get_statuses(self) -> list[dict[str, str]]:
         """List statuses with their category; bounded metadata only."""
         raw = self.request_list("GET", "/rest/api/3/status", endpoint="status")
+        if len(raw) > MAX_STATUSES:
+            raise JiraApiError("jira_unavailable", endpoint="status")
         statuses: list[dict[str, str]] = []
         for entry in raw if isinstance(raw, list) else []:
             if not isinstance(entry, Mapping):
@@ -1199,7 +1205,7 @@ class JiraReadClient:
                     "category_key": _bounded_str(category.get("key"), 32),
                 }
             )
-        return statuses[:256]
+        return statuses
 
     def search_issues(
         self,
@@ -1281,6 +1287,70 @@ class JiraReadClient:
             # Page cap reached while the server kept offering continuation.
             truncated = True
         return {"issues": collected, "truncated": truncated}
+
+    def search_page(
+        self,
+        *,
+        jql: str,
+        fields: Sequence[str],
+        max_results: int,
+        next_page_token: str | None,
+    ) -> dict[str, Any]:
+        """Return one sanitized enhanced-search page for the tracker queue."""
+        query = jql.strip()
+        if not query or len(query) > 2000 or "\n" in query or "\r" in query:
+            raise ValueError("jql must be a single line of at most 2000 characters")
+        requested = sorted(set(fields))
+        if not requested:
+            raise ValueError("search must request at least one metadata field")
+        for name in requested:
+            if name not in SAFE_SEARCH_FIELDS and not re.fullmatch(
+                r"customfield_[0-9]+", name
+            ):
+                raise ValueError(f"search field {name!r} is not readable metadata")
+        bounded_max = max(1, min(int(max_results), SEARCH_PAGE_SIZE))
+        if next_page_token is not None and (
+            not isinstance(next_page_token, str)
+            or not next_page_token
+            or len(next_page_token) > 4096
+            or any(ord(char) < 32 or ord(char) == 127 for char in next_page_token)
+        ):
+            raise ValueError("invalid Jira search cursor")
+        body: dict[str, Any] = {
+            "jql": query,
+            "fields": requested,
+            "maxResults": bounded_max,
+        }
+        if next_page_token:
+            body["nextPageToken"] = next_page_token
+        data = self.request_json(
+            "POST", "/rest/api/3/search/jql", json_body=body, endpoint="search"
+        )
+        raw_issues = data.get("issues")
+        if not isinstance(raw_issues, list) or len(raw_issues) > bounded_max:
+            raise JiraApiError("jira_unavailable", endpoint="search")
+        issues = []
+        for entry in raw_issues:
+            parsed = _parse_queue_search_issue(entry, requested)
+            if parsed is None:
+                raise JiraApiError("jira_unavailable", endpoint="search")
+            issues.append(parsed)
+        page: dict[str, Any] = {"issues": issues}
+        is_last = data.get("isLast")
+        if is_last is not None:
+            if not isinstance(is_last, bool):
+                raise JiraApiError("jira_unavailable", endpoint="search")
+            page["isLast"] = is_last
+        token = data.get("nextPageToken")
+        if token not in (None, ""):
+            if (
+                not isinstance(token, str)
+                or len(token) > 4096
+                or any(ord(char) < 32 or ord(char) == 127 for char in token)
+            ):
+                raise JiraApiError("jira_unavailable", endpoint="search")
+            page["nextPageToken"] = token
+        return page
 
     def get_transitions(self, issue_id_or_key: str) -> list[dict[str, str]]:
         """List available transitions for one issue; bounded metadata only."""
@@ -1507,6 +1577,85 @@ def _parse_search_issue(entry: Any) -> dict[str, Any] | None:
     }
 
 
+def _parse_queue_search_issue(
+    entry: Any, requested_fields: Sequence[str]
+) -> dict[str, Any] | None:
+    """Shape one search hit for queue normalization without retaining prose."""
+    raw_fields = entry.get("fields") if isinstance(entry, Mapping) else {}
+    raw_labels = raw_fields.get("labels", []) if isinstance(raw_fields, Mapping) else []
+    if (
+        not isinstance(raw_labels, (list, tuple))
+        or len(raw_labels) > MAX_LABELS
+        or not all(isinstance(label, str) for label in raw_labels)
+    ):
+        return None
+    parsed = _parse_search_issue(entry)
+    if parsed is None:
+        return None
+    compact = parsed["fields"]
+    raw_status = (
+        raw_fields.get("status") if isinstance(raw_fields, Mapping) else {}
+    )
+    status_category = (
+        raw_status.get("statusCategory") if isinstance(raw_status, Mapping) else {}
+    )
+    fields: dict[str, Any] = {
+        "project": {"id": parsed["project_id"]},
+        "status": {
+            "id": compact["status_id"],
+            "name": compact["status_name"],
+            "statusCategory": {
+                "key": _bounded_str(
+                    status_category.get("key")
+                    if isinstance(status_category, Mapping)
+                    else "",
+                    32,
+                )
+            },
+        },
+        "issuetype": {
+            "id": compact["issue_type_id"],
+            "name": compact["issue_type_name"],
+        },
+        "labels": compact["labels"],
+        "assignee": True if compact["assigned"] else None,
+        "created": compact["created"],
+        "updated": compact["updated"],
+    }
+    if isinstance(raw_fields, Mapping):
+        for name in requested_fields:
+            if not re.fullmatch(r"customfield_[0-9]+", name):
+                continue
+            value = raw_fields.get(name)
+            if isinstance(value, bool):
+                fields[name] = value
+            elif isinstance(value, str):
+                fields[name] = _bounded_str(value, 128)
+            elif isinstance(value, list):
+                if len(value) > MAX_LABELS or not all(
+                    isinstance(label, str) for label in value
+                ):
+                    return None
+                fields[name] = _bounded_labels(value)
+            elif isinstance(value, Mapping):
+                status_category = value.get("statusCategory")
+                fields[name] = {
+                    "id": _bounded_str(value.get("id"), 32),
+                    "name": _bounded_str(value.get("name"), 64),
+                    "statusCategory": {
+                        "key": _bounded_str(
+                            status_category.get("key")
+                            if isinstance(status_category, Mapping)
+                            else "",
+                            32,
+                        )
+                        },
+                    }
+            elif value is not None:
+                return None
+    return {"id": parsed["id"], "key": parsed["key"], "fields": fields}
+
+
 def quote_jql_string(value: str) -> str:
     """Quote one JQL string literal, escaping backslashes and quotes."""
     text = value.strip()
@@ -1541,6 +1690,44 @@ def build_project_jql(
     if len(clause) > 2000:
         raise ValueError("project JQL exceeds the bounded length")
     return clause
+
+
+def build_project_probe_jql(project_id: str, query: str = "") -> str:
+    """Scope an optional queue query to one project for readiness probes.
+
+    A top-level ORDER BY clause is omitted because probe ordering is irrelevant.
+    Quoted text and nested expressions are preserved.
+    """
+    text = query.strip()
+    if not text:
+        return build_project_jql(project_id=project_id)
+    if len(text) > 2000 or "\n" in text or "\r" in text:
+        raise ValueError("JQL must be a bounded single line")
+    quoted: str | None = None
+    escaped = False
+    depth = 0
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quoted:
+            escaped = True
+        elif quoted:
+            if char == quoted:
+                quoted = None
+        elif char in "\"'":
+            quoted = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("JQL parentheses are unbalanced")
+        elif depth == 0 and re.match(r"(?i)order\s+by\b", text[index:]):
+            text = text[:index].strip()
+            break
+    if quoted or depth:
+        raise ValueError("JQL is unbalanced")
+    return build_project_jql(project_id=project_id, extra=text)
 
 
 def map_status_to_lifecycle(

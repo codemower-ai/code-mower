@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import uuid
 from collections.abc import Mapping, Sequence
@@ -717,9 +718,12 @@ def collect_controller_report(
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     jira_reader: tracker_queue.JiraQueueReader | None = None,
     tracker_links: Mapping[tuple[str, str, str], int] | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    config = code_mower_config.load_config(config_path)
-    issues = code_mower_config.validate_config(config)
+    resolved_config = (
+        config if config is not None else code_mower_config.load_config(config_path)
+    )
+    issues = code_mower_config.validate_config(resolved_config)
     if issues:
         issue_text = "; ".join(f"{issue.path}: {issue.message}" for issue in issues)
         raise code_mower_config.ConfigError(f"invalid Code Mower config: {issue_text}")
@@ -727,13 +731,13 @@ def collect_controller_report(
         repo=options.repo,
         gh_json_runner=gh_json_runner,
         command_runner=command_runner,
-        tracker_config=config,
+        tracker_config=resolved_config,
         jira_reader=jira_reader,
         tracker_links=tracker_links,
     )
     ready_issues = _collect_ready_issues(
         repo=options.repo,
-        config=config,
+        config=resolved_config,
         gh_json_runner=gh_json_runner,
         issue_limit=options.issue_limit,
         tracker_view=status_report.get("tracker"),
@@ -741,7 +745,7 @@ def collect_controller_report(
     return evaluate_controller_report(
         status_report=status_report,
         ready_issues=ready_issues,
-        config=config,
+        config=resolved_config,
         options=options,
     )
 
@@ -828,6 +832,8 @@ def main(
     *,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
+    env: Mapping[str, str] | None = None,
+    jira_client_factory: Any = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="code-mower controller")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -850,6 +856,10 @@ def main(
     run.add_argument("--team-id", default="")
     run.add_argument("--install-id", default="")
     run.add_argument("--source", default="code-mower-controller")
+    run.add_argument("--provider-credential-file", default="")
+    run.add_argument("--provider-profile", default="")
+    run.add_argument("--provider-config-dir", default="")
+    run.add_argument("--http-timeout", type=float, default=20.0)
     run.add_argument("--json", action="store_true")
     args = parser.parse_args(list(argv or ()))
     if args.command != "run":  # pragma: no cover - argparse validates commands.
@@ -863,11 +873,29 @@ def main(
             merge_token_ready=args.merge_token_ready,
             issue_limit=args.issue_limit,
         )
+        config = code_mower_config.load_config(args.config)
+        jira_reader = tracker_queue.resolve_jira_queue_reader(
+            config,
+            credential_file=(
+                Path(args.provider_credential_file)
+                if args.provider_credential_file
+                else None
+            ),
+            profile=args.provider_profile,
+            config_dir=(
+                Path(args.provider_config_dir) if args.provider_config_dir else None
+            ),
+            env=os.environ if env is None else env,
+            timeout_seconds=args.http_timeout,
+            client_factory=jira_client_factory,
+        )
         report = collect_controller_report(
             config_path=args.config,
             options=options,
             gh_json_runner=gh_json_runner,
             command_runner=command_runner,
+            jira_reader=jira_reader,
+            config=config,
         )
         event = build_controller_event(
             report=report,

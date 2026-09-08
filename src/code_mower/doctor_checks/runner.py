@@ -288,8 +288,8 @@ def run_doctor(
                 provider_config_dir=provider_config_dir,
             )
         )
-        # Read-only Jira tracker posture rides the existing generic
-        # provider selector flags; GitHub-only configs produce no checks.
+
+    if adoption:
         checks.extend(
             check_jira_tracker_readiness(
                 config=config,

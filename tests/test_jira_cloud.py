@@ -867,6 +867,17 @@ class ReadPrimitiveTests(unittest.TestCase):
         )
         self.assertIsNone(jira_cloud.map_status_to_lifecycle("10000", statuses, {}))
 
+    def test_oversized_status_inventory_fails_closed(self) -> None:
+        raw = [
+            {"id": str(index), "name": f"Status {index}", "statusCategory": {}}
+            for index in range(jira_cloud.MAX_STATUSES + 1)
+        ]
+        client = make_client(FakeHttp([http_response(raw)]))
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_statuses()
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(ctx.exception.endpoint, "status")
+
     def test_search_pagination_with_next_page_token(self) -> None:
         runner = FakeHttp(
             [
@@ -923,9 +934,11 @@ class ReadPrimitiveTests(unittest.TestCase):
             {
                 "BROWSE_PROJECTS": True,
                 "CREATE_ISSUES": True,
+                "ASSIGN_ISSUES": False,
                 "EDIT_ISSUES": False,
                 "TRANSITION_ISSUES": False,
                 "ADD_COMMENTS": False,
+                "LINK_ISSUES": False,
             },
         )
         bodies = runner.request_bodies()
@@ -935,9 +948,11 @@ class ReadPrimitiveTests(unittest.TestCase):
             [
                 "BROWSE_PROJECTS",
                 "CREATE_ISSUES",
+                "ASSIGN_ISSUES",
                 "EDIT_ISSUES",
                 "TRANSITION_ISSUES",
                 "ADD_COMMENTS",
+                "LINK_ISSUES",
             ],
         )
         self.assertEqual(entry["projects"], [int(PROJECT_ID)])
@@ -1190,7 +1205,9 @@ class DoctorCheckTests(unittest.TestCase):
 
     def test_ready_probe_passes_with_metadata_only_detail(self) -> None:
         env = {jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN}
-        checks, runner = run_doctor_checks(jira_config(), ready_script(), env=env)
+        config = jira_config()
+        config["tracker"]["jira_cloud"]["jql"] = "labels = ready"
+        checks, runner = run_doctor_checks(config, ready_script(), env=env)
         assert runner is not None
         by_id = checks_by_id(checks)
         self.assertEqual(by_id[jira_doctor.JIRA_CONFIG_CHECK].status, "pass")
@@ -1202,10 +1219,12 @@ class DoctorCheckTests(unittest.TestCase):
         self.assertEqual(detail["project_key"], "ABC")
         self.assertEqual(detail["status_count"], 3)
         self.assertEqual(detail["permission_probe"]["BROWSE_PROJECTS"], True)
-        # The default queue query uses the immutable project id.
+        # Readiness samples the configured project, even when queue JQL is broad.
         bodies = runner.request_bodies()
         search_body = bodies[-1]
-        self.assertEqual(search_body["jql"], "project = 10001")
+        self.assertEqual(
+            search_body["jql"], "project = 10001 AND (labels = ready)"
+        )
         blob = doctor_blob(checks)
         self.assertNotIn(TOKEN, blob)
         self.assertNotIn(EMAIL, blob)
@@ -1273,7 +1292,10 @@ class DoctorCheckTests(unittest.TestCase):
         assert runner is not None
         by_id = checks_by_id(checks)
         self.assertEqual(by_id[jira_doctor.JIRA_READ_CHECK].status, "pass")
-        self.assertEqual(runner.request_bodies()[-1]["jql"], custom)
+        self.assertEqual(
+            runner.request_bodies()[-1]["jql"],
+            "project = 10001 AND (project = 10001 AND statusCategory != Done)",
+        )
 
     def test_expired_token_fails_read(self) -> None:
         env = {jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN}

@@ -68,9 +68,12 @@ smaller primitive is stable enough to share.
 ## Work Tracker Contract
 
 `code_mower.trackerWorkItem.v1` is a provider-neutral normalized work item.
-GitHub Issues is the only implemented tracker and the default when a config
-omits `tracker`; an opt-in `jira_cloud` kind adds identity, status-category,
-and capability config validation only, with no network calls or writes. See
+GitHub Issues is the default work tracker when a config omits `tracker`.
+An opt-in `jira_cloud` tracker kind adds configuration validation, read-only
+adoption diagnostics via `code-mower doctor --adoption`, guarded mutation
+planning and owner-authorized execution, and guarded GitHub-to-Jira PR status
+synchronization. See [Jira Cloud Setup](jira-cloud-setup.md),
+[Jira Adoption Rehearsal](jira-adoption-rehearsal.md), and
 `docs/tracker-data-contract.md`.
 
 ## Local Runner And Optional Cloud
