@@ -611,8 +611,10 @@ def _probe_jira_read(
     mutations = block.get("mutations")
     configured_transitions = mutations.get("transitions") if isinstance(mutations, Mapping) else None
     if isinstance(configured_transitions, Mapping) and configured_transitions and issues:
-        sample_key = issues[0].get("key")
-        if sample_key:
+        for issue in issues[:5]:
+            sample_key = issue.get("key") if isinstance(issue, Mapping) else None
+            if not sample_key:
+                continue
             try:
                 available_transitions = client.get_transitions(sample_key)
                 for cat, tid in configured_transitions.items():
@@ -635,6 +637,9 @@ def _probe_jira_read(
                                 )
             except jira_cloud_module.JiraApiError as exc:
                 transition_probe_error = exc.code
+                break
+            if len(verified_transitions) == len(configured_transitions):
+                break
     unverified_transitions = [
         {"category": str(cat), "transition_id": str(tid)}
         for cat, tid in (

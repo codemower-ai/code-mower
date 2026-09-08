@@ -633,6 +633,54 @@ class JiraDoctorAdoptionTests(unittest.TestCase):
         }[jira_doctor.JIRA_MUTATIONS_CHECK]
         self.assertEqual(mutation_check.status, "fail")
 
+    def test_doctor_verifies_transitions_across_sampled_issue_states(self) -> None:
+        cfg = sample_jira_config(
+            status_category_map={"in_progress": ["10001"]},
+            mutations={
+                "writes_enabled": True,
+                "allowed_operations": ["transition"],
+                "transitions": {"in_progress": "21"},
+            },
+        )
+        permissions = {
+            "globalPermissions": [],
+            "projectPermissions": [
+                {"issues": [], "permission": "BROWSE_PROJECTS", "projects": [10001]},
+                {"issues": [], "permission": "TRANSITION_ISSUES", "projects": [10001]},
+            ],
+        }
+        first = load_fixture("search_page2.json")["issues"][0]
+        second = json.loads(json.dumps(first))
+        second.update({"id": "20004", "key": "ABC-4"})
+        search = {"isLast": True, "issues": [first, second]}
+        runner = FakeHttp(
+            [
+                http_response(load_fixture("server_info.json")),
+                http_response(load_fixture("project.json")),
+                http_response(load_fixture("statuses.json")),
+                http_response(load_fixture("status_categories.json")),
+                http_response(permissions),
+                http_response(search),
+                http_response(
+                    {
+                        "transitions": [
+                            {"id": "11", "name": "Start", "to": {"id": "10000"}}
+                        ]
+                    }
+                ),
+                http_response(load_fixture("transitions.json")),
+            ]
+        )
+        checks = jira_doctor.check_jira_tracker_readiness(
+            config=cfg,
+            env={jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN},
+            client_factory=make_client_factory(runner),
+        )
+        mutation_check = {
+            check.name: check for check in checks
+        }[jira_doctor.JIRA_MUTATIONS_CHECK]
+        self.assertEqual(mutation_check.status, "pass")
+
     def test_doctor_rate_limited_warns_and_skips_mutations(self) -> None:
         cfg = sample_jira_config()
         script = [http_error(429, b'{"rate":"limited"}', {"Retry-After": "0"})] * 4
