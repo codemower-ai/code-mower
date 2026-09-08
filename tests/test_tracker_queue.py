@@ -98,6 +98,55 @@ class TrackerQueueTests(unittest.TestCase):
         raw["fields"]["project"]["id"] = "999"
         self.assertFalse(queue(Reader({"issues": [raw]}))["available"])
 
+    def test_jql_parenthesis_attacks_fail_before_reading(self):
+        for predicate in (
+            ') OR project != 10001 OR (',
+            'labels = "ready") OR project = 999 OR (labels = "ready"',
+            '(labels = "ready"', 'labels = "ready")',
+            '(labels = "ready" ORDER BY created ASC)',
+            r'labels = ready\) OR project = 999 OR (',
+            'labels = "unterminated',
+        ):
+            with self.subTest(predicate=predicate):
+                cfg = config()
+                cfg["tracker"]["jira_cloud"]["jql"] = predicate
+                reader = Reader()
+                result = tracker_queue.collect_queue(cfg, reader=reader)
+                self.assertFalse(result["available"])
+                self.assertEqual(result["errors"], ["jira_read_unavailable"])
+                self.assertEqual(reader.calls, [])
+
+    def test_jql_balanced_and_quoted_parenthesis_boundaries(self):
+        for predicate in (
+            '', '(labels = "ready" OR (status in ("Open", "New")))',
+            'labels = ")"', "labels = '('", r'labels = "escaped \" )"',
+            'labels = "ORDER BY )"',
+        ):
+            with self.subTest(predicate=predicate):
+                cfg = config()["tracker"]["jira_cloud"]
+                cfg["jql"] = predicate + " ORDER BY updated DESC"
+                expected = "project = 10001" + (f" AND ({predicate})" if predicate else "")
+                self.assertEqual(tracker_queue._query(cfg), expected + " ORDER BY created ASC, key ASC")
+
+    def test_exact_page_limit_with_fresh_cursors_is_partial_and_ineligible(self):
+        for max_pages in (1, 3, 10):
+            with self.subTest(max_pages=max_pages):
+                reader = Reader(*(
+                    {"issues": [issue(index + 1)], "isLast": False, "nextPageToken": f"page-{index + 1}"}
+                    for index in range(max_pages + 1)
+                ))
+                result = queue(reader, max_pages=max_pages)
+                self.assertEqual(len(reader.calls), max_pages)
+                self.assertEqual([call["next_page_token"] for call in reader.calls],
+                                 [None] + [f"page-{index}" for index in range(1, max_pages)])
+                self.assertTrue(result["available"])
+                self.assertFalse(result["complete"])
+                self.assertEqual(result["freshness"], "partial")
+                self.assertEqual(result["errors"], ["jira_page_limit"])
+                rows = view(result)["items"]
+                self.assertEqual(len(rows), max_pages)
+                self.assertTrue(all(not row["eligible"] for row in rows))
+
     def test_bounded_repeated_missing_and_failing_pages(self):
         first = {"issues": [issue()], "nextPageToken": "repeat", "isLast": False}
         partial = queue(Reader(first), max_pages=1)
@@ -238,6 +287,37 @@ class TrackerQueueTests(unittest.TestCase):
                 degraded = board.status_payload(board.BoardConfig(repo="owner/repo", repo_path=path))
             self.assertEqual(degraded["tracker"]["freshness"], "unavailable")
             self.assertEqual(degraded["remote"], baseline["remote"])
+
+    def test_board_live_jira_survives_github_outage_without_mutating_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            config_path = path / "code-mower.yml"
+            _write_board_config(config_path)
+            with config_path.open("a") as stream:
+                stream.write(yaml.safe_dump({"tracker": config()["tracker"]}, width=2000))
+            cfg = board.BoardConfig(repo="owner/repo", repo_path=path)
+            status = _status()
+            status["remote"].update(available=False, errors=["GitHub unavailable"])
+            status["tracker"] = {"sentinel": "caller-owned"}
+            before = copy.deepcopy(status)
+            reader = Reader()
+            pilot = board.supervised_pilot_payload(
+                cfg, status, jira_reader=reader,
+                gh_json_runner=lambda args: self.fail("must not read GitHub issues"),
+            )
+            self.assertEqual(status, before)
+            self.assertEqual(len(reader.calls), 1)
+            self.assertEqual(pilot["active_issues"][0]["work_item"]["identity"]["issue_key"], "ABC-1")
+            self.assertEqual(pilot["tracker"]["freshness"], "live")
+            self.assertEqual(pilot["tracker"]["items"][0]["gate_status"], "unknown")
+            self.assertEqual(pilot["tracker"]["items"][0]["pr_freshness"], "unavailable")
+            self.assertEqual(pilot["decision"]["stop_condition"], "github_unavailable")
+            self.assertFalse(pilot["decision"]["would_mutate"])
+            with patch.object(lane_status, "collect_status", return_value=copy.deepcopy(before)):
+                payload = board.status_payload(cfg, jira_reader=Reader())
+            self.assertEqual(payload["tracker"], payload["supervised_pilot"]["tracker"])
+            self.assertEqual(payload["remote"], before["remote"])
+            self.assertEqual(len(payload["supervised_pilot"]["active_issues"]), 1)
 
     def test_board_cached_queue_is_historical_without_changing_snapshot(self):
         snapshot = {"board": {}, "tracker": view(queue(), prs=[_pr()],

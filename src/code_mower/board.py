@@ -245,6 +245,8 @@ def status_payload(
         jira_reader=jira_reader,
         tracker_links=tracker_links,
     )
+    if "tracker" in payload["supervised_pilot"]:
+        payload["tracker"] = payload["supervised_pilot"]["tracker"]
     payload["productivity"] = productivity_report.board_payload(
         repo=config.repo,
         repo_path=config.repo_path,
@@ -794,12 +796,13 @@ def _supervised_issue_payload(issue: Mapping[str, Any]) -> dict[str, Any]:
 
 def supervised_pilot_payload(
     config: BoardConfig,
-    status: dict[str, Any],
+    status: Mapping[str, Any],
     *,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     jira_reader: controller.tracker_queue.JiraQueueReader | None = None,
     tracker_links: Mapping[tuple[str, str, str], int] | None = None,
 ) -> dict[str, Any]:
+    """Return pilot state and its optional tracker view without modifying status."""
     config_path = Path(config.repo_path) / "code-mower.yml"
     if not config_path.is_file():
         return _supervised_disabled("code-mower.yml not found; supervised pilot state is unavailable")
@@ -812,19 +815,20 @@ def supervised_pilot_payload(
         return _supervised_disabled("Code Mower config is invalid; run code-mower config validate")
 
     remote = status.get("remote") if isinstance(status.get("remote"), Mapping) else {}
+    tracker_view = None
     if controller.tracker_queue.jira_enabled(raw_config):
-        status["tracker"] = controller.tracker_queue.queue_view(
+        tracker_view = controller.tracker_queue.queue_view(
             controller.tracker_queue.collect_queue(raw_config, reader=jira_reader),
             config=raw_config, remote=remote, links=tracker_links,
             stale_minutes=config.stale_minutes,
         )
-    if remote.get("available"):
+    if remote.get("available") or controller.tracker_queue.jira_enabled(raw_config):
         ready_issues = controller._collect_ready_issues(  # noqa: SLF001 - shared package policy surface for Board.
             repo=config.repo,
             config=raw_config,
             gh_json_runner=gh_json_runner,
             issue_limit=min(config.pr_limit, 50),
-            tracker_view=status.get("tracker"),
+            tracker_view=tracker_view,
         )
     else:
         ready_issues = {"available": False, "errors": ["remote unavailable"], "issues": []}
@@ -840,6 +844,7 @@ def supervised_pilot_payload(
     raw_prs = remote.get("pull_requests") if isinstance(remote.get("pull_requests"), list) else []
     issue_payload = ready_issues.get("issues") if isinstance(ready_issues.get("issues"), list) else []
     return {
+        **({"tracker": report["tracker"]} if "tracker" in report else {}),
         "schema": controller.SUPERVISED_PILOT_SCHEMA,
         "enabled": True,
         "cycle_state": _supervised_cycle_state(decision.get("decision_state")),

@@ -715,7 +715,7 @@ def main(
     subparsers = parser.add_subparsers(dest="command", required=True)
     status = subparsers.add_parser("status")
     status.add_argument("--repo", required=True)
-    status.add_argument("--config", type=Path, default=Path("code-mower.yml"))
+    status.add_argument("--config", type=Path)
     status.add_argument("--json", action="store_true")
     status.add_argument("--pr-limit", type=int, default=50)
     status.add_argument("--workflow-limit", type=int, default=20)
@@ -729,14 +729,17 @@ def main(
     if args.command != "status":  # pragma: no cover - argparse validates choices.
         raise AssertionError(f"unhandled lanes command: {args.command}")
     tracker_config = None
-    if args.config.is_file():
+    config_path = args.config if args.config is not None else Path("code-mower.yml")
+    if args.config is not None or config_path.is_file():
         try:
-            tracker_config = code_mower_config.load_config(args.config)
-            if tracker_queue.jira_enabled(tracker_config) and code_mower_config.validate_config(tracker_config):
+            tracker_config = code_mower_config.load_config(config_path)
+            if code_mower_config.validate_config(tracker_config):
                 raise ValueError("invalid config")
         except (OSError, ValueError, code_mower_config.ConfigError):
-            print("invalid Code Mower config; run code-mower config validate", file=sys.stderr)
-            return 2
+            if args.config is not None:
+                print("invalid Code Mower config; run code-mower config validate", file=sys.stderr)
+                return 2
+            tracker_config = None
     report = collect_status(
         repo=args.repo,
         gh_json_runner=gh_json_runner,

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import subprocess
-from contextlib import redirect_stdout
+import tempfile
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from datetime import UTC, datetime, timedelta
 from io import StringIO
+from pathlib import Path
 from unittest import TestCase
 
 from code_mower import lane_status
@@ -355,6 +357,38 @@ class LaneStatusTests(TestCase):
         self.assertEqual(report["local_boards"]["boards"][0]["cwd"], "/tmp/lane-checkout")
         self.assertNotIn("cwd_redacted", report["local_boards"]["boards"][0])
         self.assertEqual(report["local_processes"]["processes"][0]["cwd"], "/tmp/codex-lane")
+
+    def test_main_implicit_invalid_or_non_jira_config_preserves_status(self):
+        for content in ("tracker: [", "unrelated: true\n", "tracker:\n  kind: github\n"):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as directory:
+                Path(directory, "code-mower.yml").write_text(content)
+                out, err = StringIO(), StringIO()
+                with chdir(directory), redirect_stdout(out), redirect_stderr(err):
+                    code = lane_status.main(
+                        ["status", "--repo", "owner/repo", "--json"],
+                        gh_json_runner=lambda args: [],
+                        command_runner=lambda args: _completed(""),
+                    )
+                self.assertEqual(code, 0)
+                self.assertTrue(json.loads(out.getvalue())["remote"]["available"])
+                self.assertNotIn("tracker", json.loads(out.getvalue()))
+                self.assertEqual(err.getvalue(), "")
+
+    def test_main_explicit_invalid_config_fails_clearly(self):
+        for content in ("tracker: [", "unrelated: true\n", None):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory, "code-mower.yml")
+                if content is not None:
+                    path.write_text(content)
+                out, err = StringIO(), StringIO()
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = lane_status.main(
+                        ["status", "--repo", "owner/repo", "--config", str(path)],
+                        gh_json_runner=lambda args: self.fail("invalid config must stop before GitHub"),
+                    )
+                self.assertEqual(code, 2)
+                self.assertIn("invalid Code Mower config", err.getvalue())
+                self.assertEqual(out.getvalue(), "")
 
     def test_main_json_outputs_stable_shape(self) -> None:
         def gh_json(args: list[str]) -> object:

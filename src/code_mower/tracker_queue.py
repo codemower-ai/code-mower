@@ -45,22 +45,29 @@ def _query(config: Mapping[str, Any]) -> str:
         raise ValueError("invalid query")
     quoted = None
     escaped = False
+    paren_depth = 0
     for index, char in enumerate(query):
         if escaped:
             escaped = False
-        elif char == "\\":
+        elif char == "\\" and quoted:
             escaped = True
         elif quoted:
             if char == quoted:
                 quoted = None
         elif char in "\"'":
             quoted = char
+        elif char == "(":
+            paren_depth += 1
+        elif char == ")":
+            paren_depth -= 1
+            if paren_depth < 0:
+                raise ValueError("invalid query")
         elif re.match(r"(?i)\border\s+by\b", query[index:]) and (
             index == 0 or not query[index - 1].isalnum()
         ):
             query = query[:index]
             break
-    if quoted:
+    if quoted or paren_depth:
         raise ValueError("invalid query")
     predicate = query.strip()
     return f'project = {project}' + (f" AND ({predicate})" if predicate else "") + " ORDER BY created ASC, key ASC"
