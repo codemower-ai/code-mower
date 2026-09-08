@@ -87,6 +87,7 @@ PACKAGE_FILES = (
     ("src/code_mower/cloud_client/work_types.py", "src/code_mower/cloud_client/work_types.py", "core"),
     ("tools/code_mower_config.py", "src/code_mower/config.py", "core"),
     ("src/code_mower/tracker_contract.py", "src/code_mower/tracker_contract.py", "core"),
+    ("src/code_mower/tracker_queue.py", "src/code_mower/tracker_queue.py", "core"),
     ("tools/code_mower_context_packs.py", "src/code_mower/code_mower_context_packs.py", "core"),
     ("src/code_mower/controller.py", "src/code_mower/controller.py", "core"),
     ("tools/code_mower_doctor.py", "src/code_mower/doctor.py", "core"),

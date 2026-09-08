@@ -65,3 +65,46 @@ rejected. `mutations.allowed_operations` excludes delete. This adds
 validation only: no Jira network calls or writes happen from this config.
 The JQL string remains local configuration and must not be persisted in Board
 event history, provider prompts, or cloud uploads.
+
+## Read queue
+
+`tracker_queue.py` implements read policy through the injectable
+`JiraQueueReader.search_page(jql, fields, max_results, next_page_token)`
+keyword-only protocol. A doctor-validated reader supplies enhanced-search
+responses (`issues`, `nextPageToken`, optional `isLast`); transport, credentials,
+timeouts, retries, and concrete CLI binding belong to #800. Until that binding
+lands, configured Jira surfaces explicitly report `jira_reader_unavailable`.
+No Jira calls or writes occur without an injected reader.
+
+The adapter wraps the configured predicate with immutable numeric project-id
+scoping, replaces its unquoted ordering with `created ASC, key ASC`, verifies
+each returned item's project id, deduplicates by issue id (newest update wins),
+and sorts deterministically. Defaults are five pages of 50 items; hard limits
+are ten pages of 100. Repeated/missing cursors and malformed responses fail
+closed. A page-limit result is partial and cannot authorize a dispatch.
+Search uses the [enhanced JQL response contract](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/).
+
+Only contract fields are normalized. Labels are limited to 100 input entries
+and 128 characters each; provider metadata values are limited to 64 characters.
+Custom mappings accept `customfield_<id>` fields with bounded label scalars,
+boolean assignment, or portable lifecycle/status-category values. Status-id
+overrides take priority over portable Jira categories. Unknown categories
+make the read unavailable rather than guessing eligibility. Summaries/titles
+are deliberately omitted even from local rendering. Queries, cursors, raw
+responses, and exception text never enter returned reports.
+
+With Jira configured, controller reports, `lanes status` (local
+`code-mower.yml`, or `--config`), and Board current state add a `tracker` view.
+Each row carries a validated work item, freshness, lane, optional linked PR
+number, live GitHub gate state, and next action. `queue_view` accepts explicit
+local `(cloud_id, project_id, issue_id)` → PR-number references; discovery and
+persistence of links belong to #802. It never infers links from issue prose.
+Historical queue snapshots cannot supply current PR/gate state or dispatch
+eligibility. Observation age, not the issue's last edit, determines freshness.
+Unavailable Jira preserves all live GitHub PR/check/gate decisions. With no
+tracker configured, existing GitHub report fields and decisions are unchanged.
+
+Board history may retain these metadata-only rows, but history is never merged
+into the live queue. Existing cloud-event allowlists omit the new tracker
+payload entirely. This read adapter adds no dispatch, assignment, transition,
+comment, link, or issue-update operation.
