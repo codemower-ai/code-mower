@@ -867,6 +867,41 @@ class ApplyTests(unittest.TestCase):
         )
         self.assertEqual(runner.write_calls(), [])
 
+    def test_a_self_transition_outside_the_target_ids_blocks_without_writing(
+        self,
+    ) -> None:
+        """An edge that lands on the current status is still a destination.
+
+        The issue sits on status 5, which the requested category does not
+        name a target, and the configured edge is re-pointed to land back on
+        status 5. Destination equals current status, but "where the issue
+        already is" was never the target, so this must block on the
+        destination check rather than report already-at-target success.
+        """
+        runner = RouteHttp(
+            {
+                ("GET", ISSUE_PATH): ok(issue_response(status_id="5")),
+                ("GET", LEDGER_PATH): error(404),
+                ("GET", f"{ISSUE_PATH}/transitions"): ok(
+                    {"transitions": [{"id": "31", "name": "Start", "to": {"id": "5"}}]}
+                ),
+            }
+        )
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--transition", "in_progress", "--apply"],
+            runner=runner,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual(
+            operation(report, "transition")["reason"], "transition_target_mismatch"
+        )
+        self.assertEqual(
+            operation(report, "transition")["detail"]["destination_status_id"], "5"
+        )
+        # Nothing was written, and nothing was recorded as an applied effect.
+        self.assertEqual(runner.write_calls(), [])
+
     def test_transition_is_idempotent_at_the_configured_target_status(self) -> None:
         runner = RouteHttp(
             {
@@ -1104,12 +1139,15 @@ class CommentClaimTests(unittest.TestCase):
         self.assertEqual(operation(report, "comment")["reason"], "comment_unverified")
         self.assertEqual(len(jira.comment_posts()), 1)
 
-    def test_an_ambiguous_claim_that_landed_is_recovered_by_its_owner_token(self) -> None:
-        """A lost 201 response is resolved by reading the claim back once.
+    def test_an_ambiguous_claim_that_landed_still_never_posts(self) -> None:
+        """A lost claim response is never recovered into a right to post.
 
         The claim write is attempted exactly once, so its answer is
-        ambiguous rather than retried. Reading the stored owner token back
-        tells this process whether the write that vanished was its own.
+        ambiguous rather than retried, and the answer it lost -- 201 created
+        versus 200 replaced -- is the only thing that authorizes a post.
+        Reading this attempt's own owner token back proves the write landed
+        and nothing more, so the run reports the claim as held-unconfirmed
+        and hands it to an owner.
         """
         jira = FakeJira()
 
@@ -1120,9 +1158,51 @@ class CommentClaimTests(unittest.TestCase):
 
         jira.before_request = lose_the_response
         code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "comment")["status"], "unverified")
+        self.assertEqual(
+            operation(report, "comment")["reason"], "comment_claim_unconfirmed"
+        )
+        self.assertEqual(
+            operation(report, "comment")["detail"]["claim_state"], "claimed_unconfirmed"
+        )
+        self.assertEqual(jira.comment_posts(), [])
+        # The report tells an owner to look at the issue once by hand.
+        self.assertIn("by hand", report["next_action"])
+
+        # The claim stays held, so no later run reposts it either.
+        jira.before_request = None
+        code, report, _ = run_cli(self.ARGS, runner=jira)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "comment")["reason"], "comment_unverified")
+        self.assertEqual(jira.comment_posts(), [])
+
+    def test_mixed_case_pull_request_urls_replay_onto_one_claim(self) -> None:
+        """Two spellings of one pull request are one comment intent."""
+        lower = "https://github.com/owner/repo/pull/12"
+        upper = "https://github.com/Owner/Repo/pull/12"
+        jira = FakeJira()
+
+        def args(pr_url: str) -> list[str]:
+            return [
+                "mutate", "--issue", ISSUE,
+                "--comment", "pr_opened",
+                "--pr-url", pr_url,
+                "--apply",
+            ]
+
+        code, report, _ = run_cli(args(lower), runner=jira)
         self.assertEqual(code, 0)
         self.assertEqual(operation(report, "comment")["status"], "applied")
+
+        code, report, _ = run_cli(args(upper), runner=jira)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "comment")["status"], "already_applied")
+        self.assertEqual(operation(report, "comment")["reason"], "already_commented")
+        # One intent, one claim key, one comment -- not two of each.
         self.assertEqual(len(jira.comment_posts()), 1)
+        self.assertEqual(len(jira.properties), 1)
+        self.assertEqual(jira.claim("pr_opened", lower)["state"], "posted")
 
     def test_an_ambiguous_claim_that_never_landed_posts_nothing(self) -> None:
         jira = FakeJira(faults={("PUT", "comment_claim"): [TimeoutError("lost")]})
@@ -1209,6 +1289,59 @@ class CommentConcurrencyTests(unittest.TestCase):
             operation(self.first[1], "comment")["detail"]["claim_state"],
             "held_by_another_apply",
         )
+
+    def test_an_overwriting_claim_with_a_lost_response_posts_nothing(self) -> None:
+        """The interleaving an owner-token readback cannot survive.
+
+        The second apply reads the claim absent, then the first apply runs
+        to completion: it creates the claim, posts, and finalizes to
+        ``posted``. The second apply's ``PUT`` then lands as a **200** that
+        overwrites that finished claim, and its response is lost. Reading
+        the claim back now finds the second apply's own owner token -- which
+        proves only that its write landed, not that it created anything. A
+        run that treats that as its lost 201 posts a duplicate comment.
+        """
+        jira = FakeJira()
+        state: dict[str, Any] = {"reentered": False, "first": None}
+
+        def overwrite_then_lose_the_response(
+            fake: FakeJira, method: str, path: str
+        ) -> None:
+            if state["reentered"] or method != "PUT" or path != self.MARKER:
+                return
+            state["reentered"] = True
+            # This apply's claim body, captured before the competing run
+            # appends its own calls.
+            body = fake.calls[-1]["body"]
+            state["first"] = run_cli(self.ARGS, runner=fake)
+            # Jira commits this apply's PUT as a 200 replacement of the
+            # finished claim, then the response never arrives.
+            fake._property("PUT", path.split("/properties/")[1], body)
+            raise TimeoutError("response lost after Jira committed the overwrite")
+
+        jira.before_request = overwrite_then_lose_the_response
+        second = run_cli(self.ARGS, runner=jira)
+        first = state["first"]
+        self.assertIsNotNone(first, "the competing apply never ran")
+
+        # Exactly one comment reached Jira, across both applies.
+        self.assertEqual(len(jira.comment_posts()), 1)
+        self.assertEqual(first[0], 0)
+        self.assertEqual(operation(first[1], "comment")["status"], "applied")
+        # The overwrite really happened: the stored claim is the second
+        # apply's, so its owner token matches on readback.
+        self.assertEqual(jira.claim("claimed")["state"], "claimed")
+        # And it still refused to post, truthfully, for an owner to settle.
+        self.assertEqual(second[0], 1)
+        self.assertEqual(operation(second[1], "comment")["status"], "unverified")
+        self.assertEqual(
+            operation(second[1], "comment")["reason"], "comment_claim_unconfirmed"
+        )
+        self.assertEqual(
+            operation(second[1], "comment")["detail"]["claim_state"],
+            "claimed_unconfirmed",
+        )
+        self.assertIn("by hand", second[1]["next_action"])
 
     def test_a_second_apply_between_the_claim_write_and_the_post(self) -> None:
         jira = self._interleave("POST", f"{ISSUE_PATH}/comment")
@@ -1371,14 +1504,59 @@ class IssueIdentityReplayTests(unittest.TestCase):
         )
         self.assertEqual(runner.write_calls(), [])
 
-    def test_comment_fingerprints_ignore_template_whitespace_reflow(self) -> None:
+    def test_comment_fingerprints_are_semantic_not_rendered_prose(self) -> None:
+        """The replay key is a template id plus a canonical PR identity.
+
+        Hashing the rendered sentence instead would tie replay protection to
+        wording: editing a template in this file would change every key and
+        silently unprotect comments an earlier build already posted.
+        """
         subject = jira_mutations.fingerprint_subject(ISSUE_ID)
-        text = jira_mutations.render_comment("claimed")
-        self.assertEqual(
-            jira_mutations.normalize_comment_text(text),
-            jira_mutations.normalize_comment_text(text.replace(" ", "\n  ")),
-        )
         self.assertTrue(subject.isupper() or subject.isdigit())
+        self.assertEqual(
+            jira_mutations._operation_fingerprint(
+                "comment", subject, {"template": "pr_opened", "pr_url": PR_URL}
+            ),
+            jira_mutations.mutation_fingerprint(
+                "comment",
+                {
+                    "issue": subject,
+                    "template": "pr_opened",
+                    "pull_request": jira_mutations.remote_link_global_id(
+                        "owner", "repo", "12"
+                    ),
+                },
+            ),
+        )
+
+    def test_mixed_case_pull_request_spellings_share_one_claim_key(self) -> None:
+        """GitHub owner and repository casing is not part of PR identity."""
+        subject = jira_mutations.fingerprint_subject(ISSUE_ID)
+        spellings = (
+            "https://github.com/owner/repo/pull/12",
+            "https://github.com/Owner/Repo/pull/12",
+            "https://github.com/OWNER/REPO/pull/12",
+        )
+        fingerprints = {
+            jira_mutations._operation_fingerprint(
+                "comment", subject, {"template": "pr_opened", "pr_url": pr_url}
+            )
+            for pr_url in spellings
+        }
+        self.assertEqual(len(fingerprints), 1)
+        keys = {
+            jira_mutations.comment_claim_property_key(value) for value in fingerprints
+        }
+        self.assertEqual(len(keys), 1)
+        # A different pull request on the same repository still differs.
+        self.assertNotIn(
+            jira_mutations._operation_fingerprint(
+                "comment",
+                subject,
+                {"template": "pr_opened", "pr_url": "https://github.com/owner/repo/pull/13"},
+            ),
+            fingerprints,
+        )
 
 
 class WriteAttemptAccountingTests(unittest.TestCase):

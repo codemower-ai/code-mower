@@ -206,6 +206,16 @@ re-pointed under it; verifying the destination before the write keeps a
 `--transition in_progress` from moving an issue somewhere that category
 never meant.
 
+The configured status ids and the destination are both checked before any
+already-at-target answer. `already_at_target_status` means the issue's
+current status is one of the category's configured ids — nothing else earns
+it. In particular a self-transition, an edge whose destination is the status
+the issue already holds, is only reached when that status is outside the
+configured ids, so it is a non-target destination and blocks with
+`transition_target_mismatch`. Calling it already-at-target would report a
+status the category never names as the category's target, and would let a
+re-pointed workflow read as success.
+
 Idempotency is reconciled from authoritative state where it exists:
 assignment from the current assignee, transition from the current status
 (against `status_category_map` and the transition's target status), and the
@@ -257,11 +267,18 @@ Sequence, and what each outcome means:
   if it is missing. It is never reposted automatically.
 - `PUT` answers 200 → `comment_claim_held`, also `unverified`: another apply
   owns this comment, including the duty to report whether it landed.
-- the claim `PUT` itself fails ambiguously → the claim is read back once. A
-  stored owner token matching this attempt means the lost response was this
-  run's own 201, so it may post; any other owner means it may not; an absent
-  or unreadable claim means nothing was claimed, the run fails with the
-  transport reason, and a later run may claim it cleanly.
+- the claim `PUT` itself fails ambiguously → **no post, ever.** The answer
+  that authorizes a post is 201-created rather than 200-replaced, and that
+  is precisely the answer an ambiguous acquire lost; a readback cannot
+  recover it. The claim is read back once only to describe the outcome. A
+  stored owner token matching this attempt proves the write landed and
+  nothing more — it is equally consistent with a 200 that overwrote a claim
+  another apply already held for a comment that apply had posted — so it
+  reports `comment_claim_unconfirmed` with report status `unverified` and
+  leaves the claim held, which keeps every later run from reposting too. Any
+  other owner reports `comment_claim_held`. No readable claim means nothing
+  was claimed, the run fails with the transport reason, and a later run may
+  claim it cleanly.
 - the post fails, ambiguously or outright → the claim is finalized to
   `unverified` and the operation reports `comment_unverified` with the closed
   transport cause in `detail.post_error`. One owner reconciliation, never a
@@ -272,6 +289,17 @@ assignment, transition, or link that fails first cannot leave a claim behind
 for a comment that was never attempted.
 
 ### Fingerprints and the advisory ledger
+
+A comment fingerprint is computed over what the comment *means*: the closed
+template id plus the canonical identity of the pull request it refers to
+(`code-mower:github:<owner>/<repo>/pull/<number>`, the same case-folded
+identity the remote link uses). The rendered sentence is not part of it.
+Hashing the rendered text would put two things in the replay key that do not
+belong there: how an operator spelled the URL, so that
+`github.com/Owner/Repo` and `github.com/owner/repo` would claim two keys and
+post one comment twice; and the wording of a template, so that reflowing a
+sentence would change every key and silently unprotect comments an earlier
+build already posted.
 
 Fingerprints are computed over the **immutable numeric issue id**, not the
 caller's spelling of the issue key. A key is mutable — a project move or

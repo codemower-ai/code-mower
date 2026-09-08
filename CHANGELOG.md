@@ -31,8 +31,11 @@ later entries are regular releases.
   attachment, arbitrary field update, or free-form comment. Live state and
   available transitions are re-checked immediately before each write, a
   transition is blocked unless its live destination status is configured for
-  the requested lifecycle category, and stable idempotency markers make
-  restart or replay report already-applied instead of duplicating an effect.
+  the requested lifecycle category — including an edge re-pointed back onto
+  the status the issue already holds, which is a non-target destination like
+  any other and blocks rather than reporting success — and stable idempotency
+  markers make restart or replay report already-applied instead of
+  duplicating an effect.
   The two writes Jira gives no idempotency key — the comment post and the
   transition post — are attempted exactly once, so an ambiguous timeout,
   429, or 5xx can never be retried into a double apply.
@@ -41,7 +44,12 @@ later entries are regular releases.
   claims its own `code-mower-comment-v1.<fingerprint>` issue property, and
   only Jira's documented 201-created answer to that `PUT` acquires the right
   to post; a 200, an existing value, or an unreadable one means another apply
-  owns the comment and this run never posts. Because the claim is per intent
+  owns the comment and this run never posts. An acquire whose response is
+  lost is never recovered into a right to post either: the create-or-update
+  answer is what authorizes the post, a readback can only show who holds the
+  claim now, and a claim carrying this attempt's own owner token is equally
+  consistent with having overwritten a claim another apply already used to
+  post. Because the claim is per intent
   and never evicts, two concurrent applies of one intent produce a single
   comment, and no number of comments on an issue can push an older comment's
   protection out of a bounded store. An interrupted, ambiguous, or contended
@@ -49,7 +57,11 @@ later entries are regular releases.
   reposted automatically. Fingerprints are computed over the immutable Jira
   issue id rather than the caller's spelling of the key, so the same issue
   addressed by key, by lowercase key, or by id resolves to one replay
-  identity; a plan built from a key marks its fingerprints provisional and
+  identity, and a comment fingerprint is semantic — the closed template id
+  plus the canonical pull request identity, with GitHub owner and repository
+  casing folded — rather than the rendered sentence, so mixed-case spellings
+  of one pull request URL claim one key and template wording can be edited
+  without unprotecting comments already posted; a plan built from a key marks its fingerprints provisional and
   apply recomputes them from the live id. `write_request_count` is counted at
   the transport attempt boundary and reports every write attempt an apply
   made — including timed-out, rejected, and retried attempts — not only the

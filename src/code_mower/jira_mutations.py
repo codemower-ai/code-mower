@@ -208,6 +208,7 @@ REASON_CODES = frozenset(
         "already_linked",
         "comment_unverified",
         "comment_claim_held",
+        "comment_claim_unconfirmed",
         "issue_identity_unresolved",
         "account_unresolved",
         "issue_out_of_scope",
@@ -324,16 +325,6 @@ def comment_claim_property_key(fingerprint: str) -> str:
     return jira_cloud.validate_property_key(COMMENT_CLAIM_PREFIX + fingerprint)
 
 
-def normalize_comment_text(text: str) -> str:
-    """Collapse a rendered comment to its canonical fingerprint form.
-
-    Template bodies are wrapped for readability in this file, so a reflow
-    that changes no words must not change the fingerprint and silently
-    unprotect an already-posted comment.
-    """
-    return " ".join(str(text or "").split())
-
-
 def fingerprint_subject(issue_id: str) -> str:
     """Return the issue identity a fingerprint is computed over.
 
@@ -375,14 +366,27 @@ def _operation_fingerprint(
         template = str(detail.get("template") or "")
         if template not in COMMENT_TEMPLATES:
             return ""
-        try:
-            text = render_comment(template, str(detail.get("pr_url") or ""))
-        except MutationRequestError:  # pragma: no cover - plan validated it
-            return ""
+        # A comment intent is identified semantically -- the closed template
+        # id plus the canonical identity of the pull request it refers to --
+        # and never by its rendered prose. Fingerprinting the rendered text
+        # would fold two things into the replay key that do not belong in
+        # it: how an operator happened to spell the URL, so that
+        # github.com/Owner/Repo and github.com/owner/repo would claim two
+        # different keys and post the same comment on one pull request
+        # twice; and the wording of the template, so that reflowing a
+        # sentence in this file would silently unprotect every comment an
+        # earlier build already posted.
+        pull_request = ""
+        if template in TEMPLATES_REQUIRING_PR:
+            try:
+                parsed = parse_pull_request_url(str(detail.get("pr_url") or ""))
+            except MutationRequestError:  # pragma: no cover - plan validated it
+                return ""
+            pull_request = parsed["global_id"]
         payload = {
             "issue": subject,
             "template": template,
-            "text": normalize_comment_text(text),
+            "pull_request": pull_request,
         }
     else:  # pragma: no cover - handlers are a closed table
         return ""
@@ -1339,6 +1343,15 @@ def _apply_transition(
     category = str(operation.detail.get("lifecycle_category") or "")
     current_status = str(state.get("status_id") or "")
     target_ids = set(operation.detail.get("target_status_ids") or ())
+
+    # The configured target status ids are what "the requested lifecycle
+    # category" means here, so nothing -- not a write, and not an
+    # already-at-target answer -- may be decided before them. Without them
+    # there is no target to be at.
+    if not target_ids:
+        operation.status = "blocked"
+        operation.reason = "target_status_not_configured"
+        return ledger
     if current_status and current_status in target_ids:
         operation.status = "already_applied"
         operation.reason = "already_at_target_status"
@@ -1353,21 +1366,22 @@ def _apply_transition(
         operation.reason = "transition_unavailable"
         operation.detail["available_transition_count"] = len(available)
         return ledger
-    destination = str(match.get("to_status_id") or "")
-    if current_status and destination == current_status:
-        operation.status = "already_applied"
-        operation.reason = "already_at_target_status"
-        return _record(ledger, operation, "applied")
 
     # A configured transition id is only a workflow edge, and a workflow can
     # be re-pointed underneath it. Verify where this edge actually lands
     # against the status ids configured for the requested lifecycle category
     # before writing, so a re-pointed transition blocks rather than moving the
     # issue somewhere the requested category never meant.
-    if not target_ids:
-        operation.status = "blocked"
-        operation.reason = "target_status_not_configured"
-        return ledger
+    #
+    # A self-transition -- an edge whose destination is the status the issue
+    # already holds -- is checked by exactly this rule and nothing else.
+    # Control only reaches here when the current status is outside the
+    # configured target ids, so a destination equal to it is outside them
+    # too: it is a non-target destination that happens to be where the issue
+    # already sits, and it blocks. Answering "already at target status"
+    # ahead of this check would have called a status the category never
+    # names a target, and reported a re-pointed workflow as success.
+    destination = str(match.get("to_status_id") or "")
     if destination not in target_ids:
         operation.status = "blocked"
         operation.reason = "transition_target_mismatch"
@@ -1444,15 +1458,33 @@ def _apply_comment(
             issue_ref, fingerprint, template=template, owner=owner
         )
     except jira_cloud.JiraApiError as exc:
+        # The acquire is attempted exactly once and its answer was lost, so
+        # the one fact that authorizes a post -- Jira answering 201 Created
+        # rather than 200 OK -- is gone for good. A readback cannot recover
+        # it. Finding this attempt's own owner token stored proves only that
+        # the PUT landed, and a PUT that landed as a 200 overwrote a claim
+        # another apply already held, possibly for a comment that apply had
+        # already posted. So the readback classifies the outcome and never
+        # unlocks the post.
         outcome = _recover_comment_claim(client, issue_ref, fingerprint, owner)
         if outcome == "unknown":
-            # The claim write is ambiguous and unreadable, so whether this
-            # process owns the right to post is unknown. Not posting is the
-            # only safe answer; a later run re-reads the claim and decides.
+            # Nothing readable is claimed. This run failed with the transport
+            # reason and a later run may claim the intent cleanly.
             _fail_from_error(operation, exc)
             operation.detail["claim_state"] = "unknown"
             return ledger
-        acquired = outcome == "won"
+        operation.status = "unverified"
+        if outcome == "self":
+            # This attempt's token is stored, but whether it created the
+            # claim or replaced someone else's is unknowable. The claim
+            # stays held, so the comment is never posted by any later run
+            # either, and one owner reconciles it.
+            operation.reason = "comment_claim_unconfirmed"
+            operation.detail["claim_state"] = "claimed_unconfirmed"
+        else:
+            operation.reason = "comment_claim_held"
+            operation.detail["claim_state"] = "held_by_another_apply"
+        return ledger
 
     if not acquired:
         # Another apply created the property first. It owns this comment,
@@ -1497,13 +1529,21 @@ def _apply_comment(
 def _recover_comment_claim(
     client: JiraMutationClient, issue_ref: str, fingerprint: str, owner: str
 ) -> str:
-    """Resolve an ambiguous claim acquire by reading the claim back once.
+    """Describe, never authorize, the outcome of an ambiguous claim acquire.
 
-    Returns ``"won"`` when the stored owner token is this attempt's, so the
-    ambiguous write is the one that created the claim and posting is safe;
-    ``"lost"`` when another apply owns it; and ``"unknown"`` when the claim
-    is absent (the write never landed, so a later run may claim it cleanly)
-    or unreadable.
+    This reads the claim back once and reports who holds it. It cannot
+    report who *created* it: the claim property is a create-or-update PUT
+    and only Jira's 201-versus-200 answer separates the two, which is
+    exactly what an ambiguous acquire lost. A stored owner token matching
+    this attempt is therefore equally consistent with "this write created
+    the claim" and with "this write overwrote a claim another apply already
+    held, for a comment that apply may already have posted". No caller may
+    turn any answer here into a comment post.
+
+    Returns ``"self"`` when this attempt's token is stored, ``"other"`` when
+    another apply's is, and ``"unknown"`` when no readable claim is there --
+    which covers both an absent claim and an unreadable one, because the
+    property read reports them identically and neither may be guessed apart.
     """
     try:
         claim = client.get_comment_claim(issue_ref, fingerprint)
@@ -1511,7 +1551,7 @@ def _recover_comment_claim(
         return "unknown"
     if not isinstance(claim, Mapping):
         return "unknown"
-    return "won" if str(claim.get("owner") or "") == owner else "lost"
+    return "self" if str(claim.get("owner") or "") == owner else "other"
 
 
 def _finalize_claim_quietly(
