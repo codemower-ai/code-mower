@@ -831,6 +831,24 @@ def _builder_event_from_authoring_run(
     return validate_cloud_event(event)
 
 
+def artifact_event_from_dict(
+    value: Mapping[str, Any],
+    event_type: str,
+) -> dict[str, Any] | None:
+    """Convert a local artifact dict via the generic artifact chain.
+
+    Covers ``code_mower.authoringRun.v1`` builder-run artifacts and
+    ``code_mower.adoptionResult.v1`` adoption results, the two artifact
+    formats cloud dogfood already converts. Window observations are not
+    handled here; callers try the window converter separately. Returns
+    ``None`` when the input is not a recognized artifact for ``event_type``.
+    """
+
+    return _builder_event_from_authoring_run(
+        value, event_type
+    ) or adoption_event_from_result_dict(value, event_type)
+
+
 def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
     validate_metadata_payload(value)
     normalized = dict(value)
@@ -886,16 +904,17 @@ def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
     return validate_cloud_event(normalized)
 
 
-def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
-    source = path.expanduser()
-    if not source.is_file():
-        raise CloudBundleError(f"event file does not exist or is not a file: {source}")
-    try:
-        text = source.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise CloudBundleError(f"event file is not UTF-8 text: {source}") from exc
-    except OSError as exc:
-        raise CloudBundleError(f"unable to read event file {source}: {exc}") from exc
+def parse_event_file_candidates(text: str, path: Path) -> list[Any]:
+    """Parse raw JSON/JSONL event-file candidates.
+
+    Shared by the generic event loader and the productivity-window loader so
+    JSON/JSONL parsing fixes cannot drift between the two paths. Returns the
+    raw decoded items (object for a single document, members for an array or
+    JSONL stream); callers keep their own per-item conversion and safe
+    diagnostics. Raises the normal safe :class:`CloudBundleError` on bad
+    lines or scalar documents.
+    """
+
     if not text.strip():
         return []
     try:
@@ -909,31 +928,77 @@ def load_event_file(path: Path, event_type: str) -> list[dict[str, Any]]:
                 parsed.append(json.loads(line))
             except json.JSONDecodeError as exc:
                 raise CloudBundleError(
-                    f"event file {source} line {line_number} is not JSON"
+                    f"event file {path} line {line_number} is not JSON"
                 ) from exc
     if isinstance(parsed, dict):
-        parsed_events = [parsed]
-    elif isinstance(parsed, list):
-        parsed_events = parsed
-    else:
-        raise CloudBundleError(
-            f"event file must contain an object, array, or JSONL: {source}"
-        )
+        return [parsed]
+    if isinstance(parsed, list):
+        return list(parsed)
+    raise CloudBundleError(
+        f"event file must contain an object, array, or JSONL: {path}"
+    )
+
+
+def load_event_file(
+    path: Path,
+    event_type: str,
+    *,
+    repo_slug: str = "",
+    team_id: str = "",
+    install_id: str = "",
+    source: str = "",
+) -> list[dict[str, Any]]:
+    """Load normalized events from a JSON/JSONL file.
+
+    Window observations (``code_mower.productivityWindow.v1``) convert
+    deterministically, filling an empty observation repo slug from
+    ``repo_slug`` exactly as repo-sync does; already-normalized events pass
+    through unchanged.
+    """
+
+    resolved = path.expanduser()
+    if not resolved.is_file():
+        raise CloudBundleError(f"event file does not exist or is not a file: {resolved}")
+    try:
+        text = resolved.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise CloudBundleError(f"event file is not UTF-8 text: {resolved}") from exc
+    except OSError as exc:
+        raise CloudBundleError(f"unable to read event file {resolved}: {exc}") from exc
+    parsed_events = parse_event_file_candidates(text, resolved)
     events: list[dict[str, Any]] = []
     for item in parsed_events:
         if not isinstance(item, dict):
             raise CloudBundleError(
-                f"event file contains a non-object event: {source}"
+                f"event file contains a non-object event: {resolved}"
             )
+        # Deferred import: productivity_windows only needs events lazily, and
+        # events must not import it at module load.
+        from .productivity_windows import productivity_window_event_from_dict
+
         events.append(
-            _builder_event_from_authoring_run(item, event_type)
-            or adoption_event_from_result_dict(item, event_type)
+            artifact_event_from_dict(item, event_type)
+            or productivity_window_event_from_dict(
+                item,
+                event_type,
+                repo_slug=repo_slug,
+                team_id=team_id,
+                install_id=install_id,
+                source=source,
+            )
             or normalize_event(item, event_type)
         )
     return events
 
 
-def parse_event_args(values: list[str]) -> list[dict[str, Any]]:
+def parse_event_args(
+    values: list[str],
+    *,
+    repo_slug: str = "",
+    team_id: str = "",
+    install_id: str = "",
+    source: str = "",
+) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for raw in values:
         if "=" not in raw:
@@ -941,7 +1006,16 @@ def parse_event_args(values: list[str]) -> list[dict[str, Any]]:
                 "--event entries must use EVENT_TYPE=PATH, for example reviewer_run=run.json"
             )
         event_type, path_text = raw.split("=", 1)
-        events.extend(load_event_file(Path(path_text), safe_event_type(event_type)))
+        events.extend(
+            load_event_file(
+                Path(path_text),
+                safe_event_type(event_type),
+                repo_slug=repo_slug,
+                team_id=team_id,
+                install_id=install_id,
+                source=source,
+            )
+        )
     if len(events) > MAX_EVENT_COUNT:
         raise CloudBundleError(
             f"too many events: {len(events)}; max {MAX_EVENT_COUNT}"

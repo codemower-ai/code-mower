@@ -486,6 +486,61 @@ scorecard inputs; consumers should not add them into headline repo/release
 totals for the same window. Scorecard promotion recommendations remain advisory
 until reviewed against `docs/lane-promotion-policy.md`.
 
+### Normalized Productivity Windows
+
+`code_mower.productivityWindow.v1` is the additive local observation shape for
+deterministic normalized repository/release productivity windows (issue #738).
+Operators derive one observation file per window from GitHub lifecycle metadata
+(PR opened/merged/closed and check timestamps, revert references) plus local
+controller/audit timing when available, using numeric aggregates only:
+
+```bash
+code-mower cloud dogfood --event productivity_summary=window.json --json
+code-mower cloud export --event productivity_summary=window.json --repo-slug OWNER/REPO --json
+code-mower cloud repo-sync --repo OWNER/REPO=/path/to/repo \
+  --event productivity_summary=window.json --json
+```
+
+The OSS uploader converts each observation into a `productivity_summary` event
+with `dimensions.productivity_window_schema=code_mower.productivityWindow.v1`.
+An observation that omits `repo_slug` is filled from `--repo-slug` (export)
+or the detected repo (dogfood, and repo-sync per synced repo); an explicit
+observation slug that disagrees with the repo-sync target is rejected.
+The converter separates elapsed time (`cycle_time_seconds`, always the
+`window_end` minus `window_start` span), observed active agent time
+(`active_time_seconds`), queue/wait (`queue_wait_seconds`, with an explicit
+`wait_time_seconds` aggregate only when the operator supplies one), review
+(`time_to_first_review_seconds`), time-to-green (`time_to_green_seconds`),
+merge (`time_to_merge_seconds`), and owner-wait (`owner_wait_seconds`).
+PR counts, fix rounds, interventions, reverts, and post-merge defect linkage
+are included only when explicitly observed in the input.
+
+Missing values stay unavailable, never zero: unobserved timings and counts are
+omitted, and explicit `active_time_coverage`/`defect_coverage` dimensions
+(`observed` or `unavailable`) record what was measured so incomplete
+active-time data cannot be presented as complete. `comparison_basis`
+(`code_mower_window`, `pre_code_mower`, `operator_selected`, or `unknown`)
+supports pre-Code-Mower or operator-selected comparison windows, and every
+windowed event carries `causal_claim=none`: before/after deltas are
+correlation context, never causal proof. `timing_provenance`
+(`github_lifecycle`, `github_lifecycle_and_local_timing`,
+`operator_supplied`, or `unknown`) records where the numbers came from.
+
+Windowed events use a closed dimension vocabulary and repo/release subjects
+only, so undeclared fields are rejected rather than becoming accidental prose
+channels. The event id is a deterministic UUIDv5 over the canonical window
+content and `created_at` is the window end, so repeated syncs over the same
+observation re-emit the same event id and bytes; only changed observation
+content yields a new event. Repo-sync forwards `--event` entries into each
+repo's dogfood step and summarizes window coverage under
+`productivity_baseline` in `data_class_summary`, alongside the existing
+current-dogfood, imported-history, and reviewer-evidence classes.
+Observations and events must not contain source, diffs, prompts, transcripts,
+issue bodies, raw output, local paths, auth output, or secrets. Events that
+omit the window stamp, including all uploads before this producer, remain
+valid, and CodeMower.com must keep accepting uploads that omit these
+dimensions.
+
 Local `code_mower.authoringRun.v1` artifacts from `builder-experiment run` may
 also be passed as `--event builder_run=PATH`. The OSS uploader converts them to
 the normalized `builder_run` event shape and uploads only metadata such as

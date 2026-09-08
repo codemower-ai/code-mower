@@ -6,6 +6,7 @@ import math
 from typing import Any, Mapping
 
 from .errors import CloudBundleError
+from .productivity_windows import validate_productivity_window_event
 
 
 PRODUCTIVITY_EVENT_TYPE = "productivity_summary"
@@ -147,3 +148,4 @@ def validate_productivity_summary_payload(event: Mapping[str, Any]) -> None:
             raise CloudBundleError(
                 f"productivity_summary metric {key!r} must be an integer {unit} value"
             )
+    validate_productivity_window_event(event)

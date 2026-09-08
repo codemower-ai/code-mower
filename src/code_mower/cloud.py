@@ -32,6 +32,7 @@ if __package__ in {None, ""}:
         default_setup_path as _default_setup_path,
         build_upload_payload,
         default_dogfood_reports as _default_dogfood_reports,
+        detect_repo_slug as _detect_repo_slug,
         dogfood_upload as _dogfood_upload,
         event_id_from_github_run as _event_id_from_github_run,
         is_local_http_endpoint,
@@ -87,6 +88,7 @@ else:  # pragma: no cover - exercised after package extraction.
         default_setup_path as _default_setup_path,
         build_upload_payload,
         default_dogfood_reports as _default_dogfood_reports,
+        detect_repo_slug as _detect_repo_slug,
         dogfood_upload as _dogfood_upload,
         event_id_from_github_run as _event_id_from_github_run,
         is_local_http_endpoint,
@@ -665,6 +667,17 @@ def main(argv: list[str] | None = None) -> int:
         help="sync mode to run; repeatable, defaults to dogfood and reviewer-runs",
     )
     repo_sync.add_argument(
+        "--event",
+        action="append",
+        default=[],
+        metavar="EVENT_TYPE=PATH",
+        help=(
+            "include structured benchmark events from JSON/JSONL in each repo's "
+            "dogfood step; productivity_summary entries also accept "
+            "code_mower.productivityWindow.v1 window observations"
+        ),
+    )
+    repo_sync.add_argument(
         "--output-dir",
         type=Path,
         default=Path(DEFAULT_REPO_SYNC_OUTPUT_DIR),
@@ -741,7 +754,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "export":
             events = [
-                *_parse_event_args(args.event),
+                *_parse_event_args(
+                    args.event,
+                    repo_slug=args.repo_slug,
+                    team_id=args.team_id,
+                    install_id=args.install_id,
+                ),
                 *_spend_events(
                     args.spend,
                     repo_slug=args.repo_slug,
@@ -837,11 +855,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_cloud_doctor_text(report), end="")
             return 1 if report["failures"] else 0
         if args.command == "dogfood":
+            # Resolve the slug before loading window events so a slugless
+            # observation is filled from --repo-slug or the detected repo,
+            # exactly as dogfood_upload and repo-sync resolve it below.
+            dogfood_repo_slug = args.repo_slug or _detect_repo_slug(
+                args.repo_path.expanduser().resolve()
+            )
             result = _dogfood_upload(
                 repo_path=args.repo_path,
                 output_dir=args.output_dir,
                 reports=_parse_report_args(args.report),
-                events=_parse_event_args(args.event),
+                events=_parse_event_args(
+                    args.event,
+                    repo_slug=dogfood_repo_slug,
+                    team_id=args.team_id,
+                    install_id=args.install_id,
+                    source=args.source,
+                ),
                 spend_path=args.spend,
                 repo_slug=args.repo_slug,
                 team_id=args.team_id,
@@ -1027,6 +1057,7 @@ def main(argv: list[str] | None = None) -> int:
                 include_git_ref=args.include_git_ref,
                 yes=args.yes,
                 timeout=args.timeout,
+                events=args.event,
             )
             if args.json:
                 print(json.dumps(result, indent=2, sort_keys=True))
@@ -1041,6 +1072,7 @@ def main(argv: list[str] | None = None) -> int:
                     current = summary.get("current_dogfood", {})
                     history = summary.get("imported_history", {})
                     reviewer = summary.get("reviewer_evidence", {})
+                    baseline = summary.get("productivity_baseline", {})
                     print(
                         "Current dogfood: "
                         f"{current.get('steps', 0)} steps, "
@@ -1056,6 +1088,12 @@ def main(argv: list[str] | None = None) -> int:
                         "Reviewer evidence: "
                         f"{reviewer.get('steps', 0)} steps, "
                         f"{reviewer.get('events', 0)} events"
+                    )
+                    print(
+                        "Productivity baseline: "
+                        f"{baseline.get('steps', 0)} steps, "
+                        f"{baseline.get('events', 0)} events "
+                        "(correlation only, no causal claims)"
                     )
                     guidance = (
                         history.get("trust_guidance", {})

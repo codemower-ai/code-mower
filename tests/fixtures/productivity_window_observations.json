@@ -1,0 +1,50 @@
+{
+  "schema": "code_mower.productivityWindowFixture.v1",
+  "notes": "Metadata-only window observations for issue #738. Numeric aggregates only.",
+  "repo_window": {
+    "schema": "code_mower.productivityWindow.v1",
+    "repo_slug": "owner/repo",
+    "window_start": "2026-08-01T00:00:00Z",
+    "window_end": "2026-08-08T00:00:00Z",
+    "window_granularity": "week",
+    "aggregation_subject": "repo",
+    "aggregation_key": "owner/repo",
+    "comparison_basis": "code_mower_window",
+    "timing_provenance": "github_lifecycle_and_local_timing",
+    "event_source": "repo-sync",
+    "timings": {
+      "active_seconds": 7200,
+      "queue_wait_seconds": 1800,
+      "time_to_first_review_seconds": 900,
+      "time_to_green_seconds": 10800,
+      "time_to_merge_seconds": 14400,
+      "owner_wait_seconds": 600
+    },
+    "counts": {
+      "merged_pr_count": 4,
+      "abandoned_pr_count": 1,
+      "fix_round_count": 2,
+      "owner_intervention_count": 1
+    }
+  },
+  "release_window": {
+    "schema": "code_mower.productivityWindow.v1",
+    "repo_slug": "owner/repo",
+    "window_start": "2026-07-01T00:00:00Z",
+    "window_end": "2026-07-15T00:00:00Z",
+    "window_granularity": "release",
+    "aggregation_subject": "release",
+    "release": "v1.0.0",
+    "comparison_basis": "pre_code_mower",
+    "timing_provenance": "github_lifecycle",
+    "timings": {
+      "time_to_green_seconds": 21600,
+      "time_to_merge_seconds": 28800
+    },
+    "counts": {
+      "merged_pr_count": 6,
+      "reverted_pr_count": 1,
+      "post_merge_defect_count": 2
+    }
+  }
+}
