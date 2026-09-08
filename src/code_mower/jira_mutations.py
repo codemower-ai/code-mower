@@ -197,8 +197,8 @@ COMMENT_TEMPLATES: Mapping[str, str] = {
     ),
     "pr_merged": ("The GitHub pull request {pr_url} for this issue merged."),
     "pr_blocked": (
-        "Code Mower paused this issue: GitHub pull request {pr_url} is not "
-        "gate-ready. No Jira state was changed beyond this note."
+        "Code Mower recorded that GitHub pull request {pr_url} is not "
+        "gate-ready. Review and merge decisions remain on GitHub."
     ),
 }
 TEMPLATES_REQUIRING_PR = frozenset({"pr_opened", "pr_merged", "pr_blocked"})

@@ -303,6 +303,14 @@ class MilestonePlansTest(unittest.TestCase):
         report = plan(sync_config(), "blocked")
         self.assertEqual(report["transition_category"], "blocked")
         self.assertEqual(report["comment_template"], "pr_blocked")
+        self.assertNotIn(
+            "No Jira state was changed",
+            jira_mutations.COMMENT_TEMPLATES["pr_blocked"],
+        )
+        self.assertIn(
+            "Review and merge decisions remain on GitHub",
+            jira_mutations.COMMENT_TEMPLATES["pr_blocked"],
+        )
 
     def test_green_is_silent_link_verify(self) -> None:
         report = plan(sync_config(), "green")
