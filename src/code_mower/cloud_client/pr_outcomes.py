@@ -713,10 +713,25 @@ def load_pr_outcome_observations(path: Path) -> dict[str, dict[str, str]]:
     let a later correction tie on ``created_at``.
     """
 
-    try:
-        text = Path(path).expanduser().read_text(encoding="utf-8")
-    except FileNotFoundError:
+    resolved = Path(path).expanduser()
+    # Only a genuinely absent path is valid initial state.  ``exists()``
+    # follows symlinks, so a dangling symlink would otherwise surface as
+    # ``FileNotFoundError`` and be silently replaced on the next save;
+    # ``is_symlink()`` is lstat-based and still detects it.  Any present
+    # but unusable entry -- symlink, directory, fifo, or other
+    # non-regular file -- fails closed, matching the discipline used for
+    # reviewer ledgers and builder inventories.
+    if not resolved.exists() and not resolved.is_symlink():
         return {}
+    if resolved.is_symlink() or not resolved.is_file():
+        raise _malformed_observation_state_error()
+    try:
+        text = resolved.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        # The entry vanished or its target disappeared between the lstat
+        # check and the read; fail closed rather than treating recorded
+        # state as empty.
+        raise _malformed_observation_state_error() from exc
     except UnicodeDecodeError as exc:
         raise _malformed_observation_state_error() from exc
     except OSError as exc:
@@ -774,6 +789,13 @@ def save_pr_outcome_observations(
     """Atomically persist local pr_outcome observation state."""
 
     destination = Path(path).expanduser()
+    # A symlink or other present-but-non-regular entry must never be
+    # replaced by recorded state; ``tmp_path.replace`` would silently
+    # overwrite a dangling symlink, so fail closed first.
+    if destination.is_symlink() or (
+        destination.exists() and not destination.is_file()
+    ):
+        raise _malformed_observation_state_error()
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema": PR_OUTCOME_OBSERVATION_STATE_SCHEMA,

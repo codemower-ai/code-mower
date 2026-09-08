@@ -23,6 +23,7 @@ from code_mower.cloud_client import (
     pr_outcome_observation_record,
     pr_outcomes_upload,
     run_gh_pr_list,
+    save_pr_outcome_observations,
     validate_cloud_event,
 )
 
@@ -1834,6 +1835,97 @@ class PrOutcomeStateFailClosedTests(unittest.TestCase):
             bundle.assert_not_called()
             self.assertIn("observation state", str(ctx.exception))
             self.assertNotIn(str(repo_path), str(ctx.exception))
+
+    def test_dangling_symlink_state_aborts_and_is_never_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            state_path = self._state_path(repo_path)
+            state_path.parent.mkdir(parents=True)
+            state_path.symlink_to("nonexistent-target")
+            with self.assertRaises(CloudBundleError) as ctx:
+                load_pr_outcome_observations(state_path)
+            message = str(ctx.exception)
+            self.assertIn("observation state", message)
+            self.assertIn("malformed", message)
+            self.assertNotIn(str(repo_path), message)
+            self.assertNotIn(str(state_path), message)
+            self.assertNotIn(tmp, message)
+            with self.assertRaises(CloudBundleError):
+                save_pr_outcome_observations(state_path, {})
+            self.assertTrue(state_path.is_symlink())
+            self.assertFalse(state_path.exists())
+
+    def test_symlink_to_valid_state_file_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            target = repo_path / "real-state.json"
+            target.write_text(
+                json.dumps(
+                    {
+                        "schema": "code_mower.prOutcomeObservations.v1",
+                        "observations": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state_path = self._state_path(repo_path)
+            state_path.parent.mkdir(parents=True)
+            state_path.symlink_to(target)
+            with self.assertRaises(CloudBundleError) as ctx:
+                load_pr_outcome_observations(state_path)
+            message = str(ctx.exception)
+            self.assertIn("observation state", message)
+            self.assertNotIn(str(repo_path), message)
+            self.assertNotIn(str(state_path), message)
+
+    def test_non_regular_state_entries_abort_on_load_and_save(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            state_path = self._state_path(repo_path)
+            state_path.mkdir(parents=True)
+            for op in (
+                lambda: load_pr_outcome_observations(state_path),
+                lambda: save_pr_outcome_observations(state_path, {}),
+            ):
+                with self.assertRaises(CloudBundleError) as ctx:
+                    op()
+                self.assertIn("observation state", str(ctx.exception))
+                self.assertNotIn(str(repo_path), str(ctx.exception))
+            self.assertTrue(state_path.is_dir())
+
+    def test_valid_regular_state_file_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            state_path = self._state_path(repo_path)
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "code_mower.prOutcomeObservations.v1",
+                        "observations": {
+                            "owner/repo#1": {
+                                "fingerprint": "abc123",
+                                "created_at": "2026-09-03T10:00:00Z",
+                                "source_freshness": "2026-09-03T13:00:00Z",
+                                "outcome": "merged",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = load_pr_outcome_observations(state_path)
+            self.assertEqual(
+                loaded,
+                {
+                    "owner/repo#1": {
+                        "fingerprint": "abc123",
+                        "created_at": "2026-09-03T10:00:00Z",
+                        "source_freshness": "2026-09-03T13:00:00Z",
+                        "outcome": "merged",
+                    }
+                },
+            )
 
 
 class PrOutcomeNonRegularEvidenceTests(unittest.TestCase):
