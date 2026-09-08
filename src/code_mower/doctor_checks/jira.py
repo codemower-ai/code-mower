@@ -226,14 +226,21 @@ def _probe_jira_read(
         )
 
     if client_factory is None:
-        def _default_factory(**kwargs: Any) -> jira_cloud_module.JiraReadClient:
+
+        def _default_factory(
+            *,
+            cloud_id: str,
+            email: str,
+            token: str,
+            site_url: str = "",
+            timeout_seconds: float = 5,
+        ) -> jira_cloud_module.JiraReadClient:
             return jira_cloud_module.JiraReadClient(
                 cloud_id=cloud_id,
-                email=resolution.email,
-                token=resolution.token,
+                email=email,
+                token=token,
                 site_url=site_url,
-                timeout_seconds=float(http_timeout),
-                **kwargs,
+                timeout_seconds=float(timeout_seconds),
             )
 
         factory: JiraClientFactory = _default_factory

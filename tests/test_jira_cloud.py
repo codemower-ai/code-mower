@@ -15,6 +15,7 @@ import stat
 import unittest
 from pathlib import Path
 from typing import Any, Mapping
+from unittest import mock
 
 from code_mower import jira_cloud
 from code_mower.doctor_checks import jira as jira_doctor
@@ -623,6 +624,113 @@ class ReadPrimitiveTests(unittest.TestCase):
         self.assertEqual(task_fields, ["customfield_10001", "priority"])
         self.assertEqual(bug_fields, ["customfield_10002", "priority"])
         self.assertNotEqual(task_fields, bug_fields)
+        for call in runner.calls[1:]:
+            self.assertIn("/rest/api/3/issue/createmeta/", call["url"])
+            self.assertIn("startAt=0", call["url"])
+            self.assertIn("maxResults=", call["url"])
+
+    def test_create_fields_follow_bounded_pagination(self) -> None:
+        runner = FakeHttp(
+            [
+                http_response(
+                    {
+                        "fields": [
+                            {"fieldId": "customfield_10001", "required": True},
+                            {"fieldId": "labels", "required": False},
+                        ],
+                        "startAt": 0,
+                        "maxResults": 50,
+                        "total": 3,
+                    }
+                ),
+                http_response(
+                    {
+                        "fields": [{"fieldId": "priority", "required": True}],
+                        "startAt": 2,
+                        "maxResults": 50,
+                        "total": 3,
+                    }
+                ),
+            ]
+        )
+        client = make_client(runner)
+        required = client.get_required_create_fields(PROJECT_ID, "10001")
+        self.assertEqual(required, ["customfield_10001", "priority"])
+        self.assertEqual(len(runner.calls), 2)
+        self.assertIn("startAt=0", runner.calls[0]["url"])
+        self.assertIn("startAt=2", runner.calls[1]["url"])
+
+    def test_create_fields_stop_on_malformed_pagination(self) -> None:
+        runner = FakeHttp(
+            [
+                http_response(
+                    {
+                        "fields": [{"fieldId": "priority", "required": True}],
+                        "startAt": 0,
+                        "maxResults": 50,
+                        "total": "not-a-number",
+                    }
+                )
+            ]
+        )
+        client = make_client(runner)
+        required = client.get_required_create_fields(PROJECT_ID, "10001")
+        self.assertEqual(required, ["priority"])
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_create_fields_stop_on_repeated_pagination_state(self) -> None:
+        page = {
+            "fields": [{"fieldId": "priority", "required": True}],
+            "startAt": 0,
+            "maxResults": 50,
+            "total": 999,
+        }
+        runner = FakeHttp([http_response(page), http_response(page)])
+        client = make_client(runner)
+        required = client.get_required_create_fields(PROJECT_ID, "10001")
+        self.assertEqual(required, ["priority"])
+        self.assertLessEqual(len(runner.calls), 2)
+
+    def test_create_fields_ignore_mapping_shaped_payload(self) -> None:
+        runner = FakeHttp(
+            [
+                http_response(
+                    {
+                        "fields": {"priority": {"required": True}},
+                        "startAt": 0,
+                        "maxResults": 50,
+                        "total": 1,
+                    }
+                )
+            ]
+        )
+        client = make_client(runner)
+        self.assertEqual(client.get_required_create_fields(PROJECT_ID, "10001"), [])
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_create_fields_ignore_malformed_records(self) -> None:
+        runner = FakeHttp(
+            [
+                http_response(
+                    {
+                        "fields": [
+                            "not-a-mapping",
+                            {"required": True},
+                            {"fieldId": "bad id!", "required": True},
+                            {"fieldId": "priority", "required": "yes"},
+                            {"fieldId": "priority", "required": True},
+                        ],
+                        "startAt": 0,
+                        "maxResults": 50,
+                        "total": 5,
+                    }
+                )
+            ]
+        )
+        client = make_client(runner)
+        self.assertEqual(
+            client.get_required_create_fields(PROJECT_ID, "10001"), ["priority"]
+        )
 
     def test_status_metadata_and_categories(self) -> None:
         runner = FakeHttp(
@@ -716,9 +824,21 @@ class ReadPrimitiveTests(unittest.TestCase):
             },
         )
         bodies = runner.request_bodies()
+        entry = bodies[0]["projectPermissions"][0]
         self.assertEqual(
-            bodies[0]["projectPermissions"][0]["projectId"], PROJECT_ID
+            entry["permissions"],
+            [
+                "BROWSE_PROJECTS",
+                "CREATE_ISSUES",
+                "EDIT_ISSUES",
+                "TRANSITION_ISSUES",
+                "ADD_COMMENTS",
+            ],
         )
+        self.assertEqual(entry["projects"], [int(PROJECT_ID)])
+        self.assertNotIn("projectId", entry)
+        self.assertTrue(runner.calls[0]["url"].endswith("/rest/api/3/permissions/check"))
+        self.assertEqual(runner.calls[0]["method"], "POST")
 
     def test_permission_names_are_bounded_tokens(self) -> None:
         runner = FakeHttp([])
@@ -726,6 +846,108 @@ class ReadPrimitiveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.check_permissions(PROJECT_ID, ["browse_projects"])
         self.assertEqual(runner.calls, [])
+
+    def test_permission_denied_and_missing_are_false(self) -> None:
+        runner = FakeHttp(
+            [
+                http_response(
+                    {
+                        "globalPermissions": [],
+                        "projectPermissions": [
+                            {
+                                "permission": "BROWSE_PROJECTS",
+                                "projects": [int(PROJECT_ID)],
+                                "issues": [],
+                            }
+                        ],
+                    }
+                )
+            ]
+        )
+        client = make_client(runner)
+        permissions = client.check_permissions(PROJECT_ID)
+        self.assertTrue(permissions["BROWSE_PROJECTS"])
+        self.assertFalse(permissions["CREATE_ISSUES"])
+        self.assertFalse(permissions["EDIT_ISSUES"])
+
+    def test_permission_out_of_project_is_denied(self) -> None:
+        runner = FakeHttp(
+            [
+                http_response(
+                    {
+                        "globalPermissions": [],
+                        "projectPermissions": [
+                            {
+                                "permission": "BROWSE_PROJECTS",
+                                "projects": [99999],
+                                "issues": [],
+                            },
+                            {
+                                "permission": "CREATE_ISSUES",
+                                "projects": [int(PROJECT_ID)],
+                                "issues": [],
+                            },
+                        ],
+                    }
+                )
+            ]
+        )
+        client = make_client(runner)
+        permissions = client.check_permissions(PROJECT_ID)
+        self.assertFalse(permissions["BROWSE_PROJECTS"])
+        self.assertTrue(permissions["CREATE_ISSUES"])
+
+    def test_permission_malformed_records_are_ignored(self) -> None:
+        runner = FakeHttp(
+            [
+                http_response(
+                    {
+                        "globalPermissions": [],
+                        "projectPermissions": [
+                            "not-a-mapping",
+                            {"permission": "BROWSE_PROJECTS"},
+                            {"permission": "BROWSE_PROJECTS", "projects": "10001"},
+                            {
+                                "permission": "CREATE_ISSUES",
+                                "projects": [True, None, "abc", int(PROJECT_ID)],
+                                "issues": "not-a-list",
+                            },
+                            {
+                                "permission": "UNKNOWN_PERMISSION",
+                                "projects": [int(PROJECT_ID)],
+                                "issues": [],
+                            },
+                        ],
+                    }
+                )
+            ]
+        )
+        client = make_client(runner)
+        permissions = client.check_permissions(PROJECT_ID)
+        self.assertFalse(permissions["BROWSE_PROJECTS"])
+        self.assertTrue(permissions["CREATE_ISSUES"])
+        self.assertFalse(permissions["EDIT_ISSUES"])
+
+    def test_permission_numeric_string_project_id_is_tolerated(self) -> None:
+        runner = FakeHttp(
+            [
+                http_response(
+                    {
+                        "globalPermissions": [],
+                        "projectPermissions": [
+                            {
+                                "permission": "EDIT_ISSUES",
+                                "projects": [PROJECT_ID],
+                                "issues": [],
+                            }
+                        ],
+                    }
+                )
+            ]
+        )
+        client = make_client(runner)
+        permissions = client.check_permissions(PROJECT_ID)
+        self.assertTrue(permissions["EDIT_ISSUES"])
 
 
 def jira_config(**overrides: Any) -> dict[str, Any]:
@@ -879,6 +1101,60 @@ class DoctorCheckTests(unittest.TestCase):
         bodies = runner.request_bodies()
         search_body = bodies[-1]
         self.assertEqual(search_body["jql"], "project = 10001")
+        blob = doctor_blob(checks)
+        self.assertNotIn(TOKEN, blob)
+        self.assertNotIn(EMAIL, blob)
+
+    def test_default_factory_constructs_client_without_injection(self) -> None:
+        """Exercise the real default factory path with bounded fake network.
+
+        No ``client_factory`` is injected, so ``_probe_jira_read`` builds
+        the production ``JiraReadClient``. Only the network boundary is
+        faked by patching ``default_http_runner`` with a scripted,
+        offline runner; a duplicate-keyword TypeError here would surface
+        as a misleading ``malformed`` read failure.
+        """
+        env = {jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN}
+        scripted = FakeHttp(ready_script())
+        timeouts: list[float] = []
+
+        def fake_default(
+            method: str,
+            url: str,
+            headers: Mapping[str, str],
+            body: bytes | None,
+            *,
+            timeout_seconds: float = 5,
+            max_response_bytes: int = jira_cloud.MAX_RESPONSE_BYTES,
+        ) -> tuple[int, Mapping[str, str], bytes]:
+            timeouts.append(float(timeout_seconds))
+            return scripted(method, url, headers, body)
+
+        with mock.patch.object(
+            jira_cloud, "default_http_runner", fake_default
+        ):
+            checks = jira_doctor.check_jira_tracker_readiness(
+                config=jira_config(),
+                env=dict(env),
+                client_factory=None,
+            )
+        by_id = checks_by_id(checks)
+        self.assertEqual(by_id[jira_doctor.JIRA_CONFIG_CHECK].status, "pass")
+        self.assertEqual(by_id[jira_doctor.JIRA_CREDENTIALS_CHECK].status, "pass")
+        read = by_id[jira_doctor.JIRA_READ_CHECK]
+        self.assertEqual(read.status, "pass")
+        self.assertEqual(read.detail.get("reason"), "ready")
+        # All six probe requests flowed through the bounded fake network.
+        self.assertEqual(len(scripted.calls), 6)
+        self.assertTrue(
+            scripted.calls[0]["url"].startswith(
+                f"https://api.atlassian.com/ex/jira/{CLOUD_ID}/"
+            )
+        )
+        # Production construction passes timeout_seconds through exactly once.
+        self.assertTrue(timeouts)
+        for value in timeouts:
+            self.assertEqual(value, 5.0)
         blob = doctor_blob(checks)
         self.assertNotIn(TOKEN, blob)
         self.assertNotIn(EMAIL, blob)

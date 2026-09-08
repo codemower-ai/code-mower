@@ -764,20 +764,64 @@ class JiraReadClient:
             raise ValueError("issue_type_id must be a bounded token")
         quoted_project = urllib.parse.quote(project_id, safe="")
         quoted_type = urllib.parse.quote(issue_type_id, safe="")
-        data = self.request_json(
-            "GET",
-            f"/rest/api/3/issue/createmeta/{quoted_project}/issuetypes/{quoted_type}",
-            endpoint="createMeta",
-        )
-        raw_fields = data.get("fields")
-        required: list[str] = []
-        if isinstance(raw_fields, Mapping):
-            for field_id, spec in raw_fields.items():
-                if not isinstance(field_id, str) or not _TOKEN_ID_RE.fullmatch(field_id):
+        path = f"/rest/api/3/issue/createmeta/{quoted_project}/issuetypes/{quoted_type}"
+        # The endpoint returns ``fields`` as a paginated array of records
+        # shaped ``{"fieldId": ..., "required": bool}`` with
+        # ``startAt``/``maxResults``/``total`` pagination. Follow pages with
+        # bounded state; malformed or repeated pagination stops the walk
+        # safely with whatever required ids are collected so far.
+        required: set[str] = set()
+        start_at = 0
+        seen_starts: set[int] = set()
+        for _ in range(8):
+            if start_at in seen_starts:
+                break
+            seen_starts.add(start_at)
+            data = self.request_json(
+                "GET",
+                path,
+                query={"startAt": str(start_at), "maxResults": "50"},
+                endpoint="createMeta",
+            )
+            raw_fields = data.get("fields")
+            if not isinstance(raw_fields, list):
+                break
+            for record in raw_fields:
+                if not isinstance(record, Mapping):
                     continue
-                if isinstance(spec, Mapping) and spec.get("required") is True:
-                    required.append(field_id)
-        return sorted(set(required))[:64]
+                field_id = record.get("fieldId")
+                if (
+                    isinstance(field_id, str)
+                    and _TOKEN_ID_RE.fullmatch(field_id)
+                    and record.get("required") is True
+                ):
+                    required.add(field_id)
+            total_raw = data.get("total")
+            if isinstance(total_raw, bool):
+                break
+            try:
+                total = int(total_raw)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                break
+            if total < 0 or total > 10000:
+                break
+            server_start_raw = data.get("startAt")
+            if server_start_raw is not None:
+                if isinstance(server_start_raw, bool):
+                    break
+                try:
+                    server_start = int(server_start_raw)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    break
+                if server_start != start_at:
+                    break
+            if not raw_fields or start_at + len(raw_fields) >= total:
+                break
+            next_start = start_at + len(raw_fields)
+            if next_start <= start_at or next_start in seen_starts:
+                break
+            start_at = next_start
+        return sorted(required)[:64]
 
     def get_status_categories(self) -> list[dict[str, str]]:
         """List status categories; bounded id/key/name triples only."""
@@ -919,24 +963,35 @@ class JiraReadClient:
             "/rest/api/3/permissions/check",
             json_body={
                 "projectPermissions": [
-                    {"projectId": project_id, "permissions": requested}
+                    {"permissions": requested, "projects": [int(project_id)]}
                 ]
             },
             endpoint="permissions",
         )
+        wanted = int(project_id)
         result: dict[str, bool] = {name: False for name in requested}
         entries = data.get("projectPermissions")
         for entry in entries if isinstance(entries, list) else []:
             if not isinstance(entry, Mapping):
                 continue
-            for item in entry.get("permissions") if isinstance(
-                entry.get("permissions"), list
-            ) else []:
-                if not isinstance(item, Mapping):
+            name = entry.get("permission")
+            if not isinstance(name, str) or name not in result:
+                continue
+            granted = entry.get("projects")
+            if not isinstance(granted, list):
+                continue
+            for raw_id in granted:
+                if isinstance(raw_id, bool):
                     continue
-                name = str(item.get("permission") or "")
-                if name in result:
-                    result[name] = item.get("havePermission") is True
+                if isinstance(raw_id, int):
+                    candidate: int | None = raw_id
+                elif isinstance(raw_id, str) and _PROJECT_ID_RE.fullmatch(raw_id):
+                    candidate = int(raw_id)
+                else:
+                    continue
+                if candidate == wanted:
+                    result[name] = True
+                    break
         return result
 
 
