@@ -127,13 +127,13 @@ def build_catch_up_summary(
 
 
 def _invalid_spend_ledger_error() -> CloudBundleError:
-    """Return the bounded, path-free error for an unusable explicit ledger."""
+    """Return the bounded, path-free error for an unusable spend ledger."""
 
     return CloudBundleError(
-        "the explicitly requested reviewer spend ledger could not provide "
-        "spend evidence; aborting export/upload rather than reporting "
-        "coverage without it. Supply a readable, regular JSON ledger file "
-        "or omit the ledger path to use the optional default ledger."
+        "the reviewer spend ledger could not provide spend evidence; "
+        "aborting export/upload rather than reporting coverage without it. "
+        "Supply a readable, regular JSON ledger file or omit the ledger path "
+        "to use the optional default ledger."
     )
 
 
@@ -160,6 +160,15 @@ def _reviewer_spend_events(
         # degrade to "no reviewer evidence" and report complete coverage.
         if resolved_spend_path.is_symlink() or not resolved_spend_path.is_file():
             raise _invalid_spend_ledger_error()
+    elif require_valid_spend:
+        # The optional default ledger may only be silently absent.  Any
+        # existing but unusable entry -- directory, dangling symlink,
+        # symlink, or other non-regular file -- must fail closed rather
+        # than treat a corrupt ledger as no evidence.
+        if not resolved_spend_path.exists() and not resolved_spend_path.is_symlink():
+            return []
+        if resolved_spend_path.is_symlink() or not resolved_spend_path.is_file():
+            raise _invalid_spend_ledger_error()
     elif not resolved_spend_path.is_file():
         return []
     try:
@@ -174,9 +183,10 @@ def _reviewer_spend_events(
             preserve_unattributable=preserve_unattributable,
         )
     except (OSError, ValueError) as exc:
-        if explicit_spend and require_valid_spend:
-            # ``load_spend_file`` diagnostics embed the raw path; the
-            # fail-closed error stays bounded and path-free.
+        if require_valid_spend:
+            # ``load_spend_file`` and ``spend_runs_to_events`` diagnostics may
+            # embed the raw path; the fail-closed error stays bounded and
+            # path-free.
             raise _invalid_spend_ledger_error() from exc
         raise
 

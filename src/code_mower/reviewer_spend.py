@@ -247,17 +247,18 @@ def spend_runs_to_events(
     By default this keeps the historical shared semantics: non-mapping rows
     are skipped and rows without a ``lane`` are dropped, with ``cost_usd``
     reported as recorded.  ``preserve_unattributable=True`` opts in to the
-    fail-closed behavior used by pr-outcomes: malformed or lane-less rows
-    are preserved as ``unreadable-evidence`` events so the caller can count
-    them as unattributable incomplete evidence, and their ``cost_usd`` is
-    withheld because it cannot be attributed to a specific lane and PR.
+    fail-closed behavior used by pr-outcomes: the top-level ``runs`` member
+    must exist and be an array, malformed or lane-less rows are preserved
+    as ``unreadable-evidence`` events so the caller can count them as
+    unattributable incomplete evidence, and their ``cost_usd`` is withheld
+    because it cannot be attributed to a specific lane and PR.
     """
 
     events: list[dict[str, Any]] = []
     if preserve_unattributable:
-        raw_runs = payload.get("runs")
-        if raw_runs is None:
-            raw_runs = []
+        if "runs" not in payload or payload["runs"] is None:
+            raise ValueError("reviewer spend runs must be an array")
+        raw_runs = payload["runs"]
         if not isinstance(raw_runs, list):
             raise ValueError("reviewer spend runs must be a list")
         runs: list[Mapping[str, Any]] = [

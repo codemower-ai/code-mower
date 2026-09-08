@@ -1402,6 +1402,96 @@ class PrOutcomeFailClosedTests(unittest.TestCase):
                 events["1"]["dimensions"]["cost_coverage"], "complete"
             )
 
+    def _assert_invalid_default_spend_aborts(
+        self, repo_path: Path
+    ) -> None:
+        with mock.patch(
+            "code_mower.cloud_client.operations.run_gh_pr_list",
+            return_value=[self._merged_pr("1")],
+        ), mock.patch(
+            "code_mower.cloud_client.operations.build_cloud_bundle"
+        ) as bundle:
+            with self.assertRaises(CloudBundleError) as ctx:
+                self._upload_with_spend(repo_path, None)
+        bundle.assert_not_called()
+        message = str(ctx.exception)
+        self.assertIn("spend ledger", message)
+        self.assertNotIn(str(repo_path), message)
+
+    def test_default_missing_spend_ledger_allows_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (
+                builder_dir / "devin-local-pr-1-aa11.cloud-event.json"
+            ).write_text(
+                json.dumps(_builder_run_event("b1", "1", 0.10)),
+                encoding="utf-8",
+            )
+
+            result = self._upload_with_spend(repo_path, None)
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["errors"], [])
+            events = self._emitted_events(result)
+            self.assertEqual(
+                events["1"]["dimensions"]["cost_coverage"], "complete"
+            )
+
+    def test_default_directory_spend_ledger_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            spend_dir = repo_path / ".code-mower" / "reviewer-spend.json"
+            spend_dir.parent.mkdir(parents=True, exist_ok=True)
+            spend_dir.mkdir()
+            self._assert_invalid_default_spend_aborts(repo_path)
+
+    def test_default_dangling_symlink_spend_ledger_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            spend_path = repo_path / ".code-mower" / "reviewer-spend.json"
+            spend_path.parent.mkdir(parents=True, exist_ok=True)
+            spend_path.symlink_to("nonexistent-target")
+            self._assert_invalid_default_spend_aborts(repo_path)
+
+    def test_default_empty_runs_ledger_allows_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            spend_path = repo_path / ".code-mower" / "reviewer-spend.json"
+            spend_path.parent.mkdir(parents=True, exist_ok=True)
+            spend_path.write_text(
+                json.dumps({"schema": reviewer_spend.SPEND_SCHEMA, "runs": []}),
+                encoding="utf-8",
+            )
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            (
+                builder_dir / "devin-local-pr-1-aa11.cloud-event.json"
+            ).write_text(
+                json.dumps(_builder_run_event("b1", "1", 0.10)),
+                encoding="utf-8",
+            )
+
+            result = self._upload_with_spend(repo_path, None)
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["errors"], [])
+            events = self._emitted_events(result)
+            self.assertEqual(
+                events["1"]["dimensions"]["cost_coverage"], "complete"
+            )
+
+    def test_default_malformed_runs_ledger_aborts(self) -> None:
+        for contents in ("{}", '{"runs": null}'):
+            with self.subTest(contents=contents):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_path = Path(tmp)
+                    spend_path = (
+                        repo_path / ".code-mower" / "reviewer-spend.json"
+                    )
+                    spend_path.parent.mkdir(parents=True, exist_ok=True)
+                    spend_path.write_text(contents, encoding="utf-8")
+                    self._assert_invalid_default_spend_aborts(repo_path)
+
 
 class PrOutcomeIdentityP2Tests(unittest.TestCase):
     def test_repaired_evidence_changes_fingerprint_and_ordering(self) -> None:

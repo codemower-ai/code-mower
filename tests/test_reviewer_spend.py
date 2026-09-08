@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from code_mower import claude_audit_pr, codex_audit_pr, reviewer_spend
 from code_mower.cloud_client import validate_cloud_event
 
@@ -412,3 +414,26 @@ def test_spend_runs_to_events_opt_in_preserves_unattributable_without_cost() -> 
     assert events[0]["dimensions"]["pr_number"] == ""
     assert "cost_usd" not in events[0]["metrics"]
     validate_cloud_event(events[0])
+
+
+def test_spend_runs_to_events_strict_requires_runs_array() -> None:
+    with pytest.raises(ValueError, match="reviewer spend runs must be an array"):
+        reviewer_spend.spend_runs_to_events({}, preserve_unattributable=True)
+
+    with pytest.raises(ValueError, match="reviewer spend runs must be an array"):
+        reviewer_spend.spend_runs_to_events(
+            {"runs": None}, preserve_unattributable=True
+        )
+
+
+def test_spend_runs_to_events_strict_empty_runs_is_valid() -> None:
+    events = reviewer_spend.spend_runs_to_events(
+        {"runs": []}, preserve_unattributable=True
+    )
+    assert events == []
+
+
+def test_spend_runs_to_events_legacy_allows_missing_or_null_runs() -> None:
+    assert reviewer_spend.spend_runs_to_events({}) == []
+    assert reviewer_spend.spend_runs_to_events({"runs": None}) == []
+    assert reviewer_spend.spend_runs_to_events({"runs": []}) == []
