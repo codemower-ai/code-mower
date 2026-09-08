@@ -197,19 +197,42 @@ available transitions. An issue outside the configured project, a
 transition the live workflow no longer offers, or a lost permission blocks
 with a closed reason instead of guessing.
 
+A transition is blocked unless the live transition's destination status id
+is one of the ids `status_category_map` configures for the requested
+lifecycle category (`transition_target_mismatch`, or
+`target_status_not_configured` when the category has no configured ids). A
+configured transition id names a workflow edge, and a workflow can be
+re-pointed under it; verifying the destination before the write keeps a
+`--transition in_progress` from moving an issue somewhere that category
+never meant.
+
 Idempotency is reconciled from authoritative state where it exists:
 assignment from the current assignee, transition from the current status
 (against `status_category_map` and the transition's target status), and the
 remote link from its deterministic `globalId`
 (`code-mower:github:<owner>/<repo>/pull/<number>`), which makes Jira upsert
-rather than duplicate. Comments have no server-side idempotency key and
-their bodies are never read back, so a bounded `code-mower-mutations-v1`
-issue property records a stable fingerprint *before* the comment is posted
-and finalizes it afterwards. An interrupted run therefore replays as
-`replay_not_reposted` and never posts a second comment. Retries stay bounded
-(exponential backoff plus jitter, capped `Retry-After`); 409 conflicts fail
-fast rather than retrying into a double apply, and a failing operation
-aborts the rest of the run instead of continuing.
+rather than duplicate.
+
+Retries follow the same rule. Reads, the assignee PUT, the `globalId`
+remote-link upsert, and the ledger property PUT are all safe to repeat and
+keep the bounded budget (exponential backoff plus jitter, capped
+`Retry-After`). The comment POST and the transition POST have no
+server-side idempotency key, so they are attempted exactly once: an
+ambiguous timeout, 429, or 5xx cannot be told apart from a write Jira
+already committed, and a transport retry there would double-apply. 409
+conflicts fail fast for the same reason, and a failing operation aborts the
+rest of the run instead of continuing.
+
+Comments additionally have their bodies never read back, so a bounded
+`code-mower-mutations-v1` issue property records a stable fingerprint
+*immediately before* the comment is posted — inside the comment step, so a
+failed assignment, transition, or link can never leave a pending entry for a
+comment that was never attempted — and finalizes it afterwards. A later run
+that finds an unfinalized entry never reposts and never claims the comment
+landed: it reports `comment_unverified` with report status `unverified` and
+a non-zero exit, and asks an owner to look at the issue once and add the
+note by hand only if it is missing. The ledger keeps saying `unverified`
+rather than converging on a guess.
 
 GitHub remains the sole pull request, check, review, and merge-gate
 authority. This surface reads no gate state and changes none; a Jira

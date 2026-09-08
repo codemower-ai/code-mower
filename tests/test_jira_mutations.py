@@ -343,6 +343,110 @@ class TransportAllowListTests(unittest.TestCase):
                 client._check_request_allowed(method, path)
 
 
+class TransportRetryPolicyTests(unittest.TestCase):
+    """A write Jira may already have committed is never retried blindly.
+
+    Timeout, 429, and 5xx are all ambiguous: the request may have been lost
+    on the way out, or Jira may have applied it and lost the response. For a
+    comment post or a transition post there is no way to tell and no
+    server-side idempotency key, so the transport attempts them exactly once
+    and lets apply reconcile on the operator's next run.
+    """
+
+    AMBIGUOUS_FAILURES = {
+        "timeout": lambda: [TimeoutError("timed out")] * 4,
+        "rate_limited": lambda: [error(429, {"Retry-After": "1"})] * 4,
+        "server_error": lambda: [error(503)] * 4,
+    }
+
+    def _attempt_count(self, route: tuple[str, str], responses: Any, call: Any) -> int:
+        sleeps: list[float] = []
+        runner = RouteHttp({route: responses})
+        client = make_client(runner, sleeps=sleeps, max_attempts=4)
+        with self.assertRaises(jira_cloud.JiraApiError):
+            call(client)
+        self.assertEqual(sleeps, [], "a single-attempt write must not back off")
+        return len(runner.calls)
+
+    def test_comment_post_is_attempted_once_after_an_ambiguous_failure(self) -> None:
+        for label, responses in self.AMBIGUOUS_FAILURES.items():
+            with self.subTest(failure=label):
+                attempts = self._attempt_count(
+                    ("POST", f"{ISSUE_PATH}/comment"),
+                    responses(),
+                    lambda client: client.add_templated_comment(
+                        ISSUE, "claimed", pr_url="", fingerprint="a" * 32
+                    ),
+                )
+                self.assertEqual(attempts, 1)
+
+    def test_transition_post_is_attempted_once_after_an_ambiguous_failure(self) -> None:
+        for label, responses in self.AMBIGUOUS_FAILURES.items():
+            with self.subTest(failure=label):
+                attempts = self._attempt_count(
+                    ("POST", f"{ISSUE_PATH}/transitions"),
+                    responses(),
+                    lambda client: client.transition_issue(ISSUE, "31"),
+                )
+                self.assertEqual(attempts, 1)
+
+    def test_reads_and_idempotent_writes_keep_the_retry_budget(self) -> None:
+        """The narrowing is surgical: everything else still retries.
+
+        Assignee is a whole-value PUT, the remote link is upserted by its
+        deterministic globalId, and the ledger property is a whole-value PUT,
+        so repeating any of them cannot produce a second effect.
+        """
+        cases = (
+            (("GET", ISSUE_PATH), lambda client: client.get_issue_state(ISSUE)),
+            (
+                ("PUT", f"{ISSUE_PATH}/assignee"),
+                lambda client: client.assign_issue(ISSUE, ACCOUNT_ID),
+            ),
+            (
+                ("POST", f"{ISSUE_PATH}/remotelink"),
+                lambda client: client.link_pull_request(ISSUE, PR_URL),
+            ),
+            (
+                ("PUT", LEDGER_PATH),
+                lambda client: client.set_mutation_ledger(ISSUE, {"entries": {}}),
+            ),
+        )
+        for route, call in cases:
+            with self.subTest(route=route):
+                runner = RouteHttp({route: [error(503)] * 4})
+                client = make_client(runner, sleeps=[], max_attempts=4)
+                with self.assertRaises(jira_cloud.JiraApiError):
+                    call(client)
+                self.assertEqual(len(runner.calls), 4)
+
+    def test_the_retry_policy_seam_names_only_the_two_unsafe_writes(self) -> None:
+        client = make_client(ExplodingHttp(), max_attempts=4)
+        for method, path in (
+            ("POST", f"{ISSUE_PATH}/comment"),
+            ("POST", f"{ISSUE_PATH}/transitions"),
+        ):
+            self.assertEqual(client._attempts_for(method, path), 1)
+        for method, path in (
+            ("GET", ISSUE_PATH),
+            ("PUT", f"{ISSUE_PATH}/assignee"),
+            ("POST", f"{ISSUE_PATH}/remotelink"),
+            ("PUT", LEDGER_PATH),
+        ):
+            self.assertEqual(client._attempts_for(method, path), 4)
+
+    def test_the_read_client_retries_every_request_it_can_make(self) -> None:
+        client = jira_cloud.JiraReadClient(
+            cloud_id=CLOUD_ID,
+            email=EMAIL,
+            token=TOKEN,
+            http_runner=ExplodingHttp(),
+            max_attempts=4,
+        )
+        self.assertEqual(client._attempts_for("GET", ISSUE_PATH), 4)
+        self.assertEqual(client._attempts_for("POST", "/rest/api/3/search/jql"), 4)
+
+
 class ApplyTests(unittest.TestCase):
     def test_claim_assigns_the_authenticated_account(self) -> None:
         runner = RouteHttp(
@@ -445,6 +549,77 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(report["status"], "blocked")
         self.assertEqual(operation(report, "transition")["reason"], "transition_unavailable")
+        self.assertEqual(runner.write_calls(), [])
+
+    def test_transition_landing_outside_the_configured_target_is_blocked(self) -> None:
+        """A configured transition id is only a workflow edge.
+
+        The workflow can be re-pointed under it, so where the edge actually
+        lands is verified against the lifecycle category's configured status
+        ids before any write.
+        """
+        runner = RouteHttp(
+            {
+                ("GET", ISSUE_PATH): ok(issue_response(status_id="1")),
+                ("GET", LEDGER_PATH): error(404),
+                ("GET", f"{ISSUE_PATH}/transitions"): ok(
+                    {"transitions": [{"id": "31", "name": "Start", "to": {"id": "9"}}]}
+                ),
+            }
+        )
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--transition", "in_progress", "--apply"],
+            runner=runner,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual(
+            operation(report, "transition")["reason"], "transition_target_mismatch"
+        )
+        self.assertEqual(
+            operation(report, "transition")["detail"]["destination_status_id"], "9"
+        )
+        self.assertEqual(runner.write_calls(), [])
+
+    def test_a_transition_with_no_configured_target_status_is_blocked(self) -> None:
+        runner = RouteHttp(
+            {
+                ("GET", ISSUE_PATH): ok(issue_response(status_id="1")),
+                ("GET", LEDGER_PATH): error(404),
+                ("GET", f"{ISSUE_PATH}/transitions"): ok(
+                    {"transitions": [{"id": "31", "to": {"id": "3"}}]}
+                ),
+            }
+        )
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--transition", "in_progress", "--apply"],
+            runner=runner,
+            config_kwargs={"status_category_map": {}},
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            operation(report, "transition")["reason"], "target_status_not_configured"
+        )
+        self.assertEqual(runner.write_calls(), [])
+
+    def test_a_transition_with_an_unknown_destination_is_blocked(self) -> None:
+        runner = RouteHttp(
+            {
+                ("GET", ISSUE_PATH): ok(issue_response(status_id="1")),
+                ("GET", LEDGER_PATH): error(404),
+                ("GET", f"{ISSUE_PATH}/transitions"): ok(
+                    {"transitions": [{"id": "31", "name": "Start"}]}
+                ),
+            }
+        )
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--transition", "in_progress", "--apply"],
+            runner=runner,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            operation(report, "transition")["reason"], "transition_target_mismatch"
+        )
         self.assertEqual(runner.write_calls(), [])
 
     def test_transition_is_idempotent_at_the_configured_target_status(self) -> None:
@@ -604,7 +779,14 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(operation(report, "comment")["reason"], "already_commented")
         self.assertNotIn(f"{ISSUE_PATH}/comment", runner.paths("POST"))
 
-    def test_interrupted_comment_replays_without_a_duplicate(self) -> None:
+    def test_interrupted_comment_is_unverified_rather_than_claimed_applied(self) -> None:
+        """A pending entry means "unknown", and the report must say so.
+
+        The comment may have committed, may have been lost in flight, or may
+        never have left. Reposting risks a duplicate and claiming success
+        would be a guess, so the run reports ``unverified`` and hands the one
+        comment back to an owner.
+        """
         runner = RouteHttp(
             {
                 ("GET", ISSUE_PATH): ok(issue_response()),
@@ -615,9 +797,95 @@ class ReplayTests(unittest.TestCase):
         code, report, _ = run_cli(
             ["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"], runner=runner
         )
-        self.assertEqual(code, 0)
-        self.assertEqual(operation(report, "comment")["reason"], "replay_not_reposted")
+        self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "unverified")
+        self.assertEqual(operation(report, "comment")["status"], "unverified")
+        self.assertEqual(operation(report, "comment")["reason"], "comment_unverified")
         self.assertNotIn(f"{ISSUE_PATH}/comment", runner.paths("POST"))
+        self.assertIn("by hand", report["next_action"])
+        final_ledger = runner.write_calls()[-1]["body"]
+        self.assertEqual(
+            [entry["state"] for entry in final_ledger["entries"].values()], ["unverified"]
+        )
+
+    def test_an_unverified_comment_stays_unverified_and_is_never_reposted(self) -> None:
+        runner = RouteHttp(
+            {
+                ("GET", ISSUE_PATH): ok(issue_response()),
+                ("GET", LEDGER_PATH): ok(self._ledger("claimed", "unverified")),
+                ("PUT", LEDGER_PATH): empty(),
+            }
+        )
+        code, report, _ = run_cli(
+            ["mutate", "--issue", ISSUE, "--comment", "claimed", "--apply"], runner=runner
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "comment")["reason"], "comment_unverified")
+        self.assertNotIn(f"{ISSUE_PATH}/comment", runner.paths("POST"))
+
+    def test_a_failed_earlier_operation_leaves_no_pending_comment_behind(self) -> None:
+        """A never-attempted comment must not be suppressed on the retry.
+
+        The intent is recorded immediately before the post, so a transition
+        that fails first cannot leave a pending ledger entry that a later run
+        would read as an interrupted post.
+        """
+        first = RouteHttp(
+            {
+                ("GET", ISSUE_PATH): ok(issue_response(status_id="1")),
+                ("GET", LEDGER_PATH): error(404),
+                ("GET", f"{ISSUE_PATH}/transitions"): ok(
+                    {"transitions": [{"id": "31", "to": {"id": "3"}}]}
+                ),
+                ("POST", f"{ISSUE_PATH}/transitions"): error(500),
+            }
+        )
+        args = [
+            "mutate",
+            "--issue",
+            ISSUE,
+            "--transition",
+            "in_progress",
+            "--comment",
+            "claimed",
+            "--apply",
+        ]
+        code, report, _ = run_cli(args, runner=first)
+        self.assertEqual(code, 1)
+        self.assertEqual(operation(report, "transition")["reason"], "unavailable")
+        self.assertEqual(operation(report, "comment")["status"], "skipped")
+        # The only write attempted is the transition itself: no ledger entry
+        # was opened for a comment that never ran.
+        self.assertEqual(
+            [call["path"] for call in first.write_calls()],
+            [f"{ISSUE_PATH}/transitions"],
+        )
+
+        second = RouteHttp(
+            {
+                ("GET", ISSUE_PATH): ok(issue_response(status_id="1")),
+                ("GET", LEDGER_PATH): error(404),
+                ("GET", f"{ISSUE_PATH}/transitions"): ok(
+                    {"transitions": [{"id": "31", "to": {"id": "3"}}]}
+                ),
+                ("POST", f"{ISSUE_PATH}/transitions"): empty(),
+                ("POST", f"{ISSUE_PATH}/comment"): ok({"id": "20001"}, status=201),
+                ("PUT", LEDGER_PATH): empty(),
+            }
+        )
+        code, report, _ = run_cli(args, runner=second)
+        self.assertEqual(code, 0)
+        self.assertEqual(operation(report, "transition")["status"], "applied")
+        self.assertEqual(operation(report, "comment")["status"], "applied")
+        self.assertEqual(
+            [call["path"] for call in second.write_calls()],
+            [
+                f"{ISSUE_PATH}/transitions",
+                LEDGER_PATH,
+                f"{ISSUE_PATH}/comment",
+                LEDGER_PATH,
+            ],
+        )
 
     def test_comment_intent_is_recorded_before_the_post(self) -> None:
         runner = RouteHttp(

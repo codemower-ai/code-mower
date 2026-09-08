@@ -27,6 +27,9 @@ Transport rules:
   no live Jira calls. Responses are size-bounded, retries use bounded
   exponential backoff plus jitter with injectable sleep/random helpers, and
   cancellation is cooperative through an injectable predicate.
+  ``_attempts_for`` is the single retry-policy seam: reads keep the full
+  budget, and a writing subclass narrows it for requests that cannot be
+  safely repeated.
 - Failures map to closed reason codes; raw response bodies never enter
   diagnostics, and only bounded metadata fields are ever requested or
   returned (never summary, description, comments, attachments, issue body,
@@ -757,6 +760,20 @@ class JiraReadClient:
         if not path.startswith("/rest/api/3/"):
             raise ValueError("jira_cloud client refuses paths outside /rest/api/3/")
 
+    def _attempts_for(self, method: str, path: str) -> int:
+        """Return the retry budget for one request.
+
+        This is the single retry-policy seam, and the counterpart of
+        ``_check_request_allowed``. Every request this client can issue is a
+        read, and a repeated read cannot change Jira, so all of them keep the
+        full bounded budget. A subclass that can write must narrow this for
+        any request without a server-side idempotency key: an ambiguous
+        timeout, 429, or 5xx cannot be told apart from a request Jira already
+        committed, so a blind retry there would double-apply (see
+        ``jira_mutations.JiraMutationClient``).
+        """
+        return max(1, self.max_attempts)
+
     def _request_parsed(
         self,
         method: str,
@@ -784,7 +801,7 @@ class JiraReadClient:
                 raise ValueError("jira_cloud request body exceeds the read-request bound")
 
         runner = self.http_runner
-        attempts = max(1, self.max_attempts)
+        attempts = self._attempts_for(method, path)
         last_code = "jira_unavailable"
         for attempt in range(attempts):
             if self.cancelled_fn():

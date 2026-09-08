@@ -29,10 +29,16 @@ later entries are regular releases.
   `--apply`. Only claim, configured transition ids, bounded templated
   comments, and one pull request remote link are possible — no delete,
   attachment, arbitrary field update, or free-form comment. Live state and
-  available transitions are re-checked immediately before each write, and
-  stable idempotency markers make restart or replay report already-applied
-  instead of duplicating an effect. GitHub remains the only PR, check, and
-  merge-gate authority (issue #799).
+  available transitions are re-checked immediately before each write, a
+  transition is blocked unless its live destination status is configured for
+  the requested lifecycle category, and stable idempotency markers make
+  restart or replay report already-applied instead of duplicating an effect.
+  The two writes Jira gives no idempotency key — the comment post and the
+  transition post — are attempted exactly once, so an ambiguous timeout,
+  429, or 5xx can never be retried into a double apply; an interrupted
+  comment is reported `unverified` for an owner to reconcile and is never
+  reposted automatically. GitHub remains the only PR, check, and merge-gate
+  authority (issue #799).
 
 ### Fixed
 

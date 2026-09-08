@@ -18,7 +18,9 @@ allow-list on :class:`JiraMutationClient`:
 
 - ``assign``: claim the issue for the authenticated account.
 - ``transition``: one *configured* transition id, verified against the live
-  issue's available transitions immediately before the write.
+  issue's available transitions immediately before the write, and blocked
+  unless that transition's live destination status is one of the status ids
+  configured for the requested lifecycle category.
 - ``comment``: one bounded comment rendered from a closed template table.
   There is no free-form comment passthrough: the transport builds the body
   itself from a template id and a validated GitHub pull request URL.
@@ -32,11 +34,18 @@ any issue property other than this module's own idempotency ledger.
 
 Replay safety: assignment, transition, and remote link are reconciled from
 authoritative live state (current assignee, current status plus available
-transitions, and remote-link ``globalId``). Comments have no server-side
-idempotency key and their bodies are never read back, so a bounded issue
-property ledger records a stable fingerprint before the comment is posted
-and finalizes it afterwards. An interrupted run therefore replays as
-"already applied" and never posts a second comment.
+transitions, and remote-link ``globalId``), and each of those three writes
+is idempotent at Jira, so the transport may retry them. The two writes that
+are not -- the comment post and the transition post -- are attempted exactly
+once, because an ambiguous timeout, 429, or 5xx cannot be told apart from a
+write Jira already committed.
+
+Comments have no server-side idempotency key and their bodies are never read
+back, so a bounded issue property ledger records a stable fingerprint
+immediately before the comment is posted and finalizes it afterwards. A
+later run that finds an unfinalized entry never reposts, and never claims
+the comment landed either: it reports ``unverified`` and asks an owner to
+reconcile that one comment by hand.
 
 GitHub remains the sole pull request, check, review, and merge-gate
 authority. Nothing here reads or changes gate state, and a Jira refusal,
@@ -73,6 +82,12 @@ LEDGER_SCHEMA = "code_mower.jiraMutationLedger.v1"
 #: property key the transport may write.
 LEDGER_PROPERTY_KEY = "code-mower-mutations-v1"
 MAX_LEDGER_ENTRIES = 32
+
+#: Closed ledger states. ``pending`` is written immediately before a comment
+#: post; ``applied`` after a post this process saw succeed. ``unverified`` is
+#: terminal and honest: a later run found an unfinalized ``pending`` entry, so
+#: the comment may or may not exist in Jira and only an owner can say which.
+LEDGER_STATES = ("pending", "applied", "unverified")
 
 #: Report/apply order. Claim first so a later failure still leaves the issue
 #: visibly owned; the pull request link lands before the comment that
@@ -130,11 +145,13 @@ REASON_CODES = frozenset(
         "operation_not_allowed",
         "transition_not_configured",
         "transition_unavailable",
+        "transition_target_mismatch",
+        "target_status_not_configured",
         "already_assigned",
         "already_at_target_status",
         "already_commented",
         "already_linked",
-        "replay_not_reposted",
+        "comment_unverified",
         "account_unresolved",
         "issue_out_of_scope",
         "permission_denied",
@@ -161,10 +178,14 @@ _ERROR_CODE_OUTCOMES: Mapping[str, tuple[str, str]] = {
 }
 
 #: Worst-first, so a report status is the most severe operation outcome.
+#: ``unverified`` outranks ``refused`` because it is the only outcome that
+#: leaves Jira in a state this tool cannot describe, and it is the one that
+#: needs an owner to look.
 _STATUS_SEVERITY = (
     "cancelled",
     "failed",
     "blocked",
+    "unverified",
     "refused",
     "skipped",
     "applied",
@@ -210,9 +231,6 @@ class _Operation:
     reason: str
     detail: dict[str, Any] = field(default_factory=dict)
     fingerprint: str = ""
-    #: True when *this* run opened the ledger's pending entry, which is how a
-    #: first post is told apart from an interrupted earlier run's replay.
-    opened_this_run: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -524,10 +542,18 @@ def _next_action(
         return "Dry run only. Re-run with --apply to perform these Jira writes."
     if status in ("applied", "already_applied"):
         return "Jira is synchronized. GitHub remains the only PR, check, and merge-gate authority."
+    if status == "unverified":
+        return (
+            "An earlier interrupted run recorded a comment intent that cannot be "
+            "confirmed either way, so Code Mower will never repost it. Open the issue "
+            "once, and add the note by hand only if it is missing. Every other "
+            "operation in this report reflects verified live state."
+        )
     if status == "blocked":
         return (
-            "Re-check Jira permissions, the configured transition id, and the current "
-            "issue state, then re-run with --apply. Applied operations are not repeated."
+            "Re-check Jira permissions, the configured transition id and its target "
+            "status ids, and the current issue state, then re-run with --apply. "
+            "Applied operations are not repeated."
         )
     if status == "cancelled":
         return "The run was cancelled. Re-run with --apply; applied operations are not repeated."
@@ -637,6 +663,22 @@ _WRITE_ALLOW_LIST: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
+#: Writes with no server-side idempotency key, attempted exactly once.
+#:
+#: A timeout, 429, or 5xx is ambiguous: Jira may already have committed the
+#: write before the response was lost, so a transport-level retry can post a
+#: second comment or drive a second workflow step. These two are therefore
+#: never retried; the operator re-runs the command, and apply reconciles from
+#: live state (transition) or the replay ledger (comment) first.
+#:
+#: The other three writes are genuinely idempotent and keep the full retry
+#: budget: assignee is a whole-value PUT, the remote link is upserted by its
+#: deterministic ``globalId``, and the ledger property is a whole-value PUT.
+_NON_IDEMPOTENT_WRITES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("POST", re.compile(r"^/rest/api/3/issue/[^/]+/transitions$")),
+    ("POST", re.compile(r"^/rest/api/3/issue/[^/]+/comment$")),
+)
+
 
 class JiraMutationClient(jira_cloud.JiraReadClient):
     """Read client widened to a closed, guarded Jira write allow-list.
@@ -663,6 +705,19 @@ class JiraMutationClient(jira_cloud.JiraReadClient):
             if method == allowed_method and pattern.fullmatch(path):
                 return
         raise ValueError("jira mutation client refuses a request outside its write allow-list")
+
+    def _attempts_for(self, method: str, path: str) -> int:
+        """Give non-idempotent writes exactly one attempt.
+
+        Reads and the three idempotent writes keep the inherited bounded
+        retry budget. A comment post or a transition post gets a single
+        attempt, so an ambiguous failure surfaces as one failed operation to
+        reconcile rather than a silent double apply.
+        """
+        for allowed_method, pattern in _NON_IDEMPOTENT_WRITES:
+            if method == allowed_method and pattern.fullmatch(path):
+                return 1
+        return super()._attempts_for(method, path)
 
     def _auth_headers(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         headers = super()._auth_headers(extra)
@@ -766,7 +821,7 @@ def _validated_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
                 continue
             operation = str(entry.get("operation") or "")
             state = str(entry.get("state") or "")
-            if operation not in MUTATION_ORDER or state not in ("pending", "applied"):
+            if operation not in MUTATION_ORDER or state not in LEDGER_STATES:
                 continue
             entries[fingerprint] = {
                 "operation": operation,
@@ -788,7 +843,7 @@ def _ledger_state(ledger: Mapping[str, Any], fingerprint: str) -> str:
     if not isinstance(entry, Mapping):
         return ""
     state = str(entry.get("state") or "")
-    return state if state in ("pending", "applied") else ""
+    return state if state in LEDGER_STATES else ""
 
 
 def _record(ledger: dict[str, Any], operation: _Operation, state: str) -> dict[str, Any]:
@@ -802,6 +857,12 @@ def _record(ledger: dict[str, Any], operation: _Operation, state: str) -> dict[s
 
 
 # -- Apply ---------------------------------------------------------------
+
+
+#: Operation outcomes the run may continue past. ``unverified`` is included
+#: so the ledger entry recording that unknown state is still persisted; the
+#: report status still carries it to the operator.
+_CONTINUING_STATUSES = ("applied", "already_applied", "unverified")
 
 
 class _WriteCounter:
@@ -889,24 +950,12 @@ def apply_mutation_plan(
     report["tracker"]["issue_id"] = state.get("id", "")
     report["tracker"]["issue_key"] = state.get("key", "")
 
-    # A comment cannot be verified after the fact, so its intent is recorded
-    # before it is posted. An interrupted run replays as already-applied.
-    comment_op = next(
-        (operation for operation in pending if operation.operation == "comment"), None
-    )
-    will_post_comment = comment_op is not None and not _ledger_state(
-        ledger, comment_op.fingerprint
-    )
-    if comment_op is not None and will_post_comment:
-        try:
-            ledger = _record(ledger, comment_op, "pending")
-            client.set_mutation_ledger(issue_ref, ledger)
-            writes.bump()
-            comment_op.opened_this_run = True
-        except jira_cloud.JiraApiError as exc:
-            _fail_from_error(comment_op, exc)
-            return _abort()
-
+    # Each handler owns its own idempotency, including the comment's pending
+    # ledger entry, which is written inside the handler immediately before the
+    # post. Recording that intent any earlier would let a failed assignment,
+    # transition, or link leave a pending entry behind for a comment that was
+    # never attempted, which a later run could not tell apart from an
+    # interrupted post and so would suppress forever.
     for operation in pending:
         try:
             handler = _HANDLERS[operation.operation]
@@ -918,7 +967,7 @@ def apply_mutation_plan(
             operation.status = "blocked"
             operation.reason = "rejected"
             return _abort()
-        if operation.status not in ("applied", "already_applied"):
+        if operation.status not in _CONTINUING_STATUSES:
             return _abort()
 
     ledger_status = "written"
@@ -983,10 +1032,26 @@ def _apply_transition(
         operation.reason = "transition_unavailable"
         operation.detail["available_transition_count"] = len(available)
         return ledger
-    if current_status and match.get("to_status_id") == current_status:
+    destination = str(match.get("to_status_id") or "")
+    if current_status and destination == current_status:
         operation.status = "already_applied"
         operation.reason = "already_at_target_status"
         return _record(ledger, operation, "applied")
+
+    # A configured transition id is only a workflow edge, and a workflow can
+    # be re-pointed underneath it. Verify where this edge actually lands
+    # against the status ids configured for the requested lifecycle category
+    # before writing, so a re-pointed transition blocks rather than moving the
+    # issue somewhere the requested category never meant.
+    if not target_ids:
+        operation.status = "blocked"
+        operation.reason = "target_status_not_configured"
+        return ledger
+    if destination not in target_ids:
+        operation.status = "blocked"
+        operation.reason = "transition_target_mismatch"
+        operation.detail["destination_status_id"] = destination
+        return ledger
 
     client.transition_issue(issue_ref, transition_id)
     writes.bump()
@@ -1028,13 +1093,26 @@ def _apply_comment(
         operation.status = "already_applied"
         operation.reason = "already_commented"
         return ledger
-    if recorded == "pending" and not operation.opened_this_run:
-        # This run did not open the pending entry, so a previous run already
-        # reached the post. Jira has no comment idempotency key and comment
-        # bodies are never read back, so replay finalizes without reposting.
-        operation.status = "already_applied"
-        operation.reason = "replay_not_reposted"
-        return _record(ledger, operation, "applied")
+    if recorded in ("pending", "unverified"):
+        # An earlier run recorded this intent immediately before its post and
+        # never finalized it, so the post may have committed, may have been
+        # lost in flight, or may never have left. Jira gives comments no
+        # idempotency key and comment bodies are never read back, so this run
+        # cannot tell which. Reposting would risk a duplicate, and claiming it
+        # applied would be a guess: the outcome is reported as unverified for
+        # an owner to reconcile by hand, and the ledger keeps saying so.
+        operation.status = "unverified"
+        operation.reason = "comment_unverified"
+        if recorded == "pending":
+            ledger = _record(ledger, operation, "unverified")
+        return ledger
+
+    # Record the intent immediately before the post, so an interruption
+    # anywhere from here on is recognizable on the next run.
+    ledger = _record(ledger, operation, "pending")
+    client.set_mutation_ledger(issue_ref, ledger)
+    writes.bump()
+
     comment_id = client.add_templated_comment(
         issue_ref,
         str(operation.detail.get("template") or ""),
