@@ -16,9 +16,11 @@ planning, Jira queue intake, and guarded GitHub pull request synchronization.
 3. **Read-First Doctor:** `code-mower doctor --adoption` inspects metadata,
    verifies credentials, and validates permissions without creating or modifying
    any Jira issues.
-4. **Closed Operation Allow-List:** Only four operations can ever be performed:
+4. **Closed Operation Allow-List:** Only four user-visible operations can ever be performed:
    `assign`, `transition`, `link`, and templated `comment`. Deletes, arbitrary
-   field writes, and bulk operations are permanently rejected.
+   field writes, and general bulk operations are permanently rejected. PR sync
+   uses one internal transactional property update, filtered to the already
+   verified issue and only when its Code Mower association property is absent.
 5. **Replay-Safe Idempotency:** Comments and links carry deterministic markers
    and global IDs so repeated applies never create duplicates.
 
@@ -71,6 +73,17 @@ reports candidate filenames only, never credential values or absolute paths.
 
 Add the optional `tracker:` block to your repository's `code-mower.yml`. You can
 generate this block automatically during initialization using `code-mower init --jira`.
+
+For an existing Code Mower repository, add the tracker block in a reviewed PR.
+First inspect generated-template drift without changing the checkout:
+
+```bash
+code-mower migration setup-drift --repo-path .
+```
+
+Keep repository-specific workflow customizations, copy only the Jira config and
+documentation changes you intend to adopt, and review the resulting diff. Do
+not replace an existing generated workflow tree with `init --apply` wholesale.
 
 ```yaml
 version: 1
@@ -147,6 +160,14 @@ Run adoption diagnostics to verify configuration and read connectivity:
 code-mower doctor --adoption --repo example-org/example-repo
 ```
 
+When more than one Jira profile exists, use the same explicit selector on each
+command:
+
+```bash
+code-mower doctor --adoption --repo example-org/example-repo \
+  --provider-profile jira.env
+```
+
 The adoption check evaluates four Jira readiness checks:
 
 1. **`tracker.jira.config`**: Validates URL format, project IDs, mapping shapes,
@@ -159,6 +180,23 @@ The adoption check evaluates four Jira readiness checks:
 4. **`tracker.jira.mutations`**: Checks write guards, verifies permissions for
    allowed operations (`EDIT_ISSUES`, `TRANSITION_ISSUES`, `ADD_COMMENTS`), and
    confirms transition targets match `status_category_map`.
+
+### Read-only queue and controller preview
+
+After doctor passes, inspect the live Jira-backed queue alongside GitHub lane
+state, then ask the controller for a non-mutating decision:
+
+```bash
+code-mower lanes status --repo example-org/example-repo \
+  --config code-mower.yml --provider-profile jira.env
+code-mower controller run --repo example-org/example-repo \
+  --config code-mower.yml --provider-profile jira.env \
+  --mode dry_run --json
+```
+
+Omit `--provider-profile` when credentials resolve unambiguously from the
+environment or a single secure profile. These commands read Jira metadata and
+GitHub state only. Controller dry-run never dispatches, merges, or writes Jira.
 
 ---
 
@@ -231,3 +269,4 @@ To revert Jira integration at any time:
 | `target_status_not_configured` | Configured transition lacks destination status mapping | Ensure `status_category_map` defines status IDs for the transition's lifecycle category. |
 | `transition_target_mismatch` | Jira workflow leads to an unmapped status | Update `status_category_map` to include the target status ID of the workflow transition. |
 | `rate_limited` | Jira gateway capacity reached | Doctor logs a warning and defers probes without writing. Wait briefly and retry. |
+| Controller reports `jira_unavailable` | Credentials did not resolve or the live Jira read failed | Run doctor with the same `--provider-profile` selector, fix its closed diagnostic, then repeat the dry-run preview. |

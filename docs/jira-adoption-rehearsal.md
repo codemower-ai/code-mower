@@ -137,6 +137,23 @@ Verify that all four Jira checks pass:
       - Sample issues retrieved without errors
 - [ ] `tracker.jira.mutations`: PASS (`Jira mutations configured (writes disabled by config guard)`)
 
+### Preview the queue and controller
+
+Use the same profile selector that passed doctor; omit it only when ambient
+credentials or one secure stored profile resolve unambiguously:
+
+```bash
+code-mower lanes status --repo example-org/example-repo \
+  --config code-mower.yml --provider-profile jira.env
+code-mower controller run --repo example-org/example-repo \
+  --config code-mower.yml --provider-profile jira.env \
+  --mode dry_run --json
+```
+
+Verify that Jira queue freshness is `live`, issue rows contain bounded metadata
+only, and the controller reports a dry-run decision. Neither command dispatches,
+merges, changes gate state, or writes Jira.
+
 If any check fails, consult the remediation advice printed in the doctor report
 before proceeding.
 

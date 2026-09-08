@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -22,6 +23,50 @@ class JiraQueueReader(Protocol):
         self, *, jql: str, fields: Sequence[str], max_results: int,
         next_page_token: str | None,
     ) -> Mapping[str, Any]: ...
+
+
+def resolve_jira_queue_reader(
+    config: Mapping[str, Any],
+    *,
+    credential_file: Path | None = None,
+    profile: str = "",
+    config_dir: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout_seconds: float = 20.0,
+    client_factory: Any = None,
+) -> JiraQueueReader | None:
+    """Build the read-only Jira queue client, or fail closed to unavailable.
+
+    Credential diagnostics belong to doctor. Controller and lane status only
+    need a reader/no-reader decision and must never print credential values or
+    resolver exception text.
+    """
+    if not jira_enabled(config):
+        return None
+    from . import jira_cloud
+
+    resolution = jira_cloud.resolve_jira_credentials(
+        credential_file=credential_file,
+        profile=profile,
+        config_dir=config_dir,
+        env=env,
+    )
+    if not resolution.has_credentials:
+        return None
+    jira = config.get("tracker", {}).get("jira_cloud", {})
+    if not isinstance(jira, Mapping):
+        return None
+    factory = client_factory or jira_cloud.JiraReadClient
+    try:
+        return factory(
+            cloud_id=str(jira.get("cloud_id") or ""),
+            email=resolution.email,
+            token=resolution.token,
+            site_url=str(jira.get("site_url") or ""),
+            timeout_seconds=float(timeout_seconds),
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def jira_enabled(config: Mapping[str, Any]) -> bool:

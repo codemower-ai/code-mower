@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import uuid
 from collections.abc import Mapping, Sequence
@@ -828,6 +829,8 @@ def main(
     *,
     gh_json_runner: lane_status.GitHubJsonRunner = lane_status.run_gh_json,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
+    env: Mapping[str, str] | None = None,
+    jira_client_factory: Any = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="code-mower controller")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -850,6 +853,10 @@ def main(
     run.add_argument("--team-id", default="")
     run.add_argument("--install-id", default="")
     run.add_argument("--source", default="code-mower-controller")
+    run.add_argument("--provider-credential-file", default="")
+    run.add_argument("--provider-profile", default="")
+    run.add_argument("--provider-config-dir", default="")
+    run.add_argument("--http-timeout", type=float, default=20.0)
     run.add_argument("--json", action="store_true")
     args = parser.parse_args(list(argv or ()))
     if args.command != "run":  # pragma: no cover - argparse validates commands.
@@ -863,11 +870,28 @@ def main(
             merge_token_ready=args.merge_token_ready,
             issue_limit=args.issue_limit,
         )
+        config = code_mower_config.load_config(args.config)
+        jira_reader = tracker_queue.resolve_jira_queue_reader(
+            config,
+            credential_file=(
+                Path(args.provider_credential_file)
+                if args.provider_credential_file
+                else None
+            ),
+            profile=args.provider_profile,
+            config_dir=(
+                Path(args.provider_config_dir) if args.provider_config_dir else None
+            ),
+            env=os.environ if env is None else env,
+            timeout_seconds=args.http_timeout,
+            client_factory=jira_client_factory,
+        )
         report = collect_controller_report(
             config_path=args.config,
             options=options,
             gh_json_runner=gh_json_runner,
             command_runner=command_runner,
+            jira_reader=jira_reader,
         )
         event = build_controller_event(
             report=report,
