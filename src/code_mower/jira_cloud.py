@@ -51,6 +51,7 @@ from typing import Any, Callable, Mapping, Sequence
 from .provider_credentials import (
     check_file_permissions,
     display_profile_path,
+    effective_env_value,
     parse_env_file,
     resolve_provider_credentials,
     validate_jira_email,
@@ -60,6 +61,10 @@ API_GATEWAY = "https://api.atlassian.com"
 SITE_EXAMPLE = "https://example.atlassian.net"
 
 JIRA_EMAIL_ENV = "JIRA_API_EMAIL"
+#: Backward-compatible alias for JIRA_API_EMAIL kept for long-standing
+#: local setups. The primary name wins when both are set, and neither
+#: value is ever printed, logged, or placed in diagnostics.
+JIRA_ACCOUNT_EMAIL_ENV = "JIRA_ACCOUNT_EMAIL"
 JIRA_TOKEN_ENV = "JIRA_API_TOKEN"
 JIRA_KEYCHAIN_SERVICE_ENV = "JIRA_KEYCHAIN_SERVICE"
 
@@ -71,6 +76,13 @@ BACKOFF_CAP_SECONDS = 8.0
 RETRY_AFTER_CAP_SECONDS = 60
 SEARCH_PAGE_SIZE = 100
 SEARCH_MAX_ISSUES = 200
+#: Maximum enhanced-JQL page fetches per search call. This bound is
+#: independent of the count of collected usable issues so that empty or
+#: unusable pages with fresh continuation tokens cannot loop forever.
+SEARCH_MAX_PAGES = 20
+#: Create-metadata page size and maximum page fetches per discovery call.
+CREATEMETA_PAGE_SIZE = 50
+CREATEMETA_MAX_PAGES = 8
 KEYCHAIN_TIMEOUT_SECONDS = 10
 MAX_METADATA_VALUE_LENGTH = 128
 MAX_LABEL_LENGTH = 128
@@ -314,12 +326,23 @@ def _map_base_resolution(
     )
 
 
+def _env_jira_email(env: Mapping[str, str]) -> str:
+    """Return the valid account email from the environment, else "".
+
+    Reads JIRA_API_EMAIL first with JIRA_ACCOUNT_EMAIL as a
+    backward-compatible alias. Values are validated by shape only and are
+    never logged or placed in diagnostics.
+    """
+    email = effective_env_value("jira", env, JIRA_EMAIL_ENV)
+    return email if validate_jira_email(email) else ""
+
+
 def _email_from_profile_file(path: Path) -> str:
     try:
         parsed = parse_env_file(path)
     except (ValueError, OSError):
         return ""
-    email = str(parsed.get(JIRA_EMAIL_ENV) or "").strip()
+    email = effective_env_value("jira", parsed, JIRA_EMAIL_ENV)
     return email if validate_jira_email(email) else ""
 
 
@@ -362,22 +385,26 @@ def resolve_jira_credentials(
 
     # "missing" or "malformed": the token may still be completable from the
     # Keychain when a service is named and the email is known and valid.
+    # Precedence mirrors ambient-first resolution: the environment wins for
+    # each value independently, then the selected profile file completes
+    # whichever value is still missing. In particular a selected secure
+    # profile supplies the email even when JIRA_KEYCHAIN_SERVICE already
+    # comes from the environment.
     service = str(current_env.get(JIRA_KEYCHAIN_SERVICE_ENV) or "").strip()
-    email = str(current_env.get(JIRA_EMAIL_ENV) or "").strip()
-    if not validate_jira_email(email):
-        email = ""
-    if not service and base.profile_file is not None and base.profile_file.is_file():
+    email = _env_jira_email(current_env)
+    if (not service or not email) and base.profile_file is not None and base.profile_file.is_file():
         if base.source in ("credential_file", "profile", "single_profile"):
             if check_file_permissions(base.profile_file):
                 try:
                     parsed = parse_env_file(base.profile_file)
                 except (ValueError, OSError):
                     parsed = {}
-                file_service = str(
-                    parsed.get(JIRA_KEYCHAIN_SERVICE_ENV) or ""
-                ).strip()
-                if file_service and len(file_service) <= 128:
-                    service = file_service
+                if not service:
+                    file_service = str(
+                        parsed.get(JIRA_KEYCHAIN_SERVICE_ENV) or ""
+                    ).strip()
+                    if file_service and len(file_service) <= 128:
+                        service = file_service
                 if not email:
                     email = _email_from_profile_file(base.profile_file)
 
@@ -428,6 +455,37 @@ def resolve_jira_credentials(
     )
 
 
+class JiraRedirectRejected(OSError):
+    """An HTTP redirect was rejected instead of followed.
+
+    Carries only a fixed message (status code); never a URL, header, or
+    credential. The client maps this to ``jira_unavailable`` without
+    retrying, so a redirect can never forward Basic Authorization.
+    """
+
+
+class _RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that rejects every redirect before following it.
+
+    urllib's default redirect handler would re-send the request --
+    including the Basic Authorization header -- to the Location URL, and
+    would additionally allow an HTTPS-to-HTTP downgrade. Raising here
+    means no second request is ever built, so credentials cannot leak to
+    the redirect target, same-host or cross-host alike.
+    """
+
+    def redirect_request(  # type: ignore[override]
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> Any:
+        raise JiraRedirectRejected(f"refusing HTTP redirect ({int(code)})")
+
+
 def default_http_runner(
     method: str,
     url: str,
@@ -439,15 +497,18 @@ def default_http_runner(
 ) -> tuple[int, Mapping[str, str], bytes]:
     """Perform one bounded HTTPS request without following secrets anywhere.
 
-    HTTP error statuses are returned as data (never raised) so the caller
-    maps them to closed codes. Transport failures raise OSError/ValueError
-    subclasses, which the caller maps to ``jira_unavailable``.
+    Redirects are rejected before urllib can forward the Authorization
+    header (see _RejectRedirectHandler). HTTP error statuses are returned
+    as data (never raised) so the caller maps them to closed codes.
+    Transport failures raise OSError/ValueError subclasses, which the
+    caller maps to ``jira_unavailable``.
     """
     request = urllib.request.Request(
         url, data=body, headers=dict(headers), method=method
     )
+    opener = urllib.request.build_opener(_RejectRedirectHandler)
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with opener.open(request, timeout=timeout_seconds) as response:
             raw = response.read(max_response_bytes + 1)
             return (
                 int(response.status),
@@ -487,6 +548,48 @@ def _backoff_delay(attempt: int, random_fn: JiraRandom) -> float:
     except (TypeError, ValueError):
         jitter = 0.0
     return min(capped + max(0.0, jitter), BACKOFF_CAP_SECONDS)
+
+
+def _parse_createmeta_total(data: Mapping[str, Any], *, endpoint: str) -> int:
+    """Parse a create-metadata ``total`` or fail closed.
+
+    Booleans, non-numeric values, and out-of-range totals are malformed
+    pagination state: callers must raise, never treat a partial page as
+    exhaustive.
+    """
+    total_raw = data.get("total")
+    if isinstance(total_raw, bool):
+        raise JiraApiError("jira_unavailable", endpoint=endpoint)
+    try:
+        total = int(total_raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise JiraApiError("jira_unavailable", endpoint=endpoint) from None
+    if total < 0 or total > 10000:
+        raise JiraApiError("jira_unavailable", endpoint=endpoint)
+    return total
+
+
+def _check_createmeta_start(
+    data: Mapping[str, Any], start_at: int, *, endpoint: str
+) -> None:
+    """Verify the server's ``startAt`` echo matches the requested offset.
+
+    A missing echo is tolerated when the server sent no pagination state
+    at all; a present but mismatched or malformed echo fails closed.
+    """
+    server_start_raw = data.get("startAt")
+    if server_start_raw is None:
+        if "total" in data:
+            raise JiraApiError("jira_unavailable", endpoint=endpoint)
+        return
+    if isinstance(server_start_raw, bool):
+        raise JiraApiError("jira_unavailable", endpoint=endpoint)
+    try:
+        server_start = int(server_start_raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise JiraApiError("jira_unavailable", endpoint=endpoint) from None
+    if server_start != start_at:
+        raise JiraApiError("jira_unavailable", endpoint=endpoint)
 
 
 @dataclass
@@ -632,6 +735,10 @@ class JiraReadClient:
                     )
             except JiraApiError:
                 raise
+            except JiraRedirectRejected:
+                # Rejected redirects fail fast with the request endpoint:
+                # retrying cannot help and must never forward credentials.
+                raise JiraApiError("jira_unavailable", endpoint=endpoint) from None
             except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ValueError):
                 last_code = "jira_unavailable"
                 status = -1
@@ -730,24 +837,58 @@ class JiraReadClient:
         return projects[:bounded]
 
     def get_issue_types(self, project_id: str) -> list[dict[str, str]]:
-        """List issue types for a project; id plus display name only."""
+        """List issue types for a project; id plus display name only.
+
+        Follows bounded create-metadata pagination. Repeated or malformed
+        pagination state fails closed instead of presenting a partial page
+        as the exhaustive set. A response with no pagination keys is one
+        exhaustive page.
+        """
         if not _PROJECT_ID_RE.fullmatch(project_id):
             raise ValueError("project_id must be a bounded numeric id")
         quoted = urllib.parse.quote(project_id, safe="")
-        data = self.request_json(
-            "GET",
-            f"/rest/api/3/issue/createmeta/{quoted}/issuetypes",
-            endpoint="createMeta",
-        )
-        raw_types = data.get("issueTypes")
+        path = f"/rest/api/3/issue/createmeta/{quoted}/issuetypes"
         issue_types: list[dict[str, str]] = []
-        for entry in raw_types if isinstance(raw_types, list) else []:
-            if not isinstance(entry, Mapping):
-                continue
-            type_id = _bounded_str(entry.get("id"), 32)
-            if not type_id or not _TOKEN_ID_RE.fullmatch(type_id):
-                continue
-            issue_types.append({"id": type_id, "name": _bounded_str(entry.get("name"))})
+        seen_ids: set[str] = set()
+        start_at = 0
+        seen_starts: set[int] = set()
+        for _ in range(CREATEMETA_MAX_PAGES):
+            if start_at in seen_starts:
+                raise JiraApiError("jira_unavailable", endpoint="createMeta")
+            seen_starts.add(start_at)
+            data = self.request_json(
+                "GET",
+                path,
+                query={"startAt": str(start_at), "maxResults": str(CREATEMETA_PAGE_SIZE)},
+                endpoint="createMeta",
+            )
+            raw_types = data.get("issueTypes")
+            if not isinstance(raw_types, list):
+                raise JiraApiError("jira_unavailable", endpoint="createMeta")
+            for entry in raw_types:
+                if not isinstance(entry, Mapping):
+                    continue
+                type_id = _bounded_str(entry.get("id"), 32)
+                if not type_id or not _TOKEN_ID_RE.fullmatch(type_id):
+                    continue
+                if type_id in seen_ids:
+                    continue
+                seen_ids.add(type_id)
+                issue_types.append(
+                    {"id": type_id, "name": _bounded_str(entry.get("name"))}
+                )
+            if "total" not in data and "startAt" not in data:
+                break
+            total = _parse_createmeta_total(data, endpoint="createMeta")
+            _check_createmeta_start(data, start_at, endpoint="createMeta")
+            if start_at + len(raw_types) >= total:
+                break
+            next_start = start_at + len(raw_types)
+            if next_start <= start_at or next_start in seen_starts:
+                raise JiraApiError("jira_unavailable", endpoint="createMeta")
+            start_at = next_start
+        else:
+            raise JiraApiError("jira_unavailable", endpoint="createMeta")
         return issue_types
 
     def get_required_create_fields(
@@ -757,6 +898,8 @@ class JiraReadClient:
 
         Only field ids (never values, labels-as-prose, or defaults) cross
         this boundary, so workflow variation is visible without prose.
+        Malformed or repeated pagination state raises JiraApiError instead
+        of returning a partial set.
         """
         if not _PROJECT_ID_RE.fullmatch(project_id):
             raise ValueError("project_id must be a bounded numeric id")
@@ -767,25 +910,28 @@ class JiraReadClient:
         path = f"/rest/api/3/issue/createmeta/{quoted_project}/issuetypes/{quoted_type}"
         # The endpoint returns ``fields`` as a paginated array of records
         # shaped ``{"fieldId": ..., "required": bool}`` with
-        # ``startAt``/``maxResults``/``total`` pagination. Follow pages with
-        # bounded state; malformed or repeated pagination stops the walk
-        # safely with whatever required ids are collected so far.
+        # ``startAt``/``maxResults``/``total`` pagination. Pages are
+        # followed with bounded state; malformed or repeated pagination
+        # state fails closed with a stable safe error instead of returning
+        # a partial required-field set that a caller could mistake for
+        # complete. Malformed records inside a well-formed page are still
+        # skipped; a malformed page is not.
         required: set[str] = set()
         start_at = 0
         seen_starts: set[int] = set()
-        for _ in range(8):
+        for _ in range(CREATEMETA_MAX_PAGES):
             if start_at in seen_starts:
-                break
+                raise JiraApiError("jira_unavailable", endpoint="createMeta")
             seen_starts.add(start_at)
             data = self.request_json(
                 "GET",
                 path,
-                query={"startAt": str(start_at), "maxResults": "50"},
+                query={"startAt": str(start_at), "maxResults": str(CREATEMETA_PAGE_SIZE)},
                 endpoint="createMeta",
             )
             raw_fields = data.get("fields")
             if not isinstance(raw_fields, list):
-                break
+                raise JiraApiError("jira_unavailable", endpoint="createMeta")
             for record in raw_fields:
                 if not isinstance(record, Mapping):
                     continue
@@ -796,31 +942,18 @@ class JiraReadClient:
                     and record.get("required") is True
                 ):
                     required.add(field_id)
-            total_raw = data.get("total")
-            if isinstance(total_raw, bool):
+            if "total" not in data and "startAt" not in data:
                 break
-            try:
-                total = int(total_raw)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                break
-            if total < 0 or total > 10000:
-                break
-            server_start_raw = data.get("startAt")
-            if server_start_raw is not None:
-                if isinstance(server_start_raw, bool):
-                    break
-                try:
-                    server_start = int(server_start_raw)  # type: ignore[arg-type]
-                except (TypeError, ValueError):
-                    break
-                if server_start != start_at:
-                    break
-            if not raw_fields or start_at + len(raw_fields) >= total:
+            total = _parse_createmeta_total(data, endpoint="createMeta")
+            _check_createmeta_start(data, start_at, endpoint="createMeta")
+            if start_at + len(raw_fields) >= total:
                 break
             next_start = start_at + len(raw_fields)
             if next_start <= start_at or next_start in seen_starts:
-                break
+                raise JiraApiError("jira_unavailable", endpoint="createMeta")
             start_at = next_start
+        else:
+            raise JiraApiError("jira_unavailable", endpoint="createMeta")
         return sorted(required)[:64]
 
     def get_status_categories(self) -> list[dict[str, str]]:
@@ -865,7 +998,10 @@ class JiraReadClient:
         ``fields`` must stay inside SAFE_SEARCH_FIELDS; requests naming any
         other field (including text/prose fields) are rejected before any
         network call. Returned issues carry bounded status/type/label/
-        assignment/timestamp metadata only.
+        assignment/timestamp metadata only. Page fetches are bounded
+        independently of usable results; a repeated token returns the
+        collected issues with ``truncated`` set, and a malformed token
+        raises JiraApiError.
         """
         query = jql.strip()
         if not query or len(query) > 2000 or "\n" in query or "\r" in query:
@@ -879,8 +1015,13 @@ class JiraReadClient:
         bounded_total = max(1, min(int(max_issues), 1000))
         collected: list[dict[str, Any]] = []
         next_token: str | None = None
+        seen_tokens: set[str] = set()
         truncated = False
-        while True:
+        # Pages are bounded independently of the usable-issue count: empty
+        # or unusable pages with fresh tokens must terminate, and a
+        # repeated token returns what was collected with truncated set
+        # rather than looping forever.
+        for _ in range(SEARCH_MAX_PAGES):
             body: dict[str, Any] = {
                 "jql": query,
                 "fields": sorted(set(requested)),
@@ -905,10 +1046,25 @@ class JiraReadClient:
                 break
             token = data.get("nextPageToken")
             is_last = data.get("isLast")
-            if token and isinstance(token, str) and is_last is not True:
-                next_token = token
-            else:
+            if token is None or token == "":
+                # No continuation offered. When the server still claims
+                # more data exists, say so explicitly instead of
+                # presenting a partial page as exhaustive.
+                if is_last is False:
+                    truncated = True
                 break
+            if not isinstance(token, str):
+                raise JiraApiError("jira_unavailable", endpoint="search")
+            if is_last is True:
+                break
+            if token in seen_tokens:
+                truncated = True
+                break
+            seen_tokens.add(token)
+            next_token = token
+        else:
+            # Page cap reached while the server kept offering continuation.
+            truncated = True
         return {"issues": collected, "truncated": truncated}
 
     def get_transitions(self, issue_id_or_key: str) -> list[dict[str, str]]:

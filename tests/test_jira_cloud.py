@@ -12,7 +12,10 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
 import unittest
+import urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Mapping
 from unittest import mock
@@ -660,7 +663,7 @@ class ReadPrimitiveTests(unittest.TestCase):
         self.assertIn("startAt=0", runner.calls[0]["url"])
         self.assertIn("startAt=2", runner.calls[1]["url"])
 
-    def test_create_fields_stop_on_malformed_pagination(self) -> None:
+    def test_create_fields_malformed_pagination_fails_closed(self) -> None:
         runner = FakeHttp(
             [
                 http_response(
@@ -674,11 +677,15 @@ class ReadPrimitiveTests(unittest.TestCase):
             ]
         )
         client = make_client(runner)
-        required = client.get_required_create_fields(PROJECT_ID, "10001")
-        self.assertEqual(required, ["priority"])
+        # A partial required-field set must never be returned: doctor
+        # would otherwise treat it as the complete set.
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_required_create_fields(PROJECT_ID, "10001")
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(ctx.exception.endpoint, "createMeta")
         self.assertEqual(len(runner.calls), 1)
 
-    def test_create_fields_stop_on_repeated_pagination_state(self) -> None:
+    def test_create_fields_repeated_pagination_state_fails_closed(self) -> None:
         page = {
             "fields": [{"fieldId": "priority", "required": True}],
             "startAt": 0,
@@ -687,11 +694,61 @@ class ReadPrimitiveTests(unittest.TestCase):
         }
         runner = FakeHttp([http_response(page), http_response(page)])
         client = make_client(runner)
-        required = client.get_required_create_fields(PROJECT_ID, "10001")
-        self.assertEqual(required, ["priority"])
-        self.assertLessEqual(len(runner.calls), 2)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_required_create_fields(PROJECT_ID, "10001")
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(len(runner.calls), 2)
 
-    def test_create_fields_ignore_mapping_shaped_payload(self) -> None:
+    def test_create_fields_page_bound_fails_closed(self) -> None:
+        script = [
+            http_response(
+                {
+                    "fields": [{"fieldId": f"customfield_{index:05d}", "required": True}],
+                    "startAt": index,
+                    "maxResults": 50,
+                    "total": 10000,
+                }
+            )
+            for index in range(jira_cloud.CREATEMETA_MAX_PAGES)
+        ]
+        runner = FakeHttp(script)
+        client = make_client(runner)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_required_create_fields(PROJECT_ID, "10001")
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(len(runner.calls), jira_cloud.CREATEMETA_MAX_PAGES)
+
+    def test_create_fields_startat_mismatch_fails_closed(self) -> None:
+        runner = FakeHttp(
+            [
+                http_response(
+                    {
+                        "fields": [
+                            {"fieldId": "customfield_10001", "required": True},
+                            {"fieldId": "labels", "required": False},
+                        ],
+                        "startAt": 0,
+                        "maxResults": 50,
+                        "total": 3,
+                    }
+                ),
+                http_response(
+                    {
+                        "fields": [{"fieldId": "priority", "required": True}],
+                        "startAt": 0,
+                        "maxResults": 50,
+                        "total": 3,
+                    }
+                ),
+            ]
+        )
+        client = make_client(runner)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_required_create_fields(PROJECT_ID, "10001")
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(len(runner.calls), 2)
+
+    def test_create_fields_mapping_shaped_payload_fails_closed(self) -> None:
         runner = FakeHttp(
             [
                 http_response(
@@ -705,7 +762,11 @@ class ReadPrimitiveTests(unittest.TestCase):
             ]
         )
         client = make_client(runner)
-        self.assertEqual(client.get_required_create_fields(PROJECT_ID, "10001"), [])
+        # A mapping-shaped page is malformed: returning [] would let
+        # doctor report "no required fields" as a complete answer.
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_required_create_fields(PROJECT_ID, "10001")
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
         self.assertEqual(len(runner.calls), 1)
 
     def test_create_fields_ignore_malformed_records(self) -> None:
@@ -1338,6 +1399,577 @@ class NoSecretDiagnosticsTests(unittest.TestCase):
         self.assertNotIn(TOKEN, blob)
         self.assertNotIn(SERVICE, blob)
         self.assertTrue(detail.get("keychain"))
+
+
+class FakeRedirectResponse:
+    """Minimal context-manager response for opener wiring tests."""
+
+    def __init__(self, payload: bytes) -> None:
+        self.status = 200
+        self.headers: dict[str, str] = {}
+        self._payload = payload
+
+    def read(self, limit: int = -1) -> bytes:
+        return self._payload
+
+    def __enter__(self) -> FakeRedirectResponse:
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+
+def redirect_handler_for(location: str) -> type[BaseHTTPRequestHandler]:
+    """Build a localhost handler that 302-redirects every GET to location."""
+
+    class RedirectOnceHandler(BaseHTTPRequestHandler):
+        hits: list[str] = []
+
+        def do_GET(self) -> None:  # noqa: N802 - http.server naming
+            type(self).hits.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.end_headers()
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    return RedirectOnceHandler
+
+
+def start_local_server(
+    handler_cls: type[BaseHTTPRequestHandler],
+) -> tuple[HTTPServer, threading.Thread]:
+    server = HTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+    )
+    thread.start()
+    return server, thread
+
+
+def closed_local_port() -> int:
+    import socket as socket_module
+
+    sock = socket_module.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = int(sock.getsockname()[1])
+    sock.close()
+    return port
+
+
+class RedirectRejectionTests(unittest.TestCase):
+    CODES = (301, 302, 303, 307, 308)
+
+    def test_handler_rejects_same_host_cross_host_and_downgrade(self) -> None:
+        handler = jira_cloud._RejectRedirectHandler()
+        origin = "https://api.atlassian.com/ex/jira/x"
+        targets = {
+            "same-host": "https://api.atlassian.com/ex/jira/other",
+            "cross-host": "https://collector.example/x",
+            "downgrade": "http://api.atlassian.com/ex/jira/other",
+        }
+        for label, target in targets.items():
+            for code in self.CODES:
+                with self.subTest(target=label, code=code):
+                    req = urllib.request.Request(
+                        origin, headers={"Authorization": "Basic REDACTED"}
+                    )
+                    with self.assertRaises(jira_cloud.JiraRedirectRejected):
+                        handler.redirect_request(req, None, code, "Moved", {}, target)
+
+    def test_rejection_carries_no_urls_or_secrets(self) -> None:
+        handler = jira_cloud._RejectRedirectHandler()
+        req = urllib.request.Request("https://api.atlassian.com/ex/jira/x")
+        try:
+            handler.redirect_request(
+                req, None, 302, "Moved", {}, "https://collector.example/x"
+            )
+            self.fail("redirect was not rejected")
+        except jira_cloud.JiraRedirectRejected as exc:
+            self.assertNotIn("collector.example", str(exc))
+            self.assertNotIn("api.atlassian.com", str(exc))
+
+    def test_default_runner_uses_redirect_rejecting_opener(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_build_opener(*handlers: Any) -> Any:
+            captured["handlers"] = handlers
+
+            class FakeOpener:
+                def open(self, request: Any, timeout: Any = None) -> Any:
+                    captured["request"] = request
+                    return FakeRedirectResponse(b'{"baseUrl": "https://example.atlassian.net"}')
+
+            return FakeOpener()
+
+        with mock.patch.object(
+            urllib.request, "build_opener", fake_build_opener
+        ):
+            with mock.patch.object(
+                urllib.request,
+                "urlopen",
+                side_effect=AssertionError("must use the rejecting opener"),
+            ):
+                status, _, raw = jira_cloud.default_http_runner(
+                    "GET",
+                    "https://api.atlassian.com/ex/jira/x",
+                    {"Accept": "application/json"},
+                    None,
+                )
+        self.assertEqual(status, 200)
+        self.assertIn(b"example.atlassian.net", raw)
+        self.assertTrue(
+            any(
+                handler is jira_cloud._RejectRedirectHandler
+                for handler in captured["handlers"]
+            )
+        )
+
+    def test_same_host_redirect_is_not_followed(self) -> None:
+        handler_cls = redirect_handler_for("/target")
+        handler_cls.hits = []
+        server, thread = start_local_server(handler_cls)
+        try:
+            port = int(server.server_address[1])
+            with self.assertRaises(jira_cloud.JiraRedirectRejected):
+                jira_cloud.default_http_runner(
+                    "GET",
+                    f"http://127.0.0.1:{port}/start",
+                    {"Authorization": "Basic REDACTED"},
+                    None,
+                )
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+        # Only the first request was made; the redirect target never saw
+        # the request, so no Authorization header could be forwarded.
+        self.assertEqual(handler_cls.hits, ["/start"])
+
+    def test_cross_host_redirect_never_connects(self) -> None:
+        # The redirect target is a closed port: following the redirect
+        # would raise ConnectionRefusedError, so JiraRedirectRejected
+        # proves the credentialed second request was never attempted.
+        target = f"http://127.0.0.1:{closed_local_port()}/collect"
+        handler_cls = redirect_handler_for(target)
+        handler_cls.hits = []
+        server, thread = start_local_server(handler_cls)
+        try:
+            port = int(server.server_address[1])
+            with self.assertRaises(jira_cloud.JiraRedirectRejected):
+                jira_cloud.default_http_runner(
+                    "GET",
+                    f"http://127.0.0.1:{port}/start",
+                    {"Authorization": "Basic REDACTED"},
+                    None,
+                )
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+        self.assertEqual(handler_cls.hits, ["/start"])
+
+    def test_client_maps_rejected_redirect_without_retry(self) -> None:
+        sleeps: list[float] = []
+        runner = FakeHttp(
+            [jira_cloud.JiraRedirectRejected("refusing HTTP redirect (302)")]
+        )
+        client = make_client(runner, sleeps=sleeps, max_attempts=4)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_server_info()
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(ctx.exception.endpoint, "serverInfo")
+        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(sleeps, [])
+
+
+class IssueTypePaginationTests(unittest.TestCase):
+    @staticmethod
+    def page(entries: list[tuple[str, str]], start: int, total: int) -> Any:
+        return http_response(
+            {
+                "issueTypes": [{"id": type_id, "name": name} for type_id, name in entries],
+                "startAt": start,
+                "maxResults": 50,
+                "total": total,
+            }
+        )
+
+    def test_multi_page_success(self) -> None:
+        runner = FakeHttp(
+            [
+                self.page([("10001", "Task"), ("10002", "Bug")], 0, 3),
+                self.page([("10003", "Story")], 2, 3),
+            ]
+        )
+        client = make_client(runner)
+        types = client.get_issue_types(PROJECT_ID)
+        self.assertEqual([item["id"] for item in types], ["10001", "10002", "10003"])
+        self.assertEqual(len(runner.calls), 2)
+        self.assertIn("startAt=0", runner.calls[0]["url"])
+        self.assertIn("startAt=2", runner.calls[1]["url"])
+
+    def test_page_bound_fails_closed(self) -> None:
+        script = [
+            self.page([(f"1000{index}", f"Type{index}")], index, 10000)
+            for index in range(jira_cloud.CREATEMETA_MAX_PAGES)
+        ]
+        runner = FakeHttp(script)
+        client = make_client(runner)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_issue_types(PROJECT_ID)
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(len(runner.calls), jira_cloud.CREATEMETA_MAX_PAGES)
+
+    def test_repeated_state_fails_closed(self) -> None:
+        page = {
+            "issueTypes": [{"id": "10001", "name": "Task"}],
+            "startAt": 0,
+            "maxResults": 50,
+            "total": 999,
+        }
+        runner = FakeHttp([http_response(page), http_response(page)])
+        client = make_client(runner)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_issue_types(PROJECT_ID)
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(len(runner.calls), 2)
+
+    def test_malformed_total_fails_closed(self) -> None:
+        runner = FakeHttp(
+            [
+                http_response(
+                    {
+                        "issueTypes": [{"id": "10001", "name": "Task"}],
+                        "startAt": 0,
+                        "maxResults": 50,
+                        "total": "not-a-number",
+                    }
+                )
+            ]
+        )
+        client = make_client(runner)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_issue_types(PROJECT_ID)
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_startat_mismatch_fails_closed(self) -> None:
+        runner = FakeHttp(
+            [
+                self.page([("10001", "Task"), ("10002", "Bug")], 0, 3),
+                self.page([("10003", "Story")], 0, 3),
+            ]
+        )
+        client = make_client(runner)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_issue_types(PROJECT_ID)
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(len(runner.calls), 2)
+
+
+class SearchPaginationTests(unittest.TestCase):
+    @staticmethod
+    def issue_page(
+        keys: list[str], token: Any = None, is_last: bool = True
+    ) -> Any:
+        issues = [
+            {
+                "id": f"2000{index}",
+                "key": key,
+                "fields": {"status": {"id": "10000", "name": "To Do"}},
+            }
+            for index, key in enumerate(keys)
+        ]
+        payload: dict[str, Any] = {"issues": issues, "isLast": is_last}
+        if token is not None:
+            payload["nextPageToken"] = token
+        return http_response(payload)
+
+    def test_empty_pages_with_changing_tokens_terminate(self) -> None:
+        runner = FakeHttp(
+            [
+                self.issue_page([], token="token-1", is_last=False),
+                self.issue_page([], token="token-2", is_last=False),
+                self.issue_page(["ABC-1"]),
+            ]
+        )
+        client = make_client(runner)
+        result = client.search_issues("project = 10001")
+        self.assertFalse(result["truncated"])
+        self.assertEqual([issue["key"] for issue in result["issues"]], ["ABC-1"])
+        self.assertEqual(len(runner.calls), 3)
+
+    def test_repeated_token_returns_truncated_result(self) -> None:
+        runner = FakeHttp(
+            [
+                self.issue_page(["ABC-1"], token="token-1", is_last=False),
+                self.issue_page(["ABC-2"], token="token-1", is_last=False),
+            ]
+        )
+        client = make_client(runner)
+        result = client.search_issues("project = 10001")
+        self.assertTrue(result["truncated"])
+        self.assertEqual(
+            [issue["key"] for issue in result["issues"]], ["ABC-1", "ABC-2"]
+        )
+        self.assertEqual(len(runner.calls), 2)
+
+    def test_malformed_token_fails_closed(self) -> None:
+        runner = FakeHttp([self.issue_page(["ABC-1"], token=123, is_last=False)])
+        client = make_client(runner)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.search_issues("project = 10001")
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(ctx.exception.endpoint, "search")
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_page_cap_returns_truncated_result(self) -> None:
+        script = [
+            self.issue_page([], token=f"token-{index}", is_last=False)
+            for index in range(jira_cloud.SEARCH_MAX_PAGES + 5)
+        ]
+        runner = FakeHttp(script)
+        client = make_client(runner)
+        result = client.search_issues("project = 10001")
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["issues"], [])
+        self.assertEqual(len(runner.calls), jira_cloud.SEARCH_MAX_PAGES)
+
+    def test_is_last_false_without_token_is_truncated(self) -> None:
+        runner = FakeHttp([self.issue_page(["ABC-1"], is_last=False)])
+        client = make_client(runner)
+        result = client.search_issues("project = 10001")
+        self.assertTrue(result["truncated"])
+        self.assertEqual([issue["key"] for issue in result["issues"]], ["ABC-1"])
+        self.assertEqual(len(runner.calls), 1)
+
+
+class KeychainProfileEmailTests(unittest.TestCase):
+    def test_env_service_with_selected_profile_email(self) -> None:
+        import tempfile
+
+        seen: list[Any] = []
+
+        def fake_keychain(argv: Any, env: Any) -> str:
+            seen.append(tuple(argv))
+            return TOKEN
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            write_profile(
+                config_dir,
+                "team.env",
+                f"{jira_cloud.JIRA_EMAIL_ENV}={EMAIL}\n"
+                f"{jira_cloud.JIRA_KEYCHAIN_SERVICE_ENV}={SERVICE}\n",
+            )
+            env = {jira_cloud.JIRA_KEYCHAIN_SERVICE_ENV: "env-service"}
+            resolution = jira_cloud.resolve_jira_credentials(
+                profile="team",
+                config_dir=config_dir,
+                env=env,
+                keychain_runner=fake_keychain,
+            )
+        self.assertTrue(resolution.has_credentials)
+        self.assertTrue(resolution.keychain_used)
+        self.assertEqual(resolution.email, EMAIL)
+        # The email comes from the selected profile while the service
+        # comes from the environment; neither value leaks into argv
+        # beyond the Keychain account lookup itself.
+        self.assertEqual(len(seen), 1)
+        self.assertIn("env-service", seen[0])
+        self.assertIn(EMAIL, seen[0])
+
+    def test_explicit_credential_file_email_with_env_service(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_profile(
+                Path(tmp),
+                "custom.env",
+                f"{jira_cloud.JIRA_EMAIL_ENV}={EMAIL}\n"
+                f"{jira_cloud.JIRA_KEYCHAIN_SERVICE_ENV}={SERVICE}\n",
+            )
+            env = {jira_cloud.JIRA_KEYCHAIN_SERVICE_ENV: SERVICE}
+            resolution = jira_cloud.resolve_jira_credentials(
+                credential_file=path,
+                env=env,
+                keychain_runner=lambda argv, env: TOKEN,
+            )
+        self.assertTrue(resolution.has_credentials)
+        self.assertEqual(resolution.email, EMAIL)
+        self.assertTrue(resolution.keychain_used)
+
+    def test_ambient_email_wins_over_profile_email(self) -> None:
+        import tempfile
+
+        seen: list[Any] = []
+
+        def fake_keychain(argv: Any, env: Any) -> str:
+            seen.append(tuple(argv))
+            return TOKEN
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            write_profile(
+                config_dir,
+                "team.env",
+                f"{jira_cloud.JIRA_EMAIL_ENV}=stored@example.com\n"
+                f"{jira_cloud.JIRA_KEYCHAIN_SERVICE_ENV}={SERVICE}\n",
+            )
+            env = {
+                jira_cloud.JIRA_EMAIL_ENV: EMAIL,
+                jira_cloud.JIRA_KEYCHAIN_SERVICE_ENV: SERVICE,
+            }
+            resolution = jira_cloud.resolve_jira_credentials(
+                profile="team",
+                config_dir=config_dir,
+                env=env,
+                keychain_runner=fake_keychain,
+            )
+        self.assertTrue(resolution.has_credentials)
+        self.assertEqual(resolution.email, EMAIL)
+        self.assertIn(EMAIL, seen[0])
+        self.assertNotIn("stored@example.com", "".join(seen[0]))
+
+
+class EmailAliasTests(unittest.TestCase):
+    ALIAS = jira_cloud.JIRA_ACCOUNT_EMAIL_ENV
+
+    def test_ambient_alias_email_resolves(self) -> None:
+        env = {self.ALIAS: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN}
+        resolution = jira_cloud.resolve_jira_credentials(env=env)
+        self.assertEqual(resolution.status, "ok")
+        self.assertEqual(resolution.source, "env")
+        self.assertEqual(resolution.email, EMAIL)
+        self.assertEqual(resolution.token, TOKEN)
+
+    def test_primary_email_wins_over_alias(self) -> None:
+        env = {
+            jira_cloud.JIRA_EMAIL_ENV: EMAIL,
+            self.ALIAS: "other@example.com",
+            jira_cloud.JIRA_TOKEN_ENV: TOKEN,
+        }
+        resolution = jira_cloud.resolve_jira_credentials(env=env)
+        self.assertEqual(resolution.status, "ok")
+        self.assertEqual(resolution.email, EMAIL)
+
+    def test_profile_file_alias_email_resolves(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            write_profile(
+                config_dir,
+                "jira.env",
+                f"{self.ALIAS}={EMAIL}\n"
+                f"{jira_cloud.JIRA_TOKEN_ENV}={TOKEN}\n",
+            )
+            resolution = jira_cloud.resolve_jira_credentials(
+                config_dir=config_dir, env={}
+            )
+        self.assertEqual(resolution.status, "ok")
+        self.assertEqual(resolution.source, "single_profile")
+        self.assertEqual(resolution.email, EMAIL)
+
+    def test_alias_email_completes_keychain_token(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                self.ALIAS: EMAIL,
+                jira_cloud.JIRA_KEYCHAIN_SERVICE_ENV: SERVICE,
+            }
+            resolution = jira_cloud.resolve_jira_credentials(
+                config_dir=Path(tmp),
+                env=env,
+                keychain_runner=lambda argv, env: TOKEN,
+            )
+        self.assertTrue(resolution.has_credentials)
+        self.assertEqual(resolution.email, EMAIL)
+        self.assertTrue(resolution.keychain_used)
+
+    def test_partial_ambient_alias_fails_closed(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            write_profile(
+                config_dir,
+                "jira.env",
+                f"{jira_cloud.JIRA_EMAIL_ENV}={EMAIL}\n"
+                f"{jira_cloud.JIRA_TOKEN_ENV}={TOKEN}\n",
+            )
+            # An ambient alias email is authoritative ambient presence, so
+            # the missing token fails closed instead of falling back to
+            # the stored profile.
+            resolution = jira_cloud.resolve_jira_credentials(
+                config_dir=config_dir, env={self.ALIAS: EMAIL}
+            )
+        self.assertEqual(resolution.status, "missing")
+        self.assertFalse(resolution.has_credentials)
+
+    def test_alias_values_never_appear_in_diagnostics(self) -> None:
+        import tempfile
+
+        secret_email = "alias-secret@example.com"
+        secret_token = "tok-alias-secret-7"
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            write_profile(
+                config_dir,
+                "jira.env",
+                f"{self.ALIAS}={secret_email}\n"
+                f"{jira_cloud.JIRA_TOKEN_ENV}={secret_token}\n",
+                mode=0o644,
+            )
+            resolution = jira_cloud.resolve_jira_credentials(
+                config_dir=config_dir, env={}
+            )
+        self.assertEqual(resolution.status, "insecure_permissions")
+        blob = json.dumps(
+            {
+                "message": resolution.message,
+                "remediation": resolution.remediation,
+                "detail": resolution.safe_detail(),
+            }
+        )
+        self.assertNotIn(secret_email, blob)
+        self.assertNotIn(secret_token, blob)
+        self.assertNotIn(str(config_dir), blob)
+
+
+class DoctorFailClosedTests(unittest.TestCase):
+    def test_malformed_create_meta_pagination_fails_read(self) -> None:
+        env = {jira_cloud.JIRA_EMAIL_ENV: EMAIL, jira_cloud.JIRA_TOKEN_ENV: TOKEN}
+        script = [
+            http_response(load_fixture("server_info.json")),
+            http_response(load_fixture("project.json")),
+            http_response(load_fixture("statuses.json")),
+            http_response(load_fixture("status_categories.json")),
+            http_response(load_fixture("issue_types.json")),
+            http_response(
+                {
+                    "fields": [{"fieldId": "priority", "required": True}],
+                    "startAt": 0,
+                    "maxResults": 50,
+                    "total": "not-a-number",
+                }
+            ),
+        ]
+        checks, _ = run_doctor_checks(
+            jira_config(issue_type_id="10002"), script, env=env
+        )
+        read = checks_by_id(checks)[jira_doctor.JIRA_READ_CHECK]
+        # Doctor must fail the probe rather than report the partial
+        # ["priority"] field set as complete.
+        self.assertEqual(read.status, "fail")
+        self.assertEqual(read.detail.get("reason"), "unavailable")
+        self.assertNotIn("required_create_fields", read.detail)
+        blob = doctor_blob(checks)
+        self.assertNotIn(TOKEN, blob)
+        self.assertNotIn(EMAIL, blob)
 
 
 if __name__ == "__main__":
