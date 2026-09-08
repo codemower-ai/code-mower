@@ -19,13 +19,18 @@ credentials or network access.
 
 ### 1. Initialize Configuration
 
-Run `init` with the `--jira` flag (or `--tracker jira_cloud`):
+From a clean checkout, preview the standard easy-mode output with the `--jira`
+flag (or `--tracker jira_cloud`), then generate a reviewable tree:
 
 ```bash
-code-mower init --jira --repo example-org/example-repo
+code-mower init --easy --jira --repo example-org/example-repo
+code-mower init --easy --jira --repo example-org/example-repo \
+  --apply --output-dir .code-mower.generated --skip-github-labels
 ```
 
-Observe the generated `code-mower.yml`:
+Review `.code-mower.generated/code-mower.yml`, replace every placeholder, and
+copy the reviewed configuration to the repository root as described in the
+normal quickstart. Observe that it contains:
 - Repository targets `example-org/example-repo`
 - Default easy-mode reviewer lanes (Claude and Codex)
 - Optional `tracker:` block configured for `jira_cloud`:
@@ -33,6 +38,7 @@ Observe the generated `code-mower.yml`:
   - `cloud_id: "11111111-2222-3333-4444-555555555555"`
   - `project_id: "10001"`
   - `project_key: "ABC"`
+  - `sync.trusted_pr_authors: []` (fail-closed until explicitly configured)
   - `mutations.writes_enabled: false` (safe default)
   - `status_category_map` mapping lifecycle states to numeric IDs
 
@@ -41,10 +47,13 @@ Observe the generated `code-mower.yml`:
 
 ### 2. Validate Configuration Posture
 
-Check the configuration structure:
+Check the configuration structure with an intentionally empty profile
+directory so this offline stage cannot auto-load an existing Jira profile:
 
 ```bash
-code-mower doctor --adoption --repo example-org/example-repo
+EMPTY_PROFILES="$(mktemp -d)"
+code-mower doctor .code-mower.generated/code-mower.yml \
+  --provider-config-dir "$EMPTY_PROFILES" --json
 ```
 
 In an offline environment without credentials:
@@ -61,7 +70,8 @@ No tokens are exposed, and no network traffic leaves the machine.
 Simulate an issue claim and transition plan:
 
 ```bash
-code-mower jira-mutations plan --issue ABC-1 --claim --transition in_progress
+code-mower tracker mutate .code-mower.generated/code-mower.yml \
+  --issue ABC-1 --claim --transition in_progress --json
 ```
 
 The output report (`code_mower.jiraMutationPlan.v1`) shows:
@@ -73,13 +83,23 @@ The output report (`code_mower.jiraMutationPlan.v1`) shows:
 
 ### 4. Dry-Run Pull Request Sync
 
-Simulate PR status synchronization:
+With the generated trusted-author list still empty, simulate PR status
+synchronization:
 
 ```bash
-code-mower jira-sync --pr https://github.com/example-org/example-repo/pull/42
+code-mower tracker pr-sync \
+  .code-mower.generated/code-mower.yml \
+  --milestone opened \
+  --pr-url https://github.com/example-org/example-repo/pull/42 \
+  --branch feature/ABC-1-example \
+  --pr-author trusted-builder \
+  --json
 ```
 
-Confirms the linking relationship without mutating the issue.
+The report fails closed with `untrusted_pr_author` and zero Jira calls. Add
+`trusted-builder` to the generated config's `sync.trusted_pr_authors` list and
+rerun to see the bounded dry-run plan. Neither run contacts Jira or mutates the
+issue.
 
 ---
 
@@ -97,7 +117,7 @@ first time. All steps in this stage are strictly read-only.
 - [ ] **Project Key:** Confirm the short project key (e.g. `PROJ`).
 - [ ] **Credentials:**
   - Export `JIRA_API_EMAIL` and `JIRA_API_TOKEN`, OR
-  - Write `~/.config/code-mower/profiles/jira.env` and enforce `chmod 0600 ~/.config/code-mower/profiles/jira.env`.
+  - Write `~/.config/code-mower/jira.env` and enforce `chmod 0600 ~/.config/code-mower/jira.env`.
 
 ### Run Read-Only Doctor
 
@@ -155,12 +175,21 @@ tracker:
         in_progress: "31" # <-- Replace with your workflow's transition ID
 ```
 
+For PR sync, also add only the GitHub logins authorized to drive this scratch
+issue from PR metadata:
+
+```yaml
+    sync:
+      trusted_pr_authors:
+        - "trusted-builder"
+```
+
 ### 3. Dry-Run the Plan First
 
 Even with `writes_enabled: true`, omit `--apply` to inspect the plan first:
 
 ```bash
-code-mower jira-mutations plan --issue ABC-999 --claim --transition in_progress --comment claimed
+code-mower tracker mutate --issue ABC-999 --claim --transition in_progress --comment claimed --json
 ```
 
 Review the JSON output:
@@ -172,29 +201,31 @@ Review the JSON output:
 Run with `--apply`:
 
 ```bash
-code-mower jira-mutations apply --issue ABC-999 --claim --transition in_progress --comment claimed --apply
+code-mower tracker mutate --issue ABC-999 --claim --transition in_progress --comment claimed --apply --json
 ```
 
 Verify the report:
 - `mode: "apply"`
 - `status: "applied"`
-- `applied_count: 3` (assign, transition, comment)
-- `write_request_count: 3`
+- assign, transition, and comment operations report `applied`
+- `write_request_count` is nonzero and includes replay-safety property writes,
+  not only the three requested user-visible effects
 
 ### 5. Verify in Jira UI
 
 Open `ABC-999` in Jira:
 - [ ] Assignee is now set to the authenticated bot account.
 - [ ] Status has transitioned to `In Progress`.
-- [ ] Comment is posted containing the templated text and idempotency marker:
-      `Code Mower idempotency marker: <hash>`.
+- [ ] Comment contains the closed `claimed` template text plus Code Mower's
+      bounded idempotency marker; replay state also remains in Jira issue
+      properties.
 
 ### 6. Verify Replay Safety (Idempotency)
 
 Re-run the exact same command:
 
 ```bash
-code-mower jira-mutations apply --issue ABC-999 --claim --transition in_progress --comment claimed --apply
+code-mower tracker mutate --issue ABC-999 --claim --transition in_progress --comment claimed --apply --json
 ```
 
 Verify that Code Mower recognizes the existing state:
@@ -205,7 +236,8 @@ Verify that Code Mower recognizes the existing state:
 
 ### 7. Teardown and Cleanup
 
-1. In Jira, delete or close the scratch issue `ABC-999`.
+1. In Jira, close or archive the scratch issue `ABC-999` using your normal
+   project workflow. Code Mower never deletes Jira issues.
 2. In `code-mower.yml`, revert `writes_enabled` to `false` until your team is
    ready for production builder dispatches:
    ```yaml

@@ -2367,6 +2367,9 @@ EXAMPLE_JIRA_TRACKER_CONFIG: dict[str, Any] = {
         "field_mappings": {
             "lifecycle_category": "status",
         },
+        "sync": {
+            "trusted_pr_authors": [],
+        },
         "mutations": {
             "writes_enabled": False,
             "allowed_operations": [
@@ -3186,7 +3189,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true", help="render the init plan")
     parser.add_argument("--apply", action="store_true", help="write generated files to --output-dir")
-    parser.add_argument(
+    tracker_group = parser.add_mutually_exclusive_group()
+    tracker_group.add_argument(
         "--jira",
         action="store_true",
         help=(
@@ -3194,7 +3198,7 @@ def main(argv: list[str] | None = None) -> int:
             "generated code-mower.yml (defaults to GitHub-only)"
         ),
     )
-    parser.add_argument(
+    tracker_group.add_argument(
         "--tracker",
         choices=("github", "jira_cloud"),
         default=None,
@@ -3286,11 +3290,7 @@ def main(argv: list[str] | None = None) -> int:
                     config, profile=args.profile,
                 ),
             )
-        tracker_choice = (
-            "jira_cloud"
-            if (args.jira or args.tracker == "jira_cloud")
-            else (args.tracker or "github")
-        )
+        tracker_choice = "jira_cloud" if args.jira else args.tracker
         plan = render_init_plan(
             config,
             profile_id=args.profile,

@@ -71,7 +71,7 @@ smaller primitive is stable enough to share.
 GitHub Issues is the default work tracker when a config omits `tracker`.
 An opt-in `jira_cloud` tracker kind adds configuration validation, read-only
 adoption diagnostics via `code-mower doctor --adoption`, guarded mutation
-planning and owner-authorized execution, and bidirectional PR status
+planning and owner-authorized execution, and guarded GitHub-to-Jira PR status
 synchronization. See [Jira Cloud Setup](jira-cloud-setup.md),
 [Jira Adoption Rehearsal](jira-adoption-rehearsal.md), and
 `docs/tracker-data-contract.md`.

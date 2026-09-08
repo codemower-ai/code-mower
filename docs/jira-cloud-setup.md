@@ -3,7 +3,7 @@
 Code Mower uses GitHub Issues as its default, built-in work tracker. For teams
 that manage tasks in Atlassian Jira Cloud, Code Mower provides an optional,
 guarded integration for issue adoption, status verification, dry-run mutation
-planning, and bidirectional pull request synchronization.
+planning, Jira queue intake, and guarded GitHub pull request synchronization.
 
 ## Design and Safety Principles
 
@@ -35,30 +35,35 @@ Set the following variables in your local environment or CI runner:
 
 ```bash
 export JIRA_API_EMAIL="user@example.com"
-export JIRA_API_TOKEN="your-atlassian-api-token"
-# Optional: pre-seed cloud ID if already known
-export JIRA_CLOUD_ID="11111111-2222-3333-4444-555555555555"
+export JIRA_API_TOKEN="<token>"
 ```
+
+Tenant and project identity belong in `code-mower.yml`; credential environment
+variables do not override that reviewed repository configuration.
 
 > **Note:** Generate an API token from your Atlassian Account Settings under
 > **Security > Create and manage API tokens**. Never use your account password.
 
 ### Stored Profile File
 
-You can store credentials in `~/.config/code-mower/profiles/jira.env`:
+You can store credentials in `~/.config/code-mower/jira.env`:
 
 ```bash
-mkdir -p ~/.config/code-mower/profiles
-cat << 'PROFILE_EOF' > ~/.config/code-mower/profiles/jira.env
+mkdir -p ~/.config/code-mower
+cat << 'PROFILE_EOF' > ~/.config/code-mower/jira.env
 JIRA_API_EMAIL=user@example.com
-JIRA_API_TOKEN=your-atlassian-api-token
+JIRA_API_TOKEN=<token>
 PROFILE_EOF
-chmod 0600 ~/.config/code-mower/profiles/jira.env
+chmod 0600 ~/.config/code-mower/jira.env
 ```
 
 > **Security Requirement:** Profile files must have restrictive file permissions
 > (`0600` or `0400`). Code Mower refuses to read files accessible to group or
 > other users.
+
+If more than one Jira profile exists, Code Mower never guesses. Pass the safe
+filename selector explicitly, for example `--provider-profile jira.env`; doctor
+reports candidate filenames only, never credential values or absolute paths.
 
 ---
 
@@ -94,7 +99,14 @@ tracker:
         - "3"
 
     field_mappings:
-      component: "components"
+      lifecycle_category: "status"
+      labels: "labels"
+      assigned: "assignee"
+
+    sync:
+      # Empty means every PR-triggered Jira write fails closed.
+      trusted_pr_authors:
+        - "trusted-builder"
 
     mutations:
       writes_enabled: false
@@ -119,7 +131,8 @@ tracker:
 | `issue_type_id` | string | Optional default numeric issue type ID for tasks. |
 | `jql` | string | Bounded single-line JQL query for queue polling. |
 | `status_category_map` | mapping | Maps normalized lifecycle categories (`new`, `in_progress`, `blocked`, `done`) to numeric Jira status IDs. |
-| `field_mappings` | mapping | Optional map from safe target fields (`component`, `environment`, `fix_version`, `priority`) to Jira field IDs. |
+| `field_mappings` | mapping | Optional map from normalized metadata fields (`lifecycle_category`, `labels`, `assigned`) to Jira field IDs. Issue prose is never mapped. |
+| `sync.trusted_pr_authors` | list | GitHub logins allowed to drive Jira state from bounded PR metadata. An empty list fails closed. |
 | `mutations.writes_enabled`| boolean | Master repository guard. Defaults to `false`. |
 | `mutations.allowed_operations`| list | Subsets allowed writes: `assign`, `transition`, `link`, `comment`. |
 | `mutations.transitions` | mapping | Maps lifecycle categories to numeric Jira transition IDs. |
@@ -156,7 +169,7 @@ The adoption check evaluates four Jira readiness checks:
 Plan a mutation without making network writes:
 
 ```bash
-code-mower jira-mutations plan --issue ABC-1 --claim --transition in_progress
+code-mower tracker mutate --issue ABC-1 --claim --transition in_progress --json
 ```
 
 This generates a deterministic plan JSON report showing:
@@ -171,10 +184,29 @@ When ready, execute with both guards active:
 2. Supply `--apply` on the command line:
 
 ```bash
-code-mower jira-mutations apply --issue ABC-1 --claim --transition in_progress --apply
+code-mower tracker mutate --issue ABC-1 --claim --transition in_progress --apply --json
 ```
 
 If either guard is absent, Code Mower refuses to write and emits an informative report.
+
+### Pull Request Sync
+
+PR sync also requires the PR author to be present in
+`tracker.jira_cloud.sync.trusted_pr_authors`. Preview one bounded milestone
+before adding `--apply`:
+
+```bash
+code-mower tracker pr-sync \
+  --milestone opened \
+  --pr-url https://github.com/example-org/example-repo/pull/42 \
+  --branch feature/ABC-1-example \
+  --pr-author trusted-builder \
+  --json
+```
+
+The issue key is read only from the bounded branch name or leading PR-title
+token, never from a PR body, issue prose, comment, source, or diff. GitHub
+remains the only check and merge-gate authority.
 
 ---
 
@@ -193,7 +225,7 @@ To revert Jira integration at any time:
 
 | Symptom | Cause | Remediation |
 |---|---|---|
-| `tracker.jira.credentials: fail` | Missing or insecure credential file | Verify `JIRA_API_EMAIL` and `JIRA_API_TOKEN` are exported, or check `chmod 0600 ~/.config/code-mower/profiles/jira.env`. |
+| `tracker.jira.credentials: fail` | Missing or insecure credential file | Verify `JIRA_API_EMAIL` and `JIRA_API_TOKEN` are exported, or check `chmod 0600 ~/.config/code-mower/jira.env`. |
 | `tracker.jira.read: fail (forbidden)` | Account lacks project access | Grant the Atlassian user account `BROWSE_PROJECTS` on the target project. |
 | `tracker.jira.mutations: fail (permission_denied)` | Missing edit or transition permissions | Grant `EDIT_ISSUES`, `TRANSITION_ISSUES`, and `ADD_COMMENTS` permissions in the project permission scheme. |
 | `target_status_not_configured` | Configured transition lacks destination status mapping | Ensure `status_category_map` defines status IDs for the transition's lifecycle category. |

@@ -20,6 +20,7 @@ from code_mower import init as code_mower_init
 from code_mower import jira_cloud
 from code_mower import jira_mutations
 from code_mower.doctor_checks import jira as jira_doctor
+from code_mower.doctor_checks.runner import run_doctor
 
 FIXTURES = Path(__file__).parent / "fixtures" / "jira"
 CONFIG_TEMPLATE = (
@@ -125,6 +126,7 @@ class JiraInitTests(unittest.TestCase):
         self.assertEqual(jc.get("cloud_id"), "11111111-2222-3333-4444-555555555555")
         self.assertEqual(jc.get("project_id"), "10001")
         self.assertEqual(jc.get("project_key"), "ABC")
+        self.assertEqual(jc.get("sync"), {"trusted_pr_authors": []})
         mutations = jc.get("mutations", {})
         self.assertFalse(mutations.get("writes_enabled"))
         self.assertEqual(
@@ -153,6 +155,21 @@ class JiraInitTests(unittest.TestCase):
                 self.assertNotIn("Work tracker:", out_gh)
             finally:
                 os.chdir(orig)
+
+    def test_init_rejects_conflicting_tracker_selectors(self) -> None:
+        with self.assertRaises(SystemExit):
+            code_mower_init.main(
+                [str(CONFIG_TEMPLATE), "--dry-run", "--jira", "--tracker", "github"]
+            )
+
+    def test_existing_jira_config_is_reported_without_tracker_flag(self) -> None:
+        base_cfg = code_mower_config.load_config(CONFIG_TEMPLATE)
+        configured = code_mower_init.config_with_jira_tracker(base_cfg)
+
+        plan = code_mower_init.render_init_plan(configured)
+
+        self.assertEqual(plan.data.get("tracker"), "jira_cloud")
+        self.assertIn("Work tracker:", plan.text)
 
     def test_init_apply_writes_valid_config_and_next_steps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -184,6 +201,29 @@ class JiraInitTests(unittest.TestCase):
 
 
 class JiraDoctorAdoptionTests(unittest.TestCase):
+    def test_plain_doctor_includes_configured_jira_without_github_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "code-mower.yml"
+            configured = code_mower_init.config_with_jira_tracker(
+                code_mower_config.load_config(CONFIG_TEMPLATE)
+            )
+            config_path.write_text(
+                code_mower_init._render_provider_catalog(configured),
+                encoding="utf-8",
+            )
+            report = run_doctor(
+                config_path=config_path,
+                provider_templates_path=(
+                    Path(code_mower_init.__file__).parent / "templates" / "providers.yml"
+                ),
+                profile=None,
+            )
+
+        by_name = {check.name: check for check in report.checks}
+        self.assertEqual(by_name[jira_doctor.JIRA_CONFIG_CHECK].status, "pass")
+        self.assertEqual(by_name[jira_doctor.JIRA_CREDENTIALS_CHECK].status, "fail")
+        self.assertNotIn("github.repo", by_name)
+
     def test_doctor_adoption_four_jira_checks_pass(self) -> None:
         cfg = sample_jira_config()
         runner = FakeHttp(base_probe_script())

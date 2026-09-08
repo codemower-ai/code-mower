@@ -32,6 +32,9 @@ repositories:
 #         - "10003"
 #     field_mappings:
 #       lifecycle_category: "status"
+#     sync:
+#       # Add only GitHub logins allowed to drive Jira state from PR metadata.
+#       trusted_pr_authors: []
 #     mutations:
 #       writes_enabled: false
 #       allowed_operations:

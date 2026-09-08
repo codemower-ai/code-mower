@@ -165,7 +165,7 @@ def _validate_jira_config(block: Mapping[str, Any]) -> tuple[str, str] | None:
                     f"Category must be one of {sorted(tracker_contract.LIFECYCLE_CATEGORIES)}. "
                     f"See {_SETUP_JIRA_DOC}.",
                 )
-            if not isinstance(sids, (list, tuple)) or not sids or not all(
+            if not isinstance(sids, (list, tuple)) or not all(
                 isinstance(sid, str) and sid for sid in sids
             ):
                 return (
@@ -173,6 +173,35 @@ def _validate_jira_config(block: Mapping[str, Any]) -> tuple[str, str] | None:
                     f"Set status IDs for category '{cat}' to a list of numeric string IDs. "
                     f"See {_SETUP_JIRA_DOC}.",
                 )
+
+    sync = block.get("sync")
+    if sync is not None:
+        from code_mower import config as config_module
+
+        if not isinstance(sync, Mapping):
+            return (
+                "jira_cloud sync must be a mapping",
+                f"Configure sync.trusted_pr_authors as a list. See {_SETUP_JIRA_DOC}.",
+            )
+        extra_sync_keys = set(sync) - {"trusted_pr_authors"}
+        if extra_sync_keys:
+            return (
+                f"jira_cloud sync has unknown key '{sorted(extra_sync_keys)[0]}'",
+                f"Only sync.trusted_pr_authors is supported. See {_SETUP_JIRA_DOC}.",
+            )
+        authors = sync.get("trusted_pr_authors")
+        if authors is not None and (
+            not isinstance(authors, (list, tuple))
+            or not all(
+                isinstance(author, str)
+                and config_module.SAFE_GITHUB_LOGIN_RE.fullmatch(author)
+                for author in authors
+            )
+        ):
+            return (
+                "jira_cloud sync trusted_pr_authors must be GitHub logins",
+                f"Set sync.trusted_pr_authors to a list of trusted GitHub logins. See {_SETUP_JIRA_DOC}.",
+            )
 
     field_mappings = block.get("field_mappings")
     if field_mappings is not None:
@@ -273,6 +302,7 @@ def _validate_jira_config(block: Mapping[str, Any]) -> tuple[str, str] | None:
         "jql",
         "status_category_map",
         "field_mappings",
+        "sync",
         "mutations",
     }
     if extra_keys:

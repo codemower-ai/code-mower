@@ -288,17 +288,19 @@ def run_doctor(
                 provider_config_dir=provider_config_dir,
             )
         )
-        # Read-only Jira tracker posture rides the existing generic
-        # provider selector flags; GitHub-only configs produce no checks.
-        checks.extend(
-            check_jira_tracker_readiness(
-                config=config,
-                credential_file=provider_credential_file,
-                profile=provider_profile,
-                config_dir=provider_config_dir,
-                http_timeout=http_timeout,
-            )
+
+    # A configured Jira tracker is part of ordinary doctor posture too. This
+    # lets an offline adopter validate config and credential resolution
+    # without enabling the adoption preset's GitHub network checks.
+    checks.extend(
+        check_jira_tracker_readiness(
+            config=config,
+            credential_file=provider_credential_file,
+            profile=provider_profile,
+            config_dir=provider_config_dir,
+            http_timeout=http_timeout,
         )
+    )
 
     if "github" in enabled_stages:
         checks.extend(
