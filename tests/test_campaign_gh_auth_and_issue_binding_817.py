@@ -28,7 +28,7 @@ from code_mower.provider_registry import REFERENCE_PROVIDERS
 
 CURSOR_TOKEN_ENV = "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN"
 CURSOR_TRANSPORT_ENV = "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY"
-SECRET = "ghp_s3cret-probe-token-value"
+FAKE_GH_AUTH_TOKEN_VALUE = "ghp_s3cret-probe-token-value"
 
 
 def _verified_cursor_env(*, token: bool = True) -> dict[str, str]:
@@ -196,7 +196,7 @@ class GhAuthCredentialFallbackTests(unittest.TestCase):
         self.assertTrue(profile["auth"]["ready"])
         self.assertEqual(release_campaigns.hosted_dispatch_blockers(profile), [])
         self.assertIn("gh", profile["auth"]["detail"])
-        self.assertNotIn(SECRET, json.dumps(profile))
+        self.assertNotIn(FAKE_GH_AUTH_TOKEN_VALUE, json.dumps(profile))
 
     def test_dispatch_profile_remediation_names_both_ways_to_authenticate(self) -> None:
         probe = _RecordingProbe(authenticated=False)
@@ -226,7 +226,7 @@ class GhAuthProbeSecrecyTests(unittest.TestCase):
     def test_probe_returns_a_bare_bool_and_never_the_token(self) -> None:
         with mock.patch(
             "code_mower.release_campaigns.subprocess.run",
-            return_value=self._completed(returncode=0, stdout=f"{SECRET}\n"),
+            return_value=self._completed(returncode=0, stdout=f"{FAKE_GH_AUTH_TOKEN_VALUE}\n"),
         ) as run:
             result = release_campaigns.run_gh_auth_probe()
 
@@ -272,7 +272,7 @@ class GhAuthProbeSecrecyTests(unittest.TestCase):
             argvs: list[list[str]] = []
             with mock.patch(
                 "code_mower.release_campaigns.subprocess.run",
-                return_value=self._completed(returncode=0, stdout=f"{SECRET}\n"),
+                return_value=self._completed(returncode=0, stdout=f"{FAKE_GH_AUTH_TOKEN_VALUE}\n"),
             ):
                 release_campaigns.campaign_command(
                     release_tag="v1.0.0",
@@ -295,11 +295,11 @@ class GhAuthProbeSecrecyTests(unittest.TestCase):
             assert stored is not None
             self.assertEqual(stored["providers"][0]["state"], "running")
             serialized = json.dumps(stored)
-            self.assertNotIn(SECRET, serialized)
+            self.assertNotIn(FAKE_GH_AUTH_TOKEN_VALUE, serialized)
             self.assertNotIn("ghp_", serialized)
             rendered = release_campaigns.render_campaign_text(stored)
-            self.assertNotIn(SECRET, rendered)
-            self.assertNotIn(SECRET, json.dumps(argvs))
+            self.assertNotIn(FAKE_GH_AUTH_TOKEN_VALUE, rendered)
+            self.assertNotIn(FAKE_GH_AUTH_TOKEN_VALUE, json.dumps(argvs))
 
 
 class GhAuthFallbackReachesTheCampaignTests(unittest.TestCase):
