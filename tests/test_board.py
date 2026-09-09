@@ -2691,11 +2691,14 @@ class StatusCacheTests(TestCase):
                 with urllib.request.urlopen(url, timeout=2) as resp:
                     return json.loads(resp.read().decode("utf-8")).get("board", {}).get("cache", {})
 
-            # 1. Warm initial snapshot -> generation 1
+            # 1. Warm an initial snapshot. Fast hosts may refresh it again
+            # before the following HTTP poll, so retain the observed generation
+            # instead of assuming it is exactly one.
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline and poll_status().get("generation", 0) < 1:
                 time.sleep(0.05)
-            self.assertEqual(poll_status().get("generation"), 1)
+            initial_generation = int(poll_status().get("generation", 0))
+            self.assertGreaterEqual(initial_generation, 1)
 
             # 2. Trigger abnormal thread exit on next refresh
             time.sleep(0.15)
@@ -2703,19 +2706,29 @@ class StatusCacheTests(TestCase):
             poll_status()
 
             deadline = time.monotonic() + 5.0
+            failed_meta: dict = {}
             while time.monotonic() < deadline:
                 meta = poll_status()
                 if "SystemExit" in meta.get("last_error", "") and not meta.get("refresh_in_progress"):
+                    failed_meta = meta
                     break
                 time.sleep(0.05)
-            self.assertIn("SystemExit", poll_status().get("last_error", ""))
+            self.assertIn("SystemExit", failed_meta.get("last_error", ""))
+            failed_generation = int(failed_meta.get("generation", 0))
+            self.assertGreaterEqual(failed_generation, initial_generation)
 
-            # 3. Wait for backoff to expire, retry, and generation to advance to 2
+            # 3. Wait for backoff to expire, retry, and advance beyond the
+            # generation observed at failure.
             time.sleep(0.15)
             deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline and poll_status().get("generation", 0) < 2:
+            recovered_meta = poll_status()
+            while (
+                time.monotonic() < deadline
+                and int(recovered_meta.get("generation", 0)) <= failed_generation
+            ):
                 time.sleep(0.05)
-            self.assertEqual(poll_status().get("generation"), 2)
+                recovered_meta = poll_status()
+            self.assertGreater(int(recovered_meta.get("generation", 0)), failed_generation)
         finally:
             server.shutdown()
             server.server_close()
