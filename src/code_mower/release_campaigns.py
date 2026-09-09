@@ -124,6 +124,32 @@ CAMPAIGN_TEMP_PREFIX = ".tmp."
 # metadata-only campaign state, and neither may ever carry an arbitrary string.
 RELEASE_PR_PATTERN = re.compile(r"^[1-9][0-9]{0,11}$")
 
+# A campaign may bind exactly one GitHub issue -- the campaign issue every
+# hosted comment dispatch, poll, and result discovery is addressed to. It is a
+# plain GitHub number and reaches a `gh issue ...` argv and metadata-only
+# campaign state, so it is held to the same bounded positive-integer grammar the
+# linked release pull request uses.
+ISSUE_NUMBER_PATTERN = RELEASE_PR_PATTERN
+
+# Wall-clock bound on the `gh auth token` credential probe. The probe is a
+# fallback for GitHub-comment hosted transports only, and it must never be able
+# to stall a campaign command, so it is bounded here rather than inheriting a
+# caller's timeout.
+GH_AUTH_PROBE_TIMEOUT_SECONDS = 10
+
+# Zero-argument, boolean-valued GitHub credential probe. The return type is the
+# contract: a probe reports only *whether* `gh` holds usable credentials, so no
+# implementation of it -- production or test -- can hand a token back to a
+# caller that might log, return, or persist it.
+#
+# The probe is *injected*, never defaulted: it is the one readiness input whose
+# answer comes from ambient machine state rather than from arguments, stored
+# campaign state, or the passed environment. Process boundaries wire
+# `run_gh_auth_probe` (see `release_qualify` and the doctor runner); every other
+# caller -- including every test -- gets no probe and therefore a verdict that
+# depends only on its inputs.
+AuthProbe = Callable[[], bool]
+
 DEFAULT_CAMPAIGN_PROVIDERS = (
     "claude",
     "codex",
@@ -351,6 +377,14 @@ class ReleaseCampaign:
     # lack the key; readers must use `stored_release_pr`, never direct
     # indexing.
     release_pr: str = ""
+    # The GitHub issue this campaign is bound to: the issue hosted comment
+    # dispatch posts to, polling reads, and result discovery accepts results
+    # from. It is durable campaign identity, not a per-invocation argument, so
+    # every later dispatch, resume, watch, retry, and discovery reuses it
+    # without the operator re-supplying `--issue`. Campaigns written before this
+    # field existed lack the key; readers must use `stored_issue_number`, never
+    # direct indexing.
+    issue_number: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -441,6 +475,44 @@ def stored_release_pr(campaign: Mapping[str, Any]) -> str:
         return ""
 
 
+def validate_issue_number(issue: Any) -> str:
+    """Return ``issue`` normalized to a bare number, or raise ``ValueError``.
+
+    An empty value means "no campaign issue supplied" and is returned unchanged.
+    Anything else must be a positive GitHub issue number: the value is bound
+    into the campaign as durable identity and interpolated into a ``gh issue``
+    argv, so it can never be a URL, an ``owner/repo#n`` reference, or any other
+    shell-shaped string.
+    """
+    if issue is None:
+        return ""
+    if isinstance(issue, bool) or not isinstance(issue, (str, int)):
+        raise ValueError("issue must be a positive GitHub issue number")
+    text = str(issue).strip()
+    if not text:
+        return ""
+    if ISSUE_NUMBER_PATTERN.fullmatch(text) is None:
+        raise ValueError(
+            f"issue must be a positive GitHub issue number, got {text!r}"
+        )
+    return text
+
+
+def stored_issue_number(campaign: Mapping[str, Any]) -> str:
+    """Read a campaign's bound issue number, failing closed.
+
+    Campaigns written before the issue field existed simply carry no key, and a
+    hand-edited campaign may carry anything at all; both degrade to "" -- the
+    same state a fresh campaign created without ``--issue`` is in -- so such a
+    campaign is still completable exactly once by supplying ``--issue``, and a
+    malformed stored value never reaches a ``gh`` argv.
+    """
+    try:
+        return validate_issue_number(campaign.get("issue_number"))
+    except ValueError:
+        return ""
+
+
 def resolve_provider_lane(name: str) -> tuple[str, ProviderLane]:
     """Resolve a provider alias to its canonical key and declarative lane configuration.
 
@@ -493,6 +565,48 @@ def _find_command(
     return None
 
 
+def run_gh_auth_probe() -> bool:
+    """Report whether the `gh` CLI already holds usable GitHub credentials.
+
+    Secret-free by construction. `gh auth token` prints the token on stdout, so
+    the completed process is read for exactly two facts -- a zero exit status and
+    a non-empty stdout -- and collapsed to a bool here. The captured output is
+    never returned, printed, logged, put into campaign state, or included in any
+    error: it does not outlive this function. Bounded by
+    :data:`GH_AUTH_PROBE_TIMEOUT_SECONDS`, and failing closed on a timeout, a
+    missing `gh`, or any other subprocess error, so an unauthenticated or absent
+    CLI is simply "no credentials" rather than a campaign-command failure.
+    """
+    try:
+        completed = subprocess.run(
+            ["gh", "auth", "token"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=GH_AUTH_PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0 and bool((completed.stdout or "").strip())
+
+
+def _is_github_comment_hosted_lane(lane: ProviderLane) -> bool:
+    """Report whether this lane's campaign transport is a GitHub issue comment.
+
+    These are the only lanes whose dispatch, polling, and result discovery run
+    entirely through `gh` (`gh issue comment`, `gh issue view`), so an already
+    authenticated `gh` CLI is genuine evidence that the transport can run. A
+    lane that talks to a provider's own API -- Devin's v3 sessions transport --
+    needs that provider's API credentials, which `gh` says nothing about.
+    """
+    return lane.driver in {"hosted_bridge", "saas_event"} and not _is_devin_api_lane(lane)
+
+
+def _token_env_present(lane: ProviderLane, env: Mapping[str, str]) -> bool:
+    """Report whether any of the lane's configured token variables is set."""
+    return any(env.get(token) for token in lane.token_env)
+
+
 def _check_credentials(
     lane: ProviderLane,
     *,
@@ -500,7 +614,21 @@ def _check_credentials(
     credential_file: Path | None = None,
     profile: str = "",
     config_dir: Path | None = None,
+    auth_probe: AuthProbe | None = None,
 ) -> tuple[bool, str]:
+    """Report whether this lane has the credentials its campaign transport needs.
+
+    Environment variables keep strict precedence: a configured token variable
+    that is set answers the question outright, and ``auth_probe`` is not called
+    at all. Only when *none* of them is set does a GitHub-comment hosted lane
+    fall back to asking the supplied probe whether `gh` is already
+    authenticated -- because that transport dispatches and polls by invoking
+    `gh` itself, so an authenticated CLI *is* the credential, and demanding a
+    duplicate token variable marked a working lane unavailable. The fallback is
+    deliberately narrow: local CLI lanes and Devin's own API transport resolve
+    credentials exactly as before, and a caller that supplies no probe gets the
+    unchanged environment-only verdict.
+    """
     current_env = os.environ if env is None else env
     if lane.provider_config.get("campaign_transport") == "devin_api_v3":
         creds = devin_api.credentials_from_env(
@@ -510,9 +638,13 @@ def _check_credentials(
             config_dir=config_dir,
         )
         return bool(creds.api_key and creds.org_id and not creds.missing), creds.missing
-    if lane.token_env:
-        found = any(current_env.get(token) for token in lane.token_env)
-        if not found:
+    if lane.token_env and not _token_env_present(lane, current_env):
+        gh_authenticated = (
+            auth_probe is not None
+            and _is_github_comment_hosted_lane(lane)
+            and bool(auth_probe())
+        )
+        if not gh_authenticated:
             return False, lane.token_env[0]
     required_any = lane.provider_config.get("required_env_any", ())
     if required_any and not any(current_env.get(var) for var in required_any):
@@ -698,13 +830,16 @@ def hosted_dispatch_profile(
     credential_file: Path | None = None,
     profile: str = "",
     config_dir: Path | None = None,
+    auth_probe: AuthProbe | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Evaluate the closed hosted dispatch profile for one lane.
 
     Returns one ``{"ready": bool, "detail": str, "remediation": str}`` entry
     per check in :data:`HOSTED_DISPATCH_PROFILE_CHECKS`. Details and
     remediations are bounded metadata only: provider/lane names and
-    environment variable names, never secret values, paths, or output.
+    environment variable names, never secret values, paths, or output. The
+    ``auth`` detail names *which kind* of credential answered -- a token
+    variable or an already authenticated `gh` CLI -- and never the credential.
     """
     current_env = os.environ if env is None else env
     if _is_devin_api_lane(lane):
@@ -724,14 +859,24 @@ def hosted_dispatch_profile(
         credential_file=credential_file,
         profile=profile,
         config_dir=config_dir,
+        auth_probe=auth_probe,
     )
+    if not has_creds:
+        auth_detail = "dispatch token missing"
+    elif _token_env_present(lane, current_env) or not lane.token_env:
+        auth_detail = "dispatch token present"
+    else:
+        auth_detail = "authenticated gh CLI credentials present"
     prof["auth"] = {
         "ready": has_creds,
-        "detail": "dispatch token present" if has_creds else "dispatch token missing",
+        "detail": auth_detail,
         "remediation": (
             ""
             if has_creds
-            else f"set {missing_cred} in the environment for {lane.provider} campaign dispatch"
+            else (
+                f"set {missing_cred} in the environment, or authenticate the gh CLI, "
+                f"for {lane.provider} campaign dispatch"
+            )
         ),
     }
 
@@ -2786,6 +2931,7 @@ def initialize_campaign(
     repo_slug: str = "",
     campaign_id: str = "",
     release_pr: str = "",
+    issue_number: str | int = "",
 ) -> ReleaseCampaign:
     valid, normalized_version, error = _validate_tag_format(release_tag)
     if not valid:
@@ -2816,6 +2962,7 @@ def initialize_campaign(
         raise ValueError("starting_version must be lower than the target version")
     _validate_package_source(package_source)
     normalized_release_pr = validate_release_pr(release_pr)
+    normalized_issue_number = validate_issue_number(issue_number)
 
     if not campaign_id:
         campaign_id = f"campaign-{release_tag}"
@@ -2950,6 +3097,7 @@ def initialize_campaign(
         providers=campaign_providers,
         provider_posture_configured=required_providers is not None,
         release_pr=normalized_release_pr,
+        issue_number=normalized_issue_number,
     )
 
 
@@ -3413,12 +3561,19 @@ def dispatch_or_advance_campaign(
     provider_credential_file: Path | None = None,
     provider_profile: str = "",
     provider_config_dir: Path | None = None,
+    auth_probe: AuthProbe | None = None,
 ) -> dict[str, Any]:
     """Execute dispatch, polling, or status progression on a campaign.
 
     `retry_provider` is the only way a provider whose applied dispatch/adapter
     was already attempted (`attempted_at` set) gets invoked again -- ordinary
     resume never repeats a paid/hosted dispatch or local adapter run.
+
+    The campaign issue is read from the campaign first and from ``issue_number``
+    only as a fallback, so dispatch, resume, watch, retry, and result discovery
+    all address the issue the campaign is bound to rather than whatever the
+    current invocation happened to spell. A conflicting request is rejected by
+    the callers above (`_issue_link_conflict`) before reaching here.
 
     A hosted/SaaS dispatch is therefore checkpointed as a *pollable* state
     before its external post rather than after: `attempted_at`, `running`, the
@@ -3458,6 +3613,15 @@ def dispatch_or_advance_campaign(
     # only ever *widens result discovery* to that one explicitly linked
     # surface; dispatch and trigger comments still go to the campaign issue.
     release_pr = stored_release_pr(campaign)
+    # Stored identity wins over the current invocation's spelling: an omitted
+    # `--issue` must not silently unbind a campaign that already knows its
+    # issue, which is exactly how a dispatched campaign came to report a
+    # provider unavailable for a "missing" issue it had been dispatched on.
+    try:
+        requested_issue = validate_issue_number(issue_number)
+    except ValueError:
+        requested_issue = ""
+    issue_number = stored_issue_number(campaign) or requested_issue
 
     retry_canonical = ""
     if retry_provider:
@@ -3947,6 +4111,7 @@ def dispatch_or_advance_campaign(
             credential_file=provider_credential_file,
             profile=provider_profile,
             config_dir=provider_config_dir,
+            auth_probe=auth_probe,
         )
         transport_ready, _ = _check_hosted_transport(
             lane,
@@ -3967,6 +4132,7 @@ def dispatch_or_advance_campaign(
                 credential_file=provider_credential_file,
                 profile=provider_profile,
                 config_dir=provider_config_dir,
+                auth_probe=auth_probe,
             )
             if lane.driver in {"hosted_bridge", "saas_event"}
             else {}
@@ -5409,6 +5575,7 @@ def campaign_watch(
     provider_credential_file: Path | None = None,
     provider_profile: str = "",
     provider_config_dir: Path | None = None,
+    auth_probe: AuthProbe | None = None,
 ) -> dict[str, Any]:
     """Poll a stored release campaign at a positive interval and bounded timeout.
 
@@ -5596,6 +5763,35 @@ def campaign_watch(
             print(f"error: {repo_slug_error}", file=err)
         return summary
 
+    # A watch that names a different issue than the campaign is bound to is
+    # refused before the first poll, exactly as the mutating route refuses it:
+    # the stored issue is the one this campaign was dispatched on, and silently
+    # preferring it while reporting success against the requested one would
+    # answer a question the operator did not ask.
+    issue_error = _issue_link_conflict(target_campaign, issue)
+    if issue_error:
+        summary = _build_watch_summary(
+            campaign_id=str(target_campaign.get("campaign_id") or campaign_id),
+            release_tag=str(target_campaign.get("release_tag") or release_tag),
+            package_identity="",
+            qualification_context=str(
+                target_campaign.get("qualification_context") or ""
+            ),
+            status="invalid",
+            stop_reason="invalid_campaign",
+            polls=0,
+            elapsed_seconds=0.0,
+            interval_seconds=validated_interval,
+            timeout_seconds=validated_timeout,
+            next_action="use the issue recorded by the campaign",
+            next_detail=issue_error,
+            retry_guidance="omit --issue or pass the stored campaign issue",
+            error=issue_error,
+        )
+        if not emit_json:
+            print(f"error: {issue_error}", file=err)
+        return summary
+
     cid = str(target_campaign.get("campaign_id") or "")
     rtag = str(target_campaign.get("release_tag") or "")
     pkg_spec = str(target_campaign.get("package_spec") or "")
@@ -5672,6 +5868,7 @@ def campaign_watch(
                 provider_credential_file=provider_credential_file,
                 provider_profile=provider_profile,
                 provider_config_dir=provider_config_dir,
+                auth_probe=auth_probe,
             )
             initial_transitions = _describe_transitions(
                 initial_snapshot,
@@ -5783,6 +5980,7 @@ def campaign_watch(
                         provider_credential_file=provider_credential_file,
                         provider_profile=provider_profile,
                         provider_config_dir=provider_config_dir,
+                        auth_probe=auth_probe,
                     )
 
                 now_after_poll = time_fn()
@@ -6764,6 +6962,56 @@ def _link_release_pr(
     save_campaign(campaign, campaigns_dir)
 
 
+def _issue_link_conflict(campaign: Mapping[str, Any], issue: str | int) -> str:
+    """Report why ``issue`` cannot be bound to ``campaign``, or "".
+
+    The campaign issue is durable identity, so it follows the same fill-once
+    rule as the repository slug and the linked release pull request: an empty
+    stored value may be filled, but repointing a bound issue would dispatch to,
+    poll, and accept results from an issue the campaign was never qualified on.
+    A conflict is reported here -- before any lock-held mutation, `gh` call, or
+    dispatch -- so a mistyped ``--issue`` costs nothing.
+    """
+    if not issue:
+        return ""
+    try:
+        requested_issue = validate_issue_number(issue)
+    except ValueError as exc:
+        return str(exc)
+    stored_issue = stored_issue_number(campaign)
+    if stored_issue and requested_issue != stored_issue:
+        return (
+            f"--issue {requested_issue!r} does not match existing campaign issue "
+            f"{stored_issue!r}; an existing campaign's issue is fixed once set"
+        )
+    return ""
+
+
+def _bind_issue_number(
+    campaign: dict[str, Any], issue: str | int, *, campaigns_dir: Path
+) -> None:
+    """Fill an existing campaign's empty issue binding and persist it.
+
+    Campaigns are routinely created before the campaign issue exists, and every
+    campaign stored before this field existed carries none -- so the first
+    ``--issue`` an existing campaign is completed with is bound here and
+    persisted *before* the run advances, so this run's own dispatch and poll
+    already read the stored value and no later invocation has to re-supply it.
+    A bound issue is never rewritten: a mismatch is rejected by
+    :func:`_issue_link_conflict` first.
+    """
+    if not issue or stored_issue_number(campaign):
+        return
+    try:
+        normalized = validate_issue_number(issue)
+    except ValueError:
+        return
+    if not normalized:
+        return
+    campaign["issue_number"] = normalized
+    save_campaign(campaign, campaigns_dir)
+
+
 def _existing_campaign_conflict(
     campaign: Mapping[str, Any],
     *,
@@ -6775,6 +7023,7 @@ def _existing_campaign_conflict(
     required_providers: Sequence[str] | None = None,
     repo_slug: str = "",
     release_pr: str = "",
+    issue: str | int = "",
 ) -> str:
     """Report a bounded conflict between an existing campaign and creation arguments.
 
@@ -6803,6 +7052,12 @@ def _existing_campaign_conflict(
     surface*, so repointing it on an in-flight campaign would start accepting
     provider results from a pull request the campaign was never qualified
     against.
+
+    ``issue`` is the third fill-once field, and the strictest of the three: the
+    campaign issue is where a hosted dispatch was posted and where its answer is
+    read back, so a later invocation naming a *different* issue is rejected here
+    -- before the lock-held mutation, the `gh` call, and the paid dispatch --
+    rather than quietly redirecting an in-flight campaign.
     """
     stored_slug = str(campaign.get("repo_slug") or "")
     if repo_slug and stored_slug and repo_slug != stored_slug:
@@ -6813,6 +7068,9 @@ def _existing_campaign_conflict(
     release_pr_conflict = _release_pr_link_conflict(campaign, release_pr)
     if release_pr_conflict:
         return release_pr_conflict
+    issue_conflict = _issue_link_conflict(campaign, issue)
+    if issue_conflict:
+        return issue_conflict
     stored_context = str(campaign.get("qualification_context") or "cold_install")
     if qualification_context and qualification_context != stored_context:
         return (
@@ -6940,6 +7198,7 @@ def campaign_command(
     provider_credential_file: Path | None = None,
     provider_profile: str = "",
     provider_config_dir: Path | None = None,
+    auth_probe: AuthProbe | None = None,
 ) -> int:
     """Create, inspect, advance, or publish a release qualification campaign.
 
@@ -7048,6 +7307,15 @@ def campaign_command(
     # polled discovery surface, so it is never stored unvalidated.
     try:
         release_pr = validate_release_pr(release_pr)
+    except ValueError as exc:
+        print(f"error: {exc}", file=err)
+        return 1
+
+    # The campaign issue is bound into campaign identity and interpolated into a
+    # `gh issue` argv, so a malformed value is refused on exactly the same terms,
+    # before any lock, lookup, mutation, or dispatch.
+    try:
+        issue = validate_issue_number(issue)
     except ValueError as exc:
         print(f"error: {exc}", file=err)
         return 1
@@ -7172,6 +7440,7 @@ def campaign_command(
             provider_credential_file=provider_credential_file,
             provider_profile=provider_profile,
             provider_config_dir=provider_config_dir,
+            auth_probe=auth_probe,
         )
         if not explicit_campaigns_dir:
             assert identity is not None
@@ -7228,6 +7497,7 @@ def _campaign_command_impl(
     provider_credential_file: Path | None = None,
     provider_profile: str = "",
     provider_config_dir: Path | None = None,
+    auth_probe: AuthProbe | None = None,
 ) -> int:
     """Body of :func:`campaign_command`.
 
@@ -7295,6 +7565,7 @@ def _campaign_command_impl(
             provider_credential_file=provider_credential_file,
             provider_profile=provider_profile,
             provider_config_dir=provider_config_dir,
+            auth_probe=auth_probe,
         )
         if emit_json:
             out = stdout if stdout is not None else sys.stdout
@@ -7361,7 +7632,12 @@ def _campaign_command_impl(
         if release_pr_conflict:
             print(f"error: {release_pr_conflict}", file=sys.stderr)
             return 1
+        issue_conflict = _issue_link_conflict(existing, issue)
+        if issue_conflict:
+            print(f"error: {issue_conflict}", file=sys.stderr)
+            return 1
         _link_release_pr(existing, release_pr, campaigns_dir=campaigns_dir)
+        _bind_issue_number(existing, issue, campaigns_dir=campaigns_dir)
         try:
             updated = record_manual_result(
                 existing,
@@ -7461,6 +7737,7 @@ def _campaign_command_impl(
             required_providers=required_providers,
             repo_slug=repo_slug,
             release_pr=release_pr,
+            issue=issue,
         )
         if conflict:
             print(f"error: {conflict}", file=sys.stderr)
@@ -7491,6 +7768,11 @@ def _campaign_command_impl(
         # above, so this only ever fills an empty value -- before advancing, so
         # this run's own poll already reads the linked surface.
         _link_release_pr(existing, release_pr, campaigns_dir=campaigns_dir)
+        # Same fill-once terms for the campaign issue, and for the same reason:
+        # binding it before the advance is what makes this the *last* invocation
+        # that has to name it. A campaign stored before the field existed is
+        # completed here, once.
+        _bind_issue_number(existing, issue, campaigns_dir=campaigns_dir)
         updated = dispatch_or_advance_campaign(
             existing,
             apply=apply,
@@ -7507,6 +7789,7 @@ def _campaign_command_impl(
             provider_credential_file=provider_credential_file,
             provider_profile=provider_profile,
             provider_config_dir=provider_config_dir,
+            auth_probe=auth_probe,
         )
         if emit_json:
             print(json.dumps(updated, indent=2, sort_keys=True))
@@ -7548,6 +7831,9 @@ def _campaign_command_impl(
             repo_slug=repo_slug,
             campaign_id=campaign_id,
             release_pr=release_pr,
+            # Creation is the first and best moment to bind the campaign issue:
+            # a campaign created with --issue never has to be told again.
+            issue_number=issue,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -7593,6 +7879,7 @@ def _campaign_command_impl(
         provider_credential_file=provider_credential_file,
         provider_profile=provider_profile,
         provider_config_dir=provider_config_dir,
+        auth_probe=auth_probe,
     )
 
     if emit_json:

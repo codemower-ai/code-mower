@@ -4897,14 +4897,19 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
             self.assertEqual(gh_json_runner.call_count, 0)
 
     def test_dry_run_resume_reevaluates_the_issue_prerequisite(self) -> None:
-        """Resume without --apply shares the branch: unavailable without --issue, queued with it."""
+        """Resume without --apply shares the branch: unavailable without --issue, queued once bound.
+
+        The campaign is created here with no issue at all, so the first resume
+        has nothing stored to fall back on and must still name --issue. Once an
+        issue is supplied it is bound durably (Closes #817): a later resume
+        needs it no more than the first one supplied it.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             self._preview(
                 campaigns_dir,
                 provider="cursor_cloud_agent",
                 token_env="CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
-                issue="42",
             )
 
             resumed, command_runner, gh_json_runner, adapter_runner = self._preview(
@@ -4930,6 +4935,20 @@ class HostedDryRunIssuePrerequisiteTests(unittest.TestCase):
             self.assertEqual(requeued_entry["state"], "queued")
             self.assertEqual(requeued_entry["error"], "")
             self._assert_no_dispatch(requeued_entry, command_runner, gh_json_runner, adapter_runner)
+
+            # The bound issue is durable campaign identity: a further resume
+            # with no --issue at all reuses it and stays queued rather than
+            # regressing to unavailable.
+            rebound, command_runner, gh_json_runner, adapter_runner = self._preview(
+                campaigns_dir,
+                provider="cursor_cloud_agent",
+                token_env="CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN",
+                resume=True,
+            )
+            rebound_entry = rebound["providers"][0]
+            self.assertEqual(rebound_entry["state"], "queued")
+            self.assertEqual(rebound_entry["error"], "")
+            self._assert_no_dispatch(rebound_entry, command_runner, gh_json_runner, adapter_runner)
 
 
 class CampaignAggregateStatusHonestyTests(unittest.TestCase):
@@ -10439,26 +10458,38 @@ class HostedDispatchCrashWindowTests(unittest.TestCase):
             self.assertTrue(provider_entry["dispatched_at"])
             self.assertEqual(stored["status"], "running")
 
-    def test_a_retry_that_cannot_dispatch_keeps_the_dispatch_pollable(self) -> None:
-        """A refused retry learns nothing about the outstanding post.
+    def test_an_explicit_retry_reuses_the_stored_issue_without_the_flag(self) -> None:
+        """An explicit retry reposts on the campaign's bound issue (Closes #817).
 
-        `--apply --retry-provider devin` without `--issue` cannot dispatch, but
-        that refusal costs nothing externally: demoting the provider to
-        `unavailable` would stop every later resume from reading the comment
-        the interrupted attempt may already have posted.
+        `_crash_during_dispatch` created this campaign with `--issue`, which
+        binds it durably: `--apply --retry-provider devin` no longer has to
+        repeat `--issue` to dispatch -- it reuses the stored one, exactly as an
+        ordinary resume does.
         """
         with tempfile.TemporaryDirectory() as tmp:
             campaigns_dir = Path(tmp) / "campaigns"
             self._crash_during_dispatch(campaigns_dir)
 
-            runner = self._resume(campaigns_dir, apply=True, retry_provider="devin")
+            posted: list[list[str]] = []
 
-            runner.assert_not_called()
+            def counting_command_runner(argv, **_kwargs):
+                posted.append(list(argv))
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            self._resume(
+                campaigns_dir,
+                apply=True,
+                retry_provider="devin",
+                command_runner=counting_command_runner,
+            )
+
+            self.assertEqual(len(posted), 1, posted)
             stored = self._load(campaigns_dir)
             provider_entry = stored["providers"][0]
             self.assertEqual(provider_entry["state"], "running")
+            self.assertTrue(provider_entry["dispatch_ref"]["comment_posted"])
             self.assertEqual(provider_entry["dispatch_ref"]["issue_number"], self.ISSUE)
-            self.assertIn("--issue", provider_entry["next_action"])
+            self.assertTrue(provider_entry["dispatched_at"])
             self.assertEqual(stored["status"], "running")
 
             # And the dispatch is still pollable to a conclusion afterwards.

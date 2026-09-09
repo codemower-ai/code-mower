@@ -1168,7 +1168,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     campaign.add_argument(
         "--issue",
         default="",
-        help="Optional GitHub issue number for remote or comment dispatch",
+        help=(
+            "GitHub issue number for remote or comment dispatch. It is bound to "
+            "the campaign the first time it is supplied, so later dispatch, "
+            "resume, watch, retry, and result discovery reuse it without the "
+            "flag; a later --issue naming a different issue is rejected"
+        ),
     )
     campaign.add_argument(
         "--release-pr",
@@ -1446,6 +1451,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 provider_credential_file=args.provider_credential_file,
                 provider_profile=args.provider_profile,
                 provider_config_dir=args.provider_config_dir,
+                # The process boundary is where ambient machine state is allowed
+                # in: a GitHub-comment hosted lane dispatches by invoking `gh`,
+                # so an already authenticated `gh` counts as credentials when no
+                # token variable is exported. The probe reports a bool and never
+                # the token (see `release_campaigns.run_gh_auth_probe`).
+                auth_probe=release_campaigns.run_gh_auth_probe,
             )
         except ValueError as e:
             print(f"error: {e}", file=sys.stderr)
