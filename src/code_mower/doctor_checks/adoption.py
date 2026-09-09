@@ -599,6 +599,7 @@ def check_adoption_campaign_readiness(
     which_fn: Callable[[str], str | None] = shutil.which,
     command_runner: Any = None,
     auth_probe_runner: Any = None,
+    gh_auth_probe: Any = None,
     capability_runner: Any = None,
     token_dir: Path | None = None,
     providers: Sequence[str] = DEFAULT_CAMPAIGN_PROVIDERS,
@@ -606,7 +607,14 @@ def check_adoption_campaign_readiness(
     provider_profile: str = "",
     provider_config_dir: Path | None = None,
 ) -> tuple[DoctorCheck, ...]:
-    """Validate release campaign readiness across configured providers and storage."""
+    """Validate release campaign readiness across configured providers and storage.
+
+    ``gh_auth_probe`` is the optional zero-argument GitHub credential probe the
+    campaign command uses (``release_campaigns.AuthProbe``). Supplied, a
+    GitHub-comment hosted lane with no token variable exported is credentialed
+    when `gh` is already authenticated, so this report and an actual dispatch
+    reach the same verdict; omitted, the verdict is environment-only.
+    """
     from code_mower import lane_status
     from code_mower.campaign_adapters import (
         check_antigravity_readiness,
@@ -959,6 +967,7 @@ def check_adoption_campaign_readiness(
                     credential_file=provider_credential_file,
                     profile=provider_profile,
                     config_dir=provider_config_dir,
+                    auth_probe=gh_auth_probe,
                 )
                 effective_env = current_env
 
@@ -980,6 +989,7 @@ def check_adoption_campaign_readiness(
                 credential_file=provider_credential_file,
                 profile=provider_profile,
                 config_dir=provider_config_dir,
+                auth_probe=gh_auth_probe,
             )
             dispatch_blockers = hosted_dispatch_blockers(dispatch_profile)
             dispatch_summary = {

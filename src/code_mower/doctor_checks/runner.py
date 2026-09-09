@@ -277,6 +277,8 @@ def run_doctor(
     )
 
     if adoption:
+        from code_mower import release_campaigns
+
         checks.extend(
             check_adoption_campaign_readiness(
                 config=config,
@@ -286,6 +288,11 @@ def run_doctor(
                 provider_credential_file=provider_credential_file,
                 provider_profile=provider_profile,
                 provider_config_dir=provider_config_dir,
+                # Report the same credential verdict the campaign command
+                # reaches: a GitHub-comment hosted lane dispatches through `gh`,
+                # so an authenticated CLI is credentials even with no token
+                # variable exported. Doctor and dispatch must not disagree.
+                gh_auth_probe=release_campaigns.run_gh_auth_probe,
             )
         )
 
