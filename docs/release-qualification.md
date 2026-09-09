@@ -343,7 +343,7 @@ For issue-comment transports such as Cursor Cloud Agent:
 
 - The dispatch comment states exactly what will be accepted. For an upgrade campaign it carries the campaign's exact `starting_version` in both the machine-readable `code_mower.releaseCampaignDispatch.v1` marker and the human-facing instructions, so a remote runner never has to guess which starting version to qualify from. Cold-install (and `unknown`) campaigns have no starting version and omit the field. An upgrade campaign whose stored `starting_version` is missing is never dispatched at all: the provider stays `unavailable` with the bounded `campaign_identity_incomplete` error code and no comment is posted.
 - The provider's reply comment must embed a `CODE_MOWER_ADOPTION_RESULT` marker as a single-line HTML comment on a line of its own (`<!-- CODE_MOWER_ADOPTION_RESULT: {...} -->`), wrapping schema `code_mower.releaseCampaignResult.v1` with `campaign_id`, `provider`, `release_tag`, and `idempotency_key` matching the original dispatch, plus a validated `adoption_result`. A bare or unbound result is ignored so a stale or unrelated comment can never be replayed as evidence. The embedded `adoption_result`'s own `qualification_context` and `starting_version` must also match the campaign's exactly, independent of the wrapper's idempotency key -- a cold-install result cannot complete an upgrade campaign, and an upgrade result from one starting version cannot complete a same-tag upgrade campaign from a different starting version. The marker line is matched end to end and its JSON is captured through the object's own final brace, so a literal `-->` inside a permitted string value cannot truncate an otherwise valid trusted result; a marker whose JSON is genuinely malformed is still ignored (fail-closed), never guessed at.
-- These identity fields are visible in the public dispatch comment, so binding alone does not prove authorship -- anyone could reply with a matching marker. A result marker is only ever accepted from a GitHub comment author present in the lane's `provider_config.bot_authors` list (and, if configured, the comma-separated login list in the environment variable named by `provider_config.bot_authors_env`). A lane with no trusted authors configured trusts nobody; an untrusted or spoofed author's comment is ignored and the provider keeps running.
+- These identity fields are visible in the public dispatch comment, so binding alone does not prove authorship -- anyone could reply with a matching marker. A result marker is only ever accepted from a GitHub comment author present in the lane's `provider_config.bot_authors` list, the campaign's provider-scoped `--trusted-result-author` additions, or the comma-separated login list in the environment variable named by `provider_config.bot_authors_env`. A lane with no trusted authors configured trusts nobody; an untrusted or spoofed author's comment is ignored and the provider keeps running. Trusting an author never relaxes exact result-marker or embedded adoption-result validation.
 - A hosted provider may answer on the campaign issue **or** on the release pull request the campaign links with `--release-pr <number>`. Those two explicitly linked surfaces are the only places a result is ever looked for: discovery never searches other repository issues or pull requests, never follows a link found inside a comment, and always reads both surfaces in the campaign's own `--repo-slug` repository. A result found on the linked release PR is held to the identical trusted-author, marker schema, campaign id, provider, release tag, idempotency key, package identity, package source, qualification context, and exact starting-version checks as one found on the campaign issue -- being posted on the release PR grants it nothing.
 - The campaign issue takes precedence, and a provider that posts the same result on both surfaces is deduplicated: identical evidence completes the provider once and records no superseded attempt. The provider entry keeps a metadata-only `result_source` (`surface`, `number`, and the counts of additional surfaces carrying identical or differing evidence). No issue body, pull request body, or comment text is ever stored. `result_source` always describes the attempt whose result the entry currently holds: when a later attempt supersedes that result, the earlier source is archived with it in `attempt_history` rather than left behind, so issue-versus-pull-request provenance stays auditable across a retry, a redispatch, or a `--record-result` recovery.
 - Surface failures stay non-fatal and diagnosable. An unreadable surface is recorded as the retryable `github_poll_unavailable` error (which `watch` reports as `remote_unavailable`), never as a rejected result; a valid result visible on the other surface is still accepted even while one surface is unreachable. Unrelated comments on either surface are ignored, and a trusted-but-mismatched marker still reports `hosted_result_rejected` with its bounded field-level reason.
@@ -369,6 +369,51 @@ Cursor Cloud Agent is a hosted async builder using the `hosted_bridge` driver.
 
 **Environment override:**
 Set `CURSOR_CLOUD_AGENT_BOT_AUTHORS` to a comma-separated list of additional trusted GitHub logins. This extends (does not replace) the default trusted authors, allowing self-hosted or alternative Cursor integrations to be trusted.
+
+**Durable campaign author trust:**
+Cursor Cloud Agent may post its result under the installing user's GitHub
+identity. After verifying that identity, record it explicitly when creating the
+campaign. Replace `verified-installer` below with that exact GitHub login and
+`OWNER/REPO` with the campaign repository:
+
+```bash
+code-mower release campaign create \
+  --campaign-id cursor-v1.1.0-qualification \
+  --release-tag v1.1.0 \
+  --providers cursor_cloud_agent \
+  --repo-slug OWNER/REPO \
+  --trusted-result-author cursor_cloud_agent=verified-installer
+
+# After inspecting the preview and meeting the prerequisites above:
+code-mower release campaign dispatch \
+  --campaign-id cursor-v1.1.0-qualification --issue 123 --apply
+code-mower release campaign watch --campaign-id cursor-v1.1.0-qualification
+```
+
+Use the actual campaign issue number in place of `123`. No author environment
+variable is needed on dispatch, resume, or watch: the additions are persisted
+in the local campaign file and reused for hosted dispatch checks and result
+discovery on both allowed surfaces. Each login is trusted only for its named
+provider. Repeat `--trusted-result-author PROVIDER=LOGIN` to add more authors.
+
+Provider names must resolve to a selected campaign provider. Aliases such as
+`cursor`, case, surrounding spaces, and provider hyphen/underscore spellings
+normalize to the canonical key. Logins use 1–39 ASCII letters/digits with
+single internal hyphens and an optional literal `[bot]` suffix; case is
+normalized, but `example` and `example[bot]` remain separate identities.
+URLs, `@` prefixes, wildcards, control characters, and comma-separated entries
+are rejected. There are at most 128 entries and 32 distinct logins per provider;
+duplicate normalized entries count as one stored author.
+
+The explicit additions are immutable campaign identity, including an empty
+list. On resume or dispatch, omit the option or repeat the **entire** stored
+list (order and duplicates do not matter). A different list is rejected before
+polling, recording results, linking a PR, or dispatching. Create a new campaign
+id to change trust; legacy campaigns without the field have no stored additions.
+Built-in authors and the existing environment-variable additions still work;
+environment additions remain invocation-scoped and are not saved automatically.
+Trusted login values remain in local state: command JSON reports only their
+aggregate count, and Board, dispatch comments, and campaign uploads omit them.
 
 **Trigger comments (real builder contract):**
 - `@cursor`
