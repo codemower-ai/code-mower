@@ -463,7 +463,7 @@ class TrackerQueueTests(unittest.TestCase):
                 self.assertEqual(tracker_queue._query(cfg), expected + " ORDER BY created ASC, key ASC")
 
     def test_exact_page_limit_with_fresh_cursors_is_partial_and_ineligible(self):
-        for max_pages in (1, 3, 10):
+        for max_pages in (1, 3, tracker_queue.QUEUE_MAX_PAGES):
             with self.subTest(max_pages=max_pages):
                 reader = Reader(*(
                     {"issues": [issue(index + 1)], "isLast": False, "nextPageToken": f"page-{index + 1}"}
@@ -492,9 +492,11 @@ class TrackerQueueTests(unittest.TestCase):
             self.assertEqual(result["items"], [])
             self.assertNotIn(PROSE, json.dumps(result))
         self.assertFalse(tracker_queue.collect_queue(config())["available"])
-        reader = Reader({"issues": [issue()] * 101})
+        reader = Reader({"issues": [issue()] * (tracker_queue.QUEUE_PAGE_SIZE + 1)})
         self.assertFalse(queue(reader, page_size=500)["available"])
-        self.assertEqual(reader.calls[0]["max_results"], 100)
+        self.assertEqual(
+            reader.calls[0]["max_results"], tracker_queue.QUEUE_PAGE_SIZE
+        )
 
     def test_custom_fields_status_mapping_and_bounds(self):
         cfg = config()["tracker"]["jira_cloud"]
@@ -542,9 +544,12 @@ class TrackerQueueTests(unittest.TestCase):
         result = queue(Reader({"issues": [newer], "nextPageToken": "more"}, {"issues": [older]}))
         self.assertTrue(result["items"][0]["assigned"])
         self.assertFalse(view(result)["items"][0]["eligible"])
-        reader = Reader(*({"issues": [], "nextPageToken": str(index)} for index in range(20)))
+        reader = Reader(*(
+            {"issues": [], "nextPageToken": str(index)}
+            for index in range(tracker_queue.QUEUE_MAX_PAGES + 1)
+        ))
         self.assertEqual(queue(reader, max_pages=100)["freshness"], "partial")
-        self.assertEqual(len(reader.calls), 10)
+        self.assertEqual(len(reader.calls), tracker_queue.QUEUE_MAX_PAGES)
 
     def test_stale_current_vs_historical_pr_and_gate(self):
         payload = queue()

@@ -16,6 +16,11 @@ from urllib.parse import urlsplit
 from .tracker_contract import TRACKER_WORK_ITEM_SCHEMA, validate_tracker_work_item
 
 
+QUEUE_PAGE_SIZE = 25
+QUEUE_DEFAULT_MAX_PAGES = 10
+QUEUE_MAX_PAGES = 40
+
+
 class JiraQueueReader(Protocol):
     """Minimal enhanced-search seam for #800; no transport implementation here."""
 
@@ -203,7 +208,8 @@ def normalize_jira_work_item(raw: Mapping[str, Any], config: Mapping[str, Any]) 
 
 def collect_queue(
     config: Mapping[str, Any], *, reader: JiraQueueReader | None = None,
-    now: datetime | None = None, max_pages: int = 5, page_size: int = 50,
+    now: datetime | None = None, max_pages: int = QUEUE_DEFAULT_MAX_PAGES,
+    page_size: int = QUEUE_PAGE_SIZE,
 ) -> dict[str, Any]:
     """Bounded enhanced JQL reads. Partial/error results never become eligible."""
     observed = now or datetime.now(UTC)
@@ -227,12 +233,13 @@ def collect_queue(
         seen_tokens: set[str] = set()
         items = {}
         token = None
-        for _ in range(min(10, max(1, max_pages))):
-            page = reader.search_page(jql=query, fields=sorted(fields), max_results=min(100, max(1, page_size)), next_page_token=token)
+        bounded_page_size = min(QUEUE_PAGE_SIZE, max(1, page_size))
+        for _ in range(min(QUEUE_MAX_PAGES, max(1, max_pages))):
+            page = reader.search_page(jql=query, fields=sorted(fields), max_results=bounded_page_size, next_page_token=token)
             if "isLast" in page and not isinstance(page["isLast"], bool):
                 raise ValueError("invalid completion marker")
             raw_items = page["issues"]
-            if not isinstance(raw_items, list) or len(raw_items) > min(100, max(1, page_size)):
+            if not isinstance(raw_items, list) or len(raw_items) > bounded_page_size:
                 raise ValueError("invalid page")
             for raw in raw_items:
                 item = normalize_jira_work_item(raw, jira)

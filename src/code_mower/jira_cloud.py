@@ -83,16 +83,17 @@ MAX_ATTEMPTS = 4
 BACKOFF_BASE_SECONDS = 0.5
 BACKOFF_CAP_SECONDS = 8.0
 RETRY_AFTER_CAP_SECONDS = 60
-SEARCH_PAGE_SIZE = 100
+SEARCH_PAGE_SIZE = 25
 SEARCH_MAX_ISSUES = 200
 #: Maximum enhanced-JQL page fetches per search call. This bound is
 #: independent of the count of collected usable issues so that empty or
 #: unusable pages with fresh continuation tokens cannot loop forever.
-SEARCH_MAX_PAGES = 20
+SEARCH_MAX_PAGES = 40
 #: Create-metadata page size and maximum page fetches per discovery call.
 CREATEMETA_PAGE_SIZE = 50
 CREATEMETA_MAX_PAGES = 8
 MAX_REQUIRED_CREATE_FIELDS = 64
+MAX_ISSUE_TYPES = 256
 KEYCHAIN_TIMEOUT_SECONDS = 10
 MAX_METADATA_VALUE_LENGTH = 128
 MAX_LABEL_LENGTH = 128
@@ -259,6 +260,21 @@ def _bounded_labels(value: Any) -> list[str]:
         if name:
             names.append(name[:MAX_LABEL_LENGTH])
     return sorted(set(names))[:MAX_LABELS]
+
+
+def _bounded_issue_types(value: Any) -> list[dict[str, str]]:
+    issue_types: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    entries = value if isinstance(value, list) else []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        type_id = _bounded_str(entry.get("id"), 32)
+        if not type_id or not _TOKEN_ID_RE.fullmatch(type_id) or type_id in seen_ids:
+            continue
+        seen_ids.add(type_id)
+        issue_types.append({"id": type_id, "name": _bounded_str(entry.get("name"))})
+    return issue_types
 
 
 def default_keychain_runner(argv: Sequence[str], env: Mapping[str, str]) -> str:
@@ -1059,12 +1075,30 @@ class JiraReadClient:
         Follows bounded create-metadata pagination. Repeated or malformed
         pagination state fails closed instead of presenting a partial page
         as the exhaustive set. A response with no pagination keys is one
-        exhaustive page.
+        exhaustive page. Jira sites that return 404 for create metadata fall
+        back to the project issue-type endpoint; other failures remain visible.
         """
         if not _PROJECT_ID_RE.fullmatch(project_id):
             raise ValueError("project_id must be a bounded numeric id")
         quoted = urllib.parse.quote(project_id, safe="")
         path = f"/rest/api/3/issue/createmeta/{quoted}/issuetypes"
+        try:
+            return self._get_createmeta_issue_types(path)
+        except JiraApiError as exc:
+            if exc.code != "jira_not_found":
+                raise
+        raw_types = self.request_list(
+            "GET",
+            "/rest/api/3/issuetype/project",
+            query={"projectId": project_id},
+            endpoint="issueTypeProject",
+        )
+        if len(raw_types) > MAX_ISSUE_TYPES:
+            raise JiraApiError("jira_unavailable", endpoint="issueTypeProject")
+        return _bounded_issue_types(raw_types)
+
+    def _get_createmeta_issue_types(self, path: str) -> list[dict[str, str]]:
+        """Read bounded create-metadata pages from one validated path."""
         issue_types: list[dict[str, str]] = []
         seen_ids: set[str] = set()
         start_at = 0
@@ -1082,18 +1116,10 @@ class JiraReadClient:
             raw_types = data.get("issueTypes")
             if not isinstance(raw_types, list):
                 raise JiraApiError("jira_unavailable", endpoint="createMeta")
-            for entry in raw_types:
-                if not isinstance(entry, Mapping):
-                    continue
-                type_id = _bounded_str(entry.get("id"), 32)
-                if not type_id or not _TOKEN_ID_RE.fullmatch(type_id):
-                    continue
-                if type_id in seen_ids:
-                    continue
-                seen_ids.add(type_id)
-                issue_types.append(
-                    {"id": type_id, "name": _bounded_str(entry.get("name"))}
-                )
+            for entry in _bounded_issue_types(raw_types):
+                if entry["id"] not in seen_ids:
+                    seen_ids.add(entry["id"])
+                    issue_types.append(entry)
             if "total" not in data and "startAt" not in data:
                 break
             total = _parse_createmeta_total(data, endpoint="createMeta")
