@@ -1,0 +1,12 @@
+[
+  {
+    "id": "10001",
+    "name": "Task",
+    "description": "fixture prose must not cross the metadata boundary"
+  },
+  {
+    "id": "10002",
+    "name": "Bug",
+    "description": "more fixture prose"
+  }
+]

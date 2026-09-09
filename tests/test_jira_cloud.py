@@ -898,6 +898,7 @@ class ReadPrimitiveTests(unittest.TestCase):
         # Only bounded metadata fields are requested and returned.
         for body in bodies:
             self.assertLessEqual(set(body["fields"]), jira_cloud.SAFE_SEARCH_FIELDS)
+            self.assertEqual(body["maxResults"], jira_cloud.SEARCH_PAGE_SIZE)
         first = result["issues"][0]
         self.assertEqual(first["id"], "20001")
         self.assertEqual(first["fields"]["status_id"], "10000")
@@ -1736,6 +1737,43 @@ class IssueTypePaginationTests(unittest.TestCase):
         self.assertEqual(len(runner.calls), 2)
         self.assertIn("startAt=0", runner.calls[0]["url"])
         self.assertIn("startAt=2", runner.calls[1]["url"])
+
+    def test_not_found_falls_back_to_project_issue_types(self) -> None:
+        runner = FakeHttp(
+            [
+                http_error(404),
+                http_response(load_fixture("project_issue_types.json")),
+            ]
+        )
+        client = make_client(runner)
+        types = client.get_issue_types(PROJECT_ID)
+        self.assertEqual(
+            types,
+            [{"id": "10001", "name": "Task"}, {"id": "10002", "name": "Bug"}],
+        )
+        self.assertIn("/issue/createmeta/", runner.calls[0]["url"])
+        self.assertIn("/issuetype/project?projectId=10001", runner.calls[1]["url"])
+        self.assertNotIn("fixture prose", json.dumps(types))
+
+    def test_non_not_found_failure_does_not_fall_back(self) -> None:
+        runner = FakeHttp([http_error(403)])
+        client = make_client(runner)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_issue_types(PROJECT_ID)
+        self.assertEqual(ctx.exception.code, "jira_forbidden")
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_fallback_issue_type_inventory_is_bounded(self) -> None:
+        raw = [
+            {"id": str(index), "name": f"Type {index}"}
+            for index in range(jira_cloud.MAX_ISSUE_TYPES + 1)
+        ]
+        runner = FakeHttp([http_error(404), http_response(raw)])
+        client = make_client(runner)
+        with self.assertRaises(jira_cloud.JiraApiError) as ctx:
+            client.get_issue_types(PROJECT_ID)
+        self.assertEqual(ctx.exception.code, "jira_unavailable")
+        self.assertEqual(ctx.exception.endpoint, "issueTypeProject")
 
     def test_page_bound_fails_closed(self) -> None:
         script = [

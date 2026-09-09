@@ -81,9 +81,11 @@ No Jira calls or writes occur without an injected reader.
 The adapter wraps the configured predicate with immutable numeric project-id
 scoping, replaces its unquoted ordering with `created ASC, key ASC`, verifies
 each returned item's project id, deduplicates by issue id (newest update wins),
-and sorts deterministically. Defaults are five pages of 50 items; hard limits
-are ten pages of 100. Repeated/missing cursors and malformed responses fail
-closed. A page-limit result is partial and cannot authorize a dispatch.
+and sorts deterministically. Jira searches use 25-item pages to stay inside
+the bounded response budget while preserving the prior coverage: the default
+is ten pages (250 items), with a hard limit of 40 pages (1,000 items).
+Repeated/missing cursors and malformed responses fail closed. A page-limit
+result is partial and cannot authorize a dispatch.
 Search uses the [enhanced JQL response contract](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/).
 
 Only contract fields are normalized. Labels are limited to 100 input entries

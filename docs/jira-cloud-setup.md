@@ -182,6 +182,12 @@ The adoption check evaluates four Jira readiness checks:
    `ADD_COMMENTS`), and
    confirms transition targets match `status_category_map`.
 
+Queue reads use bounded 25-item pages so metadata-rich Jira projects remain
+inside Code Mower's response-size limit. When Jira returns 404 for the
+create-metadata issue-type inventory, doctor falls back to Jira's project
+issue-type endpoint. Required create-field metadata still fails closed when
+unavailable; Code Mower never treats missing metadata as an empty requirement.
+
 ### Read-only queue and controller preview
 
 After doctor passes, inspect the live Jira-backed queue alongside GitHub lane
