@@ -5993,6 +5993,37 @@ def campaign_watch(
                     print(f"error: {msg}", file=err)
                 return summary
             watch_repo_slug, _ = _watch_repo_slug(reloaded, repo_slug)
+            # The conflict check above read the campaign as it stood before this
+            # watch held the lock, so re-check the record actually loaded under
+            # it: a binding completed in between must be honored rather than
+            # overwritten. Then bind on the same fill-once terms the mutating
+            # route uses. Binding here -- under the lock, before the first poll
+            # -- is what makes this the last invocation that has to name
+            # `--issue`: this run's own poll and every later watch read the
+            # stored value, and a pre-migration campaign that carries no issue
+            # is completed once. A bound issue is never rewritten.
+            reloaded_issue_error = _issue_link_conflict(reloaded, issue)
+            if reloaded_issue_error:
+                summary = _build_watch_summary(
+                    campaign_id=cid,
+                    release_tag=rtag,
+                    package_identity=pkg_id,
+                    qualification_context=qcontext,
+                    status="invalid",
+                    stop_reason="invalid_campaign",
+                    polls=0,
+                    elapsed_seconds=time_fn() - start_time,
+                    interval_seconds=validated_interval,
+                    timeout_seconds=validated_timeout,
+                    next_action="use the issue recorded by the campaign",
+                    next_detail=reloaded_issue_error,
+                    retry_guidance="omit --issue or pass the stored campaign issue",
+                    error=reloaded_issue_error,
+                )
+                if not emit_json:
+                    print(f"error: {reloaded_issue_error}", file=err)
+                return summary
+            _bind_issue_number(reloaded, issue, campaigns_dir=campaigns_dir)
             initial_snapshot = copy.deepcopy(reloaded)
             current_campaign = dispatch_or_advance_campaign(
                 reloaded,

@@ -742,5 +742,161 @@ class PreBindingCampaignCompatibilityTests(unittest.TestCase):
             self.assertIn("fixed once set", err.getvalue())
 
 
+class WatchIssueBindingTests(unittest.TestCase):
+    """`watch --issue` binds the campaign issue durably, and binds it once.
+
+    Watching is the long-running command an operator leaves attached to a
+    campaign, so it is frequently the first place a pre-migration campaign is
+    told which issue it belongs to. Polling that issue without recording it
+    would make every later invocation re-supply `--issue` -- the exact defect
+    the mutating route already fixes -- so the binding is completed under the
+    campaigns lock, before the first poll, on the same fill-once terms.
+    """
+
+    def _running_campaign(self, campaigns_dir: Path, *, bound: bool) -> None:
+        """Store a dispatched campaign, with or without a bound issue.
+
+        The unbound variant carries no `issue_number` key at all: the on-disk
+        shape of a campaign written before the field existed.
+        """
+        campaign = release_campaigns.initialize_campaign(
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            providers=["cursor_cloud_agent"],
+            repo_slug="owner/repo",
+        ).to_dict()
+        provider = campaign["providers"][0]
+        campaign["status"] = "running"
+        provider["state"] = "running"
+        provider["attempted_at"] = "2024-01-01T00:00:00Z"
+        provider["dispatch_ref"] = {"issue_number": "817", "comment_posted": True}
+        if bound:
+            campaign["issue_number"] = "817"
+        else:
+            campaign.pop("issue_number")
+        release_campaigns.save_campaign(campaign, campaigns_dir)
+
+    def _watch(
+        self,
+        campaigns_dir: Path,
+        repo_path: Path,
+        *,
+        issue: str = "",
+        gh_json_runner: Any = None,
+    ) -> dict[str, Any]:
+        return release_campaigns.campaign_watch(
+            release_tag="v1.0.0",
+            campaigns_dir=campaigns_dir,
+            repo_path=repo_path,
+            issue=issue,
+            interval=0.01,
+            timeout=0.02,
+            emit_json=True,
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            sleep_fn=lambda _s: None,
+            gh_json_runner=gh_json_runner or _empty_gh_json_runner(),
+            env=_verified_cursor_env(),
+        )
+
+    def _stored(self, campaigns_dir: Path) -> dict[str, Any]:
+        stored = release_campaigns.load_campaign_by_id(
+            "campaign-v1.0.0", campaigns_dir
+        )
+        assert stored is not None
+        return stored
+
+    def test_watch_binds_the_first_explicit_issue(self) -> None:
+        """The issue is persisted, and this same run already polls it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            campaigns_dir = root / "campaigns"
+            self._running_campaign(campaigns_dir, bound=False)
+
+            calls: list[tuple[str, ...]] = []
+            self._watch(
+                campaigns_dir,
+                root,
+                issue="817",
+                gh_json_runner=_empty_gh_json_runner(calls),
+            )
+
+            self.assertEqual(self._stored(campaigns_dir)["issue_number"], "817")
+            self.assertTrue(calls)
+            self.assertEqual(calls[0][:3], ("issue", "view", "817"))
+
+    def test_later_watch_without_the_flag_reuses_the_bound_issue(self) -> None:
+        """Having bound it once, the operator never names the issue again."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            campaigns_dir = root / "campaigns"
+            self._running_campaign(campaigns_dir, bound=False)
+            self._watch(campaigns_dir, root, issue="817")
+
+            calls: list[tuple[str, ...]] = []
+            self._watch(
+                campaigns_dir, root, gh_json_runner=_empty_gh_json_runner(calls)
+            )
+
+            self.assertTrue(calls)
+            self.assertEqual(calls[0][:3], ("issue", "view", "817"))
+            self.assertEqual(self._stored(campaigns_dir)["issue_number"], "817")
+
+    def test_later_different_issue_is_refused_before_polling_or_mutation(self) -> None:
+        """The fill-once guarantee survives: the binding is never repointed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            campaigns_dir = root / "campaigns"
+            self._running_campaign(campaigns_dir, bound=False)
+            self._watch(campaigns_dir, root, issue="817")
+            before = json.dumps(self._stored(campaigns_dir), sort_keys=True)
+
+            gh_json_runner = mock.MagicMock()
+            summary = self._watch(
+                campaigns_dir, root, issue="999", gh_json_runner=gh_json_runner
+            )
+
+            self.assertEqual(summary["stop_reason"], "invalid_campaign")
+            self.assertIn("fixed once set", summary["error"])
+            gh_json_runner.assert_not_called()
+            self.assertEqual(before, json.dumps(self._stored(campaigns_dir), sort_keys=True))
+
+    def test_binding_is_rechecked_against_the_campaign_loaded_under_the_lock(self) -> None:
+        """A binding completed after the pre-lock read still wins.
+
+        The conflict check that precedes the lock sees a stale record, so a
+        campaign bound in between must be re-checked against the copy actually
+        loaded under the lock -- otherwise the watch would overwrite a binding
+        the fill-once rule promises is permanent.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            campaigns_dir = root / "campaigns"
+            self._running_campaign(campaigns_dir, bound=False)
+            stale = self._stored(campaigns_dir)
+            # Another invocation binds 817 between the caller's read and the lock.
+            self._watch(campaigns_dir, root, issue="817")
+
+            gh_json_runner = mock.MagicMock()
+            summary = release_campaigns.campaign_watch(
+                stale,
+                campaigns_dir=campaigns_dir,
+                repo_path=root,
+                issue="999",
+                interval=0.01,
+                timeout=0.02,
+                emit_json=True,
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+                sleep_fn=lambda _s: None,
+                gh_json_runner=gh_json_runner,
+                env=_verified_cursor_env(),
+            )
+
+            self.assertEqual(summary["stop_reason"], "invalid_campaign")
+            gh_json_runner.assert_not_called()
+            self.assertEqual(self._stored(campaigns_dir)["issue_number"], "817")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
