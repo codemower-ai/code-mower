@@ -512,9 +512,13 @@ exit EXIT_CODE
 
     def test_prompt_file_removed_on_timeout(self) -> None:
         fake, mode_log, path_log = self._write_prompt_observer("slow", sleep=3)
+        temp_root = Path(tempfile.gettempdir())
+        before = set(temp_root.glob("code-mower-devin-cli-*"))
         result = self._run_with_fake(fake, timeout=1)
         self.assertEqual(result.verdict, "UNKNOWN")
-        self.assertFalse(Path(path_log.read_text(encoding="utf-8")).exists())
+        self.assertEqual(set(temp_root.glob("code-mower-devin-cli-*")), before)
+        if path_log.exists():
+            self.assertFalse(Path(path_log.read_text(encoding="utf-8")).exists())
 
 
 def _child_is_alive(pid: int) -> bool:
@@ -614,8 +618,9 @@ class TestGitLimitedDeadline(_DevinCliAuditTestCase):
             + "sleep 60\n"
         )
         with self.assertRaises(devin_cli_audit.NoTrustworthyVerdictError):
-            self._run_with_path(bin_dir, max_bytes=1024, timeout=2)
+            self._run_with_path(bin_dir, max_bytes=1024, timeout=10)
 
+        self.assertTrue(pid_file.exists(), "fake git did not start before its deadline")
         _assert_child_reaped(self, pid_file, "bounded git timeout")
 
 
