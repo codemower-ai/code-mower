@@ -7,6 +7,22 @@ later entries are regular releases.
 
 ## Unreleased
 
+## v1.1.2
+
+Code Mower v1.1.2 hardens Jira Cloud adoption for large and
+create-metadata-limited projects without changing the GitHub-only default or
+the metadata-only privacy boundary.
+
+### Fixed
+
+- Jira enhanced-search requests use bounded 25-item pages while preserving
+  the existing 250-item default and 1,000-item hard queue coverage. This keeps
+  metadata-rich project responses inside the transport response-size limit.
+- Jira issue-type discovery falls back to the project issue-type endpoint only
+  when the create-metadata inventory returns 404. Authentication,
+  authorization, malformed, oversized, and create-field metadata failures
+  continue to fail closed (issue #831, PR #832).
+
 ## v1.1.1
 
 Code Mower v1.1.1 hardens hosted release qualification and campaign recovery.
