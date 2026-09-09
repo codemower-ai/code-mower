@@ -113,6 +113,7 @@ response). See
 The reason is derived from error messages and exception types during the install
 attempt. It is always one stable identifier from this vocabulary and never
 includes raw command output, file paths, authentication details, or secrets.
+Remote qualification reports only this bounded reason word as failure evidence: a failed `package_install` must carry exactly one closed `failure_reason`, with `unknown` reserved for a command that was actually attempted and cannot be classified from local diagnostics.
 
 **Operators can infer:**
 - Whether a failure was likely environmental (network/sandbox) vs. package-related
