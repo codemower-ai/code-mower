@@ -8454,7 +8454,7 @@ def main():
         for label, path in active_docs.items():
             text = path.read_text(encoding="utf-8")
             with self.subTest(path=label):
-                self.assertRegex(text, r"0\.[89]|1\.0")
+                self.assertRegex(text, r"0\.[89]|1\.\d+")
                 for phrase in stale_phrases:
                     self.assertNotIn(phrase, text)
 
