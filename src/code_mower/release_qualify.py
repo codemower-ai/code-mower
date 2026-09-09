@@ -1114,6 +1114,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     campaign.add_argument(
+        "--trusted-result-author",
+        action="append",
+        default=None,
+        metavar="PROVIDER=LOGIN",
+        help=(
+            "Trust this GitHub result author for one selected provider (repeatable). "
+            "Stored locally at creation; omitted on resume/dispatch/watch it is reused "
+            "automatically. If repeated on resume/dispatch, the full normalized list "
+            "must match stored author posture. Logins are excluded from Board and uploads."
+        ),
+    )
+    campaign.add_argument(
         "--required-providers",
         default=None,
         help=(
@@ -1416,6 +1428,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 package_spec=args.package_spec,
                 providers=providers_list,
                 required_providers=required_providers_list,
+                trusted_result_authors=args.trusted_result_author,
                 qualification_context=args.qualification_context,
                 starting_version=args.starting_version,
                 package_source=args.package_source,

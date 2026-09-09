@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 from unittest import mock
@@ -15266,6 +15267,418 @@ class LinkedReleasePrIdentityTests(unittest.TestCase):
         self.assertIn("--release-pr", help_text)
         self.assertIn("release pull request number linked to this campaign", help_text)
         self.assertIn("can never change a linked PR", help_text)
+
+
+class TrustedCampaignResultAuthorTests(unittest.TestCase):
+    """Explicit, provider-scoped trust persists locally without weakening result binding."""
+
+    LOGIN = "private-campaign-installer"
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.campaigns_dir = self.root / "campaigns"
+
+    def _campaign(self, **kwargs: Any) -> Any:
+        options = {
+            "release_tag": "v1.0.0",
+            "providers": ["cursor_cloud_agent"],
+            "repo_slug": "owner/repo",
+            "release_pr": "786",
+            "trusted_result_authors": [f"cursor={self.LOGIN}"],
+        }
+        options.update(kwargs)
+        return release_campaigns.initialize_campaign(**options)
+
+    def _seed_running(self, **kwargs: Any) -> Any:
+        campaign = self._campaign(**kwargs)
+        campaign.status = "running"
+        campaign.dry_run = False
+        for provider in campaign.providers:
+            provider.update({
+                "state": "running",
+                "attempted_at": "2026-09-04T08:00:00Z",
+                "dispatch_mode": "applied",
+                "trigger_posted": True,
+                "dispatch_ref": {"issue_number": "784", "comment_posted": True},
+            })
+        release_campaigns.save_campaign(campaign, self.campaigns_dir)
+        return campaign
+
+    def _command(self, **kwargs: Any) -> tuple[int, str, str]:
+        options = {
+            "action": "resume",
+            "campaign_id": "campaign-v1.0.0",
+            "campaigns_dir": self.campaigns_dir,
+            "env": {},
+        }
+        options.update(kwargs)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = release_campaigns.campaign_command(**options)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_create_save_load_normalizes_aliases_case_order_and_duplicates(self) -> None:
+        campaign = self._campaign(
+            providers=["cursor", "claude"],
+            trusted_result_authors=[
+                " Cursor = Example-Installer ",
+                "CURSOR-CLOUD-AGENT=example-installer",
+                "claude_code=Build-App[BOT]",
+                "cursor=another-installer",
+            ],
+        )
+        expected = {
+            "claude": ["build-app[bot]"],
+            "cursor_cloud_agent": ["another-installer", "example-installer"],
+        }
+        self.assertEqual(campaign.trusted_result_authors, expected)
+        path = release_campaigns.save_campaign(campaign, self.campaigns_dir)
+        loaded = release_campaigns.load_campaign_by_id(campaign.campaign_id, self.campaigns_dir)
+        self.assertEqual(loaded["trusted_result_authors"], expected)
+        self.assertEqual(json.loads(path.read_text())["trusted_result_authors"], expected)
+
+    def test_cli_create_accepts_repeated_authors_and_redacts_output(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = release_qualify.main([
+                "campaign", "create", "--release-tag", "v1.0.0",
+                "--providers", "cursor", "--campaigns-dir", str(self.campaigns_dir),
+                "--trusted-result-author", f"CuRsOr={self.LOGIN.upper()}",
+                "--trusted-result-author", "cursor_cloud_agent=another-installer[bot]",
+                "--json",
+            ])
+        self.assertEqual(code, 0, err.getvalue())
+        loaded = release_campaigns.load_campaign_by_id("campaign-v1.0.0", self.campaigns_dir)
+        self.assertEqual(loaded["trusted_result_authors"], {
+            "cursor_cloud_agent": ["another-installer[bot]", self.LOGIN],
+        })
+        self.assertNotIn(self.LOGIN, out.getvalue().lower() + err.getvalue().lower())
+        self.assertEqual(json.loads(out.getvalue())["trusted_result_author_count"], 2)
+
+    def test_malformed_arguments_are_refused_before_lookup_or_lock(self) -> None:
+        invalid = [
+            "cursor", "cursor=", "=installer", "cursor=a=b", "cursor=a,b",
+            "cursor=@installer", "cursor=https://github.com/installer",
+            "cursor=*", "cursor=-installer", "cursor=installer-", "cursor=a--b",
+            "cursor=a.b", "cursor=a_b", "cursor=a b", "cursor=a\nb", "cursor=a\x00b",
+            "cursor=\u212a", "cursor=\u00e9", "cursor=a\n", "cursor=" + "a" * 40,
+            "cursor=" + "a" * 40 + "[bot]", "cursor=a[bot]extra",
+            "https://example.com=installer", "unknown-provider=installer",
+            "cursor cloud agent=installer", "c" * 65 + "=installer",
+            "cursor=" + "a" * 200, 123,
+        ]
+        for entry in invalid:
+            with self.subTest(entry=entry), mock.patch.object(
+                release_campaigns, "locked_campaigns_dir"
+            ) as lock, mock.patch.object(release_campaigns, "_load_requested_campaign") as lookup:
+                code, _, error = self._command(
+                    action="create", release_tag="v1.0.0", trusted_result_authors=[entry],
+                )
+                self.assertEqual(code, 1)
+                self.assertIn("trusted result author", error)
+                self.assertLess(len(error), 220)
+                lock.assert_not_called()
+                lookup.assert_not_called()
+                self.assertFalse(self.campaigns_dir.exists())
+
+    def test_author_and_collection_bounds(self) -> None:
+        self.assertEqual(
+            self._campaign(trusted_result_authors=["cursor=" + "a" * 39 + "[bot]"])
+            .trusted_result_authors,
+            {"cursor_cloud_agent": ["a" * 39 + "[bot]"]},
+        )
+        for entries in (
+            "cursor=installer", {"cursor": ["installer"]},
+            ["cursor=installer"] * 129,
+            [f"cursor=installer-{index}" for index in range(33)],
+        ):
+            with self.subTest(entries=entries), self.assertRaises(ValueError):
+                self._campaign(trusted_result_authors=entries)
+        self.assertEqual(len(self._campaign(
+            trusted_result_authors=[f"cursor=installer-{index}" for index in range(32)],
+        ).trusted_result_authors["cursor_cloud_agent"]), 32)
+
+    def test_known_but_unselected_provider_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not selected"):
+            self._campaign(trusted_result_authors=["claude=installer"])
+
+    def test_resume_and_watch_discover_stored_installer_without_environment(self) -> None:
+        for action in ("resume", "dispatch", "watch"):
+            for surface in ("issue", "pr"):
+                with self.subTest(action=action, surface=surface):
+                    campaign = self._seed_running()
+                    comment = _cursor_result_comment(
+                        campaign, campaign.providers[0], author=self.LOGIN.upper(),
+                    )
+                    runner = _surface_gh_runner(**{f"{surface}_comments": [comment]})
+                    mutation = mock.Mock(side_effect=AssertionError("must only poll"))
+                    code, output, error = self._command(
+                        action=action, gh_json_runner=runner, command_runner=mutation,
+                        adapter_runner=mutation, emit_json=True,
+                    )
+                    self.assertEqual(code, 0, error)
+                    loaded = release_campaigns.load_campaign_by_id(campaign.campaign_id, self.campaigns_dir)
+                    self.assertEqual(loaded["providers"][0]["state"], "complete")
+                    self.assertEqual(
+                        loaded["providers"][0]["result_source"]["surface"],
+                        "pull_request" if surface == "pr" else surface,
+                    )
+                    self.assertEqual(loaded["trusted_result_authors"], campaign.trusted_result_authors)
+                    self.assertNotIn(self.LOGIN, output.lower() + error.lower())
+                    mutation.assert_not_called()
+
+    def test_stored_author_makes_dispatch_profile_ready_without_builtin_authors(self) -> None:
+        _, lane = release_campaigns.resolve_provider_lane("cursor")
+        lane = replace(lane, provider_config={**lane.provider_config, "bot_authors": ()})
+        env = {
+            "CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "fixture-token",
+            "CODE_MOWER_CURSOR_CLOUD_AGENT_CAMPAIGN_TRANSPORT_READY": "1",
+        }
+        with mock.patch.dict(release_campaigns.REFERENCE_PROVIDERS, {"cursor_cloud_agent": lane}):
+            self.assertFalse(release_campaigns.hosted_dispatch_profile(
+                lane, env=env,
+            )["trusted_responder"]["ready"])
+            self.assertTrue(release_campaigns.hosted_dispatch_profile(
+                lane, env=env, trusted_result_authors=[self.LOGIN],
+            )["trusted_responder"]["ready"])
+            campaign = self._campaign()
+            release_campaigns.save_campaign(campaign, self.campaigns_dir)
+            code, _, error = self._command(action="dispatch", env=env, issue="784")
+            self.assertEqual(code, 0, error)
+            loaded = release_campaigns.load_campaign_by_id(campaign.campaign_id, self.campaigns_dir)
+            self.assertEqual(loaded["providers"][0]["state"], "queued")
+            self.assertEqual(loaded["providers"][0]["error"], "")
+
+    def test_matching_resume_arguments_are_set_comparisons(self) -> None:
+        campaign = self._seed_running(trusted_result_authors=[
+            f"cursor={self.LOGIN}", "cursor=another-installer",
+        ])
+        comment = _cursor_result_comment(campaign, campaign.providers[0], author=self.LOGIN)
+        code, _, error = self._command(
+            trusted_result_authors=[
+                "CURSOR-CLOUD-AGENT=ANOTHER-INSTALLER", f" cursor = {self.LOGIN.upper()} ",
+                f"cursor_cloud_agent={self.LOGIN}",
+            ],
+            gh_json_runner=_surface_gh_runner(issue_comments=[comment]),
+        )
+        self.assertEqual(code, 0, error)
+
+    def test_conflicts_precede_poll_retry_record_and_identity_mutation(self) -> None:
+        campaign = self._seed_running(repo_slug="", release_pr="")
+        path = self.campaigns_dir / release_campaigns.campaign_filename(campaign.campaign_id)
+        before = path.read_bytes()
+        for options in (
+            {"action": "resume"}, {"action": "dispatch", "apply": True},
+            {"action": None}, {"action": None, "resume": True},
+            {"retry_provider": "cursor", "apply": True},
+            {"record_result": self.root / "result.json", "record_provider": "cursor"},
+        ):
+            for entries in ([], ["cursor=different-installer"],
+                            [f"cursor={self.LOGIN}", "cursor=another-installer"]):
+                with self.subTest(options=options, entries=entries), mock.patch.object(
+                    release_campaigns, "save_campaign"
+                ) as save, mock.patch.object(release_campaigns, "record_manual_result") as record:
+                    external = mock.Mock(side_effect=AssertionError("must refuse before side effects"))
+                    code, _, error = self._command(
+                        **options, repo_slug="owner/repo", release_pr="786",
+                        trusted_result_authors=entries, gh_json_runner=external,
+                        command_runner=external, adapter_runner=external,
+                    )
+                    self.assertEqual(code, 1)
+                    self.assertIn("author posture is fixed at creation", error)
+                    self.assertNotIn(self.LOGIN, error)
+                    save.assert_not_called()
+                    record.assert_not_called()
+                    external.assert_not_called()
+                    self.assertEqual(path.read_bytes(), before)
+
+    def test_option_scope_rejects_actions_that_do_not_create_or_verify_posture(self) -> None:
+        for action in ("status", "watch", "upload", "dispose"):
+            with self.subTest(action=action), mock.patch.object(
+                release_campaigns, "_load_requested_campaign"
+            ) as lookup:
+                code, _, error = self._command(
+                    action=action, trusted_result_authors=[f"cursor={self.LOGIN}"],
+                )
+                self.assertEqual(code, 1)
+                self.assertIn("--trusted-result-author applies only", error)
+                lookup.assert_not_called()
+                self.assertFalse(self.campaigns_dir.exists())
+
+    def test_legacy_and_empty_postures_cannot_be_widened_on_resume(self) -> None:
+        for legacy in (True, False):
+            with self.subTest(legacy=legacy):
+                campaign = self._campaign(trusted_result_authors=None).to_dict()
+                if legacy:
+                    campaign.pop("trusted_result_authors")
+                path = release_campaigns.save_campaign(campaign, self.campaigns_dir)
+                before = path.read_bytes()
+                code, _, error = self._command(trusted_result_authors=[f"cursor={self.LOGIN}"])
+                self.assertEqual(code, 1)
+                self.assertIn("fixed at creation", error)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_legacy_campaigns_keep_builtin_and_environment_authors(self) -> None:
+        for author, env in (("cursor[bot]", {}), (self.LOGIN, {
+            "CURSOR_CLOUD_AGENT_BOT_AUTHORS": self.LOGIN,
+        })):
+            with self.subTest(author=author):
+                campaign = self._seed_running(trusted_result_authors=None)
+                legacy = campaign.to_dict()
+                legacy.pop("trusted_result_authors")
+                release_campaigns.save_campaign(legacy, self.campaigns_dir)
+                comment = _cursor_result_comment(campaign, campaign.providers[0], author=author)
+                code, _, error = self._command(
+                    env=env, gh_json_runner=_surface_gh_runner(issue_comments=[comment]),
+                )
+                self.assertEqual(code, 0, error)
+                loaded = release_campaigns.load_campaign_by_id(campaign.campaign_id, self.campaigns_dir)
+                self.assertEqual(loaded["providers"][0]["state"], "complete")
+                self.assertNotIn("trusted_result_authors", loaded)
+
+    def test_builtin_and_environment_authors_still_extend_explicit_posture(self) -> None:
+        for author in ("cursor[bot]", "environment-installer"):
+            with self.subTest(author=author):
+                campaign = self._seed_running()
+                comment = _cursor_result_comment(campaign, campaign.providers[0], author=author)
+                code, _, error = self._command(
+                    env={"CURSOR_CLOUD_AGENT_BOT_AUTHORS": "environment-installer"},
+                    gh_json_runner=_surface_gh_runner(issue_comments=[comment]),
+                )
+                self.assertEqual(code, 0, error)
+                loaded = release_campaigns.load_campaign_by_id(campaign.campaign_id, self.campaigns_dir)
+                self.assertEqual(loaded["providers"][0]["state"], "complete")
+                self.assertEqual(loaded["trusted_result_authors"], campaign.trusted_result_authors)
+
+    def test_authors_remain_provider_scoped_and_bot_suffix_remains_exact(self) -> None:
+        for additions, author in (
+            ([f"claude={self.LOGIN}"], self.LOGIN),
+            ([f"cursor={self.LOGIN}[bot]"], self.LOGIN),
+            ([f"cursor={self.LOGIN}"], self.LOGIN + "[bot]"),
+            ([f"cursor={self.LOGIN}"], "untrusted-installer"),
+        ):
+            with self.subTest(additions=additions, author=author):
+                campaign = self._seed_running(
+                    providers=["cursor", "claude"], trusted_result_authors=additions,
+                )
+                comment = _cursor_result_comment(campaign, campaign.providers[0], author=author)
+                loaded = release_campaigns.load_campaign_by_id(campaign.campaign_id, self.campaigns_dir)
+                updated = release_campaigns.dispatch_or_advance_campaign(
+                    loaded, campaigns_dir=self.campaigns_dir, env={}, poll_only=True,
+                    gh_json_runner=_surface_gh_runner(issue_comments=[comment]),
+                )
+                self.assertEqual(updated["providers"][0]["state"], "running")
+                self.assertIsNone(updated["providers"][0]["adoption_result"])
+
+    def test_trusted_author_never_bypasses_exact_marker_and_result_binding(self) -> None:
+        cases = [
+            ("schema", "other", False), ("campaign_id", "different-campaign", False),
+            ("provider", "claude", False), ("release_tag", "v2.0.0", False),
+            ("idempotency_key", "wrong-key", False), ("package_source", "testpypi", False),
+            ("provider", "claude", True), ("release_tag", "v2.0.0", True),
+            ("package_identity", "different-package", True),
+            ("qualification_context", "upgrade", True), ("starting_version", "0.9.0", True),
+            ("package_source", "testpypi", True), ("extra", True, True),
+        ]
+        for key, value, embedded in cases:
+            with self.subTest(key=key, value=value, embedded=embedded):
+                campaign = self._seed_running()
+                comment = _cursor_result_comment(campaign, campaign.providers[0], author=self.LOGIN)
+                wrapper = json.loads(comment["body"].split("CODE_MOWER_ADOPTION_RESULT: ")[1][:-4])
+                (wrapper["adoption_result"] if embedded else wrapper)[key] = value
+                comment["body"] = f"<!-- CODE_MOWER_ADOPTION_RESULT: {json.dumps(wrapper)} -->"
+                loaded = release_campaigns.load_campaign_by_id(campaign.campaign_id, self.campaigns_dir)
+                updated = release_campaigns.dispatch_or_advance_campaign(
+                    loaded, campaigns_dir=self.campaigns_dir, env={}, poll_only=True,
+                    gh_json_runner=_surface_gh_runner(issue_comments=[comment]),
+                )
+                self.assertNotEqual(updated["providers"][0]["state"], "complete")
+                self.assertIsNone(updated["providers"][0]["adoption_result"])
+
+    def test_malformed_stored_posture_fails_closed_before_mutation_or_poll(self) -> None:
+        for posture in (
+            None, [], "cursor=installer", {"cursor_cloud_agent": "installer"},
+            {"cursor_cloud_agent": []}, {"cursor_cloud_agent": [None]},
+            {"cursor_cloud_agent": ["*"]}, {"unknown": ["installer"]},
+            {"claude": ["installer"]},
+            {"cursor_cloud_agent": [f"installer-{index}" for index in range(33)]},
+        ):
+            with self.subTest(posture=posture):
+                campaign = self._seed_running().to_dict()
+                campaign["trusted_result_authors"] = posture
+                before = copy.deepcopy(campaign)
+                external = mock.Mock(side_effect=AssertionError("must refuse before polling"))
+                with self.assertRaises(ValueError):
+                    release_campaigns.dispatch_or_advance_campaign(
+                        campaign, apply=True, campaigns_dir=self.campaigns_dir,
+                        env={}, gh_json_runner=external, command_runner=external,
+                    )
+                self.assertEqual(campaign, before)
+                path = self.campaigns_dir / release_campaigns.campaign_filename(campaign["campaign_id"])
+                path.write_text(json.dumps(campaign))
+                stored_before = path.read_bytes()
+                for action in ("resume", "watch"):
+                    code, _, _ = self._command(action=action, gh_json_runner=external)
+                    self.assertEqual(code, 1)
+                    self.assertEqual(path.read_bytes(), stored_before)
+                external.assert_not_called()
+
+    def test_trusted_author_still_requires_the_exact_result_marker(self) -> None:
+        for variant in ("bare_result", "bare_envelope", "inline", "wrong_marker", "invalid_json"):
+            with self.subTest(variant=variant):
+                campaign = self._seed_running()
+                comment = _cursor_result_comment(campaign, campaign.providers[0], author=self.LOGIN)
+                envelope = comment["body"].split("CODE_MOWER_ADOPTION_RESULT: ")[1][:-4]
+                marker = f"<!-- CODE_MOWER_ADOPTION_RESULT: {envelope} -->"
+                comment["body"] = {
+                    "bare_result": json.dumps(_mock_adoption_result(provider="cursor_cloud_agent")),
+                    "bare_envelope": envelope,
+                    "inline": "Result: " + marker,
+                    "wrong_marker": marker.replace("CODE_MOWER_ADOPTION_RESULT", "ADOPTION_RESULT"),
+                    "invalid_json": "<!-- CODE_MOWER_ADOPTION_RESULT: {invalid} -->",
+                }[variant]
+                updated = release_campaigns.dispatch_or_advance_campaign(
+                    campaign.to_dict(), campaigns_dir=self.campaigns_dir, env={}, poll_only=True,
+                    gh_json_runner=_surface_gh_runner(issue_comments=[comment]),
+                )
+                self.assertEqual(updated["providers"][0]["state"], "running")
+                self.assertIsNone(updated["providers"][0]["adoption_result"])
+
+    def test_dispatch_board_status_and_upload_never_expose_local_logins(self) -> None:
+        campaign = self._campaign()
+        release_campaigns.save_campaign(campaign, self.campaigns_dir)
+        bodies: list[str] = []
+        code, dispatch_output, error = self._command(
+            action="dispatch", apply=True, issue="784",
+            env={"CURSOR_CLOUD_AGENT_AUDIT_LABEL_TOKEN": "fixture-token"},
+            command_runner=_capturing_dispatch_command_runner(bodies), emit_json=True,
+        )
+        self.assertEqual(code, 0, error)
+        self.assertTrue(bodies)
+        campaign = release_campaigns.load_campaign_by_id(campaign.campaign_id, self.campaigns_dir)
+        campaign["providers"][0]["state"] = "complete"
+        campaign["providers"][0]["adoption_result"] = _mock_adoption_result(provider="cursor_cloud_agent")
+        release_campaigns.save_campaign(campaign, self.campaigns_dir)
+        projection = release_campaigns.release_campaigns_board_payload(campaigns_dir=self.campaigns_dir)
+        code, status_output, error = self._command(action="status", emit_json=True)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(json.loads(status_output)["trusted_result_author_count"], 1)
+        plan = release_campaigns.build_campaign_upload_events(campaign)
+        self.assertEqual(len(plan["events"]), 1)
+        post = CampaignUploadTests._capturing_post()
+        cloud = release_campaigns._load_cloud_client()
+        with mock.patch.dict(os.environ, {
+            cloud.DEFAULT_TOKEN_ENV: CampaignUploadTests.FAKE_CREDENTIAL,
+        }, clear=True), mock.patch.object(cloud, "post_upload_payload", post):
+            preview = release_campaigns.campaign_upload(campaign, token_dir=self.root / "tokens")
+            applied = release_campaigns.campaign_upload(campaign, yes=True, token_dir=self.root / "tokens")
+        self.assertEqual(len(post.posted), 1)
+        public = json.dumps([bodies, dispatch_output, projection, status_output, plan, preview, applied, post.posted])
+        self.assertNotIn(self.LOGIN, public)
+        self.assertNotIn("trusted_result_authors", public)
+        self.assertIn(self.LOGIN, json.dumps(campaign))
 
 
 if __name__ == "__main__":
