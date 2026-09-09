@@ -150,6 +150,15 @@ GH_AUTH_PROBE_TIMEOUT_SECONDS = 10
 # depends only on its inputs.
 AuthProbe = Callable[[], bool]
 
+# Explicit trust additions are local campaign identity, never public metadata.
+TRUSTED_AUTHOR_PROVIDER_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}")
+TRUSTED_AUTHOR_LOGIN_PATTERN = re.compile(
+    r"[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,38}(?:\[bot\])?"
+)
+MAX_TRUSTED_RESULT_AUTHORS = 128
+MAX_TRUSTED_RESULT_AUTHORS_PER_PROVIDER = 32
+MAX_TRUSTED_RESULT_AUTHOR_ARGUMENT_LENGTH = 128
+
 DEFAULT_CAMPAIGN_PROVIDERS = (
     "claude",
     "codex",
@@ -385,6 +394,10 @@ class ReleaseCampaign:
     # field existed lack the key; readers must use `stored_issue_number`, never
     # direct indexing.
     issue_number: str = ""
+    # Provider-scoped explicit additions only. Built-ins and environment
+    # additions continue to resolve at invocation time. Never project these
+    # login values onto Board, dispatch comments, or upload events.
+    trusted_result_authors: dict[str, list[str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -527,6 +540,105 @@ def resolve_provider_lane(name: str) -> tuple[str, ProviderLane]:
         known = ", ".join(sorted(set(PROVIDER_ALIAS_MAP) | set(REFERENCE_PROVIDERS)))
         raise ValueError(f"unknown release campaign provider {name!r}; known providers: {known}")
     return lane.provider, lane
+
+
+def normalize_trusted_result_authors(
+    entries: Sequence[str] | None,
+) -> dict[str, list[str]]:
+    """Parse bounded PROVIDER=LOGIN additions without echoing private input.
+
+    Provider aliases, case, surrounding whitespace, and hyphen/underscore
+    spellings normalize before comparison. Login identity is case-insensitive;
+    a literal [bot] suffix remains distinct from the corresponding user.
+    """
+    if entries is None:
+        return {}
+    if not isinstance(entries, (list, tuple)) or len(entries) > MAX_TRUSTED_RESULT_AUTHORS:
+        raise ValueError("trusted result authors must be a list of at most 128 PROVIDER=LOGIN entries")
+    grouped: dict[str, set[str]] = {}
+    for entry in entries:
+        if (
+            not isinstance(entry, str)
+            or len(entry) > MAX_TRUSTED_RESULT_AUTHOR_ARGUMENT_LENGTH
+            or not entry.isascii()
+            or any(ord(char) < 32 or ord(char) == 127 for char in entry)
+            or entry.count("=") != 1
+        ):
+            raise ValueError("trusted result author must use bounded PROVIDER=LOGIN syntax")
+        provider, login = (part.strip() for part in entry.split("="))
+        if TRUSTED_AUTHOR_PROVIDER_PATTERN.fullmatch(provider) is None:
+            raise ValueError("trusted result author provider must be a known campaign provider")
+        try:
+            canonical, _ = resolve_provider_lane(provider.lower().replace("-", "_"))
+        except ValueError:
+            raise ValueError(
+                "trusted result author provider must be a known campaign provider"
+            ) from None
+        login = login.lower()
+        if TRUSTED_AUTHOR_LOGIN_PATTERN.fullmatch(login) is None:
+            raise ValueError(
+                "trusted result author login must use 1-39 ASCII letters/digits with single "
+                "internal hyphens and an optional [bot] suffix"
+            )
+        authors = grouped.setdefault(canonical, set())
+        authors.add(login)
+        if len(authors) > MAX_TRUSTED_RESULT_AUTHORS_PER_PROVIDER:
+            raise ValueError("trusted result authors may contain at most 32 logins per provider")
+    return {provider: sorted(authors) for provider, authors in sorted(grouped.items())}
+
+
+def stored_trusted_result_authors(campaign: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Read validated local author posture; missing legacy posture means no additions.
+
+    Malformed explicit posture is refused wholesale, never silently discarded
+    or coerced into an allowlist. This runs before polling or campaign writes.
+    """
+    raw = campaign.get("trusted_result_authors", {})
+    if not isinstance(raw, Mapping) or len(raw) > MAX_TRUSTED_RESULT_AUTHORS:
+        raise ValueError("invalid stored trusted result author posture")
+    entries: list[str] = []
+    for provider, authors in raw.items():
+        if (
+            not isinstance(provider, str)
+            or len(provider) > 64
+            or not isinstance(authors, list)
+            or not authors
+            or len(authors) > MAX_TRUSTED_RESULT_AUTHORS_PER_PROVIDER
+        ):
+            raise ValueError("invalid stored trusted result author posture")
+        for author in authors:
+            if not isinstance(author, str) or len(author) > 44:
+                raise ValueError("invalid stored trusted result author posture")
+            entries.append(f"{provider}={author}")
+            if len(entries) > MAX_TRUSTED_RESULT_AUTHORS:
+                raise ValueError("invalid stored trusted result author posture")
+    try:
+        normalized = normalize_trusted_result_authors(entries)
+    except ValueError:
+        raise ValueError("invalid stored trusted result author posture") from None
+    providers = campaign.get("providers", [])
+    selected = {
+        p.get("provider") for p in providers
+        if isinstance(p, Mapping) and isinstance(p.get("provider"), str)
+    } if isinstance(providers, list) else set()
+    if not normalized.keys() <= selected:
+        raise ValueError("trusted result author provider is not selected in this campaign")
+    return normalized
+
+
+def _trusted_result_authors_conflict(
+    campaign: Mapping[str, Any], entries: Sequence[str] | None,
+) -> str:
+    try:
+        stored = stored_trusted_result_authors(campaign)
+        if entries is not None and normalize_trusted_result_authors(entries) != stored:
+            return (
+                "--trusted-result-author does not match existing campaign trusted result authors; "
+                "author posture is fixed at creation; create a new campaign to change it"
+            )
+    except ValueError as exc:
+        return str(exc)
+    return ""
 
 
 def _compute_idempotency_key(
@@ -831,6 +943,7 @@ def hosted_dispatch_profile(
     profile: str = "",
     config_dir: Path | None = None,
     auth_probe: AuthProbe | None = None,
+    trusted_result_authors: Sequence[str] = (),
 ) -> dict[str, dict[str, Any]]:
     """Evaluate the closed hosted dispatch profile for one lane.
 
@@ -931,7 +1044,9 @@ def hosted_dispatch_profile(
         ),
     }
 
-    trusted_authors = _resolve_trusted_bot_authors(lane, env=current_env)
+    trusted_authors = _resolve_trusted_bot_authors(
+        lane, env=current_env, trusted_result_authors=trusted_result_authors,
+    )
     responder_ready = bool(trusted_authors)
     prof["trusted_responder"] = {
         "ready": responder_ready,
@@ -1297,8 +1412,9 @@ def save_campaign(
     campaign: ReleaseCampaign | dict[str, Any],
     campaigns_dir: Path,
 ) -> Path:
-    campaigns_dir.mkdir(parents=True, exist_ok=True)
     payload = campaign.to_dict() if isinstance(campaign, ReleaseCampaign) else campaign
+    stored_trusted_result_authors(payload)
+    campaigns_dir.mkdir(parents=True, exist_ok=True)
     filename = campaign_filename(payload["campaign_id"])
     target_path = campaigns_dir / filename
     # Stage into a name unique to this write. A single shared `.tmp.<name>`
@@ -2394,16 +2510,19 @@ def _resolve_trusted_bot_authors(
     lane: ProviderLane,
     *,
     env: Mapping[str, str],
+    trusted_result_authors: Sequence[str] = (),
 ) -> tuple[str, ...]:
     """Resolve the closed set of GitHub logins trusted to post adoption-result markers.
 
-    Only the lane's declarative `provider_config.bot_authors` and an optional
-    `provider_config.bot_authors_env` environment override are honored. The
+    Only the lane's declarative `provider_config.bot_authors`, its optional
+    `provider_config.bot_authors_env` additions, and validated campaign-local
+    additions for this provider are honored. The
     idempotency key alone is not sufficient identity binding -- it is visible
     in the public dispatch comment, so anyone could reply with a matching
     marker. A lane with no trusted authors configured trusts nobody.
     """
     authors: list[str] = [str(a) for a in lane.provider_config.get("bot_authors") or ()]
+    authors.extend(trusted_result_authors)
     bot_authors_env = lane.provider_config.get("bot_authors_env")
     if bot_authors_env:
         raw = env.get(str(bot_authors_env), "")
@@ -2928,6 +3047,7 @@ def initialize_campaign(
     package_source: str = DEFAULT_PACKAGE_SOURCE,
     providers: Sequence[str] = (),
     required_providers: Sequence[str] | None = None,
+    trusted_result_authors: Sequence[str] | None = None,
     repo_slug: str = "",
     campaign_id: str = "",
     release_pr: str = "",
@@ -3042,6 +3162,10 @@ def initialize_campaign(
     else:
         resolved_required = set(seen_providers)
 
+    normalized_authors = normalize_trusted_result_authors(trusted_result_authors)
+    if not normalized_authors.keys() <= seen_providers:
+        raise ValueError("trusted result author provider is not selected in this campaign")
+
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     environment = _detect_environment()
 
@@ -3098,6 +3222,7 @@ def initialize_campaign(
         provider_posture_configured=required_providers is not None,
         release_pr=normalized_release_pr,
         issue_number=normalized_issue_number,
+        trusted_result_authors=normalized_authors,
     )
 
 
@@ -3582,6 +3707,7 @@ def dispatch_or_advance_campaign(
     campaign an ordinary resume can poll to a conclusion instead of one stuck
     between "already attempted" and "never dispatched".
     """
+    campaign_authors = stored_trusted_result_authors(campaign)
     current_env = os.environ if env is None else env
     campaign_before_poll = copy.deepcopy(campaign) if poll_only else None
     repo_path = repo_path or Path.cwd()
@@ -3772,7 +3898,10 @@ def dispatch_or_advance_campaign(
             # marker could restart a provider that has already finished.
             found_result, result_source, rejection_detail = _discover_trusted_surface_result(
                 surfaces,
-                trusted_authors=_resolve_trusted_bot_authors(lane, env=current_env),
+                trusted_authors=_resolve_trusted_bot_authors(
+                    lane, env=current_env,
+                    trusted_result_authors=campaign_authors.get(lane.provider, ()),
+                ),
                 campaign_id=campaign_id,
                 provider=provider,
                 release_tag=release_tag,
@@ -4133,6 +4262,7 @@ def dispatch_or_advance_campaign(
                 profile=provider_profile,
                 config_dir=provider_config_dir,
                 auth_probe=auth_probe,
+                trusted_result_authors=campaign_authors.get(lane.provider, ()),
             )
             if lane.driver in {"hosted_bridge", "saas_event"}
             else {}
@@ -5311,6 +5441,18 @@ def campaign_upload(
     return summary
 
 
+def campaign_status_payload(campaign: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep explicit trusted-author logins in storage, not pasteable command output."""
+    payload = {key: value for key, value in campaign.items() if key != "trusted_result_authors"}
+    if "trusted_result_authors" in campaign:
+        try:
+            authors = stored_trusted_result_authors(campaign)
+            payload["trusted_result_author_count"] = sum(len(logins) for logins in authors.values())
+        except ValueError:
+            payload["trusted_result_author_count"] = None
+    return payload
+
+
 def render_campaign_text(campaign: Mapping[str, Any]) -> str:
     lines = [
         f"Release Campaign: {campaign.get('release_tag')} ({campaign.get('qualification_context')})",
@@ -5491,6 +5633,7 @@ def _watch_campaign_validation_error(campaign: Any) -> str:
     if not isinstance(campaign, Mapping) or campaign.get("schema") != CAMPAIGN_SCHEMA:
         return "invalid campaign payload"
     try:
+        stored_trusted_result_authors(campaign)
         campaign_id = validate_campaign_id(campaign.get("campaign_id"))
         valid_tag, normalized_version, _ = _validate_tag_format(campaign.get("release_tag"))
         if not valid_tag:
@@ -5831,7 +5974,7 @@ def campaign_watch(
             if target_absent and not target_path.is_file():
                 save_campaign(target_campaign, campaigns_dir)
             reloaded = load_campaign_by_id(cid, campaigns_dir)
-            if reloaded is None:
+            if reloaded is None or _watch_campaign_validation_error(reloaded):
                 msg = f"campaign {cid!r} could not be loaded from storage"
                 summary = _build_watch_summary(
                     campaign_id=cid,
@@ -5950,7 +6093,7 @@ def campaign_watch(
                     monotonic=time_fn,
                 ):
                     reloaded = load_campaign_by_id(cid, campaigns_dir)
-                    if reloaded is None:
+                    if reloaded is None or _watch_campaign_validation_error(reloaded):
                         stop_reason = "invalid_campaign"
                         break
                     watch_repo_slug, repo_slug_error = _watch_repo_slug(
@@ -6807,6 +6950,7 @@ def _command_intent_conflict(
     dispose_provider: str = "",
     unavailable_reason: str = "",
     release_pr: str = "",
+    trusted_result_authors: Sequence[str] | None = None,
 ) -> str:
     """Report the one bounded reason this invocation states conflicting intents.
 
@@ -6866,6 +7010,13 @@ def _command_intent_conflict(
     )
     if conflict:
         return conflict
+    if trusted_result_authors is not None and (
+        status or action in {"status", "watch", "upload", "dispose"}
+    ):
+        return (
+            "--trusted-result-author applies only to campaign creation, resume, and dispatch; "
+            "omit it to use the stored author posture"
+        )
     return _action_flag_conflict(action=action, status=status, resume=resume)
 
 
@@ -7024,6 +7175,7 @@ def _existing_campaign_conflict(
     repo_slug: str = "",
     release_pr: str = "",
     issue: str | int = "",
+    trusted_result_authors: Sequence[str] | None = None,
 ) -> str:
     """Report a bounded conflict between an existing campaign and creation arguments.
 
@@ -7059,6 +7211,9 @@ def _existing_campaign_conflict(
     -- before the lock-held mutation, the `gh` call, and the paid dispatch --
     rather than quietly redirecting an in-flight campaign.
     """
+    author_conflict = _trusted_result_authors_conflict(campaign, trusted_result_authors)
+    if author_conflict:
+        return author_conflict
     stored_slug = str(campaign.get("repo_slug") or "")
     if repo_slug and stored_slug and repo_slug != stored_slug:
         return (
@@ -7158,6 +7313,7 @@ def campaign_command(
     package_spec: str = "",
     providers: Sequence[str] = (),
     required_providers: Sequence[str] | str | None = None,
+    trusted_result_authors: Sequence[str] | None = None,
     qualification_context: str = "",
     starting_version: str = "",
     package_source: str = "",
@@ -7286,6 +7442,7 @@ def campaign_command(
         dispose_provider=dispose_provider,
         unavailable_reason=unavailable_reason,
         release_pr=str(release_pr or ""),
+        trusted_result_authors=trusted_result_authors,
     )
     if conflict:
         print(f"error: {conflict}", file=err)
@@ -7306,6 +7463,7 @@ def campaign_command(
     # mutation, exactly like a malformed campaign id: the value becomes a
     # polled discovery surface, so it is never stored unvalidated.
     try:
+        normalize_trusted_result_authors(trusted_result_authors)
         release_pr = validate_release_pr(release_pr)
     except ValueError as exc:
         print(f"error: {exc}", file=err)
@@ -7402,6 +7560,7 @@ def campaign_command(
             package_spec=package_spec,
             providers=providers,
             required_providers=parsed_required_providers,
+            trusted_result_authors=trusted_result_authors,
             qualification_context=qualification_context,
             starting_version=starting_version,
             package_source=package_source,
@@ -7459,6 +7618,7 @@ def _campaign_command_impl(
     package_spec: str = "",
     providers: Sequence[str] = (),
     required_providers: Sequence[str] | None = None,
+    trusted_result_authors: Sequence[str] | None = None,
     qualification_context: str = "",
     starting_version: str = "",
     package_source: str = "",
@@ -7586,6 +7746,15 @@ def _campaign_command_impl(
         print(f"error: {identifier_error}", file=sys.stderr)
         return 1
 
+    # Validate the local posture before *any* write route, including manual
+    # result recording and filling the linked PR/repository. Omission reuses
+    # stored additions; an explicit list asserts the entire immutable posture.
+    if existing and not (is_status or is_upload):
+        author_conflict = _trusted_result_authors_conflict(existing, trusted_result_authors)
+        if author_conflict:
+            print(f"error: {author_conflict}", file=sys.stderr)
+            return 1
+
     if is_dispose:
         if existing is None:
             target = f" for {identifier!r}" if identifier else ""
@@ -7605,7 +7774,7 @@ def _campaign_command_impl(
             print(f"error: {exc}", file=sys.stderr)
             return 1
         if emit_json:
-            print(json.dumps(updated, indent=2, sort_keys=True))
+            print(json.dumps(campaign_status_payload(updated), indent=2, sort_keys=True))
         else:
             print(render_campaign_text(updated))
         return 0
@@ -7647,7 +7816,7 @@ def _campaign_command_impl(
                 repo_path=repo_path,
             )
             if emit_json:
-                print(json.dumps(updated, indent=2, sort_keys=True))
+                print(json.dumps(campaign_status_payload(updated), indent=2, sort_keys=True))
             else:
                 print(render_campaign_text(updated))
             return 0 if updated.get("status") != "blocked" else 1
@@ -7670,7 +7839,7 @@ def _campaign_command_impl(
                 return 1
             existing = all_c[0]
         if emit_json:
-            print(json.dumps(existing, indent=2, sort_keys=True))
+            print(json.dumps(campaign_status_payload(existing), indent=2, sort_keys=True))
         else:
             print(render_campaign_text(existing))
         return 0
@@ -7738,6 +7907,7 @@ def _campaign_command_impl(
             repo_slug=repo_slug,
             release_pr=release_pr,
             issue=issue,
+            trusted_result_authors=trusted_result_authors,
         )
         if conflict:
             print(f"error: {conflict}", file=sys.stderr)
@@ -7792,7 +7962,7 @@ def _campaign_command_impl(
             auth_probe=auth_probe,
         )
         if emit_json:
-            print(json.dumps(updated, indent=2, sort_keys=True))
+            print(json.dumps(campaign_status_payload(updated), indent=2, sort_keys=True))
         else:
             print(render_campaign_text(updated))
         return 0 if updated.get("status") != "blocked" else 1
@@ -7828,6 +7998,7 @@ def _campaign_command_impl(
             package_source=package_source or DEFAULT_PACKAGE_SOURCE,
             providers=providers,
             required_providers=required_providers,
+            trusted_result_authors=trusted_result_authors,
             repo_slug=repo_slug,
             campaign_id=campaign_id,
             release_pr=release_pr,
@@ -7883,7 +8054,7 @@ def _campaign_command_impl(
     )
 
     if emit_json:
-        print(json.dumps(updated, indent=2, sort_keys=True))
+        print(json.dumps(campaign_status_payload(updated), indent=2, sort_keys=True))
     else:
         print(render_campaign_text(updated))
     return 0 if updated.get("status") != "blocked" else 1
