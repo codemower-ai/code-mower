@@ -7,6 +7,28 @@ later entries are regular releases.
 
 ## Unreleased
 
+## v1.1.1
+
+Code Mower v1.1.1 hardens hosted release qualification and campaign recovery.
+GitHub remains authoritative for pull requests and merge gates; qualification
+results and optional cloud uploads retain the metadata-only privacy boundary.
+
+### Fixed
+
+- GitHub-comment qualification transports reuse authenticated `gh` access
+  when no configured token environment variable is set. Campaigns persist
+  their issue binding for dispatch, watch, resume, retry, and result discovery;
+  conflicting issue changes fail before polling or mutation (issue #817,
+  PR #824).
+- Provider-scoped trusted result-author additions can be declared at campaign
+  creation, persist across polling and retries, and cannot be silently changed.
+  Existing built-in authors and environment additions remain supported; login
+  values stay out of Board and cloud uploads (issue #818, PR #823).
+- Failed remote `package_install` steps require an actionable closed
+  `failure_reason`. Provider instructions reserve `unknown` for failures that
+  cannot be classified, while remote validation rejects missing or invalid
+  reasons before accepting evidence (issue #819, PR #822).
+
 ## v1.1.0
 
 Code Mower v1.1.0 adds opt-in Jira Cloud work tracking without changing the
