@@ -207,7 +207,29 @@ GitHub state only. Controller dry-run never dispatches, merges, or writes Jira.
 
 ---
 
-## 4. Guarded Mutation Workflow
+## 4. Shared Orchestrator Contract
+
+`code-mower session start` adds a `tracker` section to the operating brief
+whenever `tracker.kind` is `jira_cloud`. Codex, Claude, and every other
+selected orchestrator host receive identical rules from that section:
+
+- Code Mower's Jira REST transport is authoritative for queue reads and every
+  Jira mutation.
+- Atlassian Rovo MCP, if the host has it connected, is optional local
+  read/context enrichment only. It never gains queue or mutation authority.
+- Every Jira write flows through the guarded `code-mower tracker mutate` or
+  `code-mower tracker pr-sync` commands below, never through Rovo tools or
+  any other path.
+- The brief names the configured project by `project_key` (or `project_id`
+  when no key is configured) only. It never includes issue body text,
+  comments, attachments, or credentials.
+
+See [Participants And Sessions](sessions.md#jira-tracker-contract) for the
+full session brief contract.
+
+---
+
+## 5. Guarded Mutation Workflow
 
 ### Dry-Run Planning (Default)
 
@@ -255,7 +277,7 @@ remains the only check and merge-gate authority.
 
 ---
 
-## 5. Rollback and Safe De-adoption
+## 6. Rollback and Safe De-adoption
 
 To revert Jira integration at any time:
 
@@ -266,7 +288,7 @@ To revert Jira integration at any time:
 
 ---
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | Symptom | Cause | Remediation |
 |---|---|---|

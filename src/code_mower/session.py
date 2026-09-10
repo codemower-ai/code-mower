@@ -22,6 +22,38 @@ from .participants import (
 )
 
 
+JIRA_TRACKER_CONTRACT_INSTRUCTIONS = (
+    "Code Mower's Jira REST transport is authoritative for queue reads and all "
+    "Jira mutations.",
+    "Atlassian Rovo MCP, if available to this host, is optional local read/context "
+    "enrichment only; it carries no queue or mutation authority for this session.",
+    "Every Jira write must flow through the guarded `code-mower tracker mutate` or "
+    "`code-mower tracker pr-sync` commands; do not write through Rovo MCP tools or "
+    "any other path.",
+    "Report only the configured Jira project key or ID; never surface issue body "
+    "text, comments, attachments, or credentials in this session brief.",
+)
+
+
+def _jira_tracker_section(config: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Bounded, metadata-only Jira operating contract shared by every
+    orchestrator host, or None when the tracker is not `jira_cloud`."""
+    tracker = config.get("tracker")
+    if not isinstance(tracker, Mapping) or tracker.get("kind") != "jira_cloud":
+        return None
+    jira_cloud = tracker.get("jira_cloud")
+    jira_cloud = jira_cloud if isinstance(jira_cloud, Mapping) else {}
+    project = str(jira_cloud.get("project_key") or jira_cloud.get("project_id") or "")
+    return {
+        "kind": "jira_cloud",
+        "project": project,
+        "authority": "code_mower_jira_rest",
+        "read_context": "atlassian_rovo_mcp_optional",
+        "mutation_commands": ["code-mower tracker mutate", "code-mower tracker pr-sync"],
+        "instructions": list(JIRA_TRACKER_CONTRACT_INSTRUCTIONS),
+    }
+
+
 def build_session(
     *, repo: str, host: str, selected: tuple[str, ...],
     config: Mapping[str, Any], orchestrator: str | None = None,
@@ -58,7 +90,7 @@ def build_session(
                         if item.builder else None),
             "reviewer": review, "note": item.note,
         })
-    return {
+    payload: dict[str, Any] = {
         "schema": "code_mower.session.v1",
         "repo": repo, "host": host, "orchestrator": coordinator,
         "participants": members,
@@ -74,6 +106,10 @@ def build_session(
             "Record results through existing builder/reviewer evidence contracts and use code-mower lanes status for progress.",
         ],
     }
+    tracker_section = _jira_tracker_section(config)
+    if tracker_section is not None:
+        payload["tracker"] = tracker_section
+    return payload
 
 
 def render_session(payload: Mapping[str, Any]) -> str:
@@ -96,6 +132,12 @@ def render_session(payload: Mapping[str, Any]) -> str:
         if member["note"]:
             lines.append(f"  {member['note']}")
     lines.extend(["", *payload["instructions"]])
+    tracker = payload.get("tracker")
+    if isinstance(tracker, Mapping) and tracker.get("kind") == "jira_cloud":
+        lines.append("")
+        project = tracker.get("project") or "(unconfigured)"
+        lines.append(f"Tracker: jira_cloud (project {project})")
+        lines.extend(tracker.get("instructions", []))
     if payload["status"] == "handoff_required":
         lines.append("Pass this brief to the selected orchestrator before beginning work.")
     return "\n".join(lines) + "\n"

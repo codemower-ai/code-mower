@@ -7,6 +7,18 @@ later entries are regular releases.
 
 ## Unreleased
 
+### Added
+
+- `code-mower session start` adds a `tracker` section to the operating brief
+  when `tracker.kind` is `jira_cloud`, giving every selected orchestrator host
+  (Codex, Claude, or others) an identical Jira authority, privacy, and
+  mutation contract: Code Mower's Jira REST transport is authoritative for
+  queue reads and all mutations, Atlassian Rovo MCP is optional local
+  read/context enrichment only, and writes must flow through the guarded
+  `code-mower tracker mutate` and `code-mower tracker pr-sync` commands. The
+  brief names the configured Jira project by key or ID only. GitHub-only
+  sessions are unchanged (issue #836).
+
 ## v1.1.2
 
 Code Mower v1.1.2 hardens Jira Cloud adoption for large and
