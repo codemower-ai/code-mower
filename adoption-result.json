@@ -1,0 +1,55 @@
+{
+  "elapsed_seconds": 19.24,
+  "ending_version": "",
+  "execution_state": "executed",
+  "executor": "cursor_cloud_agent",
+  "host_class": "local",
+  "normalized_version": "1.2.1",
+  "outcome": "fail",
+  "package_identity": "code-mower",
+  "provider": "cursor_cloud_agent",
+  "qualification_context": "cold_install",
+  "release_tag": "v1.2.1",
+  "runtime_class": "python_3.12",
+  "schema": "code_mower.adoptionResult.v1",
+  "starting_version": "",
+  "steps": [
+    {
+      "elapsed_seconds": 15.53,
+      "id": "doctor",
+      "owner_action_count": 3,
+      "status": "warn",
+      "warning_count": 24
+    },
+    {
+      "elapsed_seconds": 1.45,
+      "id": "lanes_status",
+      "owner_action_count": 0,
+      "status": "pass",
+      "warning_count": 0
+    },
+    {
+      "elapsed_seconds": 2.22,
+      "id": "board",
+      "owner_action_count": 0,
+      "status": "pass",
+      "warning_count": 0
+    },
+    {
+      "elapsed_seconds": 0.05,
+      "failure_reason": "unknown",
+      "id": "package_install",
+      "owner_action_count": 0,
+      "status": "fail",
+      "warning_count": 0
+    },
+    {
+      "elapsed_seconds": 0.0,
+      "id": "overhead",
+      "owner_action_count": 0,
+      "status": "pass",
+      "warning_count": 0
+    }
+  ],
+  "timestamp_utc": "2026-09-10T22:22:03Z"
+}
