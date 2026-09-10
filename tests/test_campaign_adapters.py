@@ -398,6 +398,35 @@ class ArgvBuilderTests(unittest.TestCase):
             prompt,
         )
 
+    def test_claude_prompt_requires_deterministic_timing_arithmetic(self) -> None:
+        prompt = campaign_adapters.build_qualification_prompt(
+            provider="claude",
+            release_tag="v1.0.0",
+            package_spec="code-mower==1.0.0",
+            package_identity="code-mower",
+            normalized_version="1.0.0",
+            qualification_context="cold_install",
+            starting_version="",
+        )
+        self.assertIn("non-negative integer number of seconds", prompt)
+        self.assertIn("exact arithmetic sum", prompt)
+        self.assertIn("never use a separately measured", prompt)
+        self.assertIn("Include an overhead step", prompt)
+
+    def test_non_claude_prompts_omit_claude_timing_rule(self) -> None:
+        for provider in ("codex", "antigravity", "muse", "devin_cli"):
+            with self.subTest(provider=provider):
+                prompt = campaign_adapters.build_qualification_prompt(
+                    provider=provider,
+                    release_tag="v1.0.0",
+                    package_spec="code-mower==1.0.0",
+                    package_identity="code-mower",
+                    normalized_version="1.0.0",
+                    qualification_context="cold_install",
+                    starting_version="",
+                )
+                self.assertNotIn("Claude timing arithmetic", prompt)
+
     def test_guidance_schema_enforces_step_id_taxonomy(self) -> None:
         step_id_schema = campaign_adapters.ADOPTION_RESULT_JSON_SCHEMA[
             "properties"
@@ -875,6 +904,74 @@ class AdapterTransportTests(unittest.TestCase):
         self.assertTrue(output.is_file())
         self.assertEqual(json.loads(output.read_text(encoding="utf-8")), _adoption_result("claude"))
         self.assertNotIn("SECRET-NOISE", output.read_text(encoding="utf-8"))
+
+    def test_claude_rejects_inconsistent_timing_without_retry(self) -> None:
+        calls = 0
+        inconsistent = _adoption_result(
+            "claude",
+            elapsed_seconds=20,
+            steps=[
+                {
+                    "id": "package_install",
+                    "status": "pass",
+                    "elapsed_seconds": 8,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                },
+                {
+                    "id": "doctor",
+                    "status": "pass",
+                    "elapsed_seconds": 4,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                },
+            ],
+        )
+
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            nonlocal calls
+            calls += 1
+            stdout = json.dumps({"is_error": False, "structured_output": inconsistent})
+            return subprocess.CompletedProcess(list(argv), 0, stdout=stdout, stderr="")
+
+        code, output, _tmp = self._run("claude", runner)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(calls, 1)
+        self.assertFalse(output.exists())
+
+    def test_claude_accepts_exact_integer_step_sum(self) -> None:
+        exact = _adoption_result(
+            "claude",
+            elapsed_seconds=12,
+            steps=[
+                {
+                    "id": "package_install",
+                    "status": "pass",
+                    "elapsed_seconds": 8,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                },
+                {
+                    "id": "doctor",
+                    "status": "pass",
+                    "elapsed_seconds": 4,
+                    "warning_count": 0,
+                    "owner_action_count": 0,
+                },
+            ],
+        )
+
+        def runner(
+            argv: Any, prompt_input: Any, timeout: int, workdir: Path, child_env: Any
+        ) -> Any:
+            stdout = json.dumps({"is_error": False, "structured_output": exact})
+            return subprocess.CompletedProcess(list(argv), 0, stdout=stdout, stderr="")
+
+        code, output, _tmp = self._run("claude", runner)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.read_text(encoding="utf-8")), exact)
 
     def test_claude_rejects_is_error_true_envelope_even_with_valid_fenced_result(self) -> None:
         """A valid Claude error envelope must fail closed even if result contains fenced JSON."""
