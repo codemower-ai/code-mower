@@ -16,7 +16,7 @@ from unittest import mock
 from code_mower import cli, file_locks, session, session_lease
 
 
-LEASE_FILE = Path(".code-mower/sessions") / session_lease.LEASE_FILE_NAME
+LEASE_FILE = Path(".code-mower") / session_lease.LEASE_FILE_NAME
 
 
 @contextmanager
@@ -27,6 +27,18 @@ def working_directory(path):
         yield
     finally:
         os.chdir(previous)
+
+
+def _init_git_repo(path: Path) -> None:
+    """Mark ``path`` as an ordinary Git checkout root: the CLI's lease commands
+    auto-detect their working copy this way, so mutating tests need it."""
+    (Path(path) / ".git").mkdir()
+
+
+def _init_git_worktree(path: Path, *, gitdir: Path) -> None:
+    """Mark ``path`` as a Git worktree pointing at ``gitdir``, the way ``git
+    worktree add`` leaves a ``.git`` file instead of a ``.git`` directory."""
+    (Path(path) / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
 
 
 def start_session(*args, host="claude", repo="team/project", as_json=True):
@@ -59,6 +71,7 @@ def expire_lease(*, path=LEASE_FILE, seconds=1):
 class SessionStartupLeaseTests(unittest.TestCase):
     def test_startup_takes_a_metadata_only_lease_recorded_in_the_brief(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             code, out, _ = start_session()
             self.assertEqual(code, 0)
             payload = json.loads(out)
@@ -83,6 +96,7 @@ class SessionStartupLeaseTests(unittest.TestCase):
 
     def test_a_second_live_session_is_refused_with_owner_actions_and_writes_no_brief(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             first = json.loads(start_session()[1])
             code, out, err = start_session(host="codex")
             self.assertEqual(code, 1)
@@ -93,12 +107,21 @@ class SessionStartupLeaseTests(unittest.TestCase):
             self.assertIn("code-mower session lease release --session-id", err)
             self.assertIn("code-mower session lease release --force", err)
             self.assertIn("--dry-run", err)
-            briefs = sorted(path.name for path in LEASE_FILE.parent.glob("*.json"))
-            self.assertEqual(briefs, sorted([f"{first['id']}.json", session_lease.LEASE_FILE_NAME]))
+            # the lease lives at the working-copy root, separate from the
+            # briefs directory that --state-dir controls
+            self.assertEqual(
+                sorted(path.name for path in LEASE_FILE.parent.glob("*.json")),
+                [session_lease.LEASE_FILE_NAME],
+            )
+            self.assertEqual(
+                sorted(path.name for path in Path(session.DEFAULT_STATE_DIR).glob("*.json")),
+                [f"{first['id']}.json"],
+            )
             self.assertEqual(session_lease.read_lease(LEASE_FILE)["session_id"], first["id"])
 
     def test_a_refusal_for_a_different_repo_names_the_requested_repo(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             start_session(repo="team/project")
             code, out, err = start_session(host="codex", repo="other/repo")
             self.assertEqual(code, 1)
@@ -108,7 +131,7 @@ class SessionStartupLeaseTests(unittest.TestCase):
 
     def test_concurrent_acquisition_has_exactly_one_winner(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_dir = Path(tmp) / "sessions"
+            root = Path(tmp)
             contenders = 8
             ready = threading.Barrier(contenders)
             guard = threading.Lock()
@@ -119,7 +142,7 @@ class SessionStartupLeaseTests(unittest.TestCase):
                 try:
                     record = session_lease.acquire_lease(
                         repo="team/project", orchestrator="claude",
-                        session_id=f"session-{index}", state_dir=state_dir,
+                        session_id=f"session-{index}", root=root,
                     )
                 except session_lease.SessionLeaseError:
                     return
@@ -132,11 +155,12 @@ class SessionStartupLeaseTests(unittest.TestCase):
             for thread in threads:
                 thread.join()
             self.assertEqual(len(winners), 1)
-            stored = session_lease.read_lease(session_lease.lease_path(state_dir))
+            stored = session_lease.read_lease(session_lease.lease_path(root))
             self.assertEqual(stored["session_id"], winners[0])
 
     def test_forced_takeover_replaces_a_live_lease_only_when_asked_for(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             first = json.loads(start_session()[1])
             self.assertEqual(start_session(host="codex")[0], 1)
             code, out, _ = start_session("--force-lease", host="codex")
@@ -150,6 +174,7 @@ class SessionStartupLeaseTests(unittest.TestCase):
 
     def test_an_expired_lease_is_recovered_without_an_owner_decision(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             first = json.loads(start_session()[1])
             expired = expire_lease()
             self.assertEqual(session_lease.lease_state(session_lease.read_lease(LEASE_FILE)), "expired")
@@ -172,6 +197,7 @@ class SessionStartupLeaseTests(unittest.TestCase):
         )
         for content in unusable:
             with self.subTest(content=content[:24]), tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+                _init_git_repo(tmp)
                 LEASE_FILE.parent.mkdir(parents=True)
                 LEASE_FILE.write_text(content, encoding="utf-8")
                 self.assertIsNone(session_lease.read_lease(LEASE_FILE))
@@ -180,6 +206,7 @@ class SessionStartupLeaseTests(unittest.TestCase):
 
     def test_invalid_utf8_lease_file_is_treated_as_malformed_and_recovered(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             LEASE_FILE.parent.mkdir(parents=True)
             LEASE_FILE.write_bytes(b"\xff\xfe\x00not valid utf-8")
             self.assertIsNone(session_lease.read_lease(LEASE_FILE))
@@ -190,6 +217,7 @@ class SessionStartupLeaseTests(unittest.TestCase):
             self.assertEqual(record["session_id"], json.loads(out)["id"])
 
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             LEASE_FILE.parent.mkdir(parents=True)
             LEASE_FILE.write_bytes(b"\xff\xfe\x00not valid utf-8")
             code, out, _ = run_lease("release", "--force", "--json")
@@ -199,14 +227,14 @@ class SessionStartupLeaseTests(unittest.TestCase):
 
     def test_the_same_session_re_acquiring_renews_in_place(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_dir = Path(tmp) / "sessions"
+            root = Path(tmp)
             first = session_lease.acquire_lease(
                 repo="team/project", orchestrator="claude", session_id="session-1",
-                state_dir=state_dir, ttl_minutes=60,
+                root=root, ttl_minutes=60,
             )
             again = session_lease.acquire_lease(
                 repo="team/project", orchestrator="claude", session_id="session-1",
-                state_dir=state_dir, ttl_minutes=600,
+                root=root, ttl_minutes=600,
             )
             self.assertEqual(again["acquired_at"], first["acquired_at"])
             self.assertGreater(datetime.fromisoformat(again["expires_at"]),
@@ -225,6 +253,7 @@ class ReadOnlySessionTests(unittest.TestCase):
 
     def test_read_only_generation_still_works_while_another_session_holds_the_lease(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             held = json.loads(start_session()[1])
             self.assertEqual(start_session("--dry-run", host="codex")[0], 0)
             code, out, _ = start_session("--no-lease", host="codex")
@@ -246,6 +275,7 @@ class ReadOnlySessionTests(unittest.TestCase):
 class LeaseCommandTests(unittest.TestCase):
     def test_inspect_renew_and_release_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             code, out, _ = run_lease("show", "--json")
             self.assertEqual(code, 0)
             self.assertEqual(json.loads(out)["state"], "absent")
@@ -281,6 +311,7 @@ class LeaseCommandTests(unittest.TestCase):
 
     def test_renew_and_release_refuse_a_live_lease_owned_by_another_session(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             started = json.loads(start_session()[1])
             code, _, err = run_lease("renew", "--session-id", "not-the-owner")
             self.assertEqual(code, 1)
@@ -298,6 +329,7 @@ class LeaseCommandTests(unittest.TestCase):
 
     def test_an_expired_lease_is_not_renewed_but_is_free_to_release(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             started = json.loads(start_session()[1])
             expire_lease()
             code, _, err = run_lease("renew", "--session-id", started["id"])
@@ -312,6 +344,7 @@ class LeaseCommandTests(unittest.TestCase):
 
     def test_releasing_an_absent_lease_succeeds_and_reports_nothing_to_release(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             code, out, _ = run_lease("release", "--json")
             self.assertEqual(code, 0)
             payload = json.loads(out)
@@ -321,6 +354,7 @@ class LeaseCommandTests(unittest.TestCase):
 
     def test_rendered_inspection_names_the_holder_and_the_expiry(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             started = json.loads(start_session()[1])
             text = run_lease("show")[1]
             self.assertIn("Session lease: team/project", text)
@@ -373,8 +407,8 @@ class LeaseClockOrderingTests(unittest.TestCase):
 
     def test_acquire_samples_the_clock_after_lock_contention_not_before(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_dir = Path(tmp) / "sessions"
-            path = session_lease.lease_path(state_dir)
+            root = Path(tmp)
+            path = session_lease.lease_path(root)
             path.parent.mkdir(parents=True)
             lock_path = path.with_name(f"{path.name}.lock")
 
@@ -382,7 +416,7 @@ class LeaseClockOrderingTests(unittest.TestCase):
                 call_started = datetime.now(timezone.utc)
                 record = session_lease.acquire_lease(
                     repo="team/project", orchestrator="claude",
-                    session_id="session-1", state_dir=state_dir,
+                    session_id="session-1", root=root,
                 )
 
             acquired_at = datetime.fromisoformat(record["acquired_at"])
@@ -391,18 +425,18 @@ class LeaseClockOrderingTests(unittest.TestCase):
 
     def test_renew_samples_the_clock_after_lock_contention_not_before(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_dir = Path(tmp) / "sessions"
+            root = Path(tmp)
             session_lease.acquire_lease(
                 repo="team/project", orchestrator="claude",
-                session_id="session-1", state_dir=state_dir, ttl_minutes=60,
+                session_id="session-1", root=root, ttl_minutes=60,
             )
-            path = session_lease.lease_path(state_dir)
+            path = session_lease.lease_path(root)
             lock_path = path.with_name(f"{path.name}.lock")
 
             with self._lock_held_for(lock_path, seconds=0.2):
                 call_started = datetime.now(timezone.utc)
                 payload = session_lease.renew_lease(
-                    state_dir=state_dir, session_id="session-1", ttl_minutes=60,
+                    root=root, session_id="session-1", ttl_minutes=60,
                 )
 
             renewed_at = datetime.fromisoformat(payload["lease"]["renewed_at"])
@@ -414,7 +448,7 @@ class LeasePrivacyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             record = session_lease.acquire_lease(
                 repo="team/project", orchestrator="claude", session_id="session-1",
-                state_dir=Path(tmp) / "sessions",
+                root=Path(tmp),
             )
             self.assertEqual(set(record), set(session_lease.LEASE_FIELDS))
             self.assertEqual(len(session_lease.LEASE_FIELDS), 7)
@@ -457,6 +491,7 @@ class BriefCompatibilityTests(unittest.TestCase):
 
     def test_a_saved_leased_brief_round_trips_through_session_show(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             payload = json.loads(start_session()[1])
             out = io.StringIO()
             with redirect_stdout(out):
@@ -467,16 +502,17 @@ class BriefCompatibilityTests(unittest.TestCase):
 class WriteFailureCleanupTests(unittest.TestCase):
     def test_cleanup_after_a_write_failure_preserves_the_original_error_and_the_new_holder(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
             original_release = session_lease.release_lease
 
-            def race_then_release(*, state_dir, session_id=None, force=False, now=None):
+            def race_then_release(*, session_id=None, force=False, now=None, root=None):
                 # Simulate another session force-taking the lease in the narrow
                 # window between this call's acquisition and its failed write.
                 session_lease.acquire_lease(
                     repo="team/project", orchestrator="codex",
-                    session_id="rival-session", state_dir=state_dir, force=True,
+                    session_id="rival-session", root=root, force=True,
                 )
-                return original_release(state_dir=state_dir, session_id=session_id, force=force, now=now)
+                return original_release(session_id=session_id, force=force, now=now, root=root)
 
             with mock.patch.object(session_lease, "release_lease", side_effect=race_then_release), \
                  mock.patch.object(session.json, "dump", side_effect=OSError("disk full")):

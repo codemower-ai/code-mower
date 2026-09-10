@@ -32,6 +32,14 @@ READ_ONLY_LEASE_INSTRUCTION = (
     "run `code-mower session start` without `--dry-run`/`--no-lease` before coordinating changes."
 )
 
+# The brief's saved lease block is a snapshot from acquisition time, not current
+# truth; `session show` re-verifies it live and falls back to this instruction
+# whenever that lease is no longer the one backing this session.
+STALE_LEASE_INSTRUCTION = (
+    "This brief's mutating orchestrator lease is no longer held by this session: read, plan, "
+    "and report from it, but run `code-mower session start` again before coordinating changes."
+)
+
 
 JIRA_TRACKER_CONTRACT_INSTRUCTIONS = (
     "Code Mower's Jira REST transport is authoritative for queue reads and all "
@@ -185,7 +193,6 @@ def _acquire_startup_lease(args: argparse.Namespace, payload: dict[str, Any]) ->
         repo=payload["repo"],
         orchestrator=payload["orchestrator"],
         session_id=payload["id"],
-        state_dir=args.state_dir,
         ttl_minutes=args.lease_ttl_minutes,
         force=args.force_lease,
     )
@@ -195,16 +202,13 @@ def _acquire_startup_lease(args: argparse.Namespace, payload: dict[str, Any]) ->
 
 def _run_lease_command(args: argparse.Namespace) -> dict[str, Any]:
     if args.lease_command == "show":
-        return session_lease.inspect_lease(state_dir=args.state_dir)
+        return session_lease.inspect_lease()
     if args.lease_command == "renew":
         return session_lease.renew_lease(
-            state_dir=args.state_dir,
             session_id=args.session_id,
             ttl_minutes=args.lease_ttl_minutes,
         )
-    return session_lease.release_lease(
-        state_dir=args.state_dir, session_id=args.session_id, force=args.force,
-    )
+    return session_lease.release_lease(session_id=args.session_id, force=args.force)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -249,7 +253,6 @@ def main(argv: list[str] | None = None) -> int:
         help="release a live lease owned by another session; use only after an owner decision",
     )
     for lease_parser in (lease_show, lease_renew, lease_release):
-        lease_parser.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
         lease_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     render = render_session
@@ -258,6 +261,14 @@ def main(argv: list[str] | None = None) -> int:
             payload = json.loads(args.session_file.read_text(encoding="utf-8"))
             if not isinstance(payload, dict) or payload.get("schema") != "code_mower.session.v1":
                 raise ConfigError("not a Code Mower session file")
+            saved_lease = payload.get("lease")
+            if isinstance(saved_lease, Mapping) and saved_lease.get("mutating"):
+                live = session_lease.verify_live_lease(
+                    repo=payload["repo"], session_id=payload["id"], orchestrator=payload["orchestrator"],
+                )
+                payload["lease"] = live
+                if not live["mutating"]:
+                    payload["instructions"] = [*payload["instructions"], STALE_LEASE_INSTRUCTION]
         elif args.command == "lease":
             payload = _run_lease_command(args)
             render = session_lease.render_lease
@@ -290,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
                     with destination.open("x", encoding="utf-8") as handle:
                         json.dump(payload, handle, indent=2, sort_keys=True)
                         handle.write("\n")
-                except OSError as exc:
+                except OSError:
                     # A brief that was never written has no orchestrator, so the
                     # lease this call just took must not outlive the failure. If
                     # another session force-took the lease in this narrow window,
@@ -298,12 +309,10 @@ def main(argv: list[str] | None = None) -> int:
                     # original write failure.
                     if record is not None:
                         try:
-                            session_lease.release_lease(
-                                state_dir=args.state_dir, session_id=payload["id"],
-                            )
+                            session_lease.release_lease(session_id=payload["id"])
                         except session_lease.SessionLeaseError:
                             pass
-                    raise exc
+                    raise
         print(json.dumps(payload, indent=2, sort_keys=True) if args.json else render(payload), end="\n" if args.json else "")
         return 0
     except (ConfigError, OSError, ValueError, KeyError, TypeError, session_lease.SessionLeaseError) as exc:

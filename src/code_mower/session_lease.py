@@ -4,7 +4,7 @@ A Code Mower session is agent-coordinated: the hosting agent drives builders and
 reviewers through its own tools. Nothing stopped two agents from starting a
 mutating session against the same working copy at the same time, and both would
 then believe they were the orchestrator for it. This module is the local mutual
-exclusion for that case -- one live lease per session state directory, taken
+exclusion for that case -- one live lease per Git working copy, taken
 explicitly at session startup, and given up only by release, expiry, or an
 owner's deliberate takeover.
 
@@ -14,6 +14,14 @@ orchestrator provider id, the session id, and the acquired/renewed/expires UTC
 timestamps. It never holds issue text, credentials, diffs, or provider output;
 it lives under the git-ignored ``.code-mower/`` tree; and no Code Mower export
 or upload path reads it, so it is never sent anywhere.
+
+The lease is anchored to the canonical Git working-copy root, not to
+``--state-dir``: that flag only controls where a saved brief lands. Two agents
+in the same working copy contend for the same lease even when they pass
+different ``--state-dir`` values or run from different subdirectories, because
+the lease file's location is derived from the repository, not from caller
+input. A mutating call that cannot establish a working-copy root fails safely
+rather than falling back to the current directory or some other guess.
 
 Writes are serialized on a dedicated lock file through
 :mod:`code_mower.file_locks` and land through a temporary file plus
@@ -42,6 +50,7 @@ from .file_locks import exclusive_file_lock
 
 LEASE_SCHEMA = "code_mower.session_lease.v1"
 LEASE_FILE_NAME = "orchestrator-lease.json"
+LEASE_DIR_NAME = ".code-mower"
 
 # Long enough that an ordinary agent session is never cut off mid-flight, short
 # enough that an abandoned one recovers the same working day without an owner
@@ -73,9 +82,39 @@ class SessionLeaseError(RuntimeError):
     """
 
 
-def lease_path(state_dir: str | Path) -> Path:
-    """Where the single lease for ``state_dir`` lives."""
-    return Path(state_dir) / LEASE_FILE_NAME
+def find_working_copy_root(start: str | Path | None = None) -> Path:
+    """Locate the canonical Git working-copy root above ``start`` (default cwd).
+
+    Walking up from the caller's directory, rather than trusting a caller-
+    supplied path, is what makes the result independent of ``--state-dir`` and
+    of how deep a command was invoked from: every path under the same working
+    copy resolves to the same root.
+
+    A directory is recognized as a working-copy root when it holds ``.git`` --
+    either the directory an ordinary checkout has, or the file a Git worktree
+    (or submodule) has pointing at its shared gitdir. Neither form is read;
+    presence alone is enough to anchor the lease, which avoids content parsing
+    that could misjudge a real working copy as absent.
+
+    Raises :class:`SessionLeaseError` when no ``.git`` is found, so a mutating
+    caller fails safely instead of guessing a root that could let two working
+    copies collide, or one working copy split across two leases.
+    """
+    current = Path(start).resolve() if start is not None else Path.cwd().resolve()
+    for candidate in (current, *current.parents):
+        git_entry = candidate / ".git"
+        if git_entry.is_dir() or git_entry.is_file():
+            return candidate
+    raise SessionLeaseError(
+        "no Git working copy was found from the current directory; "
+        "the mutating session lease needs one to coordinate safely -- "
+        "run this from inside a Git checkout or worktree"
+    )
+
+
+def lease_path(root: str | Path) -> Path:
+    """Where the single lease for the working copy rooted at ``root`` lives."""
+    return Path(root) / LEASE_DIR_NAME / LEASE_FILE_NAME
 
 
 def _now() -> datetime:
@@ -216,21 +255,24 @@ def acquire_lease(
     repo: str,
     orchestrator: str,
     session_id: str,
-    state_dir: str | Path,
     ttl_minutes: int = DEFAULT_TTL_MINUTES,
     force: bool = False,
     now: datetime | None = None,
+    root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Take the single mutating lease for ``state_dir``, or refuse.
+    """Take the single mutating lease for the current Git working copy, or refuse.
 
-    Re-acquiring under the same ``session_id`` renews in place and keeps the
-    original ``acquired_at``. An absent or expired lease is taken over silently;
-    a live lease held by another session is taken only with ``force``, which
-    callers must gate on an explicit owner decision.
+    ``root`` is the working-copy root and defaults to
+    :func:`find_working_copy_root`; callers pass it explicitly only in tests
+    that already know the root. Re-acquiring under the same ``session_id``
+    renews in place and keeps the original ``acquired_at``. An absent or
+    expired lease is taken over silently; a live lease held by another session
+    is taken only with ``force``, which callers must gate on an explicit owner
+    decision.
     """
     if ttl_minutes <= 0:
         raise SessionLeaseError("the lease TTL must be a positive number of minutes")
-    path = lease_path(state_dir)
+    path = lease_path(root if root is not None else find_working_copy_root())
     with _locked(path):
         moment = now or _now()
         current = read_lease(path)
@@ -253,12 +295,12 @@ def acquire_lease(
 
 def renew_lease(
     *,
-    state_dir: str | Path,
     session_id: str,
     ttl_minutes: int = DEFAULT_TTL_MINUTES,
     now: datetime | None = None,
+    root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Extend the caller's own live lease.
+    """Extend the caller's own live lease for the current Git working copy.
 
     An expired lease is not renewed. Another session may already have been told
     it is free to take over, so the owner has to come back through
@@ -266,7 +308,7 @@ def renew_lease(
     """
     if ttl_minutes <= 0:
         raise SessionLeaseError("the lease TTL must be a positive number of minutes")
-    path = lease_path(state_dir)
+    path = lease_path(root if root is not None else find_working_copy_root())
     with _locked(path):
         moment = now or _now()
         current = read_lease(path)
@@ -293,12 +335,12 @@ def renew_lease(
 
 def release_lease(
     *,
-    state_dir: str | Path,
     session_id: str | None = None,
     force: bool = False,
     now: datetime | None = None,
+    root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Give up the lease.
+    """Give up the lease held for the current Git working copy.
 
     Releasing nothing succeeds; so does releasing an expired lease, which is
     already free. Releasing a live lease requires either its own ``session_id``
@@ -306,7 +348,7 @@ def release_lease(
     holding session is gone.
     """
     moment = now or _now()
-    path = lease_path(state_dir)
+    path = lease_path(root if root is not None else find_working_copy_root())
     with _locked(path):
         current = read_lease(path)
         state = lease_state(current, now=moment)
@@ -325,13 +367,53 @@ def release_lease(
     )
 
 
-def inspect_lease(*, state_dir: str | Path, now: datetime | None = None) -> dict[str, Any]:
-    """Report the lease without changing it."""
+def inspect_lease(*, now: datetime | None = None, root: str | Path | None = None) -> dict[str, Any]:
+    """Report the lease for the current Git working copy without changing it."""
     moment = now or _now()
-    path = lease_path(state_dir)
+    path = lease_path(root if root is not None else find_working_copy_root())
     with _locked(path):
         current = read_lease(path)
     return _status(current, now=moment, path=path, action="inspect")
+
+
+def verify_live_lease(
+    *,
+    repo: str,
+    session_id: str,
+    orchestrator: str,
+    now: datetime | None = None,
+    root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Re-read the working copy's current lease rather than trusting a saved one.
+
+    A saved session brief's lease block is a snapshot from acquisition time; it
+    says nothing about whether that lease is still live. This re-reads the
+    working copy's actual lease and reports ``mutating`` True only when it is
+    still held, unexpired, and matches ``repo``, ``session_id``, and
+    ``orchestrator`` exactly. Everything else -- released, expired, malformed,
+    missing, or force-taken-over by another session -- reports as non-mutating,
+    including when no working-copy root can even be found: this is a read, and
+    a read must never claim authority a mutation would have to earn.
+    """
+    moment = now or _now()
+    try:
+        resolved_root = root if root is not None else find_working_copy_root()
+    except SessionLeaseError:
+        current = None
+    else:
+        path = lease_path(resolved_root)
+        with _locked(path):
+            current = read_lease(path)
+    state = lease_state(current, now=moment)
+    if (
+        state == STATE_HELD
+        and current is not None
+        and current["repo"] == repo
+        and current["session_id"] == session_id
+        and current["orchestrator"] == orchestrator
+    ):
+        return {**current, "state": STATE_HELD, "mutating": True}
+    return {"state": state, "mutating": False}
 
 
 def render_lease(payload: Mapping[str, Any]) -> str:
@@ -352,7 +434,7 @@ def render_lease(payload: Mapping[str, Any]) -> str:
         lines = [
             "Session lease: none",
             f"State: {payload['state']}",
-            "No mutating orchestrator lease is held for this session directory.",
+            "No mutating orchestrator lease is held for this working copy.",
             "Read-only briefs do not need one; code-mower session start takes one.",
         ]
     else:
