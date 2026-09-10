@@ -570,6 +570,19 @@ def build_qualification_prompt(
     )
     if target_runtime:
         lines.append(f"- target_runtime: {target_runtime}")
+    if provider == "claude":
+        lines.extend(
+            [
+                "",
+                "Claude timing arithmetic (mandatory): report every step elapsed_seconds",
+                "as a non-negative integer number of seconds. Include an overhead step for",
+                "measured setup or serialization time outside the named checks. Set the",
+                "top-level elapsed_seconds to the exact arithmetic sum of the numeric step",
+                "elapsed_seconds values you emit; never use a separately measured or",
+                "estimated total. Before responding, add those emitted values again and",
+                "confirm exact equality.",
+            ]
+        )
     lines.extend(
         [
             "",
