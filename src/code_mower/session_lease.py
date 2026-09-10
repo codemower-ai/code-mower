@@ -161,22 +161,59 @@ def read_lease(path: str | Path) -> dict[str, Any] | None:
     makes recovery safe: the worst case is that a takeover is allowed, never
     that a repository is wedged by a corrupt file.
     """
-    lease_file = Path(path)
+    return _read_lease_result(path)[1]
+
+
+def _read_lease_result(path: str | Path) -> tuple[str, dict[str, Any] | None]:
     try:
-        raw = lease_file.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
+        raw = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return STATE_ABSENT, None
+    except UnicodeDecodeError:
+        return "malformed", None
+    except OSError:
+        return "unavailable", None
     try:
         record = json.loads(raw)
     except json.JSONDecodeError:
-        return None
+        return "malformed", None
     if not isinstance(record, dict) or record.get("schema") != LEASE_SCHEMA:
-        return None
+        return "malformed", None
     if set(record) != set(LEASE_FIELDS):
-        return None
+        return "malformed", None
     if not all(isinstance(record[field], str) and record[field] for field in LEASE_FIELDS):
-        return None
-    return record
+        return "malformed", None
+    return "read", record
+
+
+def observe_lease(*, start: str | Path | None = None, now: datetime | None = None) -> dict[str, Any]:
+    """Read local display metadata without locks, writes, or authority decisions.
+
+    Atomic lease replacement makes a lock-free snapshot sufficient for display.
+    Diagnostic states do not alter the recovery semantics of ``read_lease``.
+    No paths, session identifiers, or raw errors are returned.
+    """
+    unavailable = {"state": "unavailable", "provider": None, "expires_at": None}
+    try:
+        root = find_working_copy_root(start)
+        state, record = _read_lease_result(lease_path(root))
+    except (OSError, SessionLeaseError, RuntimeError):
+        return unavailable
+    if record is None:
+        return {**unavailable, "state": state}
+    timestamps = [_parse_timestamp(record[field]) for field in ("acquired_at", "renewed_at", "expires_at")]
+    if any(value is None for value in timestamps):
+        return {**unavailable, "state": "malformed"}
+    try:
+        expiry = timestamps[2].astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        state = lease_state(record, now=now)
+    except (OverflowError, ValueError):
+        return {**unavailable, "state": "malformed"}
+    return {
+        "state": "active" if state == STATE_HELD else state,
+        "provider": record["orchestrator"],
+        "expires_at": expiry,
+    }
 
 
 def lease_state(record: Mapping[str, Any] | None, *, now: datetime | None = None) -> str:

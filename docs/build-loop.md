@@ -139,7 +139,9 @@ are debugging locally.
 Use `lanes status` as the pasteable visibility surface during supervised pilots.
 Use `board serve` when you want the same state in a local browser. The board is
 read-only, serves on loopback by default, and does not require a separate
-observer setup. When `code-mower.yml` is present, the Board also shows a
+observer setup. Run it from the working copy to inspect Local Orchestrator Lease
+provider, state, and local expiry (hover for UTC). When `code-mower.yml` is
+present, the Board also shows a
 supervised-pilot section backed by the controller policy engine: current
 decision, queue counts, selected issue or PR, reviewer evidence, gate state, and
 next action.
