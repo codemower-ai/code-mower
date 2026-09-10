@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -551,6 +552,10 @@ class BriefCompatibilityTests(unittest.TestCase):
                 self.assertEqual(cli.main(["session", "show", payload["session_file"], "--json"]), 0)
             self.assertEqual(json.loads(out.getvalue()), payload)
 
+    @unittest.skipIf(
+        sys.platform.startswith("win"),
+        "chmod-based permission simulation doesn't apply on Windows",
+    )
     def test_show_renders_read_only_when_the_lease_lock_cannot_be_written(self):
         # session show re-verifies a saved brief's lease against the live lock
         # file, but the checkout itself may be read-only for this caller
