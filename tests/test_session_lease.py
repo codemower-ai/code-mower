@@ -187,6 +187,33 @@ class SessionStartupLeaseTests(unittest.TestCase):
             self.assertGreater(datetime.fromisoformat(record["acquired_at"]),
                                datetime.fromisoformat(expired["acquired_at"]))
 
+    def test_cursor_session_acquires_canonical_lease_and_refuses_competing_orchestrators(self):
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
+            code, out, _ = start_session(host="cursor")
+            self.assertEqual(code, 0)
+            cursor_session = json.loads(out)
+            record = session_lease.read_lease(LEASE_FILE)
+            self.assertEqual(record["orchestrator"], "cursor")
+            self.assertEqual(record["session_id"], cursor_session["id"])
+            self.assertTrue(cursor_session["lease"]["mutating"])
+            self.assertEqual(cursor_session["lease"]["state"], "held")
+
+            for competing_host in ("codex", "claude"):
+                with self.subTest(competing_host=competing_host):
+                    code, out, err = start_session(host=competing_host)
+                    self.assertEqual(code, 1)
+                    self.assertEqual(out, "")
+                    self.assertIn("already holds the mutating orchestrator lease for team/project", err)
+                    self.assertIn(f"holder: cursor (session {cursor_session['id']})", err)
+                    self.assertIn("code-mower session lease show", err)
+                    self.assertIn("code-mower session lease release --session-id", err)
+                    self.assertIn("code-mower session lease release --force", err)
+
+            lease_after_refusals = session_lease.read_lease(LEASE_FILE)
+            self.assertEqual(lease_after_refusals["orchestrator"], "cursor")
+            self.assertEqual(lease_after_refusals["session_id"], cursor_session["id"])
+
     def test_a_lease_file_this_version_cannot_honor_never_wedges_the_repository(self):
         unusable = (
             "",
