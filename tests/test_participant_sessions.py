@@ -269,6 +269,28 @@ class JiraTrackerSessionTests(unittest.TestCase):
         self.assertIn("tracker mutate", joined)
         self.assertIn("tracker pr-sync", joined)
 
+    def test_cursor_receives_identical_jira_contract_as_codex_and_claude(self):
+        cursor_plan = session.build_session(
+            repo="team/project", host="cursor", selected=("claude", "codex", "cursor"),
+            config=JIRA_TRACKER_CONFIG,
+        )
+        claude_plan = session.build_session(
+            repo="team/project", host="claude", selected=("claude", "codex", "cursor"),
+            config=JIRA_TRACKER_CONFIG,
+        )
+        codex_plan = session.build_session(
+            repo="team/project", host="codex", selected=("claude", "codex", "cursor"),
+            config=JIRA_TRACKER_CONFIG,
+        )
+        self.assertEqual(cursor_plan["tracker"], claude_plan["tracker"])
+        self.assertEqual(cursor_plan["tracker"], codex_plan["tracker"])
+        instructions = cursor_plan["tracker"]["instructions"]
+        joined = " ".join(instructions)
+        self.assertIn("authoritative for queue reads and all", joined)
+        self.assertIn("Rovo MCP", joined)
+        self.assertIn("tracker mutate", joined)
+        self.assertIn("tracker pr-sync", joined)
+
     def test_rendered_brief_includes_the_jira_contract_and_project(self):
         plan = session.build_session(
             repo="team/project", host="claude", selected=("claude", "codex"),
