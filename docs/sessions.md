@@ -103,3 +103,23 @@ or build.
 Session selection uses the same participant definitions as installation. The
 reviewer registry and repository config continue to define execution and trust
 policy, so a new participant does not require another orchestration algorithm.
+
+## Jira Tracker Contract
+
+When the repository's `tracker.kind` is `jira_cloud`, `session start` adds a
+`tracker` section to the brief. Codex and Claude, or any other selected
+orchestrator host, receive the same rules from that section regardless of
+which one calls `--host`:
+
+- Code Mower's Jira REST transport is authoritative for queue reads and every
+  Jira mutation.
+- Atlassian Rovo MCP, if the host has it connected, is optional local
+  read/context enrichment only. It has no queue or mutation authority.
+- Every Jira write must go through the guarded `code-mower tracker mutate` or
+  `code-mower tracker pr-sync` commands; see
+  [Jira Cloud Setup](jira-cloud-setup.md) for the double write-guard.
+- The brief names the configured Jira project by key or ID only. It never
+  includes issue body text, comments, attachments, or credentials.
+
+Sessions for the default GitHub tracker, or a repository with no `tracker`
+block, omit this section entirely; existing GitHub-only briefs are unchanged.

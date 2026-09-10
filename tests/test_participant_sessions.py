@@ -206,5 +206,83 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
 
+JIRA_TRACKER_CONFIG = {
+    "tracker": {
+        "kind": "jira_cloud",
+        "jira_cloud": {
+            "site_url": "https://example.atlassian.net",
+            "cloud_id": "11111111-2222-3333-4444-555555555555",
+            "project_id": "10001",
+            "project_key": "ABC",
+        },
+    },
+}
+
+
+class JiraTrackerSessionTests(unittest.TestCase):
+    def test_jira_tracker_section_is_absent_for_github_and_unconfigured_trackers(self):
+        for tracker_config in ({}, {"tracker": {"kind": "github"}}):
+            with self.subTest(tracker_config=tracker_config):
+                plan = session.build_session(
+                    repo="team/project", host="claude", selected=("claude", "codex"),
+                    config=tracker_config,
+                )
+                self.assertNotIn("tracker", plan)
+
+    def test_jira_tracker_section_names_the_project_without_body_text_or_credentials(self):
+        plan = session.build_session(
+            repo="team/project", host="claude", selected=("claude", "codex"),
+            config=JIRA_TRACKER_CONFIG,
+        )
+        tracker = plan["tracker"]
+        self.assertEqual(tracker["kind"], "jira_cloud")
+        self.assertEqual(tracker["project"], "ABC")
+        self.assertEqual(tracker["mutation_commands"], ["code-mower tracker mutate", "code-mower tracker pr-sync"])
+        blob = json.dumps(plan)
+        for forbidden in ("11111111-2222-3333-4444-555555555555", "example.atlassian.net", "JIRA_API_TOKEN"):
+            self.assertNotIn(forbidden, blob)
+
+    def test_jira_tracker_falls_back_to_project_id_when_no_key_is_configured(self):
+        config_without_key = copy.deepcopy(JIRA_TRACKER_CONFIG)
+        del config_without_key["tracker"]["jira_cloud"]["project_key"]
+        plan = session.build_session(
+            repo="team/project", host="codex", selected=("claude", "codex"),
+            config=config_without_key,
+        )
+        self.assertEqual(plan["tracker"]["project"], "10001")
+
+    def test_claude_and_codex_receive_materially_identical_jira_contract_instructions(self):
+        claude_plan = session.build_session(
+            repo="team/project", host="claude", selected=("claude", "codex"),
+            config=JIRA_TRACKER_CONFIG,
+        )
+        codex_plan = session.build_session(
+            repo="team/project", host="codex", selected=("claude", "codex"),
+            config=JIRA_TRACKER_CONFIG,
+        )
+        self.assertEqual(claude_plan["tracker"], codex_plan["tracker"])
+        instructions = claude_plan["tracker"]["instructions"]
+        joined = " ".join(instructions)
+        self.assertIn("authoritative for queue reads and all", joined)
+        self.assertIn("Rovo MCP", joined)
+        self.assertIn("tracker mutate", joined)
+        self.assertIn("tracker pr-sync", joined)
+
+    def test_rendered_brief_includes_the_jira_contract_and_project(self):
+        plan = session.build_session(
+            repo="team/project", host="claude", selected=("claude", "codex"),
+            config=JIRA_TRACKER_CONFIG,
+        )
+        text = session.render_session(plan)
+        self.assertIn("Tracker: jira_cloud (project ABC)", text)
+        self.assertIn("code-mower tracker mutate", text)
+
+        github_plan = session.build_session(
+            repo="team/project", host="claude", selected=("claude", "codex"),
+            config={},
+        )
+        self.assertNotIn("Tracker:", session.render_session(github_plan))
+
+
 if __name__ == "__main__":
     unittest.main()

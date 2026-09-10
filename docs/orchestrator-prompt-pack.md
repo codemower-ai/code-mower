@@ -19,6 +19,14 @@ and makes the prompt pack safe to copy across repositories.
   `docs/lane-promotion-policy.md`.
 - Do not upload source, raw diffs, transcripts, issue body text, raw
   stdout/stderr, auth output, or secrets to CodeMower.com.
+- When the repository's `tracker.kind` is `jira_cloud`, treat Code Mower's
+  Jira REST transport as authoritative for queue reads and every Jira
+  mutation. Atlassian Rovo MCP, if connected, is optional local read/context
+  enrichment only. Every Jira write goes through the guarded
+  `code-mower tracker mutate` or `code-mower tracker pr-sync` commands, never
+  through Rovo tools or another path. `code-mower session start` states this
+  contract identically for every orchestrator host; see
+  [Jira Cloud Setup](jira-cloud-setup.md).
 
 ## Universal Install Or Upgrade Prompt
 
