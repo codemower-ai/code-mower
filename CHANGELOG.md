@@ -9,6 +9,12 @@ later entries are regular releases.
 
 ### Added
 
+- Hosted release-campaign dispatch comments now include the exact shell-quoted
+  `code-mower release qualify` command for their bound candidate and instruct
+  providers to embed its generated adoption-result object unchanged. This
+  removes schema improvisation while preserving strict campaign identity and
+  result validation (issue #830).
+
 - `code-mower session start` takes an explicit local single-orchestrator lease
   before saving a brief, so one working copy has one mutating orchestrator at a
   time. The lease is local coordination metadata only — repository slug,
