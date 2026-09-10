@@ -5,6 +5,21 @@ project used alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop were hardening; v1.0 and
 later entries are regular releases.
 
+## v1.2.1
+
+Code Mower v1.2.1 hardens maintained Claude release qualification without
+changing validation, retry policy, event shapes, or the metadata-only privacy
+boundary.
+
+### Fixed
+
+- Claude qualification prompts now require non-negative integer step durations
+  and an exact top-level arithmetic sum. Measured setup or serialization time
+  is represented as an explicit overhead step, preventing independently
+  estimated totals from being rejected after otherwise successful runs. The
+  adapter still validates provider-authored evidence, fails closed on a
+  mismatch, and never adds an automatic paid retry (issue #854, PR #855).
+
 ## v1.2.0
 
 Code Mower v1.2.0 makes multi-agent orchestration safer and more portable
