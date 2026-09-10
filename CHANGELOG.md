@@ -5,7 +5,11 @@ project used alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop were hardening; v1.0 and
 later entries are regular releases.
 
-## Unreleased
+## v1.2.0
+
+Code Mower v1.2.0 makes multi-agent orchestration safer and more portable
+without changing the supervised-pilot posture or metadata-only privacy
+boundary.
 
 ### Added
 
@@ -14,6 +18,19 @@ later entries are regular releases.
   providers to embed its generated adoption-result object unchanged. This
   removes schema improvisation while preserving strict campaign identity and
   result validation (issue #830).
+
+- Controller decisions now record the orchestrator provider in local and
+  metadata-only telemetry, so operators can compare coordination paths without
+  collecting prompts, transcripts, or source (issue #839).
+
+- Board shows the active local orchestrator lease, its holder, and expiry so
+  another agent can distinguish an owned working copy from an abandoned one
+  before attempting a mutation (issue #839).
+
+- Cursor is qualified against the same session brief, Jira authority, local
+  lease, and controller telemetry contract used by Codex and Claude. Atlassian
+  MCP remains optional read/context enrichment; guarded Code Mower Jira REST
+  commands remain authoritative for writes (issue #837).
 
 - `code-mower session start` takes an explicit local single-orchestrator lease
   before saving a brief, so one working copy has one mutating orchestrator at a
@@ -38,6 +55,13 @@ later entries are regular releases.
   `code-mower tracker mutate` and `code-mower tracker pr-sync` commands. The
   brief names the configured Jira project by key or ID only. GitHub-only
   sessions are unchanged (issue #836).
+
+### Documentation
+
+- Public guides now distinguish the published v1.1.2 package from later
+  source-only orchestration features and consistently describe the shared
+  Codex, Claude, and Cursor contract. The v1.2.0 release closes that temporary
+  source/package boundary (issue #848).
 
 ## v1.1.2
 

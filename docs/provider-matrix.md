@@ -28,9 +28,9 @@ agent hosting a session is the default orchestrator.
 | Cursor | Qualified for the same session, telemetry, and lease contract | Code Mower REST is authoritative; Atlassian MCP is optional read/context only and noninteractive reads need approved tool access such as `--auto-review` |
 | Devin, Grok Bot, Antigravity, Muse, custom hosts | Recognized host identities for briefs and telemetry; execution remains an explicit handoff or provider-specific transport until separately qualified | No implicit Jira authority; use the guarded Code Mower tracker commands for writes |
 
-The lease, shared Jira brief, and explicit Cursor qualification are currently
-unreleased changes on `main`; see [Participants And Sessions](sessions.md) for
-the exact release boundary.
+The lease, shared Jira brief, and explicit Cursor qualification are available
+in `code-mower==1.2.0`; see [Participants And Sessions](sessions.md) for the
+operating contract.
 
 ## Provider Classes
 

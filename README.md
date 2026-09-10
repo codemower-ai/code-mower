@@ -25,11 +25,10 @@ Code Mower is local-first. The OSS tool works without the hosted service.
 Default cloud bundles exclude source code, raw diffs, raw model transcripts,
 raw stdout/stderr, auth output, and secrets.
 
-Documentation on `main` follows the source on `main`, including the changes
-listed under **Unreleased** in [the changelog](CHANGELOG.md). If you install the
-published `code-mower==1.1.2` package, use the documentation from the matching
-[`v1.1.2` tag](https://github.com/codemower-ai/code-mower/tree/v1.1.2); later
-source-only commands are not part of that package.
+Documentation on `main` follows the source on `main`. If you install the
+published `code-mower==1.2.0` package, use the documentation from the matching
+[`v1.2.0` tag](https://github.com/codemower-ai/code-mower/tree/v1.2.0) so the
+commands and package stay aligned as development continues.
 
 ## Design Principles
 
@@ -223,7 +222,7 @@ agent report its actual host posture, exact installed version, doctor result,
 Board URL, and any owner-only click-list before it mutates the repo.
 
 The current package-index announcement entry point is the tagged
-[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v1.1.2/docs/try-in-10-minutes.md)
+[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/v1.2.0/docs/try-in-10-minutes.md)
 guide. The v1.0 supervised-pilot release includes the native Board, the
 controller dry-run and policy contract, adoption and upgrade hardening from
 recent install rehearsals, package-index release checks, provider-diversity
@@ -303,12 +302,11 @@ and bounded remote install failure reasons. The v1.1.2 patch keeps large Jira
 queues inside the response budget and adds a narrow issue-type discovery
 fallback when Jira's create-metadata inventory returns 404.
 
-Unreleased source on `main` adds a shared Jira authority brief for every
-orchestrator host, a local single-orchestrator session lease with Board
-visibility, controller orchestrator telemetry, and explicit Cursor
-orchestrator qualification. These changes are not in `code-mower==1.1.2`.
-Package-only users can start from the public package rather than a source
-checkout.
+The v1.2 release gives every orchestrator host the same Jira authority brief,
+adds a local single-orchestrator session lease with Board visibility, records
+controller orchestrator telemetry, qualifies Cursor against the Codex/Claude
+orchestrator contract, and makes hosted release qualification reproduce the
+validated local result command exactly.
 
 ## What Calibration Does And Does Not Prove
 
@@ -339,7 +337,7 @@ Provider-contract baseline for the next release train:
 
 For release verification,
 [First-User Install Rehearsal](docs/first-user-install-rehearsal.md) records
-the package-index procedure for `v1.1.2` / `code-mower==1.1.2`. The
+the package-index procedure for `v1.2.0` / `code-mower==1.2.0`. The
 GitHub release records the workflow and rehearsal evidence for the exact tag.
 After publication, [Release Qualification](docs/release-qualification.md)
 coordinates provider-specific install and operational checks without treating
@@ -533,8 +531,8 @@ measurement work.
 
 ## Installation Status
 
-The current package-index release baseline is `v1.1.2`, with pinned package
-install spec `code-mower==1.1.2`. Release evidence is recorded on the GitHub
+The current package-index release baseline is `v1.2.0`, with pinned package
+install spec `code-mower==1.2.0`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. The public repository is
 [codemower-ai/code-mower](https://github.com/codemower-ai/code-mower), and
 GitHub releases remain the auditable source for tags, build artifacts, and
@@ -646,6 +644,7 @@ first so local work exercises the same package entrypoint users install.
 - [v1.1 Release Notes](docs/v11-release-notes.md)
 - [v1.1.1 Release Notes](docs/v111-release-notes.md)
 - [v1.1.2 Release Notes](docs/v112-release-notes.md)
+- [v1.2 Release Notes](docs/v12-release-notes.md)
 - [Post-v0.8 Effectiveness Assessment](docs/post-v08-effectiveness-assessment.md)
 - [v1.0.1 Effectiveness Assessment](docs/v101-effectiveness-assessment.md)
 

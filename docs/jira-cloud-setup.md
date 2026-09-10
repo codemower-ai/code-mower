@@ -209,10 +209,9 @@ GitHub state only. Controller dry-run never dispatches, merges, or writes Jira.
 
 ## 4. Shared Orchestrator Contract
 
-This shared session-brief contract is currently an unreleased `main` feature;
-it is not part of the published `code-mower==1.1.2` package. The released Jira
-REST commands and double write guard described elsewhere in this guide remain
-available in v1.1.2.
+This shared session-brief contract, the Jira REST commands, and the double
+write guard described elsewhere in this guide are available in
+`code-mower==1.2.0`.
 
 `code-mower session start` adds a `tracker` section to the operating brief
 whenever `tracker.kind` is `jira_cloud`. Codex, Claude, and every other
