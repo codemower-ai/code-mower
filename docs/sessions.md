@@ -4,13 +4,11 @@ Choose the tools you want to work with. Claude Code and Codex are the default
 pair; Devin and other participants are explicit additions. The agent hosting
 your conversation is the default orchestrator for that session.
 
-The participant picker and host-led session brief are available in the
-published `code-mower==1.1.2` package. The single-orchestrator lease, shared
-Jira tracker brief, controller host telemetry, and explicit Cursor
-qualification documented below are currently **Unreleased** on `main`; they are
-not available in the v1.1.2 package. Install from the matching tag when
-following release documentation, or use a contributor checkout when testing
-these source changes.
+The participant picker, host-led session brief, single-orchestrator lease,
+shared Jira tracker brief, controller host telemetry, and explicit Cursor
+qualification documented below are available in `code-mower==1.2.0`.
+Install from the matching tag when following release documentation, or use a
+contributor checkout when testing later source changes.
 
 ## Choose During Setup
 
