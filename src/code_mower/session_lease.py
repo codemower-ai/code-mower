@@ -116,7 +116,7 @@ def read_lease(path: str | Path) -> dict[str, Any] | None:
     lease_file = Path(path)
     try:
         raw = lease_file.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     try:
         record = json.loads(raw)
@@ -230,9 +230,9 @@ def acquire_lease(
     """
     if ttl_minutes <= 0:
         raise SessionLeaseError("the lease TTL must be a positive number of minutes")
-    moment = now or _now()
     path = lease_path(state_dir)
     with _locked(path):
+        moment = now or _now()
         current = read_lease(path)
         state = lease_state(current, now=moment)
         held_by_us = state == STATE_HELD and current is not None and current["session_id"] == session_id
@@ -266,9 +266,9 @@ def renew_lease(
     """
     if ttl_minutes <= 0:
         raise SessionLeaseError("the lease TTL must be a positive number of minutes")
-    moment = now or _now()
     path = lease_path(state_dir)
     with _locked(path):
+        moment = now or _now()
         current = read_lease(path)
         state = lease_state(current, now=moment)
         if state == STATE_ABSENT:

@@ -5,12 +5,15 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
+from unittest import mock
 
-from code_mower import cli, session, session_lease
+from code_mower import cli, file_locks, session, session_lease
 
 
 LEASE_FILE = Path(".code-mower/sessions") / session_lease.LEASE_FILE_NAME
@@ -175,6 +178,25 @@ class SessionStartupLeaseTests(unittest.TestCase):
                 self.assertEqual(start_session()[0], 0)
                 self.assertIsNotNone(session_lease.read_lease(LEASE_FILE))
 
+    def test_invalid_utf8_lease_file_is_treated_as_malformed_and_recovered(self):
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            LEASE_FILE.parent.mkdir(parents=True)
+            LEASE_FILE.write_bytes(b"\xff\xfe\x00not valid utf-8")
+            self.assertIsNone(session_lease.read_lease(LEASE_FILE))
+            code, out, _ = start_session()
+            self.assertEqual(code, 0)
+            record = session_lease.read_lease(LEASE_FILE)
+            self.assertIsNotNone(record)
+            self.assertEqual(record["session_id"], json.loads(out)["id"])
+
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            LEASE_FILE.parent.mkdir(parents=True)
+            LEASE_FILE.write_bytes(b"\xff\xfe\x00not valid utf-8")
+            code, out, _ = run_lease("release", "--force", "--json")
+            self.assertEqual(code, 0)
+            self.assertTrue(json.loads(out)["released"])
+            self.assertFalse(LEASE_FILE.exists())
+
     def test_the_same_session_re_acquiring_renews_in_place(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp) / "sessions"
@@ -320,6 +342,73 @@ class LeaseCommandTests(unittest.TestCase):
             self.assertFalse(LEASE_FILE.exists())
 
 
+class LeaseClockOrderingTests(unittest.TestCase):
+    """Lock contention must never backdate a lease to a moment before it won the lock."""
+
+    @staticmethod
+    @contextmanager
+    def _lock_held_for(lock_path: Path, *, seconds: float) -> Iterator[None]:
+        holder_ready = threading.Event()
+        release_holder = threading.Event()
+
+        def hold_lock() -> None:
+            with file_locks.exclusive_file_lock(lock_path):
+                holder_ready.set()
+                release_holder.wait()
+
+        def delayed_release() -> None:
+            time.sleep(seconds)
+            release_holder.set()
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        holder_ready.wait()
+        releaser = threading.Thread(target=delayed_release)
+        releaser.start()
+        try:
+            yield
+        finally:
+            holder.join()
+            releaser.join()
+
+    def test_acquire_samples_the_clock_after_lock_contention_not_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "sessions"
+            path = session_lease.lease_path(state_dir)
+            path.parent.mkdir(parents=True)
+            lock_path = path.with_name(f"{path.name}.lock")
+
+            with self._lock_held_for(lock_path, seconds=0.2):
+                call_started = datetime.now(timezone.utc)
+                record = session_lease.acquire_lease(
+                    repo="team/project", orchestrator="claude",
+                    session_id="session-1", state_dir=state_dir,
+                )
+
+            acquired_at = datetime.fromisoformat(record["acquired_at"])
+            self.assertGreaterEqual(acquired_at, call_started + timedelta(seconds=0.15))
+            self.assertGreater(datetime.fromisoformat(record["expires_at"]), acquired_at)
+
+    def test_renew_samples_the_clock_after_lock_contention_not_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "sessions"
+            session_lease.acquire_lease(
+                repo="team/project", orchestrator="claude",
+                session_id="session-1", state_dir=state_dir, ttl_minutes=60,
+            )
+            path = session_lease.lease_path(state_dir)
+            lock_path = path.with_name(f"{path.name}.lock")
+
+            with self._lock_held_for(lock_path, seconds=0.2):
+                call_started = datetime.now(timezone.utc)
+                payload = session_lease.renew_lease(
+                    state_dir=state_dir, session_id="session-1", ttl_minutes=60,
+                )
+
+            renewed_at = datetime.fromisoformat(payload["lease"]["renewed_at"])
+            self.assertGreaterEqual(renewed_at, call_started + timedelta(seconds=0.15))
+
+
 class LeasePrivacyTests(unittest.TestCase):
     def test_the_lease_holds_only_coordination_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -373,6 +462,33 @@ class BriefCompatibilityTests(unittest.TestCase):
             with redirect_stdout(out):
                 self.assertEqual(cli.main(["session", "show", payload["session_file"], "--json"]), 0)
             self.assertEqual(json.loads(out.getvalue()), payload)
+
+
+class WriteFailureCleanupTests(unittest.TestCase):
+    def test_cleanup_after_a_write_failure_preserves_the_original_error_and_the_new_holder(self):
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            original_release = session_lease.release_lease
+
+            def race_then_release(*, state_dir, session_id=None, force=False, now=None):
+                # Simulate another session force-taking the lease in the narrow
+                # window between this call's acquisition and its failed write.
+                session_lease.acquire_lease(
+                    repo="team/project", orchestrator="codex",
+                    session_id="rival-session", state_dir=state_dir, force=True,
+                )
+                return original_release(state_dir=state_dir, session_id=session_id, force=force, now=now)
+
+            with mock.patch.object(session_lease, "release_lease", side_effect=race_then_release), \
+                 mock.patch.object(session.json, "dump", side_effect=OSError("disk full")):
+                code, out, err = start_session()
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("disk full", err)
+            self.assertNotIn("already holds the mutating orchestrator lease", err)
+            record = session_lease.read_lease(LEASE_FILE)
+            self.assertIsNotNone(record)
+            self.assertEqual(record["session_id"], "rival-session")
 
 
 if __name__ == "__main__":

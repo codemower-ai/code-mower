@@ -277,6 +277,7 @@ PACKAGE_FILES = (
     ("src/code_mower/lane_delivery.py", "src/code_mower/lane_delivery.py", "core"),
     ("src/code_mower/participants.py", "src/code_mower/participants.py", "core"),
     ("src/code_mower/session.py", "src/code_mower/session.py", "core"),
+    ("src/code_mower/session_lease.py", "src/code_mower/session_lease.py", "core"),
     ("src/code_mower/lane_status.py", "src/code_mower/lane_status.py", "core"),
     ("tools/code_mower_package.py", "src/code_mower/package.py", "core"),
     ("tools/code_mower_package_content.py", "src/code_mower/package_content.py", "core"),

@@ -290,14 +290,20 @@ def main(argv: list[str] | None = None) -> int:
                     with destination.open("x", encoding="utf-8") as handle:
                         json.dump(payload, handle, indent=2, sort_keys=True)
                         handle.write("\n")
-                except OSError:
+                except OSError as exc:
                     # A brief that was never written has no orchestrator, so the
-                    # lease this call just took must not outlive the failure.
+                    # lease this call just took must not outlive the failure. If
+                    # another session force-took the lease in this narrow window,
+                    # cleanup must not delete the new holder's lease or mask the
+                    # original write failure.
                     if record is not None:
-                        session_lease.release_lease(
-                            state_dir=args.state_dir, session_id=payload["id"],
-                        )
-                    raise
+                        try:
+                            session_lease.release_lease(
+                                state_dir=args.state_dir, session_id=payload["id"],
+                            )
+                        except session_lease.SessionLeaseError:
+                            pass
+                    raise exc
         print(json.dumps(payload, indent=2, sort_keys=True) if args.json else render(payload), end="\n" if args.json else "")
         return 0
     except (ConfigError, OSError, ValueError, KeyError, TypeError, session_lease.SessionLeaseError) as exc:
