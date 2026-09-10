@@ -17,7 +17,9 @@ from . import __version__
 from . import config as code_mower_config
 from . import lane_status, tracker_queue
 from .cloud_client.errors import CloudBundleError
-from .cloud_client.events import EVENT_SCHEMA, normalize_event, utc_now, validate_cloud_event
+from .cloud_client.events import (
+    EVENT_SCHEMA, normalize_event, utc_now, validate_cloud_event, validate_orchestrator_provider,
+)
 from .providers import build_code_mower_tool_provenance
 
 
@@ -52,6 +54,11 @@ class ControllerOptions:
     auto_merge_enabled: bool = False
     merge_token_ready: bool = False
     issue_limit: int = 50
+    orchestrator_provider: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.orchestrator_provider is not None:
+            validate_orchestrator_provider(self.orchestrator_provider)
 
 
 def _text(value: Any) -> str:
@@ -618,6 +625,8 @@ def evaluate_controller_report(
             "ready_issue_errors": list(issue_payload.get("errors") or []),
         },
     }
+    if options.orchestrator_provider is not None:
+        report["orchestrator_provider"] = options.orchestrator_provider
     if tracker_queue.jira_enabled(config) and "tracker" in issue_payload:
         report["tracker"] = issue_payload["tracker"]
     return report
@@ -682,6 +691,10 @@ def build_controller_event(
         "merge_method": _text(decision.get("merge_method")),
         "would_mutate": bool(decision.get("would_mutate")),
     }
+    if "orchestrator_provider" in report:
+        dimensions["orchestrator_provider"] = validate_orchestrator_provider(
+            report["orchestrator_provider"]
+        )
     dimensions = {
         key: value
         for key, value in dimensions.items()
@@ -788,10 +801,14 @@ def render_text(report: Mapping[str, Any]) -> str:
         f"Code Mower controller for {report.get('repo')}",
         f"Generated: {report.get('generated_at')}",
         f"Mode: {report.get('mode')}",
+    ]
+    if "orchestrator_provider" in report:
+        lines.append(f"Orchestrator: {report['orchestrator_provider']}")
+    lines.extend([
         "",
         f"Decision: {decision.get('decision_state')}",
         f"Next: {decision.get('next_action')}",
-    ]
+    ])
     if decision.get("next_detail"):
         lines.append(f"Detail: {decision.get('next_detail')}")
     if decision.get("pr_number"):
@@ -852,6 +869,10 @@ def main(
     run.add_argument("--auto-merge-enabled", action="store_true")
     run.add_argument("--merge-token-ready", action="store_true")
     run.add_argument("--issue-limit", type=int, default=50)
+    run.add_argument(
+        "--orchestrator", metavar="PROVIDER",
+        help="orchestrator provider (e.g. codex, claude, or custom:<slug>); overrides CODE_MOWER_HOST",
+    )
     run.add_argument("--event-file", type=Path, default=None)
     run.add_argument("--team-id", default="")
     run.add_argument("--install-id", default="")
@@ -864,6 +885,7 @@ def main(
     args = parser.parse_args(list(argv or ()))
     if args.command != "run":  # pragma: no cover - argparse validates commands.
         raise AssertionError(f"unhandled controller command: {args.command}")
+    environ = os.environ if env is None else env
     try:
         options = ControllerOptions(
             repo=args.repo,
@@ -872,6 +894,10 @@ def main(
             auto_merge_enabled=args.auto_merge_enabled,
             merge_token_ready=args.merge_token_ready,
             issue_limit=args.issue_limit,
+            orchestrator_provider=(
+                args.orchestrator if args.orchestrator is not None
+                else environ.get("CODE_MOWER_HOST")
+            ),
         )
         config = code_mower_config.load_config(args.config)
         jira_reader = tracker_queue.resolve_jira_queue_reader(
@@ -885,7 +911,7 @@ def main(
             config_dir=(
                 Path(args.provider_config_dir) if args.provider_config_dir else None
             ),
-            env=os.environ if env is None else env,
+            env=environ,
             timeout_seconds=args.http_timeout,
             client_factory=jira_client_factory,
         )
