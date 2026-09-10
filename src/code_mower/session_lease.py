@@ -138,10 +138,18 @@ def _locked(path: Path) -> Iterator[None]:
 
     The lock file is never deleted, so an unlink of the lease itself cannot race
     a waiter that already opened the lock.
+
+    A :class:`FileLockError` (for example a contended lock timing out) is
+    translated to :class:`SessionLeaseError` here, the one place every lease
+    operation passes through, so no caller -- CLI or library -- ever has to
+    catch the lock layer's exception type separately from the lease layer's.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with exclusive_file_lock(path.with_name(f"{path.name}.lock")):
-        yield
+    try:
+        with exclusive_file_lock(path.with_name(f"{path.name}.lock")):
+            yield
+    except FileLockError as exc:
+        raise SessionLeaseError(f"could not acquire the session lease lock: {exc}") from exc
 
 
 def read_lease(path: str | Path) -> dict[str, Any] | None:
@@ -348,9 +356,9 @@ def release_lease(
     or ``force`` -- the explicit takeover an owner authorizes after deciding the
     holding session is gone.
     """
-    moment = now or _now()
     path = lease_path(root if root is not None else find_working_copy_root())
     with _locked(path):
+        moment = now or _now()
         current = read_lease(path)
         state = lease_state(current, now=moment)
         if state == STATE_HELD and not force and current["session_id"] != session_id:
@@ -370,9 +378,9 @@ def release_lease(
 
 def inspect_lease(*, now: datetime | None = None, root: str | Path | None = None) -> dict[str, Any]:
     """Report the lease for the current Git working copy without changing it."""
-    moment = now or _now()
     path = lease_path(root if root is not None else find_working_copy_root())
     with _locked(path):
+        moment = now or _now()
         current = read_lease(path)
     return _status(current, now=moment, path=path, action="inspect")
 
@@ -415,7 +423,7 @@ def verify_live_lease(
         with _locked(path):
             moment = now or _now()
             current = read_lease(path)
-    except (OSError, FileLockError):
+    except (OSError, SessionLeaseError):
         return {"state": STATE_UNVERIFIABLE, "mutating": False}
     state = lease_state(current, now=moment)
     if (

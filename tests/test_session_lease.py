@@ -496,6 +496,130 @@ class LeaseClockOrderingTests(unittest.TestCase):
             self.assertEqual(result["state"], session_lease.STATE_HELD)
             self.assertTrue(result["mutating"])
 
+    def test_inspect_samples_the_clock_after_lock_contention_not_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = session_lease.lease_path(root)
+            # Expires well before the lock releases, so a `show` that samples
+            # the clock before contention (rather than after winning the
+            # lock) would wrongly report this lease as still held.
+            self._write_raw_lease(path, expires_at=datetime.now(timezone.utc) + timedelta(seconds=0.1))
+            lock_path = path.with_name(f"{path.name}.lock")
+
+            with self._lock_held_for(lock_path, seconds=0.2):
+                payload = session_lease.inspect_lease(root=root)
+
+            self.assertEqual(payload["state"], session_lease.STATE_EXPIRED)
+
+    def test_inspect_honors_an_explicit_now_instead_of_the_real_clock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = session_lease.lease_path(root)
+            injected_now = datetime.now(timezone.utc)
+            self._write_raw_lease(path, expires_at=injected_now + timedelta(seconds=0.1))
+            lock_path = path.with_name(f"{path.name}.lock")
+
+            with self._lock_held_for(lock_path, seconds=0.2):
+                payload = session_lease.inspect_lease(now=injected_now, root=root)
+
+            self.assertEqual(payload["state"], session_lease.STATE_HELD)
+
+    def test_release_samples_the_clock_after_lock_contention_not_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = session_lease.lease_path(root)
+            # Already expired by the time the lock is won, so releasing it
+            # (with neither a matching session id nor --force) must succeed
+            # rather than being refused as if it were still live.
+            self._write_raw_lease(path, expires_at=datetime.now(timezone.utc) + timedelta(seconds=0.1))
+            lock_path = path.with_name(f"{path.name}.lock")
+
+            with self._lock_held_for(lock_path, seconds=0.2):
+                payload = session_lease.release_lease(session_id="someone-else", root=root)
+
+            self.assertEqual(payload["previous_state"], session_lease.STATE_EXPIRED)
+            self.assertTrue(payload["released"])
+
+    def test_release_honors_an_explicit_now_instead_of_the_real_clock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = session_lease.lease_path(root)
+            injected_now = datetime.now(timezone.utc)
+            self._write_raw_lease(path, expires_at=injected_now + timedelta(seconds=0.1))
+            lock_path = path.with_name(f"{path.name}.lock")
+
+            with self._lock_held_for(lock_path, seconds=0.2):
+                with self.assertRaises(session_lease.SessionLeaseError):
+                    session_lease.release_lease(session_id="someone-else", now=injected_now, root=root)
+
+
+class LeaseLockFailureTests(unittest.TestCase):
+    """A contended lease lock must fail as an actionable SessionLeaseError,
+    never escape as file_locks.FileLockError -- an uncaught RuntimeError that
+    would crash a session lease CLI command instead of producing the normal
+    error message and exit code."""
+
+    def test_lock_timeout_is_reported_as_a_session_lease_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = session_lease.lease_path(root)
+            lock_path = path.with_name(f"{path.name}.lock")
+            lock_path.parent.mkdir(parents=True)
+
+            holder_ready = threading.Event()
+            release_holder = threading.Event()
+
+            def hold_lock() -> None:
+                with file_locks.exclusive_file_lock(lock_path):
+                    holder_ready.set()
+                    release_holder.wait()
+
+            holder = threading.Thread(target=hold_lock)
+            holder.start()
+            holder_ready.wait()
+            try:
+                with mock.patch.object(
+                    session_lease, "exclusive_file_lock",
+                    lambda p: file_locks.exclusive_file_lock(p, timeout_seconds=0.05, retry_seconds=0.01),
+                ):
+                    with self.assertRaises(session_lease.SessionLeaseError):
+                        session_lease.inspect_lease(root=root)
+            finally:
+                release_holder.set()
+                holder.join()
+
+    def test_cli_lease_show_reports_a_clean_error_on_lock_timeout_not_a_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
+            lock_path = LEASE_FILE.with_name(f"{LEASE_FILE.name}.lock")
+            lock_path.parent.mkdir(parents=True)
+
+            holder_ready = threading.Event()
+            release_holder = threading.Event()
+
+            def hold_lock() -> None:
+                with file_locks.exclusive_file_lock(lock_path):
+                    holder_ready.set()
+                    release_holder.wait()
+
+            holder = threading.Thread(target=hold_lock)
+            holder.start()
+            holder_ready.wait()
+            try:
+                with mock.patch.object(
+                    session_lease, "exclusive_file_lock",
+                    lambda p: file_locks.exclusive_file_lock(p, timeout_seconds=0.05, retry_seconds=0.01),
+                ):
+                    code, out, err = run_lease("show")
+            finally:
+                release_holder.set()
+                holder.join()
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertTrue(err.startswith("error:"))
+            self.assertIn("lease lock", err)
+
 
 class LeasePrivacyTests(unittest.TestCase):
     def test_the_lease_holds_only_coordination_metadata(self):
