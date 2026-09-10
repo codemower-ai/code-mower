@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 from contextlib import redirect_stdout
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
+from unittest import TestCase
+from unittest.mock import Mock, patch
 
 from code_mower import controller
+from code_mower.cloud_client.errors import CloudBundleError
+from code_mower.cloud_client.events import normalize_event
 
 
 NOW = "2026-09-03T12:00:00Z"
@@ -332,6 +337,17 @@ def test_green_promoted_merge_excludes_author_lane_and_requests_auto_merge() -> 
 
 
 def test_cli_writes_metadata_only_event_file(tmp_path: Path) -> None:
+    _assert_cli_metadata_event(tmp_path)
+
+
+def _assert_cli_metadata_event(
+    tmp_path: Path, flag: str | None = None, host: str | None = None,
+    expected: str | None = None,
+) -> None:
+    # Unrelated process state must never identify the orchestrator.
+    environ = {"CODEX_THREAD_ID": "unrelated-process-context", "CLAUDECODE": "1"}
+    if host is not None:
+        environ["CODE_MOWER_HOST"] = host
     config_path = tmp_path / "code-mower.yml"
     config_path.write_text(
         """
@@ -375,7 +391,7 @@ lanes:
         return subprocess.CompletedProcess([], 1, "", "")
 
     out = StringIO()
-    with redirect_stdout(out):
+    with patch.dict("os.environ", environ, clear=True), redirect_stdout(out):
         code = controller.main(
             [
                 "run",
@@ -386,6 +402,7 @@ lanes:
                 "--event-file",
                 str(event_path),
                 "--json",
+                *(["--orchestrator", flag] if flag is not None else []),
             ],
             gh_json_runner=gh_json,  # type: ignore[call-arg]
             command_runner=command_runner,  # type: ignore[call-arg]
@@ -396,6 +413,19 @@ lanes:
     event = json.loads(event_path.read_text(encoding="utf-8"))
     assert payload["event"]["event_type"] == "queue_state_snapshot"
     assert event["event_type"] == "queue_state_snapshot"
+    assert payload["event"] == event
+    assert normalize_event(event, event["event_type"]) == event
+    assert event["provider"] == "code-mower"
+    assert event["tool"]["provider"] == "code-mower"
+    assert event["tool"]["role"] == "controller"
+    if expected is None:
+        assert "orchestrator_provider" not in payload
+        assert "orchestrator_provider" not in event["dimensions"]
+        assert "Orchestrator:" not in controller.render_text(payload)
+    else:
+        assert payload["orchestrator_provider"] == expected
+        assert event["dimensions"]["orchestrator_provider"] == expected
+        assert f"Orchestrator: {expected}" in controller.render_text(payload)
     serialized = json.dumps(event).lower()
     for forbidden in (
         "source_code",
@@ -406,6 +436,96 @@ lanes:
         "transcript",
     ):
         assert forbidden not in serialized
+    assert "unrelated-process-context" not in serialized
+    assert str(tmp_path) not in serialized
+
+
+class ControllerOrchestratorTests(TestCase):
+    def test_cli_records_explicit_fallback_and_absent_identity(self) -> None:
+        cases = [
+            ("codex", "claude", "codex"),
+            ("claude", "codex", "claude"),
+            ("codex", "invalid-host", "codex"),
+            ("codex", None, "codex"),
+            ("claude", None, "claude"),
+            (None, "codex", "codex"),
+            (None, "claude", "claude"),
+            ("custom:pilot-agent", None, "custom:pilot-agent"),
+            (None, "custom:pilot-agent", "custom:pilot-agent"),
+            (None, None, None),
+        ]
+        for flag, host, expected in cases:
+            with self.subTest(flag=flag, host=host), tempfile.TemporaryDirectory() as tmp:
+                _assert_cli_metadata_event(Path(tmp), flag, host, expected)
+
+    def test_cli_rejects_invalid_orchestrator_before_collection(self) -> None:
+        values = [
+            "unregistered-host", "gitar", "", " ", "custom:", "custom:two words",
+            "custom:/tmp/host", "custom:" + "a" * 65,
+            "custom:sk-" + "a" * 24, "Bearer " + "a" * 24,
+        ]
+        for source in ("flag", "environment"):
+            for value in values:
+                with self.subTest(source=source, value=value), tempfile.TemporaryDirectory() as tmp:
+                    event_path = Path(tmp) / "event.json"
+                    gh_json = Mock(side_effect=AssertionError("must not collect remote metadata"))
+                    command_runner = Mock(side_effect=AssertionError("must not inspect processes"))
+                    # Invalid explicit flags cannot fall back to a valid environment value.
+                    env = {"CODE_MOWER_HOST": "codex" if source == "flag" else value}
+                    out, err = StringIO(), StringIO()
+                    with redirect_stdout(out), redirect_stderr(err):
+                        code = controller.main(
+                            [
+                                "run", "--repo", "owner/repo", "--config", str(Path(tmp) / "missing.yml"),
+                                "--event-file", str(event_path), "--json",
+                                *(["--orchestrator", value] if source == "flag" else []),
+                            ],
+                            env=env, gh_json_runner=gh_json, command_runner=command_runner,
+                        )
+                    self.assertEqual(code, 1)
+                    self.assertEqual(out.getvalue(), "")
+                    self.assertIn("orchestrator_provider", err.getvalue())
+                    self.assertNotIn("Traceback", err.getvalue())
+                    if value.strip() and value != "custom:":
+                        self.assertNotIn(value, err.getvalue())
+                    self.assertFalse(event_path.exists())
+                    gh_json.assert_not_called()
+                    command_runner.assert_not_called()
+
+    def test_controller_validates_identity_from_programmatic_callers(self) -> None:
+        with self.assertRaisesRegex(CloudBundleError, "orchestrator_provider"):
+            _options(orchestrator_provider="unregistered-host")
+        report = _evaluate([])
+        report["orchestrator_provider"] = "custom:/tmp/host"
+        with self.assertRaisesRegex(CloudBundleError, "orchestrator_provider"):
+            controller.build_controller_event(report=report)
+
+    def test_programmatic_report_does_not_infer_host_from_environment(self) -> None:
+        with patch.dict("os.environ", {"CODE_MOWER_HOST": "claude"}):
+            report = _evaluate([])
+            self.assertNotIn("orchestrator_provider", report)
+            self.assertNotIn("orchestrator_provider", controller.build_controller_event(report=report)["dimensions"])
+
+    def test_orchestrator_identity_preserves_policy_and_tool_provenance(self) -> None:
+        cases = [
+            ([], "queue_state_snapshot"),
+            ([_pr(needs=["needs-claude-audit"])], "controller_decision"),
+            ([_pr(needs=["needs-owner"])], "owner_intervention"),
+            ([_pr(builder="builder:codex", done=["claude-audit-done"])], "merge_decision"),
+        ]
+        for provider in ("codex", "claude", "custom:pilot-agent"):
+            for prs, event_type in cases:
+                with self.subTest(provider=provider, event_type=event_type):
+                    baseline = _evaluate(prs)
+                    report = _evaluate(prs, orchestrator_provider=provider)
+                    self.assertEqual(report, {**baseline, "orchestrator_provider": provider})
+                    baseline_event = controller.build_controller_event(report=baseline)
+                    event = controller.build_controller_event(report=report)
+                    self.assertEqual(event["event_type"], event_type)
+                    self.assertEqual(event["tool"], baseline_event["tool"])
+                    self.assertEqual(event["dimensions"], {
+                        **baseline_event["dimensions"], "orchestrator_provider": provider,
+                    })
 
 
 def test_cli_accepts_explicit_dry_run_alias(tmp_path: Path) -> None:

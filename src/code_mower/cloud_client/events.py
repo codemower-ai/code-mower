@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
 from code_mower import __version__
+from code_mower.participants import PARTICIPANTS
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 from code_mower.providers import (
     build_code_mower_tool_provenance,
@@ -46,6 +48,13 @@ from .work_types import validate_work_type_metadata
 
 
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
+CONTROLLER_EVENT_TYPES = frozenset({
+    "controller_decision", "merge_decision", "queue_state_snapshot", "owner_intervention",
+})
+ORCHESTRATOR_PROVIDERS = frozenset(
+    name for name, participant in PARTICIPANTS.items() if participant.orchestrator
+)
+CUSTOM_ORCHESTRATOR_RE = re.compile(r"custom:[a-z][a-z0-9-]{0,63}")
 AUTHORING_RUN_SCHEMA = "code_mower.authoringRun.v1"
 CLOUD_EVENT_STRING_FIELDS = (
     "schema",
@@ -358,6 +367,21 @@ def build_provider_catalog_snapshot_events(
     return events
 
 
+def validate_orchestrator_provider(value: Any) -> str:
+    """Validate categorical host identity without echoing untrusted input."""
+    if not isinstance(value, str) or (
+        value not in ORCHESTRATOR_PROVIDERS
+        and CUSTOM_ORCHESTRATOR_RE.fullmatch(value) is None
+    ):
+        raise CloudBundleError(
+            "orchestrator_provider must be a known orchestrator provider "
+            f"({', '.join(sorted(ORCHESTRATOR_PROVIDERS))}) or custom:<slug>; "
+            "slug must be 1-64 lowercase letters, digits, or hyphens, starting with a letter"
+        )
+    validate_metadata_payload({"orchestrator_provider": value})
+    return value
+
+
 def validate_cloud_event(value: Any) -> dict[str, Any]:
     """Validate Code Mower's metadata-only cloud event boundary.
 
@@ -380,6 +404,11 @@ def validate_cloud_event(value: Any) -> dict[str, Any]:
     for key in ("metrics", "dimensions", "tool"):
         if not isinstance(value.get(key), dict):
             raise CloudBundleError(f"structured event field {key} must be an object")
+    if (
+        value["event_type"] in CONTROLLER_EVENT_TYPES
+        and "orchestrator_provider" in value["dimensions"]
+    ):
+        validate_orchestrator_provider(value["dimensions"]["orchestrator_provider"])
     if value["event_type"] == PRODUCTIVITY_EVENT_TYPE:
         validate_productivity_summary_payload(value)
     if value["event_type"] == PR_OUTCOME_EVENT_TYPE:

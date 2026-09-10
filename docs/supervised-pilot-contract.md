@@ -28,7 +28,22 @@ code-mower controller run --repo OWNER/REPO
 code-mower controller run --repo OWNER/REPO --dry-run
 code-mower controller run --repo OWNER/REPO --mode promoted --json
 code-mower controller run --repo OWNER/REPO --event-file .code-mower/controller-event.json
+code-mower controller run --repo OWNER/REPO --orchestrator codex --json
 ```
+
+Supply `--orchestrator PROVIDER` to identify the host driving a controller run.
+It takes precedence over the `CODE_MOWER_HOST` environment fallback. Known
+orchestrators are `codex`, `claude`, `cursor`, `devin`, `grok-bot`, `antigravity`,
+and `muse`. Extensions must use `custom:<slug>`, where the slug is 1–64 lowercase
+letters, digits, or hyphens and starts with a letter (for example,
+`custom:pilot-agent`). Values are exact, case-sensitive identifiers; empty,
+unknown, reviewer-only, malformed, and secret-like values are rejected.
+
+The local report records optional top-level `orchestrator_provider`; the event
+records `dimensions.orchestrator_provider`. Both omit the field when neither
+input is supplied. Identity is never inferred from process state, credentials,
+builder lanes, or reviewer configuration. This is categorical provider metadata,
+not a user, machine, session, or lease identifier, and does not affect policy.
 
 `--dry-run` is an explicit alias for the default `dry_run` mode, which is useful
 when agent permission systems classify commands by flags. `dry_run` and
@@ -96,7 +111,10 @@ Every supervised-pilot event should include these dimensions:
 
 Optional dimensions include PR number, issue number, branch, author login, lane
 id, reviewer outcome references, gate status, stop condition, safe run URL, and
-short SHA prefix.
+short SHA prefix. Controller-produced events may also include
+`dimensions.orchestrator_provider` under the identity rules above. Existing
+consumers must accept its absence; the event schema and Code Mower `provider`
+and `tool` provenance remain unchanged.
 
 ## Metrics
 

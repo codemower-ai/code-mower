@@ -168,6 +168,23 @@ boundary, stop conditions, reviewer outcome references, example fixtures, and
 privacy rules. CodeMower.com must keep accepting v0.9.x uploads that omit these
 event types.
 
+Controller-produced `controller_decision`, `merge_decision`,
+`queue_state_snapshot`, and `owner_intervention` events may include optional
+`dimensions.orchestrator_provider`. It is the host provider explicitly supplied
+through `controller run --orchestrator PROVIDER`, or lower-precedence
+`CODE_MOWER_HOST`, and mirrors the local report's `orchestrator_provider`.
+Known values are `codex`, `claude`, `cursor`, `devin`, `grok-bot`, `antigravity`,
+and `muse`. The explicit extension form is `custom:<slug>` with 1–64 lowercase
+letters, digits, or hyphens, starting with a letter. Validation rejects empty,
+unknown, reviewer-only, malformed, and secret-like values. Extensions identify
+providers only; they must not carry user or machine identity, local paths,
+session/lease identifiers, prompts, work content, auth output, or secrets.
+When identity is not supplied, the field is omitted; no process-state inference
+is performed. This dimension is additive and optional within the existing v1
+schemas. Consumers must keep accepting older events without it. Top-level
+`provider` and `tool` still describe Code Mower, and upload privacy remains
+metadata-only.
+
 ## PR Outcome And Cost
 
 `pr_outcome` is the additive atomic event for Dashboard 2.0. It uses the normal
