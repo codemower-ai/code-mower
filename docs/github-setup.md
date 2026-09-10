@@ -1,8 +1,10 @@
 # Code Mower GitHub Setup
 
-Code Mower v1.0 is GitHub-first. The easy path assumes GitHub pull requests,
+Code Mower remains GitHub-first. The easy path assumes GitHub pull requests,
 labels, issue comments, pull request reviews, check runs, branch protection,
-GitHub Actions, and the `gh` CLI.
+GitHub Actions, and the `gh` CLI. Jira Cloud can optionally supply work items
+and receive guarded lifecycle updates, but it does not replace GitHub as the
+pull request, check, or merge-gate authority.
 
 Public and private repositories are both supported. The difference is not the
 Code Mower lane model; it is provider access, token scope, and data exposure.

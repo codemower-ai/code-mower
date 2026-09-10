@@ -7949,6 +7949,33 @@ def main():
             with self.subTest(path=path.relative_to(ROOT).as_posix()):
                 self.assertIsNone(stale_baseline.search(path.read_text(encoding="utf-8")))
 
+    def test_public_docs_match_current_commands_and_privacy_boundary(self) -> None:
+        paths = sorted((ROOT / "docs").rglob("*.md")) + [
+            ROOT / "README.md",
+            ROOT / "CHANGELOG.md",
+        ]
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+
+        self.assertNotIn("code-mower tracker status", combined)
+        self.assertNotIn("code-mower audit pr", combined)
+        self.assertNotIn("Until that binding lands", combined)
+        for private_identifier in (
+            "DrinkBetter-AI/mobile-app",
+            "/Us" + "ers/" + "j" + "huber",
+            "/home/" + "j" + "huber",
+            "github.com/" + "jeff" + "huber/",
+        ):
+            self.assertNotIn(private_identifier, combined)
+
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        sessions = (ROOT / "docs" / "sessions.md").read_text(encoding="utf-8")
+        self.assertIn("Documentation on `main` follows the source on `main`", readme)
+        self.assertIn("not available in the v1.1.2 package", sessions)
+        self.assertLess(
+            readme.index("[v1.1 Release Notes](docs/v11-release-notes.md)"),
+            readme.index("[v1.1.1 Release Notes](docs/v111-release-notes.md)"),
+        )
+
     def test_current_release_docs_record_package_index_procedure(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         oss_checklist = (ROOT / "docs" / "oss-v1-checklist.md").read_text(
@@ -8523,7 +8550,11 @@ def main():
             readme,
         )
         self.assertIn("Gemini CLI and Antigravity are distinct lane ids", readme)
-        self.assertIn("Claude Code/Codex as builders and peer reviewers", quickstart)
+        self.assertIn("the agent hosting the session is", quickstart)
+        self.assertIn(
+            "default builder and peer-review pair remains Claude Code plus Codex",
+            quickstart,
+        )
         self.assertIn("Other providers are opt-in selections", quickstart)
         self.assertIn("CODE_MOWER_GATE_AUTOMERGE_TOKEN", quickstart)
         self.assertIn("Manual Audit Wrapper Fails Before Reviewing", troubleshooting)
