@@ -395,14 +395,15 @@ def verify_live_lease(
     including when no working-copy root can even be found: this is a read, and
     a read must never claim authority a mutation would have to earn.
     """
-    moment = now or _now()
     try:
         resolved_root = root if root is not None else find_working_copy_root()
     except SessionLeaseError:
+        moment = now or _now()
         current = None
     else:
         path = lease_path(resolved_root)
         with _locked(path):
+            moment = now or _now()
             current = read_lease(path)
     state = lease_state(current, now=moment)
     if (

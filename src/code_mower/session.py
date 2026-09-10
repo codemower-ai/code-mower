@@ -296,17 +296,19 @@ def main(argv: list[str] | None = None) -> int:
                 record = _acquire_startup_lease(args, payload)
                 destination = Path(args.state_dir) / f"{payload['id']}.json"
                 payload["session_file"] = str(destination.resolve())
-                destination.parent.mkdir(parents=True, exist_ok=True)
                 try:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
                     with destination.open("x", encoding="utf-8") as handle:
                         json.dump(payload, handle, indent=2, sort_keys=True)
                         handle.write("\n")
                 except OSError:
                     # A brief that was never written has no orchestrator, so the
-                    # lease this call just took must not outlive the failure. If
-                    # another session force-took the lease in this narrow window,
-                    # cleanup must not delete the new holder's lease or mask the
-                    # original write failure.
+                    # lease this call just took must not outlive the failure --
+                    # whether the write itself failed or the destination
+                    # directory could not even be created. If another session
+                    # force-took the lease in this narrow window, cleanup must
+                    # not delete the new holder's lease or mask the original
+                    # failure.
                     if record is not None:
                         try:
                             session_lease.release_lease(session_id=payload["id"])

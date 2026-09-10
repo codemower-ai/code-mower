@@ -442,6 +442,59 @@ class LeaseClockOrderingTests(unittest.TestCase):
             renewed_at = datetime.fromisoformat(payload["lease"]["renewed_at"])
             self.assertGreaterEqual(renewed_at, call_started + timedelta(seconds=0.15))
 
+    @staticmethod
+    def _write_raw_lease(path: Path, *, expires_at: datetime) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc)
+        record = {
+            "schema": session_lease.LEASE_SCHEMA,
+            "repo": "team/project",
+            "orchestrator": "claude",
+            "session_id": "session-1",
+            "acquired_at": now.isoformat(),
+            "renewed_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+        }
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+    def test_verify_live_lease_samples_the_clock_after_lock_contention_not_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = session_lease.lease_path(root)
+            # Expires well before the lock releases, so a read that samples
+            # the clock before contention (rather than after winning the
+            # lock) would wrongly call this lease still held.
+            self._write_raw_lease(path, expires_at=datetime.now(timezone.utc) + timedelta(seconds=0.1))
+            lock_path = path.with_name(f"{path.name}.lock")
+
+            with self._lock_held_for(lock_path, seconds=0.2):
+                result = session_lease.verify_live_lease(
+                    repo="team/project", session_id="session-1", orchestrator="claude", root=root,
+                )
+
+            self.assertEqual(result["state"], session_lease.STATE_EXPIRED)
+            self.assertFalse(result["mutating"])
+
+    def test_verify_live_lease_honors_an_explicit_now_instead_of_the_real_clock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = session_lease.lease_path(root)
+            injected_now = datetime.now(timezone.utc)
+            # The real clock will have moved past expiry by the time the lock
+            # is won; an explicitly injected `now` must still be honored
+            # verbatim rather than resampled inside the lock.
+            self._write_raw_lease(path, expires_at=injected_now + timedelta(seconds=0.1))
+            lock_path = path.with_name(f"{path.name}.lock")
+
+            with self._lock_held_for(lock_path, seconds=0.2):
+                result = session_lease.verify_live_lease(
+                    repo="team/project", session_id="session-1", orchestrator="claude",
+                    now=injected_now, root=root,
+                )
+
+            self.assertEqual(result["state"], session_lease.STATE_HELD)
+            self.assertTrue(result["mutating"])
+
 
 class LeasePrivacyTests(unittest.TestCase):
     def test_the_lease_holds_only_coordination_metadata(self):
@@ -525,6 +578,22 @@ class WriteFailureCleanupTests(unittest.TestCase):
             record = session_lease.read_lease(LEASE_FILE)
             self.assertIsNotNone(record)
             self.assertEqual(record["session_id"], "rival-session")
+
+    def test_a_destination_directory_that_cannot_be_created_leaves_no_orphaned_lease(self):
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
+            # An existing file where --state-dir points makes mkdir fail with
+            # FileExistsError, before the brief would ever be written.
+            state_dir = Path(tmp) / "state-as-file"
+            state_dir.write_text("not a directory", encoding="utf-8")
+
+            code, out, err = start_session("--state-dir", str(state_dir))
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertNotEqual(err, "")
+            self.assertFalse(LEASE_FILE.exists())
+            self.assertIsNone(session_lease.read_lease(LEASE_FILE))
 
 
 if __name__ == "__main__":
