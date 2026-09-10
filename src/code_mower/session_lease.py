@@ -45,7 +45,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from .file_locks import exclusive_file_lock
+from .file_locks import FileLockError, exclusive_file_lock
 
 
 LEASE_SCHEMA = "code_mower.session_lease.v1"
@@ -72,6 +72,7 @@ LEASE_FIELDS = (
 STATE_ABSENT = "absent"
 STATE_HELD = "held"
 STATE_EXPIRED = "expired"
+STATE_UNVERIFIABLE = "unverifiable"
 
 
 class SessionLeaseError(RuntimeError):
@@ -391,20 +392,31 @@ def verify_live_lease(
     working copy's actual lease and reports ``mutating`` True only when it is
     still held, unexpired, and matches ``repo``, ``session_id``, and
     ``orchestrator`` exactly. Everything else -- released, expired, malformed,
-    missing, or force-taken-over by another session -- reports as non-mutating,
-    including when no working-copy root can even be found: this is a read, and
-    a read must never claim authority a mutation would have to earn.
+    missing, force-taken-over by another session, or simply unverifiable --
+    reports as non-mutating, including when no working-copy root can even be
+    found: this is a read, and a read must never claim authority a mutation
+    would have to earn.
+
+    Verification itself takes the lease lock, which -- unlike a plain read of
+    the lease file -- creates ``.code-mower/`` and the lock file if either is
+    missing. A read-only checkout (for example a saved brief inspected outside
+    its working copy, or one where the tree is not writable) can therefore
+    fail to even attempt verification. That failure is reported the same way
+    as any other lease this call cannot confirm is live: non-mutating, with
+    the caller left to re-acquire through ``code-mower session start`` before
+    coordinating changes.
     """
     try:
         resolved_root = root if root is not None else find_working_copy_root()
     except SessionLeaseError:
-        moment = now or _now()
-        current = None
-    else:
-        path = lease_path(resolved_root)
+        return {"state": STATE_UNVERIFIABLE, "mutating": False}
+    path = lease_path(resolved_root)
+    try:
         with _locked(path):
             moment = now or _now()
             current = read_lease(path)
+    except (OSError, FileLockError):
+        return {"state": STATE_UNVERIFIABLE, "mutating": False}
     state = lease_state(current, now=moment)
     if (
         state == STATE_HELD

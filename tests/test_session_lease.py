@@ -551,6 +551,36 @@ class BriefCompatibilityTests(unittest.TestCase):
                 self.assertEqual(cli.main(["session", "show", payload["session_file"], "--json"]), 0)
             self.assertEqual(json.loads(out.getvalue()), payload)
 
+    def test_show_renders_read_only_when_the_lease_lock_cannot_be_written(self):
+        # session show re-verifies a saved brief's lease against the live lock
+        # file, but the checkout itself may be read-only for this caller
+        # (inspected from a mount, or by a user who doesn't own the lock).
+        # That must degrade to a non-mutating render with reacquire guidance,
+        # never crash and never claim the brief still carries authority.
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses file write permissions")
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
+            payload = json.loads(start_session()[1])
+            self.assertTrue(payload["lease"]["mutating"])
+            lock_path = LEASE_FILE.with_name(f"{LEASE_FILE.name}.lock")
+            original_mode = lock_path.stat().st_mode
+            lock_path.chmod(0o400)
+            try:
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    code = cli.main(["session", "show", payload["session_file"], "--json"])
+            finally:
+                lock_path.chmod(original_mode)
+
+            self.assertEqual(code, 0)
+            shown = json.loads(out.getvalue())
+            self.assertEqual(shown["lease"], {"state": session_lease.STATE_UNVERIFIABLE, "mutating": False})
+            self.assertIn(session.STALE_LEASE_INSTRUCTION, shown["instructions"])
+            # The underlying lease itself is untouched -- this was a read.
+            record = session_lease.read_lease(LEASE_FILE)
+            self.assertEqual(record["session_id"], payload["id"])
+
 
 class WriteFailureCleanupTests(unittest.TestCase):
     def test_cleanup_after_a_write_failure_preserves_the_original_error_and_the_new_holder(self):
