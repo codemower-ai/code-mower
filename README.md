@@ -4,9 +4,9 @@ Code Mower helps teams set up AI peer-programmer and reviewer lanes on real
 GitHub pull requests, then measure which builders and reviewers are useful on
 their actual codebase.
 
-Code Mower 1.0 is supervised-pilot, bring-your-own-agent-loop software for
-teams willing to calibrate reviewers. It is not a drop-in unattended merge
-gate.
+The current Code Mower release line is supervised-pilot,
+bring-your-own-agent-loop software for teams willing to calibrate reviewers.
+It is not a drop-in unattended merge gate.
 
 The short version:
 
@@ -24,6 +24,12 @@ The short version:
 Code Mower is local-first. The OSS tool works without the hosted service.
 Default cloud bundles exclude source code, raw diffs, raw model transcripts,
 raw stdout/stderr, auth output, and secrets.
+
+Documentation on `main` follows the source on `main`, including the changes
+listed under **Unreleased** in [the changelog](CHANGELOG.md). If you install the
+published `code-mower==1.1.2` package, use the documentation from the matching
+[`v1.1.2` tag](https://github.com/codemower-ai/code-mower/tree/v1.1.2); later
+source-only commands are not part of that package.
 
 ## Design Principles
 
@@ -158,10 +164,12 @@ When a team wants the same operator picture on CodeMower.com, run
 zero-report, metadata-only mirror event, then add `--yes` only after review.
 The v1.0 supervised-pilot automation and event boundary is defined in
 [Supervised Pilot Contract](docs/supervised-pilot-contract.md).
-As that controller lands, `code-mower controller run --repo OWNER/REPO` is the
-dry-run-first policy check: it selects the current dispatch/merge/owner-action
-decision from metadata, can write a sanitized event with `--event-file`, and
-does not mutate GitHub state.
+`code-mower controller run --repo OWNER/REPO` is the dry-run-first policy
+check: it selects the current dispatch/merge/owner-action decision from
+metadata, can write a sanitized event with `--event-file`, and does not mutate
+GitHub state. Its modes change policy evaluation and evidence requirements;
+the generated workflows and provider transports own any separately authorized
+mutation.
 
 ## See The Value Shape First
 
@@ -280,12 +288,25 @@ reports `running` / `waiting_for_user`, so a finished informational Devin
 attempt is no longer recorded as owner-blocked. An explicit terminal API
 failure and a `waiting_for_approval` session still take precedence over any
 structured output.
+The v1.0.15 patch makes productivity current-state metrics prefer live GitHub
+state over historical Board snapshots and distinguishes historical evidence in
+reports.
 The v1.1 release adds optional Jira Cloud work tracking while keeping GitHub
 pull requests, checks, and merge gates authoritative. Jira setup starts
 read-only; mutation requires both explicit configuration and an explicit
 apply command. Controller queue visibility, Board, and PR-to-Jira milestones
 share the same bounded metadata contract, and GitHub-only repositories keep
 their existing behavior and generated workflows.
+The v1.1.1 patch hardens hosted release qualification with authenticated GitHub
+fallback, durable campaign issue binding, persistent trusted result authors,
+and bounded remote install failure reasons. The v1.1.2 patch keeps large Jira
+queues inside the response budget and adds a narrow issue-type discovery
+fallback when Jira's create-metadata inventory returns 404.
+
+Unreleased source on `main` adds a shared Jira authority brief for every
+orchestrator host, a local single-orchestrator session lease with Board
+visibility, controller orchestrator telemetry, and explicit Cursor
+orchestrator qualification. These changes are not in `code-mower==1.1.2`.
 Package-only users can start from the public package rather than a source
 checkout.
 
@@ -554,11 +575,14 @@ first so local work exercises the same package entrypoint users install.
 
 ## Docs Map
 
+### Start And Operate
+
 - [Install And Bootstrap](docs/install.md)
 - [Upgrade An Existing Repository](docs/upgrade-existing-repo.md)
 - [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)
 - [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)
 - [Quickstart Reference](docs/quickstart.md)
+- [Participants And Sessions](docs/sessions.md)
 - [Orchestrator Prompt Pack](docs/orchestrator-prompt-pack.md)
 - [Planning And Work Orders](docs/planning-work-orders.md)
 - [Builder Providers: Grok And Cursor](docs/builders-grok-cursor.md)
@@ -574,11 +598,31 @@ first so local work exercises the same package entrypoint users install.
 - [GitHub Setup](docs/github-setup.md)
 - [Jira Cloud Setup](docs/jira-cloud-setup.md)
 - [Jira Adoption Rehearsal](docs/jira-adoption-rehearsal.md)
+- [Work Tracker Data Contract](docs/tracker-data-contract.md)
+- [Release Qualification](docs/release-qualification.md)
+- [Launch Command Surface](docs/launch-command-surface.md)
+- [Troubleshooting](docs/troubleshooting.md)
+
+### Trust, Architecture, And Evidence
+
+- [Architecture](docs/architecture.md)
+- [Lane Promotion Policy](docs/lane-promotion-policy.md)
+- [Cloud Sharing](docs/cloud-sharing.md)
+- [Cloud Data Contract](docs/cloud-data-contract.md)
+- [Board Data Contract](docs/board-data-contract.md)
+- [Privacy And Threat Model](docs/privacy-threat-model.md)
+- [Current State And Roadmap](docs/current-state-and-roadmap.md)
+- [Public Release Checklist](docs/public-release-checklist.md)
+- [PyPI Release Runbook](docs/pypi-release.md)
+- [Sample Doctor Output](docs/sample-doctor-output.md)
 - [First Run Transcript](docs/first-run-transcript.md)
 - [First-User Demo Transcript](docs/first-user-demo-transcript.md)
 - [First-User Install Rehearsal](docs/first-user-install-rehearsal.md)
-- [Release Qualification](docs/release-qualification.md)
-- [Launch Command Surface](docs/launch-command-surface.md)
+- [Demo Calibration Example](examples/demo-calibration/README.md)
+- [Board Demo Rehearsal](examples/board-demo/README.md)
+
+### History And Release Records
+
 - [v0.6 Truth Baseline](docs/v06-truth-baseline.md)
 - [v0.6 Release Notes](docs/v06-release-notes.md)
 - [v0.8 Release Notes](docs/v08-release-notes.md)
@@ -599,23 +643,14 @@ first so local work exercises the same package entrypoint users install.
 - [v1.0.13 Release Notes](docs/v1013-release-notes.md)
 - [v1.0.14 Release Notes](docs/v1014-release-notes.md)
 - [v1.0.15 Release Notes](docs/v1015-release-notes.md)
+- [v1.1 Release Notes](docs/v11-release-notes.md)
 - [v1.1.1 Release Notes](docs/v111-release-notes.md)
 - [v1.1.2 Release Notes](docs/v112-release-notes.md)
-- [v1.1 Release Notes](docs/v11-release-notes.md)
 - [Post-v0.8 Effectiveness Assessment](docs/post-v08-effectiveness-assessment.md)
 - [v1.0.1 Effectiveness Assessment](docs/v101-effectiveness-assessment.md)
-- [Demo Calibration Example](examples/demo-calibration/README.md)
-- [Board Demo Rehearsal](examples/board-demo/README.md)
-- [PyPI Release Runbook](docs/pypi-release.md)
-- [Sample Doctor Output](docs/sample-doctor-output.md)
-- [Architecture](docs/architecture.md)
-- [Lane Promotion Policy](docs/lane-promotion-policy.md)
-- [Cloud Sharing](docs/cloud-sharing.md)
-- [Cloud Data Contract](docs/cloud-data-contract.md)
-- [Board Data Contract](docs/board-data-contract.md)
-- [Privacy And Threat Model](docs/privacy-threat-model.md)
-- [Current State And Roadmap](docs/current-state-and-roadmap.md)
-- [Public Release Checklist](docs/public-release-checklist.md)
+
+### Project
+
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 - [Support](SUPPORT.md)

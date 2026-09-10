@@ -11,9 +11,10 @@ around the top AI coding agents and reviewers. The OSS core helps teams move
 from plan to merge at maximum safe velocity while preserving code quality,
 architecture, and deployment confidence.
 
-Code Mower v1.0 is supervised-pilot software for teams willing to calibrate
-reviewers and keep a human or trusted orchestrator responsible for the loop. It
-is not a drop-in unattended merge gate for arbitrary repositories.
+The current Code Mower release line is supervised-pilot software for teams
+willing to calibrate reviewers and keep a human or trusted orchestrator
+responsible for the loop. It is not a drop-in unattended merge gate for
+arbitrary repositories.
 
 It also creates a quality, speed, and cost benchmark loop on a team's actual
 product: which AI builders and reviewers produce useful results on this
@@ -32,6 +33,13 @@ install spec `code-mower==1.1.2`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. It is intended to be installed
 from the package index for supervised pilots, with GitHub tag/source installs
 kept as a fallback and development path.
+
+Source on `main` also contains the changes listed under **Unreleased** in the
+root changelog: a shared Jira authority brief, a local single-orchestrator
+session lease with Board visibility, controller orchestrator telemetry, and
+explicit Cursor orchestrator qualification. Those source changes are not in
+the published `code-mower==1.1.2` package. Package users should follow docs
+from the matching `v1.1.2` tag.
 
 The v1.1.2 supervised-pilot release keeps the Python 3.12+ runtime contract,
 pipx/uv install matrix, non-expiring dispatch-token diagnostics, native redacted
@@ -122,11 +130,10 @@ The beta-to-v1.0 line has proved:
 - a package-installed calibration/value-report pipeline target that keeps
   reviewer metrics, lane policy, value-report artifacts, and sanitized report
   upload in the release rehearsal path; and
-- a private-repo install rehearsal target against
-  [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
-  that proved the package-installed CLI can detect and dry-run
-  repository-native checks in an external-ish private repo without committing
-  support files first.
+- a private-repo install rehearsal target against an external TypeScript
+  product repository that proved the package-installed CLI can detect and
+  dry-run repository-native checks in an external private repo without
+  committing support files first.
   The rehearsal passed with 10/10 first-user readiness and 0 readiness
   warnings, detected `npm run lint`, `npm run typecheck`, and `npm run test`
   from `package.json`, and separately reported only expected setup diagnostics

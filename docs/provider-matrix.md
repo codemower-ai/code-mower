@@ -1,10 +1,10 @@
 # Code Mower Provider Matrix
 
-Code Mower separates lane semantics from provider mechanics. v1.0 should ship a
-small default path and make every optional provider's cost, privacy, and merge
-authority clear before it runs.
+Code Mower separates lane semantics from provider mechanics. The current
+supervised-pilot line ships a small default path and makes every optional
+provider's cost, privacy, and merge authority clear before it runs.
 
-## Default v1.0 Profile
+## Default Supervised-Pilot Profile
 
 | Lane | Driver | Default role | Merge authority | Notes |
 |---|---|---|---|---|
@@ -16,9 +16,25 @@ participants explicitly with `init --interactive` or `init --with`; selecting
 them does not promote their review authority. Gitar remains available in
 `saas_research` and the optional reviewer selections. See [sessions](sessions.md).
 
+## Orchestrator Hosts
+
+Orchestrator identity is separate from builder and reviewer selection. The
+agent hosting a session is the default orchestrator.
+
+| Host | Current qualification | Jira context posture |
+|---|---|---|
+| Codex | Qualified for session coordination, controller telemetry, and the local working-copy lease | Code Mower REST is authoritative; connected Atlassian Rovo MCP is optional read/context only |
+| Claude Code | Qualified for the same session, telemetry, and lease contract | Code Mower REST is authoritative; connected Atlassian Rovo MCP is optional read/context only |
+| Cursor | Qualified for the same session, telemetry, and lease contract | Code Mower REST is authoritative; Atlassian MCP is optional read/context only and noninteractive reads need approved tool access such as `--auto-review` |
+| Devin, Grok Bot, Antigravity, Muse, custom hosts | Recognized host identities for briefs and telemetry; execution remains an explicit handoff or provider-specific transport until separately qualified | No implicit Jira authority; use the guarded Code Mower tracker commands for writes |
+
+The lease, shared Jira brief, and explicit Cursor qualification are currently
+unreleased changes on `main`; see [Participants And Sessions](sessions.md) for
+the exact release boundary.
+
 ## Provider Classes
 
-| Class | Examples | Private repo support | Source exposure | v1.0 posture |
+| Class | Examples | Private repo support | Source exposure | Current posture |
 |---|---|---|---|---|
 | Local CLI | Codex, Claude Code, Antigravity CLI, Muse Code, Grok Build, Hermes CLI, Aider, CodeRabbit CLI | Yes, if local auth can read the repo | Usually sent to the provider behind the CLI unless provider is local-only | Codex/Claude default; others informational |
 | API/local model | Qwen, Gemma, DeepSeek, Grok-compatible endpoints | Yes | Sent to configured endpoint; local endpoints can keep code local | Informational calibration |
@@ -39,7 +55,7 @@ the live catalog is untouched.
 
 ## Lane Details
 
-| Lane id | Provider | Trigger | Cost policy | Private repo requirement | v1.0 merge role |
+| Lane id | Provider | Trigger | Cost policy | Private repo requirement | Current merge role |
 |---|---|---|---|---|---|
 | `codex` | Codex CLI | Code Mower label/wrapper | included/provider account | local checkout plus GitHub token | merge-gating eligible |
 | `claude_audit` | Claude Code | Code Mower label/wrapper | included/provider account | local checkout plus GitHub token | merge-gating eligible |
@@ -49,7 +65,7 @@ the live catalog is untouched.
 | `qodo` | Qodo | manual opt-in comment/event | paid | GitHub App enabled for repo | informational |
 | `cursor_bugbot` | Cursor BugBot | `bugbot run` or `@cursor review` | paid/Cursor usage | Cursor GitHub App and BugBot repo enablement | informational |
 | `devin` | Devin | Devin Sessions API v3 | paid | service-user `DEVIN_API_KEY`, opaque `DEVIN_ORG_ID`, and exact `OWNER/REPO` in `CODE_MOWER_DEVIN_REPOSITORIES` | canonical hosted Devin; `devin_cloud` accepted alias; issue marker is optional audit evidence |
-| `devin_cli` | Devin CLI | local runner / doctor contract | included/provider account | local checkout plus local auth | informational; not merge authority until calibrated; selectable for release campaigns with the #744 maintained adapter |
+| `devin_cli` | Devin CLI | local runner / doctor contract | included/provider account | local checkout plus local auth | informational; not merge authority until calibrated; selectable for release campaigns through the maintained adapter |
 | `local_llm` | OpenAI-compatible endpoint | local runner | local or endpoint cost | endpoint receives selected code context | informational |
 | `aider` | Aider CLI | local runner | local/provider account | local checkout plus model auth | informational |
 | `gemini_cli` | Gemini CLI compatibility | local runner | provider account | local checkout plus API/auth | legacy informational |

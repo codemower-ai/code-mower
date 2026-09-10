@@ -702,10 +702,12 @@ class JiraDoctorAdoptionTests(unittest.TestCase):
 
     def test_doctor_credentials_fail_skips_read_and_mutations(self) -> None:
         cfg = sample_jira_config()
-        checks = jira_doctor.check_jira_tracker_readiness(
-            config=cfg,
-            env={},
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = jira_doctor.check_jira_tracker_readiness(
+                config=cfg,
+                env={},
+                config_dir=Path(tmp),
+            )
         by_name = {c.name: c for c in checks}
         self.assertEqual(by_name[jira_doctor.JIRA_CONFIG_CHECK].status, "pass")
         self.assertEqual(by_name[jira_doctor.JIRA_CREDENTIALS_CHECK].status, "fail")

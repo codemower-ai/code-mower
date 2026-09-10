@@ -360,9 +360,7 @@ package source after execution. The workflow run links are the publication
 evidence; the rehearsal JSON is the install-path evidence.
 
 After production PyPI rehearsal passes, repeat the package-install rehearsal
-against the private
-[DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app)
-repository:
+against a private external TypeScript product repository:
 
 ```bash
 code-mower migration package-install-rehearsal \
@@ -375,6 +373,6 @@ code-mower migration package-install-rehearsal \
 
 Record status, first-user readiness counts, external repo readiness, wrapper
 presence, and detected repository-native checks after execution. That run is
-the proof that a private JavaScript/mobile repo can try Code Mower from PyPI,
+the proof that a private TypeScript product repo can try Code Mower from PyPI,
 detect its native check surface, and preview setup without first adopting
 repo-local wrappers.

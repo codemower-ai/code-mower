@@ -1192,9 +1192,9 @@ install exposed a Python command-resolution sharp edge.
 - `migration package-install-rehearsal --python python3.12` now resolves
   command-style Python names through `PATH` instead of treating them as repo
   relative paths.
-- Rehearsed `v0.5.0-beta.1` against `DrinkBetter-AI/mobile-app`: easy init,
-  doctor, native check detection, lint, typecheck, tests, and package-install
-  readiness all passed when run with Python 3.12.
+- Rehearsed `v0.5.0-beta.1` against a private external TypeScript product
+  repository: easy init, doctor, native check detection, lint, typecheck,
+  tests, and package-install readiness all passed when run with Python 3.12.
 - Kept the documented public install target and package metadata aligned on
   `v0.5.0-beta.2` / `0.5.0b2`.
 

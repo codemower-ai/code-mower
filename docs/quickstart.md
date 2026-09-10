@@ -3,9 +3,9 @@
 This is the reference for Code Mower's first-user command surface. For the two
 guided starts, use [Try Code Mower In 10 Minutes](try-in-10-minutes.md) for the
 reviewer gate or [Build Loop In 30 Minutes](build-loop-in-30-minutes.md) for
-builders plus orchestrator convention. Code Mower v1.0 is supervised-pilot
-software; start on one repository and keep reviewer lanes manual until the
-output is useful on your codebase.
+builders plus orchestration. The current Code Mower release line is
+supervised-pilot software; start on one repository and keep reviewer lanes
+manual until the output is useful on your codebase.
 
 To see the value loop before you touch a product repository, open the
 [Demo Calibration Example](../examples/demo-calibration/README.md), the
@@ -58,16 +58,20 @@ pipx ensurepath
 exec "$SHELL" -l
 ```
 
-For the reference multi-agent adoption loop, use Claude Code as the
-orchestrator convention, and Claude Code/Codex as builders and peer reviewers.
-Other providers are opt-in selections through `init --interactive` or `init --with`.
-They retain their existing calibration and promotion requirements. On shared machines,
-read [Multi-Agent Coexistence](install.md#multi-agent-coexistence) before
-running multiple builders against the same repository.
+For the reference multi-agent adoption loop, the agent hosting the session is
+the default orchestrator. Codex, Claude Code, and Cursor are qualified session
+hosts; the default builder and peer-review pair remains Claude Code plus Codex.
+Other providers are opt-in selections through `init --interactive` or
+`init --with`, and retain their existing calibration and promotion
+requirements. See [Participants And Sessions](sessions.md) for the role and
+transport distinctions. On shared machines, read
+[Multi-Agent Coexistence](install.md#multi-agent-coexistence) before running
+multiple builders against the same repository.
 
 ## 2. Authenticate GitHub
 
-Code Mower v1.0 is GitHub-first.
+Code Mower remains GitHub-first. Jira Cloud is an optional work tracker; GitHub
+pull requests, checks, and merge gates remain authoritative.
 
 ```bash
 gh auth login -h github.com -s repo,workflow,read:org

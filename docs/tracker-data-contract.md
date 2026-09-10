@@ -72,11 +72,11 @@ event history, provider prompts, or cloud uploads.
 
 `tracker_queue.py` implements read policy through the injectable
 `JiraQueueReader.search_page(jql, fields, max_results, next_page_token)`
-keyword-only protocol. A doctor-validated reader supplies enhanced-search
-responses (`issues`, `nextPageToken`, optional `isLast`); transport, credentials,
-timeouts, retries, and concrete CLI binding belong to #800. Until that binding
-lands, configured Jira surfaces explicitly report `jira_reader_unavailable`.
-No Jira calls or writes occur without an injected reader.
+keyword-only protocol. The bounded `jira_cloud.py` transport supplies the
+doctor-validated reader used by the CLI, including credential resolution,
+timeouts, and retries. Configured Jira surfaces report
+`jira_reader_unavailable` when no validated reader can be constructed. No Jira
+calls occur without that reader, and queue reads never perform writes.
 
 The adapter wraps the configured predicate with immutable numeric project-id
 scoping, replaces its unquoted ordering with `created ASC, key ASC`, verifies
@@ -101,8 +101,9 @@ With Jira configured, controller reports, `lanes status` (local
 `code-mower.yml`, or `--config`), and Board current state add a `tracker` view.
 Each row carries a validated work item, freshness, lane, optional linked PR
 number, live GitHub gate state, and next action. `queue_view` accepts explicit
-local `(cloud_id, project_id, issue_id)` → PR-number references; discovery and
-persistence of links belong to #802. It never infers links from issue prose.
+local `(cloud_id, project_id, issue_id)` → PR-number references. It does not
+discover those references or infer links from issue prose; guarded PR sync
+owns the durable Jira-side association.
 Historical queue snapshots cannot supply current PR/gate state or dispatch
 eligibility. Observation age, not the issue's last edit, determines freshness.
 Unavailable Jira preserves all live GitHub PR/check/gate decisions. With no

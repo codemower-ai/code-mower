@@ -37,7 +37,7 @@ Start with the default dry run:
 ```bash
 code-mower init --jira
 code-mower doctor --adoption --repo OWNER/REPO
-code-mower tracker status --repo OWNER/REPO
+code-mower lanes status --repo OWNER/REPO --config code-mower.yml
 ```
 
 See [Jira Cloud Setup](jira-cloud-setup.md) and

@@ -1,14 +1,14 @@
 # Supervised Pilot Contract
 
-Code Mower v1.0 is a supervised autonomous pilot. The operator promise is that
-Code Mower can keep a repository moving by selecting ready work, dispatching
-builder and reviewer lanes, watching the gate, requesting auto-merge only when
-policy evidence is complete, and stopping with a clear owner action when it is
-not.
+Code Mower's current operating model is a supervised autonomous pilot. The
+operator promise is that Code Mower can keep a repository moving by selecting
+ready work, dispatching builder and reviewer lanes, watching the gate,
+requesting auto-merge only when policy evidence is complete, and stopping with
+a clear owner action when it is not.
 
-The goal is not unattended arbitrary autonomy. v1.0 should make the happy path
-faster while keeping every merge decision observable, reproducible from
-metadata, and reversible by the repository owner.
+The goal is not unattended arbitrary autonomy. The supervised-pilot path makes
+the happy path faster while keeping every merge decision observable,
+reproducible from metadata, and reversible by the repository owner.
 
 ## Automation Boundary
 

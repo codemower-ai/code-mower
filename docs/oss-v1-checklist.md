@@ -1,5 +1,11 @@
 # Code Mower OSS v1.0 Checklist
 
+This is the historical v1.0 acceptance and release record. For current
+installation and operation, use [Install And Bootstrap](install.md),
+[Try Code Mower In 10 Minutes](try-in-10-minutes.md), and
+[Current State And Roadmap](current-state-and-roadmap.md). Runnable examples
+below are kept valid where they remain part of the current CLI.
+
 v1.0 should make Code Mower valuable in "easy mode" before asking users to
 understand every lane, provider, or calibration option.
 
@@ -61,12 +67,11 @@ package. Before widening the release, record:
 - local dogfood uploads from a stored dashboard-issued token, proving local
   Codex sessions can contribute current metadata without exposing source, raw
   diffs, raw transcripts, auth output, or secrets;
-- private-repo package-install rehearsal against
-  [DrinkBetter-AI/mobile-app](https://github.com/DrinkBetter-AI/mobile-app),
-  including repository-native check detection and dry-run execution. That run
-  passed with 10/10 first-user readiness, detected `npm run lint`,
-  `npm run typecheck`, and `npm run test`, and did not require committing
-  Code Mower support files into the private product repo;
+- private-repo package-install rehearsal against an external TypeScript
+  product repository, including repository-native check detection and dry-run
+  execution. That run passed with 10/10 first-user readiness, detected
+  `npm run lint`, `npm run typecheck`, and `npm run test`, and did not require
+  committing Code Mower support files into the private product repo;
 - calibration/value-report generation from the installed package plus sanitized
   report upload coverage for CodeMower.com;
 - metadata-only AI tool/model provenance in cloud bundles and dogfood events,
@@ -196,7 +201,7 @@ code-mower migration package-install-rehearsal \
   --allow-package-index \
   --repo-path /path/to/repo \
   --json
-code-mower audit pr 123
+code-mower next-steps --repo OWNER/REPO --pr 123
 code-mower calibration value-report templates/calibration-corpus.json
 python scripts/smoke_easy_mode.py --json
 ```
