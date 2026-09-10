@@ -9,6 +9,20 @@ later entries are regular releases.
 
 ### Added
 
+- `code-mower session start` takes an explicit local single-orchestrator lease
+  before saving a brief, so one working copy has one mutating orchestrator at a
+  time. The lease is local coordination metadata only — repository slug,
+  normalized orchestrator id, session id, acquired/renewed/expires UTC
+  timestamps, and a schema version — written under a file lock through an
+  atomic replace, and never uploaded. Under concurrent acquisition exactly one
+  caller wins; a second live session is refused with the owner's actions. New
+  `code-mower session lease show|renew|release` commands inspect, renew, and
+  release it, and taking over a live lease is always explicit
+  (`session lease release --force` or `session start --force-lease`). Expired
+  and unreadable leases recover on the next start with no owner action, and
+  read-only brief generation (`--dry-run`, `--no-lease`) needs no lease
+  (issue #838).
+
 - `code-mower session start` adds a `tracker` section to the operating brief
   when `tracker.kind` is `jira_cloud`, giving every selected orchestrator host
   (Codex, Claude, or others) an identical Jira authority, privacy, and

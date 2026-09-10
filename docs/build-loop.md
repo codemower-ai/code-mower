@@ -73,6 +73,10 @@ branch for fix rounds. Audit-duty runs reject all pushes.
 If the owning lane must rewrite history, it should use `--force-with-lease`.
 Unconditional force pushes are outside the build-loop contract.
 
+One writer per branch is a lane rule; one orchestrator per working copy is a
+separate local lease that `code-mower session start` takes. See
+[the session lease](sessions.md#single-orchestrator-lease).
+
 ## Owner Sitting
 
 Use `needs-owner` when a lane needs a human-only decision, credentials, account

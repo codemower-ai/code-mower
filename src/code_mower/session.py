@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from . import session_lease
 from .config import ConfigError, _format_issues, load_config, validate_config
 from .participants import (
     PARTICIPANTS,
@@ -19,6 +20,24 @@ from .participants import (
     parse_participants,
     participant_id,
     reference_review_config,
+)
+
+
+DEFAULT_STATE_DIR = ".code-mower/sessions"
+
+# Briefs that hold no lease are still useful for planning and review; the
+# instruction says so rather than leaving the absence to be inferred.
+READ_ONLY_LEASE_INSTRUCTION = (
+    "This brief holds no mutating orchestrator lease: read, plan, and report from it, but "
+    "run `code-mower session start` without `--dry-run`/`--no-lease` before coordinating changes."
+)
+
+# The brief's saved lease block is a snapshot from acquisition time, not current
+# truth; `session show` re-verifies it live and falls back to this instruction
+# whenever that lease is no longer the one backing this session.
+STALE_LEASE_INSTRUCTION = (
+    "This brief's mutating orchestrator lease is no longer held by this session: read, plan, "
+    "and report from it, but run `code-mower session start` again before coordinating changes."
 )
 
 
@@ -118,6 +137,16 @@ def render_session(payload: Mapping[str, Any]) -> str:
         f"Orchestrator: {PARTICIPANTS[payload['orchestrator']].name} (host: {payload['host']})",
         f"Status: {payload['status']}",
     ]
+    lease = payload.get("lease")
+    if isinstance(lease, Mapping):
+        if lease.get("mutating"):
+            holder = lease.get("orchestrator")
+            holder = PARTICIPANTS[holder].name if holder in PARTICIPANTS else str(holder)
+            lines.append(
+                f"Lease: held by {holder} until {lease['expires_at']} (session {lease['session_id']})"
+            )
+        else:
+            lines.append("Lease: none (read-only brief; no mutating orchestration authority)")
     if payload.get("session_file"):
         lines.append(f"Session file: {payload['session_file']}")
     for member in payload["participants"]:
@@ -143,6 +172,45 @@ def render_session(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _mark_read_only(payload: dict[str, Any]) -> None:
+    """Record that this brief carries no mutating orchestration authority."""
+    payload["lease"] = {"state": session_lease.STATE_ABSENT, "mutating": False}
+    payload["instructions"].append(READ_ONLY_LEASE_INSTRUCTION)
+
+
+def _acquire_startup_lease(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Take the single mutating lease for this session, before anything is saved.
+
+    Acquisition happens up front so a refused session leaves no brief behind for
+    a second orchestrator to act on.
+    """
+    if not args.lease:
+        if args.force_lease:
+            raise ConfigError("--force-lease takes over a lease; it cannot be combined with --no-lease")
+        _mark_read_only(payload)
+        return None
+    record = session_lease.acquire_lease(
+        repo=payload["repo"],
+        orchestrator=payload["orchestrator"],
+        session_id=payload["id"],
+        ttl_minutes=args.lease_ttl_minutes,
+        force=args.force_lease,
+    )
+    payload["lease"] = {**record, "state": session_lease.STATE_HELD, "mutating": True}
+    return record
+
+
+def _run_lease_command(args: argparse.Namespace) -> dict[str, Any]:
+    if args.lease_command == "show":
+        return session_lease.inspect_lease()
+    if args.lease_command == "renew":
+        return session_lease.renew_lease(
+            session_id=args.session_id,
+            ttl_minutes=args.lease_ttl_minutes,
+        )
+    return session_lease.release_lease(session_id=args.session_id, force=args.force)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -152,18 +220,58 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("--host", help="calling agent identity; normally supplied by the agent or CODE_MOWER_HOST")
     start.add_argument("--orchestrator", help="explicit coordinator override; otherwise the calling agent")
     start.add_argument("--config", help="repository configuration; defaults to code-mower.yml when present")
-    start.add_argument("--state-dir", default=".code-mower/sessions")
+    start.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
     start.add_argument("--dry-run", action="store_true", help="preview without saving a session")
+    start.add_argument(
+        "--no-lease", dest="lease", action="store_false",
+        help="generate a read-only brief without taking the mutating orchestrator lease",
+    )
+    start.add_argument(
+        "--force-lease", action="store_true",
+        help="take over a live lease held by another session; use only after an owner decision",
+    )
+    start.add_argument(
+        "--lease-ttl-minutes", type=int, default=session_lease.DEFAULT_TTL_MINUTES,
+        help="how long the acquired lease stays live before it can be taken over",
+    )
     start.add_argument("--json", action="store_true")
     show = sub.add_parser("show", help="read a saved operating brief")
     show.add_argument("session_file", type=Path)
     show.add_argument("--json", action="store_true")
+    lease = sub.add_parser("lease", help="inspect, renew, or release the local mutating session lease")
+    lease_sub = lease.add_subparsers(dest="lease_command", required=True)
+    lease_show = lease_sub.add_parser("show", help="report the current lease without changing it")
+    lease_renew = lease_sub.add_parser("renew", help="extend the calling session's own lease")
+    lease_renew.add_argument("--session-id", required=True, help="the holding session's id")
+    lease_renew.add_argument(
+        "--lease-ttl-minutes", type=int, default=session_lease.DEFAULT_TTL_MINUTES,
+    )
+    lease_release = lease_sub.add_parser("release", help="give up the lease")
+    lease_release.add_argument("--session-id", help="the holding session's id")
+    lease_release.add_argument(
+        "--force", action="store_true",
+        help="release a live lease owned by another session; use only after an owner decision",
+    )
+    for lease_parser in (lease_show, lease_renew, lease_release):
+        lease_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    render = render_session
     try:
         if args.command == "show":
             payload = json.loads(args.session_file.read_text(encoding="utf-8"))
             if not isinstance(payload, dict) or payload.get("schema") != "code_mower.session.v1":
                 raise ConfigError("not a Code Mower session file")
+            saved_lease = payload.get("lease")
+            if isinstance(saved_lease, Mapping) and saved_lease.get("mutating"):
+                live = session_lease.verify_live_lease(
+                    repo=payload["repo"], session_id=payload["id"], orchestrator=payload["orchestrator"],
+                )
+                payload["lease"] = live
+                if not live["mutating"]:
+                    payload["instructions"] = [*payload["instructions"], STALE_LEASE_INSTRUCTION]
+        elif args.command == "lease":
+            payload = _run_lease_command(args)
+            render = session_lease.render_lease
         else:
             host = args.host or os.environ.get("CODE_MOWER_HOST")
             if not host:
@@ -180,17 +288,35 @@ def main(argv: list[str] | None = None) -> int:
                 repo=args.repo, host=host, selected=selected,
                 config=config, orchestrator=args.orchestrator,
             )
-            if not args.dry_run:
+            if args.dry_run:
+                _mark_read_only(payload)
+            else:
                 payload["id"] = uuid.uuid4().hex
                 payload["created_at"] = datetime.now(timezone.utc).isoformat()
+                record = _acquire_startup_lease(args, payload)
                 destination = Path(args.state_dir) / f"{payload['id']}.json"
                 payload["session_file"] = str(destination.resolve())
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                with destination.open("x", encoding="utf-8") as handle:
-                    json.dump(payload, handle, indent=2, sort_keys=True)
-                    handle.write("\n")
-        print(json.dumps(payload, indent=2, sort_keys=True) if args.json else render_session(payload), end="\n" if args.json else "")
+                try:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with destination.open("x", encoding="utf-8") as handle:
+                        json.dump(payload, handle, indent=2, sort_keys=True)
+                        handle.write("\n")
+                except OSError:
+                    # A brief that was never written has no orchestrator, so the
+                    # lease this call just took must not outlive the failure --
+                    # whether the write itself failed or the destination
+                    # directory could not even be created. If another session
+                    # force-took the lease in this narrow window, cleanup must
+                    # not delete the new holder's lease or mask the original
+                    # failure.
+                    if record is not None:
+                        try:
+                            session_lease.release_lease(session_id=payload["id"])
+                        except session_lease.SessionLeaseError:
+                            pass
+                    raise
+        print(json.dumps(payload, indent=2, sort_keys=True) if args.json else render(payload), end="\n" if args.json else "")
         return 0
-    except (ConfigError, OSError, ValueError, KeyError, TypeError) as exc:
+    except (ConfigError, OSError, ValueError, KeyError, TypeError, session_lease.SessionLeaseError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -186,6 +186,7 @@ class SessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"
             init.apply_init_plan(plan, root)
+            (root / ".git").mkdir()
             with working_directory(root), mock.patch("subprocess.run", side_effect=AssertionError("must not launch a provider")), mock.patch.dict(os.environ, {"CODE_MOWER_HOST": "codex"}):
                 output = io.StringIO()
                 with redirect_stdout(output):

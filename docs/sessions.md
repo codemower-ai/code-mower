@@ -82,6 +82,54 @@ Creating the brief does not launch provider processes, authenticate tools, or
 prove they are available. Readiness remains unchecked until the agent verifies
 the chosen execution path. Live PR progress remains in `code-mower lanes status`.
 
+## Single Orchestrator Lease
+
+`session start` takes a local lease before it saves anything, so one repository
+working copy has one mutating orchestrator at a time. The lease lives at
+`.code-mower/sessions/orchestrator-lease.json`, is written under a file lock
+through a temporary file, and holds coordination metadata only: the repository
+slug, the normalized orchestrator id, the session id, the acquired/renewed/
+expires UTC timestamps, and a schema version. It is never uploaded or exported.
+
+A second agent that starts a mutating session while the lease is live is refused
+and told what the owner can do:
+
+```text
+error: another session already holds the mutating orchestrator lease for owner/repo
+  holder: claude (session 4f1c...)
+  expires: 2026-01-01T18:00:00+00:00 (about 5h 42m left)
+  owner actions:
+    inspect it:              code-mower session lease show
+    let its owner release:   code-mower session lease release --session-id <id>
+    take it over on purpose: code-mower session lease release --force
+  read-only briefs need no lease: add --dry-run or --no-lease to session start
+```
+
+Manage the lease directly when a session ends or stalls:
+
+```bash
+code-mower session lease show
+code-mower session lease renew --session-id <id>
+code-mower session lease release --session-id <id>
+code-mower session lease release --force
+```
+
+The holding session renews with its own session id; the brief reports that id
+and the expiry. A lease past `expires_at` is free again, so an abandoned or
+crashed session recovers on the next `session start` with no owner action. An
+expired lease is not renewed — start a fresh session instead. Taking over a
+*live* lease is always explicit: `session lease release --force`, or
+`session start --force-lease`, only after the owner decides the holding session
+is gone.
+
+Read-only work needs no lease. `session start --dry-run` previews a brief
+without touching the lease, and `--no-lease` saves one for reading, planning, and
+reporting. Both mark the brief `"lease": {"state": "absent", "mutating": false}`
+and say so in the instructions. `session show` still reads briefs saved before
+leases existed. The lease coordinates sessions only; it does not change the
+one-writer-per-branch rule in [the build loop](build-loop.md), repository merge
+policy, or the generated workflows.
+
 ## Common Roles, Explicit Product Differences
 
 | Concept | Rule |
