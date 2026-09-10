@@ -34,6 +34,7 @@ from . import controller
 from . import lane_status
 from . import productivity_report
 from . import reviewer_spend
+from . import session_lease
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -235,6 +236,7 @@ def status_payload(
             "interval_seconds": config.record_interval_seconds,
         },
     }
+    payload["orchestrator_lease"] = session_lease.observe_lease(start=config.repo_path)
     payload["agent_adapters"] = agent_adapters_payload(config)
     payload["release_campaigns"] = release_campaigns_payload(config)
     payload["owner_queue"] = owner_queue_payload(payload)
@@ -275,6 +277,7 @@ def _recording_metadata(config: BoardConfig, status: str, **extra: Any) -> dict[
 def _recordable_payload(payload: dict[str, Any]) -> dict[str, Any]:
     snapshot = dict(payload)
     snapshot.pop("productivity", None)
+    snapshot.pop("orchestrator_lease", None)
     return snapshot
 
 
@@ -544,6 +547,7 @@ def _pending_status_payload(config: BoardConfig) -> dict[str, Any]:
         "local_paths": "shown" if config.show_local_paths else "redacted",
         "recording": {"enabled": config.record_events, "interval_seconds": config.record_interval_seconds},
     }
+    payload["orchestrator_lease"] = session_lease.observe_lease(start=config.repo_path)
     payload["agent_adapters"] = agent_adapters_payload(config)
     payload["owner_queue"] = owner_queue_payload(payload)
     payload["supervised_pilot"] = _supervised_disabled(
@@ -1302,6 +1306,7 @@ def render_board_html(config: BoardConfig) -> str:
     <section><h2>Supervised Pilot</h2><div class="rows" id="supervised"></div></section>
     <section><h2>Productivity</h2><div class="rows" id="productivity"></div></section>
     <section><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
+    <section><h2>Local Orchestrator Lease</h2><div class="rows" id="lease"></div></section>
     <section><h2>Agent Cards</h2><div class="rows" id="agents"></div></section>
     <section><h2>Release Campaigns</h2><div class="rows" id="campaigns"></div></section>
     <section><h2>Open PRs</h2><div class="rows" id="prs"></div></section>
@@ -1368,7 +1373,13 @@ def render_board_html(config: BoardConfig) -> str:
     function checks(list) {{
       return (list || []).map(c => `<span class="${{stateClass(c.state)}}">${{esc(c.name)}}=${{esc(c.state)}}</span>`).join(", ") || '<span class="muted">none</span>';
     }}
+    function renderLease(lease) {{
+      const messages = {{absent: "No orchestrator lease in this working copy.", expired: "Lease expired.", malformed: "Local lease is malformed.", unavailable: "Local lease is unavailable."}};
+      const state = lease?.state || "unavailable";
+      return `<div class="row"><div class="line">${{pill(state)}}<b>Provider: ${{esc(lease?.provider || "none")}}</b></div><div>Expires: ${{lease?.expires_at ? localTime(lease.expires_at) : "n/a"}}</div><div class="muted">${{esc(messages[state] || "Local orchestration lease is active.")}}</div></div>`;
+    }}
     function render(data) {{
+      put("lease", renderLease(data.orchestrator_lease));
       document.getElementById("repo").textContent = REPO;
       const version = data.board?.version || {{}};
       const servingVersion = version.serving_version || "unknown";
