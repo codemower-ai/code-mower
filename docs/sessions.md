@@ -171,3 +171,29 @@ which one calls `--host`:
 
 Sessions for the default GitHub tracker, or a repository with no `tracker`
 block, omit this section entirely; existing GitHub-only briefs are unchanged.
+
+## Cursor Orchestrator Posture
+
+Cursor is qualified as an interchangeable orchestrator host under the same
+participant session, controller-provider telemetry, and canonical working-copy
+lease contracts as Codex and Claude. Cursor-hosted sessions receive identical
+Jira tracker authority instructions when configured, and all controller events
+(queue snapshots, controller decisions, owner interventions, and merge
+decisions) correctly tag the orchestrator identity without changing policy
+decisions or tool provenance.
+
+### Jira Access For Cursor
+
+The official Atlassian MCP server provides optional local read and context
+enrichment when connected to Cursor. Broad Atlassian OAuth capability does not
+grant Code Mower mutation authority; the session brief and guarded tracker
+commands remain authoritative for every Jira mutation. Code Mower's Jira REST
+transport is authoritative for queue reads.
+
+### Noninteractive CLI Readiness
+
+Cursor's noninteractive CLI requires authenticated and approved Atlassian MCP
+plus read-tool auto-review (`--auto-review`) or an equivalent interactive
+approval path. Without auto-review enabled, Cursor denies MCP read calls even
+when the MCP server is authenticated. This is a host-readiness requirement,
+not a Jira reliability issue.

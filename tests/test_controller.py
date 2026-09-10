@@ -513,7 +513,7 @@ class ControllerOrchestratorTests(TestCase):
             ([_pr(needs=["needs-owner"])], "owner_intervention"),
             ([_pr(builder="builder:codex", done=["claude-audit-done"])], "merge_decision"),
         ]
-        for provider in ("codex", "claude", "custom:pilot-agent"):
+        for provider in ("codex", "claude", "cursor", "custom:pilot-agent"):
             for prs, event_type in cases:
                 with self.subTest(provider=provider, event_type=event_type):
                     baseline = _evaluate(prs)
