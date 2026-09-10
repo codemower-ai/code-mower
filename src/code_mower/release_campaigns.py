@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -2269,6 +2270,36 @@ def _dispatch_github_comment(
         else f" The embedded `adoption_result` must report `qualification_context` "
         f"`{qualification_context}` with an empty `starting_version`."
     )
+    qualify_argv = [
+        "code-mower",
+        "release",
+        "qualify",
+        "--release-tag",
+        release_tag,
+        "--package-spec",
+        package_spec,
+        "--package-source",
+        package_source,
+        "--qualification-context",
+        qualification_context,
+    ]
+    if starting_version:
+        qualify_argv.extend(["--starting-version", starting_version])
+    qualify_argv.extend(
+        [
+            "--provider",
+            provider,
+            "--executor",
+            provider,
+            "--repo-slug",
+            repo_slug,
+            "--output",
+            "adoption-result.json",
+            "--execute",
+            "--json",
+        ]
+    )
+    qualify_command = shlex.join(qualify_argv)
     body = (
         f"### Code Mower Release Qualification Dispatch\n\n"
         f"- **Release Tag:** `{release_tag}`\n"
@@ -2280,10 +2311,14 @@ def _dispatch_github_comment(
         f"{package_source_line}"
         f"{trigger_comments_line}"
         f"- **Idempotency Key:** `{idempotency_key}`\n\n"
-        f"Reply with a comment containing a `CODE_MOWER_ADOPTION_RESULT` "
+        f"Run this exact candidate qualification command:\n\n"
+        f"```sh\n{qualify_command}\n```\n\n"
+        f"Then reply with a comment containing a `CODE_MOWER_ADOPTION_RESULT` "
         f"marker wrapping schema `{RESULT_MARKER_SCHEMA}` with matching "
         f"campaign_id, provider, release_tag, package_source, and idempotency_key, plus an "
-        f"embedded `adoption_result`. The marker must be a single-line HTML "
+        f"embedded `adoption_result` equal to the complete JSON object written to "
+        f"`adoption-result.json`; embed that object unchanged, without renaming, "
+        f"dropping, or synthesizing fields. The marker must be a single-line HTML "
         f"comment on a line of its own.{starting_version_requirement} "
         f"See docs/release-qualification.md.\n\n"
         f"<!-- CODE_MOWER_RELEASE_CAMPAIGN: {marker_str} -->\n"

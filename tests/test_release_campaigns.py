@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -4117,6 +4118,13 @@ def _dispatch_marker_from_body(body: str) -> dict[str, Any]:
     return parsed
 
 
+def _qualification_command_from_body(body: str) -> list[str]:
+    """Parse the shell-quoted qualification command from a dispatch comment."""
+    match = re.search(r"```sh\n([^\n]+)\n```", body)
+    assert match is not None, "dispatch comment is missing its qualification command"
+    return shlex.split(match.group(1))
+
+
 def _capturing_dispatch_command_runner(bodies: list[str], *, returncode: int = 0):
     """A gh command runner that records the exact comment body it was asked to post."""
 
@@ -4512,6 +4520,35 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
             # Human-facing instructions must state the same starting version.
             self.assertIn("- **Starting Version:** `1.0.3`", body)
             self.assertIn("`starting_version` `1.0.3`", body)
+            self.assertEqual(
+                _qualification_command_from_body(body),
+                [
+                    "code-mower",
+                    "release",
+                    "qualify",
+                    "--release-tag",
+                    "v2.0.0",
+                    "--package-spec",
+                    "code-mower==2.0.0",
+                    "--package-source",
+                    "pypi",
+                    "--qualification-context",
+                    "upgrade",
+                    "--starting-version",
+                    "1.0.3",
+                    "--provider",
+                    "cursor_cloud_agent",
+                    "--executor",
+                    "cursor_cloud_agent",
+                    "--repo-slug",
+                    "owner/repo",
+                    "--output",
+                    "adoption-result.json",
+                    "--execute",
+                    "--json",
+                ],
+            )
+            self.assertIn("embed that object unchanged", body)
             self.assertEqual(saved["providers"][0]["state"], "running")
 
     def test_cold_install_dispatch_omits_starting_version(self) -> None:
@@ -4537,6 +4574,34 @@ class RemoteDispatchStartingVersionTests(unittest.TestCase):
             self.assertEqual(marker["qualification_context"], "cold_install")
             self.assertNotIn("starting_version", marker)
             self.assertNotIn("Starting Version", bodies[0])
+            command = _qualification_command_from_body(bodies[0])
+            self.assertEqual(command[command.index("--qualification-context") + 1], "cold_install")
+            self.assertNotIn("--starting-version", command)
+
+    def test_dispatch_qualification_command_shell_quotes_argument_values(self) -> None:
+        bodies: list[str] = []
+        package_spec = "code-mower==2.0.0; printf unsafe"
+        repo_slug = "owner/repo && printf unsafe"
+
+        ok, _ref, error = release_campaigns._dispatch_github_comment(
+            repo_slug,
+            "42",
+            "campaign-v2.0.0",
+            "v2.0.0",
+            package_spec,
+            "cursor_cloud_agent",
+            "cold_install",
+            "key",
+            command_runner=_capturing_dispatch_command_runner(bodies),
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(error, "")
+        command = _qualification_command_from_body(bodies[0])
+        self.assertEqual(command[command.index("--package-spec") + 1], package_spec)
+        self.assertEqual(command[command.index("--repo-slug") + 1], repo_slug)
+        self.assertNotIn(";", command)
+        self.assertNotIn("&&", command)
 
     def test_upgrade_dispatch_then_poll_completes_bound_remote_result(self) -> None:
         """The result a dispatched upgrade advertises is exactly the one polling accepts."""
