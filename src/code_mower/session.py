@@ -49,6 +49,10 @@ JIRA_TRACKER_CONTRACT_INSTRUCTIONS = (
     "Every Jira write must flow through the guarded `code-mower tracker mutate` or "
     "`code-mower tracker pr-sync` commands; do not write through Rovo MCP tools or "
     "any other path.",
+    "When implementation starts, preview and then apply a claim plus the configured "
+    "`in_progress` transition through `code-mower tracker mutate`.",
+    "When a non-draft pull request is ready for human review, preview and then apply "
+    "the `ready_for_review` milestone through `code-mower tracker pr-sync`.",
     "Report only the configured Jira project key or ID; never surface issue body "
     "text, comments, attachments, or credentials in this session brief.",
 )

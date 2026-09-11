@@ -16,7 +16,7 @@ has no network calls and no mutation/apply logic.
   optional `issue_key` for display. A display name is never identity.
 - `url`: the tracker's bounded canonical HTTPS browse URL.
 - `lifecycle_category`: one portable category — `new`, `in_progress`,
-  `blocked`, `done` — not a raw provider status name.
+  `review`, `blocked`, `done` — not a raw provider status name.
 - `labels`: sorted label/tag strings.
 - `assigned`: whether anyone is assigned, as a boolean.
 - `created_at` / `updated_at`: bounded, timezone-aware ISO 8601 timestamps.
@@ -52,6 +52,7 @@ tracker:
     status_category_map:
       new: ["10000"]
       in_progress: ["10001"]
+      review: ["10004"]
     field_mappings:
       lifecycle_category: "status"
     mutations:
@@ -59,6 +60,7 @@ tracker:
       allowed_operations: []   # subset of assign, transition, comment, link
       transitions:             # lifecycle category -> Jira transition id
         in_progress: "31"
+        review: "51"
 ```
 
 `field_mappings` targets are restricted to safe normalized fields
@@ -411,7 +413,7 @@ text, credential, account email, or absolute path is printed or retained.
 `src/code_mower/jira_pr_sync.py` synchronizes one configured Jira work item
 with one GitHub PR milestone (issue #802) through the guarded mutation
 surface above — `code-mower tracker pr-sync --milestone
-opened|updated|blocked|green|merged|closed_unmerged --pr-url ... --branch
+opened|ready_for_review|updated|blocked|green|merged|closed_unmerged --pr-url ... --branch
 ... --pr-author LOGIN [--apply]` — so both write guards, the configured
 transition-id map, the `tracker.jira_cloud.sync.trusted_pr_authors` allow-list,
 the closed comment templates, and the replay protection apply unchanged. The
@@ -425,10 +427,14 @@ issue-property claim uses Jira's transactional bulk-property filter to set the
 owner only when the property is absent, serializing initially unlinked competing
 PRs without last-writer-wins replacement; an interrupted claim can be resumed
 only by that same PR identity. Comments go out only on
-opened/blocked/merged,
-and ambiguous or mismatched identity fails closed to an owner action.
+opened/ready-for-review/blocked/merged. `opened` keeps an initial or draft PR
+in `in_progress`; `ready_for_review` advances a non-draft PR to the configured
+`review` status. Both reuse the same bounded PR-opened comment intent, so the
+second milestone does not duplicate the Jira comment. Ambiguous or mismatched
+identity fails closed to an owner action.
 Duplicate events and missed-event recovery converge to `already_applied`;
-an `opened` event cannot move a blocked or done issue backward, and a
+an `opened` event cannot move a configured review, blocked, or done issue
+backward, and a
 `blocked` event cannot move a done issue backward. Those stale-event guards
 require complete later-state mappings and are rechecked at the transport
 boundary before each physical write. Jira failures stay in the sync report

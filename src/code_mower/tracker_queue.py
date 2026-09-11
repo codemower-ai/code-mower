@@ -174,7 +174,7 @@ def normalize_jira_work_item(raw: Mapping[str, Any], config: Mapping[str, Any]) 
             category = {"new": "new", "indeterminate": "in_progress", "done": "done"}.get(
                 (status.get("statusCategory") or {}).get("key")
             )
-    elif status in ("new", "in_progress", "blocked", "done"):
+    elif status in ("new", "in_progress", "review", "blocked", "done"):
         category = status
     labels = fields.get(mappings.get("labels", "labels")) or []
     if not isinstance(labels, list):

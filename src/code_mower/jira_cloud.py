@@ -65,6 +65,7 @@ from .provider_credentials import (
     resolve_provider_credentials,
     validate_jira_email,
 )
+from .tracker_contract import LIFECYCLE_CATEGORIES
 
 API_GATEWAY = "https://api.atlassian.com"
 SITE_EXAMPLE = "https://example.atlassian.net"
@@ -1773,7 +1774,7 @@ def map_status_to_lifecycle(
     if wanted not in known:
         return None
     mapping = status_category_map or {}
-    for category in ("new", "in_progress", "blocked", "done"):
+    for category in LIFECYCLE_CATEGORIES:
         ids = mapping.get(category) or []
         if wanted in {str(item) for item in ids}:
             return category

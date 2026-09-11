@@ -190,6 +190,7 @@ tracker:
         - "comment"
       transitions:
         in_progress: "31" # <-- Replace with your workflow's transition ID
+        review: "51" # <-- Replace with the transition to your Code Review status
 ```
 
 For PR sync, also add only the GitHub logins authorized to drive this scratch
@@ -200,6 +201,11 @@ issue from PR metadata:
       trusted_pr_authors:
         - "trusted-builder"
 ```
+
+Map the destination status IDs for both `in_progress` and `review` under
+`status_category_map`. The IDs above are synthetic examples; discover the
+numeric transition and destination status IDs from the repository's real Jira
+workflow before applying anything.
 
 ### 3. Dry-Run the Plan First
 

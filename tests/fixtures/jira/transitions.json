@@ -1,1 +1,1 @@
-{"transitions": [{"id": "11", "name": "To Do", "to": {"id": "10000", "name": "To Do"}}, {"id": "21", "name": "Start Review", "to": {"id": "10001", "name": "In Review"}}, {"id": "31", "name": "Finish", "to": {"id": "10002", "name": "Done"}}]}
+{"transitions": [{"id": "11", "name": "To Do", "to": {"id": "10000", "name": "To Do"}}, {"id": "21", "name": "Start Work", "to": {"id": "10001", "name": "In Progress"}}, {"id": "51", "name": "Request Review", "to": {"id": "10004", "name": "Code Review"}}, {"id": "31", "name": "Finish", "to": {"id": "10002", "name": "Done"}}]}

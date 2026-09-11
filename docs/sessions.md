@@ -172,6 +172,10 @@ which one calls `--host`:
 - Every Jira write must go through the guarded `code-mower tracker mutate` or
   `code-mower tracker pr-sync` commands; see
   [Jira Cloud Setup](jira-cloud-setup.md) for the double write-guard.
+- At implementation start, the orchestrator previews and applies the configured
+  `in_progress` claim/transition. When a non-draft PR is ready for human review,
+  it previews and applies the `ready_for_review` PR-sync milestone, which uses
+  the configured `review` transition.
 - The brief names the configured Jira project by key or ID only. It never
   includes issue body text, comments, attachments, or credentials.
 

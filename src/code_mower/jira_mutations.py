@@ -2252,7 +2252,15 @@ def _parser() -> argparse.ArgumentParser:
     sync.add_argument(
         "--milestone",
         required=True,
-        choices=("opened", "updated", "blocked", "green", "merged", "closed_unmerged"),
+        choices=(
+            "opened",
+            "ready_for_review",
+            "updated",
+            "blocked",
+            "green",
+            "merged",
+            "closed_unmerged",
+        ),
         help="GitHub/Code Mower lifecycle milestone to synchronize",
     )
     sync.add_argument("--pr-url", required=True, help="GitHub pull request URL")

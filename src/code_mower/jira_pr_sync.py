@@ -58,6 +58,7 @@ SYNC_REPORT_SCHEMA = "code_mower.jiraPrSync.v1"
 #: replay), never inferred from prose.
 PR_MILESTONES = (
     "opened",
+    "ready_for_review",
     "updated",
     "blocked",
     "green",
@@ -72,6 +73,10 @@ PR_MILESTONES = (
 #: often they replay.
 _MILESTONE_POLICY: Mapping[str, Mapping[str, str]] = {
     "opened": {"transition_category": "in_progress", "comment_template": "pr_opened"},
+    "ready_for_review": {
+        "transition_category": "review",
+        "comment_template": "pr_opened",
+    },
     "updated": {"transition_category": "", "comment_template": ""},
     "blocked": {"transition_category": "blocked", "comment_template": "pr_blocked"},
     "green": {"transition_category": "", "comment_template": ""},
@@ -340,13 +345,17 @@ def build_sync_plan(
         )
 
     settings = jira_mutations.resolve_mutation_settings(config)
-    stale_categories = {
+    required_stale_categories = {
         "opened": ("blocked", "done"),
+        "ready_for_review": ("blocked", "done"),
         "blocked": ("done",),
+    }.get(milestone, ())
+    optional_stale_categories = {
+        "opened": ("review",),
     }.get(milestone, ())
     missing_stale_categories = [
         category
-        for category in stale_categories
+        for category in required_stale_categories
         if not settings.status_category_map.get(category)
     ]
     if missing_stale_categories:
@@ -387,7 +396,7 @@ def build_sync_plan(
     stale_status_ids = sorted(
         {
             status_id
-            for category in stale_categories
+            for category in (*required_stale_categories, *optional_stale_categories)
             for status_id in settings.status_category_map.get(category, ())
         }
     )

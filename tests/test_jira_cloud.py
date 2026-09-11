@@ -847,7 +847,10 @@ class ReadPrimitiveTests(unittest.TestCase):
         client = make_client(runner)
         statuses = client.get_statuses()
         categories = client.get_status_categories()
-        self.assertEqual([item["id"] for item in statuses], ["10000", "10001", "10002"])
+        self.assertEqual(
+            [item["id"] for item in statuses],
+            ["10000", "10001", "10004", "10002"],
+        )
         self.assertEqual(
             [item["key"] for item in categories], ["new", "indeterminate", "done"]
         )
@@ -922,9 +925,10 @@ class ReadPrimitiveTests(unittest.TestCase):
         client = make_client(runner)
         transitions = client.get_transitions("20001")
         self.assertEqual(
-            [item["id"] for item in transitions], ["11", "21", "31"]
+            [item["id"] for item in transitions], ["11", "21", "51", "31"]
         )
         self.assertEqual(transitions[1]["to_status_id"], "10001")
+        self.assertEqual(transitions[2]["to_status_id"], "10004")
 
     def test_effective_permission_probe_returns_booleans(self) -> None:
         runner = FakeHttp([http_response(load_fixture("permissions.json"))])
@@ -1218,7 +1222,7 @@ class DoctorCheckTests(unittest.TestCase):
         detail = dict(read.detail or {})
         self.assertEqual(detail["reason"], "ready")
         self.assertEqual(detail["project_key"], "ABC")
-        self.assertEqual(detail["status_count"], 3)
+        self.assertEqual(detail["status_count"], 4)
         self.assertEqual(detail["permission_probe"]["BROWSE_PROJECTS"], True)
         # Readiness samples the configured project, even when queue JQL is broad.
         bodies = runner.request_bodies()
