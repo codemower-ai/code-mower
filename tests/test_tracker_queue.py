@@ -521,10 +521,10 @@ class TrackerQueueTests(unittest.TestCase):
         cfg = config()["tracker"]["jira_cloud"]
         cfg["field_mappings"] = {"assigned": "assignee", "lifecycle_category": "customfield_100"}
         raw = issue()
-        raw["fields"].update({"assignee": {"displayName": PROSE}, "customfield_100": "blocked"})
+        raw["fields"].update({"assignee": {"displayName": PROSE}, "customfield_100": "review"})
         item = tracker_queue.normalize_jira_work_item(raw, cfg)
         self.assertTrue(item["assigned"])
-        self.assertEqual(item["lifecycle_category"], "blocked")
+        self.assertEqual(item["lifecycle_category"], "review")
         self.assertNotIn(PROSE, json.dumps(item))
 
     def test_malformed_completion_markers_and_unknown_categories_fail_closed(self):

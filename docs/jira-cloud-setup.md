@@ -106,6 +106,8 @@ tracker:
         - "1"
       in_progress:
         - "2"
+      review:
+        - "5"
       blocked:
         - "4"
       done:
@@ -130,6 +132,7 @@ tracker:
         - "comment"
       transitions:
         in_progress: "31"
+        review: "51"
         done: "41"
 ```
 
@@ -143,7 +146,7 @@ tracker:
 | `project_key` | string | Display key of the project (e.g. `ABC`). |
 | `issue_type_id` | string | Optional default numeric issue type ID for tasks. |
 | `jql` | string | Bounded single-line JQL query for queue polling. |
-| `status_category_map` | mapping | Maps normalized lifecycle categories (`new`, `in_progress`, `blocked`, `done`) to numeric Jira status IDs. |
+| `status_category_map` | mapping | Maps normalized lifecycle categories (`new`, `in_progress`, `review`, `blocked`, `done`) to numeric Jira status IDs. |
 | `field_mappings` | mapping | Optional map from normalized metadata fields (`lifecycle_category`, `labels`, `assigned`) to Jira field IDs. Issue prose is never mapped. |
 | `sync.trusted_pr_authors` | list | GitHub logins allowed to drive Jira state from bounded PR metadata. An empty list fails closed. |
 | `mutations.writes_enabled`| boolean | Master repository guard. Defaults to `false`. |
@@ -278,6 +281,13 @@ code-mower tracker pr-sync \
 The issue key is read only from the bounded branch name or leading PR-title
 token, never from a PR body, issue prose, comment, source, or diff. GitHub
 remains the only check and merge-gate authority.
+
+At work start, preview and then apply `tracker mutate --claim --transition
+in_progress`. When the resulting non-draft PR is ready for human review,
+preview and then apply the same PR-sync command with `--milestone
+ready_for_review`; that uses the configured `review` transition. Discover and
+configure each repository's numeric Jira transition and destination status IDs
+rather than copying the synthetic values above.
 
 ---
 

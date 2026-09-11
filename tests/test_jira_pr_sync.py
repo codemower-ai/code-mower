@@ -42,7 +42,7 @@ def sync_config(
     allowed_operations: tuple[str, ...] = ("transition", "comment", "link"),
 ) -> dict[str, Any]:
     resolved = (
-        {"in_progress": "31", "blocked": "71", "done": "91"}
+        {"in_progress": "31", "review": "51", "blocked": "71", "done": "91"}
         if transitions is None
         else dict(transitions)
     )
@@ -57,6 +57,7 @@ def sync_config(
                 "sync": {"trusted_pr_authors": ["trusted-builder"]},
                 "status_category_map": {
                     "in_progress": ["3"],
+                    "review": ["5"],
                     "blocked": ["7"],
                     "done": ["9"],
                 },
@@ -92,6 +93,7 @@ class FakeJira:
         project_id: str = PROJECT_ID,
         transitions: Any = (
             {"id": "31", "to": {"id": "3"}},
+            {"id": "51", "to": {"id": "5"}},
             {"id": "71", "to": {"id": "7"}},
             {"id": "91", "to": {"id": "9"}},
         ),
@@ -350,6 +352,38 @@ class MilestonePlansTest(unittest.TestCase):
         self.assertEqual(report["gate_authority"], "github")
         self.assertEqual(report["gate_impact"], "none")
 
+    def test_ready_for_review_links_comments_and_moves_to_review(self) -> None:
+        report = plan(sync_config(), "ready_for_review")
+        self.assertEqual(report["status"], "planned")
+        self.assertEqual(report["transition_category"], "review")
+        self.assertEqual(report["comment_template"], "pr_opened")
+        operations = [
+            (item["operation"], item["status"])
+            for item in report["mutation_plan"]["operations"]
+        ]
+        self.assertEqual(
+            operations,
+            [("link", "planned"), ("transition", "planned"), ("comment", "planned")],
+        )
+
+    def test_opened_optionally_guards_against_configured_review_status(self) -> None:
+        report = plan(sync_config(), "opened")
+        transition = next(
+            item
+            for item in report["mutation_plan"]["operations"]
+            if item["operation"] == "transition"
+        )
+        self.assertEqual(transition["detail"]["skip_if_status_ids"], ["5", "7", "9"])
+
+    def test_opened_remains_valid_without_review_configuration(self) -> None:
+        config = sync_config(
+            transitions={"in_progress": "31", "blocked": "71", "done": "91"}
+        )
+        del config["tracker"]["jira_cloud"]["status_category_map"]["review"]
+        report = plan(config, "opened")
+        self.assertEqual(report["status"], "planned")
+        self.assertEqual(report["transition_category"], "in_progress")
+
     def test_updated_is_link_only(self) -> None:
         report = plan(sync_config(), "updated")
         operations = [(item["operation"], item["status"])
@@ -482,6 +516,20 @@ class ApplyIdempotencyTest(unittest.TestCase):
         self.assertEqual(len(runner.comment_posts()), 1)
         self.assertEqual(runner.global_ids, [GLOBAL_ID])
         self.assertEqual(len(runner.transition_posts()), 1)
+
+    def test_ready_for_review_advances_opened_pr_without_duplicate_comment(self) -> None:
+        config, runner = sync_config(), FakeJira()
+        opened = plan_and_apply(config, "opened", runner)
+        ready = plan_and_apply(config, "ready_for_review", runner)
+        replay = plan_and_apply(config, "ready_for_review", runner)
+
+        self.assertEqual(opened["status"], "applied")
+        self.assertEqual(ready["status"], "applied")
+        self.assertEqual(replay["status"], "already_applied")
+        self.assertEqual(runner.status_id, "5")
+        self.assertEqual(len(runner.comment_posts()), 1)
+        self.assertEqual(len(runner.transition_posts()), 2)
+        self.assertEqual(runner.global_ids, [GLOBAL_ID])
 
     def test_merged_retry_never_duplicates(self) -> None:
         config, runner = sync_config(), FakeJira()

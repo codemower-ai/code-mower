@@ -45,6 +45,12 @@ class TrackerWorkItemValidationTests(unittest.TestCase):
 
         self.assertTrue(any("lifecycle_category" in error for error in errors))
 
+    def test_review_lifecycle_category_is_portable(self) -> None:
+        item = copy.deepcopy(_fixture()["jira_cloud"])
+        item["lifecycle_category"] = "review"
+
+        self.assertEqual(tracker_contract.validate_tracker_work_item(item), ())
+
     def test_jira_identity_requires_cloud_project_and_issue_ids(self) -> None:
         item = copy.deepcopy(_fixture()["jira_cloud"])
         item["identity"] = {"issue_key": "ABC-123"}

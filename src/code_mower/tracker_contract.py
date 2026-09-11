@@ -18,7 +18,7 @@ TRACKER_WORK_ITEM_SCHEMA = "code_mower.trackerWorkItem.v1"
 
 TRACKER_KINDS = ("github", "jira_cloud")
 
-LIFECYCLE_CATEGORIES = ("new", "in_progress", "blocked", "done")
+LIFECYCLE_CATEGORIES = ("new", "in_progress", "review", "blocked", "done")
 
 ALLOWED_MUTATION_OPERATIONS = ("assign", "transition", "comment", "link")
 

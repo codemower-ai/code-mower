@@ -268,6 +268,8 @@ class JiraTrackerSessionTests(unittest.TestCase):
         self.assertIn("Rovo MCP", joined)
         self.assertIn("tracker mutate", joined)
         self.assertIn("tracker pr-sync", joined)
+        self.assertIn("implementation starts", joined)
+        self.assertIn("ready_for_review", joined)
 
     def test_cursor_receives_identical_jira_contract_as_codex_and_claude(self):
         cursor_plan = session.build_session(

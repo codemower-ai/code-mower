@@ -27,6 +27,10 @@ and makes the prompt pack safe to copy across repositories.
   through Rovo tools or another path. `code-mower session start` states this
   contract identically for every orchestrator host; see
   [Jira Cloud Setup](jira-cloud-setup.md).
+- For Jira-backed work, preview and apply the configured `in_progress`
+  transition when implementation starts. When a non-draft PR is ready for
+  human review, preview and apply `tracker pr-sync --milestone
+  ready_for_review`. Do not infer workflow transitions from display names.
 
 ## Universal Install Or Upgrade Prompt
 

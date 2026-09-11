@@ -727,8 +727,9 @@ class JiraAdoptionRehearsalFlowTests(unittest.TestCase):
         issues = code_mower_config.validate_config(config_dict)
         self.assertEqual(issues, [])
 
-        # Operator configures transition to match their workflow (transition 21 leads to status 10001)
+        # Operator configures transitions to match their workflow.
         config_dict["tracker"]["jira_cloud"]["mutations"]["transitions"]["in_progress"] = "21"
+        config_dict["tracker"]["jira_cloud"]["mutations"]["transitions"]["review"] = "51"
 
         # Step 3: Run doctor readiness checks
         perms_with_writes = {

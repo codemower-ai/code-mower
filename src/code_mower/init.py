@@ -2361,6 +2361,7 @@ EXAMPLE_JIRA_TRACKER_CONFIG: dict[str, Any] = {
         "status_category_map": {
             "new": ["10000"],
             "in_progress": ["10001"],
+            "review": ["10004"],
             "blocked": ["10002"],
             "done": ["10003"],
         },
@@ -2380,6 +2381,7 @@ EXAMPLE_JIRA_TRACKER_CONFIG: dict[str, Any] = {
             ],
             "transitions": {
                 "in_progress": "31",
+                "review": "51",
             },
         },
     },
