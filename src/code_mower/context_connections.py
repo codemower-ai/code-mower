@@ -126,30 +126,36 @@ def _invalidate(locked, state, *, status="needs_auth"):
 def authorize(store: ContextStore, name: str, *, backend=None, explicit_retry=False):
     backend = backend or _backend()
     with store.locked(name) as locked:
-        state = _state(locked.read(), name)
-        if state["state"] == "disconnected" or (state["state"] != "verified" and not explicit_retry):
-            raise ContextError("context authorization is disabled; run context verify or reconnect")
-        expected = {**state["identity"], "subject": state["subject"]}
-        try:
-            credentials = locked.vault.get(state["credential_id"])
-            if not credentials:
-                raise ContextError("context credentials are missing; reconnect")
-            proof = backend.refresh(expected, credentials)
-            _proof_matches(proof, expected)
-            locked.vault.put(state["credential_id"], proof.credentials)
-            state = {**state, "state": "verified", "expires_at": datetime.fromtimestamp(proof.expires_at, timezone.utc).isoformat()}
-            locked.write(state)
-        except Exception:
-            _invalidate(locked, state)
-            raise ContextError("context authorization failed; cached evidence is invalid; run context verify or reconnect") from None
-        envelope = {
-            "schema": CONNECTION_SCHEMA, "capability_version": CAPABILITY_VERSION,
-            **{key: state[key] for key in ("connection", "provider", "kind", "generation", "state", "identity",
-                                         "repositories", "recipients", "expires_at")},
-            "capabilities": {"search": state["capability_status"]["search"] == "available",
-                             "memory": state["capability_status"]["memory"] == "available", "revision_binding": False},
-        }
-        return dict(validate_connection(envelope, now=datetime.now(timezone.utc)))
+        return authorize_locked(locked, name, backend, explicit_retry=explicit_retry)
+
+
+def authorize_locked(locked, name, backend, *, timeout_seconds=None, explicit_retry=False):
+    """Refresh under the caller-held connection lock, including bounded fetches."""
+    state = _state(locked.read(), name)
+    if state["state"] == "disconnected" or (state["state"] != "verified" and not explicit_retry):
+        raise ContextError("context authorization is disabled; run context verify or reconnect")
+    expected = {**state["identity"], "subject": state["subject"]}
+    try:
+        credentials = locked.vault.get(state["credential_id"])
+        if not credentials:
+            raise ContextError("context credentials are missing; reconnect")
+        kwargs = {} if timeout_seconds is None else {"timeout_seconds": timeout_seconds}
+        proof = backend.refresh(expected, credentials, **kwargs)
+        _proof_matches(proof, expected)
+        locked.vault.put(state["credential_id"], proof.credentials)
+        state = {**state, "state": "verified", "expires_at": datetime.fromtimestamp(proof.expires_at, timezone.utc).isoformat()}
+        locked.write(state)
+    except Exception:
+        _invalidate(locked, state)
+        raise ContextError("context authorization failed; cached evidence is invalid; run context verify or reconnect") from None
+    envelope = {
+        "schema": CONNECTION_SCHEMA, "capability_version": CAPABILITY_VERSION,
+        **{key: state[key] for key in ("connection", "provider", "kind", "generation", "state", "identity",
+                                     "repositories", "recipients", "expires_at")},
+        "capabilities": {"search": state["capability_status"]["search"] == "available",
+                         "memory": state["capability_status"]["memory"] == "available", "revision_binding": False},
+    }
+    return dict(validate_connection(envelope, now=datetime.now(timezone.utc)))
 
 
 def status(store: ContextStore, name: str):
@@ -167,6 +173,12 @@ def disconnect(store: ContextStore, name: str, *, backend=None):
         # First commit the tombstone. Remote/network/vault failure cannot turn
         # this connection or its prior packet generations back on.
         state = _invalidate(locked, state, status="disconnected")
+        packet_cleanup = "complete"
+        try:
+            from .context_packets import purge_connection
+            purge_connection(locked)
+        except Exception:
+            packet_cleanup = "needs_attention"
         remote, cleanup = "unknown", "complete"
         try:
             credentials = locked.vault.get(state["credential_id"])
@@ -181,7 +193,8 @@ def disconnect(store: ContextStore, name: str, *, backend=None):
             locked.vault.delete(state["credential_id"])
         except Exception:
             cleanup = "needs_attention"
-        return {**_summary(state), "remote_revocation": remote, "credential_cleanup": cleanup}
+        return {**_summary(state), "remote_revocation": remote, "credential_cleanup": cleanup,
+                "packet_cleanup": packet_cleanup}
 
 
 def main(argv=None):
