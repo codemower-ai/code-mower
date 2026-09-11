@@ -25,10 +25,13 @@ import re
 if __package__:
     try:
         from . import decisions as code_mower_decisions
+        from . import context_review as code_mower_context_review
     except ImportError:  # pragma: no cover - copied tools fallback
         import decisions as code_mower_decisions  # type: ignore
+        import context_review as code_mower_context_review  # type: ignore
 else:  # pragma: no cover - direct helper execution
     import decisions as code_mower_decisions  # type: ignore
+    import context_review as code_mower_context_review  # type: ignore
 
 MIN_ABBREVIATED_SHA_LENGTH = 7
 AUTHOR_EXCLUSION_ENV = "CODE_MOWER_AUTHOR_EXCLUSION_JSON"
@@ -454,6 +457,7 @@ def latest_current_audit_verdict(
         bool,
     ],
     decision_authorities: Sequence[str] = (),
+    context_required: bool = False,
 ) -> str:
     verdict = latest_current_audit_verdict_detail(
         lane,
@@ -461,6 +465,7 @@ def latest_current_audit_verdict(
         head_sha=head_sha,
         trusted_comment_author=trusted_comment_author,
         decision_authorities=decision_authorities,
+        context_required=context_required,
     )
     return verdict.verdict if verdict else ""
 
@@ -475,8 +480,16 @@ def latest_current_audit_verdict_detail(
         bool,
     ],
     decision_authorities: Sequence[str] = (),
+    context_required: bool = False,
 ) -> AuditVerdict | None:
     verdicts: list[AuditVerdict] = []
+    try:
+        context_input = code_mower_context_review.latest_input(comments, authorities=decision_authorities)
+    except (ValueError, TypeError, RecursionError):
+        # A broken latest control declaration cannot expose an older PASS.
+        return None
+    if context_required and (context_input is None or not context_input['required']):
+        return None
     decisions = code_mower_decisions.collect_decision_records_from_comments(
         comments,
         authorities=decision_authorities,
@@ -492,6 +505,22 @@ def latest_current_audit_verdict_detail(
             head_sha=head_sha,
             decisions=decisions,
         )
+        failed_context_check = any(marker in body for marker in (
+            "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=unknown -->",
+            "<!-- CODE_MOWER_AUDIT_REQUEUE: kind=stale -->",
+        )) and audit_comment_head_sha(body) == head_sha
+        if context_input is not None:
+            matches = code_mower_context_review.review_matches(body, context_input, head=head_sha)
+            # If the control-comment fetch itself failed, the wrapper cannot
+            # name a revision. Its current-head UNKNOWN still invalidates PASS.
+            # A verdict explicitly bound to a different revision never does.
+            unbound_failure = failed_context_check and code_mower_context_review.REVIEW_MARKER not in body
+            if not matches and not unbound_failure:
+                continue
+        if context_input is not None and failed_context_check:
+            # A later failed authorization/input check must supersede an older
+            # PASS even when both the code head and selected revision match.
+            verdict = "unknown"
         if verdict:
             try:
                 comment_id = int(comment.get("id") or 0)

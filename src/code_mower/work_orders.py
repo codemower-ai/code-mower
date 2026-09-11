@@ -1259,7 +1259,14 @@ def render_work_order(
     role_lenses: Sequence[str] = (),
     review_lanes: Sequence[str] = (),
     source: Mapping[str, Any] | None = None,
+    context_packet: str | None = None,
 ) -> str:
+    context_rows = []
+    if context_packet is not None:
+        from .context_packets import _handle
+        _handle(context_packet)
+        context_rows = [f"- Context packet: `{context_packet}`",
+                        "- Obtain private evidence with `code-mower context deliver` as the approved participant; this reference alone grants no access."]
     role_lenses = tuple(role_lenses) or DEFAULT_ROLE_LENSES
     review_lanes = tuple(review_lanes) or DEFAULT_REVIEW_LANES
     lines = [
@@ -1276,6 +1283,7 @@ def render_work_order(
         "## Context",
         "",
         *_context_manifest_rows(context_manifest),
+        *context_rows,
         "",
         "## Role/Lens Passes",
         "",
@@ -1334,6 +1342,7 @@ def draft_work_order(
     output: Path | None = None,
     force: bool = False,
     max_batch_items: int = DEFAULT_MAX_WORK_ORDER_BATCH_ITEMS,
+    context_packet: str | None = None,
 ) -> dict[str, Any]:
     title = title.strip() or _extract_heading_title(source_text, "Untitled work order")
     batch_items = validate_work_order_source_text(
@@ -1361,6 +1370,7 @@ def draft_work_order(
         role_lenses=effective_role_lenses,
         review_lanes=effective_review_lanes,
         source=source_metadata,
+        context_packet=context_packet,
     )
     _write_text(output, markdown, force=True)
     manifest = {
@@ -1372,6 +1382,7 @@ def draft_work_order(
         "repo": repo,
         "output_path": str(output),
         "context_manifest": str(context_manifest) if context_manifest else "",
+        **({"context_packet": context_packet} if context_packet is not None else {}),
         "role_lenses": list(effective_role_lenses),
         "review_lanes": list(effective_review_lanes),
         "max_batch_items": max_batch_items,
@@ -1530,6 +1541,9 @@ def project_context_main(argv: list[str] | None = None) -> int:
 
 def context_main(argv: list[str] | None = None) -> int:
     effective_argv = sys.argv[1:] if argv is None else argv
+    if effective_argv[:1] in (["attach"], ["deliver"], ["feedback"]):
+        from .context_command import main
+        return main(effective_argv)
     if effective_argv[:1] == ["fetch"]:
         from .context_packets import main
         return main(effective_argv[1:])
@@ -1538,7 +1552,7 @@ def context_main(argv: list[str] | None = None) -> int:
         return connection_main(effective_argv)
     parser = argparse.ArgumentParser(prog="code-mower context")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("connect", "verify", "status", "disconnect", "fetch"):
+    for name in ("connect", "verify", "status", "disconnect", "fetch", "attach", "deliver", "feedback"):
         subparsers.add_parser(name, add_help=False, help="Manage an optional private context connection")
     add_parser = subparsers.add_parser("add")
     add_parser.add_argument("--external", type=Path, action="append", default=[])
@@ -1675,6 +1689,7 @@ def work_order_main(argv: list[str] | None = None) -> int:
     draft_parser.add_argument("--issue-plan", type=Path)
     draft_parser.add_argument("--repo", default="")
     draft_parser.add_argument("--context-manifest", type=Path)
+    draft_parser.add_argument("--context-packet", help="Opaque context packet identity; evidence remains private")
     draft_parser.add_argument("--role-lens", action="append", default=[])
     draft_parser.add_argument("--review-lane", action="append", default=[])
     draft_parser.add_argument("--output", type=Path)
@@ -1751,6 +1766,7 @@ def work_order_main(argv: list[str] | None = None) -> int:
                 source_text=source_text,
                 repo=repo,
                 context_manifest=args.context_manifest,
+                context_packet=args.context_packet,
                 role_lenses=args.role_lens,
                 review_lanes=args.review_lane,
                 source=source,

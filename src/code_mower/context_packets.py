@@ -59,7 +59,12 @@ def _index(locked):
         raise ContextError("private context packet index is invalid")
     handles, keys = set(), set()
     for entry in value["entries"]:
-        _object(entry, {"key", "handle", "reference", "generation", "usage"})
+        _object(entry, {"key", "handle", "reference", "generation", "usage"}, {"deliveries"})
+        deliveries = entry.get("deliveries", [])
+        if not isinstance(deliveries, list) or len(deliveries) > 8:
+            raise ContextError("context packet delivery count exceeds its bound")
+        for revision in deliveries:
+            _handle(revision)
         _handle(entry["handle"])
         if (not isinstance(entry["key"], str) or len(entry["key"]) != 64
                 or any(c not in "0123456789abcdef" for c in entry["key"])
@@ -88,8 +93,14 @@ def _index(locked):
 def purge_connection(locked):
     artifact, index = _index(locked)
     for entry in index["entries"]:
-        locked.artifact("p-" + entry["handle"]).delete()
+        _delete_entry(locked, entry)
     artifact.write({"schema": INDEX_SCHEMA, "entries": []})
+
+
+def _delete_entry(locked, entry):
+    for revision in entry.get("deliveries", []):
+        locked.artifact("d-" + revision).delete()
+    locked.artifact("p-" + entry["handle"]).delete()
 
 
 def _request(spec, recipient=None):
@@ -132,7 +143,7 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False):
         if len(entries) >= MAX_SAVED_PACKETS:
             removed.append(entries.pop(0))
         for previous in removed:
-            locked.artifact("p-" + previous["handle"]).delete()
+            _delete_entry(locked, previous)
         index["entries"] = [*entries, entry]
         index_file.write(index)
         left = policy["timeout_seconds"] - (time.monotonic() - started)

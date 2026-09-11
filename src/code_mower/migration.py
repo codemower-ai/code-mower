@@ -237,6 +237,7 @@ SETUP_DRIFT_TOOL_FILENAMES = {
     "code_mower_standalone_pin.env",
     "code_mower_standalone_shadow.sh",
     "decisions.py",
+    "context_review.py",
     "safe_gh_comment.py",
     "status_report.py",
 }
