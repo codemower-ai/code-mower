@@ -159,6 +159,23 @@ class ParticipantTests(unittest.TestCase):
 
 
 class SessionTests(unittest.TestCase):
+    def test_optional_context_does_not_change_default_participants_or_host(self):
+        for host in ('claude', 'codex'):
+            plan = session.build_session(repo='owner/repo', host=host, selected=('claude', 'codex'),
+                config={'context': {'schema': 'code_mower.contextPolicy.v1', 'connection': 'example-context',
+                                    'policy_version': 'v1', 'required': True}})
+            self.assertEqual(plan['orchestrator'], host)
+            self.assertEqual([row['id'] for row in plan['participants']], ['claude', 'codex'])
+            self.assertEqual(plan['context'], {'readiness': 'unchecked', 'required': True})
+            self.assertNotIn('example-context', json.dumps(plan))
+            self.assertIn('context deliver', json.dumps(plan))
+        source = dict(config.load_config(STARTER))
+        source['context'] = {'schema': 'code_mower.contextPolicy.v1', 'connection': 'example-context',
+                             'policy_version': 'v1', 'required': True}
+        generated = init.render_init_plan(source, config_path=str(STARTER), participants=('claude', 'codex'))
+        gate = next(entry for entry in generated.data['generated_files'] if entry['path'] == '.github/workflows/code-mower-gate.yml')
+        self.assertEqual(gate['context_required'], 'true')
+
     def test_each_agent_host_is_the_implicit_orchestrator(self):
         for host in ("claude", "codex", "devin", "cursor", "grok-bot", "antigravity"):
             with self.subTest(host=host):

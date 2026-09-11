@@ -313,6 +313,8 @@ def repost_audit_verdict_artifact(path: Path, *, token: str) -> dict[str, Any]:
         raise ValueError("refusing to repost quarantined or fixture-shaped verdict artifact")
     repo = str(artifact["repo"])
     body = str(artifact["comment_body"])
+    if "CODE_MOWER_CONTEXT_REVIEW:" in body:
+        raise ValueError("context-bound verdicts require a fresh authorized audit; offline repost is not supported")
     posted = post_pr_comment(
         repo,
         int(artifact["pr_number"]),

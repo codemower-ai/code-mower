@@ -231,6 +231,18 @@ PRODUCT_SUPPORT_FILES = (
         "0644",
     ),
     (
+        "tools/context_review.py",
+        "context_review.py",
+        "product-support-helper",
+        "0644",
+    ),
+    (
+        "tools/yaml_subset.py",
+        "yaml_subset.py",
+        "product-support-helper",
+        "0644",
+    ),
+    (
         "tools/safe_gh_comment.py",
         "templates/product-support/safe_gh_comment.py",
         "product-support-helper",
@@ -1461,6 +1473,8 @@ def _gate_workflow_entry(
     gate_override_label: str = "gate:override",
     decision_authorities: str = "",
 ) -> dict[str, str]:
+    from .context_contract import normalize_policy
+    context_policy = normalize_policy(config.get('context'))
     gate_lanes = [
         _gate_lane_entry(lane_id, lane)
         for lane_id, lane in selected_lanes.items()
@@ -1472,6 +1486,7 @@ def _gate_workflow_entry(
         "copy_from": GATE_WORKFLOW_TEMPLATE,
         "package_copy_from": GATE_WORKFLOW_TEMPLATE,
         "gate_lanes_json": json.dumps(gate_lanes, separators=(",", ":"), sort_keys=True),
+        "context_required": 'true' if context_policy and context_policy['required'] else 'false',
         "gate_author_env_assignments": _var_env_assignments(
             [lane.get("authors_env", "") for lane in gate_lanes]
         ),
@@ -1893,6 +1908,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
             entry.get("gate_author_env_assignments") or ""
         ),
         "__GATE_LANES_JSON__": _yaml_scalar(entry.get("gate_lanes_json") or "[]"),
+        "__CONTEXT_REQUIRED__": _yaml_scalar(entry.get("context_required") or "false"),
         "__GATE_OVERRIDE_LABEL_JSON__": _yaml_scalar(str(gate_override_label)),
         "__DECISION_AUTHORITIES__": _yaml_scalar(
             str(entry.get("decision_authorities") or "")

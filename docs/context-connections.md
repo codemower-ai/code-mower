@@ -131,6 +131,6 @@ private-file cleanup failed; resolve the local storage problem and retry
 disconnect. Deletion cannot recall evidence already delivered to a recipient.
 
 The [provider contract](context-provider-contract.md) records the qualified SDK,
-identity, read operations, and revocation behavior. Integration into participant
-prompts and review gating is the separate delivery capability; fetching a packet
-alone does not make an existing review context-aware.
+identity, read operations, and revocation behavior. Use the
+[delivery commands](context-delivery.md) to attach the packet to participant
+prompts and review gating; fetching alone does not select a review input.

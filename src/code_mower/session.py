@@ -44,10 +44,11 @@ STALE_LEASE_INSTRUCTION = (
 JIRA_TRACKER_CONTRACT_INSTRUCTIONS = (
     "Code Mower's Jira REST transport is authoritative for queue reads and all "
     "Jira mutations.",
-    "Atlassian Rovo MCP, if available to this host, is optional local read/context "
-    "enrichment only; it carries no queue or mutation authority for this session.",
+    "Optional local context providers, including Atlassian Rovo MCP and explicitly "
+    "authorized organization context, supply read-only evidence; they carry no queue "
+    "or mutation authority for this session.",
     "Every Jira write must flow through the guarded `code-mower tracker mutate` or "
-    "`code-mower tracker pr-sync` commands; do not write through Rovo MCP tools or "
+    "`code-mower tracker pr-sync` commands; do not write through context-provider tools or "
     "any other path.",
     "When implementation starts, preview and then apply a claim plus the configured "
     "`in_progress` transition through `code-mower tracker mutate`.",
@@ -71,7 +72,7 @@ def _jira_tracker_section(config: Mapping[str, Any]) -> dict[str, Any] | None:
         "kind": "jira_cloud",
         "project": project,
         "authority": "code_mower_jira_rest",
-        "read_context": "atlassian_rovo_mcp_optional",
+        "read_context": "optional_authorized_context",
         "mutation_commands": ["code-mower tracker mutate", "code-mower tracker pr-sync"],
         "instructions": list(JIRA_TRACKER_CONTRACT_INSTRUCTIONS),
     }
@@ -132,6 +133,14 @@ def build_session(
     tracker_section = _jira_tracker_section(config)
     if tracker_section is not None:
         payload["tracker"] = tracker_section
+    if config.get("context") is not None:
+        payload["context"] = {"readiness": "unchecked", "required": config["context"]["required"]}
+        payload["instructions"].extend([
+            "Use the explicitly selected context connection; never substitute a host's ambient account.",
+            "Give approved participants the same authorized packet through `code-mower context deliver`; context confers no tools or authority.",
+            "Attach the selected packet to the PR before peer review. Changed evidence requires a new context input revision and a fresh review, even on the same code head.",
+            "Required context that is missing, expired or unauthorized pauses dependent work and produces UNKNOWN review input. Keep private evidence and detailed context-bound findings out of public comments and telemetry.",
+        ])
     return payload
 
 

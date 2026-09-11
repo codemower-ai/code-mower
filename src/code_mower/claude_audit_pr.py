@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from code_mower import context_audit, context_delivery, context_review
+
 if __package__ in {None, "", "tools"}:
     try:
         from tools import audit_limits as code_mower_audit_limits
@@ -247,6 +249,8 @@ class ClaudeAuditConfig:
     decision_authorities: Tuple[str, ...] = ()
     merge_authority: bool = True
     calibration_badge: str = ""
+    context_revision: Optional[str] = None
+    context_state_dir: Optional[Path] = None
 
 
 @dataclass
@@ -949,6 +953,7 @@ def _review_prompt(
     review_doctrine: str = "",
     plan_context_text: str = "",
     decision_registry_text: str = "",
+    private_evidence_text: str = "",
 ) -> str:
     safe_branch_name = _one_line(branch_name, 200)
     safe_title = _one_line(title, 500)
@@ -1005,6 +1010,7 @@ Return only the structured JSON object required by the provided schema.
 {doctrine_block}
 {plan_context_block}
 {decision_registry_block}
+{private_evidence_text}
 
 Repository: {repo}
 Pull request: #{pr_number}
@@ -1473,7 +1479,18 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     final_fixture_reason: Optional[str] = None
     unknown_reason = ""
 
-    if diff_context.was_truncated:
+    private_context = context_audit.prepare(
+        repository=repo, pr=pr_number, head=head_sha_start, host="claude",
+        authorities=decision_authorities, revision=config.context_revision,
+        state_dir=config.context_state_dir,
+        repo_path=local_repo, base_ref=config.base_ref,
+        fetch_comments=lambda: fetch_issue_comments(repo, pr_number, token=config.github_token),
+    )
+
+    if private_context is not None and not private_context.ready:
+        unknown_reason = "Selected context input is unavailable; authorize the selected connection and retry"
+        parsed = _unknown_structured_verdict(unknown_reason)
+    elif diff_context.was_truncated:
         unknown_reason = _diff_truncation_unknown_reason(diff_context)
         parsed = _unknown_structured_verdict(unknown_reason)
         print(
@@ -1534,6 +1551,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                 rendered_plan_context.text if rendered_plan_context is not None else ""
             ),
             decision_registry_text=decision_registry_context,
+            private_evidence_text=private_context.text if private_context is not None else "",
         )
 
         attempt_prompt = prompt
@@ -1579,9 +1597,10 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                     config = replace(config, max_budget_usd=raised_budget)
                     continue
             if guardrail_reason and attempt < MAX_CLAUDE_AUDIT_ATTEMPTS:
+                visible_reason = "private context verdict needs validation" if private_context is not None and private_context.private else guardrail_reason
                 print(
                     "  structured-verdict guardrail rejected Claude output: "
-                    f"{guardrail_reason}; retrying once",
+                    f"{visible_reason}; retrying once",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -1595,10 +1614,14 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
         dt = time.time() - t0
         print(f"  claude audit completed in {dt:.0f}s", file=sys.stderr, flush=True)
     if parsed.mismatch_note:
-        print(f"  structured-verdict mismatch: {parsed.mismatch_note}", file=sys.stderr, flush=True)
+        note = "private context verdict needs validation" if private_context is not None and private_context.private else parsed.mismatch_note
+        print(f"  structured-verdict mismatch: {note}", file=sys.stderr, flush=True)
 
     pr_meta_after = fetch_pull_request(repo, pr_number, token=config.github_token)
     head_sha_end = pr_meta_after["head"]["sha"]
+    if private_context is not None and not private_context.finish(head=head_sha_end, prose=parsed.prose):
+        unknown_reason = "Selected context authorization or review input changed; reattach and review again"
+        parsed = _unknown_structured_verdict(unknown_reason)
     is_stale = head_sha_start != head_sha_end
     actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
     claude_cli_reason = unknown_reason or _claude_cli_failure_reason(
@@ -1642,6 +1665,17 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
         result_verdict = parsed.verdict
         trailer = BLOCKED_TRAILER if parsed.verdict == "BLOCKED" else DONE_TRAILER
 
+    if private_context is not None and private_context.metadata is not None:
+        if private_context.private:
+            comment_body = context_delivery.public_verdict(
+                private_context.delivery, provider="Claude", head=head_sha_start,
+                verdict=result_verdict, counts=[parsed.p0_count, parsed.p1_count, parsed.p2_count, parsed.p3_count],
+                trailer=trailer, actions_run_id=actions_run_id, merge_authority=config.merge_authority,
+            )
+        else:
+            footer = context_review.marker(private_context.metadata, review=True) + "\n" + trailer
+            comment_body = limit_comment_body(comment_body.rsplit(trailer, 1)[0] + footer + "\n", footer, provider_name="Claude")
+
     result = ClaudeAuditResult(
         repo=repo,
         pr_number=pr_number,
@@ -1656,7 +1690,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     )
 
     if not config.dry_run:
-        if result_verdict == "UNKNOWN":
+        if result_verdict == "UNKNOWN" and not (private_context is not None and private_context.private):
             dump_path = _dump_claude_cli_failure(
                 repo=repo,
                 pr_number=pr_number,
@@ -1694,7 +1728,8 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                 file=sys.stderr,
                 flush=True,
             )
-            _write_claude_raw_output_sidecar(artifact_path, raw_output_attempts)
+            if not (private_context is not None and private_context.private):
+                _write_claude_raw_output_sidecar(artifact_path, raw_output_attempts)
         if quarantine_reason:
             print(
                 "  runtime guard quarantined verdict artifact: "
@@ -1785,6 +1820,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         ),
     )
     ap.add_argument("--repo-paths", default=os.environ.get("CLAUDE_AUDIT_REPO_PATHS", ""))
+    ap.add_argument("--context-revision", help="Require this explicitly attached private context input revision")
+    ap.add_argument("--context-state-dir", type=Path, help="Private context store outside the repository")
     ap.add_argument("--claude-cli-path", default=os.environ.get("CLAUDE_CLI_PATH", DEFAULT_CLAUDE_CLI_PATH))
     ap.add_argument("--model", default=os.environ.get("CLAUDE_AUDIT_MODEL", DEFAULT_CLAUDE_MODEL))
     ap.add_argument("--max-budget-usd", default=_env_text("CLAUDE_AUDIT_MAX_BUDGET_USD"))
@@ -1997,6 +2034,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             prompt_lenses=code_mower_prompts.split_lenses(args.prompt_lenses),
             prompt_dir=args.prompt_dir,
             include_plan_context=not args.no_plan_context,
+            context_revision=args.context_revision,
+            context_state_dir=args.context_state_dir,
             project_context_manifest=args.project_context_manifest,
             external_context_manifest=args.external_context_manifest,
             max_plan_context_bytes=args.max_plan_context_bytes,

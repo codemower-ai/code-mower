@@ -4,6 +4,8 @@ name: Code Mower gate
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+  issue_comment:
+    types: [created, edited, deleted]
   workflow_run:
     workflows: ["Code Mower Local CLI Audits"]
     types: [completed]
@@ -26,6 +28,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CODE_MOWER_GATE_CONTEXT: code-mower/gate
+  CODE_MOWER_CONTEXT_REQUIRED: "false"
   CODE_MOWER_GATE_ENABLE_AUTO_MERGE: "true"
   CODE_MOWER_OWNER_LABEL: "needs-owner"
   CODE_MOWER_OWNER_SITTING_LABEL: "owner-sitting"
@@ -40,7 +43,9 @@ env:
 jobs:
   gate:
     name: publish Code Mower gate status
-    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event_name != 'issue_comment' || (github.event.issue.pull_request && startsWith(github.event.comment.body, 'Code Mower context input') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -75,7 +80,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CODE_MOWER_GATE_AUTOMERGE_TOKEN: ${{ secrets.CODE_MOWER_GATE_AUTOMERGE_TOKEN || secrets.DISPATCH_TOKEN || '' }}
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number || github.event.workflow_run.pull_requests[0].number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pr_number || github.event.workflow_run.pull_requests[0].number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.inputs.head_sha }}
           WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
           WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
@@ -275,6 +280,7 @@ jobs:
           import sys
 
           try:
+              from tools.context_review import required_for_checkout
               from tools.audit_labeler_lib import (
                   GitHubToken,
                   attested_non_current_audit_heads,
@@ -286,6 +292,7 @@ jobs:
                   latest_current_audit_verdict_detail,
               )
           except ImportError:  # pragma: no cover - unit-test/package fallback
+              from code_mower.context_review import required_for_checkout
               from code_mower.audit_labeler_lib import (
                   GitHubToken,
                   attested_non_current_audit_heads,
@@ -401,6 +408,10 @@ jobs:
                   tokens=github_tokens,
               )
 
+          context_required = required_for_checkout(
+              'code-mower.yml', fallback=os.environ.get('CODE_MOWER_CONTEXT_REQUIRED') == 'true'
+          )
+
           def latest_current_verdict(lane):
               return latest_current_audit_verdict(
                   lane,
@@ -408,6 +419,7 @@ jobs:
                   head_sha=head_sha,
                   trusted_comment_author=trusted_comment_author,
                   decision_authorities=tuple(decision_authorities),
+                  context_required=context_required,
               )
 
           def latest_current_verdict_detail(lane):
@@ -417,6 +429,7 @@ jobs:
                   head_sha=head_sha,
                   trusted_comment_author=trusted_comment_author,
                   decision_authorities=tuple(decision_authorities),
+                  context_required=context_required,
               )
 
           builder_matches = []

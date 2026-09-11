@@ -26,6 +26,12 @@ EXPECTED_GUARD = (
     "github.event_name != 'pull_request_target' || "
     "github.event.pull_request.head.repo.full_name == github.repository"
 )
+EXPECTED_GATE_GUARD = (
+    f"({EXPECTED_GUARD}) && "
+    "(github.event_name != 'issue_comment' || (github.event.issue.pull_request && "
+    "startsWith(github.event.comment.body, 'Code Mower context input') && "
+    "contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"]'), github.event.comment.author_association)))"
+)
 
 
 def _workflow_on(workflow: dict) -> dict:
@@ -33,8 +39,13 @@ def _workflow_on(workflow: dict) -> dict:
 
 
 def _guard_allows(condition: str, *, event_name: str, repository: str,
-                  head_repo: str | None) -> bool:
+                  head_repo: str | None, is_pr_comment=False, comment_body='', association='OWNER') -> bool:
     """Evaluate a two-branch ``A || B`` job guard against a synthetic event."""
+
+    if condition == EXPECTED_GATE_GUARD:
+        return (_guard_allows(EXPECTED_GUARD, event_name=event_name, repository=repository, head_repo=head_repo)
+                and (event_name != 'issue_comment' or (is_pr_comment and comment_body.startswith('Code Mower context input')
+                     and association in ('OWNER', 'MEMBER', 'COLLABORATOR'))))
 
     def resolve(term: str) -> str | None:
         term = term.strip()
@@ -99,7 +110,7 @@ class ForkPrGuardTests(unittest.TestCase):
                     )
                 )
                 self.assertEqual(
-                    workflow["jobs"][job_name]["if"], EXPECTED_GUARD
+                    workflow["jobs"][job_name]["if"], EXPECTED_GATE_GUARD if job_name == 'gate' else EXPECTED_GUARD
                 )
 
     def test_canonical_and_mirror_clear_stale_templates_match(self) -> None:
@@ -120,7 +131,7 @@ class ForkPrGuardTests(unittest.TestCase):
             "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertEqual(canonical, mirror)
-        self.assertIn(f"if: {EXPECTED_GUARD}", canonical)
+        self.assertIn(f"({EXPECTED_GUARD}) &&", canonical)
 
     def test_packaged_clear_stale_fallback_carries_guard(self) -> None:
         with mock.patch.object(
@@ -162,7 +173,7 @@ class ForkPrGuardTests(unittest.TestCase):
         self.assertIn("workflow_run", on_config)
         job = workflow["jobs"]["gate"]
         self.assertEqual(job["name"], "publish Code Mower gate status")
-        self.assertEqual(job["if"], EXPECTED_GUARD)
+        self.assertEqual(job["if"], EXPECTED_GATE_GUARD)
         self.assertIn("CODE_MOWER_GATE_AUTOMERGE_TOKEN", text)
         self.assertTrue(
             _guard_allows(job["if"], event_name="pull_request_target",
@@ -176,6 +187,13 @@ class ForkPrGuardTests(unittest.TestCase):
         self.assertTrue(
             _guard_allows(job["if"], event_name="workflow_run",
                           repository="owner/repo", head_repo=None))
+        for is_pr, body, allowed in ((True, 'Code Mower context input\n', True),
+                                    (False, 'Code Mower context input\n', False),
+                                    (True, 'ordinary discussion', False)):
+            self.assertEqual(_guard_allows(job['if'], event_name='issue_comment', repository='owner/repo',
+                head_repo=None, is_pr_comment=is_pr, comment_body=body), allowed)
+        self.assertFalse(_guard_allows(job['if'], event_name='issue_comment', repository='owner/repo',
+            head_repo=None, is_pr_comment=True, comment_body='Code Mower context input\n', association='NONE'))
 
 
 if __name__ == "__main__":

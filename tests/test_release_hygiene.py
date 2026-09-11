@@ -1749,6 +1749,28 @@ jobs:
         self.assertEqual(result["gate_state"], "success")
         self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
 
+    def test_gate_reads_required_policy_from_current_trusted_checkout(self) -> None:
+        # Execute the shipped workflow decision with unchanged old review/head
+        # while only trusted configuration changes, without regenerating it.
+        lane = {"id": "claude", "display_name": "Claude", "done": "claude-audit-done",
+                "blocked": "claude-audit-blocked", "bot_authors": "claude-audit-bot"}
+        comments = [{"body": "Head SHA: `" + ("a" * 40) + "`\n"
+                     "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                     "user": {"login": "claude-audit-bot"}}]
+        previous_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "code-mower.yml"
+            try:
+                os.chdir(tmp)
+                for required, expected in ((False, "success"), (True, "pending")):
+                    config.write_text(f"context:\n  required: {str(required).lower()}\n")
+                    result = self._run_gate_template_decision(
+                        lanes=[lane], labels={"claude-audit-done"}, comments=comments,
+                        env={"CODE_MOWER_CONTEXT_REQUIRED": "false"})
+                    self.assertEqual(result["gate_state"], expected)
+            finally:
+                os.chdir(previous_cwd)
+
     def test_gate_decision_accepts_configured_lane_author_env(self) -> None:
         result = self._run_gate_template_decision(
             lanes=[

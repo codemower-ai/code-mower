@@ -2,10 +2,9 @@
 
 Implementation step [C2](https://github.com/codemower-ai/code-mower/issues/870)
 in [epic #868](https://github.com/codemower-ai/code-mower/issues/868).
-These are internal contracts for later connection, retrieval, and delivery work.
-They do not enable Coworker, implement authentication, or inject evidence into
-agents. Do not configure required context in a live workflow until the delivery
-step enforces that requirement.
+These contracts underpin the optional [connection](context-connections.md),
+retrieval, and [participant delivery](context-delivery.md) paths. A packet alone
+does not select a review input: attach it through the delivery command.
 
 `code_mower.context_contract` uses only the Python standard library. Existing
 configs and external file manifests are unchanged when context is absent.
@@ -110,7 +109,8 @@ instructions. The delivery step must frame that distinction while preserving
 the existing trusted-base audit policy, sandbox, and ambient-MCP restrictions.
 It must give approved participants the same packet identity, invalidate review
 for changed material context, and treat unavailable required inputs as
-incomplete/UNKNOWN. Those behaviors are not claimed by this contract-only step.
+incomplete/UNKNOWN. The [delivery layer](context-delivery.md) enforces those
+requirements; this validator alone does not dispatch an agent or approve review.
 
 `ValidatedPacket.shareable_summary()` returns only the fixed summary schema,
 kind, document count, completeness, truncation, and revision state. It omits

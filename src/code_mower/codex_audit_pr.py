@@ -68,6 +68,9 @@ Trailer protocol (mirrors Devin/local LLM):
 
 from __future__ import annotations
 
+from code_mower import context_audit, context_delivery, context_review
+from code_mower.context_contract import ContextError
+
 import argparse
 import json
 import os
@@ -288,6 +291,9 @@ class AuditConfig:
     # Optional human-facing calibration status. This must never decide merge
     # authority; it only renders as a separate badge line in the comment.
     calibration_badge: str = ""
+    context_revision: Optional[str] = None
+    context_state_dir: Optional[Path] = None
+    private_evidence: str = field(default="", repr=False)
 
 
 @dataclass
@@ -1351,12 +1357,15 @@ def run_codex_review(
     review_path = tmp_dir / "review.txt"
     prompt = ""
     context_omission_notice = ""
-    if trusted_context.strip():
+    if trusted_context.strip() or config.private_evidence:
         wrapper_context = _build_codex_wrapper_review_context(
             worktree_path,
             config,
         )
         if wrapper_context.was_truncated:
+            if config.private_evidence:
+                shutil.rmtree(str(tmp_dir), ignore_errors=True)
+                raise ContextError("private evidence cannot be omitted from the review")
             context_omission_notice = _codex_context_omission_notice(
                 diff_bytes=wrapper_context.full_diff_bytes,
                 hard_limit_bytes=wrapper_context.hard_limit_bytes,
@@ -1376,6 +1385,7 @@ def run_codex_review(
                 base_ref=config.base_ref,
                 trusted_context=trusted_context,
                 review_context=wrapper_context,
+                private_evidence_text=config.private_evidence,
             )
             env = _build_subprocess_env(None)
     if not prompt:
@@ -1461,6 +1471,7 @@ def _codex_wrapper_review_prompt(
     base_ref: str,
     trusted_context: str,
     review_context: _CodexWrapperReviewContext,
+    private_evidence_text: str = "",
 ) -> str:
     nonce = secrets.token_hex(8)
     context_begin = f"----- BEGIN TRUSTED AUDIT CONTEXT [{nonce}] -----"
@@ -1496,6 +1507,8 @@ Trusted Code Mower audit context:
 {context_begin}
 {trusted_context.rstrip()}
 {context_end}
+
+{private_evidence_text}
 
 Base ref: {base_ref}
 Diff truncation: {truncation_note}
@@ -1863,6 +1876,16 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         config.decision_authorities,
         trusted_ref=config.base_ref,
     )
+    private_context = context_audit.prepare(
+        repository=repo, pr=pr_number, head=head_sha_start, host="codex",
+        authorities=decision_authorities, revision=config.context_revision,
+        state_dir=config.context_state_dir,
+        repo_path=local_repo, base_ref=config.base_ref,
+        fetch_comments=lambda: fetch_issue_comments(repo, pr_number, token=config.github_token),
+    )
+    private_input_unavailable = private_context is not None and not private_context.ready
+    if private_context is not None:
+        config = replace(config, private_evidence=private_context.text)
     review_context_summary = "review context diagnostics unavailable"
     review_context: ReviewContextDiagnostics | None = None
     context_notice = ""
@@ -2027,7 +2050,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         )
         effective_trusted_context = trusted_audit_context
         if (
-            trusted_audit_context.strip()
+            (trusted_audit_context.strip() or config.private_evidence)
             and review_context is not None
             and review_context.was_truncated
         ):
@@ -2036,23 +2059,33 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 hard_limit_bytes=review_context.hard_limit_bytes,
             )
             effective_trusted_context = ""
+            if config.private_evidence:
+                private_input_unavailable = True
             print(
-                f"  {context_notice}; using context-free codex review --base",
+                f"  {context_notice}; " + ("selected context cannot be omitted; emitting UNKNOWN"
+                    if config.private_evidence else "using context-free codex review --base"),
                 file=sys.stderr,
                 flush=True,
             )
         t0 = time.time()
-        review_text, review_stderr = run_codex_review(
-            config,
-            worktree_path,
-            effective_trusted_context,
-        )
+        review_text, review_stderr = "", ""
+        if not private_input_unavailable:
+            try:
+                review_text, review_stderr = run_codex_review(
+                    config,
+                    worktree_path,
+                    effective_trusted_context,
+                )
+            except ContextError:
+                private_input_unavailable = True
         if not context_notice:
             context_notice = _codex_context_omission_notice_from_diagnostics(
                 review_stderr
             )
             if context_notice:
                 effective_trusted_context = ""
+                if config.private_evidence:
+                    private_input_unavailable = True
         dt = time.time() - t0
         print(f"  codex review completed in {dt:.0f}s", file=sys.stderr, flush=True)
     finally:
@@ -2063,11 +2096,15 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     # may receive the same trusted context only to apply transport policy
     # to findings already present in the review prose.
     t0 = time.time()
-    parsed, structure_stdout, structure_stderr = run_codex_verdict_structuring(
-        config,
-        review_text,
-        effective_trusted_context,
-    )
+    if private_input_unavailable:
+        parsed = _unknown_structured_verdict("Selected context input could not be delivered; reattach and review again")
+        structure_stdout, structure_stderr = "", ""
+    else:
+        parsed, structure_stdout, structure_stderr = run_codex_verdict_structuring(
+            config,
+            review_text,
+            effective_trusted_context,
+        )
     dt = time.time() - t0
     print(
         f"  codex verdict structuring completed in {dt:.0f}s",
@@ -2075,8 +2112,9 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         flush=True,
     )
     if parsed.mismatch_note:
+        note = "private context verdict needs validation" if private_context is not None and private_context.private else parsed.mismatch_note
         print(
-            f"  structured-verdict mismatch: {parsed.mismatch_note}",
+            f"  structured-verdict mismatch: {note}",
             file=sys.stderr,
             flush=True,
         )
@@ -2097,6 +2135,8 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     # the verdict applies to a no-longer-current SHA — requeue.
     pr_meta_after = fetch_pull_request(repo, pr_number, token=config.github_token)
     head_sha_end = pr_meta_after["head"]["sha"]
+    if private_context is not None and not private_context.finish(head=head_sha_end, prose=parsed.prose):
+        parsed = _unknown_structured_verdict("Selected context authorization or review input changed; reattach and review again")
     is_stale = head_sha_start != head_sha_end
     actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
 
@@ -2125,7 +2165,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         # without this dump there's no way to diagnose "real structured
         # output drift or one-shot Codex CLI flake?" after the fact.
         # Best-effort: a logging failure must not interrupt the audit.
-        dump_path = dump_cli_failure(
+        dump_path = None if private_context is not None and private_context.private else dump_cli_failure(
             repo=repo,
             pr_number=pr_number,
             head_sha=head_sha_start,
@@ -2165,6 +2205,17 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         )
         result_verdict = parsed.verdict
         trailer = BLOCKED_TRAILER if parsed.verdict == "BLOCKED" else DONE_TRAILER
+
+    if private_context is not None and private_context.metadata is not None:
+        if private_context.private:
+            comment_body = context_delivery.public_verdict(
+                private_context.delivery, provider="Codex", head=head_sha_start,
+                verdict=result_verdict, counts=[parsed.p0_count, parsed.p1_count, parsed.p2_count, parsed.p3_count],
+                trailer=trailer, actions_run_id=actions_run_id, merge_authority=config.merge_authority,
+            )
+        else:
+            footer = context_review.marker(private_context.metadata, review=True) + "\n" + trailer
+            comment_body = limit_comment_body(comment_body.rsplit(trailer, 1)[0] + footer + "\n", footer, provider_name="Codex")
 
     result = AuditResult(
         repo=repo,
@@ -2256,6 +2307,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     ap.add_argument("--repo", help="owner/repo, e.g. owner/repo")
     ap.add_argument("--pr", type=int, help="PR number")
+    ap.add_argument("--context-revision", help="Require this explicitly attached private context input revision")
+    ap.add_argument("--context-state-dir", type=Path, help="Private context store outside the repository")
     ap.add_argument(
         "--repost-verdict-artifact",
         type=Path,
@@ -2602,6 +2655,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         venv_path=explicit_venv,
         disable_venv=disable_venv,
         include_plan_context=not args.no_plan_context,
+        context_revision=args.context_revision,
+        context_state_dir=args.context_state_dir,
         project_context_manifest=args.project_context_manifest,
         external_context_manifest=args.external_context_manifest,
         max_plan_context_bytes=args.max_plan_context_bytes,
