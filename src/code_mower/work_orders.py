@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from code_mower import __version__
+from code_mower.context_contract import manifest_packet_references
 
 
 PROJECT_CONTEXT_SCHEMA = "code_mower.projectContext.v1"
@@ -403,17 +404,16 @@ def _external_context_entry_key(entry: Mapping[str, Any]) -> str:
     return f"filename:{entry.get('filename', '')}"
 
 
-def _read_existing_external_context_entries(manifest_path: Path) -> list[dict[str, Any]]:
+def _read_existing_external_context_manifest(manifest_path: Path) -> Mapping[str, Any]:
     if not manifest_path.exists():
-        return []
+        return {}
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"could not read existing external context manifest {manifest_path}: {exc}") from exc
-    entries = payload.get("entries", [])
-    if not isinstance(entries, list):
-        return []
-    return [dict(entry) for entry in entries if isinstance(entry, Mapping)]
+    if not isinstance(payload, Mapping):
+        raise ValueError("external context manifest must be an object")
+    return payload
 
 
 def _merge_external_context_entries(
@@ -449,7 +449,14 @@ def add_external_context(
         raise ValueError("--max-preview-chars must be greater than or equal to zero")
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "external-context-manifest.json"
-    existing_entries = _read_existing_external_context_entries(manifest_path)
+    existing_manifest = _read_existing_external_context_manifest(manifest_path)
+    packet_references = manifest_packet_references(existing_manifest)
+    raw_entries = existing_manifest.get("entries", [])
+    existing_entries = (
+        [dict(entry) for entry in raw_entries if isinstance(entry, Mapping)]
+        if isinstance(raw_entries, list)
+        else []
+    )
     added_entries = [
         _external_context_entry(
             path,
@@ -478,6 +485,8 @@ def add_external_context(
             "raw external docs or previews unless a user explicitly opts in."
         ),
     }
+    if "provider_packets" in existing_manifest:
+        manifest["provider_packets"] = list(packet_references)
     _write_json(manifest_path, manifest, force=True)
     manifest["manifest_path"] = str(manifest_path)
     return manifest
