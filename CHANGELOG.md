@@ -5,6 +5,24 @@ project used alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop were hardening; v1.0 and
 later entries are regular releases.
 
+## v1.2.2
+
+Code Mower v1.2.2 keeps Jira workflow state and Board current-state reporting
+aligned with the work that is actually ready now, without changing merge-gate
+semantics or the metadata-only privacy boundary.
+
+### Fixed
+
+- Jira PR synchronization can transition a tracked issue to its configured
+  `Code Review` status when the current PR reaches the `ready_for_review`
+  milestone. The transition remains explicit, dry-run first, idempotent, and
+  restricted to the configured Jira workflow mapping (issue #862, PR #863).
+- Board and `lanes status` collapse repeated runs of the same check context and
+  provider or workflow to the newest timestamped result. Superseded failures
+  remain historical evidence but no longer make current work appear blocked;
+  GitHub's current merge and branch-protection state remains authoritative and
+  separately reported (issue #861, PR #864).
+
 ## v1.2.1
 
 Code Mower v1.2.1 hardens maintained Claude release qualification without
