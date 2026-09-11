@@ -135,6 +135,29 @@ def _release_windows(handle: IO[str]) -> None:
 
 
 @contextmanager
+def exclusive_handle_lock(
+    handle: IO[str],
+    *,
+    timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
+    retry_seconds: float = DEFAULT_LOCK_RETRY_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> Iterator[IO[str]]:
+    """Lock an already-open descriptor; its caller controls safe path opening."""
+    backend = _backend()
+    if backend == "unsupported":
+        raise FileLockError("no supported file-locking backend is available")
+    acquire = _acquire_posix if backend == "posix" else _acquire_windows
+    release = _release_posix if backend == "posix" else _release_windows
+    acquire(handle, timeout_seconds=timeout_seconds, retry_seconds=retry_seconds,
+            sleep=sleep, monotonic=monotonic)
+    try:
+        yield handle
+    finally:
+        release(handle)
+
+
+@contextmanager
 def exclusive_file_lock(
     lock_path: str | Path,
     *,
@@ -161,26 +184,8 @@ def exclusive_file_lock(
     path = Path(lock_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle:
-        if backend == "posix":
-            _acquire_posix(
-                handle,
-                timeout_seconds=timeout_seconds,
-                retry_seconds=retry_seconds,
-                sleep=sleep,
-                monotonic=monotonic,
-            )
-        else:
-            _acquire_windows(
-                handle,
-                timeout_seconds=timeout_seconds,
-                retry_seconds=retry_seconds,
-                sleep=sleep,
-                monotonic=monotonic,
-            )
-        try:
+        with exclusive_handle_lock(
+            handle, timeout_seconds=timeout_seconds, retry_seconds=retry_seconds,
+            sleep=sleep, monotonic=monotonic,
+        ):
             yield handle
-        finally:
-            if backend == "posix":
-                _release_posix(handle)
-            else:
-                _release_windows(handle)
