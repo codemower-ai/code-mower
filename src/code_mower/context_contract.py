@@ -359,6 +359,7 @@ def load_packet(
             "documents",
             "binding",
         },
+        {"omissions"},
     )
     if (
         packet["schema"] != PACKET_SCHEMA
@@ -416,11 +417,21 @@ def load_packet(
     ):
         raise ContextError("context completeness and truncation are inconsistent")
     documents = packet["documents"]
+    omissions = packet.get("omissions", [])
+    if (not isinstance(omissions, list) or len(omissions) > 8
+            or any(item not in ("provider_partial", "provider_has_more", "unresolved_entities",
+                                "provider_warning", "provider_compaction", "text_limit", "document_limit")
+                   for item in omissions)):
+        raise ContextError("context omissions must use bounded metadata codes")
     if not isinstance(documents, list) or len(documents) > limits["max_documents"]:
         raise ContextError("context document count exceeds its budget")
     total = 0
     for document in documents:
-        doc = _object(document, {"text", "citations", "confidence"})
+        doc = _object(document, {"text", "citations", "confidence"}, {"source_date", "source_kind"})
+        if doc.get("source_date") is not None:
+            _timestamp(doc["source_date"])
+        if doc.get("source_kind") is not None:
+            _text(doc["source_kind"], maximum=64)
         if not isinstance(doc["text"], str) or not doc["text"].strip():
             raise ContextError("context evidence must contain text")
         try:

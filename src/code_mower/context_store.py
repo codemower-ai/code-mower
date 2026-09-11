@@ -154,6 +154,23 @@ class LockedConnection:
                 pass
 
 
+    def artifact(self, key: str) -> LockedConnection:
+        """Private auxiliary files cannot collide with a connection alias."""
+        return LockedConnection(self._fd, "." + _identifier(key), self.vault)
+
+    def delete(self) -> None:
+        try:
+            fd = os.open(self._name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self._fd)
+        except FileNotFoundError:
+            return
+        try:
+            _private(fd)
+            os.unlink(self._name, dir_fd=self._fd)
+            os.fsync(self._fd)
+        finally:
+            os.close(fd)
+
+
 class ContextStore:
     def __init__(self, root: Path | None = None, *, vault: CredentialVault | None = None):
         self.root = Path(root) if root is not None else default_context_root()

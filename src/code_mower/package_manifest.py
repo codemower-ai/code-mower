@@ -24,6 +24,8 @@ PACKAGE_FILES = (
     ("src/code_mower/context_store.py", "src/code_mower/context_store.py", "core"),
     ("src/code_mower/context_connections.py", "src/code_mower/context_connections.py", "core"),
     ("src/code_mower/coworker_mcp.py", "src/code_mower/coworker_mcp.py", "core"),
+    ("src/code_mower/coworker_retrieval.py", "src/code_mower/coworker_retrieval.py", "core"),
+    ("src/code_mower/context_packets.py", "src/code_mower/context_packets.py", "core"),
     ("src/code_mower/productivity_report.py", "src/code_mower/productivity_report.py", "core"),
     ("tools/code_mower_requirements.txt", "requirements/requirements.txt", "tooling"),
     ("tools/code_mower_calibration.py", "src/code_mower/code_mower_calibration.py", "core"),

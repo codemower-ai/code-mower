@@ -25,6 +25,7 @@ from mcp.shared.auth import (
 
 from .context_contract import ContextError
 from .context_store import strict_json
+from .coworker_retrieval import SEARCH_TOOL, normalize_search, search_arguments, verify_search_schema
 
 ORIGIN = "https://odin.coworker.ai"
 ENDPOINT = ORIGIN + "/mcp"
@@ -97,6 +98,47 @@ class PinnedTransport(httpx2.AsyncBaseTransport):
 
     async def aclose(self):
         await self.transport.aclose()
+
+
+class ReadTransport(PinnedTransport):
+    """One explicit search, bounded listing, and only MCP session bookkeeping."""
+
+    def __init__(self, arguments, limits, *, transport=None):
+        super().__init__(maximum_bytes=limits["max_packet_bytes"],
+                         maximum_requests=limits["max_requests"] + 6, transport=transport)
+        self.arguments, self.limits = arguments, limits
+        self.pages = self.read_requests = self.searches = 0
+
+    async def handle_async_request(self, request):
+        if str(request.url) != ENDPOINT:
+            raise ContextError("context retrieval destination is not approved")
+        if request.method == "POST":
+            body = strict_json(await request.aread())
+            method, params = body.get("method"), body.get("params", {})
+            if method == "tools/call":
+                if (not isinstance(params, dict) or params.get("name") != SEARCH_TOOL
+                        or params.get("arguments") != self.arguments or self.searches
+                        or params.keys() - {"name", "arguments", "_meta"}
+                        or params.get("_meta", {}) != {}):
+                    raise ContextError("context tool call or automatic redispatch is not approved")
+                self.searches += 1
+                self.read_requests += 1
+            elif method == "tools/list":
+                self.pages += 1
+                self.read_requests += 1
+                if self.pages > self.limits["max_pages"]:
+                    raise ContextError("context discovery page limit exceeded")
+            elif method not in ("initialize", "notifications/initialized"):
+                raise ContextError("context MCP method is not approved")
+            if self.read_requests > self.limits["max_requests"]:
+                raise ContextError("context read request limit exceeded")
+        elif request.method not in ("GET", "DELETE"):
+            raise ContextError("context transport method is not approved")
+        response = await super().handle_async_request(request)
+        if response.status_code in (401, 403, 429):
+            await response.aclose()
+            raise ContextError("context access is unavailable or rate limited; no retry was sent")
+        return response
 
 
 class _MemoryStorage:
@@ -185,11 +227,11 @@ class CoworkerBackend:
         except Exception:
             raise ContextError("Coworker authorization unavailable; reconnect or retry after service recovery") from None
 
-    def refresh(self, expected, credentials) -> ConnectionProof:
-        return self._run(self._refresh(expected, credentials))
+    def refresh(self, expected, credentials, *, timeout_seconds=30) -> ConnectionProof:
+        return self._run(self._refresh(expected, credentials, timeout_seconds=timeout_seconds))
 
-    async def _refresh(self, expected, credentials):
-        async with asyncio.timeout(30):
+    async def _refresh(self, expected, credentials, *, timeout_seconds=30):
+        async with asyncio.timeout(timeout_seconds):
             storage = _MemoryStorage(credentials)
             auth = _auth(storage)
             transport = PinnedTransport(maximum_requests=12)
@@ -268,6 +310,61 @@ class CoworkerBackend:
 
     def revoke(self, credentials) -> None:
         self._run(self._revoke(credentials))
+
+    def retrieve(self, credentials, query, source, limits, *, timeout_seconds):
+        return self._run(self._retrieve(credentials, query, source, limits, timeout_seconds=timeout_seconds))
+
+    async def _retrieve(self, credentials, query, source, limits, *, timeout_seconds):
+        started = time.monotonic()
+        arguments = search_arguments(query, source, limits)
+        transport = ReadTransport(arguments, limits)
+        async with asyncio.timeout(timeout_seconds):
+            # Only the newly verified bearer enters this session. Refresh
+            # credentials stay in the lifecycle/vault and no auth fallback is
+            # installed in the MCP client.
+            async with httpx2.AsyncClient(transport=transport, timeout=timeout_seconds,
+                    headers={"Authorization": "Bearer " + credentials["tokens"]["access_token"]},
+                    follow_redirects=False) as http:
+                async with Client(streamable_http_client(ENDPOINT, http_client=http), mode="legacy",
+                                  cache=None, input_required_max_rounds=0,
+                                  read_timeout_seconds=timeout_seconds) as client:
+                    cursor, seen, search = None, set(), None
+                    for _page in range(limits["max_pages"]):
+                        if transport.read_requests + 2 > limits["max_requests"]:
+                            raise ContextError("context request budget cannot cover discovery and search")
+                        listing = await client.list_tools(cursor=cursor, cache_mode="reload")
+                        matches = [tool for tool in listing.tools if tool.name == SEARCH_TOOL]
+                        if len(matches) > 1:
+                            raise ContextError("Coworker search discovery is ambiguous")
+                        if matches:
+                            search = matches[0].model_dump(mode="json", by_alias=True)
+                            break
+                        cursor = listing.next_cursor
+                        if not cursor:
+                            break
+                        if cursor in seen:
+                            raise ContextError("Coworker discovery repeated a page")
+                        seen.add(cursor)
+                    if search is None:
+                        raise ContextError("Coworker memory search is unavailable within discovery limits")
+                    verify_search_schema(search)
+                    # The session API rejects elicitation/claimed results;
+                    # never let provider input requests trigger another call.
+                    result = await client.session.call_tool(SEARCH_TOOL, arguments,
+                                                           read_timeout_seconds=timeout_seconds)
+                    data = result.model_dump(mode="json", by_alias=True)
+                    blocks = data.get("content")
+                    if (data.get("isError") or data.get("structuredContent") is not None
+                            or not isinstance(blocks, list) or len(blocks) != 1
+                            or blocks[0].get("type") != "text"):
+                        raise ContextError("Coworker search returned an unsupported content envelope")
+                    normalized = normalize_search(strict_json(blocks[0]["text"]), limits=limits,
+                                                  maximum_results=arguments["top_k"])
+                    normalized["usage"] = {"requests": transport.read_requests, "pages": transport.pages,
+                                           "response_bytes": normalized["response_bytes"],
+                                           "elapsed_seconds": round(time.monotonic() - started, 3),
+                                           "cost_usd": None}
+                    return normalized
 
     async def _revoke(self, credentials):
         async with asyncio.timeout(20):
