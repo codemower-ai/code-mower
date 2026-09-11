@@ -115,8 +115,10 @@ another account.
 
 Repeating a successful request reauthorizes online and reuses the same packet.
 Changing only an approved participant role does not retrieve different evidence.
-Failures, crashes, stale packets, or material changes require an explicit
-`--refresh`; it replaces the prior packet and invalidates its handle. A saved
+Failures, crashes, or stale packets require an explicit `--refresh` to retry.
+Use the same option to retrieve updated evidence for an existing request; it
+replaces the prior packet and invalidates its handle. A different query, work
+item, or policy starts a separate bounded request. A saved
 packet is never permission to replay offline. `load_authorized` checks the
 current connection, account/workspace, repository, work item, recipient, policy
 version, expiry, and integrity before delivery.
