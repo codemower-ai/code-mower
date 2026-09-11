@@ -60,7 +60,7 @@ def _text(value: Any, *, maximum: int = 256) -> str:
         not isinstance(value, str)
         or not value.strip()
         or len(value) > maximum
-        or any(ord(c) < 32 for c in value)
+        or any(ord(c) < 32 or 127 <= ord(c) <= 159 or c in "\u2028\u2029" for c in value)
     ):
         raise ContextError("context identifier must be bounded single-line text")
     return value
