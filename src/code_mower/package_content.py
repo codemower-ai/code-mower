@@ -41,7 +41,7 @@ def _pyproject_text(package_name: str, *, version: str) -> str:
             'dependencies = ["PyYAML>=6.0"]',
             "",
             "[project.optional-dependencies]",
-            'coworker = ["mcp>=2.2.0,<2.3", "keyring>=25,<26"]',
+            'coworker = ["mcp>=2.2.0,<2.3", "httpx2>=2.12,<3", "PyJWT[crypto]>=2.10,<3", "keyring>=25,<26"]',
             "",
             "[project.scripts]",
             f'{package_name} = "code_mower.cli:main"',

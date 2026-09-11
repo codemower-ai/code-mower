@@ -28,6 +28,7 @@ jobs:
           python -m pip install ruff
           python -m pip install -e '.[coworker]'
           python -m pip check
+          python -c 'from code_mower import coworker_mcp; import keyring'
 
       - name: Ruff lint
         run: python -m ruff check .

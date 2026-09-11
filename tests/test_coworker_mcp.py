@@ -1,18 +1,19 @@
 """Exercise the maintained SDK without network access or real credentials."""
 
 import asyncio
+import importlib.util
 import time
 import unittest
 from unittest.mock import patch
 
 from code_mower.context_contract import ContextError
 
-try:
+if importlib.util.find_spec("mcp") is not None:
     import httpx2
     import jwt
     from cryptography.hazmat.primitives.asymmetric import rsa
     from code_mower import coworker_mcp as mcp
-except ImportError:
+else:
     mcp = None
 
 

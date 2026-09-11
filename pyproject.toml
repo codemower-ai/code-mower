@@ -29,7 +29,7 @@ Issues = "https://github.com/codemower-ai/code-mower/issues"
 Changelog = "https://github.com/codemower-ai/code-mower/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-coworker = ["mcp>=2.2.0,<2.3", "keyring>=25,<26"]
+coworker = ["mcp>=2.2.0,<2.3", "httpx2>=2.12,<3", "PyJWT[crypto]>=2.10,<3", "keyring>=25,<26"]
 test = [
     "build>=1.2",
     "pytest>=8.0",
