@@ -11,6 +11,10 @@ different contract from CodeMower.com cloud uploads.
 
 `code_mower.laneStatus.v1` is the status snapshot produced by
 `code-mower lanes status --repo OWNER/REPO`.
+Repeated runs for the same check context and provider or workflow are collapsed
+to the newest timestamped result in this current-state snapshot. Superseded
+results remain available in prior local history events, but do not drive the
+current next action or owner queue.
 
 `code_mower.board.v1` is the local board wrapper added by
 `code-mower board serve --repo OWNER/REPO`. It adds board display metadata and

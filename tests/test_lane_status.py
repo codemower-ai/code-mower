@@ -20,6 +20,95 @@ def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[
 
 
 class LaneStatusTests(TestCase):
+    def test_collect_status_uses_newest_duplicate_check_run_for_current_state(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 11,
+                        "title": "Fix accessible label",
+                        "url": "https://github.com/owner/repo/pull/11",
+                        "headRefName": "fix/accessible-label",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "builder"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "claude-audit-done"}],
+                        "statusCheckRollup": [
+                            {
+                                "__typename": "CheckRun",
+                                "name": "validate-branch-name / validate-branch-name",
+                                "workflowName": "branch-name-check",
+                                "detailsUrl": "https://github.com/owner/repo/actions/runs/1",
+                                "completedAt": "2026-09-01T11:40:00Z",
+                                "conclusion": "FAILURE",
+                            },
+                            {
+                                "__typename": "CheckRun",
+                                "name": "validate-branch-name / validate-branch-name",
+                                "workflowName": "branch-name-check",
+                                "detailsUrl": "https://github.com/owner/repo/actions/runs/3",
+                                "completedAt": "2026-09-01T11:43:00Z",
+                                "conclusion": "SUCCESS",
+                            },
+                        ],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        report = lane_status.collect_status(
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        branch_checks = [
+            check for check in pr["checks"] if check["name"].startswith("validate-branch-name")
+        ]
+        self.assertEqual(branch_checks, [{"name": "validate-branch-name / validate-branch-name", "state": "success"}])
+        self.assertEqual(pr["next_action"], "ready for merge or auto-merge")
+        self.assertEqual(report["remote"]["gate_health"]["alerts"], [])
+
+    def test_check_normalization_keeps_distinct_failures_actionable(self) -> None:
+        checks = lane_status._checks(
+            [
+                {
+                    "__typename": "CheckRun",
+                    "name": "package",
+                    "workflowName": "quality",
+                    "completedAt": "2026-09-01T11:40:00Z",
+                    "conclusion": "FAILURE",
+                },
+                {
+                    "__typename": "CheckRun",
+                    "name": "package",
+                    "workflowName": "quality",
+                    "completedAt": "2026-09-01T11:43:00Z",
+                    "conclusion": "SUCCESS",
+                },
+                {
+                    "__typename": "CheckRun",
+                    "name": "code-mower/gate",
+                    "workflowName": "gate",
+                    "completedAt": "2026-09-01T11:42:00Z",
+                    "conclusion": "FAILURE",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            checks,
+            [
+                {"name": "package", "state": "success"},
+                {"name": "code-mower/gate", "state": "failure"},
+            ],
+        )
+
     def test_collect_status_reports_pr_checks_labels_and_next_action(self) -> None:
         def gh_json(args: list[str]) -> object:
             if args[:2] == ["pr", "list"]:
