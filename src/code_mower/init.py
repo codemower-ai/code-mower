@@ -2474,7 +2474,32 @@ def render_init_plan(
     source_kind: str | None = None,
     participants: tuple[str, ...] | None = None,
     tracker: str | None = None,
+    context_connection: str | None = None,
+    context_required: bool | None = None,
+    without_context: bool = False,
 ) -> RenderedPlan:
+    if without_context and (context_connection is not None or context_required is not None):
+        raise ConfigError('--without-context cannot be combined with a context selection')
+    context_changed = without_context or context_connection is not None or context_required is not None
+    if context_changed:
+        from .context_contract import ContextError, normalize_policy
+        try:
+            config = dict(config)
+            if without_context:
+                config.pop('context', None)
+            else:
+                policy = normalize_policy(config.get('context'))
+                if policy is None:
+                    if context_connection is None:
+                        raise ConfigError('select --context-connection before choosing required or optional context')
+                    policy = {'schema': 'code_mower.contextPolicy.v1', 'policy_version': 'v1', 'required': False}
+                if context_connection is not None:
+                    policy = {**policy, 'connection': context_connection}
+                if context_required is not None:
+                    policy = {**policy, 'required': context_required}
+                config['context'] = normalize_policy(policy)
+        except ContextError as exc:
+            raise ConfigError(str(exc)) from None
     previous_profile_lanes: tuple[str, ...] = ()
     if participants is not None:
         previous_profile_lanes = _profile(config, profile_id).lanes
@@ -2579,7 +2604,7 @@ def render_init_plan(
         }
         if Path(config_path).name == "code-mower.example.yml":
             adoption_config_entry["package_copy_from"] = "templates/code-mower.example.yml"
-        if participants is not None or tracker is not None:
+        if participants is not None or tracker is not None or context_changed:
             adoption_config_entry["config_data"] = config
         generated_files.append(adoption_config_entry)
 
@@ -3194,6 +3219,13 @@ def main(argv: list[str] | None = None) -> int:
         "--with", dest="participants", metavar="PARTICIPANTS",
         help="select participants, for example claude,codex,devin; saves session defaults",
     )
+    parser.add_argument('--context-connection', help='Select an optional generic context reference; stores no account or credentials')
+    context_mode = parser.add_mutually_exclusive_group()
+    context_mode.add_argument('--context-required', dest='context_required', action='store_true', default=None,
+                              help='Require context for dependent work and independent review')
+    context_mode.add_argument('--context-optional', dest='context_required', action='store_false',
+                              help='Allow an explicitly unavailable context input to continue ordinary work')
+    parser.add_argument('--without-context', action='store_true', help='Remove context selection from generated setup')
     parser.add_argument(
         "--interactive", action="store_true",
         help="choose participants with a checkbox menu; previews setup unless --apply is set",
@@ -3281,7 +3313,8 @@ def main(argv: list[str] | None = None) -> int:
             args.dry_run = True
     if args.builders and not args.dry_run and not args.apply:
         args.dry_run = True
-    if (args.interactive or args.participants is not None) and not args.dry_run and not args.apply:
+    if (args.interactive or args.participants is not None or args.context_connection is not None
+            or args.context_required is not None or args.without_context) and not args.dry_run and not args.apply:
         args.dry_run = True
     if args.apply and args.dry_run:
         print("error: choose either --dry-run or --apply", file=sys.stderr)
@@ -3328,6 +3361,9 @@ def main(argv: list[str] | None = None) -> int:
             source_kind="packaged_starter" if packaged_fallback else "explicit_repository_config",
             participants=selected_participants,
             tracker=tracker_choice,
+            context_connection=args.context_connection,
+            context_required=args.context_required,
+            without_context=args.without_context,
         )
         label_repo = ""
         should_ensure_github_labels = bool(

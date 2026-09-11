@@ -207,3 +207,7 @@ plus read-tool auto-review (`--auto-review`) or an equivalent interactive
 approval path. Without auto-review enabled, Cursor denies MCP read calls even
 when the MCP server is authenticated. This is a host-readiness requirement,
 not a Jira reliability issue.
+
+Optional organizational context uses the [context setup](context-setup.md) policy.
+Session briefs report redacted readiness and pause dependent work when required
+context is unchecked; account identity is never inferred from the host account.

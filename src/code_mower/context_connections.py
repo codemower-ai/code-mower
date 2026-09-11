@@ -164,6 +164,12 @@ def status(store: ContextStore, name: str):
         summary = _summary(state)
         summary["authorization"] = "unchecked"  # An offline status is never authorization.
         summary["expired"] = _timestamp(state["expires_at"]) <= datetime.now(timezone.utc)
+        from .context_readiness import summary as readiness_summary
+        readiness = ('identity_unverified' if state['state'] == 'disconnected' else
+                     'unauthorized' if state['state'] != 'verified' else
+                     'stale' if summary['expired'] else 'unchecked')
+        shared = readiness_summary(readiness)
+        summary.update({key: shared[key] for key in ('readiness', 'next_action', 'dependent_work', 'owner_action')})
         return summary
 
 
@@ -208,10 +214,24 @@ def main(argv=None):
         command.add_argument("--connection", required=True)
         command.add_argument("--state-dir", type=Path)
         command.add_argument("--json", action="store_true")
+    identity = commands.add_parser('identity', help='Inspect saved identity locally; this is not online authorization')
+    identity.add_argument('--connection', required=True)
+    identity.add_argument('--state-dir', type=Path)
+    identity.add_argument('--local-only', action='store_true', required=True,
+                          help='Display private identity on the terminal only; never in JSON or redirected output')
     args = parser.parse_args(argv)
     try:
         store = ContextStore(args.state_dir)
-        if args.command == "connect":
+        if args.command == 'identity':
+            if not sys.stdout.isatty():
+                raise ContextError('identity inspection requires a local terminal and cannot be redirected')
+            with store.locked(args.connection) as locked:
+                state = _state(locked.read(), args.connection)
+            print('Saved identity only; run context doctor --online for current authorization.')
+            print('Account: ' + state['identity']['principal'])
+            print('Workspace: ' + state['identity']['workspace'])
+            return 0
+        elif args.command == "connect":
             if args.spec_stdin:
                 spec = strict_json(sys.stdin.buffer.read(262_145))
             else:
@@ -230,8 +250,12 @@ def main(argv=None):
                     raise ContextError("could not open sign-in; retry with --no-browser")
             result = connect(store, args.connection, spec, open_url=open_url)
         elif args.command == "verify":
-            authorize(store, args.connection, explicit_retry=True)
+            envelope = authorize(store, args.connection, explicit_retry=True)
             result = {**status(store, args.connection), "authorization": "verified_online"}
+            from .context_readiness import summary as readiness_summary
+            ready = all(envelope['capabilities'][key] for key in ('search', 'memory'))
+            shared = readiness_summary('ready' if ready else 'incomplete', authorization='verified_online')
+            result.update({key: shared[key] for key in ('readiness', 'next_action', 'dependent_work', 'owner_action')})
         elif args.command == "status":
             result = status(store, args.connection)
         else:
@@ -242,7 +266,7 @@ def main(argv=None):
         # Never render arbitrary provider, keychain, input, or filesystem errors.
         error = sys.exc_info()[1]
         message = str(error) if isinstance(error, ContextError) else "context operation failed; check private connection setup"
-        print(json.dumps({"status": "unavailable", "message": message}) if args.json else message, file=sys.stderr)
+        print(json.dumps({"status": "unavailable", "message": message}) if getattr(args, 'json', False) else message, file=sys.stderr)
         return 1
 
 

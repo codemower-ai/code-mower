@@ -34,6 +34,6 @@ def doctor_check_group_id(name: str, lane: str | None = None) -> str:
         return "providers"
     if name.startswith("runtime."):
         return "runtime"
-    if name.startswith(("config.", "provider_templates.", "profile.", "doctor.", "tracker.")):
+    if name.startswith(("config.", "provider_templates.", "profile.", "doctor.", "tracker.", "context.")):
         return "setup"
     return "other"
