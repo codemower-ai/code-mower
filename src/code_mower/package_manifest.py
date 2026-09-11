@@ -537,6 +537,8 @@ PACKAGE_FILES = (
     ("docs/context-provider-contract.md", "docs/context-provider-contract.md", "doc"),
     ("docs/context-connections.md", "docs/context-connections.md", "doc"),
     ("docs/context-setup.md", "docs/context-setup.md", "doc"),
+    ("docs/v130-release-notes.md", "docs/v130-release-notes.md", "doc"),
+    ("docs/v130-context-qualification.md", "docs/v130-context-qualification.md", "doc"),
     ("docs/context-packet-schema.md", "docs/context-packet-schema.md", "doc"),
     ("docs/context-delivery.md", "docs/context-delivery.md", "doc"),
     ("tools/CODE_MOWER_CLOUD_BENCHMARKING.md", "docs/cloud-benchmarking.md", "doc"),
