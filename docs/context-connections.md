@@ -49,8 +49,9 @@ revoked. Already-issued access tokens may remain usable until expiry. Consequent
 dependent fetch and replay operations must refresh online before granting access.
 A failed refresh invalidates the local connection generation and prior cached
 evidence. Use `verify` to explicitly retry after service recovery, or reconnect if
-the grant was revoked. Changing accounts or destinations requires disconnecting
-first, followed by a new login and a new connection generation.
+the grant was revoked. Reconnecting, including after failed authentication,
+requires `disconnect` followed by `connect`. This also applies when changing
+accounts or destinations; the new login creates a new connection generation.
 
 Disconnect first disables local authorization, then attempts refresh-token
 revocation and deletes the local credential. `remote_revocation: unknown` reports

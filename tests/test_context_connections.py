@@ -183,6 +183,37 @@ class ConnectionTests(unittest.TestCase):
             self.create(spec={**self.spec, "repositories": ["owner/other-repo"]})
         self.assertEqual(before, self.read())
 
+    def test_failed_authorization_requires_disconnect_before_reconnecting(self):
+        self.create()
+        self.backend.revoked = True
+        with self.assertRaises(ContextError):
+            authorize(self.store, "example", backend=self.backend)
+        before = self.read()
+        self.backend.revoked = False
+        other = {**self.spec, "principal": "two@example.invalid", "workspace": "example-two",
+                 "repositories": ["owner/other-repo"], "recipients": ["claude:builder"]}
+        for spec in (self.spec, other):
+            with self.assertRaisesRegex(ContextError, "disconnect"):
+                self.create(spec=spec)
+            self.assertEqual(before, self.read())
+        disconnect(self.store, "example", backend=self.backend)
+        self.create(spec=other)
+        self.assertEqual(self.read()["identity"]["principal"], other["principal"])
+        self.assertNotEqual(before["generation"], self.read()["generation"])
+
+    def test_top_level_cli_dispatches_private_connect_and_status(self):
+        from code_mower.cli import main
+        payload = SimpleNamespace(buffer=io.BytesIO(json.dumps(self.spec).encode()))
+        out = io.StringIO()
+        with patch("code_mower.context_connections.ContextStore", return_value=self.store), \
+                patch("code_mower.context_connections._backend", return_value=self.backend), \
+                patch("sys.stdin", payload), redirect_stdout(out):
+            self.assertEqual(main(["context", "connect", "coworker", "--connection", "example", "--spec-stdin", "--json"]), 0)
+            self.assertEqual(main(["context", "status", "--connection", "example", "--json"]), 0)
+        states = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.assertEqual([item["status"] for item in states], ["verified", "verified"])
+        self.assertEqual(states[1]["authorization"], "unchecked")
+
     def test_state_and_lock_symlinks_and_permissions_are_rejected(self):
         self.create()
         outside = self.root.parent / "outside"

@@ -91,8 +91,8 @@ def connect(store: ContextStore, name: str, spec, *, backend=None, open_url=webb
         old = locked.read()
         if old is not None:
             old = _state(old, name)
-            if old["state"] == "verified":
-                raise ContextError("connection already exists; disconnect before changing accounts or scope")
+            if old["state"] != "disconnected":
+                raise ContextError("connection already exists; disconnect before reconnecting or changing accounts or scope")
         credential_id = old["credential_id"] if old else uuid.uuid4().hex
         # Establish vault availability before asking the operator to grant OAuth.
         locked.vault.get(credential_id)
