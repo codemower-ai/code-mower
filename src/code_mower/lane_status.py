@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from . import config as code_mower_config
 from . import tracker_queue
@@ -125,16 +126,48 @@ def _check_value(check: Mapping[str, Any], keys: Sequence[str], default: str) ->
     return default
 
 
+def _check_identity(check: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    app = check.get("app")
+    app_name = ""
+    if isinstance(app, Mapping):
+        app_name = _check_value(app, ("slug", "name", "databaseId"), "")
+    provider_url = _check_value(check, ("detailsUrl", "targetUrl"), "")
+    try:
+        provider_host = urlparse(provider_url).hostname or ""
+    except ValueError:
+        provider_host = ""
+    return (
+        _text(check.get("__typename")).casefold(),
+        _check_value(check, ("name", "context", "workflowName"), "unknown").casefold(),
+        _text(check.get("workflowName")).casefold(),
+        (app_name or provider_host).casefold(),
+    )
+
+
+def _check_timestamp(check: Mapping[str, Any]) -> str:
+    return _check_value(check, ("startedAt", "createdAt", "completedAt"), "")
+
+
 def _checks(raw: Any) -> list[dict[str, str]]:
     if not isinstance(raw, list):
         return []
+    current: dict[tuple[str, str, str, str], tuple[str, int, Mapping[str, Any]]] = {}
+    order: list[tuple[str, str, str, str]] = []
+    for index, check in enumerate(raw):
+        if not isinstance(check, Mapping):
+            continue
+        identity = _check_identity(check)
+        candidate = (_check_timestamp(check), index, check)
+        if identity not in current:
+            order.append(identity)
+        if identity not in current or candidate[:2] >= current[identity][:2]:
+            current[identity] = candidate
     checks = [
         {
             "name": _check_value(check, ("name", "context", "workflowName"), "unknown"),
             "state": _check_value(check, ("conclusion", "state", "status"), "unknown").lower(),
         }
-        for check in raw
-        if isinstance(check, Mapping)
+        for _timestamp, _index, check in (current[identity] for identity in order)
     ]
     major = [check for check in checks if any(term in check["name"].lower() for term in CHECK_TERMS)]
     return (major or checks)[:8]
