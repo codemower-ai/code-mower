@@ -134,7 +134,9 @@ def build_session(
     if tracker_section is not None:
         payload["tracker"] = tracker_section
     if config.get("context") is not None:
-        payload["context"] = {"readiness": "unchecked", "required": config["context"]["required"]}
+        from .context_readiness import summary
+        from .context_contract import normalize_policy
+        payload["context"] = summary('unchecked', required=normalize_policy(config['context'])['required'])
         payload["instructions"].extend([
             "Use the explicitly selected context connection; never substitute a host's ambient account.",
             "Give approved participants the same authorized packet through `code-mower context deliver`; context confers no tools or authority.",
@@ -150,6 +152,10 @@ def render_session(payload: Mapping[str, Any]) -> str:
         f"Orchestrator: {PARTICIPANTS[payload['orchestrator']].name} (host: {payload['host']})",
         f"Status: {payload['status']}",
     ]
+    context = payload.get('context')
+    if isinstance(context, Mapping):
+        lines.append(f"Context: {context['readiness']}; dependent work: {context['dependent_work']}")
+        lines.append('Next: ' + context['next_action'])
     lease = payload.get("lease")
     if isinstance(lease, Mapping):
         if lease.get("mutating"):

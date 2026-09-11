@@ -66,6 +66,8 @@ class NativeCredentialVault:
             return backend
         except ImportError:
             raise ContextError("install code-mower[coworker] to use the optional context connection") from None
+        except ContextError:
+            raise
         except Exception:
             raise ContextError("unlock a supported OS credential store before connecting context") from None
 
@@ -76,26 +78,28 @@ class NativeCredentialVault:
         return value
 
     def get(self, credential_id: str) -> dict[str, Any] | None:
+        backend, key = self._backend, self._key(credential_id)
         try:
-            raw = self._backend.get_password(SERVICE, self._key(credential_id))
+            raw = backend.get_password(SERVICE, key)
         except Exception:
             raise ContextError("context credentials are unavailable; unlock the OS credential store") from None
         return strict_json(raw) if raw is not None else None
 
     def put(self, credential_id: str, value: dict[str, Any]) -> None:
+        backend, key = self._backend, self._key(credential_id)
         try:
             raw = json.dumps(value, allow_nan=False, separators=(",", ":"))
             if len(raw.encode()) > MAX_STATE_BYTES:
                 raise ValueError("oversized")
-            self._backend.set_password(SERVICE, self._key(credential_id), raw)
+            backend.set_password(SERVICE, key, raw)
         except Exception:
             raise ContextError("could not save context credentials in the OS credential store") from None
 
     def delete(self, credential_id: str) -> None:
+        backend, key = self._backend, self._key(credential_id)
         try:
-            key = self._key(credential_id)
-            if self._backend.get_password(SERVICE, key) is not None:
-                self._backend.delete_password(SERVICE, key)
+            if backend.get_password(SERVICE, key) is not None:
+                backend.delete_password(SERVICE, key)
         except Exception:
             raise ContextError("local access is disabled; remove its remaining credential from the OS store") from None
 

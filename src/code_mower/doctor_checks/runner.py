@@ -110,6 +110,8 @@ def run_doctor(
     provider_credential_file: Path | None = None,
     provider_profile: str = "",
     provider_config_dir: Path | None = None,
+    context_online: bool = False,
+    context_state_dir: Path | None = None,
 ) -> DoctorReport:
     plan = build_doctor_run_plan(
         github=github,
@@ -120,6 +122,14 @@ def run_doctor(
     )
     enabled_stages = {stage.id for stage in plan}
     config, templates, checks = load_inputs(config_path, provider_templates_path)
+    if isinstance(config, Mapping) and config.get('context') is not None:
+        from ..context_readiness import inspect_connection
+        readiness = inspect_connection(config['context'], state_dir=context_state_dir,
+            online=context_online, repository=repo_slug or None)
+        context_status = ('pass' if readiness['readiness'] == 'ready' else
+                          'fail' if readiness['required'] else 'warn')
+        checks.append(DoctorCheck('context.readiness', context_status, readiness['message'],
+            detail=readiness, remediation=readiness['next_action']))
     using_packaged_example = config_path.name == "code-mower.example.yml"
     # `doctor --easy` can inspect the packaged example before a repo has written
     # code-mower.yml. In that mode the example should teach the user about stale

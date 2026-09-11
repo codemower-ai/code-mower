@@ -1541,18 +1541,21 @@ def project_context_main(argv: list[str] | None = None) -> int:
 
 def context_main(argv: list[str] | None = None) -> int:
     effective_argv = sys.argv[1:] if argv is None else argv
+    if effective_argv[:1] == ['doctor']:
+        from .context_readiness import main
+        return main(effective_argv[1:])
     if effective_argv[:1] in (["attach"], ["deliver"], ["feedback"]):
         from .context_command import main
         return main(effective_argv)
     if effective_argv[:1] == ["fetch"]:
         from .context_packets import main
         return main(effective_argv[1:])
-    if effective_argv[:1] in (["connect"], ["verify"], ["status"], ["disconnect"]):
+    if effective_argv[:1] in (["connect"], ["verify"], ["status"], ["disconnect"], ["identity"]):
         from .context_connections import main as connection_main
         return connection_main(effective_argv)
     parser = argparse.ArgumentParser(prog="code-mower context")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("connect", "verify", "status", "disconnect", "fetch", "attach", "deliver", "feedback"):
+    for name in ("connect", "verify", "status", "disconnect", "identity", "doctor", "fetch", "attach", "deliver", "feedback"):
         subparsers.add_parser(name, add_help=False, help="Manage an optional private context connection")
     add_parser = subparsers.add_parser("add")
     add_parser.add_argument("--external", type=Path, action="append", default=[])

@@ -6,11 +6,13 @@ import argparse
 import json
 import os
 import sys
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import context_review
 from .claude_audit_pr import _decision_authorities_for_repo
-from .context_contract import ContextError, ContextRequest, _object
+from .context_contract import ContextError, ContextRequest, _object, normalize_policy
 from .context_delivery import attach, deliver, read_binding, render_evidence
 from .context_packets import load_authorized
 from .context_store import ContextStore, strict_json
@@ -35,6 +37,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     attach_parser = sub.add_parser("attach", help="Attach evidence to a PR and publish only its input revision metadata")
     attach_parser.add_argument("--connection", required=True)
+    attach_parser.add_argument("--unavailable", action="store_true", help="Explicitly declare unavailable context; optional work may continue with a fresh code-only review")
     attach_parser.add_argument("--request-stdin", action="store_true", required=True)
     attach_parser.add_argument("--host", choices=("claude", "codex"), default=os.environ.get("CODE_MOWER_HOST"))
     for verb in ("deliver", "feedback"):
@@ -68,7 +71,11 @@ def main(argv=None):
         authorities = _decision_authorities_for_repo(args.repo_path, (), trusted_ref=args.base_ref)
         token = _github()
         if args.command == "attach":
-            spec = _object(_private_spec(), {"repository", "work_item", "policy", "packet", "pr"})
+            fields = {"repository", "work_item", "policy", "pr"}
+            spec = _object(_private_spec(), fields if args.unavailable else fields | {"packet"})
+            policy = normalize_policy(spec['policy'])
+            if policy is None or policy['connection'] != args.connection:
+                raise ContextError('select the connection named by the work-item policy')
             if args.host not in ("claude", "codex"):
                 raise ContextError("supply the calling host when attaching context")
             if type(spec["pr"]) is not int or spec["pr"] < 1:
@@ -90,9 +97,19 @@ def main(argv=None):
                 post_pr_comment(spec["repository"], spec["pr"], context_review.INPUT_HEADER + "\n\n"
                     + "Selected evidence changed. Independent reviews must match this input and the current code head.\n\n"
                     + context_review.marker(metadata), token=token)
-            metadata = attach(store, args.connection, spec["packet"], spec["policy"],
-                ContextRequest(spec["repository"], spec["work_item"], args.host + ":orchestrator"),
-                pr=spec["pr"], head=head, publish=publish)
+            if args.unavailable:
+                from .context_audit import required_for_repo
+                required = policy['required'] or required_for_repo(args.repo_path, args.base_ref)
+                metadata = {'revision': uuid.uuid4().hex, 'head': head, 'required': required,
+                    'state': 'required_unavailable' if required else 'optional_unavailable',
+                    'expires_at': (datetime.now(timezone.utc) + timedelta(seconds=policy['max_age_seconds'])).isoformat()}
+                # No credential read, provider call, evidence binding or fallback.
+                # The current trusted gate independently rejects policy downgrade.
+                publish(metadata)
+            else:
+                metadata = attach(store, args.connection, spec["packet"], spec["policy"],
+                    ContextRequest(spec["repository"], spec["work_item"], args.host + ":orchestrator"),
+                    pr=spec["pr"], head=head, publish=publish)
             print(json.dumps({"status": "attached", **metadata}, sort_keys=True))
             return 0
         if not args.revision or args.packet:

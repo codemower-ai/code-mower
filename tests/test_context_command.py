@@ -82,6 +82,50 @@ class ContextCommandTests(unittest.TestCase):
         self.assertEqual(text, texts[0])
         self.assertEqual(self.fixture.backend.searches, 1)
 
+    def test_explicit_unavailable_input_requires_fresh_review_and_never_reads_provider(self):
+        from code_mower import audit_labeler_lib
+        spec = {key: value for key, value in self.attach_spec.items() if key != 'packet'}
+        previous = self.fixture.backend.searches
+        revisions = []
+        for required in (False, True):
+            spec['policy'] = {**spec['policy'], 'required': required}
+            with mock.patch('code_mower.context_audit.required_for_repo', return_value=False), \
+                 mock.patch.object(command, 'attach', side_effect=AssertionError('must not read evidence')):
+                code, out, err, _ = self.invoke(['attach', '--unavailable', '--connection', 'example',
+                    '--host', 'codex', '--request-stdin'], spec)
+            self.assertEqual(code, 0, err)
+            metadata = parse(self.comments[-1]['body'])
+            self.assertEqual(metadata['required'], required)
+            self.assertEqual(metadata['state'], 'required_unavailable' if required else 'optional_unavailable')
+            revisions.append(metadata['revision'])
+            lane = {'done': 'claude-audit-done', 'blocked': 'claude-audit-blocked'}
+            review = {'user': {'login': 'reviewer'}, 'body': 'Head SHA: `' + self.fixture.head + '`\n'
+                      '<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->\n'}
+            kwargs = {'head_sha': self.fixture.head, 'decision_authorities': ('controller',),
+                      'trusted_comment_author': lambda *args: True}
+            self.assertEqual(audit_labeler_lib.latest_current_audit_verdict(lane,
+                [self.comments[-1], review], **kwargs), '')
+            review['body'] += marker(metadata, review=True)
+            verdict = audit_labeler_lib.latest_current_audit_verdict(lane,
+                [self.comments[-1], review], **kwargs)
+            self.assertEqual(verdict, '' if required else 'done')
+        self.assertNotEqual(*revisions)
+        self.assertEqual(self.fixture.backend.searches, previous)
+
+    def test_unavailable_cannot_downgrade_required_base_or_select_another_connection(self):
+        spec = {key: value for key, value in self.attach_spec.items() if key != 'packet'}
+        spec['policy'] = {**spec['policy'], 'required': False}
+        args = ['attach', '--unavailable', '--connection', 'example', '--host', 'claude', '--request-stdin']
+        with mock.patch('code_mower.context_audit.required_for_repo', return_value=True):
+            code, out, err, _ = self.invoke(args, spec)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(parse(self.comments[-1]['body'])['state'], 'required_unavailable')
+        before = len(self.comments)
+        spec['policy'] = {**spec['policy'], 'connection': 'different'}
+        code, out, err, _ = self.invoke(args, spec)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(self.comments), before)
+
     def test_control_authority_required_before_publication(self):
         code, out, err, _ = self.invoke(['attach', '--connection', 'example', '--host', 'claude', '--request-stdin'],
                                        self.attach_spec, actor='untrusted')

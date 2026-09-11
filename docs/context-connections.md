@@ -4,7 +4,8 @@ Coworker supplies organizational evidence; it does not become an orchestrator,
 builder, reviewer, or tracker. Ordinary Claude/Codex setup requires no connection
 and installs no MCP or credential-store dependency.
 
-The connection lifecycle is available with the optional extra:
+Use the [optional setup and readiness guide](context-setup.md) to select a connection
+without changing your participants. The connection lifecycle is available with the optional extra:
 
 ```sh
 python -m pip install 'code-mower[coworker]'

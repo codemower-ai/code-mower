@@ -129,6 +129,8 @@ _DOCTOR_COMPAT_EXPORTS = (
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--context-online', action='store_true', help='Deliberately verify selected context authorization; never searches')
+    parser.add_argument('--context-state-dir', type=Path, help='Private context store outside repositories')
     parser.add_argument("config", nargs="?", default="code-mower.yml")
     parser.add_argument(
         "--provider-templates",
@@ -329,6 +331,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             provider_credential_file=args.provider_credential_file,
             provider_profile=args.provider_profile,
             provider_config_dir=args.provider_config_dir,
+            **({'context_online': True} if args.context_online else {}),
+            **({'context_state_dir': args.context_state_dir} if args.context_state_dir is not None else {}),
         )
     except (code_mower_config.ConfigError, ValueError) as exc:
         print(_doctor_config_error_message(exc, config_arg=args.config), file=sys.stderr)
