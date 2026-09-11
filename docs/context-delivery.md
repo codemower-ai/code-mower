@@ -54,7 +54,10 @@ If trusted repository policy requires context, both audit wrappers and the
 generated gate reject a review without its first required input declaration.
 If local policy discovery itself fails, ordinary audits remain usable; explicit
 input revisions and known declarations still require context. The generated
-gate independently enforces required policy and rejects a code-only PASS.
+gate independently reads current policy from its trusted default-branch checkout
+and rejects a code-only PASS. Changing `context.required` does not require
+regenerating the workflow. A selected but malformed context policy fails closed;
+an absent context section leaves ordinary workflows usable.
 
 Attachment sets `code-mower/gate` pending and publishes a small control comment
 containing only a random input revision, code head, required/available state,

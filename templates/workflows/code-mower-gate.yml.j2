@@ -279,6 +279,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           import sys
 
           try:
+              from tools.context_review import required_for_checkout
               from tools.audit_labeler_lib import (
                   GitHubToken,
                   attested_non_current_audit_heads,
@@ -290,6 +291,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   latest_current_audit_verdict_detail,
               )
           except ImportError:  # pragma: no cover - unit-test/package fallback
+              from code_mower.context_review import required_for_checkout
               from code_mower.audit_labeler_lib import (
                   GitHubToken,
                   attested_non_current_audit_heads,
@@ -405,6 +407,10 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   tokens=github_tokens,
               )
 
+          context_required = required_for_checkout(
+              'code-mower.yml', fallback=os.environ.get('CODE_MOWER_CONTEXT_REQUIRED') == 'true'
+          )
+
           def latest_current_verdict(lane):
               return latest_current_audit_verdict(
                   lane,
@@ -412,7 +418,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   head_sha=head_sha,
                   trusted_comment_author=trusted_comment_author,
                   decision_authorities=tuple(decision_authorities),
-                  context_required=os.environ.get('CODE_MOWER_CONTEXT_REQUIRED') == 'true',
+                  context_required=context_required,
               )
 
           def latest_current_verdict_detail(lane):
@@ -422,7 +428,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   head_sha=head_sha,
                   trusted_comment_author=trusted_comment_author,
                   decision_authorities=tuple(decision_authorities),
-                  context_required=os.environ.get('CODE_MOWER_CONTEXT_REQUIRED') == 'true',
+                  context_required=context_required,
               )
 
           builder_matches = []

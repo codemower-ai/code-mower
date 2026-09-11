@@ -27,6 +27,7 @@ PACKAGE_FILES = (
     ("src/code_mower/coworker_retrieval.py", "src/code_mower/coworker_retrieval.py", "core"),
     ("src/code_mower/context_packets.py", "src/code_mower/context_packets.py", "core"),
     ("src/code_mower/context_review.py", "src/code_mower/context_review.py", "core"),
+    ("src/code_mower/yaml_subset.py", "src/code_mower/yaml_subset.py", "core"),
     ("src/code_mower/context_delivery.py", "src/code_mower/context_delivery.py", "core"),
     ("src/code_mower/context_audit.py", "src/code_mower/context_audit.py", "core"),
     ("src/code_mower/context_command.py", "src/code_mower/context_command.py", "core"),

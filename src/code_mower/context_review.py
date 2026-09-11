@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 INPUT_MARKER = "CODE_MOWER_CONTEXT_INPUT"
@@ -14,6 +15,38 @@ _MARKERS = {name: re.compile(r"<!--\s*" + name + r":\s*(.*?)\s*-->", re.DOTALL)
             for name in (INPUT_MARKER, REVIEW_MARKER)}
 _REVISION = re.compile(r"[a-f0-9]{32}\Z")
 _SHA = re.compile(r"[a-f0-9]{40}\Z")
+
+
+def required_for_checkout(config_path, *, fallback=False):
+    """Read current policy from a trusted gate checkout, never from PR files.
+
+    Absent context avoids parsing unrelated settings. A selected but malformed
+    policy fails closed. The generated flag is only a missing-file fallback.
+    """
+    path = Path(config_path)
+    try:
+        if not path.exists():
+            return fallback
+        if path.is_symlink():
+            return True
+        text = path.read_text(encoding='utf-8')
+        if not re.search(r'^\s*context\s*:', text, re.MULTILINE):
+            return False
+        if __package__:
+            from .yaml_subset import _YamlSubsetParser
+        else:  # pragma: no cover - standalone copied helper
+            from yaml_subset import _YamlSubsetParser
+        config = _YamlSubsetParser(text).parse()
+        if not isinstance(config, dict):
+            return True
+        context = config.get('context')
+        if context is None:
+            return False
+        if not isinstance(context, dict) or type(context.get('required', False)) is not bool:
+            return True
+        return context.get('required', False)
+    except (OSError, ValueError, TypeError, RecursionError, ImportError):
+        return True
 
 
 def _utc(value):

@@ -1,10 +1,12 @@
 """Current code and context evidence must both match at the merge gate."""
 
 import unittest
+import tempfile
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from code_mower import audit_labeler_lib as gate
-from code_mower.context_review import INPUT_HEADER, latest_input, marker, review_matches
+from code_mower.context_review import INPUT_HEADER, latest_input, marker, review_matches, required_for_checkout
 
 
 class ContextReviewTests(unittest.TestCase):
@@ -70,6 +72,20 @@ class ContextReviewTests(unittest.TestCase):
         optional = {**self.current, 'required': False, 'state': 'optional_unavailable'}
         self.assertEqual(self.evaluate([self.declaration(optional), self.review(optional)], required=True), '')
         self.assertEqual(self.evaluate([self.declaration(), self.review(self.current)], required=True), 'done')
+
+    def test_current_trusted_policy_overrides_old_generated_flag_without_regeneration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'code-mower.yml'
+            path.write_text('context:\n  required: false\n')
+            self.assertEqual(self.evaluate([self.review()], required=required_for_checkout(path, fallback=False)), 'done')
+            path.write_text('context:\n  required: true\n')
+            self.assertEqual(self.evaluate([self.review()], required=required_for_checkout(path, fallback=False)), '')
+            path.write_text('context:\n  required: false\n')
+            self.assertFalse(required_for_checkout(path, fallback=True))
+            path.write_text('unrelated invalid syntax\n')
+            self.assertFalse(required_for_checkout(path))
+            path.write_text('context:\n  required: ambiguous\n')
+            self.assertTrue(required_for_checkout(path))
 
     def test_later_failed_authorization_supersedes_pass_on_same_input_and_head(self):
         failed = self.review(self.current)

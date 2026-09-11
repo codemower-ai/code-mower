@@ -32,7 +32,7 @@ def required_for_repo(repo_path, base_ref):
         # Optional policy discovery must not make an otherwise ordinary audit
         # unavailable. Explicit revisions and trusted PR declarations still
         # fail closed below; the generated gate independently enforces the
-        # repository's required-policy flag when discovery is unavailable.
+        # repository's current trusted policy when discovery is unavailable.
         return False
 
 
