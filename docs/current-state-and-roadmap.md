@@ -1,7 +1,7 @@
 # Code Mower Current State And Roadmap
 
 This is the short source-of-truth snapshot for the public OSS package, the
-hosted CodeMower.com surface, and the near-term path from the current v1.2.2
+hosted CodeMower.com surface, and the near-term path from the current v1.3.0
 line toward broader supervised adoption.
 
 ## Positioning
@@ -22,19 +22,24 @@ codebase, at what cost, and with which review policy.
 
 ## Current OSS State
 
+Version 1.3 adds optional Coworker organizational context with explicit private
+account selection, bounded cited packets and context-aware independent review.
+The [qualification scorecard](v130-context-qualification.md) reports mixed retrieval
+relevance without claiming productivity gains. Graphify remains a later candidate.
+
 The public OSS repository is:
 
 ```text
 https://github.com/codemower-ai/code-mower
 ```
 
-The current package-index release baseline is `v1.2.2`, with pinned package
-install spec `code-mower==1.2.2`. Release evidence is recorded on the GitHub
+The current package-index release baseline is `v1.3.0`, with pinned package
+install spec `code-mower==1.3.0`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. It is intended to be installed
 from the package index for supervised pilots, with GitHub tag/source installs
 kept as a fallback and development path.
 
-The v1.2.2 supervised-pilot release keeps the Python 3.12+ runtime contract,
+The v1.3.0 supervised-pilot release keeps the Python 3.12+ runtime contract,
 pipx/uv install matrix, non-expiring dispatch-token diagnostics, native redacted
 lane status, the local Board, Board history and admin commands, spend/verdict
 timelines, owner queue, optional metadata-only agent cards, explicit cloud Board
@@ -144,8 +149,8 @@ The beta-to-v1.0 line has proved:
 - a friendly-user rollout plan that turns install, doctor, first report,
   optional cloud dry-run/upload, and dashboard usefulness into explicit
   acceptance criteria for the first 5-10 users; and
-- the current public PyPI package-install rehearsal from `v1.2.2` /
-  `code-mower==1.2.2` with a
+- the current public PyPI package-install rehearsal from `v1.3.0` /
+  `code-mower==1.3.0` with a
   10/10 first-user readiness score, proving install, generated setup, doctor,
   draft calibration, value-report, cloud export, and dry-run dogfood without a
   local Code Mower checkout. The earlier beta.52 package rehearsal remains
@@ -324,7 +329,7 @@ these questions in the first few minutes:
 - Where is the code intentionally structured, and where is it still being
   refactored from extraction-era shape?
 
-The v1.2.2 line now gives adopters that trust test plus first productivity
+The v1.3.0 line now gives adopters that trust test plus first productivity
 visibility. More provider adapters are useful only when install, doctor, first
 report, privacy, measurement, and code structure remain boring and credible.
 

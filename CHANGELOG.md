@@ -5,6 +5,33 @@ project used alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop were hardening; v1.0 and
 later entries are regular releases.
 
+## v1.3.0
+
+Code Mower can optionally give its Claude and Codex participants the same bounded,
+cited organizational evidence through an explicitly selected Coworker account.
+Default setup remains Claude + Codex without a context-provider dependency.
+
+### Added
+
+- Provider-neutral context policies, immutable packets, citations, scope/expiry
+  checks and a synthetic local-graph fixture for future adapters.
+- Optional Coworker OAuth with signed account/workspace verification, OS vault
+  storage, online refresh before retrieval/replay, and local-first disconnect.
+- Bounded read-only retrieval, private work-order and reviewer delivery,
+  context-revision-aware review validity, and private detailed review feedback.
+- Optional init selection and shared redacted doctor/status/session readiness.
+  Explicit unavailable-input declarations distinguish optional outages from
+  required context; identity inspection is a local-terminal-only operation.
+- A bounded two-case frozen-reference qualification with honest relevance and
+  productivity limits. Graphify remains a separately tracked v1.3.x candidate.
+
+### Fixed
+
+- Required-context changes are read from trusted repository configuration on each
+  gate run, so an older code-only review cannot survive a newly required input.
+- Failed context attachment releases its local capacity; optional discovery
+  failures preserve ordinary no-context audit behavior.
+
 ## v1.2.2
 
 Code Mower v1.2.2 keeps Jira workflow state and Board current-state reporting

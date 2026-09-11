@@ -132,14 +132,15 @@ No dependency or credential implementation is introduced by this ADR.
 The local connection lifecycle and delivery implementations must enforce these
 rules; a synthetic fixture or structurally valid JSON is not authorization.
 
-## Proposed commands
+## Implemented commands
 
-These are design targets, not commands available in v1.2.2:
+The qualified connection and delivery path is available in v1.3.0. See the
+[setup guide](context-setup.md) for installation and explicit account selection:
 
 ```text
 code-mower context connect coworker --connection example-context
 code-mower context doctor --connection example-context
-code-mower context fetch --connection example-context --work-order PATH
+code-mower context fetch --connection example-context --request-stdin --json
 code-mower context disconnect --connection example-context
 ```
 
@@ -158,8 +159,8 @@ use with HTTP 400; the SDK cleared the in-memory credentials. The old access
 token's earlier successful initialization after access-token revocation shows
 why offline JWT verification is insufficient for packet replay authorization.
 
-C3 must force an online SDK refresh before every context retrieval or replay,
-under a per-connection lock, and require a successful token response with a
+The connection runtime forces an online SDK refresh before every context retrieval or replay,
+under a per-connection lock, and requires a successful token response with a
 newly verified principal/workspace/client binding. A failed refresh invalidates
 the local generation and cached evidence. Do not fall back to the old token,
 a stored token file, another account, or another connection. A bare MCP GET
@@ -171,12 +172,12 @@ remote revocation failures without restoring local access. An already-issued
 bearer token outside Code Mower may remain usable until its expiry; do not
 promise immediate global access-token revocation. Preserve other connections.
 
-C3 must test local disconnect, concurrent refresh, generation changes,
-wrong-account rejection, expiry, and unavailable refresh. C4 must retain the
+The regression suite tests local disconnect, concurrent refresh, generation changes,
+wrong-account rejection, expiry, and unavailable refresh. The retrieval adapter retains the
 observed partial status and citations under strict request/document/byte/time
 limits. Existing C2 tests cover structural scope/recipient rejection only;
-they are not live provider authorization evidence. Complete the private pilot
-and runtime qualification before a v1.3 release. Public artifacts contain no
+they are not live provider authorization evidence. The [v1.3 qualification scorecard](v130-context-qualification.md) distinguishes
+live delivery evidence from frozen reference assessment. Public artifacts contain no
 private account identities, source text, source IDs, or credentials.
 
 ## Later Graphify candidate

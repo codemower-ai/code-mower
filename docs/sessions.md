@@ -6,7 +6,7 @@ your conversation is the default orchestrator for that session.
 
 The participant picker, host-led session brief, single-orchestrator lease,
 shared Jira tracker brief, controller host telemetry, and explicit Cursor
-qualification documented below are available in `code-mower==1.2.2`.
+qualification documented below are available in `code-mower==1.3.0`.
 Install from the matching tag when following release documentation, or use a
 contributor checkout when testing later source changes.
 
