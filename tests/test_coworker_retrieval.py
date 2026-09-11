@@ -33,7 +33,7 @@ class NormalizationTests(unittest.TestCase):
 
     def test_malformed_citations_types_and_counts_are_not_silent_success(self):
         for mutation in (lambda v: v["result"]["results"][0].pop("source_row_id"),
-                         lambda v: v["result"]["results"][0].update(kind="SemanticUnit"),
+                         lambda v: v["result"]["results"][0].update(kind="UnknownRecord"),
                          lambda v: v["result"]["retrieval"].update(returned=7)):
             value = copy.deepcopy(FIXTURE["search_response"])
             mutation(value)
@@ -47,6 +47,13 @@ class NormalizationTests(unittest.TestCase):
         tool["name"] = "delete_everything"
         with self.assertRaises(ContextError):
             verify_search_schema(tool)
+
+    def test_mixed_qualified_kinds_keep_source_type_without_inventing_confidence(self):
+        value = json.loads((Path(__file__).parent / "fixtures/coworker_mcp_mixed_records.json").read_text())
+        result = normalize_search(value, limits=normalize_policy(POLICY), maximum_results=3)
+        self.assertEqual([doc["source_kind"] for doc in result["documents"]], ["SemanticUnit", "Attribute"])
+        self.assertTrue(all(doc["confidence"] == "unknown" for doc in result["documents"]))
+        self.assertTrue(all(doc["citations"] for doc in result["documents"]))
 
 
 if importlib.util.find_spec("mcp") is not None:

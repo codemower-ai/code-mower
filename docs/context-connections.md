@@ -101,8 +101,9 @@ authorize a different operation. Sampling, elicitation, generic agent calls,
 resource URLs, and writes are not supported by this retrieval path.
 
 Each record retains its source-row citation and title. A provider `date` is kept
-as `source_date`, without assuming it means modification time. Attribute evidence
-has `unknown` confidence: similarity scores do not establish truth. Unresolved
+as `source_date`, without assuming it means modification time. The qualified
+`Attribute` and `SemanticUnit` record types are retained as `source_kind` and
+both have `unknown` confidence: similarity scores do not establish truth. Unresolved
 entities, warnings, additional unreturned results, and text truncation produce
 explicit partial evidence. No source URL or revision is invented.
 

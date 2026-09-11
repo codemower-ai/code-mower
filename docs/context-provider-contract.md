@@ -61,15 +61,20 @@ data calls. A listing exposed 71 tools, including writes, so production code
 must select a small explicit allowlist rather than trust `readOnlyHint` alone.
 No Jira or other connected-source mutation was performed.
 
-The selected search variant returned Attributes; the advertised SemanticUnit
-variant and `om2_source_trace` are not live-qualified. The initial adapter should
-support the verified search result shape and reject unsupported variants until
-separately tested. Never pass an Attribute ID to a SemanticUnit-only tool.
+The initial search returned only Attributes. A subsequent bounded C4 work-item
+search returned one `SemanticUnit` and two `Attribute` records, each with the
+same seven fields listed above. The adapter accepts these two observed record
+kinds, preserves the kind as `source_kind`, and keeps confidence unknown for
+both. Other result kinds and `om2_source_trace` remain unqualified. Never pass
+an Attribute ID to a SemanticUnit-only tool.
 
 The [synthetic contract fixture](../tests/fixtures/coworker_mcp_contract.json)
 records stripped input schemas and an invented response with the observed
 shape. It is not an export of private content and does not establish live
 capabilities by itself.
+
+The [mixed-record fixture](../tests/fixtures/coworker_mcp_mixed_records.json)
+uses invented evidence to cover the additionally observed C4 response shape.
 
 Discovery sources: [protected resource metadata](https://odin.coworker.ai/.well-known/oauth-protected-resource/mcp),
 [authorization server metadata](https://odin.coworker.ai/.well-known/oauth-authorization-server),

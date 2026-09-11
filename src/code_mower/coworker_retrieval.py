@@ -72,7 +72,7 @@ def normalize_search(value, *, limits, maximum_results):
         omissions.append("provider_warning")
     documents, used_bytes = [], 0
     for record in records:
-        if (not isinstance(record, dict) or record.get("kind") != "Attribute"
+        if (not isinstance(record, dict) or record.get("kind") not in ("Attribute", "SemanticUnit")
                 or not isinstance(record.get("text"), str) or not record["text"].strip()):
             raise ContextError("Coworker returned an unqualified evidence shape")
         source = _text(record.get("source_row_id"), maximum=2048)
@@ -95,7 +95,7 @@ def normalize_search(value, *, limits, maximum_results):
         if updated is not None:
             _timestamp(updated)
         documents.append({"text": text, "citations": [{"source": source, "title": title}],
-                          "confidence": "unknown", "source_date": updated})
+                          "confidence": "unknown", "source_date": updated, "source_kind": record["kind"]})
         used_bytes += len(text.encode("utf-8"))
     return {"documents": documents, "completeness": "partial" if partial or truncated else "complete",
             "truncated": truncated, "source_revision": None, "source_built_at": None,

@@ -1,0 +1,48 @@
+{
+  "result": {
+    "status": "partial",
+    "query": {
+      "text": "bug triage",
+      "time_start": null,
+      "time_end": null,
+      "source": "jira",
+      "requested_mode": "fast"
+    },
+    "resolution": {
+      "status": "unresolved",
+      "entities": [],
+      "fallback_used": false
+    },
+    "retrieval": {
+      "mode": "fast",
+      "returned": 2,
+      "limit": 3,
+      "has_more": true,
+      "processing_ms": 1,
+      "activated_themes": []
+    },
+    "warnings": [],
+    "refs": [],
+    "results": [
+      {
+        "id": "semantic_example",
+        "kind": "SemanticUnit",
+        "text": "The example tracker accepts unfamiliar carrier prefixes.",
+        "date": "2026-01-01T00:00:00Z",
+        "source_row_id": "source_semantic_example",
+        "doc_title": "Example carrier acceptance notes",
+        "similarity": 0.5
+      },
+      {
+        "id": "attr_example",
+        "kind": "Attribute",
+        "text": "Triage reproducible defects before the next release.",
+        "date": "2026-01-01T00:00:00Z",
+        "source_row_id": "source_example",
+        "doc_title": "Example triage notes",
+        "similarity": 0.5
+      }
+    ]
+  },
+  "compaction": {}
+}

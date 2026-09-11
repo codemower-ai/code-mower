@@ -427,9 +427,11 @@ def load_packet(
         raise ContextError("context document count exceeds its budget")
     total = 0
     for document in documents:
-        doc = _object(document, {"text", "citations", "confidence"}, {"source_date"})
+        doc = _object(document, {"text", "citations", "confidence"}, {"source_date", "source_kind"})
         if doc.get("source_date") is not None:
             _timestamp(doc["source_date"])
+        if doc.get("source_kind") is not None:
+            _text(doc["source_kind"], maximum=64)
         if not isinstance(doc["text"], str) or not doc["text"].strip():
             raise ContextError("context evidence must contain text")
         try:
