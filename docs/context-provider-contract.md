@@ -1,7 +1,8 @@
 # Context provider contract for v1.3
 
 Status: architecture accepted; live Coworker login, identity, OM2 search, and
-headless refresh qualified on 2026-09-11. Revocation testing remains pending. Tracks [#869](https://github.com/codemower-ai/code-mower/issues/869)
+headless refresh, and refresh-token revocation qualified on 2026-09-11.
+Access-token revocation alone did not immediately reject an existing token. Tracks [#869](https://github.com/codemower-ai/code-mower/issues/869)
 in [epic #868](https://github.com/codemower-ai/code-mower/issues/868).
 This document does not announce a working Coworker integration.
 
@@ -49,7 +50,7 @@ observations for that connection, not entitlement promises for every account.
 | Result envelope | Tool metadata has no output schema. The actual result used JSON inside a text content block, with outer `result` and `compaction` objects; `structuredContent` was null. | Parse this observed envelope strictly and bound bytes. A changed or unsupported envelope is an explicit error, not an empty success. |
 | Citations and coverage | Attribute results include `id`, `kind`, `text`, `date`, `source_row_id`, `doc_title`, and `similarity`. The response was `partial`, `has_more=true`, and entity resolution was `unresolved`. | Preserve the returned source identifier and title as provenance. Do not invent a source URL, `doc_key`, revision, or SemanticUnit ID; similarity is not confidence. Ranked search is not an exhaustive source inventory. |
 | Refresh | A forced-expiry probe used the SDK refresh flow without browser interaction. Both access and refresh tokens rotated, and the refreshed JWT retained the verified identity/workspace. | Persist absolute expiry and the new token pair atomically. Reverify refreshed identity before use. |
-| Revocation | Discovery advertises `/oauth/revoke`; live revocation has not run. | Keep revocation behavior unqualified. Local disconnect must invalidate packet generations immediately; JWT expiry alone does not prove continuing authorization. |
+| Revocation | Revoking the temporary access token returned 200, but it could still initialize MCP. Revoking the temporary refresh token returned 200; a subsequent SDK refresh received 400 and cleared its in-memory credentials. | Require a successful online refresh before each retrieval or replay. On failure, invalidate local authorization and packet generations. Neither JWT validity nor a revocation HTTP 200 proves ongoing or withdrawn access. |
 | Usage | The server reported search processing time, but no price or charge. | Cost remains unknown. No broader search, pagination, automatic retry, or extra source retrieval was performed. |
 
 The probe made one `individual_context` call and one `om2_search` call, with
@@ -142,25 +143,36 @@ an existing private connection without adding an account login to ordinary
 Claude/Codex onboarding. Doctor must distinguish identity verification, search
 availability, memory entitlement, and recipient authorization.
 
-## Remaining qualification
+## Qualification boundary and implementation requirements
 
-The endpoint, consent, signed identity, result shape, and headless refresh
-checks above replace the earlier setup-details blocker. The operator approved
-the intended local account connection. That authorization and account identity
-are deliberately not copied into public fixtures or configuration.
+C1 establishes the endpoint, explicit local consent, signed identity, observed
+search shape, headless refresh, and refresh-token revocation contract. The
+operator explicitly authorized invalidating the temporary qualification token.
+The provider accepted revocation of the refresh token and then rejected its
+use with HTTP 400; the SDK cleared the in-memory credentials. The old access
+token's earlier successful initialization after access-token revocation shows
+why offline JWT verification is insufficient for packet replay authorization.
 
-Live revocation testing awaits explicit approval because it can invalidate the
-temporary probe connection and require signing in again. C1 remains open until
-that result or an explicit qualification exception is recorded. Do not claim
-that remote revocation is immediate based on a successful revocation HTTP
-response alone: test whether the old credential is actually rejected.
+C3 must force an online SDK refresh before every context retrieval or replay,
+under a per-connection lock, and require a successful token response with a
+newly verified principal/workspace/client binding. A failed refresh invalidates
+the local generation and cached evidence. Do not fall back to the old token,
+a stored token file, another account, or another connection. A bare MCP GET
+returns 405 even without credentials; it cannot prove authentication success.
 
-C3 must test local disconnect, generation changes, wrong-account rejection,
-expiry, and unavailable refresh. C4 must retain the observed partial status and
-citations under strict request/document/byte/time limits. Existing C2 tests
-cover structural scope/recipient rejection only; they are not live provider
-authorization evidence. Production code must follow the verified contract
-rather than hypothetical output shapes in tool descriptions.
+Disconnect invalidates local state and packet access first, then revokes the
+connection's refresh credential through the advertised endpoint. It must report
+remote revocation failures without restoring local access. An already-issued
+bearer token outside Code Mower may remain usable until its expiry; do not
+promise immediate global access-token revocation. Preserve other connections.
+
+C3 must test local disconnect, concurrent refresh, generation changes,
+wrong-account rejection, expiry, and unavailable refresh. C4 must retain the
+observed partial status and citations under strict request/document/byte/time
+limits. Existing C2 tests cover structural scope/recipient rejection only;
+they are not live provider authorization evidence. Complete the private pilot
+and runtime qualification before a v1.3 release. Public artifacts contain no
+private account identities, source text, source IDs, or credentials.
 
 ## Later Graphify candidate
 
