@@ -22,9 +22,11 @@ if __package__ in {None, "", "tools"}:
     except ImportError:  # pragma: no cover - direct script execution fallback.
         import audit_limits  # type: ignore
     import tracker_contract  # type: ignore
+    import context_contract  # type: ignore
 else:  # pragma: no cover - exercised after package extraction.
     from . import audit_limits
     from . import tracker_contract
+    from . import context_contract
 
 
 ALLOWED_LANE_TYPES = {"audit", "review"}
@@ -753,6 +755,10 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
                 _require_identifier(lane_name, f"{section_path}.{key}", issues)
 
     _validate_tracker(config.get("tracker"), issues)
+    try:
+        context_contract.normalize_policy(config.get("context"))
+    except context_contract.ContextError as exc:
+        issues.append(ConfigIssue("context", str(exc)))
 
     owner_surface = config.get("owner_surface")
     if owner_surface is not None:
