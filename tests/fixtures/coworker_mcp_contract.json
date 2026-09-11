@@ -1,0 +1,120 @@
+{
+  "fixture_kind": "synthetic; input schema shape observed, response content invented",
+  "qualified_sdk": "mcp 2.2.0",
+  "tools": [
+    {
+      "name": "individual_context",
+      "inputSchema": {
+        "properties": {
+          "timezone": {
+            "type": "string"
+          },
+          "user_question": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "timezone"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "readOnlyHint": true
+    },
+    {
+      "name": "om2_search",
+      "inputSchema": {
+        "properties": {
+          "include_raw_documents": {
+            "type": "boolean"
+          },
+          "query": {
+            "type": "string"
+          },
+          "search_mode": {
+            "enum": [
+              "fast",
+              "deep",
+              "topic",
+              "recent",
+              "theme_deep"
+            ],
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "time_end": {
+            "type": "string"
+          },
+          "time_start": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "top_k": {
+            "type": "integer"
+          },
+          "user_question": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "timezone"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "readOnlyHint": true
+    }
+  ],
+  "search_request": {
+    "query": "bug triage",
+    "timezone": "UTC",
+    "source": "jira",
+    "top_k": 3,
+    "search_mode": "fast",
+    "include_raw_documents": false
+  },
+  "search_response": {
+    "result": {
+      "status": "partial",
+      "query": {
+        "text": "bug triage",
+        "time_start": null,
+        "time_end": null,
+        "source": "jira",
+        "requested_mode": "fast"
+      },
+      "resolution": {
+        "status": "unresolved",
+        "entities": [],
+        "fallback_used": false
+      },
+      "retrieval": {
+        "mode": "fast",
+        "returned": 1,
+        "limit": 3,
+        "has_more": true,
+        "processing_ms": 1,
+        "activated_themes": []
+      },
+      "warnings": [],
+      "refs": [],
+      "results": [
+        {
+          "id": "attr_example",
+          "kind": "Attribute",
+          "text": "Triage reproducible defects before the next release.",
+          "date": "2026-01-01T00:00:00Z",
+          "source_row_id": "source_example",
+          "doc_title": "Example triage notes",
+          "similarity": 0.5
+        }
+      ]
+    },
+    "compaction": {}
+  }
+}
