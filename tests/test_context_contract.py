@@ -167,6 +167,19 @@ class ContextContractTests(unittest.TestCase):
                     self.load()
                 self.assertNotIn("sentinel", str(error.exception))
 
+    def test_private_identifiers_and_citations_reject_unicode_line_separators(self) -> None:
+        for separator in ("\u0085", "\u2028", "\u2029"):
+            with self.subTest(separator=repr(separator)):
+                self.data = packet(self.auth)
+                self.data["documents"][0]["citations"][0]["title"] = "source" + separator
+                with self.assertRaisesRegex(context.ContextError, "single-line"):
+                    self.load()
+                self.data = packet(self.auth)
+                self.auth["identity"]["principal"] = "principal" + separator
+                with self.assertRaisesRegex(context.ContextError, "single-line"):
+                    self.load()
+                self.auth = connection()
+
     def test_wrong_account_generation_provider_scope_policy_and_recipient_fail(self) -> None:
         mutations = [
             (
