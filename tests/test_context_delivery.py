@@ -56,10 +56,13 @@ class ContextDeliveryTests(unittest.TestCase):
         def fail(metadata):
             self.published.append(metadata)
             raise RuntimeError('failed remote write')
-        with self.assertRaises(RuntimeError):
-            self.attach(publish=fail)
-        with self.assertRaises(ContextError):
-            self.delivery(self.published[-1])
+        for _ in range(9):
+            with self.assertRaises(RuntimeError):
+                self.attach(publish=fail)
+            with self.assertRaises(ContextError):
+                self.delivery(self.published[-1])
+        current = self.attach()
+        self.assertTrue(self.delivery(current).text)
 
     def test_changed_input_recipient_revocation_and_disconnected_cache_are_rejected(self):
         current = self.attach()

@@ -29,7 +29,8 @@ EXPECTED_GUARD = (
 EXPECTED_GATE_GUARD = (
     f"({EXPECTED_GUARD}) && "
     "(github.event_name != 'issue_comment' || (github.event.issue.pull_request && "
-    "startsWith(github.event.comment.body, 'Code Mower context input')))"
+    "startsWith(github.event.comment.body, 'Code Mower context input') && "
+    "contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"]'), github.event.comment.author_association)))"
 )
 
 
@@ -38,12 +39,13 @@ def _workflow_on(workflow: dict) -> dict:
 
 
 def _guard_allows(condition: str, *, event_name: str, repository: str,
-                  head_repo: str | None, is_pr_comment=False, comment_body='') -> bool:
+                  head_repo: str | None, is_pr_comment=False, comment_body='', association='OWNER') -> bool:
     """Evaluate a two-branch ``A || B`` job guard against a synthetic event."""
 
     if condition == EXPECTED_GATE_GUARD:
         return (_guard_allows(EXPECTED_GUARD, event_name=event_name, repository=repository, head_repo=head_repo)
-                and (event_name != 'issue_comment' or (is_pr_comment and comment_body.startswith('Code Mower context input'))))
+                and (event_name != 'issue_comment' or (is_pr_comment and comment_body.startswith('Code Mower context input')
+                     and association in ('OWNER', 'MEMBER', 'COLLABORATOR'))))
 
     def resolve(term: str) -> str | None:
         term = term.strip()
@@ -190,6 +192,8 @@ class ForkPrGuardTests(unittest.TestCase):
                                     (True, 'ordinary discussion', False)):
             self.assertEqual(_guard_allows(job['if'], event_name='issue_comment', repository='owner/repo',
                 head_repo=None, is_pr_comment=is_pr, comment_body=body), allowed)
+        self.assertFalse(_guard_allows(job['if'], event_name='issue_comment', repository='owner/repo',
+            head_repo=None, is_pr_comment=True, comment_body='Code Mower context input\n', association='NONE'))
 
 
 if __name__ == "__main__":

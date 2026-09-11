@@ -147,8 +147,27 @@ class ContextAuditTests(unittest.TestCase):
         git('-c', 'user.name=Example', '-c', 'user.email=example@example.invalid', 'commit', '-qm', 'Trusted policy')
         (repo / 'code-mower.yml').write_text('context: null\n')
         self.assertTrue(context_audit.required_for_repo(repo, 'HEAD'))
-        with self.assertRaisesRegex(Exception, 'trusted context policy'):
-            context_audit.required_for_repo(repo, 'does-not-exist')
+        self.assertFalse(context_audit.required_for_repo(repo, 'does-not-exist'))
+
+    def test_optional_policy_discovery_failure_keeps_unconfigured_audit_usable(self):
+        repo = self.fixture.store.root.parent / 'repo'
+        repo.mkdir()
+        (repo / '.git').mkdir()
+        with mock.patch.object(context_audit.subprocess, 'run', side_effect=OSError('unrelated git failure')):
+            state = context_audit.prepare(repository='owner/repo', pr=42, head=self.fixture.head,
+                host='claude', authorities=(), fetch_comments=lambda: [], repo_path=repo)
+            self.assertIsNone(state)
+            state = context_audit.prepare(repository='owner/repo', pr=42, head=self.fixture.head,
+                host='claude', authorities=(), fetch_comments=lambda: [], repo_path=repo,
+                revision=self.current['revision'])
+            self.assertFalse(state.ready)
+            # A known declaration still requires delivery; config discovery
+            # cannot turn required or unavailable input into an ordinary PASS.
+            current = {**self.current, 'state': 'required_unavailable'}
+            comments = [{'user': {'login': 'controller'}, 'body': INPUT_HEADER + '\n\n' + marker(current)}]
+            state = context_audit.prepare(repository='owner/repo', pr=42, head=self.fixture.head,
+                host='codex', authorities=('controller',), fetch_comments=lambda: comments, repo_path=repo)
+            self.assertFalse(state.ready)
 
     def test_revocation_after_paid_review_does_not_accept_or_persist_findings(self):
         result, calls = self.run_review('claude', during_review=lambda: setattr(self.fixture.backend, 'revoked', True))

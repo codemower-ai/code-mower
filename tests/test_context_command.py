@@ -98,7 +98,8 @@ class ContextCommandTests(unittest.TestCase):
         self.assertEqual(out, '')
         self.assertNotIn('private remote detail', err)
         current = parse(self.comments[0]['body'])
-        self.assertFalse(read_binding(self.fixture.store, current['revision'])['published'])
+        with self.assertRaises(ContextError):
+            read_binding(self.fixture.store, current['revision'])
         code, out, _, _ = self.invoke(['deliver', '--revision', current['revision'], '--recipient', 'claude:reviewer'])
         self.assertEqual(code, 1)
         self.assertEqual(out, '')

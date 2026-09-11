@@ -45,7 +45,7 @@ jobs:
     name: publish Code Mower gate status
     if: >-
       (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
-      (github.event_name != 'issue_comment' || (github.event.issue.pull_request && startsWith(github.event.comment.body, 'Code Mower context input')))
+      (github.event_name != 'issue_comment' || (github.event.issue.pull_request && startsWith(github.event.comment.body, 'Code Mower context input') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

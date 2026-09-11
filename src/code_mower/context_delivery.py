@@ -117,7 +117,16 @@ def attach(store, name, handle, policy, request: ContextRequest, *, pr, head, pu
         deliveries.append(revision)
         index_file.write(index)
         artifact.write(binding)
-        publish(metadata)
+        try:
+            publish(metadata)
+        except Exception:
+            # Even an uncertain remote post must not enable delivery. Reclaim
+            # the unpublished local slot so a transient outage cannot exhaust
+            # the packet's bounded handoff capacity.
+            deliveries.remove(revision)
+            index_file.write(index)
+            artifact.delete()
+            raise
         artifact.write({**binding, "published": True})
         return metadata
 
