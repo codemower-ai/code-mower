@@ -59,9 +59,16 @@ jobs:
         if: matrix.python-version == '3.12'
         run: python -m code_mower.migration release-readiness --json
 
-      - name: Easy-mode smoke
+      - name: Verify the base install without optional dependencies
         if: matrix.python-version == '3.12'
-        run: python scripts/smoke_easy_mode.py --work-dir "$RUNNER_TEMP/code-mower-smoke" --json
+        run: |
+          python -m venv "$RUNNER_TEMP/code-mower-base"
+          "$RUNNER_TEMP/code-mower-base/bin/python" -m pip install "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/code-mower-base/bin/python" -c 'import importlib.util; assert all(importlib.util.find_spec(name) is None for name in ("mcp", "keyring", "httpx2", "jwt"))'
+
+      - name: Easy-mode smoke with the base install
+        if: matrix.python-version == '3.12'
+        run: python scripts/smoke_easy_mode.py --code-mower-bin "$RUNNER_TEMP/code-mower-base/bin/code-mower" --work-dir "$RUNNER_TEMP/code-mower-smoke" --json
 
       - name: Fresh-clone rehearsal
         if: matrix.python-version == '3.12'

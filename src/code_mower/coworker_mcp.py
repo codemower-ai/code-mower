@@ -149,7 +149,10 @@ async def _proof(http, storage: _MemoryStorage, expected) -> ConnectionProof:
     header = jwt.get_unverified_header(token)
     if header.get("alg") != "RS256" or not isinstance(header.get("kid"), str):
         raise ContextError("Coworker identity signature is unsupported")
-    key = keys[header["kid"]]
+    matching = [key for key in keys.keys if key.key_id == header["kid"]]
+    if len(matching) != 1:
+        raise ContextError("Coworker identity signing key is missing or ambiguous")
+    key = matching[0]
     claims = jwt.decode(token, key.key, algorithms=["RS256"], issuer=ORIGIN, audience=ORIGIN,
                         options={"require": ["exp", "iat", "iss", "aud", "sub", "email", "network", "client_id", "scope"]})
     if (claims["email"] != expected["principal"] or claims["network"] != expected["workspace"]

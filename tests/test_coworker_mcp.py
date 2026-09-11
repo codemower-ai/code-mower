@@ -29,6 +29,7 @@ class SDKBoundaryTests(unittest.TestCase):
         self.requests = []
         self.refresh_status = 200
         self.claim_overrides = {}
+        self.jwks_override = None
         self.expected = {"principal": "one@example.invalid", "workspace": "example", "subject": "example-subject"}
         self.metadata = {
             "issuer": mcp.ORIGIN, "authorization_endpoint": mcp.ORIGIN + "/oauth/authorize",
@@ -66,7 +67,7 @@ class SDKBoundaryTests(unittest.TestCase):
         if path == "/mcp":
             return httpx2.Response(405)
         if path == "/oauth/jwks":
-            return httpx2.Response(200, json={"keys": [self.jwk]})
+            return httpx2.Response(200, json={"keys": self.jwks_override if self.jwks_override is not None else [self.jwk]})
         raise AssertionError("unexpected endpoint")
 
     def transport(self, **kwargs):
@@ -107,6 +108,16 @@ class SDKBoundaryTests(unittest.TestCase):
         with patch.object(mcp, "PinnedTransport", self.transport), self.assertRaises(ContextError):
             mcp.CoworkerBackend().refresh(self.expected, self.credentials())
         self.assertFalse(any(r.method == "POST" for r in self.requests))
+
+    def test_unknown_duplicate_and_wrong_signing_keys_are_rejected(self):
+        other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        wrong_key = jwt.algorithms.RSAAlgorithm.to_jwk(other.public_key(), as_dict=True)
+        wrong_key.update(kid="example-key", alg="RS256", use="sig")
+        for keys in [[{**self.jwk, "kid": "other-key"}], [self.jwk, self.jwk], [wrong_key]]:
+            with self.subTest(keys=len(keys)):
+                self.jwks_override = keys
+                with patch.object(mcp, "PinnedTransport", self.transport), self.assertRaises(ContextError):
+                    mcp.CoworkerBackend().refresh(self.expected, self.credentials())
 
     def test_transport_rejects_foreign_origins_queries_and_unapproved_paths(self):
         async def run():
