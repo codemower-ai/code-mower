@@ -260,6 +260,13 @@ as soon as it reports the failure. The group gets `SIGTERM`, a short grace
 period, then `SIGKILL`, and the timeout is reported only once nothing is left
 running. A new session is safe here precisely because no stream is inherited.
 
+The same check runs when the indexer simply exits, because its exit says nothing
+about workers it started: one that is still writing would otherwise have its
+output packed mid-write, and its scratch directory removed underneath it. The
+group is looked up once at launch and kept — after the leader is reaped its pid
+is no longer a safe thing to look a group up from — and an exit that left an
+empty group behind costs one signal-`0` probe and no waiting at all.
+
 The subcommand, the state-directory names, and the report counters are constants
 in one place in `context_graph_lifecycle.py`. They encode the interface as the
 evaluation recorded it; the first installation against a real pinned release

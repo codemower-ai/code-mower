@@ -51,6 +51,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1144,6 +1145,13 @@ _TERMINATION_GRACE_SECONDS = 5.0
 _REAP_TIMEOUT_SECONDS = 10.0
 
 
+#: How often the grace period is re-checked when what is being waited for is
+#: the group rather than the direct child. After a normal exit the leader has
+#: already been reaped, so there is no child left to wait on and the only way
+#: to see the group empty is to ask.
+_GROUP_POLL_SECONDS = 0.05
+
+
 def _signal_group(group: int, number: int) -> None:
     try:
         os.killpg(group, number)
@@ -1153,8 +1161,55 @@ def _signal_group(group: int, number: int) -> None:
         pass
 
 
-def _terminate_process_group(child: subprocess.Popen[bytes]) -> None:
-    """Stop an abandoned provider and everything it started.
+def _session_group(child: subprocess.Popen[bytes]) -> int | None:
+    """The group the child leads, read while the child is still unreaped.
+
+    Read once at launch and retained for the rest of the run, because a pid is
+    only a safe thing to look a group up from while its process has not been
+    reaped: afterwards ``os.getpgid`` either fails or answers for whichever
+    process inherited the number. The group id itself stays safe to signal for
+    exactly as long as it is worth signalling, because the kernel does not
+    reuse a pid while it still names a process group with members in it.
+
+    ``None`` means there is no group of this run's own to signal -- the child
+    never reached one, so the only thing that can be stopped is the child.
+    """
+    try:
+        group = os.getpgid(child.pid)
+    except OSError:
+        return None
+    if group == os.getpgid(0):
+        return None
+    return group
+
+
+def _group_is_empty(group: int) -> bool:
+    """Whether anything is left in ``group``.
+
+    Signal ``0`` runs the kernel's existence and permission checks without
+    delivering anything, so this is the group's own answer rather than an
+    inference from what the leader did. A refusal is not emptiness: something
+    has to be there for the kernel to refuse on behalf of.
+    """
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _await_group_exit(group: int, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _group_is_empty(group):
+            return
+        time.sleep(_GROUP_POLL_SECONDS)
+
+
+def _terminate_process_group(child: subprocess.Popen[bytes], group: int | None) -> None:
+    """Stop everything the provider started, however this run ended.
 
     ``subprocess.run``'s own timeout kills the immediate child only. A provider
     that forks workers -- and under a launcher such as ``sandbox-exec`` the
@@ -1163,27 +1218,42 @@ def _terminate_process_group(child: subprocess.Popen[bytes]) -> None:
     a scratch directory the build is about to delete. The child leads its own
     session, so one signal to its group reaches every descendant that has not
     deliberately left it.
+
+    A leader that exits on its own is not evidence that its workers did. The
+    group is therefore checked on an ordinary return too, and not only on the
+    timeout and the interrupt: otherwise a provider that returns while a worker
+    is still writing leaves ``subprocess_indexer`` packing an artifact that is
+    concurrently being modified, and ``build_graph`` removing a scratch
+    directory that is still in use. Checking costs nothing in the ordinary
+    case, where the group is already empty and nothing is signalled or waited
+    for.
     """
-    try:
-        group = os.getpgid(child.pid)
-    except OSError:
-        group = None
-    if group is None or group == os.getpgid(0):
-        # The child never reached a group of its own. Kill what can be named
-        # directly rather than signalling the group this process is in.
-        child.kill()
-        _reap(child)
+    leader_running = child.poll() is None
+    if group is None:
+        if leader_running:
+            child.kill()
+            _reap(child)
+        return
+    if not leader_running and _group_is_empty(group):
+        # The ordinary ending: the provider exited and took its workers with it.
         return
     _signal_group(group, signal.SIGTERM)
-    try:
-        child.wait(timeout=_TERMINATION_GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
-        pass
-    # Unconditionally, and after the direct child has been waited for: that one
-    # exiting says nothing about workers it started, and this is the last moment
-    # anything can stop them.
+    if leader_running:
+        try:
+            child.wait(timeout=_TERMINATION_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+    else:
+        # Nothing here is this process's child any more -- the survivors were
+        # reparented when the leader died -- so the grace period is spent
+        # watching the group instead of waiting on a handle.
+        _await_group_exit(group, _TERMINATION_GRACE_SECONDS)
+    # Unconditionally, and after the grace period: a leader exiting says nothing
+    # about workers it started, and this is the last moment anything can stop
+    # them.
     _signal_group(group, signal.SIGKILL)
-    _reap(child)
+    if leader_running:
+        _reap(child)
 
 
 def _reap(child: subprocess.Popen[bytes]) -> None:
@@ -1200,10 +1270,13 @@ def _run_contained(
     cwd: str,
     timeout: float,
 ) -> int:
-    """Run one child in its own process group, killing the group on any exit.
+    """Run one child in its own process group, stopping the group on any exit.
 
     Raises :class:`subprocess.TimeoutExpired` once the group has been stopped,
     so a caller reports the timeout only after there is nothing left running.
+    A returned exit status carries the same guarantee: the caller reads the
+    provider's own status, and by then nothing the provider started is still
+    running against the state the caller is about to pack up or delete.
     """
     with subprocess.Popen(  # noqa: S603 - argv is a resolved executable and validated options
         list(argv),
@@ -1225,19 +1298,23 @@ def _run_contained(
         # terminal.
         start_new_session=True,
     ) as child:
+        # Read before the wait, because the wait may reap the leader and a
+        # reaped leader's pid is no longer a safe thing to look a group up from.
+        group = _session_group(child)
         try:
             return child.wait(timeout=timeout)
-        except BaseException:
-            # Every way out of this wait except returning, not the timeout
-            # alone. An operator's Ctrl-C raises ``KeyboardInterrupt`` here, and
-            # the provider does not see that signal: it leads its own session,
-            # so the terminal's SIGINT never reaches it. ``Popen.__exit__``
-            # would then wait for a child nobody has asked to stop, while
-            # ``build_graph`` deletes the scratch directory underneath it. The
-            # group is stopped first, so unwinding leaves nothing running
-            # against state that is about to be removed.
-            _terminate_process_group(child)
-            raise
+        finally:
+            # Every way out of this wait, including returning. An operator's
+            # Ctrl-C raises ``KeyboardInterrupt`` here, and the provider does
+            # not see that signal: it leads its own session, so the terminal's
+            # SIGINT never reaches it. ``Popen.__exit__`` would then wait for a
+            # child nobody has asked to stop, while ``build_graph`` deletes the
+            # scratch directory underneath it. A provider that simply exits can
+            # leave workers behind the same way, so the ordinary return is
+            # cleaned up on the same path rather than trusted. Unwinding --
+            # or returning -- leaves nothing running against state that is
+            # about to be read, packed, or removed.
+            _terminate_process_group(child, group)
 
 
 def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]:

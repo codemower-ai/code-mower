@@ -114,6 +114,12 @@ class FakeChild:
             raise subprocess.TimeoutExpired("graphify", timeout or 0)
         return self.returncode
 
+    def poll(self) -> int | None:
+        # ``None`` means the leader is still running, which is exactly the
+        # state an overrun leaves it in: the wait gave up on it, not the other
+        # way round.
+        return None if self._overruns else self.returncode
+
     def kill(self) -> None:
         self.killed = True
 
@@ -997,7 +1003,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         def fake_popen(argv, **kwargs):
             return FakeChild(overruns=True)
 
-        def record_termination(child) -> None:
+        def record_termination(child, group) -> None:
             order.append("stopped")
 
         with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
@@ -1061,6 +1067,19 @@ worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"]
 with open(sys.argv[1], "w") as handle:
     handle.write(str(worker.pid))
 time.sleep(300)
+"""
+
+    #: Stands in for a provider that starts a worker and then exits on its own,
+    #: leaving the worker running. The leader's exit is ordinary -- it even
+    #: reports a status -- and says nothing about whether the work has stopped.
+    ABANDONS_WORKER = """
+import subprocess
+import sys
+
+worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+with open(sys.argv[1], "w") as handle:
+    handle.write(str(worker.pid))
+raise SystemExit(5)
 """
 
     def reaped(self, pid: int, *, within: float = 15.0) -> bool:
@@ -1130,6 +1149,32 @@ time.sleep(300)
             self.assertNotEqual(worker, os.getpid())
             self.assertTrue(self.reaped(worker), "a worker outlived the run that was cancelled")
 
+    def test_a_provider_that_exits_leaves_no_worker_behind_it(self) -> None:
+        """A normal exit is not evidence that the work stopped.
+
+        Cleaning up only on the timeout and the interrupt left the ordinary
+        ending -- the leader returning a status while a worker it started is
+        still running -- to be trusted. ``subprocess_indexer`` would then pack
+        an artifact being concurrently modified, and ``build_graph`` would
+        delete a scratch directory still being written into. The status still
+        comes back; it now means what it appears to mean.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            recorded = Path(directory) / "worker.pid"
+            returncode = lifecycle._run_contained(
+                [sys.executable, "-c", self.ABANDONS_WORKER, str(recorded)],
+                environment={"PATH": os.environ.get("PATH", "")},
+                cwd=directory,
+                timeout=60.0,
+            )
+            self.assertEqual(returncode, 5)
+            worker = int(recorded.read_text(encoding="utf-8"))
+            self.assertNotEqual(worker, os.getpid())
+            self.assertTrue(
+                self.reaped(worker),
+                "a worker outlived the provider that started it and returned",
+            )
+
     def test_a_run_that_finishes_in_time_reports_its_own_status(self) -> None:
         # The containment is not a behaviour change for an ordinary run: the
         # exit status still comes back, and nothing is signalled.
@@ -1141,6 +1186,26 @@ time.sleep(300)
                 timeout=60.0,
             )
         self.assertEqual(returncode, 3)
+
+    def test_a_run_that_leaves_nothing_behind_is_not_charged_the_grace_period(self) -> None:
+        # Checking the group on every exit has to be free in the case that is
+        # every real build: an empty group is a signal-0 probe, not a wait, so
+        # a provider that exited with no descendants is finished the moment its
+        # status is read.
+        with tempfile.TemporaryDirectory() as directory:
+            started = time.monotonic()
+            lifecycle._run_contained(
+                [sys.executable, "-c", "raise SystemExit(0)"],
+                environment={"PATH": os.environ.get("PATH", "")},
+                cwd=directory,
+                timeout=60.0,
+            )
+            elapsed = time.monotonic() - started
+        self.assertLess(
+            elapsed,
+            lifecycle._TERMINATION_GRACE_SECONDS,
+            "a clean run waited out a grace period it had nothing to wait for",
+        )
 
 
 class BuildAndPublishTests(TemporaryWorkspace):
