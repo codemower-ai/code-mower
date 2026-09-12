@@ -20,6 +20,12 @@ The rules a local indexer cannot be trusted to follow on its own:
   name, fsynced, then renamed into place; the ``current`` pointer is replaced
   atomically afterwards. A reader either sees the whole previous generation or
   the whole new one, never a half-written directory.
+* **Check the install against the pin.** A manifest records the pin as the
+  provenance of every byte in a generation, so the executable a build is about
+  to run is checked against it first: which distribution installed it, at which
+  version, and whether it is still the file that installer wrote. The install
+  is read for this rather than the provider asked, because asking would mean
+  running the executable whose identity is in question.
 * **Scrub the environment.** The indexer runs with an allowlisted environment,
   so an ambient token cannot leak into a provider process.
 * **Deny the network and the host filesystem in the kernel, not by request.**
@@ -43,7 +49,9 @@ pinned provider without this module depending on it.
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import csv
 import hashlib
 import json
 import os
@@ -1635,6 +1643,229 @@ def _provider_read_paths(command: str, *, repository: Path) -> tuple[str, ...]:
     return (*spellings, str(root), *_provider_base_prefixes(root, repository=repository))
 
 
+#: Where an installed distribution records its own identity (PEP 376). The
+#: directory is named ``<name>-<version>.dist-info``, but the name on the
+#: directory is not what is read: a directory can be renamed and ``METADATA``
+#: is what the installer wrote.
+_DIST_INFO_SUFFIX = ".dist-info"
+
+#: Where the environment an executable belongs to keeps those records, relative
+#: to the prefix the script directory sits in. Both spellings a virtual
+#: environment uses and the two a system install uses are named, because
+#: ``_provider_read_paths`` accepts a provider from either.
+_SITE_PACKAGES_GLOBS = (
+    "lib/python*/site-packages",
+    "lib64/python*/site-packages",
+    "lib/python*/dist-packages",
+    "Lib/site-packages",
+)
+
+#: Enough of a ``METADATA`` file to hold its header block. The rest of that
+#: file is the project's long description -- a README, sometimes a large one --
+#: and no header this reads lives past the first blank line.
+_MAX_DIST_METADATA_BYTES = 65_536
+
+#: A ``RECORD`` lists every file its distribution installed, so it is large for
+#: a large package and bounded for the same reason every other foreign file
+#: here is: it is read out of somebody else's install.
+_MAX_DIST_RECORD_BYTES = 8 * 1024 * 1024
+
+#: How much of the provider executable is hashed against its recorded digest.
+#: A console script is a few hundred bytes and a compiled launcher a few
+#: megabytes; anything past this is not an install this check can speak to.
+_MAX_PROVIDER_EXECUTABLE_BYTES = 64 * 1024 * 1024
+
+#: Runs of the separators PEP 503 collapses, for comparing a pinned
+#: distribution name against an installed one. ``Graphify_Y`` and ``graphify-y``
+#: are one distribution, and a pin must not fail against its own install over
+#: the spelling an installer happened to write.
+_NAME_SEPARATORS = re.compile(r"[-_.]+")
+
+
+def _normalized_distribution(name: str) -> str:
+    return _NAME_SEPARATORS.sub("-", name.strip()).lower()
+
+
+def _reportable(value: str) -> str:
+    """A short printable spelling of something read out of a foreign install.
+
+    Installed metadata is not indexed content, but it is not this process's
+    text either, and it ends up in an operator-facing message. Bounded and
+    stripped of anything unprintable so a crafted ``METADATA`` cannot rewrite
+    the terminal the refusal is read in.
+    """
+    printable = "".join(character if character.isprintable() else "?" for character in value[:64])
+    return printable.strip() or "an unnamed distribution"
+
+
+def _site_package_roots(executable: Path) -> tuple[Path, ...]:
+    """Where the environment this executable belongs to keeps its installs."""
+    prefix = executable.parent.parent
+    roots: list[Path] = []
+    for pattern in _SITE_PACKAGES_GLOBS:
+        roots.extend(candidate for candidate in sorted(prefix.glob(pattern)) if candidate.is_dir())
+    return tuple(dict.fromkeys(roots))
+
+
+def _dist_info_headers(dist_info: Path) -> dict[str, str]:
+    """The ``METADATA`` header block, lowercased keys, first spelling wins."""
+    try:
+        with (dist_info / "METADATA").open("rb") as stream:
+            raw = stream.read(_MAX_DIST_METADATA_BYTES)
+    except OSError:
+        return {}
+    headers: dict[str, str] = {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        if not line.strip():
+            # The header block ends at the first blank line. Everything after
+            # it is the description, which may contain anything at all,
+            # including lines that look like headers.
+            break
+        if line[:1] in (" ", "\t"):
+            continue
+        key, separator, value = line.partition(":")
+        if separator:
+            headers.setdefault(key.strip().lower(), value.strip())
+    return headers
+
+
+def _record_entries(dist_info: Path) -> tuple[tuple[str, str], ...]:
+    """``(installed path, sha256 hex or "")`` for every file a distribution wrote.
+
+    The digest is recorded base64url-encoded without padding, and is absent for
+    some entries by design -- ``RECORD`` cannot record its own hash. An entry
+    whose digest is missing or in an algorithm this does not read comes back
+    with an empty one rather than being dropped: it still proves ownership,
+    which is the first thing this file is read for.
+    """
+    try:
+        with (dist_info / "RECORD").open("rb") as stream:
+            raw = stream.read(_MAX_DIST_RECORD_BYTES + 1)
+    except OSError:
+        return ()
+    if len(raw) > _MAX_DIST_RECORD_BYTES:
+        raise ContextError(
+            "the local graph provider's installed RECORD is implausibly large; refusing to "
+            "check the pin against it"
+        )
+    entries: list[tuple[str, str]] = []
+    try:
+        for row in csv.reader(io.StringIO(raw.decode("utf-8", "replace"))):
+            if not row or not row[0]:
+                continue
+            algorithm, _, encoded = (row[1] if len(row) > 1 else "").partition("=")
+            digest = ""
+            if algorithm == "sha256" and encoded:
+                try:
+                    digest = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).hex()
+                except ValueError:
+                    digest = ""
+            entries.append((row[0], digest))
+    except csv.Error:
+        # A ``RECORD`` this cannot parse claims nothing, which leaves the
+        # executable owned by no distribution and the build refused. Failing
+        # closed on an unreadable install beats accepting an unchecked one.
+        return ()
+    return tuple(entries)
+
+
+def _installed_owner(executable: Path) -> tuple[Path, str] | None:
+    """The distribution that installed this executable, and the digest it recorded.
+
+    Ownership is read from ``RECORD`` rather than guessed from the file's name.
+    A pinned release and a lookalike can both ship a console script called
+    ``graphify``, and an environment is free to hold both; what the pin has to
+    be checked against is the distribution that wrote *this* file.
+    """
+    target = str(executable)
+    for site_packages in _site_package_roots(executable):
+        for dist_info in sorted(site_packages.glob("*" + _DIST_INFO_SUFFIX)):
+            if not dist_info.is_dir():
+                continue
+            for recorded, digest in _record_entries(dist_info):
+                if os.path.realpath(site_packages / recorded) == target:
+                    return dist_info, digest
+    return None
+
+
+def _executable_digest(executable: Path) -> str:
+    digest = hashlib.sha256()
+    read = 0
+    try:
+        with executable.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                read += len(chunk)
+                if read > _MAX_PROVIDER_EXECUTABLE_BYTES:
+                    raise ContextError(
+                        "the local graph provider's executable is implausibly large; refusing to "
+                        "check it against the digest its installer recorded"
+                    )
+                digest.update(chunk)
+    except OSError:
+        raise ContextError("the local graph provider's executable could not be read") from None
+    return digest.hexdigest()
+
+
+def _verify_provider_installation(command: str, *, pin: GraphifyPin) -> None:
+    """Prove the executable about to run is the pinned release, before it runs.
+
+    Every generation's manifest records the pin as the provenance of the bytes
+    in it, and until this check existed that record was a copy of what the
+    operator typed: ``--indexer`` named an install, ``--pin-file`` named a
+    release, and nothing compared the two. A build could publish a manifest
+    naming one release while a different one -- or a different distribution
+    that happens to answer to ``extract`` -- produced the graph, and neither
+    ``status`` nor the manifest could tell afterwards. For a package whose name
+    differs from the repository's by one character, that is the substitution
+    the pin exists to make identifiable.
+
+    The install is *read*, not the provider *asked*. ``graphify --version``
+    would mean launching the very executable whose identity is in question,
+    outside the sandbox that exists to confine it, and then believing what it
+    printed about itself.
+
+    What an unpacked install can answer is identity, not provenance of the
+    artifact: nothing on disk retains the wheel it came from, so
+    ``wheel_sha256`` stays the operator's record of which artifact they
+    installed rather than something checkable here. The three things that are
+    checkable are checked -- which distribution owns this executable, at which
+    version, and whether the file still matches the digest its installer
+    recorded for it.
+    """
+    executable = Path(os.path.realpath(command))
+    owner = _installed_owner(executable)
+    if owner is None:
+        raise ContextError(
+            "the executable named for the local graph provider belongs to no distribution "
+            "installed in its environment, so it cannot be checked against the pin; install "
+            "the pinned release and name the console script that install provides"
+        )
+    dist_info, recorded_digest = owner
+    headers = _dist_info_headers(dist_info)
+    installed, version = headers.get("name", ""), headers.get("version", "")
+    if not installed or not version:
+        raise ContextError(
+            "the local graph provider's install records no name and version of its own, so the "
+            "pin cannot be checked against it; no generation was published"
+        )
+    named = _normalized_distribution(installed) == _normalized_distribution(pin.distribution)
+    # The version is compared exactly, as the installer recorded it: a pin is
+    # one release, and deciding that ``1.0`` and ``1.0.0`` are the same release
+    # is a version-comparison policy this has no business inventing.
+    if not named or version != pin.version:
+        raise ContextError(
+            f"the installed local graph provider is {_reportable(installed)} "
+            f"{_reportable(version)}, not the pinned {pin.distribution} {pin.version}; "
+            "no generation was published"
+        )
+    if recorded_digest and _executable_digest(executable) != recorded_digest:
+        raise ContextError(
+            "the local graph provider's executable no longer matches the digest its installer "
+            "recorded, so the pinned install has been modified in place; no generation was "
+            "published"
+        )
+
+
 #: The subcommand the evaluated release exposes, recorded in
 #: ``docs/graphify-evaluation.md``: the clean-room run indexed with
 #: ``extract --code-only --no-cluster --max-workers 4``. There is no
@@ -2051,16 +2282,24 @@ def _run_contained(
             _terminate_process_group(child, group)
 
 
-def subprocess_indexer(executable: str, *, repository: Path) -> Callable[[IndexRequest], IndexResult]:
+def subprocess_indexer(
+    executable: str, *, repository: Path, pin: GraphifyPin
+) -> Callable[[IndexRequest], IndexResult]:
     """Run a pinned provider CLI over the materialized copy, without a network.
 
     Kept as a factory so the lifecycle never imports or requires a graph
     package: a deployment that has installed the pin supplies the executable,
     and everything else -- including every test in this repository -- injects
     its own callable. The child sees only ``request.environment``, and it sees
-    it from inside a sandbox that denies it sockets. Resolving the executable
-    and the sandbox here, rather than at build time, means an unusable provider
-    or an uncontainable host fails before a single blob is materialized.
+    it from inside a sandbox that denies it sockets. Resolving the executable,
+    checking it against the pin, and resolving the sandbox here, rather than at
+    build time, means an unusable provider, an install that is not the pinned
+    release, or an uncontainable host fails before a single blob is
+    materialized.
+
+    ``pin`` is taken here rather than only from each request because it is half
+    of what the executable *is*: an adapter built for one release must not be a
+    callable that would run whatever a later request's pin happened to name.
 
     The argv is the interface the adopt decision evaluated, not a guess at a
     conventional one: ``extract`` with the required restrictions and then the
@@ -2073,6 +2312,7 @@ def subprocess_indexer(executable: str, *, repository: Path) -> Callable[[IndexR
             "local graph builds need an OS sandbox that denies the provider the network and "
             "the host filesystem; this host offers none that could be verified"
         )
+    _verify_provider_installation(command, pin=pin)
     # The checkout root, for the same reason the state identity uses it, and
     # here it is load-bearing rather than cosmetic: both boundaries below refuse
     # what lives *inside the checkout*, and a subdirectory would narrow that
@@ -2083,6 +2323,17 @@ def subprocess_indexer(executable: str, *, repository: Path) -> Callable[[IndexR
     runtime = _provider_read_paths(command, repository=repository)
 
     def run(request: IndexRequest) -> IndexResult:
+        if request.pin != pin:
+            # The verification above spoke for one pin; the launch below reads
+            # its options and the manifest records it from another. One caller
+            # passes both, so a divergence is a miswiring rather than an
+            # operator's doing -- and it would publish a manifest naming a pin
+            # nothing was checked against, which is the defect this check was
+            # added to close.
+            raise ContextError(
+                "this build's provider pin is not the pin the installed provider was checked "
+                "against; no generation was published"
+            )
         _refuse_pre_existing_provider_state(request.source_root)
         # Built per run, because the boundary is a function of what this build
         # exposes: the materialized copy and the build's own scratch areas are

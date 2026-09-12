@@ -15,7 +15,9 @@ proxy variables would have passed on code that had none.
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import csv
 import dataclasses
 import hashlib
 import io
@@ -628,6 +630,79 @@ def require_containment(test: unittest.TestCase) -> lifecycle.Containment:
     return mechanism
 
 
+def install_provider(
+    environment: Path,
+    *,
+    pin: lifecycle.GraphifyPin = PIN,
+    script: str = "graphify",
+    distribution: str | None = None,
+    version: str | None = None,
+    body: str = "#!/bin/sh\nexit 0\n",
+    record: bool = True,
+    digest: bool = True,
+) -> Path:
+    """A pinned provider the way an installer really leaves one on disk.
+
+    A virtual environment holding a console script and the ``.dist-info`` the
+    installer wrote for the distribution that provided it: ``METADATA`` naming
+    the release, and a ``RECORD`` claiming the script by the relative path a
+    wheel's ``RECORD`` uses for it. The identity check reads exactly this, so a
+    fixture that faked it would prove nothing.
+
+    ``distribution`` and ``version`` default to the pin's, so the ordinary call
+    installs what the pin names; naming them differently is how a test installs
+    something else under the same script name.
+    """
+    name = distribution if distribution is not None else pin.distribution
+    released = version if version is not None else pin.version
+    scripts = environment / "bin"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (environment / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    executable = scripts / script
+    executable.write_text(body, encoding="utf-8")
+    executable.chmod(0o700)
+    site_packages = environment / "lib" / "python3.12" / "site-packages"
+    dist_info = site_packages / f"{name.replace('-', '_')}-{released}.dist-info"
+    dist_info.mkdir(parents=True, exist_ok=True)
+    (dist_info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {released}\n"
+        "Summary: a stand-in for a pinned provider\n"
+        # Past the header block, because the real file carries a description
+        # and the reader must stop at the blank line rather than keep matching
+        # lines that look like headers.
+        "\nVersion: 9.9.9\nName: not-the-pinned-distribution\n",
+        encoding="utf-8",
+    )
+    if record:
+        # The relative spelling a wheel uses for a console script: three levels
+        # up from ``site-packages`` to the environment root, then ``bin``.
+        recorded = f"../../../bin/{script}"
+        if digest:
+            encoded = base64.urlsafe_b64encode(
+                hashlib.sha256(executable.read_bytes()).digest()
+            ).decode().rstrip("=")
+            line = f"{recorded},sha256={encoded},{executable.stat().st_size}\n"
+        else:
+            line = f"{recorded},,\n"
+        (dist_info / "RECORD").write_text(
+            f"{line}{dist_info.name}/METADATA,,\n{dist_info.name}/RECORD,,\n", encoding="utf-8"
+        )
+    return executable
+
+
+@contextlib.contextmanager
+def stand_in_installation():
+    """An install whose identity is taken as checked.
+
+    The identity check reads a real ``.dist-info``, which only a host with the
+    pinned provider installed actually has. Tests about argv, streams, and
+    collection stand it in for the same reason they stand in the exposure;
+    ``ProviderIdentityTests`` runs it for real against a real install.
+    """
+    with mock.patch.object(lifecycle, "_verify_provider_installation", lambda command, **_: None):
+        yield
+
+
 @contextlib.contextmanager
 def stand_in_containment(prefix: tuple[str, ...]):
     """A verified mechanism whose argv is a fixed stand-in.
@@ -635,14 +710,16 @@ def stand_in_containment(prefix: tuple[str, ...]):
     The real prefix is a function of the host, so a test that wants to read the
     argv a launch was given -- rather than to prove containment -- pins it.
     ``_provider_read_paths`` goes with it: the exposure a build computes names
-    an install that only a host with the pinned provider on it actually has.
+    an install that only a host with the pinned provider on it actually has,
+    and so does the pin check that install is read for.
     """
     with mock.patch.object(
         lifecycle, "containment_mechanism", lambda: lifecycle.Containment("stand-in", "/sandbox")
     ):
         with mock.patch.object(lifecycle, "containment_prefix", lambda **keywords: prefix):
             with mock.patch.object(lifecycle, "_provider_read_paths", lambda command, **_: ()):
-                yield
+                with stand_in_installation():
+                    yield
 
 
 @contextlib.contextmanager
@@ -1024,7 +1101,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         # only around the launch, so the Git calls a build makes are never
         # intercepted by this stand-in.
         with stand_in_containment(sandbox):
-            indexer = lifecycle.subprocess_indexer(executable, repository=self.repository)
+            indexer = lifecycle.subprocess_indexer(executable, repository=self.repository, pin=pin)
             with mock.patch.object(subprocess, "Popen", fake_popen):
                 result = indexer(request)
         return recorded[0], result
@@ -1062,7 +1139,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             return FakeChild()
 
         with stand_in_containment(("/sandbox",)):
-            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository)
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
             with mock.patch.object(lifecycle, "containment_prefix", record_prefix):
                 with mock.patch.object(subprocess, "Popen", fake_popen):
                     indexer(request)
@@ -1204,7 +1281,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             return FakeChild()
 
         with stand_in_containment(("/sandbox",)):
-            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository)
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
             with mock.patch.object(subprocess, "Popen", fake_popen):
                 result = indexer(request)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
@@ -1263,7 +1340,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             raise AssertionError(f"{self} was read whole")
 
         with stand_in_containment(("/sandbox",)):
-            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository)
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
             with mock.patch.object(subprocess, "Popen", fake_popen):
                 with mock.patch.object(Path, "read_bytes", refuse_whole_file_read):
                     result = indexer(request)
@@ -1287,7 +1364,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             return FakeChild()
 
         with stand_in_containment(("/sandbox",)):
-            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository)
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
             with mock.patch.object(subprocess, "Popen", fake_popen):
                 with self.assertRaises(ContextError):
                     indexer(request)
@@ -1311,7 +1388,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             order.append("stopped")
 
         with stand_in_containment(("/sandbox",)):
-            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository)
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
             with mock.patch.object(subprocess, "Popen", fake_popen):
                 with mock.patch.object(lifecycle, "_terminate_process_group", record_termination):
                     with self.assertRaises(ContextError) as raised:
@@ -1324,7 +1401,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
     def test_a_host_without_a_sandbox_refuses_to_launch_a_provider(self) -> None:
         with no_containment():
             with self.assertRaises(ContextError):
-                lifecycle.subprocess_indexer("graphify", repository=self.repository)
+                lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
 
     def test_a_relative_provider_path_binds_to_the_invocation_directory(self) -> None:
         # The child runs in the materialized copy, so a relative path left
@@ -1474,12 +1551,15 @@ class ProviderExposureTests(ProviderExposureFixture):
         """
         provider = self.script(self.repository / "provider-venv" / "bin" / "graphify", venv=True)
         outside = self.script(self.root / "elsewhere-venv" / "bin" / "graphify", venv=True)
-        with mock.patch.object(
+        # The identity check is stood in for: what is under test is where the
+        # install *is*, and neither of these stand-ins was installed by
+        # anything. ``ProviderIdentityTests`` runs that check for real.
+        with stand_in_installation(), mock.patch.object(
             lifecycle, "containment_mechanism", lambda: lifecycle.Containment("stand-in", "/sandbox")
         ):
             with self.assertRaises(ContextError):
                 lifecycle.subprocess_indexer(
-                    str(provider), repository=self.repository / "example_pkg"
+                    str(provider), repository=self.repository / "example_pkg", pin=PIN
                 )
             # The positive control: an install outside the checkout is still
             # accepted from the same subdirectory, so the refusal above is
@@ -1487,7 +1567,7 @@ class ProviderExposureTests(ProviderExposureFixture):
             self.assertTrue(
                 callable(
                     lifecycle.subprocess_indexer(
-                        str(outside), repository=self.repository / "example_pkg"
+                        str(outside), repository=self.repository / "example_pkg", pin=PIN
                     )
                 )
             )
@@ -1767,6 +1847,210 @@ class RuntimeExposureTests(ProviderExposureFixture):
                     lifecycle.containment_prefix(
                         writable=(self.root,), readable=(home,), repository=self.repository
                     )
+
+
+class ProviderIdentityTests(TemporaryWorkspace):
+    """The pin is checked against the install, before the install is run.
+
+    The manifest records the pin as the provenance of every byte in a
+    generation. Until this check existed that record was a copy of what the
+    operator typed: ``--indexer`` named an install, ``--pin-file`` named a
+    release, and nothing compared them, so a build could publish a manifest
+    naming graphifyy 0.9.58 over a graph some other release -- or some other
+    distribution answering to ``extract`` -- had produced.
+
+    Every test here runs the real check against a real ``.dist-info``. Nothing
+    is stood in but the sandbox, which is a property of the host rather than of
+    the install.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.sandbox = mock.patch.object(
+            lifecycle, "containment_mechanism", lambda: lifecycle.Containment("stand-in", "/sandbox")
+        )
+        self.sandbox.start()
+        self.addCleanup(self.sandbox.stop)
+
+    def adapter(self, executable: Path, *, pin: lifecycle.GraphifyPin = PIN):
+        return lifecycle.subprocess_indexer(str(executable), repository=self.repository, pin=pin)
+
+    def test_the_pinned_release_installed_where_it_is_named_is_accepted(self) -> None:
+        """The control. Without it every refusal below could be the fixture."""
+        provider = install_provider(self.root / "venv")
+        self.assertTrue(callable(self.adapter(provider)))
+
+    def test_a_different_version_of_the_pinned_distribution_is_refused(self) -> None:
+        """The manifest would otherwise name 0.9.58 over a 0.9.57 graph."""
+        provider = install_provider(self.root / "venv", version="0.9.57")
+        with self.assertRaises(ContextError) as raised:
+            self.adapter(provider)
+        self.assertIn("0.9.57", str(raised.exception))
+
+    def test_a_different_distribution_under_the_same_script_name_is_refused(self) -> None:
+        """The substitution the pin exists to make identifiable.
+
+        ``graphify`` and ``graphifyy`` differ by one character and both may
+        ship a console script called ``graphify``. Checking the file's name --
+        or that *something* by that name is installed -- would accept either.
+        """
+        provider = install_provider(self.root / "venv", distribution="graphify")
+        with self.assertRaises(ContextError) as raised:
+            self.adapter(provider)
+        # Both names spelled out, because one is a prefix of the other: a
+        # message naming only "graphify" would read as a match.
+        self.assertIn("is graphify 0.9.58, not the pinned graphifyy 0.9.58", str(raised.exception))
+
+    def test_an_executable_installed_by_another_distribution_in_the_same_environment_is_refused(
+        self,
+    ) -> None:
+        """The pinned release *is* installed here; the executable is not its own.
+
+        This is the shape the finding named: the environment satisfies the pin,
+        so any check that asked only "is the pinned release installed?" passes,
+        while ``--indexer`` names a console script a different distribution
+        wrote. Ownership is read from ``RECORD``, so the answer is about this
+        file rather than about the environment around it.
+        """
+        environment = self.root / "venv"
+        install_provider(environment)
+        other = install_provider(
+            environment, script="graphify-lookalike", distribution="something-else", version="1.0"
+        )
+        with self.assertRaises(ContextError):
+            self.adapter(other)
+        # The positive control, in the same environment: the pinned release's
+        # own script is still accepted, so the refusal is about which
+        # distribution installed the file and not about there being two.
+        self.assertTrue(callable(self.adapter(environment / "bin" / "graphify")))
+
+    def test_an_executable_no_installed_distribution_claims_is_refused(self) -> None:
+        """A script dropped into a pinned environment's ``bin`` is not the pin.
+
+        The environment is otherwise exactly right -- ``pyvenv.cfg``, the
+        pinned ``.dist-info``, the lot -- and the executable named is simply
+        not part of it.
+        """
+        environment = self.root / "venv"
+        install_provider(environment)
+        loose = environment / "bin" / "handmade"
+        loose.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        loose.chmod(0o700)
+        with self.assertRaises(ContextError):
+            self.adapter(loose)
+
+    def test_an_install_that_records_no_name_and_version_is_refused(self) -> None:
+        """Unreadable identity fails closed rather than passing unchecked."""
+        provider = install_provider(self.root / "venv")
+        metadata = next((self.root / "venv").glob("lib/*/site-packages/*.dist-info/METADATA"))
+        metadata.write_text("Metadata-Version: 2.1\n", encoding="utf-8")
+        with self.assertRaises(ContextError):
+            self.adapter(provider)
+
+    def test_the_name_is_compared_the_way_an_installer_normalizes_it(self) -> None:
+        """``Graphify_Y`` and ``graphify-y`` are one distribution (PEP 503).
+
+        A pin must not fail against its own install over the spelling whoever
+        packaged it happened to use.
+        """
+        pin = dataclasses.replace(PIN, distribution="graphify-y")
+        provider = install_provider(self.root / "venv", pin=pin, distribution="Graphify_Y")
+        self.assertTrue(callable(self.adapter(provider, pin=pin)))
+
+    def test_an_executable_modified_since_it_was_installed_is_refused(self) -> None:
+        """The pinned release is installed and this file is no longer it.
+
+        An install whose console script was rewritten in place still carries
+        the ``.dist-info`` of the release it was, so name and version alone
+        would accept it. The installer recorded what it wrote; that is what the
+        file is held to.
+        """
+        provider = install_provider(self.root / "venv")
+        provider.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+        with self.assertRaises(ContextError) as raised:
+            self.adapter(provider)
+        self.assertIn("modified", str(raised.exception))
+
+    def test_an_install_whose_record_carries_no_digest_still_verifies(self) -> None:
+        """A missing hash is not a mismatch.
+
+        ``RECORD`` is allowed to carry an empty digest -- it cannot record its
+        own -- and some installers write entries that way. Refusing there would
+        refuse a correctly pinned install for something that is not evidence of
+        anything, so ownership and version stand on their own.
+        """
+        provider = install_provider(self.root / "venv", digest=False)
+        self.assertTrue(callable(self.adapter(provider)))
+
+    def test_the_check_reads_the_install_rather_than_running_the_provider(self) -> None:
+        """Asking ``graphify --version`` would run the file in question.
+
+        It would also run it outside the sandbox that exists to confine it, and
+        take its own word for who it is. Nothing may be launched before the
+        adapter is built.
+        """
+        provider = install_provider(self.root / "venv")
+
+        def refuse_launch(argv, **kwargs):
+            raise AssertionError(f"the identity check launched {argv}")
+
+        # The check itself, not the whole adapter: building one resolves the
+        # checkout root, and that is a Git call this assertion would otherwise
+        # be mistaken for a provider launch.
+        with mock.patch.object(subprocess, "Popen", refuse_launch):
+            lifecycle._verify_provider_installation(str(provider), pin=PIN)
+
+    def test_a_build_refuses_a_pin_the_adapter_was_not_checked_against(self) -> None:
+        """One caller passes both, so a divergence is a miswiring.
+
+        The launch reads the request's options and the manifest records the
+        request's pin, so an adapter checked against one pin and driven with
+        another would publish provenance nothing verified -- the same defect
+        one seam over.
+        """
+        provider = install_provider(self.root / "venv")
+        indexer = self.adapter(provider)
+        request = lifecycle.IndexRequest(
+            source_root=self.root / "absent",
+            output_path=self.root / "absent" / "graph.bin",
+            environment={},
+            pin=dataclasses.replace(PIN, version="0.9.57"),
+            commit="a" * 40,
+            tree="b" * 40,
+        )
+        with self.assertRaises(ContextError):
+            indexer(request)
+
+    def test_an_unparseable_record_claims_nothing_and_the_build_is_refused(self) -> None:
+        """A ``RECORD`` that cannot be read is not a ``RECORD`` that vouches.
+
+        Nothing then owns the executable, so the refusal is the same one an
+        uninstalled script gets: an unreadable install fails closed rather than
+        passing unchecked.
+        """
+        provider = install_provider(self.root / "venv")
+        dist_info = next((self.root / "venv").glob("lib/*/site-packages/*.dist-info"))
+
+        def unparseable(stream, *arguments, **keywords):
+            raise csv.Error("line contains NUL")
+
+        with mock.patch.object(csv, "reader", unparseable):
+            self.assertEqual(lifecycle._record_entries(dist_info), ())
+            with self.assertRaises(ContextError):
+                self.adapter(provider)
+
+    def test_an_oversized_record_is_refused_without_being_read_whole(self) -> None:
+        """``RECORD`` is a foreign file, and is bounded at the stream like one."""
+        provider = install_provider(self.root / "venv")
+        record = next((self.root / "venv").glob("lib/*/site-packages/*.dist-info/RECORD"))
+        record.write_text("x" * (lifecycle._MAX_DIST_RECORD_BYTES + 1), encoding="utf-8")
+
+        def refuse_whole_file_read(self: Path) -> bytes:
+            raise AssertionError(f"{self} was read whole")
+
+        with mock.patch.object(Path, "read_bytes", refuse_whole_file_read):
+            with self.assertRaises(ContextError):
+                self.adapter(provider)
 
 
 @unittest.skipUnless(hasattr(os, "killpg"), "process groups are a POSIX facility")
@@ -2738,35 +3022,34 @@ class CommandTests(TemporaryWorkspace):
         path.write_text(json.dumps(PIN.as_metadata()), encoding="utf-8")
         return path
 
-    def indexer_script(self, *, complete: bool = True) -> Path:
+    def indexer_script(self, *, complete: bool = True, **installed) -> Path:
         """A stand-in for a pinned provider CLI, so no package is required.
 
         It answers to ``extract`` and writes its state into the directory it
         was run in, which is the contract ``docs/graphify-evaluation.md``
         records for the evaluated release.
 
-        Laid out as a virtual environment -- ``<root>/bin/<script>`` beside a
-        ``pyvenv.cfg`` -- because that is the layout the containment boundary
-        proves before it exposes anything. A loose script in a temporary
-        directory is refused now, and these end-to-end tests should run against
-        the arrangement an operator is actually told to pin into rather than
-        one the rule would reject.
+        Installed the way a pinned release really is -- a console script in a
+        virtual environment beside the ``.dist-info`` its installer wrote --
+        because that is what both the containment boundary and the pin check
+        read before a build runs anything. A loose script in a temporary
+        directory is refused, and these end-to-end tests should run against the
+        arrangement an operator is actually told to pin into rather than one
+        the rules would reject.
         """
-        environment = self.root / "provider-venv"
-        (environment / "bin").mkdir(parents=True, exist_ok=True)
-        (environment / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
-        path = environment / "bin" / "fake-indexer"
-        path.write_text(
-            "#!/bin/sh\n"
-            '[ "$1" = "extract" ] || exit 64\n'
-            "mkdir -p .graphify\n"
-            "printf graph-bytes > .graphify/graph.bin\n"
-            'printf \'{"complete": %s, "code_files": 1, "requeued": 0}\' '
-            f"'{'true' if complete else 'false'}' > .graphify/manifest.json\n",
-            encoding="utf-8",
+        return install_provider(
+            self.root / ("provider-venv" if complete else "provider-venv-partial"),
+            script="fake-indexer",
+            body=(
+                "#!/bin/sh\n"
+                '[ "$1" = "extract" ] || exit 64\n'
+                "mkdir -p .graphify\n"
+                "printf graph-bytes > .graphify/graph.bin\n"
+                'printf \'{"complete": %s, "code_files": 1, "requeued": 0}\' '
+                f"'{'true' if complete else 'false'}' > .graphify/manifest.json\n"
+            ),
+            **installed,
         )
-        path.chmod(0o700)
-        return path
 
     def run_command(self, *arguments: str) -> tuple[int, str]:
         from contextlib import redirect_stdout

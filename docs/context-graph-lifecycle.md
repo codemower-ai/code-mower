@@ -287,7 +287,7 @@ Every published generation carries, in `manifest.json`:
 | Field | Why it is there |
 | --- | --- |
 | `commit`, `tree` | Full object names. Staleness is decided against these, not against a branch. |
-| `provider` | Distribution, exact version, wheel SHA-256, and the extraction options used. |
+| `provider` | Distribution, exact version, wheel SHA-256, and the extraction options used. The distribution and version are [checked against the install](#the-named-install-is-checked-against-the-pin-before-it-runs) before a build runs, so this is a record of what ran rather than of what was asked for. |
 | `built_at` | ISO 8601 UTC. The provider records no build time of its own. |
 | `tracked_files`, `tracked_bytes`, `census_digest` | Exactly which bytes the indexer was shown, re-derivable from the repository. |
 | `skipped_paths` | How many tracked entries were deliberately not materialized. |
@@ -473,6 +473,43 @@ drawn around the install this process found while the child searched somewhere
 else, so a correctly installed provider failed to start; and a repository
 carrying that same relative path would have answered the child's search with a
 tracked file, which is a build executing content it was only ever meant to read.
+
+### The named install is checked against the pin, before it runs
+
+`--indexer` names an install and `--pin-file` names a release, and nothing used
+to compare the two. The manifest records the pin as the provenance of every byte
+in a generation, so a build could publish a manifest naming graphifyy 0.9.58
+over a graph that some other release — or some other distribution that happens
+to answer to `extract` — had produced, and neither `status` nor the manifest
+could tell afterwards. For a distribution whose name differs from this
+repository's by one character, that is precisely the substitution the pin exists
+to make identifiable.
+
+So the executable is checked against the pin before anything is materialized:
+
+- **Which distribution installed it.** Ownership is read from the installed
+  `RECORD`, not guessed from the file's name, because a pinned release and a
+  lookalike can both ship a console script called `graphify` and an environment
+  is free to hold both. An executable no installed distribution claims is
+  refused.
+- **At which version.** `Name` and `Version` come from that distribution's
+  `METADATA`. Names are compared the way an installer normalizes them (PEP 503),
+  so a pin does not fail against its own install over a spelling; versions are
+  compared exactly, because a pin is one release and deciding that `1.0` and
+  `1.0.0` are the same release is a policy this has no business inventing.
+- **Whether the file is still what was installed.** The executable is hashed
+  against the digest its installer recorded for it, so an install rewritten in
+  place is refused even though its `.dist-info` still names the pinned release.
+  An entry whose digest the installer left empty is not treated as a mismatch.
+
+The install is *read*, never *asked*. Running `graphify --version` would mean
+launching the very executable whose identity is in question, outside the sandbox
+that exists to confine it, and then believing what it said about itself.
+
+`wheel_sha256` stays unchecked here and is not checkable here: an unpacked
+install does not retain the artifact it came from. It remains the operator's
+record of which artifact they installed, carried into the manifest so a
+substituted distribution is identifiable after the fact.
 
 ## State layout
 

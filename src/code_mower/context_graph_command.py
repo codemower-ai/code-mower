@@ -97,7 +97,13 @@ def main(argv=None) -> int:
             manifest = lifecycle.build_graph(
                 args.repo_path,
                 pin=pin,
-                indexer=lifecycle.subprocess_indexer(args.indexer, repository=args.repo_path),
+                # The pin goes to the adapter as well as to the build: the
+                # adapter checks the install it is about to run against it, so
+                # a manifest never records a release nobody confirmed was
+                # installed.
+                indexer=lifecycle.subprocess_indexer(
+                    args.indexer, repository=args.repo_path, pin=pin
+                ),
                 root=args.state_dir,
                 revision=args.revision,
                 keep_previous=args.keep_previous,
