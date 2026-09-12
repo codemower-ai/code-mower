@@ -60,25 +60,39 @@ def devin_selection_ambiguity(
 def devin_effective_lane(
     effective_lanes: Iterable[tuple[str, Mapping[str, Any]]],
     transport: str | None = None,
-) -> Mapping[str, Any] | None:
-    """Return the effective configuration of the selected Devin review lane.
+) -> tuple[str, Mapping[str, Any]] | None:
+    """Return the selected Devin review lane as its ID and effective config.
 
     Both Devin lanes can be active at once, so the selected transport names the
     one lane whose configured command readiness must agree with: returning
     whichever lane appears first would check the other lane's executable. A lane
     is matched by what it declares, so a valid custom-named lane supplies its own
-    command configuration exactly as a canonical lane does.
+    command configuration exactly as a canonical lane does, and its own ID so
+    findings name the lane the repository actually has.
+
+    Raises:
+        ConfigError: when more than one active lane could be the selected one,
+            because readiness would otherwise report one lane's posture under
+            another lane's identity.
     """
     wanted = (
         transport
         if transport in TRANSPORTS and TRANSPORTS[transport].product == "devin"
         else None
     )
+    matched: list[tuple[str, Mapping[str, Any]]] = []
     for lane_id, effective in effective_lanes:
         declared = devin_lane_transport_name(lane_id, effective)
         if declared is not None and wanted in (None, declared):
-            return effective
-    return None
+            matched.append((lane_id, effective))
+    if len(matched) > 1:
+        raise code_mower_config.ConfigError(
+            "several active Devin lanes could be the selected one ("
+            + ", ".join(lane_id for lane_id, _ in matched)
+            + "); keep one Devin lane in the Code Mower --profile being inspected, or "
+            "name its transport with session_defaults.transports.devin"
+        )
+    return matched[0] if matched else None
 
 
 def check_devin_readiness(
@@ -93,23 +107,39 @@ def check_devin_readiness(
     provider_config_dir: Path | None = None,
     config_profile: str | None = "recommended",
     config_path: str = "",
-    effective_lane: Mapping[str, Any] | None = None,
+    effective_lanes: Iterable[tuple[str, Mapping[str, Any]]] = (),
     adoption_posture: str = "reviewer-gate",
 ) -> list[DoctorCheck]:
-    from code_mower.devin_readiness import SCHEMA, devin_readiness
+    from code_mower.devin_readiness import (
+        SCHEMA,
+        devin_readiness,
+        selected_devin_transport,
+    )
 
     try:
+        # The transport is resolved before the lane so an ambiguous selection is
+        # reported as itself, and the selected lane is resolved here so an
+        # unidentifiable lane fails closed through the same bounded finding
+        # instead of reporting another lane's identity.
+        selected = transport or selected_devin_transport(
+            config, lanes=lanes, profile=config_profile
+        )
+        lane_id, effective_lane = devin_effective_lane(effective_lanes, selected) or (
+            "",
+            None,
+        )
         findings = devin_readiness(
             config,
             lanes=lanes,
             repo_slug=repo_slug,
-            transport=transport,
+            transport=selected,
             credential_file=provider_credential_file,
             profile=provider_profile,
             config_profile=config_profile,
             config_dir=provider_config_dir,
             config_path=config_path,
             lane_config=effective_lane,
+            lane_id=lane_id,
             adoption_posture=adoption_posture,
             include_unselected=include_unselected,
         )

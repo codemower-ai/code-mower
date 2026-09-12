@@ -64,8 +64,10 @@ DEFAULT_CLI_COMMAND = "devin"
 OBSERVER_POSTURES = frozenset({"hosted-builders", "orchestrator-only"})
 DEFAULT_ADOPTION_POSTURE = "reviewer-gate"
 
-SELECT_LOCAL_COMMAND = "code-mower init --with claude,codex,devin-cli --apply"
-SELECT_HOSTED_COMMAND = "code-mower init --with claude,codex,devin-api-v3 --apply"
+SELECT_ALIASES = {
+    LOCAL_TRANSPORT: "claude,codex,devin-cli",
+    HOSTED_TRANSPORT: "claude,codex,devin-api-v3",
+}
 
 # The credential resolver reports where it searched, including a home-relative
 # profile path and filename, and repeats it in its own remediation. Readiness
@@ -73,24 +75,22 @@ SELECT_HOSTED_COMMAND = "code-mower init --with claude,codex,devin-api-v3 --appl
 # unresolved outcome is written here instead of being forwarded.
 PATH_DETAIL_FIELDS = frozenset({"profile_file", "candidate_files"})
 
-HOSTED_CREDENTIAL_REMEDIATION = {
+HOSTED_CREDENTIAL_CAUSES = {
     "malformed": (
         "The stored hosted credentials could not be parsed. Rewrite the credential "
         f"profile as `NAME=value` lines for service-user {DEVIN_API_KEY_ENV} and "
-        f"opaque {DEVIN_ORG_ID_ENV} (format `org-...`, not a GitHub owner name), "
-        "then rerun `code-mower doctor`."
+        f"opaque {DEVIN_ORG_ID_ENV} (format `org-...`, not a GitHub owner name)"
     ),
     "insecure_permissions": (
         "The stored hosted credentials are readable beyond their owner. Restrict the "
-        "credential profile to owner-only permissions (`chmod 600`), rotate the "
-        "service-user key, then rerun `code-mower doctor`."
+        "credential profile to owner-only permissions (`chmod 600`) and rotate the "
+        "service-user key"
     ),
 }
-HOSTED_CREDENTIAL_REMEDIATION_DEFAULT = (
+HOSTED_CREDENTIAL_CAUSE_DEFAULT = (
     f"Set service-user {DEVIN_API_KEY_ENV} and opaque {DEVIN_ORG_ID_ENV} "
     "(format `org-...`, not a GitHub owner name) in the environment or a "
-    "protected credential profile, then rerun `code-mower doctor`. Use "
-    f"{SELECT_LOCAL_COMMAND} instead if this machine should run the local CLI."
+    "protected credential profile"
 )
 
 # Devin exposes no read-only endpoint that proves session or GitHub connection
@@ -115,11 +115,16 @@ PERMISSION_REQUIREMENTS = {
     ),
 }
 
+# Reported next actions stay path-free because they are also carried in finding
+# detail, which is metadata: the configuration path and profile that produced the
+# finding appear only in locally rendered remediation.
 POSTURE_NEXT_ACTIONS = (
-    f"local CLI: {SELECT_LOCAL_COMMAND}, install `devin` on PATH (or set "
-    f"{CLI_COMMAND_ENV}), and run `devin auth login` in a trusted environment",
-    f"hosted API: {SELECT_HOSTED_COMMAND}, then set service-user {DEVIN_API_KEY_ENV}, "
-    f"opaque {DEVIN_ORG_ID_ENV}, and the exact OWNER/REPO in {DEVIN_REPOSITORIES_ENV}",
+    "local CLI: select devin-cli for this configuration and profile, install `devin` "
+    f"on PATH (or set {CLI_COMMAND_ENV}), and run `devin auth login` in a trusted "
+    "environment",
+    "hosted API: select devin-api-v3 for this configuration and profile, then set "
+    f"service-user {DEVIN_API_KEY_ENV}, opaque {DEVIN_ORG_ID_ENV}, and the exact "
+    f"OWNER/REPO in {DEVIN_REPOSITORIES_ENV}",
     "unavailable: keep the Claude + Codex default; report the unavailable capability "
     "and hand the work to a selected participant instead of substituting a product",
 )
@@ -213,6 +218,45 @@ def _explicit_transport_selected(config: Mapping[str, Any]) -> bool:
 
 
 @dataclass(frozen=True)
+class _Pin:
+    """The configuration, profile, and target that produced a finding.
+
+    Every actionable command a finding renders is generated from these inputs, so
+    an operator following remediation inspects or changes exactly the posture the
+    finding describes instead of the default starter configuration.
+    """
+
+    config_path: str = ""
+    profile: str = ""
+    repo_slug: str = ""
+
+    def doctor(self, *, devin: bool = False, flags: tuple[str, ...] = ()) -> str:
+        return doctor_command(
+            config_path=self.config_path,
+            profile=self.profile,
+            devin=devin,
+            flags=flags,
+        )
+
+    def readiness(self, *, repo_slug: str | None = None) -> str:
+        return readiness_command(
+            config_path=self.config_path,
+            profile=self.profile,
+            repo_slug=self.repo_slug if repo_slug is None else repo_slug,
+        )
+
+    def select(self, transport: str) -> str:
+        return select_transport_command(
+            transport, config_path=self.config_path, profile=self.profile
+        )
+
+    def interactive(self) -> str:
+        return interactive_select_command(
+            config_path=self.config_path, profile=self.profile
+        )
+
+
+@dataclass(frozen=True)
 class _LocalDiscovery:
     """How the selected local lane looks for its executable."""
 
@@ -258,19 +302,21 @@ def _cli_commands(
     return _LocalDiscovery(tuple(ordered), command_env, lane_configured)
 
 
-def _selection_finding(transport: str, lane: str) -> ReadinessFinding:
+def _selection_finding(transport: str, lane: str, pin: _Pin) -> ReadinessFinding:
     posture = POSTURES[transport]
     if transport == LOCAL_TRANSPORT:
         authentication = "ambient Devin Desktop/CLI login"
         remediation = (
             "Keep local execution, or switch to hosted service-user credentials with "
-            f"{SELECT_HOSTED_COMMAND}. Selection never grants review or merge authority."
+            f"{pin.select(HOSTED_TRANSPORT)}. Selection never grants review or merge "
+            "authority."
         )
     else:
         authentication = "hosted v3 service-user credentials with exact repository scope"
         remediation = (
             "Keep hosted execution, or switch to the local Devin CLI login with "
-            f"{SELECT_LOCAL_COMMAND}. Selection never grants review or merge authority."
+            f"{pin.select(LOCAL_TRANSPORT)}. Selection never grants review or merge "
+            "authority."
         )
     return ReadinessFinding(
         name="provider.devin.selection",
@@ -318,6 +364,7 @@ def _local_cli_finding(
     *,
     lane_config: Mapping[str, Any] | None,
     env: Mapping[str, str],
+    pin: _Pin,
     adoption_posture: str = DEFAULT_ADOPTION_POSTURE,
 ) -> ReadinessFinding:
     discovery = _cli_commands(lane_config, env)
@@ -348,9 +395,8 @@ def _local_cli_finding(
             lane=lane,
             detail=detail,
             remediation=(
-                "Rerun `code-mower doctor --devin` with the same configuration and "
-                "--profile, without the hosted-builder or orchestrator-only posture, "
-                "on the machine that executes the lane."
+                f"Rerun {pin.doctor(devin=True)} without the hosted-builder or "
+                "orchestrator-only posture, on the machine that executes the lane."
             ),
         )
     resolved = next((command for command in candidates if shutil.which(command)), None)
@@ -366,7 +412,8 @@ def _local_cli_finding(
             detail=detail,
             remediation=(
                 "Run `devin auth login` in a trusted environment if the ambient session "
-                "expired, and `code-mower doctor --probe-runtime` for bounded auth status."
+                f"expired, and {pin.doctor(flags=('--probe-runtime',))} for bounded auth "
+                "status."
             ),
         )
     if discovery.lane_configured:
@@ -378,15 +425,16 @@ def _local_cli_finding(
             install += f" or point {discovery.command_env} at the executable to run"
         remediation = (
             f"{install}, run `devin auth login` in a trusted environment, then rerun "
-            "`code-mower doctor`. Hosted credentials do not enable this transport: "
-            f"select it with {SELECT_HOSTED_COMMAND} instead."
+            f"{pin.doctor(devin=True)}. Hosted credentials do not enable this "
+            f"transport: select it with {pin.select(HOSTED_TRANSPORT)} instead."
         )
     else:
         remediation = (
             f"Install the Devin CLI as `{DEFAULT_CLI_COMMAND}` on PATH or set "
             f"{CLI_COMMAND_ENV} to its absolute path, run `devin auth login` in a trusted "
-            "environment, then rerun `code-mower doctor`. Hosted credentials do not "
-            f"enable this transport: select it with {SELECT_HOSTED_COMMAND} instead."
+            f"environment, then rerun {pin.doctor(devin=True)}. Hosted credentials do "
+            "not enable this transport: select it with "
+            f"{pin.select(HOSTED_TRANSPORT)} instead."
         )
     return ReadinessFinding(
         name="provider.devin.local_cli",
@@ -398,13 +446,7 @@ def _local_cli_finding(
     )
 
 
-def _hosted_credential_remediation(
-    status: str,
-    *,
-    config_path: str,
-    config_profile: str,
-    repo_slug: str,
-) -> str:
+def _hosted_credential_remediation(status: str, *, pin: _Pin) -> str:
     """Return the next action for an unresolved hosted credential outcome.
 
     A credential profile is not the Code Mower configuration profile, so several
@@ -414,18 +456,20 @@ def _hosted_credential_remediation(
     of the answer.
     """
     if status == "ambiguous":
-        check = readiness_command(
-            config_path=config_path, profile=config_profile, repo_slug=repo_slug
-        )
         return (
             "Several stored credential profiles could satisfy hosted Devin. Rerun "
-            f"{check} with `--provider-profile NAME` naming the credential profile to "
-            "use, or set service-user "
+            f"{pin.readiness()} with `--provider-profile NAME` naming the credential "
+            "profile to use, or set service-user "
             f"{DEVIN_API_KEY_ENV} and {DEVIN_ORG_ID_ENV} in the environment. The Code "
             "Mower --profile still selects the configuration profile."
         )
-    return HOSTED_CREDENTIAL_REMEDIATION.get(
-        status, HOSTED_CREDENTIAL_REMEDIATION_DEFAULT
+    cause = HOSTED_CREDENTIAL_CAUSES.get(status)
+    if cause is not None:
+        return f"{cause}, then rerun {pin.readiness()}."
+    return (
+        f"{HOSTED_CREDENTIAL_CAUSE_DEFAULT}, then rerun {pin.readiness()}. Use "
+        f"{pin.select(LOCAL_TRANSPORT)} instead if this machine should run the local "
+        "CLI."
     )
 
 
@@ -436,9 +480,7 @@ def _hosted_credential_finding(
     credential_file: Path | None,
     profile: str,
     config_dir: Path | None,
-    config_path: str = "",
-    config_profile: str = "",
-    repo_slug: str = "",
+    pin: _Pin,
 ) -> ReadinessFinding:
     credentials = credentials_from_env(
         env, credential_file=credential_file, profile=profile, config_dir=config_dir
@@ -491,12 +533,7 @@ def _hosted_credential_finding(
         message=message,
         lane=lane,
         detail=detail,
-        remediation=_hosted_credential_remediation(
-            credentials.status,
-            config_path=config_path,
-            config_profile=config_profile,
-            repo_slug=repo_slug,
-        ),
+        remediation=_hosted_credential_remediation(credentials.status, pin=pin),
     )
 
 
@@ -508,6 +545,7 @@ def _repository_scope_finding(
     credential_file: Path | None,
     profile: str,
     config_dir: Path | None,
+    pin: _Pin,
 ) -> ReadinessFinding:
     detail: dict[str, Any] = {
         "schema": SCHEMA,
@@ -525,8 +563,8 @@ def _repository_scope_finding(
             lane=lane,
             detail=detail,
             remediation=(
-                "Rerun `code-mower doctor --repo OWNER/REPO` to check the exact hosted "
-                "repository acknowledgement before dispatching paid work."
+                f"Rerun {pin.readiness(repo_slug='OWNER/REPO')} to check the exact "
+                "hosted repository acknowledgement before dispatching paid work."
             ),
         )
     acknowledged = repository_scope_acknowledged(
@@ -559,7 +597,8 @@ def _repository_scope_finding(
         remediation=(
             f"Add the exact `{repo_slug}` entry to {DEVIN_REPOSITORIES_ENV} (comma "
             "separated, full OWNER/REPO, so a same-name fork is never accepted) and "
-            "confirm the service user's GitHub connection reaches it, then rerun doctor."
+            f"confirm the service user's GitHub connection reaches it, then rerun "
+            f"{pin.readiness()}."
         ),
     )
 
@@ -639,7 +678,7 @@ def _lifecycle_finding(transport: str, lane: str) -> ReadinessFinding:
     )
 
 
-def _unselected_findings() -> tuple[ReadinessFinding, ...]:
+def _unselected_findings(pin: _Pin) -> tuple[ReadinessFinding, ...]:
     return (
         ReadinessFinding(
             name="provider.devin.selection",
@@ -652,10 +691,9 @@ def _unselected_findings() -> tuple[ReadinessFinding, ...]:
                 "default_participants": list(DEFAULT_PARTICIPANTS),
             },
             remediation=(
-                "Add Devin with `code-mower init --interactive` or "
-                f"`{SELECT_LOCAL_COMMAND}` (hosted: `{SELECT_HOSTED_COMMAND}`), then "
-                "rerun `code-mower doctor --devin` with the same configuration and "
-                "--profile."
+                f"Add Devin with {pin.interactive()} or {pin.select(LOCAL_TRANSPORT)} "
+                f"(hosted: {pin.select(HOSTED_TRANSPORT)}), then rerun "
+                f"{pin.doctor(devin=True)}."
             ),
         ),
         ReadinessFinding(
@@ -671,10 +709,61 @@ def _unselected_findings() -> tuple[ReadinessFinding, ...]:
             remediation=(
                 "Choose one posture before assigning Devin work; hosted credentials do "
                 "not enable local execution, and a local login does not authorize hosted "
-                "sessions."
+                f"sessions. Select the local CLI with {pin.select(LOCAL_TRANSPORT)} or "
+                f"the hosted API with {pin.select(HOSTED_TRANSPORT)}."
             ),
         ),
     )
+
+
+def _pinned(command: str, *, config_path: str, profile: str) -> str:
+    """Return `command` scoped to exactly one configuration and profile.
+
+    Both inputs are shell-quoted because a configuration path and a profile name
+    may contain spaces, and an unquoted command would inspect something else.
+    """
+    if config_path:
+        command += f" {shlex.quote(config_path)}"
+    if profile:
+        command += f" --profile {shlex.quote(profile)}"
+    return command
+
+
+def _unpinned_guidance(shown: str) -> str:
+    """Return guidance to reuse the caller's own inputs for `shown`."""
+    return (
+        f"the same `{shown}` invocation, using the same configuration and --profile "
+        "selected here"
+    )
+
+
+def doctor_command(
+    *,
+    config_path: str = "",
+    profile: str = "",
+    repo_slug: str = "",
+    devin: bool = False,
+    flags: tuple[str, ...] = (),
+) -> str:
+    """Return the doctor command that inspects exactly this posture.
+
+    A generated command must pin the configuration and profile it describes,
+    because an unpinned check can read another profile's Devin lane, and a bare
+    rerun can report a different posture than the finding that asked for it. A
+    caller without those inputs gets guidance to reuse its own instead of a
+    command that silently inspects something else.
+    """
+    shown = "code-mower doctor" + (" --devin" if devin else "")
+    shown += "".join(f" {flag}" for flag in flags)
+    if not profile:
+        return _unpinned_guidance(shown)
+    command = _pinned("code-mower doctor", config_path=config_path, profile=profile)
+    if devin:
+        command += " --devin"
+    command += "".join(f" {flag}" for flag in flags)
+    if repo_slug:
+        command += f" --repo {shlex.quote(repo_slug)}"
+    return f"`{command}`"
 
 
 def readiness_command(
@@ -683,25 +772,41 @@ def readiness_command(
     profile: str = "",
     repo_slug: str = "",
 ) -> str:
-    """Return the doctor command that inspects exactly this posture.
+    """Return the `--devin` doctor command that inspects exactly this posture."""
+    return doctor_command(
+        config_path=config_path, profile=profile, repo_slug=repo_slug, devin=True
+    )
 
-    A generated command must pin the configuration and profile it describes,
-    because an unpinned check can read another profile's Devin lane. A caller
-    without those inputs gets guidance to reuse its own instead of a command
-    that silently inspects something else.
+
+def select_transport_command(
+    transport: str,
+    *,
+    config_path: str = "",
+    profile: str = "",
+) -> str:
+    """Return the init command that selects `transport` for this configuration.
+
+    A transport switch is only actionable against the configuration and profile
+    the finding describes: a bare `code-mower init` writes the default starter
+    configuration under the recommended profile instead. The Code Mower
+    `--profile` selects that configuration profile and is never the credential
+    `--provider-profile`.
     """
+    if transport not in SELECT_ALIASES:
+        raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
+    selection = f"--with {SELECT_ALIASES[transport]} --apply"
     if not profile:
-        return (
-            "the same `code-mower doctor --devin` invocation, using the same "
-            "configuration and --profile selected here"
-        )
-    command = "code-mower doctor"
-    if config_path:
-        command += f" {shlex.quote(config_path)}"
-    command += f" --profile {shlex.quote(profile)} --devin"
-    if repo_slug:
-        command += f" --repo {shlex.quote(repo_slug)}"
-    return f"`{command}`"
+        return _unpinned_guidance(f"code-mower init {selection}")
+    command = _pinned("code-mower init", config_path=config_path, profile=profile)
+    return f"`{command} {selection}`"
+
+
+def interactive_select_command(*, config_path: str = "", profile: str = "") -> str:
+    """Return the interactive init command scoped to this configuration."""
+    if not profile:
+        return _unpinned_guidance("code-mower init --interactive")
+    command = _pinned("code-mower init", config_path=config_path, profile=profile)
+    return f"`{command} --interactive`"
 
 
 def setup_instructions(
@@ -752,26 +857,33 @@ def devin_readiness(
     config_dir: Path | None = None,
     config_path: str = "",
     lane_config: Mapping[str, Any] | None = None,
+    lane_id: str = "",
     adoption_posture: str = DEFAULT_ADOPTION_POSTURE,
     include_unselected: bool = False,
 ) -> tuple[ReadinessFinding, ...]:
     """Return the readiness findings for the selected optional Devin posture.
 
     ``profile`` names the stored credential profile; ``config_profile`` names the
-    configuration profile whose lanes decide which transport is selected. A
-    repository without Devin produces no findings unless the caller explicitly
-    asks for the unselected guidance.
+    configuration profile whose lanes decide which transport is selected.
+    ``lane_id`` is the selected effective lane, which a valid configuration may
+    name anything: reporting the canonical lane instead would attribute doctor
+    and Board metadata to a lane the repository does not have. A repository
+    without Devin produces no findings unless the caller explicitly asks for the
+    unselected guidance.
     """
+    pin = _Pin(
+        config_path=config_path, profile=config_profile or "", repo_slug=repo_slug
+    )
     selected = transport or selected_devin_transport(
         config, lanes=lanes, profile=config_profile
     )
     if selected is None:
-        return _unselected_findings() if include_unselected else ()
+        return _unselected_findings(pin) if include_unselected else ()
     if selected not in TRANSPORTS:
         raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
-    lane = TRANSPORTS[selected].review_lane
+    lane = lane_id or TRANSPORTS[selected].review_lane
     findings = [
-        _selection_finding(selected, lane),
+        _selection_finding(selected, lane, pin),
         _capability_finding(selected, lane),
     ]
     if selected == LOCAL_TRANSPORT:
@@ -780,6 +892,7 @@ def devin_readiness(
                 lane,
                 lane_config=lane_config,
                 env=os.environ if env is None else env,
+                pin=pin,
                 adoption_posture=adoption_posture,
             )
         )
@@ -791,9 +904,7 @@ def devin_readiness(
                 credential_file=credential_file,
                 profile=profile,
                 config_dir=config_dir,
-                config_path=config_path,
-                config_profile=config_profile or "",
-                repo_slug=repo_slug,
+                pin=pin,
             )
         )
         findings.append(
@@ -804,6 +915,7 @@ def devin_readiness(
                 credential_file=credential_file,
                 profile=profile,
                 config_dir=config_dir,
+                pin=pin,
             )
         )
     findings.append(_permission_finding(selected, lane))

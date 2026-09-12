@@ -683,7 +683,7 @@ class DevinDoctorStageTests(unittest.TestCase):
                 ):
             readiness = check_devin_readiness(
                 config=_config("devin-cli"),
-                effective_lane=lane,
+                effective_lanes=(("devin_cli", lane),),
                 adoption_posture=posture,
                 provider_config_dir=Path(_ISOLATED_STORE.name),
             )
@@ -726,7 +726,8 @@ class DevinDoctorStageTests(unittest.TestCase):
                 },
             ),
         ]
-        selected = devin_effective_lane(lanes)
+        lane_id, selected = devin_effective_lane(lanes)
+        self.assertEqual(lane_id, "devin_cli")
         self.assertEqual(
             candidate_local_cli_commands(selected, env={}), ["/opt/private/devin-lane"]
         )
@@ -740,9 +741,37 @@ class DevinDoctorStageTests(unittest.TestCase):
             "provider_config": {"command": "/opt/private/devin-lane"},
         }
         lanes = [("devin", hosted), ("devin_cli", local)]
-        self.assertEqual(devin_effective_lane(lanes, LOCAL_TRANSPORT), local)
-        self.assertEqual(devin_effective_lane(lanes, HOSTED_TRANSPORT), hosted)
-        self.assertEqual(devin_effective_lane(lanes, "claude_cli"), hosted)
+        self.assertEqual(
+            devin_effective_lane(lanes, LOCAL_TRANSPORT), ("devin_cli", local)
+        )
+        self.assertEqual(
+            devin_effective_lane(lanes, HOSTED_TRANSPORT), ("devin", hosted)
+        )
+
+    def test_an_unidentifiable_effective_lane_fails_closed(self) -> None:
+        hosted = {"provider": "devin", "driver": "hosted_bridge"}
+        local = {
+            "provider": "devin_cli",
+            "driver": "local_cli",
+            "product": "devin",
+            "transport": "devin_cli",
+        }
+        # Neither an unresolved transport across two transports nor two custom
+        # lanes sharing one transport identifies the lane a finding belongs to.
+        with self.assertRaises(ConfigError):
+            devin_effective_lane([("devin", hosted), ("devin_cli", local)], "claude_cli")
+        with self.assertRaises(ConfigError):
+            devin_effective_lane(
+                [("team_devin", local), ("night_devin", local)], LOCAL_TRANSPORT
+            )
+        checks = check_devin_readiness(
+            config=_config("devin-cli"),
+            transport=LOCAL_TRANSPORT,
+            effective_lanes=(("team_devin", local), ("night_devin", local)),
+            provider_config_dir=Path(_ISOLATED_STORE.name),
+        )
+        self.assertEqual([check.status for check in checks], ["fail"])
+        self.assertIn("team_devin", checks[0].remediation)
 
     def _custom_lane_config(self, directory: str, *, hosted: bool) -> Path:
         labels = (
@@ -817,6 +846,17 @@ class DevinDoctorStageTests(unittest.TestCase):
                 selection = checks["provider.devin.selection"]
                 self.assertEqual(selection["detail"]["transport"], transport)
                 self.assertEqual(selection["detail"]["posture"], posture)
+                # Every finding names the lane the repository actually has, so
+                # doctor and Board metadata are not attributed to a lane that
+                # does not exist.
+                devin_checks = [
+                    check
+                    for check in result["report"]["checks"]
+                    if check["name"].startswith("provider.devin.")
+                ]
+                self.assertEqual(
+                    {check["lane"] for check in devin_checks}, {"team_devin"}
+                )
                 if hosted:
                     self.assertIn("provider.devin.hosted_credentials", checks)
                 else:
@@ -1038,6 +1078,94 @@ class DevinGuidanceTests(unittest.TestCase):
             "code-mower doctor 'dir with spaces/code mower.yml' "
             "--profile recommended --devin --repo codemower-ai/code-mower --json",
         )
+
+
+class DevinPinnedRemediationTests(unittest.TestCase):
+    """Every actionable command names the configuration that produced it."""
+
+    CONFIG_PATH = "ops/custom mower.yml"
+    PROFILE = "custom profile"
+    DOCTOR = "code-mower doctor 'ops/custom mower.yml' --profile 'custom profile'"
+    INIT = "code-mower init 'ops/custom mower.yml' --profile 'custom profile'"
+
+    def _findings(self, *participants: str, **kwargs):
+        kwargs.setdefault("env", {})
+        kwargs.setdefault("config_path", self.CONFIG_PATH)
+        kwargs.setdefault("config_profile", self.PROFILE)
+        return _readiness(_config(*participants), **kwargs)
+
+    def test_local_selection_and_unavailable_cli_pin_the_configuration(self) -> None:
+        with mock.patch("code_mower.devin_readiness.shutil.which", return_value=None):
+            findings = self._findings("claude", "codex", "devin-cli")
+        selection = _finding(findings, "provider.devin.selection")
+        self.assertIn(
+            f"`{self.INIT} --with claude,codex,devin-api-v3 --apply`",
+            selection.remediation,
+        )
+        cli = _finding(findings, "provider.devin.local_cli")
+        self.assertIn(f"`{self.DOCTOR} --devin`", cli.remediation)
+        self.assertIn(
+            f"`{self.INIT} --with claude,codex,devin-api-v3 --apply`", cli.remediation
+        )
+        # Public detail and cloud metadata stay path-free even though the
+        # locally rendered remediation may repeat the caller's path.
+        for finding in findings:
+            self.assertNotIn(self.CONFIG_PATH, json.dumps(dict(finding.detail)))
+
+    def test_hosted_selection_and_credentials_pin_the_configuration(self) -> None:
+        findings = self._findings("devin-api-v3")
+        selection = _finding(findings, "provider.devin.selection")
+        self.assertIn(
+            f"`{self.INIT} --with claude,codex,devin-cli --apply`",
+            selection.remediation,
+        )
+        credentials = _finding(findings, "provider.devin.hosted_credentials")
+        self.assertIn(f"`{self.DOCTOR} --devin`", credentials.remediation)
+        scope = _finding(findings, "provider.devin.repository_scope")
+        self.assertIn(f"`{self.DOCTOR} --devin --repo OWNER/REPO`", scope.remediation)
+
+    def test_observer_rerun_pins_the_configuration(self) -> None:
+        findings = self._findings(
+            "devin-cli",
+            lane_config={"provider": "devin_cli", "driver": "local_cli"},
+            adoption_posture="hosted-builders",
+        )
+        cli = _finding(findings, "provider.devin.local_cli")
+        self.assertEqual(cli.status, "skip")
+        self.assertIn(f"`{self.DOCTOR} --devin`", cli.remediation)
+
+    def test_unselected_guidance_pins_the_configuration(self) -> None:
+        findings = self._findings("claude", "codex", include_unselected=True)
+        selection = _finding(findings, "provider.devin.selection")
+        self.assertIn(f"`{self.INIT} --interactive`", selection.remediation)
+        self.assertIn(
+            f"`{self.INIT} --with claude,codex,devin-cli --apply`",
+            selection.remediation,
+        )
+        self.assertIn(f"`{self.DOCTOR} --devin`", selection.remediation)
+        postures = _finding(findings, "provider.devin.postures")
+        self.assertIn(
+            f"`{self.INIT} --with claude,codex,devin-api-v3 --apply`",
+            postures.remediation,
+        )
+
+    def test_the_recommended_profile_stays_explicit(self) -> None:
+        with mock.patch("code_mower.devin_readiness.shutil.which", return_value=None):
+            findings = _readiness(
+                _config("devin-cli"), env={}, config_path="code-mower.yml"
+            )
+        cli = _finding(findings, "provider.devin.local_cli")
+        self.assertIn(
+            "`code-mower doctor code-mower.yml --profile recommended --devin`",
+            cli.remediation,
+        )
+        self.assertIn(
+            "`code-mower init code-mower.yml --profile recommended "
+            "--with claude,codex,devin-api-v3 --apply`",
+            cli.remediation,
+        )
+        # The credential profile selector is never conflated with it.
+        self.assertNotIn("--provider-profile", cli.remediation)
 
 
 class DevinDocumentationTests(unittest.TestCase):

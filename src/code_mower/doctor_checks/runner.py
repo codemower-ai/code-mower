@@ -21,7 +21,6 @@ from .cloud import check_cloud_token_surface
 from .common import ACTIONS_COST_SAMPLE_DEFAULT, load_inputs
 from .devin import (
     check_devin_readiness,
-    devin_effective_lane,
     devin_readiness_selected,
     devin_selection_ambiguity,
 )
@@ -320,7 +319,7 @@ def run_doctor(
                 provider_config_dir=provider_config_dir,
                 config_profile=profile,
                 config_path=str(config_path),
-                effective_lane=devin_effective_lane(effective_lanes, devin_transport),
+                effective_lanes=effective_lanes,
                 adoption_posture=adoption_posture,
             )
         )
