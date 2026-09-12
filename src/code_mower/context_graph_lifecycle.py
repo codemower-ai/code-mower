@@ -25,9 +25,10 @@ The rules a local indexer cannot be trusted to follow on its own:
 * **Deny the network in the kernel, not by request.** Emptying proxy variables
   only redirects a client that chooses to honour them. The provider is
   launched inside an OS sandbox that refuses sockets outright, and the sandbox
-  is accepted only after a probe child has been observed failing to connect. A
-  host that offers no such mechanism gets a refused build, not an unconfined
-  provider.
+  is accepted only after a probe child has been observed failing to reach a
+  socket this process is really listening on -- observed at the listener, not
+  believed from the child's errno. A host that offers no such mechanism gets a
+  refused build, not an unconfined provider.
 
 Nothing here installs, imports, or requires a graph package. The indexer is an
 injected callable, so the whole lifecycle is provable offline; the bundled
@@ -44,6 +45,7 @@ import re
 import io
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tarfile
@@ -77,6 +79,14 @@ MAX_BLOB_BYTES = 32 * 1024 * 1024
 #: of a checkout has no honest reason to hold more entries than the checkout
 #: had files.
 MAX_ARTIFACT_ENTRIES = MAX_TRACKED_FILES
+#: How many skipped paths one census may record. The file-count budget above
+#: bounds only what is materialized, so a repository of symlinks, submodules, or
+#: committed provider state passes it while the skipped list grows without
+#: limit. A manifest's ``skipped_paths`` is validated against this bound on
+#: every read, so a census that could exceed it would build a generation that
+#: publishes, prunes its predecessor, and then reads back ``invalid``. Bounded
+#: where the entries are collected, before any of that happens.
+MAX_SKIPPED_PATHS = MAX_TRACKED_FILES
 
 #: Only ordinary blobs are materialized. A symlink (``120000``) can name a
 #: target outside the checkout and a gitlink (``160000``) names a commit in
@@ -137,38 +147,38 @@ _SANDBOX_CANDIDATES: tuple[tuple[str, ...], ...] = (
     ("unshare", "--net", "--map-root-user", "--"),
 )
 
-#: The probe connects to the discard port on loopback, where a host without a
-#: sandbox refuses the connection. Refusal is the *failure* case here: it proves
-#: the syscall reached the network stack. Only an outright denial -- no
-#: permission, no route, no address family -- proves the child was contained.
-#: The probe exits ``7`` only on a denial; every other exit code -- a refused
-#: connection, a launcher that could not start, a child that never ran -- means
-#: the candidate is not usable as a boundary.
-_PROBE_PORT = 9
+#: The probe connects to a socket this process is really listening on, and the
+#: verdict is whether the connection *arrived* -- not which errno the child saw.
+#: Classifying by errno cannot work: a network namespace brings its own loopback
+#: up, so a contained child gets ``ECONNREFUSED`` from an empty namespace while
+#: an unconfined child gets ``ECONNREFUSED`` from an unused host port. The two
+#: are indistinguishable at the child. They are not indistinguishable at the
+#: listener, which either accepts a connection or does not.
+#:
+#: The probe exits ``7`` when it could not connect and ``3`` when it could;
+#: every other code -- a launcher that could not start, a child that never ran
+#: -- means the candidate is not usable as a boundary. A candidate is accepted
+#: only when the child reported a failed connection *and* nothing reached the
+#: listener, so a child that never ran cannot pass for a contained one.
 _PROBE_DENIED = 7
+_PROBE_REACHED = 3
 _DENIAL_PROBE = """
-import errno
 import socket
 import sys
 
-DENIED = frozenset({
-    errno.EPERM,
-    errno.EACCES,
-    errno.ENETUNREACH,
-    errno.ENETDOWN,
-    errno.EHOSTUNREACH,
-    errno.EADDRNOTAVAIL,
-    errno.EAFNOSUPPORT,
-    errno.EPROTONOSUPPORT,
-})
 try:
-    probe = socket.socket()
-    probe.settimeout(5)
-    probe.connect(("127.0.0.1", int(sys.argv[1])))
-except OSError as error:
-    sys.exit(7 if error.errno in DENIED else 3)
+    probe = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+except OSError:
+    sys.exit(7)
+probe.close()
 sys.exit(3)
 """
+
+#: How a probe run classifies: the child reached this process's listener, the
+#: child ran and could not, or nothing usable happened.
+_REACHED = "reached"
+_CONTAINED = "contained"
+_UNUSABLE = "unusable"
 
 _sandbox_prefix: tuple[str, ...] | None = None
 _sandbox_probed = False
@@ -180,23 +190,60 @@ def _launcher_path(name: str) -> str | None:
     return shutil.which(name)
 
 
-def _sandbox_denies_network(prefix: Sequence[str]) -> bool:
-    """Watch a child under ``prefix`` fail to open a connection, or say no."""
+def _accepted(listener: socket.socket) -> bool:
+    """Did anything actually connect? Drains one pending connection if so."""
     try:
-        completed = subprocess.run(
-            [*prefix, sys.executable, "-c", _DENIAL_PROBE, str(_PROBE_PORT)],
-            check=False,
-            capture_output=True,
-            timeout=60,
-            env={"PATH": os.environ.get("PATH", ""), **_NETWORK_DENY},
-        )
-    except (OSError, subprocess.SubprocessError):
+        connection, _ = listener.accept()
+    except OSError:
         return False
-    return completed.returncode == _PROBE_DENIED
+    connection.close()
+    return True
+
+
+def _classify_probe(prefix: Sequence[str]) -> str:
+    """Run the probe under ``prefix`` against a listener in this process."""
+    with socket.socket() as listener:
+        try:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+        except OSError:  # pragma: no cover - a host that cannot listen on loopback
+            return _UNUSABLE
+        # The child connects and exits; the connection waits in the backlog
+        # until it is accepted below, so the accept order does not matter.
+        listener.settimeout(1)
+        port = listener.getsockname()[1]
+        try:
+            completed = subprocess.run(
+                [*prefix, sys.executable, "-c", _DENIAL_PROBE, str(port)],
+                check=False,
+                capture_output=True,
+                timeout=60,
+                env={"PATH": os.environ.get("PATH", ""), **_NETWORK_DENY},
+            )
+        except (OSError, subprocess.SubprocessError):
+            return _UNUSABLE
+        if _accepted(listener):
+            return _REACHED
+    if completed.returncode == _PROBE_REACHED:
+        # The child says it connected but nothing arrived here; treat the
+        # disagreement as a probe that proved nothing rather than as isolation.
+        return _UNUSABLE
+    return _CONTAINED if completed.returncode == _PROBE_DENIED else _UNUSABLE
+
+
+def _sandbox_denies_network(prefix: Sequence[str]) -> bool:
+    """Watch a child under ``prefix`` fail to reach a socket that is really there."""
+    return _classify_probe(prefix) == _CONTAINED
 
 
 def _probe_network_sandbox() -> tuple[str, ...] | None:
     if not sys.executable:  # pragma: no cover - a frozen interpreter cannot probe
+        return None
+    # The control, first: a child with no prefix must reach the listener. If it
+    # cannot -- no probe interpreter, loopback blocked, sockets unavailable --
+    # then "could not connect" proves nothing about any candidate, and every
+    # candidate would pass for a boundary. Refuse the whole probe instead.
+    if _classify_probe(()) != _REACHED:
         return None
     for candidate in _SANDBOX_CANDIDATES:
         launcher = _launcher_path(candidate[0])
@@ -552,6 +599,12 @@ def read_tracked_census(repository: Path, commit: str) -> TrackedCensus:
     )
     entries: list[TrackedEntry] = []
     skipped: list[tuple[str, str]] = []
+
+    def skip(path: str, reason: str) -> None:
+        if len(skipped) >= MAX_SKIPPED_PATHS:
+            raise ContextError("skipped path census exceeds the local graph budget")
+        skipped.append((path, reason))
+
     for record in listing.split("\0"):
         if not record:
             continue
@@ -561,13 +614,13 @@ def read_tracked_census(repository: Path, commit: str) -> TrackedCensus:
             raise ContextError("local graph build could not read the repository census")
         mode, kind, blob, raw_size = fields
         if mode in _SKIPPED_MODES:
-            skipped.append((path, _SKIPPED_MODES[mode]))
+            skip(path, _SKIPPED_MODES[mode])
             continue
         if _is_provider_state(path):
-            skipped.append((path, "provider state"))
+            skip(path, "provider state")
             continue
         if mode not in _REGULAR_MODES or kind != "blob":
-            skipped.append((path, "unsupported"))
+            skip(path, "unsupported")
             continue
         if len(entries) >= MAX_TRACKED_FILES:
             raise ContextError("tracked file census exceeds the local graph budget")
@@ -1208,7 +1261,7 @@ def load_manifest(payload: Mapping[str, Any]) -> BuildManifest:
         graph_digest=_digest(payload["graph_digest"]),
         graph_bytes=_size(payload["graph_bytes"], MAX_ARTIFACT_BYTES),
         completeness=completeness,
-        skipped_paths=_size(payload["skipped_paths"], MAX_TRACKED_FILES),
+        skipped_paths=_size(payload["skipped_paths"], MAX_SKIPPED_PATHS),
         indexed_files=_size(payload["indexed_files"], MAX_TRACKED_FILES),
     )
 
@@ -1304,8 +1357,21 @@ class GraphStateRoot:
         self.verify_private(create=True)
 
     def _refuse_state_inside_a_repository(self) -> None:
-        if any((parent / ".git").exists() for parent in (self.path, *self.path.parents)):
-            raise ContextError("local graph state must stay outside Git repositories")
+        """No generation may be written inside a repository, by any spelling.
+
+        Checked on the *resolved* path as well as the given one. A lexical walk
+        alone reads ``--state-dir /outside/link/state`` as being outside every
+        repository even when ``/outside/link`` points at ``/repo/subdir``, and
+        the ``O_NOFOLLOW`` opens below would not catch it either: they protect
+        the final component of each directory this class owns, not an ancestor
+        somebody else created. Symlinked ancestors are resolved rather than
+        refused, because ordinary private roots have them -- macOS puts
+        ``/tmp`` behind ``/private/tmp``.
+        """
+        resolved = Path(os.path.realpath(self.path))
+        for candidate in dict.fromkeys((self.path, resolved)):
+            if any((parent / ".git").exists() for parent in (candidate, *candidate.parents)):
+                raise ContextError("local graph state must stay outside Git repositories")
 
     def _ensure_lock_directory(self) -> None:
         """Create only what the lock file needs, not the generations tree.
@@ -1407,16 +1473,29 @@ class GraphStateRoot:
         ``current`` start naming it. A crash between the two leaves an
         unreferenced generation, which ``prune`` removes; it never leaves a
         pointer to a directory that does not exist.
+
+        Nothing is written until the serialized manifest has been read back
+        through ``load_manifest`` and measured against the bound a reader
+        applies. A manifest this process can write but no reader can load would
+        otherwise publish, move ``current`` onto it, prune the previous usable
+        generation, and read back ``invalid`` on the next status: a build that
+        reports success while destroying the only generation that worked. The
+        check belongs here, at the one boundary every generation crosses,
+        rather than at each of the places that fill a single field in.
         """
+        serialized = json.dumps(
+            manifest.to_json(), allow_nan=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+        if len(serialized) > MAX_MANIFEST_BYTES:
+            raise ContextError("local graph manifest exceeds its bound; no generation was published")
+        if load_manifest(json.loads(serialized)).generation != manifest.generation:
+            raise ContextError("local graph manifest does not match its generation")
         self.ensure()
         staging = self.generations_path / ("." + uuid.uuid4().hex + ".staging")
         staging.mkdir(mode=0o700)
         try:
             _write_private_file(staging / ARTIFACT_NAME, artifact)
-            _write_private_file(
-                staging / MANIFEST_NAME,
-                json.dumps(manifest.to_json(), allow_nan=False, sort_keys=True, separators=(",", ":")).encode(),
-            )
+            _write_private_file(staging / MANIFEST_NAME, serialized)
             _fsync_directory(staging)
             final = self.generations_path / manifest.generation
             os.rename(staging, final)

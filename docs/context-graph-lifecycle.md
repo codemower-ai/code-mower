@@ -47,7 +47,11 @@ provenance at all. If Code Mower does not bind the revision, nothing does.
    the provider resume from a cache built over content this build never saw,
    and let the adapter collect tracked repository bytes as if the provider had
    just produced them. The census digest covers mode, blob name, size and path
-   for every entry in sorted order.
+   for every entry in sorted order. Both halves of the census are bounded as
+   they are collected: the file-count budget covers what is materialized, and a
+   matching budget covers what is skipped, because a repository of symlinks,
+   submodules, or committed provider state grows the skipped list without adding
+   a single entry to the other one.
 3. **Materialize into private state.** Each blob is written into a fresh 0700
    directory as a 0600 file. Untracked and ignored files have no path into the
    graph because they are never written, rather than because something filtered
@@ -59,7 +63,12 @@ provenance at all. If Code Mower does not bind the revision, nothing does.
    secret variable is excluded by default because the list names what is kept,
    not what is dropped. The network boundary is separate and is described
    below; the emptied proxy variables are hygiene, not that boundary.
-5. **Publish atomically.** The generation is assembled under a staging name,
+5. **Publish atomically.** The manifest is serialized and read back through the
+   same validation every consumer applies before anything is written: a
+   manifest this process can write but no reader can load would otherwise
+   become `current`, prune the generation that worked, and read back `invalid`
+   on the next status — a build reporting success while destroying the only
+   usable graph. Then the generation is assembled under a staging name,
    fsynced, renamed into `generations/<id>`, and only then does the `current`
    pointer start naming it. A reader sees the whole previous generation or the
    whole new one.
@@ -95,11 +104,21 @@ behind an argv prefix that denies it sockets at the operating-system level —
 namespace via `unshare --net` on Linux.
 
 No mechanism is trusted on its name. Each candidate is accepted only after a
-probe child launched behind it has been *observed* failing to open a TCP
-connection with a denial — `EPERM`, `ENETUNREACH`, and the like. A *refused*
-connection is the failure case: it proves the syscall reached the network stack,
-so the candidate is rejected. The result is cached for the process, since it is
-a property of the host.
+probe child launched behind it has been *observed* failing to reach a TCP
+listener this process is really holding open on loopback. The verdict is taken
+at the listener, not from the child's errno: a network namespace brings up its
+own loopback, so a correctly contained child sees the same `ECONNREFUSED` that
+an unconfined child sees from an unused host port. Those two are
+indistinguishable at the child and obvious at the listener, which either
+accepted a connection or did not. A candidate passes only when the child
+reported that it could not connect *and* nothing arrived, so a launcher that
+never started its child cannot pass for a boundary.
+
+An unsandboxed control child runs first and must reach the listener. If it
+cannot — no probe interpreter, loopback unavailable — then "could not connect"
+proves nothing about any candidate, every candidate would pass, and the probe
+refuses outright instead. The result is cached for the process, since it is a
+property of the host.
 
 A host where no candidate passes gets no build. `subprocess_indexer()` raises
 before a single blob is materialized, and `context-graph doctor` reports the
@@ -337,7 +356,13 @@ name keeps its `PATH` lookup.
 Directories are 0700 and files 0600. `<workspace>` is derived from the resolved
 checkout path, so two worktrees of the same repository get separate state and
 can never read each other's generations. State is refused inside any Git
-repository, which is the enforcement half of adoption condition 2.
+repository, which is the enforcement half of adoption condition 2. The refusal
+is checked on the resolved path as well as the given one: `--state-dir
+/outside/link/state` names no repository in its own spelling while
+`/outside/link` points inside one, and the `O_NOFOLLOW` opens cover only the
+final component of each directory this module creates. Symlinked ancestors are
+resolved rather than rejected — ordinary private roots have them, macOS reaches
+`/tmp` through `/private/tmp`.
 
 ## What this does not do
 

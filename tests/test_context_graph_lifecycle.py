@@ -15,6 +15,7 @@ proxy variables would have passed on code that had none.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import json
@@ -27,6 +28,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -322,6 +324,31 @@ class CensusAndMaterializationTests(TemporaryWorkspace):
         self.assertEqual(before.digest, after.digest)
         self.assertNotEqual(before.skipped, after.skipped)
 
+    def test_skipped_paths_are_bounded_like_materialized_ones(self) -> None:
+        """The file-count budget bounds what is written, not what is recorded.
+
+        A repository of symlinks, submodules, or committed provider state adds
+        nothing to ``entries`` and so passes the tracked-file budget however
+        large it gets, while ``skipped`` grows with it. The manifest's
+        ``skipped_paths`` is validated against the same bound on every read, so
+        an unbounded census would publish a generation, prune its predecessor,
+        and then read back ``invalid``. The refusal belongs here, before a build
+        has done anything.
+        """
+        links = [f"link-{index}.py" for index in range(3)]
+        for name in links:
+            os.symlink("/etc/passwd", self.repository / name)
+        # Named, not ``add .``: the workspace deliberately holds an untracked
+        # secret, and this test is about the census, not about committing it.
+        git(self.repository, "add", *links)
+        git(self.repository, "commit", "-q", "-m", "many symlinks")
+        commit, _ = lifecycle.resolve_revision(self.repository)
+        with mock.patch.object(lifecycle, "MAX_SKIPPED_PATHS", 2):
+            with self.assertRaises(ContextError):
+                lifecycle.read_tracked_census(self.repository, commit)
+        census = lifecycle.read_tracked_census(self.repository, commit)
+        self.assertEqual(len(census.skipped), 3)
+
     def test_materialization_writes_only_tracked_files(self) -> None:
         commit, _ = lifecycle.resolve_revision(self.repository)
         census = lifecycle.read_tracked_census(self.repository, commit)
@@ -469,11 +496,40 @@ class NetworkIsolationTests(unittest.TestCase):
         path.chmod(0o700)
         return str(path)
 
+    def closed_port(self) -> int:
+        """A loopback port that refuses connections, as an empty namespace does.
+
+        Bound and never listened on, rather than bound and released: a released
+        ephemeral port can be handed straight back to the listener this test is
+        trying to prove unreachable. Holding it means the refusal is the one
+        this test arranged.
+        """
+        held = socket.socket()
+        self.addCleanup(held.close)
+        held.bind(("127.0.0.1", 0))
+        return held.getsockname()[1]
+
+    def redirecting_launcher(self, port: int) -> str:
+        """A stand-in for a launcher that gives its child its own loopback.
+
+        This is the shape ``bwrap --unshare-net`` has: the child really runs,
+        loopback really comes up inside the new namespace, and the connection is
+        *refused* because the host's listener is not in there with it. The
+        launcher runs the probe it was handed against a port nothing is on,
+        which is what the child would have seen.
+        """
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "namespace-launcher"
+        path.write_text(f'#!/bin/sh\nexec "$1" "$2" "$3" {port}\n', encoding="utf-8")
+        path.chmod(0o700)
+        return str(path)
+
     def test_a_child_that_reports_a_denial_is_accepted(self) -> None:
         self.assertTrue(lifecycle._sandbox_denies_network((self.launcher(lifecycle._PROBE_DENIED),)))
 
     def test_a_child_that_reached_the_network_stack_is_rejected(self) -> None:
-        self.assertFalse(lifecycle._sandbox_denies_network((self.launcher(3),)))
+        self.assertFalse(lifecycle._sandbox_denies_network((self.launcher(lifecycle._PROBE_REACHED),)))
 
     def test_a_launcher_that_cannot_start_is_rejected(self) -> None:
         self.assertFalse(lifecycle._sandbox_denies_network(("/nonexistent/launcher",)))
@@ -485,6 +541,36 @@ class NetworkIsolationTests(unittest.TestCase):
         if not os.access(passthrough[0], os.X_OK):  # pragma: no cover - platform
             self.skipTest("no pass-through launcher to test against")
         self.assertFalse(lifecycle._sandbox_denies_network(passthrough))
+
+    def test_a_refused_connection_inside_a_namespace_is_containment(self) -> None:
+        """The bubblewrap case: refused by an empty namespace, not by the host.
+
+        Classifying on the child's errno cannot tell that apart from a refusal
+        by an unused host port, so a probe that only accepted ``EPERM``-shaped
+        denials rejected working bubblewrap isolation and left such hosts unable
+        to build at all. The verdict is taken at the listener instead: nothing
+        arrived, so the child was contained.
+        """
+        self.assertTrue(lifecycle._sandbox_denies_network((self.redirecting_launcher(self.closed_port()),)))
+
+    def test_the_probe_proves_its_own_apparatus_before_trusting_a_refusal(self) -> None:
+        """No candidate passes if an unsandboxed child cannot reach the listener.
+
+        "Could not connect" only means containment when connecting was possible
+        in the first place. If the control fails -- no probe interpreter,
+        loopback unavailable -- every candidate would look like a boundary, so
+        the whole probe refuses and builds refuse with it.
+        """
+        calls: list[tuple[str, ...]] = []
+
+        def classify(prefix):
+            calls.append(tuple(prefix))
+            return lifecycle._CONTAINED
+
+        with mock.patch.object(lifecycle, "_classify_probe", classify):
+            self.assertIsNone(lifecycle._probe_network_sandbox())
+        # The control ran, and nothing was probed after it failed.
+        self.assertEqual(calls, [()])
 
 
 #: What a provider that finished leaves behind: a completion claim and counts
@@ -1026,6 +1112,55 @@ class BuildAndPublishTests(TemporaryWorkspace):
     def test_state_is_refused_inside_a_git_repository(self) -> None:
         with self.assertRaises(ContextError):
             self.build(root=self.repository / ".code-mower-state")
+
+    def test_state_is_refused_behind_a_symlink_into_a_repository(self) -> None:
+        """A lexical ancestor walk does not see the repository through a link.
+
+        ``--state-dir /outside/link/state`` names no repository in its own
+        spelling, but ``/outside/link`` can point at a directory inside one, and
+        the ``O_NOFOLLOW`` opens only cover the final component of each
+        directory this lane creates. Resolved, the path is inside the checkout
+        and the artifacts would land in it.
+        """
+        inside = self.repository / "subdir"
+        inside.mkdir()
+        outside = self.root / "outside"
+        outside.mkdir()
+        os.symlink(inside, outside / "link")
+        with self.assertRaises(ContextError):
+            self.build(root=outside / "link" / "graph-state")
+        self.assertFalse((inside / "graph-state").exists())
+
+    def test_an_ordinary_symlinked_ancestor_is_resolved_not_refused(self) -> None:
+        # Resolving, not rejecting: private roots legitimately sit behind
+        # links -- macOS reaches ``/tmp`` through ``/private/tmp`` -- so a
+        # symlinked ancestor outside any repository must still build.
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        os.symlink(elsewhere, self.root / "linked-state")
+        manifest = self.build(root=self.root / "linked-state" / "graph")
+        self.assertEqual(manifest.completeness, lifecycle.COMPLETE)
+
+    def test_a_manifest_no_reader_could_load_publishes_nothing(self) -> None:
+        """Publication validates the whole manifest before it touches state.
+
+        A manifest that this process can write but ``load_manifest`` refuses
+        would otherwise become ``current``, prune the generation that worked,
+        and read back ``invalid`` on the next status -- a build reporting
+        success while destroying the only usable graph.
+        """
+        first = self.build()
+        state = lifecycle.GraphStateRoot(self.repository, root=self.state)
+        unreadable = dataclasses.replace(
+            first,
+            generation=uuid.uuid4().hex,
+            skipped_paths=lifecycle.MAX_SKIPPED_PATHS + 1,
+        )
+        with self.assertRaises(ContextError):
+            state.publish(unreadable, b"graph-bytes")
+        self.assertEqual(state.current_generation(), first.generation)
+        self.assertEqual(list(lifecycle.iter_generations(self.repository, root=self.state)), [first.generation])
+        self.assertEqual(state.read_manifest(first.generation), first)
 
 
 class StatusFailsClosedTests(TemporaryWorkspace):
