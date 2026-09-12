@@ -19,7 +19,11 @@ from .adoption import (
 from .audit_limits import check_effective_audit_limits
 from .cloud import check_cloud_token_surface
 from .common import ACTIONS_COST_SAMPLE_DEFAULT, load_inputs
-from .devin import check_devin_readiness, devin_readiness_selected
+from .devin import (
+    check_devin_readiness,
+    devin_effective_lane,
+    devin_readiness_selected,
+)
 from .github import check_github_setup
 from .jira import check_jira_tracker_readiness
 from .github_config import check_repository_posture
@@ -307,6 +311,9 @@ def run_doctor(
                 provider_credential_file=provider_credential_file,
                 provider_profile=provider_profile,
                 provider_config_dir=provider_config_dir,
+                config_profile=profile,
+                effective_lane=devin_effective_lane(effective_lanes),
+                adoption_posture=adoption_posture,
             )
         )
     checks.extend(

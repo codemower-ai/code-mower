@@ -3,16 +3,29 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from code_mower import config as code_mower_config
+from code_mower.provider_capabilities import TRANSPORTS
 
 from .models import DoctorCheck
+from .provider_local_cli_commands import candidate_local_cli_commands
 
 # `code_mower.devin_readiness` reaches the Devin credential and campaign modules,
 # which import this check package; resolve it per call to keep that acyclic.
 
-__all__ = ["check_devin_readiness", "devin_readiness_selected"]
+__all__ = [
+    "check_devin_readiness",
+    "devin_cli_commands",
+    "devin_effective_lane",
+    "devin_readiness_selected",
+]
+
+DEVIN_REVIEW_LANES = frozenset(
+    transport.review_lane
+    for transport in TRANSPORTS.values()
+    if transport.product == "devin"
+)
 
 
 def devin_readiness_selected(
@@ -30,6 +43,23 @@ def devin_readiness_selected(
         return None
 
 
+def devin_effective_lane(
+    effective_lanes: Iterable[tuple[str, Mapping[str, Any]]],
+) -> Mapping[str, Any] | None:
+    """Return the effective configuration of the selected Devin review lane."""
+    for lane_id, effective in effective_lanes:
+        if lane_id in DEVIN_REVIEW_LANES:
+            return effective
+    return None
+
+
+def devin_cli_commands(effective_lane: Mapping[str, Any] | None) -> tuple[str, ...]:
+    """Return the selected lane's command candidates in runtime discovery order."""
+    if not isinstance(effective_lane, Mapping):
+        return ()
+    return tuple(candidate_local_cli_commands(effective_lane))
+
+
 def check_devin_readiness(
     *,
     config: Mapping[str, Any] | None,
@@ -40,6 +70,9 @@ def check_devin_readiness(
     provider_credential_file: Path | None = None,
     provider_profile: str = "",
     provider_config_dir: Path | None = None,
+    config_profile: str | None = "recommended",
+    effective_lane: Mapping[str, Any] | None = None,
+    adoption_posture: str = "reviewer-gate",
 ) -> list[DoctorCheck]:
     from code_mower.devin_readiness import devin_readiness
 
@@ -50,7 +83,10 @@ def check_devin_readiness(
         transport=transport,
         credential_file=provider_credential_file,
         profile=provider_profile,
+        config_profile=config_profile,
         config_dir=provider_config_dir,
+        cli_commands=devin_cli_commands(effective_lane),
+        adoption_posture=adoption_posture,
         include_unselected=include_unselected,
     )
     return [

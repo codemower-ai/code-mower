@@ -62,6 +62,13 @@ DEVIN_REVIEW_LANES = frozenset(DEVIN_LANE_TRANSPORTS)
 CLI_COMMAND_ENV = "CODE_MOWER_DEVIN_CLI_COMMAND"
 DEFAULT_CLI_COMMAND = "devin"
 
+# Coordinating machines never execute a local reviewer CLI, so readiness skips
+# the local executable requirement wherever lane runtime skips it. The doctor
+# check package owns the canonical set and cannot be imported here without a
+# cycle, so a test pins these values to it.
+OBSERVER_POSTURES = frozenset({"hosted-builders", "orchestrator-only"})
+DEFAULT_ADOPTION_POSTURE = "reviewer-gate"
+
 SELECT_LOCAL_COMMAND = "code-mower init --with claude,codex,devin-cli --apply"
 SELECT_HOSTED_COMMAND = "code-mower init --with claude,codex,devin-api-v3 --apply"
 
@@ -184,9 +191,22 @@ def _explicit_transport_selected(config: Mapping[str, Any]) -> bool:
     return False
 
 
-def _cli_command() -> str:
-    """Return the configured command, which may be an absolute local path."""
-    return str(os.environ.get(CLI_COMMAND_ENV) or DEFAULT_CLI_COMMAND)
+def _cli_commands(configured: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """Return the candidate commands, which may be absolute local paths.
+
+    The selected lane's own discovery order wins so readiness cannot contradict
+    lane runtime; the historical override and default follow it.
+    """
+    candidates = [command for command in configured if command]
+    override = str(os.environ.get(CLI_COMMAND_ENV) or "")
+    if override:
+        candidates.append(override)
+    candidates.append(DEFAULT_CLI_COMMAND)
+    ordered: list[str] = []
+    for command in candidates:
+        if command not in ordered:
+            ordered.append(command)
+    return tuple(ordered)
 
 
 def _selection_finding(transport: str, lane: str) -> ReadinessFinding:
@@ -244,11 +264,17 @@ def _capability_finding(transport: str, lane: str) -> ReadinessFinding:
     )
 
 
-def _local_cli_finding(lane: str) -> ReadinessFinding:
-    configured = _cli_command()
-    # Discovery uses the configured command so an override outside PATH resolves,
+def _local_cli_finding(
+    lane: str,
+    *,
+    cli_commands: tuple[str, ...] = (),
+    adoption_posture: str = DEFAULT_ADOPTION_POSTURE,
+) -> ReadinessFinding:
+    candidates = _cli_commands(cli_commands)
+    resolved = next((command for command in candidates if shutil.which(command)), None)
+    # Discovery uses each configured command so an override outside PATH resolves,
     # while reporting stays a basename so no local path leaves the machine.
-    command = os.path.basename(configured)
+    command = os.path.basename(resolved or candidates[0])
     detail: dict[str, Any] = {
         "schema": SCHEMA,
         "posture": POSTURE_LOCAL_CLI,
@@ -256,8 +282,22 @@ def _local_cli_finding(lane: str) -> ReadinessFinding:
         "command": command,
         "command_env": CLI_COMMAND_ENV,
         "authentication": "ambient_cli_login",
+        "adoption_posture": adoption_posture,
     }
-    if shutil.which(configured):
+    if adoption_posture in OBSERVER_POSTURES:
+        return ReadinessFinding(
+            name="provider.devin.local_cli",
+            status=STATUS_SKIP,
+            message=f"{adoption_posture} posture does not execute the local Devin CLI "
+            "on this machine, so its availability was not inspected",
+            lane=lane,
+            detail=detail,
+            remediation=(
+                "Rerun `code-mower doctor --devin` without the hosted-builder or "
+                "orchestrator-only posture on the machine that executes the lane."
+            ),
+        )
+    if resolved is not None:
         return ReadinessFinding(
             name="provider.devin.local_cli",
             status=STATUS_PASS,
@@ -546,15 +586,22 @@ def devin_readiness(
     env: Mapping[str, str] | None = None,
     credential_file: Path | None = None,
     profile: str = "",
+    config_profile: str | None = "recommended",
     config_dir: Path | None = None,
+    cli_commands: tuple[str, ...] = (),
+    adoption_posture: str = DEFAULT_ADOPTION_POSTURE,
     include_unselected: bool = False,
 ) -> tuple[ReadinessFinding, ...]:
     """Return the readiness findings for the selected optional Devin posture.
 
-    A repository without Devin produces no findings unless the caller explicitly
+    ``profile`` names the stored credential profile; ``config_profile`` names the
+    configuration profile whose lanes decide which transport is selected. A
+    repository without Devin produces no findings unless the caller explicitly
     asks for the unselected guidance.
     """
-    selected = transport or selected_devin_transport(config, lanes=lanes)
+    selected = transport or selected_devin_transport(
+        config, lanes=lanes, profile=config_profile
+    )
     if selected is None:
         return _unselected_findings() if include_unselected else ()
     if selected not in TRANSPORTS:
@@ -565,7 +612,11 @@ def devin_readiness(
         _capability_finding(selected, lane),
     ]
     if selected == LOCAL_TRANSPORT:
-        findings.append(_local_cli_finding(lane))
+        findings.append(
+            _local_cli_finding(
+                lane, cli_commands=cli_commands, adoption_posture=adoption_posture
+            )
+        )
     else:
         findings.append(
             _hosted_credential_finding(
