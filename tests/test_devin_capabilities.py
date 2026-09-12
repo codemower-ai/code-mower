@@ -72,12 +72,21 @@ class DevinCapabilityTests(unittest.TestCase):
         self.assertIn("informational", rendered["flags"])
         self.assertNotIn("merge-authority", rendered["flags"])
 
-    def test_pre_context_hosted_capabilities_migrate_and_only_that_declaration(self):
+    def test_earlier_hosted_capabilities_migrate_and_only_those_declarations(self):
         current = participants.reference_review_config("devin")
         self.assertEqual(current["capabilities"]["context"], "agent_handoff")
-        legacy = copy.deepcopy(current)
+        pre_remote_session = copy.deepcopy(current)  # Exact pre-remote-session declaration.
+        pre_remote_session["capabilities"].update(
+            message="unavailable", cancel="unavailable", structured_results="campaign_only",
+        )
+        legacy = copy.deepcopy(pre_remote_session)
         legacy["capabilities"]["context"] = "unavailable"  # Exact pre-D5 template declaration.
-        self.assertEqual(LEGACY_CAPABILITIES, {"devin_api_v3": (legacy["capabilities"],)})
+        self.assertEqual(LEGACY_CAPABILITIES, {"devin_api_v3": (
+            pre_remote_session["capabilities"], legacy["capabilities"],
+        )})
+        for accepted in (pre_remote_session, legacy):
+            migrated = normalize_lane("devin", copy.deepcopy(accepted))
+            self.assertEqual(migrated["capabilities"], current["capabilities"])
         lane = normalize_lane("devin", legacy)
         self.assertEqual(lane["capabilities"], current["capabilities"])
         self.assertEqual((lane["transport"], lane["driver"]), ("devin_api_v3", "hosted_bridge"))
@@ -214,8 +223,12 @@ class DevinCapabilityTests(unittest.TestCase):
                 self.assertTrue(member["reviewer"]["informational"])
                 rendered = session.render_session(brief)
                 self.assertIn(expected, rendered)
-                for capability in ("message", "cancel"):
-                    self.assertIn(capability + "=unavailable", rendered)
+                for capability in ("message", "cancel", "structured_results"):
+                    expected_mode = getattr(TRANSPORTS[expected].capabilities, capability)
+                    self.assertIn(f"{capability}={expected_mode}", rendered)
+                    self.assertEqual(
+                        expected == "devin_api_v3", expected_mode == "remote_session"
+                    )
                 self.assertIn("context=" + TRANSPORTS[expected].capabilities.context, rendered)
                 self.assertEqual(expected == "devin_api_v3", "context=agent_handoff" in rendered)
 
@@ -271,9 +284,37 @@ class DevinCapabilityTests(unittest.TestCase):
             checks = check_lane_runtime(transport.review_lane, participants.reference_review_config(transport.review_lane), probe_runtime=False, http_timeout=1, adoption_posture="orchestrator-only")
             check = next(check for check in checks if check.name == "provider.capabilities")
             self.assertEqual(check.detail, transport.brief())
-            self.assertIn("message, cancel", check.message)
+            self.assertEqual(
+                transport.transport == "devin_cli", "message, cancel" in check.message
+            )
             self.assertEqual(transport.transport == "devin_cli", "context" in check.message)
             self.assertEqual(check.status, "warn")
+
+    def test_hosted_remote_session_modes_name_real_provider_operations(self):
+        """Each hosted `remote_session` mode must have a shipped operation behind it."""
+        from code_mower.remote_session import DevinProvider
+        from code_mower.remote_session_cli import COMMANDS
+
+        hosted = TRANSPORTS["devin_api_v3"].capabilities
+        operations = {
+            "message": ("message",),
+            "cancel": ("cancel",),
+            "structured_results": ("status", "collect"),
+        }
+        for capability, commands in operations.items():
+            with self.subTest(capability=capability):
+                self.assertEqual(getattr(hosted, capability), "remote_session")
+                for command in commands:
+                    self.assertIn(command, COMMANDS)
+        for operation in ("get", "message", "cancel"):
+            self.assertTrue(callable(getattr(DevinProvider, operation)))
+        self.assertIn("completion_schema", DevinProvider.__init__.__code__.co_varnames)
+        local = TRANSPORTS["devin_cli"].capabilities
+        for capability in ("message", "cancel"):
+            self.assertEqual(getattr(local, capability), "unavailable")
+        self.assertEqual(local.structured_results, "local_runner")
+        self.assertEqual(hosted.coordinate, "unavailable")
+        self.assertEqual(hosted.review, "evidence_only")
 
     def test_shipped_schema_matches_each_complete_transport_contract(self):
         schema = json.loads((ROOT / "src/code_mower/provider_capabilities.schema.json").read_text())

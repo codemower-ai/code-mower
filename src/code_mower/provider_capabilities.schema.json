@@ -73,10 +73,10 @@
             "coordinate": "unavailable",
             "build": "agent_handoff",
             "review": "evidence_only",
-            "message": "unavailable",
-            "cancel": "unavailable",
+            "message": "remote_session",
+            "cancel": "remote_session",
             "context": "agent_handoff",
-            "structured_results": "campaign_only"
+            "structured_results": "remote_session"
           }
         },
         "readiness": {
@@ -84,9 +84,7 @@
         },
         "capability_gaps": {
           "const": [
-            "coordinate",
-            "message",
-            "cancel"
+            "coordinate"
           ]
         }
       }

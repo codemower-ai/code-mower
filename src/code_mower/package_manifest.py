@@ -214,6 +214,11 @@ PACKAGE_FILES = (
         "core",
     ),
     (
+        "src/code_mower/local_cli_commands.py",
+        "src/code_mower/local_cli_commands.py",
+        "core",
+    ),
+    (
         "src/code_mower/doctor_checks/campaign_auth.py",
         "src/code_mower/doctor_checks/campaign_auth.py",
         "core",

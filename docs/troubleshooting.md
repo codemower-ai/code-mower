@@ -67,8 +67,12 @@ never selected Devin produces no Devin checks at all. When it is selected, one
 command reports the whole optional setup:
 
 ```bash
-code-mower doctor --devin --repo OWNER/REPO --json
+code-mower doctor --profile recommended --devin --repo OWNER/REPO --json
 ```
+
+Use the profile this repository actually selected: `--profile recommended` is the
+default, and any other profile name replaces it so the check reports that
+profile's Devin lane rather than another one.
 
 Read `provider.devin.selection` first: it names the selected transport and the
 authentication that belongs to it. The two authentications are separate, and one
@@ -83,10 +87,12 @@ never substitutes for the other.
 | `provider.devin.permissions` is skipped | Devin exposes no read-only permission probe, so the requirement is reported rather than verified | have the account owner confirm the create, view, and manage permissions listed in the check |
 | `provider.devin.capabilities` lists capability gaps | the transport does not support those capabilities at all | report the unavailable capability and hand that work to a selected participant instead of substituting another product |
 
-Two capability gaps come up most often. Hosted Devin cannot coordinate a
-session, so use `devin_cli`, Codex, or Claude as the host. Neither transport
-supports remote message or cancel, so a stalled local run is a local process
-action, and an uncertain hosted dispatch is recovered with
+One capability gap comes up most often: hosted Devin cannot coordinate a
+session, so use `devin_cli`, Codex, or Claude as the host. Hosted sessions do
+support remote clarification messages, cancellation, and structured builder
+results through `code-mower session message|cancel|collect`, while `devin_cli`
+runs locally and has no remote lifecycle at all, so a stalled local run is a
+local process action. An uncertain hosted dispatch is still recovered with
 `code-mower session status ALIAS --provider devin` — never a second dispatch.
 
 Devin checks report metadata only: no credential values, service-user identity,

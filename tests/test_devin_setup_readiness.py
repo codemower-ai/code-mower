@@ -23,6 +23,7 @@ from code_mower.devin_readiness import (
     POSTURE_LOCAL_CLI,
     POSTURE_UNAVAILABLE,
     devin_readiness,
+    readiness_command,
     selected_devin_transport,
     setup_instructions,
 )
@@ -32,8 +33,9 @@ from code_mower.doctor_checks import (
     doctor_check_group_id,
 )
 from code_mower.doctor_checks.common import OBSERVER_ADOPTION_POSTURES
-from code_mower.doctor_checks.devin import devin_cli_commands, devin_effective_lane
+from code_mower.doctor_checks.devin import devin_effective_lane
 from code_mower.doctor_checks.providers import check_lane_runtime
+from code_mower.local_cli_commands import candidate_local_cli_commands
 from code_mower.next_steps import build_next_steps
 from code_mower.package import load_provider_templates
 from code_mower.participants import DEFAULT_PARTICIPANTS, config_with_participants
@@ -168,10 +170,10 @@ class DevinReadinessFindingTests(unittest.TestCase):
 
     def test_configured_command_override_is_discovered_but_reported_as_a_basename(self) -> None:
         override = "/opt/private/tools/devin-cli-bin"
-        with mock.patch.dict(os.environ, {CLI_COMMAND_ENV: override}, clear=False), mock.patch(
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
             "code_mower.devin_readiness.shutil.which", side_effect=lambda name: name == override
         ) as which:
-            findings = _readiness(_config("devin-cli"), env={})
+            findings = _readiness(_config("devin-cli"), env={CLI_COMMAND_ENV: override})
         which.assert_called_once_with(override)
         cli = _finding(findings, "provider.devin.local_cli")
         self.assertEqual(cli.status, "pass")
@@ -188,9 +190,7 @@ class DevinReadinessFindingTests(unittest.TestCase):
             "code_mower.devin_readiness.shutil.which",
             side_effect=lambda name: name == "/opt/private/tools/devin-review",
         ):
-            findings = _readiness(
-                _config("devin-cli"), env={}, cli_commands=devin_cli_commands(lane)
-            )
+            findings = _readiness(_config("devin-cli"), env={}, lane_config=lane)
         cli = _finding(findings, "provider.devin.local_cli")
         self.assertEqual(cli.status, "pass")
         self.assertEqual(cli.detail["command"], "devin-review")
@@ -203,19 +203,36 @@ class DevinReadinessFindingTests(unittest.TestCase):
             "driver": "local_cli",
             "provider_config": {"command_env": "DEVIN_LANE_COMMAND", "command": "devin"},
         }
-        with mock.patch.dict(
-            os.environ, {"DEVIN_LANE_COMMAND": "/opt/lane/bin/devin-lane"}, clear=False
-        ), mock.patch(
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
             "code_mower.devin_readiness.shutil.which",
             side_effect=lambda name: name == "/opt/lane/bin/devin-lane",
         ):
             findings = _readiness(
-                _config("devin-cli"), env={}, cli_commands=devin_cli_commands(lane)
+                _config("devin-cli"),
+                env={"DEVIN_LANE_COMMAND": "/opt/lane/bin/devin-lane"},
+                lane_config=lane,
             )
         cli = _finding(findings, "provider.devin.local_cli")
         self.assertEqual(cli.status, "pass")
         self.assertEqual(cli.detail["command"], "devin-lane")
         self.assertNotIn("/opt/lane", json.dumps(dict(cli.detail)) + cli.message)
+
+    def test_lane_command_discovery_ignores_the_ambient_environment(self) -> None:
+        lane = {
+            "provider": "devin_cli",
+            "driver": "local_cli",
+            "provider_config": {"command_env": "DEVIN_LANE_COMMAND", "command": "devin"},
+        }
+        with mock.patch.dict(
+            os.environ, {"DEVIN_LANE_COMMAND": "/host/only/devin-host"}, clear=False
+        ), mock.patch(
+            "code_mower.devin_readiness.shutil.which", return_value=None
+        ) as which:
+            findings = _readiness(_config("devin-cli"), env={}, lane_config=lane)
+        inspected = [call.args[0] for call in which.call_args_list]
+        self.assertNotIn("/host/only/devin-host", inspected)
+        cli = _finding(findings, "provider.devin.local_cli")
+        self.assertEqual(cli.detail["command"], "devin")
 
     def test_lane_alternate_command_is_discovered(self) -> None:
         lane = {
@@ -230,9 +247,7 @@ class DevinReadinessFindingTests(unittest.TestCase):
             "code_mower.devin_readiness.shutil.which",
             side_effect=lambda name: name == "devin-alternate",
         ):
-            findings = _readiness(
-                _config("devin-cli"), env={}, cli_commands=devin_cli_commands(lane)
-            )
+            findings = _readiness(_config("devin-cli"), env={}, lane_config=lane)
         cli = _finding(findings, "provider.devin.local_cli")
         self.assertEqual(cli.status, "pass")
         self.assertEqual(cli.detail["command"], "devin-alternate")
@@ -554,7 +569,9 @@ class DevinDoctorStageTests(unittest.TestCase):
             ),
         ]
         selected = devin_effective_lane(lanes)
-        self.assertEqual(devin_cli_commands(selected), ("/opt/private/devin-lane",))
+        self.assertEqual(
+            candidate_local_cli_commands(selected, env={}), ["/opt/private/devin-lane"]
+        )
         self.assertIsNone(devin_effective_lane(lanes[:1]))
 
 
@@ -593,6 +610,71 @@ class DevinGuidanceTests(unittest.TestCase):
     def test_setup_instructions_reject_an_unknown_transport(self) -> None:
         with self.assertRaises(ConfigError):
             setup_instructions("devin_desktop")
+
+    def test_setup_instructions_pin_the_selected_config_and_profile(self) -> None:
+        hosted = setup_instructions(
+            HOSTED_TRANSPORT,
+            config_path="dir with spaces/code mower.yml",
+            profile="custom devin",
+            repo_slug="codemower-ai/code-mower",
+        )
+        self.assertIn(
+            "code-mower doctor 'dir with spaces/code mower.yml' "
+            "--profile 'custom devin' --devin --repo codemower-ai/code-mower",
+            " ".join(hosted),
+        )
+        local = setup_instructions(LOCAL_TRANSPORT, profile="recommended")
+        self.assertIn("--profile recommended --devin", " ".join(local))
+
+    def test_guidance_without_profile_inputs_avoids_an_ambiguous_command(self) -> None:
+        guidance = readiness_command()
+        self.assertNotIn("code-mower doctor --profile", guidance)
+        self.assertIn("same configuration and --profile selected here", guidance)
+        instructions = " ".join(setup_instructions(LOCAL_TRANSPORT))
+        self.assertIn("same configuration and --profile selected here", instructions)
+
+    def test_session_brief_guidance_never_emits_an_unpinned_check(self) -> None:
+        brief = build_session(
+            repo="codemower-ai/code-mower",
+            host="claude",
+            selected=("claude", "codex", "devin-api-v3"),
+            config=load_config(EXAMPLE_CONFIG),
+        )
+        instructions = " ".join(brief["instructions"])
+        self.assertNotIn("Confirm readiness with `code-mower doctor", instructions)
+        self.assertIn("same configuration and --profile selected here", instructions)
+
+    def test_multiple_devin_transports_fail_closed_instead_of_first_match(self) -> None:
+        config = {
+            "session_defaults": {"participants": ["claude", "codex", "devin"]},
+            "profiles": {
+                "recommended": {"lanes": ["codex_cli", "devin_cli"]},
+                "hosted-devin": {"lanes": ["codex_cli", "devin"]},
+            },
+        }
+        with self.assertRaises(ConfigError) as raised:
+            selected_devin_transport(config, lanes=("devin", "devin_cli"))
+        self.assertIn("--profile", str(raised.exception))
+        self.assertNotIn("participants", str(raised.exception))
+        self.assertEqual(
+            selected_devin_transport(config, lanes=("devin_cli",), profile="recommended"),
+            LOCAL_TRANSPORT,
+        )
+        self.assertEqual(
+            selected_devin_transport(config, lanes=("devin",), profile="hosted-devin"),
+            HOSTED_TRANSPORT,
+        )
+        explicit = {
+            **config,
+            "session_defaults": {
+                "participants": ["claude", "codex", "devin"],
+                "transports": {"devin": "devin_api_v3"},
+            },
+        }
+        self.assertEqual(
+            selected_devin_transport(explicit, lanes=("devin", "devin_cli")),
+            HOSTED_TRANSPORT,
+        )
 
     def test_next_steps_add_the_devin_check_only_for_devin_profiles(self) -> None:
         templates = load_provider_templates(PROVIDER_TEMPLATES)
@@ -657,9 +739,13 @@ class DevinGuidanceTests(unittest.TestCase):
 
 class DevinDocumentationTests(unittest.TestCase):
     def test_docs_distinguish_local_and_hosted_setup_paths(self) -> None:
+        for name in ("docs/troubleshooting.md", "docs/upgrade-existing-repo.md", "docs/sessions.md"):
+            text = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn("code-mower doctor --profile recommended --devin", text, name)
+            self.assertNotIn("code-mower doctor --devin", text, name)
+            self.assertIn("recommended", text, name)
         for name in ("docs/troubleshooting.md", "docs/upgrade-existing-repo.md"):
             text = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("code-mower doctor --devin", text, name)
             self.assertIn(DEVIN_REPOSITORIES_ENV, text, name)
             self.assertIn("devin auth login", text, name)
 

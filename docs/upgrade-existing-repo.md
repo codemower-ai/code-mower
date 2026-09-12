@@ -197,10 +197,12 @@ that never selected Devin sees no Devin checks. After selecting it, run one
 command for the whole optional setup:
 
 ```bash
-code-mower doctor --devin --repo OWNER/REPO --json
+code-mower doctor --profile recommended --devin --repo OWNER/REPO --json
 ```
 
-The `--devin` flag also works before selection and prints the local CLI, hosted
+Pin the profile you selected in place of `recommended`, so a configuration with
+more than one Devin lane is reported for that profile only. The `--devin` flag
+also works before selection and prints the local CLI, hosted
 API, and unavailable postures with the next action for each. Doctor reports the
 selected transport, which authentication belongs to it, the create/view/manage
 permissions the account owner must grant, the capabilities the transport does

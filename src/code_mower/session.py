@@ -150,7 +150,7 @@ def build_session(
         "instructions": [
             "The selected orchestrator coordinates this session; this command does not launch provider processes.",
             "Check participant authentication, permissions, and transport readiness before assigning work.",
-            "Capability modes describe the current Code Mower integration. Unavailable capabilities pause dependent work; campaign-only results and evidence-only reviews do not imply a general session lifecycle.",
+            "Capability modes describe the current Code Mower integration. Unavailable capabilities pause dependent work; remote-session results and evidence-only reviews confer no review or merge authority.",
             "Assign builds and reviews only to selected participants; report unavailable capabilities instead of substituting another product.",
             "Assign one builder per branch and hand off bounded work through an available tool or existing Code Mower dispatcher.",
             "Request independent reviews against the current PR head; a builder's own review cannot satisfy its peer-review requirement.",

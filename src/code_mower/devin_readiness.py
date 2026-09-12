@@ -15,6 +15,7 @@ raw provider output never appear in a finding.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,7 @@ from .devin_api import (
     credentials_from_env,
     repository_scope_acknowledged,
 )
+from .local_cli_commands import candidate_local_cli_commands
 from .participants import (
     DEFAULT_PARTICIPANTS,
     configured_participants,
@@ -161,13 +163,25 @@ def selected_devin_transport(
     """
     if not isinstance(config, Mapping):
         return None
+    lane_transports = {
+        DEVIN_LANE_TRANSPORTS[lane] for lane in lanes if lane in DEVIN_LANE_TRANSPORTS
+    }
+    explicit = _explicit_transport_selected(config)
+    if len(lane_transports) > 1 and not explicit:
+        # Lane order is not a selection, so an unscoped pair of transports is
+        # reported rather than silently resolved to whichever lane came first.
+        raise ConfigError(
+            "Both Devin review transports are active; scope the check to one "
+            "profile with --profile or set session_defaults.transports.devin to "
+            "devin_cli or devin_api_v3"
+        )
     lane_transport = next(
         (DEVIN_LANE_TRANSPORTS[lane] for lane in lanes if lane in DEVIN_LANE_TRANSPORTS), None
     )
     if lane_transport is None and "devin" not in configured_participants(config):
         return None
     configured = configured_transports(config, profile=profile)["devin"]
-    if lane_transport is not None and not _explicit_transport_selected(config):
+    if lane_transport is not None and not explicit:
         return lane_transport
     return configured
 
@@ -191,14 +205,21 @@ def _explicit_transport_selected(config: Mapping[str, Any]) -> bool:
     return False
 
 
-def _cli_commands(configured: tuple[str, ...] = ()) -> tuple[str, ...]:
+def _cli_commands(
+    lane_config: Mapping[str, Any] | None, env: Mapping[str, str]
+) -> tuple[str, ...]:
     """Return the candidate commands, which may be absolute local paths.
 
     The selected lane's own discovery order wins so readiness cannot contradict
-    lane runtime; the historical override and default follow it.
+    lane runtime; the historical override and default follow it. Every lookup
+    reads the injected environment so readiness never depends on the host.
     """
-    candidates = [command for command in configured if command]
-    override = str(os.environ.get(CLI_COMMAND_ENV) or "")
+    candidates = (
+        list(candidate_local_cli_commands(lane_config, env=env))
+        if isinstance(lane_config, Mapping)
+        else []
+    )
+    override = str(env.get(CLI_COMMAND_ENV) or "")
     if override:
         candidates.append(override)
     candidates.append(DEFAULT_CLI_COMMAND)
@@ -267,10 +288,11 @@ def _capability_finding(transport: str, lane: str) -> ReadinessFinding:
 def _local_cli_finding(
     lane: str,
     *,
-    cli_commands: tuple[str, ...] = (),
+    lane_config: Mapping[str, Any] | None,
+    env: Mapping[str, str],
     adoption_posture: str = DEFAULT_ADOPTION_POSTURE,
 ) -> ReadinessFinding:
-    candidates = _cli_commands(cli_commands)
+    candidates = _cli_commands(lane_config, env)
     resolved = next((command for command in candidates if shutil.which(command)), None)
     # Discovery uses each configured command so an override outside PATH resolves,
     # while reporting stays a basename so no local path leaves the machine.
@@ -293,8 +315,9 @@ def _local_cli_finding(
             lane=lane,
             detail=detail,
             remediation=(
-                "Rerun `code-mower doctor --devin` without the hosted-builder or "
-                "orchestrator-only posture on the machine that executes the lane."
+                "Rerun `code-mower doctor --devin` with the same configuration and "
+                "--profile, without the hosted-builder or orchestrator-only posture, "
+                "on the machine that executes the lane."
             ),
         )
     if resolved is not None:
@@ -491,8 +514,9 @@ def _lifecycle_finding(transport: str, lane: str) -> ReadinessFinding:
     return ReadinessFinding(
         name="provider.devin.lifecycle",
         status=STATUS_PASS,
-        message="hosted lifecycle commands preview by default and require --apply; "
-        "uncertain dispatch recovers through status, never a second dispatch",
+        message="hosted remote sessions support status, message, cancel, and collect; "
+        "lifecycle commands preview by default and require --apply, and uncertain "
+        "dispatch recovers through status, never a second dispatch",
         lane=lane,
         detail={
             "schema": SCHEMA,
@@ -502,6 +526,9 @@ def _lifecycle_finding(transport: str, lane: str) -> ReadinessFinding:
                 "code-mower session dispatch ALIAS --provider devin --repo OWNER/REPO "
                 "--input-file FILE --apply",
                 "code-mower session status ALIAS --provider devin",
+                "code-mower session message ALIAS --provider devin --request KEY "
+                "--input-file FILE --apply",
+                "code-mower session cancel ALIAS --provider devin --request KEY --apply",
                 "code-mower session collect ALIAS --provider devin --apply",
             ],
         },
@@ -529,7 +556,8 @@ def _unselected_findings() -> tuple[ReadinessFinding, ...]:
             remediation=(
                 "Add Devin with `code-mower init --interactive` or "
                 f"`{SELECT_LOCAL_COMMAND}` (hosted: `{SELECT_HOSTED_COMMAND}`), then "
-                "rerun `code-mower doctor --devin`."
+                "rerun `code-mower doctor --devin` with the same configuration and "
+                "--profile."
             ),
         ),
         ReadinessFinding(
@@ -551,23 +579,59 @@ def _unselected_findings() -> tuple[ReadinessFinding, ...]:
     )
 
 
-def setup_instructions(transport: str) -> tuple[str, ...]:
+def readiness_command(
+    *,
+    config_path: str = "",
+    profile: str = "",
+    repo_slug: str = "",
+) -> str:
+    """Return the doctor command that inspects exactly this posture.
+
+    A generated command must pin the configuration and profile it describes,
+    because an unpinned check can read another profile's Devin lane. A caller
+    without those inputs gets guidance to reuse its own instead of a command
+    that silently inspects something else.
+    """
+    if not profile:
+        return (
+            "the same `code-mower doctor --devin` invocation, using the same "
+            "configuration and --profile selected here"
+        )
+    command = "code-mower doctor"
+    if config_path:
+        command += f" {shlex.quote(config_path)}"
+    command += f" --profile {shlex.quote(profile)} --devin"
+    if repo_slug:
+        command += f" --repo {shlex.quote(repo_slug)}"
+    return f"`{command}`"
+
+
+def setup_instructions(
+    transport: str,
+    *,
+    config_path: str = "",
+    profile: str = "",
+    repo_slug: str = "",
+) -> tuple[str, ...]:
     """Return host guidance for the selected optional Devin posture."""
     if transport not in TRANSPORTS:
         raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
     if transport == LOCAL_TRANSPORT:
+        check = readiness_command(config_path=config_path, profile=profile)
         authentication = (
             "Devin executes locally through devin_cli: its ambient Devin Desktop/CLI "
             "login is the only authentication, and hosted service-user credentials do "
-            "not enable it. Confirm readiness with `code-mower doctor --devin`."
+            f"not enable it. Confirm readiness with {check}."
         )
     else:
+        check = readiness_command(
+            config_path=config_path, profile=profile, repo_slug=repo_slug or "OWNER/REPO"
+        )
         authentication = (
             "Devin executes hosted through devin_api_v3: it needs dedicated service-user "
             f"credentials ({DEVIN_API_KEY_ENV}, {DEVIN_ORG_ID_ENV}) plus the exact "
             f"OWNER/REPO acknowledged in {DEVIN_REPOSITORIES_ENV}, and a local CLI login "
-            "does not authorize it. Confirm readiness with `code-mower doctor --devin "
-            "--repo OWNER/REPO`."
+            f"does not authorize it. Confirm readiness with {check}."
         )
     return (
         authentication,
@@ -588,7 +652,7 @@ def devin_readiness(
     profile: str = "",
     config_profile: str | None = "recommended",
     config_dir: Path | None = None,
-    cli_commands: tuple[str, ...] = (),
+    lane_config: Mapping[str, Any] | None = None,
     adoption_posture: str = DEFAULT_ADOPTION_POSTURE,
     include_unselected: bool = False,
 ) -> tuple[ReadinessFinding, ...]:
@@ -614,7 +678,10 @@ def devin_readiness(
     if selected == LOCAL_TRANSPORT:
         findings.append(
             _local_cli_finding(
-                lane, cli_commands=cli_commands, adoption_posture=adoption_posture
+                lane,
+                lane_config=lane_config,
+                env=os.environ if env is None else env,
+                adoption_posture=adoption_posture,
             )
         )
     else:

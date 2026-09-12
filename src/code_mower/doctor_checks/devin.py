@@ -9,14 +9,12 @@ from code_mower import config as code_mower_config
 from code_mower.provider_capabilities import TRANSPORTS
 
 from .models import DoctorCheck
-from .provider_local_cli_commands import candidate_local_cli_commands
 
 # `code_mower.devin_readiness` reaches the Devin credential and campaign modules,
 # which import this check package; resolve it per call to keep that acyclic.
 
 __all__ = [
     "check_devin_readiness",
-    "devin_cli_commands",
     "devin_effective_lane",
     "devin_readiness_selected",
 ]
@@ -53,13 +51,6 @@ def devin_effective_lane(
     return None
 
 
-def devin_cli_commands(effective_lane: Mapping[str, Any] | None) -> tuple[str, ...]:
-    """Return the selected lane's command candidates in runtime discovery order."""
-    if not isinstance(effective_lane, Mapping):
-        return ()
-    return tuple(candidate_local_cli_commands(effective_lane))
-
-
 def check_devin_readiness(
     *,
     config: Mapping[str, Any] | None,
@@ -85,7 +76,7 @@ def check_devin_readiness(
         profile=provider_profile,
         config_profile=config_profile,
         config_dir=provider_config_dir,
-        cli_commands=devin_cli_commands(effective_lane),
+        lane_config=effective_lane,
         adoption_posture=adoption_posture,
         include_unselected=include_unselected,
     )

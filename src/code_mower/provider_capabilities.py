@@ -67,16 +67,23 @@ TRANSPORTS = MappingProxyType({
         "devin", "devin_api_v3", "hosted_bridge", "devin",
         Capabilities(
             coordinate="unavailable", build="agent_handoff", review="evidence_only",
-            message="unavailable", cancel="unavailable", context="agent_handoff",
-            structured_results="campaign_only",
+            message="remote_session", cancel="remote_session", context="agent_handoff",
+            structured_results="remote_session",
         ),
     ),
 })
 
 # Earlier maintained declarations, still accepted and migrated in memory to the current ones.
+_HOSTED_PRE_REMOTE_SESSION = {
+    **asdict(TRANSPORTS["devin_api_v3"].capabilities),
+    "message": "unavailable",
+    "cancel": "unavailable",
+    "structured_results": "campaign_only",
+}
 LEGACY_CAPABILITIES = MappingProxyType({
     "devin_api_v3": (
-        {**asdict(TRANSPORTS["devin_api_v3"].capabilities), "context": "unavailable"},
+        _HOSTED_PRE_REMOTE_SESSION,
+        {**_HOSTED_PRE_REMOTE_SESSION, "context": "unavailable"},
     ),
 })
 
