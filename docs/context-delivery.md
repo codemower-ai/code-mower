@@ -84,13 +84,18 @@ dispatcher policy, and is included in the durable binding. The embedding binds
 one packet with `devin_work_orders.packet_context(store, name, handle, policy,
 order=order)`, which derives the packet request from the order's repository and
 issue number, requires the trusted policy's `required` flag to agree with the
-order, and returns a `PacketContext` holding only a render closure. That value
+order, and returns a `PacketContext` holding only a packet-loading closure. That
+value
 is passed as `context=` to `dispatch`, `clarify`, or `fix`.
 
 Immediately before each paid create or message write, and never in preview, the
 context performs a new online authorization for `devin:builder`, and the loaded
-packet's own repository and work-item binding is compared with the order; a
-packet for another ticket, a relabelled wrapper, a bare callable, or any context
+packet's own binding is compared with the order: its repository and work item
+must match and `devin:builder` must be among its bound recipients. The evidence
+is then rendered inside the work-order boundary from that exact validated
+packet, with an identity derived from the packet digest; no separately supplied
+evidence text is ever accepted. A packet for another ticket, a packet without
+the recipient, a relabelled wrapper, a bare callable or string, or any context
 on a `none` order fails as `context_binding_mismatch`. Rendering and the 64 KiB
 combined-size check (`context_budget_exceeded`) happen before the work-order
 record, branch reservation, or a new round is written, so a rejected input
@@ -98,16 +103,28 @@ leaves no undispatched reservation and consumes no round. Evidence text is
 appended only to the provider input; records keep only digests plus the safe
 state enum, and status, collect, and cancel reject a context argument.
 
-A `required` order fails closed as `context_unavailable` when no packet is
-supplied or it cannot be reauthorized (wrong account, revoked or expired
-authorization, refreshed or invalidated packet, payload without the packet
-identity); the work order pauses with its prior state intact. Only an `optional`
-order degrades to a code-only input (`degraded`) or runs without a packet
-(`omitted`), and the remote session's input fingerprint prevents a later replay
-with different input. The state chosen for the create input and for each
-message intent is persisted and reported by every command as
+A `required` order fails closed when no packet is supplied or it cannot be
+reauthorized (wrong account, revoked or expired authorization, refreshed or
+invalidated packet). `run` then returns, rather than raises, the issue's closed
+outcome: `{"outcome": "UNKNOWN", "state": "paused", "reason":
+"context_unavailable", "context": {"policy": "required", "dispatch" | "message":
+"unavailable"}, "merge_authority": false}`; nothing was reserved, persisted, or
+sent, and an already dispatched order keeps its prior round and state. Only an
+`optional` order degrades to a code-only input (`degraded`) or runs without a
+packet (`omitted`).
+
+The complete intended input, including the evidence and its safe state, is
+digested before the local dispatch or message intent becomes durable, and the
+remote session's input fingerprint covers the same text. A retry after a stop
+between the two writes must regenerate the identical input; changed, refreshed,
+or dropped evidence fails as `request_conflict` and the saved state keeps
+reporting what was actually intended. The state chosen for the create input and
+for each message intent is persisted and reported by every command as
 `context: {policy, dispatch, message}`; replay, acknowledgement, status, and
-collect return the saved state rather than recomputing it.
+collect return the saved state rather than recomputing it. Durable records
+written before the context field existed keep their original binding and
+dispatch input: a `none` order serializes without `context_policy`, and records
+without context or input digests are read as context-free.
 
 ## Attach evidence to independent review
 

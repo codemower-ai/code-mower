@@ -1,21 +1,22 @@
 """Offline trusted-work-order delivery and hostile builder evidence fixtures."""
+import hashlib
 import json
 import os
 import sys
 import tempfile
 import unittest
-from dataclasses import replace
+import uuid
+from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from code_mower.context_contract import ContextError
+from code_mower.context_contract import ContextError, ValidatedPacket
 from code_mower.context_packets import fetch
 from code_mower.devin_sessions import DevinClient
 from code_mower.devin_work_orders import (
-    COMPLETION_SCHEMA, MAX_INPUT_BYTES, Candidates, DevinWorkOrders, PacketContext, PullRequest, WorkOrder,
-    packet_context,
+    COMPLETION_SCHEMA, Candidates, DevinWorkOrders, PacketContext, PullRequest, WorkOrder, _hash, packet_context,
 )
 from code_mower.remote_session import FakeProvider, RemoteError, RemoteSessions, _key
 from code_mower.work_orders import WORK_ORDER_SCHEMA
@@ -298,8 +299,17 @@ class DeliveryTests(WorkOrderCase):
 CONTEXT_CANARY = "PRIVATE_CONTEXT_PACKET_CANARY_TEXT"
 
 
+class Crash(Exception):
+    """Process stop between the local intent write and the remote intent write."""
+PAUSED = {"outcome": "UNKNOWN", "state": "paused", "reason": "context_unavailable"}
+
+
 def _fail():
     raise ContextError("context search unavailable")
+
+
+def _identity(packet):
+    return uuid.UUID(hex=packet.sha256[:32]).hex
 
 
 @unittest.skipUnless(os.name == "posix", "private packets need POSIX protections")
@@ -330,18 +340,32 @@ class ContextInjectionTests(WorkOrderCase):
     def run_optional(self, command, **kwargs):
         return self.service.run(command, self.optional_order, apply=True, **kwargs)
 
+    def large(self):
+        """Refresh the packet with a document large enough to break the 64 KiB input budget."""
+        self.backend.result["result"]["results"][0]["text"] = CONTEXT_CANARY + "y" * 19_000
+        self.result = fetch(self.fixture.store, "example", self.spec, backend=self.backend, refresh=True)
+        self.context = self.bind()
+        return self.context
+
     def private_files(self):
         return [path for path in self.root.rglob("*") if path.is_file()]
 
     def assert_not_persisted(self, *outputs):
         serialized = json.dumps(outputs)
-        for private in (CONTEXT_CANARY, "Packet identity", "one@example.invalid", self.result["packet_handle"]):
+        for private in (CONTEXT_CANARY, "Packet identity", "one@example.invalid", self.result["packet_handle"],
+                        _identity(self.context.load())):
             self.assertNotIn(private, serialized)
         for path in self.private_files():
             self.assertNotIn(CONTEXT_CANARY.encode(), path.read_bytes())
 
+    def assert_paused(self, output, slot, policy="required"):
+        self.assertEqual({k: output[k] for k in PAUSED}, PAUSED)
+        self.assertEqual(output["context"], {"policy": policy, slot: "unavailable"})
+        self.assertFalse(output["merge_authority"])
+        self.assertNotIn("session", output)
+
     def test_packet_context_carries_no_identity_and_policy_must_agree_with_the_order(self):
-        self.assertEqual(tuple(self.context.__dataclass_fields__), ("render",))
+        self.assertEqual(tuple(self.context.__dataclass_fields__), ("load",))
         self.assertNotIn(CONTEXT_CANARY, repr(self.context))
         with self.assertRaises(RemoteError):
             replace(self.order, context_policy="always")
@@ -356,7 +380,7 @@ class ContextInjectionTests(WorkOrderCase):
         calls = []
         def spy():
             calls.append(1)
-            return self.context.render()
+            return self.context.load()
         context = PacketContext(spy)
         for command in ("dispatch", "clarify", "fix"):
             output = self.service.run(command, self.order, context=context, request="r", prose="p")
@@ -366,6 +390,7 @@ class ContextInjectionTests(WorkOrderCase):
 
     def test_create_and_message_receive_the_common_evidence_once_each(self):
         outputs = []
+        identity = "Packet identity: " + _identity(self.context.load())
         with patch.object(self.provider, "create", wraps=self.provider.create) as create, \
                 patch.object(self.provider, "message", wraps=self.provider.message) as message:
             outputs.append(self.run_order("dispatch", context=self.context))
@@ -373,14 +398,13 @@ class ContextInjectionTests(WorkOrderCase):
             prompt = create.call_args.args[0]
             self.assertIn(CANARY, prompt)
             self.assertIn(CONTEXT_CANARY, prompt)
-            self.assertIn("Packet identity: " + self.result["packet_handle"], prompt)
+            self.assertIn(identity, prompt)
+            self.assertNotIn(self.result["packet_handle"], prompt)
             self.assertNotIn("one@example.invalid", prompt)
-            self.assertEqual(prompt.split("\n").count("Private evidence for this work item. "
-                                                     "Packet identity: " + self.result["packet_handle"]), 1)
+            self.assertEqual(prompt.split("\n").count("Private evidence for this work item. " + identity), 1)
             outputs.append(self.run_order("dispatch", context=self.context))
             self.assertEqual(create.call_count, 1)
-            with self.assertRaisesRegex(RemoteError, "context_unavailable"):
-                self.run_order("dispatch")  # Required context cannot be dropped on replay.
+            self.assert_paused(self.run_order("dispatch"), "dispatch")  # Required context cannot be dropped on replay.
             self.assertEqual(create.call_count, 1)
             outputs.append(self.run_order("clarify", request="c-1", prose=CANARY, context=self.context))
             self.assertEqual(outputs[-1]["context"]["message"], "delivered")
@@ -398,13 +422,15 @@ class ContextInjectionTests(WorkOrderCase):
             self.assertNotIn(CONTEXT_CANARY, json.dumps(locked.read()))
 
     def test_rejected_dispatch_context_writes_no_reservation(self):
-        oversized = PacketContext(lambda: (self.context.render()[0], "Packet identity: x\n" + "y" * MAX_INPUT_BYTES))
-        for context, error in ((PacketContext(_fail), "context_unavailable"), (None, "context_unavailable"),
-                               (oversized, "context_budget_exceeded"),
-                               (self.bind(order=replace(self.order, issue=908)), "context_unavailable"),
-                               (self.context.render, "context_binding_mismatch")):
-            with self.subTest(error=error), self.assertRaisesRegex(RemoteError, error):
-                self.run_order("dispatch", context=context)
+        with patch.object(self.provider, "create", wraps=self.provider.create) as create:
+            for context in (PacketContext(_fail), None, self.bind(order=replace(self.order, issue=908))):
+                self.assert_paused(self.run_order("dispatch", context=context), "dispatch")
+            with self.assertRaisesRegex(RemoteError, "context_binding_mismatch"):
+                self.run_order("dispatch", context=self.context.load)
+            with self.assertRaisesRegex(RemoteError, "context_budget_exceeded"):
+                self.service.run("dispatch", replace(self.order, body=CANARY + "b" * 47_000), apply=True,
+                                 context=self.large())
+            self.assertEqual(create.call_count, 0)
         with self.assertRaisesRegex(RemoteError, "work_order_not_found"):
             self.run_order("status")
         # The undispatched order binds neither its body nor its branch.
@@ -419,31 +445,46 @@ class ContextInjectionTests(WorkOrderCase):
             with self.subTest(command=command), self.assertRaisesRegex(RemoteError, "invalid_request"):
                 self.run_order(command, request="cancel-1", context=self.context)
 
-    def test_context_must_be_bound_to_this_work_order(self):
+    def test_context_must_be_bound_to_this_work_order_and_recipient(self):
         ticket_b = replace(self.order, issue=908, branch="devin/908")
         spec_b = {**self.spec, "work_item": "908"}
         handle_b = fetch(self.fixture.store, "example", spec_b, backend=self.backend, refresh=True)["packet_handle"]
         valid_b = self.bind(order=ticket_b, handle=handle_b)
+        packet_b = valid_b.load()
         self.service.run("dispatch", ticket_b, apply=True, context=valid_b)  # Ticket B's own packet is fine.
         # A wrapper pointed at another order authorizes against that order and fails closed.
-        with self.assertRaisesRegex(RemoteError, "context_unavailable"):
-            self.run_order("dispatch", context=self.bind(order=replace(self.order, repository="other/repo")))
+        self.assert_paused(self.run_order("dispatch", context=self.bind(order=replace(self.order, repository="other/repo"))),
+                           "dispatch")
+        # A packet bound to ticket A whose authorized recipients never included devin:builder.
+        payload = self.context.load().private_payload()
+        payload["binding"]["recipients"] = ["codex:builder", "claude:reviewer"]
+        encoded = json.dumps(payload, sort_keys=True).encode()
+        narrow_packet = ValidatedPacket(encoded, hashlib.sha256(encoded).hexdigest(), "current")
+        self.assertEqual(narrow_packet.private_payload()["binding"]["work_item"], "907")
         policy_none = replace(self.order, issue=909, branch="devin/909", context_policy="none")
         cases = {
             "packet_for_ticket_b": (self.order, valid_b),
-            "wrapper_relabelled_for_ticket_a": (self.order, PacketContext(valid_b.render)),
-            "unbound_callable": (self.order, self.context.render),
-            "policy_none_order_with_context": (policy_none, PacketContext(self.context.render)),
+            "wrapper_relabelled_for_ticket_a": (self.order, PacketContext(valid_b.load)),
+            "ticket_b_packet_returned_directly": (self.order, PacketContext(lambda: packet_b)),
+            "wrong_recipient": (self.order, PacketContext(lambda: narrow_packet)),
+            "unbound_callable": (self.order, self.context.load),
+            "not_a_packet": (self.order, PacketContext(lambda: "Packet identity: forged\n" + CONTEXT_CANARY)),
+            "policy_none_order_with_context": (policy_none, PacketContext(self.context.load)),
         }
         for name, (order, context) in cases.items():
             with self.subTest(case=name), patch.object(self.provider, "create", wraps=self.provider.create) as create:
                 with self.assertRaisesRegex(RemoteError, "context_binding_mismatch"):
                     self.service.run("dispatch", order, apply=True, context=context)
                 self.assertEqual(create.call_count, 0)
-        self.run_order("dispatch", context=self.context)
+        # Evidence is rendered from the bound packet itself, never supplied alongside it.
+        with patch.object(self.provider, "create", wraps=self.provider.create) as create:
+            self.run_order("dispatch", context=self.context)
+            self.assertIn("Packet identity: " + _identity(self.context.load()), create.call_args.args[0])
+            self.assertNotIn(_identity(packet_b), create.call_args.args[0])
         with patch.object(self.provider, "message", wraps=self.provider.message) as message:
-            with self.assertRaisesRegex(RemoteError, "context_binding_mismatch"):
-                self.run_order("clarify", request="c-1", prose=CANARY, context=PacketContext(valid_b.render))
+            for context in (PacketContext(valid_b.load), PacketContext(lambda: narrow_packet)):
+                with self.assertRaisesRegex(RemoteError, "context_binding_mismatch"):
+                    self.run_order("clarify", request="c-1", prose=CANARY, context=context)
             self.assertEqual(message.call_count, 0)
         self.assertEqual(self.run_order("status")["round"], 0)
 
@@ -463,26 +504,26 @@ class ContextInjectionTests(WorkOrderCase):
                 self.setUp()
                 arrange()
                 with patch.object(self.provider, "create", wraps=self.provider.create) as create:
-                    with self.assertRaisesRegex(RemoteError, "context_unavailable"):
-                        self.run_order("dispatch", context=self.context)
+                    self.assert_paused(self.run_order("dispatch", context=self.context), "dispatch")
                     self.assertEqual(create.call_count, 0)
+                with self.assertRaisesRegex(RemoteError, "work_order_not_found"):
+                    self.run_order("status")
                 self.assertNotIn(CONTEXT_CANARY.encode(), b"".join(p.read_bytes() for p in self.private_files()))
         self.setUp()
         self.run_order("dispatch", context=self.context)
         with patch.object(self.provider, "message", wraps=self.provider.message) as message:
             for context in (PacketContext(_fail), None):
-                with self.assertRaisesRegex(RemoteError, "context_unavailable"):
-                    self.run_order("clarify", request="c-1", prose=CANARY, context=context)
+                self.assert_paused(self.run_order("clarify", request="c-1", prose=CANARY, context=context), "message")
             self.assertEqual(message.call_count, 0)
         self.assertEqual(self.run_order("status")["round"], 0)  # No local round was consumed.
         self.assertEqual(self.run_order("clarify", request="c-1", prose=CANARY,
                                         context=self.context)["round"], 1)
         self.backend.revoked = True
         with patch.object(self.provider, "message", wraps=self.provider.message) as message:
-            with self.assertRaisesRegex(RemoteError, "context_unavailable"):
-                self.run_order("clarify", request="c-2", prose=CANARY, context=self.context)
+            self.assert_paused(self.run_order("clarify", request="c-2", prose=CANARY, context=self.context), "message")
             self.assertEqual(message.call_count, 0)
-        self.assertEqual(self.run_order("status")["round"], 1)
+        status = self.run_order("status")
+        self.assertEqual((status["round"], status["context"]["message"]), (1, "delivered"))
 
     def test_optional_context_degrades_explicitly_and_states_persist(self):
         unavailable = PacketContext(_fail)
@@ -498,7 +539,7 @@ class ContextInjectionTests(WorkOrderCase):
             handle_b = fetch(self.fixture.store, "example", {**self.spec, "work_item": "908"},
                              backend=self.backend, refresh=True)["packet_handle"]
             other = self.bind(order=replace(self.optional_order, issue=908), policy=self.optional_policy, handle=handle_b)
-            self.run_optional("clarify", request="c-0", prose=CANARY, context=PacketContext(other.render))
+            self.run_optional("clarify", request="c-0", prose=CANARY, context=PacketContext(other.load))
         with patch.object(self.provider, "message", wraps=self.provider.message) as message:
             output = self.run_optional("clarify", request="c-1", prose=CANARY, context=None)
             self.assertEqual((output["context"]["message"], output["round"]), ("omitted", 1))
@@ -517,18 +558,81 @@ class ContextInjectionTests(WorkOrderCase):
         self.assertEqual((record["context"], record["message"]["context"]), ("degraded", "delivered"))
         self.assert_not_persisted(output, status)
 
-    def test_combined_input_is_bounded(self):
-        oversized = PacketContext(lambda: (self.context.render()[0], "Packet identity: x\n" + "y" * MAX_INPUT_BYTES))
+    def test_recovery_cannot_change_evidence_after_the_local_intent_is_durable(self):
+        self.run_optional("dispatch", context=self.optional)
+        with patch.object(self.remote, "run", side_effect=Crash()), self.assertRaises(Crash):
+            self.run_optional("clarify", request="c-1", prose=CANARY, context=self.optional)
+        with self.service.store.locked(self.service._key(self.optional_order)) as locked:
+            record = locked.read()
+        self.assertEqual((record["round"], record["message"]["pending"], record["message"]["context"]),
+                         (1, True, "delivered"))
+        with patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            for context in (None, PacketContext(_fail)):
+                with self.assertRaisesRegex(RemoteError, "request_conflict"):
+                    self.run_optional("clarify", request="c-1", prose=CANARY, context=context)
+            fetch(self.fixture.store, "example", self.spec, backend=self.backend, refresh=True)
+            with self.assertRaisesRegex(RemoteError, "request_conflict"):  # Refreshed packet: input differs.
+                self.run_optional("clarify", request="c-1", prose=CANARY, context=self.optional)
+            self.assertEqual(message.call_count, 0)
+            self.result = fetch(self.fixture.store, "example", self.spec, backend=self.backend, refresh=True)
+            self.backend.result["result"]["results"][0]["text"] = CONTEXT_CANARY
+            self.assertEqual(self.run_optional("status")["context"]["message"], "delivered")
+        # Same crash before the remote create intent: the dispatch input is bound too.
+        self.setUp()
+        with patch.object(self.remote, "run", side_effect=Crash()), self.assertRaises(Crash):
+            self.run_optional("dispatch", context=self.optional)
+        with self.assertRaisesRegex(RemoteError, "request_conflict"):
+            self.run_optional("dispatch")
+        output = self.run_optional("dispatch", context=self.optional)
+        self.assertEqual(output["context"]["dispatch"], "delivered")
+
+    def test_context_free_orders_keep_their_pre_context_binding_and_input(self):
+        legacy = replace(self.order, context_policy="none")
+        legacy_fields = {k: v for k, v in asdict(legacy).items() if k != "context_policy"}
+        self.assertEqual(self.service._binding(legacy),
+                         _hash([legacy_fields, self.provider.name, self.provider.account]))
+        self.assertIn(json.dumps({k: v for k, v in legacy_fields.items() if k != "body"}, sort_keys=True)[1:-1],
+                      self.service._prompt(legacy))
+        self.assertNotIn("context_policy", self.service._prompt(legacy))
+        self.assertIn('"context_policy": "required"', self.service._prompt(self.order))
+        self.assertNotEqual(self.service._binding(self.order), self.service._binding(legacy))
+        self.assertNotEqual(self.service._binding(self.optional_order), self.service._binding(legacy))
         with patch.object(self.provider, "create", wraps=self.provider.create) as create:
-            with self.assertRaisesRegex(RemoteError, "context_budget_exceeded"):
-                self.run_order("dispatch", context=oversized)
-            self.assertEqual(create.call_count, 0)
+            self.service.run("dispatch", legacy, apply=True)
+            prompt = create.call_args.args[0]
+        # Simulate a record and remote intent written before the context field existed.
+        with self.service.store.locked(self.key) as locked:
+            record = locked.read()
+            del record["context"], record["input"]
+            locked.write(record)
+        for command in ("dispatch", "status"):
+            output = self.service.run(command, legacy, apply=True)
+            self.assertEqual(output["context"], {"policy": "none", "dispatch": None, "message": None})
+        self.assertEqual(create.call_count, 1)
+        output = self.service.run("clarify", legacy, apply=True, request="c-1", prose=CANARY)
+        self.assertEqual((output["round"], output["context"]["message"]), (1, "omitted"))
+        with self.service.store.locked(self.key) as locked:
+            record = locked.read()
+            del record["message"]["input"], record["message"]["context"]
+            locked.write(record)
+        output = self.service.run("clarify", legacy, apply=True, request="c-1", prose=CANARY)
+        self.assertEqual((output["round"], output["context"]["message"]), (1, None))
+        self.complete(round=1)
+        self.assertEqual(self.service.run("collect", legacy, apply=True)["verified_pr"]["pr_number"], 42)
+        self.service.run("cancel", legacy, apply=True, request="cancel-1")
+        for order in (self.order, self.optional_order):
+            with self.assertRaisesRegex(RemoteError, "work_order_binding_mismatch"):
+                self.service.run("status", order, apply=True)
+        self.assertNotIn("context_policy", prompt)
+
+    def test_combined_input_is_bounded(self):
         self.run_order("dispatch", context=self.context)
         self.complete()
         self.run_order("collect")
+        big = self.large()
         with patch.object(self.provider, "message", wraps=self.provider.message) as message:
             with self.assertRaisesRegex(RemoteError, "context_budget_exceeded"):
-                self.run_order("fix", request="fix-1", prose=CANARY, reviewed_head=HEAD, context=oversized)
+                self.run_order("fix", request="fix-1", prose=CANARY + "p" * 47_000, reviewed_head=HEAD, context=big)
             self.assertEqual(message.call_count, 0)
         self.assertEqual(self.run_order("status")["round"], 0)  # Oversized input leaves the record unchanged.
         with self.service.store.locked(self.key) as locked:
@@ -537,7 +641,7 @@ class ContextInjectionTests(WorkOrderCase):
         self.assertIsNotNone(record["claim"])
         self.assertEqual(record["requests"], [])
         self.assertEqual(self.run_order("fix", request="fix-1", prose=CANARY, reviewed_head=HEAD,
-                                        context=self.context)["round"], 1)
+                                        context=big)["round"], 1)
 
 
 if __name__ == "__main__":

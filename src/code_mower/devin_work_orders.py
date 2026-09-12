@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import re
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
@@ -40,6 +41,7 @@ MAX_INPUT_BYTES = 65536
 CONTEXT_RECIPIENT = "devin:builder"
 CONTEXT_POLICIES = ("none", "optional", "required")
 CONTEXT_STATES = ("delivered", "degraded", "omitted")
+CONTEXT_UNAVAILABLE = "unavailable"  # Reported, never persisted: the closed UNKNOWN/paused outcome.
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?\Z")
 
@@ -142,13 +144,15 @@ class GitHub(Protocol):
 
 @dataclass(frozen=True, repr=False)
 class PacketContext:
-    """Renders one authorized packet; carries no caller-editable identity or policy.
+    """Loads one authorized packet; carries no caller-editable identity, policy, or text.
 
-    The trusted context decision lives on ``WorkOrder.context_policy``; the loaded
-    packet's own repository/work-item binding is checked against the order at
-    every render, so this wrapper cannot redirect another ticket's packet.
+    The trusted context decision lives on ``WorkOrder.context_policy``. The loaded
+    packet's own repository, work-item, and recipient binding is checked against
+    the order and the evidence is rendered from that exact packet inside the
+    work-order boundary, so this wrapper can supply neither another ticket's
+    packet nor separately authored evidence.
     """
-    render: Callable[[], tuple[ValidatedPacket, str]] = field(repr=False)
+    load: Callable[[], ValidatedPacket] = field(repr=False)
 
 
 def packet_context(store: ContextStore, name: str, handle: str, policy, *, order: WorkOrder,
@@ -170,11 +174,10 @@ def packet_context(store: ContextStore, name: str, handle: str, policy, *, order
         raise RemoteError("invalid_request")
     request = ContextRequest(order.repository, str(order.issue), CONTEXT_RECIPIENT)
 
-    def render() -> tuple[ValidatedPacket, str]:
-        packet = load_authorized(store, name, handle, policy, request, backend=backend)
-        return packet, render_evidence(packet, handle)
+    def load() -> ValidatedPacket:
+        return load_authorized(store, name, handle, policy, request, backend=backend)
 
-    return PacketContext(render)
+    return PacketContext(load)
 
 
 def _github_call(method, *args, **kwargs):
@@ -201,12 +204,20 @@ class DevinWorkOrders:
     def _key(order):
         return "b" + _hash([order.repository.lower(), order.issue])[:62]
 
-    def _binding(self, order):
-        return _hash([asdict(order), self.remote.provider.name, self.remote.provider.account])
-
     @staticmethod
-    def _prompt(order, round_number=0):
-        policy = {k: v for k, v in asdict(order).items() if k != "body"}
+    def _fields(order):
+        """Serialized order identity; the pre-context shape is kept for context-free orders."""
+        fields = asdict(order)
+        if fields["context_policy"] == "none":
+            del fields["context_policy"]
+        return fields
+
+    def _binding(self, order):
+        return _hash([self._fields(order), self.remote.provider.name, self.remote.provider.account])
+
+    @classmethod
+    def _prompt(cls, order, round_number=0):
+        policy = {k: v for k, v in cls._fields(order).items() if k != "body"}
         return (
             "Execute exactly one trusted Code Mower work order. Single writer: you alone may "
             "write the specified branch in the specified repository. Never write another branch, "
@@ -224,13 +235,16 @@ class DevinWorkOrders:
     def _evidence(order, context):
         """Render freshly reauthorized evidence for exactly one create/message input.
 
-        ``context`` renders the authorized packet for ``devin:builder`` through
-        the ordinary online authorization path. It runs immediately before the
-        paid provider write, never in preview, and its text is never persisted.
-        The order's trusted ``context_policy`` decides the outcome: required
-        context fails closed, optional context degrades to code-only, and a
-        missing packet is ``omitted`` only when the policy allows it. Returns
-        ``(evidence, state)`` with state in ``CONTEXT_STATES``.
+        ``context`` loads the authorized packet for ``devin:builder`` through the
+        ordinary online authorization path, immediately before the paid provider
+        write and never in preview. The packet's embedded binding must name this
+        order's repository and work item and the ``devin:builder`` recipient; the
+        evidence is then rendered here from that exact packet, with an identity
+        derived from the packet digest, and is never persisted. The order's
+        trusted ``context_policy`` decides the outcome: required context fails
+        closed (``context_unavailable``), optional context degrades to code-only,
+        and a missing packet is ``omitted`` only when the policy allows it.
+        Returns ``(evidence, state)`` with state in ``CONTEXT_STATES``.
         """
         required = order.context_policy == "required"
         if context is None:
@@ -240,20 +254,21 @@ class DevinWorkOrders:
         if order.context_policy == "none" or not isinstance(context, PacketContext):
             raise RemoteError("context_binding_mismatch")
         try:
-            packet, evidence = context.render()
+            packet = context.load()
+            if not isinstance(packet, ValidatedPacket):
+                raise RemoteError("context_binding_mismatch")
+            binding = packet.private_payload().get("binding")
+            if not isinstance(binding, dict):
+                raise RemoteError("context_binding_mismatch")
+            recipients = binding.get("recipients")
+            if (binding.get("repository") != order.repository
+                    or binding.get("work_item") != str(order.issue)
+                    or not isinstance(recipients, list) or CONTEXT_RECIPIENT not in recipients):
+                raise RemoteError("context_binding_mismatch")
+            evidence = render_evidence(packet, uuid.UUID(hex=packet.sha256[:32]).hex)
         except ContextError:
             if required:
                 raise RemoteError("context_unavailable") from None
-            return None, "degraded"
-        if not isinstance(packet, ValidatedPacket) or not isinstance(evidence, str):
-            raise RemoteError("context_binding_mismatch")
-        binding = packet.private_payload().get("binding")
-        if (not isinstance(binding, dict) or binding.get("repository") != order.repository
-                or binding.get("work_item") != str(order.issue)):
-            raise RemoteError("context_binding_mismatch")
-        if "Packet identity: " not in evidence:
-            if required:
-                raise RemoteError("context_unavailable")
             return None, "degraded"
         return evidence, "delivered"
 
@@ -311,6 +326,28 @@ class DevinWorkOrders:
             request: str = "", prose: str = "", reviewed_head: str = "",
             acknowledge_delivered: bool = False,
             context: PacketContext | None = None) -> dict:
+        """Run one intent; a required packet that cannot be authorized pauses the order.
+
+        That closed outcome is returned, not raised: ``outcome`` is ``UNKNOWN``,
+        ``state`` is ``paused``, nothing was reserved, persisted, or sent, and
+        ``context`` reports ``unavailable`` for the intent that was refused.
+        """
+        try:
+            return self._run(command, order, apply=apply, request=request, prose=prose,
+                             reviewed_head=reviewed_head, acknowledge_delivered=acknowledge_delivered,
+                             context=context)
+        except RemoteError as exc:
+            if exc.args != ("context_unavailable",):
+                raise
+            slot = "dispatch" if command == "dispatch" else "message"
+            return {"schema": EVIDENCE_SCHEMA, "builder": self.transport.product,
+                    "transport": "fake" if self.remote.provider.name == "fake" else self.transport.transport,
+                    "outcome": "UNKNOWN", "state": "paused", "reason": "context_unavailable",
+                    "context": {"policy": order.context_policy, slot: CONTEXT_UNAVAILABLE},
+                    "merge_authority": False}
+
+    def _run(self, command, order, *, apply, request, prose, reviewed_head,
+             acknowledge_delivered, context):
         if command not in {"dispatch", "status", "collect", "clarify", "fix", "cancel"}:
             raise RemoteError("invalid_request")
         # Library equivalent of --apply: no reads, writes or provider calls in preview.
@@ -327,15 +364,18 @@ class DevinWorkOrders:
                 # so a rejected context never binds an undispatched order or its branch.
                 evidence, context_state = self._evidence(order, context)
                 dispatch_prose = self._with_evidence(self._prompt(order), evidence)
+                input_digest = _hash([dispatch_prose])
             if record is None:
                 if command != "dispatch":
                     raise RemoteError("work_order_not_found")
                 record = {"binding": self._binding(order), "round": 0, "claim": None,
                           "evidence": None, "message": None, "observed_acu": None, "pr_number": None,
-                          "requests": [], "context": context_state}
+                          "requests": [], "context": context_state, "input": input_digest}
                 locked.write(record)  # Stable identity survives remote create uncertainty.
             if record["binding"] != self._binding(order):
                 raise RemoteError("work_order_binding_mismatch")
+            if command == "dispatch" and record.get("input", input_digest) != input_digest:
+                raise RemoteError("request_conflict")  # Replay may not change the create input.
             # Persistent branch reservation prevents a second issue becoming its writer.
             branch_key = "w" + _hash([order.repository.lower(), order.branch])[:62]
             with self.store.locked(branch_key) as branch_lock:
@@ -376,14 +416,18 @@ class DevinWorkOrders:
                     record["round"] += 1
                     record.update(claim=None, evidence=None, message={
                         "request": request, "fingerprint": fingerprint, "pending": True,
-                        "context": context_state})
+                        "context": context_state, "input": _hash([message])})
                     record["requests"].append(request)
                     locked.write(record)  # Invalidate evidence before any remote mutation.
                 elif previous["fingerprint"] != fingerprint:
                     raise RemoteError("request_conflict")
+                elif acknowledge_delivered:
+                    message = self._message(record["round"], reviewed_head, prose, None)
                 else:
-                    evidence = None if acknowledge_delivered else self._evidence(order, context)[0]
+                    evidence = self._evidence(order, context)[0]
                     message = self._message(record["round"], reviewed_head, prose, evidence)
+                    if previous.get("input", _hash([message])) != _hash([message]):
+                        raise RemoteError("request_conflict")  # Retry may not change the evidence.
                 remote_command = "message"
                 kwargs.update(prose=message)
             result = self.remote.run(remote_command, key, apply=apply, request=request,
