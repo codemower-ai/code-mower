@@ -63,6 +63,23 @@ Publication and pruning happen inside one locked critical section. Two builders
 that race are serialized, and neither can delete the generation the other just
 published while `current` still names it.
 
+`remove` takes the same lock. A removal running beside a build would otherwise
+delete its materialized sources, its output, and the generations directory, and
+the builder would then either fail or recreate state that `remove` had already
+reported as gone. The lock file lives *beside* the state directory rather than
+inside it, so it survives the removal it serializes: a lock inside the deleted
+tree would be unlinked mid-removal, and the next builder would create a new
+inode and hold a lock nobody else was waiting on. What is left behind is an
+empty 0600 file carrying nothing.
+
+Readers take no lock at all, so a refresh can publish and prune between the
+moment `graph_status()` reads the `current` pointer and the moment it finishes
+validating what that pointer named. A failing verdict is therefore confirmed
+against the pointer before it is returned, and a pointer that moved is read
+again — otherwise a healthy refresh would surface as `invalid` or `corrupt`. A
+verdict about the generation `current` still names is returned as it stands; the
+retry is for a moved pointer, not a poll.
+
 ## The network boundary
 
 An environment variable is a request, not a boundary: `NO_PROXY=*` asks a
@@ -101,6 +118,21 @@ Git itself runs with `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`, and
 configuration can otherwise install clean/smudge filters and hook paths that run
 code during what looks like a read.
 
+Git children are not inside the provider's sandbox — they are children of Code
+Mower itself — so the boundary has to reach them separately. Both invocation
+paths, the census reader and the blob materializer, share one environment:
+`GIT_NO_LAZY_FETCH=1`, and `GIT_ALLOW_PROTOCOL` set but empty, which git reads
+as the complete list of permitted transports. `protocol.allow=never` travels on
+the command line because that is the only level that outranks the repository's
+own `.git/config`, which belongs to the untrusted checkout and is always read.
+
+That still leaves the repository *shape* that makes a read reach out at all, so
+**a build refuses a partial clone outright**. Where `extensions.partialclone` or
+a promisor remote is configured, `ls-tree` and `cat-file` can fetch a missing
+object from a remote mid-build. There is no bounded way to prove in advance
+which objects are present locally, so the build declines the checkout rather
+than discovering the gap one blob at a time. Use a full clone.
+
 ## What a manifest binds
 
 Every published generation carries, in `manifest.json`:
@@ -118,6 +150,40 @@ Every published generation carries, in `manifest.json`:
 
 `shareable_summary()` is the metadata-only view: revisions, digests, counts and
 states. It carries no indexed content, no provider output, and no local path.
+
+## How the provider is actually invoked
+
+`subprocess_indexer()` builds the argv for the interface the adopt decision
+evaluated, not a conventional-looking one: `extract` plus the pinned options,
+run with its working directory set to the materialized copy. The evaluated
+release takes no `--source`/`--output` pair — `extract` reads the directory it
+is run in and writes its state beside those sources, which the clean-room run in
+[the evaluation](graphify-evaluation.md) recorded as
+`extract --code-only --no-cluster --max-workers 4`.
+
+So the adapter collects an artifact afterwards rather than naming one up front.
+The state directory the provider wrote (`.graphify` or `.graph`, both already on
+the excluded-roots list) is packed into a single reproducible archive: names
+sorted, timestamps and ownership fixed, modes normalized, symlinks dropped. Two
+builds of one commit have to produce identical bytes, because the manifest binds
+a digest of them. That state lands inside the throwaway materialized copy, never
+inside the indexed checkout, and the copy is deleted when the build ends.
+
+**Completeness is read from the provider's report, never from its exit status.**
+The adapter parses the report the provider leaves in that state directory and
+marks the build `partial` if it admits requeued, pending, or failed entries, or
+denies completion outright. A run that left no readable report is `partial` too:
+absent evidence is not evidence of a complete build, and `partial` is the state
+`graph_status` refuses by default, so the failure is one an operator can see and
+act on. This is the direct consequence of the requeue defect the evaluation
+recorded — a repeat that exits zero in 1.63 seconds having requeued 54 entries
+has not built a complete graph.
+
+The subcommand, the state-directory names, and the report counters are constants
+in one place in `context_graph_lifecycle.py`. They encode the interface as the
+evaluation recorded it; the first installation against a real pinned release
+should confirm them against that install and correct them here if they have
+moved.
 
 ## Refresh is explicit
 

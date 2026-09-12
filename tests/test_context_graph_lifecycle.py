@@ -16,12 +16,14 @@ proxy variables would have passed on code that had none.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import socket
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -334,6 +336,11 @@ class NetworkIsolationTests(unittest.TestCase):
         self.assertFalse(lifecycle._sandbox_denies_network(passthrough))
 
 
+#: What a provider that finished leaves behind: a completion claim and counts
+#: that admit nothing outstanding.
+FINISHED_REPORT = {"complete": True, "code_files": 3, "requeued": 0}
+
+
 class ProviderLaunchTests(TemporaryWorkspace):
     """What ``subprocess_indexer`` actually hands the operating system."""
 
@@ -349,11 +356,31 @@ class ProviderLaunchTests(TemporaryWorkspace):
             tree="b" * 40,
         )
 
-    def launched_argv(self, executable: str, *, sandbox=("/sandbox", "--deny")) -> list[str]:
+    def run_indexer(
+        self,
+        executable: str,
+        *,
+        sandbox=("/sandbox", "--deny"),
+        report: object = FINISHED_REPORT,
+        state_directory: str = ".graphify",
+    ) -> tuple[list[str], lifecycle.IndexResult]:
+        """Launch the adapter with the provider's side of the contract faked.
+
+        ``extract`` writes its state beside the sources it was run over, so the
+        stand-in has to leave that state behind for the adapter to collect --
+        an exit status alone is not a finished build.
+        """
+        request = self.request()
         recorded: list[list[str]] = []
 
         def fake_run(argv, **kwargs):
             recorded.append(list(argv))
+            if state_directory:
+                written = request.source_root / state_directory
+                written.mkdir(exist_ok=True)
+                (written / "graph.bin").write_bytes(b"graph-bytes")
+                if report is not None:
+                    (written / "manifest.json").write_text(json.dumps(report), encoding="utf-8")
             return subprocess.CompletedProcess(argv, 0, b"", b"")
 
         with mock.patch.object(lifecycle, "network_sandbox_command", lambda: sandbox):
@@ -361,12 +388,81 @@ class ProviderLaunchTests(TemporaryWorkspace):
         # Patched only around the launch, so the Git calls a build makes are
         # never intercepted by this stand-in.
         with mock.patch.object(subprocess, "run", fake_run):
-            indexer(self.request())
-        return recorded[0]
+            result = indexer(request)
+        return recorded[0], result
+
+    def launched_argv(self, executable: str, *, sandbox=("/sandbox", "--deny")) -> list[str]:
+        return self.run_indexer(executable, sandbox=sandbox)[0]
 
     def test_the_provider_is_launched_inside_the_sandbox(self) -> None:
         argv = self.launched_argv("graphify")
         self.assertEqual(argv[:3], ["/sandbox", "--deny", "graphify"])
+
+    def test_the_provider_is_invoked_through_its_documented_extract_interface(self) -> None:
+        # The interface the adopt decision evaluated, recorded in
+        # docs/graphify-evaluation.md as ``extract`` plus options. An
+        # ``index --source ... --output ...`` shape would be a different CLI.
+        argv = self.launched_argv("graphify")
+        self.assertEqual(argv[3:], ["extract", *PIN.options])
+        self.assertNotIn("--source", argv)
+        self.assertNotIn("--output", argv)
+
+    def test_the_collected_artifact_holds_the_state_the_provider_wrote(self) -> None:
+        _, result = self.run_indexer("graphify")
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, 3)
+        names = self.archived_names((self.root / "graph.bin").read_bytes())
+        self.assertIn("graph.bin", names)
+
+    def archived_names(self, artifact: bytes) -> list[str]:
+        with tarfile.open(fileobj=io.BytesIO(artifact), mode="r") as archive:
+            return archive.getnames()
+
+    def test_collecting_the_same_state_twice_produces_the_same_bytes(self) -> None:
+        # The manifest binds a digest of the artifact, so two builds of one
+        # commit have to agree on the bytes down to the archive metadata.
+        self.run_indexer("graphify")
+        first = (self.root / "graph.bin").read_bytes()
+        (self.root / "graph.bin").unlink()
+        self.run_indexer("graphify")
+        self.assertEqual(first, (self.root / "graph.bin").read_bytes())
+
+    def test_a_provider_that_wrote_no_state_publishes_nothing(self) -> None:
+        with self.assertRaises(ContextError):
+            self.run_indexer("graphify", state_directory="")
+
+    def test_a_successful_run_with_requeued_entries_is_partial(self) -> None:
+        # The defect the clean-room run recorded: a repeat that exits zero in
+        # 1.63 s having requeued 54 entries has not built a complete graph.
+        _, result = self.run_indexer("graphify", report={"complete": True, "files": 429, "requeued": 54})
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("54 requeued", " ".join(result.notes))
+
+    def test_a_provider_that_denies_completion_is_partial(self) -> None:
+        _, result = self.run_indexer("graphify", report={"complete": False, "files": 10})
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+
+    def test_a_run_that_left_no_report_is_partial_rather_than_complete(self) -> None:
+        # Exit status zero is not completion evidence. Absent evidence resolves
+        # to the state ``graph_status`` refuses, not the one it accepts.
+        _, result = self.run_indexer("graphify", report=None)
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+
+    def test_an_unparseable_report_is_partial_rather_than_complete(self) -> None:
+        request = self.request()
+
+        def fake_run(argv, **kwargs):
+            written = request.source_root / ".graph"
+            written.mkdir(exist_ok=True)
+            (written / "graph.bin").write_bytes(b"graph-bytes")
+            (written / "manifest.json").write_bytes(b"{not json")
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify")
+        with mock.patch.object(subprocess, "run", fake_run):
+            result = indexer(request)
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
 
     def test_a_host_without_a_sandbox_refuses_to_launch_a_provider(self) -> None:
         with mock.patch.object(lifecycle, "network_sandbox_command", lambda: None):
@@ -535,6 +631,47 @@ class StatusFailsClosedTests(TemporaryWorkspace):
         self.assertEqual(status.state, "stale")
         self.assertFalse(status.usable)
 
+    def test_a_generation_pruned_mid_read_is_read_again(self) -> None:
+        # Readers take no lock, so a refresh can publish and prune between the
+        # pointer read and the validation of what it named. The failure that
+        # produces is about a directory a healthy build superseded, not about
+        # the graph the operator has.
+        first = self.build()
+        second = self.build(indexer=recording_indexer(b"second-graph"))
+        raced = lifecycle.GenerationStatus(
+            state="invalid",
+            generation=first.generation,
+            detail="local graph generation is missing its manifest",
+        )
+        real, attempts = lifecycle._status_once, []
+
+        def once(state, repository, **keywords):
+            attempts.append(1)
+            return raced if len(attempts) == 1 else real(state, repository, **keywords)
+
+        with mock.patch.object(lifecycle, "_status_once", once):
+            status = lifecycle.graph_status(self.repository, root=self.state)
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(status.usable)
+        self.assertEqual(status.generation, second.generation)
+
+    def test_a_verdict_about_the_published_generation_is_not_retried(self) -> None:
+        # The retry exists for a moved pointer only. A genuinely corrupt
+        # current generation is reported on the first read, not polled.
+        manifest = self.build()
+        artifact = lifecycle.GraphStateRoot(self.repository, root=self.state).artifact_path(manifest.generation)
+        artifact.write_bytes(b"tampered!!!")
+        real, attempts = lifecycle._status_once, []
+
+        def once(state, repository, **keywords):
+            attempts.append(1)
+            return real(state, repository, **keywords)
+
+        with mock.patch.object(lifecycle, "_status_once", once):
+            status = lifecycle.graph_status(self.repository, root=self.state)
+        self.assertEqual(status.state, "corrupt")
+        self.assertEqual(len(attempts), 1)
+
     def test_a_tampered_artifact_is_corrupt(self) -> None:
         manifest = self.build()
         artifact = lifecycle.GraphStateRoot(self.repository, root=self.state).artifact_path(manifest.generation)
@@ -631,7 +768,110 @@ class StatusFailsClosedTests(TemporaryWorkspace):
             artifact.chmod(0o600)
 
 
+class GitBoundaryTests(TemporaryWorkspace):
+    """The other half of the offline boundary: Git's own reads.
+
+    The provider runs inside a sandbox, but the census reader and the blob
+    materializer are Git children of this process, outside it. In a partial
+    clone their reads can fetch missing objects from a remote, so the boundary
+    has to cover them too.
+    """
+
+    def commit(self) -> str:
+        return lifecycle.resolve_revision(self.repository)[0]
+
+    def test_git_children_get_no_lazy_fetch_and_no_transport(self) -> None:
+        environment = lifecycle.git_environment()
+        self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
+        # Set but empty: git reads the variable as the complete list of
+        # permitted transports, and an empty list permits none.
+        self.assertEqual(environment["GIT_ALLOW_PROTOCOL"], "")
+        self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(environment["GIT_CONFIG_SYSTEM"], os.devnull)
+
+    def test_git_children_inherit_no_ambient_secret(self) -> None:
+        with mock.patch.dict(os.environ, {"AWS_SECRET_ACCESS_KEY": "not-a-real-secret"}):
+            self.assertNotIn("AWS_SECRET_ACCESS_KEY", lifecycle.git_environment())
+
+    def test_the_transport_denial_outranks_repository_local_configuration(self) -> None:
+        # Local configuration belongs to the untrusted checkout and is always
+        # read, so the denial has to travel on the command line, which is the
+        # only level above it.
+        self.assertIn("protocol.allow=never", lifecycle._GIT_SAFETY_OPTIONS)
+
+    def test_a_full_clone_is_read_without_complaint(self) -> None:
+        lifecycle.refuse_lazy_object_fetch(self.repository)
+        self.assertTrue(lifecycle.read_tracked_census(self.repository, self.commit()).entries)
+
+    def test_a_partial_clone_is_refused_before_its_tree_is_read(self) -> None:
+        census = lifecycle.read_tracked_census(self.repository, self.commit())
+        git(self.repository, "config", "--local", "remote.origin.promisor", "true")
+        with self.assertRaises(ContextError):
+            lifecycle.read_tracked_census(self.repository, self.commit())
+        with self.assertRaises(ContextError):
+            lifecycle.materialize_tracked_files(self.repository, census, self.root / "fresh")
+        self.assertFalse((self.root / "fresh").exists())
+
+    def test_a_partial_clone_build_publishes_nothing(self) -> None:
+        git(self.repository, "config", "--local", "remote.origin.partialclonefilter", "blob:none")
+        with self.assertRaises(ContextError):
+            self.build()
+        self.assertEqual(lifecycle.graph_status(self.repository, root=self.state).state, "absent")
+
+    def test_the_partial_clone_extension_is_refused_too(self) -> None:
+        # The other shape it takes: a repository-format extension, with the
+        # version bump that makes git accept one.
+        git(self.repository, "config", "--local", "core.repositoryformatversion", "1")
+        git(self.repository, "config", "--local", "extensions.partialclone", "origin")
+        with self.assertRaises(ContextError):
+            lifecycle.refuse_lazy_object_fetch(self.repository)
+
+
 class RemoveTests(TemporaryWorkspace):
+    def test_remove_takes_the_build_lock(self) -> None:
+        # A removal running beside a build deletes its sources, its output and
+        # its generations; the builder then either fails or recreates state
+        # that ``remove`` has already reported as gone.
+        self.build()
+        taken: list[str] = []
+        lock = lifecycle.GraphStateRoot.lock
+
+        def record_lock(state):
+            taken.append("lock")
+            return lock(state)
+
+        with mock.patch.object(lifecycle.GraphStateRoot, "lock", record_lock):
+            self.assertTrue(lifecycle.remove_graph(self.repository, root=self.state))
+        self.assertEqual(taken, ["lock"])
+
+    def test_the_lock_survives_the_removal_it_serializes(self) -> None:
+        # The inode a waiting builder is blocked on must still be there when
+        # the remover lets go of it. A lock file inside the deleted tree would
+        # be unlinked mid-removal and the next builder would lock a new one.
+        self.build()
+        state = lifecycle.GraphStateRoot(self.repository, root=self.state)
+        self.assertFalse(state.lock_path.is_relative_to(state.path))
+        before = state.lock_path.stat().st_ino
+        self.assertTrue(lifecycle.remove_graph(self.repository, root=self.state))
+        self.assertTrue(state.lock_path.exists())
+        self.assertEqual(state.lock_path.stat().st_ino, before)
+
+    def test_the_retained_lock_carries_nothing_and_stays_private(self) -> None:
+        self.build()
+        state = lifecycle.GraphStateRoot(self.repository, root=self.state)
+        lifecycle.remove_graph(self.repository, root=self.state)
+        self.assertEqual(state.lock_path.read_bytes(), b"")
+        self.assertEqual(stat.S_IMODE(state.lock_path.stat().st_mode), 0o600)
+
+    def test_removing_nothing_creates_nothing(self) -> None:
+        # A removal on an installation that never opted in must not bring a
+        # private state tree into existence just to report that it is empty.
+        state = lifecycle.GraphStateRoot(self.repository, root=self.state)
+        self.assertFalse(lifecycle.remove_graph(self.repository, root=self.state))
+        self.assertFalse(state.path.exists())
+        self.assertFalse(state.lock_path.exists())
+
     def test_remove_deletes_every_generation(self) -> None:
         self.build()
         state = lifecycle.GraphStateRoot(self.repository, root=self.state)
@@ -701,15 +941,21 @@ class CommandTests(TemporaryWorkspace):
         path.write_text(json.dumps(PIN.as_metadata()), encoding="utf-8")
         return path
 
-    def indexer_script(self) -> Path:
-        """A stand-in for a pinned provider CLI, so no package is required."""
+    def indexer_script(self, *, complete: bool = True) -> Path:
+        """A stand-in for a pinned provider CLI, so no package is required.
+
+        It answers to ``extract`` and writes its state into the directory it
+        was run in, which is the contract ``docs/graphify-evaluation.md``
+        records for the evaluated release.
+        """
         path = self.root / "fake-indexer"
         path.write_text(
             "#!/bin/sh\n"
-            'while [ "$#" -gt 0 ]; do\n'
-            '  case "$1" in --output) shift; printf graph-bytes > "$1" ;; esac\n'
-            "  shift\n"
-            "done\n",
+            '[ "$1" = "extract" ] || exit 64\n'
+            "mkdir -p .graphify\n"
+            "printf graph-bytes > .graphify/graph.bin\n"
+            'printf \'{"complete": %s, "code_files": 1, "requeued": 0}\' '
+            f"'{'true' if complete else 'false'}' > .graphify/manifest.json\n",
             encoding="utf-8",
         )
         path.chmod(0o700)
@@ -755,6 +1001,22 @@ class CommandTests(TemporaryWorkspace):
         code, output = self.run_command("status", *self.base())
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(output)["state"], "absent")
+
+    def test_a_provider_that_admits_an_incomplete_run_is_not_usable(self) -> None:
+        # End to end through the real launcher: the provider exits zero and
+        # writes state, and the build is still refused because its own report
+        # denies completion. Exit status is not completion evidence.
+        if lifecycle.network_sandbox_command() is None:
+            self.skipTest("this host offers no OS sandbox that denies a child the network")
+        code, output = self.run_command(
+            "build", *self.base(),
+            "--pin-file", str(self.pin_file()),
+            "--indexer", str(self.indexer_script(complete=False)),
+        )
+        self.assertEqual(code, 0, output)
+        code, output = self.run_command("status", *self.base())
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(output)["state"], "partial")
 
     def test_status_reports_stale_with_a_nonzero_exit(self) -> None:
         self.build()

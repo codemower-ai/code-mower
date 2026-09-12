@@ -41,9 +41,11 @@ import hashlib
 import json
 import os
 import re
+import io
 import shutil
 import subprocess
 import sys
+import tarfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -310,13 +312,16 @@ def _census_digest(entries: Iterable[TrackedEntry]) -> str:
     return census.hexdigest()
 
 
-def _git(repository: Path, *arguments: str, capture: bool = True) -> str:
-    """Run git with repository configuration disarmed.
+def git_environment() -> dict[str, str]:
+    """The environment every Git child of a build runs in.
 
-    A build reads an untrusted checkout. Local, global, and system
-    configuration can install clean/smudge filters, alternate object stores,
-    and hook paths, any of which would run code or reach outside the
-    repository during what looks like a read. This drops all three.
+    One definition for both invocation paths -- the census reader and the blob
+    materializer -- because a boundary that only half the children observe is
+    not a boundary. Beyond the scrubbing an indexer gets, this denies Git the
+    two ways a *read* can reach the network: ``GIT_NO_LAZY_FETCH`` stops a
+    partial clone fetching a missing object mid-read, and an empty
+    ``GIT_ALLOW_PROTOCOL`` leaves no transport on the allowlist, so a fetch
+    that was somehow attempted anyway has nothing to attempt it over.
     """
     environment = dict(_NETWORK_DENY)
     for name in _ENVIRONMENT_ALLOWLIST:
@@ -328,18 +333,82 @@ def _git(repository: Path, *arguments: str, capture: bool = True) -> str:
         GIT_CONFIG_SYSTEM=os.devnull,
         GIT_ATTR_NOSYSTEM="1",
         GIT_OPTIONAL_LOCKS="0",
+        GIT_NO_LAZY_FETCH="1",
+        # An empty allowlist, not an absent one: git treats the variable as the
+        # complete set of permitted transports, so "" permits none.
+        GIT_ALLOW_PROTOCOL="",
+        GIT_PROTOCOL_FROM_USER="0",
+        GIT_TERMINAL_PROMPT="0",
+        GIT_SSH_COMMAND="/usr/bin/false",
     )
+    return environment
+
+
+#: Overrides passed on the command line because that is the only level that
+#: outranks the repository's own ``.git/config``. System and global
+#: configuration are dropped by the environment above, but local configuration
+#: belongs to the untrusted checkout and is always read.
+_GIT_SAFETY_OPTIONS: tuple[str, ...] = (
+    "-c", "protocol.allow=never",
+    "-c", "core.fsmonitor=false",
+    "-c", "fetch.recurseSubmodules=no",
+    "-c", "uploadpack.allowFilter=false",
+)
+
+#: Local configuration that means "objects may be missing and fetched on
+#: demand". A build refuses such a checkout outright rather than relying on
+#: ``GIT_NO_LAZY_FETCH``, which older Git releases do not honour.
+_PARTIAL_CLONE_KEYS = r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$"
+
+
+def _git(repository: Path, *arguments: str, capture: bool = True, permit_failure: bool = False) -> str:
+    """Run git with repository configuration disarmed and no way out to a network.
+
+    A build reads an untrusted checkout. Local, global, and system
+    configuration can install clean/smudge filters, alternate object stores,
+    and hook paths, any of which would run code or reach outside the
+    repository during what looks like a read. This drops all three, and
+    ``git_environment`` closes the transports a read could otherwise use.
+    """
     try:
         completed = subprocess.run(
-            ["git", "-C", str(repository), "--no-optional-locks", *arguments],
-            check=True,
+            ["git", "-C", str(repository), "--no-optional-locks", *_GIT_SAFETY_OPTIONS, *arguments],
+            check=not permit_failure,
             capture_output=capture,
             text=True,
-            env=environment,
+            env=git_environment(),
         )
     except (OSError, UnicodeError, subprocess.SubprocessError):
         raise ContextError("local graph build could not read the target repository") from None
+    if permit_failure and completed.returncode != 0:
+        return ""
     return completed.stdout
+
+
+def refuse_lazy_object_fetch(repository: Path) -> None:
+    """Refuse a partial clone, where reading the tree can call out to a remote.
+
+    ``ls-tree`` and ``cat-file`` look like pure local reads, and in a full
+    clone they are. In a partial clone a missing object is fetched from the
+    promisor remote on demand -- during the build, over a transport the
+    repository configured, outside the sandbox the provider runs in. There is
+    no bounded way to prove ahead of time which objects are present, so the
+    build declines the whole repository shape instead.
+    """
+    declared = _git(
+        repository,
+        "config",
+        "--local",
+        "--name-only",
+        "--get-regexp",
+        _PARTIAL_CLONE_KEYS,
+        permit_failure=True,
+    )
+    if declared.strip():
+        raise ContextError(
+            "local graph builds refuse a partial clone: reading its tree can fetch objects "
+            "from a remote during the build; use a full clone of this checkout"
+        )
 
 
 def resolve_revision(repository: Path, revision: str = "HEAD") -> tuple[str, str]:
@@ -366,6 +435,7 @@ def read_tracked_census(repository: Path, commit: str) -> TrackedCensus:
     uncommitted edit, an untracked scratch file, and an ignored secret are all
     invisible here by construction rather than by filtering.
     """
+    refuse_lazy_object_fetch(repository)
     listing = _git(
         repository,
         "ls-tree",
@@ -437,23 +507,19 @@ def materialize_tracked_files(repository: Path, census: TrackedCensus, destinati
     write. Blob content comes from ``git cat-file --batch`` in one child
     process rather than one per file.
     """
+    refuse_lazy_object_fetch(repository)
     if destination.exists():
         raise ContextError("local graph materialization requires a fresh private directory")
     destination.mkdir(mode=0o700, parents=True)
     if not census.entries:
         return 0
-    environment = dict(_NETWORK_DENY)
-    for name in _ENVIRONMENT_ALLOWLIST:
-        if name in os.environ:
-            environment[name] = os.environ[name]
-    environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
     written = 0
     process = subprocess.Popen(
-        ["git", "-C", str(repository), "cat-file", "--batch"],
+        ["git", "-C", str(repository), "--no-optional-locks", *_GIT_SAFETY_OPTIONS, "cat-file", "--batch"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        env=environment,
+        env=git_environment(),
     )
     try:
         assert process.stdin is not None and process.stdout is not None
@@ -556,6 +622,117 @@ def _resolved_executable(executable: str) -> str:
     return executable
 
 
+#: The subcommand the evaluated release exposes, recorded in
+#: ``docs/graphify-evaluation.md``: the clean-room run indexed with
+#: ``extract --code-only --no-cluster --max-workers 4``. There is no
+#: ``--source``/``--output`` pair to hand it; ``extract`` reads the directory
+#: it is run in and writes its state beside those sources, which is why the
+#: child's working directory is the materialized copy and why the adapter
+#: collects an artifact afterwards rather than naming one up front.
+_PROVIDER_EXTRACT = "extract"
+
+#: Where that state lands. Both names appear in the evaluation's excluded-roots
+#: list; the adapter accepts whichever the installed release writes and refuses
+#: a build that produced neither.
+_PROVIDER_STATE_DIRECTORIES = (".graphify", ".graph")
+
+#: The provider's own record of what it processed. Completeness is read from
+#: here, never inferred from an exit status: the clean-room run recorded 54
+#: manifest entries requeued by a repeat that exited zero in 1.63 s.
+_PROVIDER_REPORT_NAMES = ("manifest.json", "index.json", "report.json")
+
+#: Counters whose presence above zero means the provider did not finish. Any
+#: one of them, not all: a report that admits requeued entries is a partial
+#: build however healthy the rest of it looks.
+_INCOMPLETE_COUNTERS = ("requeued", "pending", "failed", "errors", "incomplete")
+
+#: Where the provider reports how many files it actually indexed.
+_INDEXED_COUNTERS = ("indexed_files", "code_files", "files", "entries")
+
+
+def _provider_state_directory(source_root: Path) -> Path:
+    for name in _PROVIDER_STATE_DIRECTORIES:
+        candidate = source_root / name
+        if candidate.is_dir() and not candidate.is_symlink():
+            return candidate
+    raise ContextError("local graph provider wrote no index state; no generation was published")
+
+
+def _provider_report(state_directory: Path) -> Mapping[str, Any] | None:
+    """The provider's completion evidence, or ``None`` if it left none."""
+    for name in _PROVIDER_REPORT_NAMES:
+        path = state_directory / name
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            payload = json.loads(path.read_bytes()[: MAX_MANIFEST_BYTES + 1])
+        except (OSError, ValueError):
+            return None
+        return payload if isinstance(payload, Mapping) else None
+    return None
+
+
+def _read_completeness(report: Mapping[str, Any] | None) -> IndexResult:
+    """Classify a provider run from its own report, defaulting to partial.
+
+    Absent or unreadable evidence is *not* evidence of a complete build. The
+    provider owns no provenance (the evaluation records this as the first
+    product constraint), so a build that cannot read a completion claim
+    publishes a generation marked ``partial``, which ``graph_status`` refuses
+    by default. That is the failure an operator can act on; silently calling
+    it complete is the one they cannot.
+    """
+    if report is None:
+        return IndexResult(completeness=PARTIAL, notes=("provider left no readable completion report",))
+    notes: list[str] = []
+    for counter in _INCOMPLETE_COUNTERS:
+        value = report.get(counter)
+        if value is True:
+            notes.append(f"provider reported {counter}")
+        elif isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            notes.append(f"provider reported {value} {counter}")
+    if report.get("complete") is False:
+        notes.append("provider reported the extraction as incomplete")
+    indexed = 0
+    for counter in _INDEXED_COUNTERS:
+        value = report.get(counter)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            indexed = value
+            break
+    if notes:
+        return IndexResult(completeness=PARTIAL, indexed_files=indexed, notes=tuple(notes))
+    return IndexResult(completeness=COMPLETE, indexed_files=indexed)
+
+
+def _pack_state(state_directory: Path) -> bytes:
+    """Collect the provider's state into one reproducible artifact.
+
+    Names sorted, timestamps and ownership fixed, modes normalized: two builds
+    of the same commit must produce the same bytes, because the manifest binds
+    a digest of them. Only regular files are taken -- a symlink in provider
+    state would name a target outside the artifact, which an immutable
+    generation cannot carry.
+    """
+    buffer = io.BytesIO()
+    total = 0
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for path in sorted(state_directory.rglob("*"), key=lambda item: str(item.relative_to(state_directory))):
+            if path.is_symlink() or not path.is_file():
+                continue
+            total += path.stat().st_size
+            if total > MAX_ARTIFACT_BYTES:
+                raise ContextError("local graph artifact exceeds its budget; no generation was published")
+            info = tarfile.TarInfo(str(path.relative_to(state_directory)))
+            info.size = path.stat().st_size
+            info.mtime = 0
+            info.mode = 0o600
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            with path.open("rb") as stream:
+                archive.addfile(info, stream)
+    return buffer.getvalue()
+
+
 def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]:
     """Run a pinned provider CLI over the materialized copy, without a network.
 
@@ -566,6 +743,11 @@ def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]
     it from inside a sandbox that denies it sockets. Resolving the executable
     and the sandbox here, rather than at build time, means an unusable provider
     or an uncontainable host fails before a single blob is materialized.
+
+    The argv is the interface the adopt decision evaluated, not a guess at a
+    conventional one: ``extract`` with the pinned options, in the materialized
+    copy. Everything the provider leaves behind is then collected and
+    classified from its own report.
     """
     command = _resolved_executable(executable)
     sandbox = network_sandbox_command()
@@ -578,16 +760,7 @@ def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]
     def run(request: IndexRequest) -> IndexResult:
         try:
             completed = subprocess.run(
-                [
-                    *sandbox,
-                    command,
-                    "index",
-                    "--source",
-                    str(request.source_root),
-                    "--output",
-                    str(request.output_path),
-                    *request.pin.options,
-                ],
+                [*sandbox, command, _PROVIDER_EXTRACT, *request.pin.options],
                 check=False,
                 capture_output=True,
                 text=False,
@@ -600,7 +773,10 @@ def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]
         if completed.returncode != 0:
             # Provider stderr can echo indexed source; it is never surfaced.
             raise ContextError("local graph provider failed; no generation was published")
-        return IndexResult(completeness=COMPLETE)
+        state_directory = _provider_state_directory(request.source_root)
+        result = _read_completeness(_provider_report(state_directory))
+        _write_private_file(request.output_path, _pack_state(state_directory))
+        return result
 
     return run
 
@@ -760,6 +936,18 @@ class GraphStateRoot:
         return self.path / "generations"
 
     @property
+    def lock_path(self) -> Path:
+        """Beside the state directory, deliberately not inside it.
+
+        ``remove`` deletes the whole tree while holding this lock. A lock file
+        inside that tree would be unlinked mid-removal, and the next builder
+        would create a *new* inode and acquire a lock nobody else is holding --
+        two processes, two files, no mutual exclusion. Keeping it one level up
+        means the inode a holder waits on is the inode the remover holds.
+        """
+        return self.path.parent / f"{self.workspace}.lock"
+
+    @property
     def _chain(self) -> tuple[Path, ...]:
         """Every directory this class owns, outermost first.
 
@@ -783,15 +971,35 @@ class GraphStateRoot:
 
     def ensure(self) -> None:
         """Create the private tree, refusing to place state inside a repository."""
-        if any((parent / ".git").exists() for parent in (self.path, *self.path.parents)):
-            raise ContextError("local graph state must stay outside Git repositories")
+        self._refuse_state_inside_a_repository()
         self.verify_private(create=True)
 
+    def _refuse_state_inside_a_repository(self) -> None:
+        if any((parent / ".git").exists() for parent in (self.path, *self.path.parents)):
+            raise ContextError("local graph state must stay outside Git repositories")
+
+    def _ensure_lock_directory(self) -> None:
+        """Create only what the lock file needs, not the generations tree.
+
+        ``remove`` takes the same lock, and a removal that first created the
+        state it was asked to delete would report success for a tree it made
+        itself.
+        """
+        self._refuse_state_inside_a_repository()
+        for directory in self._chain[:2]:
+            os.close(_open_private_directory(directory, create=True))
+
     def lock(self):
-        """Serialize builds for one checkout; concurrent ones would race publish."""
-        self.ensure()
-        lock_path = self.path / "build.lock"
-        handle = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        """Serialize builds *and removals* for one checkout.
+
+        Concurrent builds would race publish; a removal running beside a build
+        would delete the sources, output, and generations out from under it.
+        Both take this lock, so the whole set of lifecycle operations that
+        mutate state for one checkout is serialized rather than just the pair
+        that was obviously racy.
+        """
+        self._ensure_lock_directory()
+        handle = os.open(self.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         stream = os.fdopen(handle, "a+", encoding="utf-8")
         try:
             _private(stream.fileno())
@@ -915,14 +1123,32 @@ class GraphStateRoot:
         return removed
 
     def remove_all(self) -> bool:
-        """Delete every trace of this checkout's graph state."""
-        if not self.path.exists():
+        """Delete this checkout's graph state, serialized against builders.
+
+        Taken under the build lock: without it, a removal can delete a running
+        build's materialized sources, its output, and the generations
+        directory, after which the builder either fails or recreates state
+        that ``remove`` has already reported as gone.
+
+        The lock file itself survives, by design. It is an empty 0600 file
+        outside the deleted tree that carries no indexed content, and it is the
+        stable inode the next builder and the next remover agree on.
+        """
+        if not self.path.exists() and not self.lock_path.exists():
+            # Nothing exists and no builder can be running: a builder creates
+            # the lock file before it creates any state, so an absent lock file
+            # means there is nothing to serialize against. Checked first so a
+            # removal on a fresh install does not create a private tree merely
+            # to report that it was empty.
             return False
-        # Refuse to delete a tree that is not ours; a loosened or foreign
-        # directory is reported, not recursively removed.
-        self.verify_private()
-        shutil.rmtree(self.path)
-        return True
+        with self.lock():
+            if not self.path.exists():
+                return False
+            # Refuse to delete a tree that is not ours; a loosened or foreign
+            # directory is reported, not recursively removed.
+            self.verify_private()
+            shutil.rmtree(self.path)
+            return True
 
 
 class _BuildLock:
@@ -1015,6 +1241,11 @@ def build_graph(
     commit, tree = resolve_revision(repository, revision)
     census = read_tracked_census(repository, commit)
     with state.lock():
+        # The lock only creates what the lock file needs, so that ``remove``
+        # can take it without materializing the tree it was asked to delete.
+        # A build does want the whole private tree, created 0700 at every
+        # level before anything is written into it.
+        state.ensure()
         build_root = state.path / ("." + uuid.uuid4().hex + ".build")
         build_root.mkdir(mode=0o700, parents=True)
         try:
@@ -1071,6 +1302,13 @@ def build_graph(
     return published
 
 
+#: How many times a reader will re-read a generation that was replaced under
+#: it. Bounded because the only thing that moves the pointer is a publish, and
+#: a refresh loop fast enough to outrun three reads is not a state worth
+#: blocking on.
+_STATUS_ATTEMPTS = 3
+
+
 def graph_status(
     repository: Path,
     *,
@@ -1084,8 +1322,40 @@ def graph_status(
     state, and every non-``current`` state is unusable. Nothing falls back to a
     previous generation: a consumer that cannot have the revision it asked for
     is told so rather than handed an older answer that looks fresh.
+
+    Readers take no lock, so a refresh can publish and prune between the moment
+    this reads the ``current`` pointer and the moment it validates what that
+    pointer named. The generation is then genuinely gone, and reporting it
+    ``invalid`` or ``corrupt`` would describe a directory a healthy build had
+    just superseded rather than anything wrong with the graph. A failing read
+    is therefore confirmed against the pointer before it is returned, and a
+    pointer that moved is read again.
     """
     state = GraphStateRoot(repository, root=root)
+    for attempt in range(_STATUS_ATTEMPTS):
+        status = _status_once(
+            state, repository, revision=revision, require_complete=require_complete
+        )
+        if status.usable or status.generation is None or attempt == _STATUS_ATTEMPTS - 1:
+            return status
+        try:
+            if state.current_generation() == status.generation:
+                # The pointer still names what was just validated, so the
+                # verdict is about the operator's graph, not a race.
+                return status
+        except ContextError:
+            return status
+    return status
+
+
+def _status_once(
+    state: GraphStateRoot,
+    repository: Path,
+    *,
+    revision: str,
+    require_complete: bool,
+) -> GenerationStatus:
+    """One validation pass over whichever generation ``current`` names now."""
     try:
         if not state.path.exists():
             return GenerationStatus(state="absent", detail="no local graph has been built for this checkout")
@@ -1260,12 +1530,14 @@ __all__: Sequence[str] = (
     "TrackedEntry",
     "build_graph",
     "doctor_report",
+    "git_environment",
     "graph_status",
     "iter_generations",
     "load_manifest",
     "load_pin",
     "materialize_tracked_files",
     "read_tracked_census",
+    "refuse_lazy_object_fetch",
     "remove_graph",
     "render_status_text",
     "resolve_revision",
