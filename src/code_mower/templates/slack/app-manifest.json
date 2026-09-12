@@ -1,0 +1,36 @@
+{
+  "_metadata": {
+    "major_version": 1,
+    "minor_version": 1
+  },
+  "display_information": {
+    "name": "Code Mower",
+    "description": "Private requests to existing Code Mower sessions"
+  },
+  "features": {
+    "slash_commands": [
+      {
+        "command": "/code-mower",
+        "url": "https://example.invalid/slack/ingress",
+        "description": "Request a private session action",
+        "usage_hint": "start|status|message|clarification_reply|cancel [text]",
+        "should_escape": false
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "commands"
+      ]
+    }
+  },
+  "settings": {
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://example.invalid/slack/ingress"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false
+  }
+}
