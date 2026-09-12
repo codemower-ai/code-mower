@@ -2473,6 +2473,7 @@ def render_init_plan(
     repo_root: str | Path | None = None,
     source_kind: str | None = None,
     participants: tuple[str, ...] | None = None,
+    transport_selection: tuple[str, str] | None = None,
     tracker: str | None = None,
     context_connection: str | None = None,
     context_required: bool | None = None,
@@ -2507,6 +2508,12 @@ def render_init_plan(
             config, participants, profile=profile_id,
         )
         participants = code_mower_participants.configured_participants(config)
+    if transport_selection is not None:
+        # A transport switch replaces one product's transport only, so every
+        # other participant and profile lane stays exactly as configured.
+        config = code_mower_participants.config_with_transport(
+            config, transport_selection[0], transport_selection[1], profile=profile_id,
+        )
     if tracker == "jira_cloud":
         config = config_with_jira_tracker(config)
     elif tracker == "github":
@@ -2607,7 +2614,12 @@ def render_init_plan(
         }
         if Path(config_path).name == "code-mower.example.yml":
             adoption_config_entry["package_copy_from"] = "templates/code-mower.example.yml"
-        if participants is not None or tracker is not None or context_changed:
+        if (
+            participants is not None
+            or transport_selection is not None
+            or tracker is not None
+            or context_changed
+        ):
             adoption_config_entry["config_data"] = config
         generated_files.append(adoption_config_entry)
 
@@ -2974,6 +2986,11 @@ def render_init_plan(
         },
         "setup_drift_hint": drift_hint,
         "participant_selection": selection_changes,
+        "transport_selection": (
+            {"product": transport_selection[0], "transport": transport_selection[1]}
+            if transport_selection is not None
+            else None
+        ),
         "labels": sorted(set(labels)),
         "workflows": workflows,
         "generated_files": generated_files,
@@ -3230,6 +3247,15 @@ def main(argv: list[str] | None = None) -> int:
                               help='Allow an explicitly unavailable context input to continue ordinary work')
     parser.add_argument('--without-context', action='store_true', help='Remove context selection from generated setup')
     parser.add_argument(
+        "--set-transport", dest="set_transport", metavar="PRODUCT=TRANSPORT",
+        help=(
+            "replace one product's transport, for example devin=devin_cli, keeping "
+            "every other participant and profile lane; the saved selection is "
+            "repository-wide, so every profile selecting that product moves with it; "
+            "previews unless --apply stages a generated tree under --output-dir"
+        ),
+    )
+    parser.add_argument(
         "--interactive", action="store_true",
         help="choose participants with a checkbox menu; previews setup unless --apply is set",
     )
@@ -3316,7 +3342,8 @@ def main(argv: list[str] | None = None) -> int:
             args.dry_run = True
     if args.builders and not args.dry_run and not args.apply:
         args.dry_run = True
-    if (args.interactive or args.participants is not None or args.context_connection is not None
+    if (args.interactive or args.participants is not None or args.set_transport is not None
+            or args.context_connection is not None
             or args.context_required is not None or args.without_context) and not args.dry_run and not args.apply:
         args.dry_run = True
     if args.apply and args.dry_run:
@@ -3361,6 +3388,10 @@ def main(argv: list[str] | None = None) -> int:
             selected_participants = tuple(
                 participant_transports.get(name, name) for name in selected_participants
             )
+        transport_selection = (
+            code_mower_participants.parse_transport_selection(args.set_transport)
+            if args.set_transport is not None else None
+        )
         tracker_choice = "jira_cloud" if args.jira else args.tracker
         plan = render_init_plan(
             config,
@@ -3371,6 +3402,7 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=Path.cwd(),
             source_kind="packaged_starter" if packaged_fallback else "explicit_repository_config",
             participants=selected_participants,
+            transport_selection=transport_selection,
             tracker=tracker_choice,
             context_connection=args.context_connection,
             context_required=args.context_required,

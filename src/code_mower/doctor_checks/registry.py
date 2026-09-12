@@ -71,6 +71,12 @@ OPTIONAL_DOCTOR_STAGES = (
         optional=True,
     ),
     DoctorCheckStage(
+        "devin-readiness",
+        "providers",
+        "Inspect the optional Devin posture, permissions, capabilities, and lifecycle",
+        optional=True,
+    ),
+    DoctorCheckStage(
         "supervised-pilot",
         "supervised_pilot",
         "Summarize manual and promoted supervised-pilot readiness",
@@ -89,6 +95,7 @@ def build_doctor_run_plan(
     cloud: bool = False,
     runner: bool = False,
     adoption: bool = False,
+    devin: bool = False,
     supervised_pilot: bool = False,
 ) -> tuple[DoctorCheckStage, ...]:
     """Return the named stages that a doctor run will execute."""
@@ -99,6 +106,7 @@ def build_doctor_run_plan(
         "cloud": cloud,
         "runner": runner,
         "adoption": adoption,
+        "devin-readiness": devin,
         "supervised-pilot": supervised_pilot,
     }
     stages.extend(stage for stage in OPTIONAL_DOCTOR_STAGES if optional_flags.get(stage.id, False))

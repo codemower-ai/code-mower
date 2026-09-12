@@ -32,6 +32,7 @@ from .common import (
     ACTIONS_COST_SAMPLE_MAX,
     load_inputs,
 )
+from .devin import check_devin_readiness, devin_readiness_selected
 from .github import check_github_setup
 from .github_config import check_repository_posture
 from .jira import (
@@ -136,6 +137,8 @@ __all__ = [
     "auth_probe_output_detail",
     "build_doctor_run_plan",
     "check_cloud_token_surface",
+    "check_devin_readiness",
+    "devin_readiness_selected",
     "DEFAULT_CAMPAIGN_PROVIDERS",
     "check_adoption_campaign_readiness",
     "check_campaign_auth_readiness",

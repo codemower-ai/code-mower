@@ -19,6 +19,11 @@ from .adoption import (
 from .audit_limits import check_effective_audit_limits
 from .cloud import check_cloud_token_surface
 from .common import ACTIONS_COST_SAMPLE_DEFAULT, load_inputs
+from .devin import (
+    check_devin_readiness,
+    devin_readiness_selected,
+    devin_selection_ambiguity,
+)
 from .github import check_github_setup
 from .jira import check_jira_tracker_readiness
 from .github_config import check_repository_posture
@@ -61,6 +66,16 @@ def _global_runtime_checks(
     )
 
 
+def _configured_lanes(config: Any, profile: str | None) -> tuple[str, ...]:
+    """Resolve selected lane ids for stage planning, before profile validation."""
+    if not isinstance(config, Mapping):
+        return ()
+    try:
+        return selected_lanes(config, profile)
+    except code_mower_config.ConfigError:
+        return ()
+
+
 def _run_plan_check(
     plan: tuple[DoctorCheckStage, ...],
     *,
@@ -98,6 +113,7 @@ def run_doctor(
     config_source: str = "",
     adoption: bool = False,
     adoption_posture: str = "reviewer-gate",
+    devin: bool = False,
     probe_runtime: bool = False,
     github: bool = False,
     cloud: bool = False,
@@ -113,15 +129,27 @@ def run_doctor(
     context_online: bool = False,
     context_state_dir: Path | None = None,
 ) -> DoctorReport:
+    config, templates, checks = load_inputs(config_path, provider_templates_path)
+    # Devin is an explicit addition to the Claude + Codex default, so its stage
+    # only runs for a repository that selected it or a caller that asked.
+    devin_lanes = _configured_lanes(config, profile)
+    devin_transport = devin_readiness_selected(
+        config, lanes=devin_lanes, profile=profile
+    )
+    # An ambiguous selection also keeps the stage, so the report says the posture
+    # cannot be determined instead of omitting Devin readiness altogether.
+    devin_ambiguous = devin_transport is None and bool(
+        devin_selection_ambiguity(config, lanes=devin_lanes, profile=profile)
+    )
     plan = build_doctor_run_plan(
         github=github,
         cloud=cloud,
         runner=runner,
         adoption=adoption or bool(repo_slug),
+        devin=devin or bool(devin_transport) or devin_ambiguous,
         supervised_pilot=supervised_pilot,
     )
     enabled_stages = {stage.id for stage in plan}
-    config, templates, checks = load_inputs(config_path, provider_templates_path)
     if isinstance(config, Mapping) and config.get('context') is not None:
         from ..context_readiness import inspect_connection
         readiness = inspect_connection(config['context'], state_dir=context_state_dir,
@@ -276,6 +304,23 @@ def run_doctor(
                 adoption_posture=adoption_posture,
                 probe_runtime=probe_runtime,
                 http_timeout=http_timeout,
+            )
+        )
+    if "devin-readiness" in enabled_stages:
+        checks.extend(
+            check_devin_readiness(
+                config=config,
+                lanes=lanes,
+                repo_slug=repo_slug,
+                transport=devin_transport,
+                include_unselected=devin and not (devin_transport or devin_ambiguous),
+                provider_credential_file=provider_credential_file,
+                provider_profile=provider_profile,
+                provider_config_dir=provider_config_dir,
+                config_profile=profile,
+                config_path=str(config_path),
+                effective_lanes=effective_lanes,
+                adoption_posture=adoption_posture,
             )
         )
     checks.extend(

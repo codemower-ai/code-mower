@@ -214,6 +214,11 @@ PACKAGE_FILES = (
         "core",
     ),
     (
+        "src/code_mower/local_cli_commands.py",
+        "src/code_mower/local_cli_commands.py",
+        "core",
+    ),
+    (
         "src/code_mower/doctor_checks/campaign_auth.py",
         "src/code_mower/doctor_checks/campaign_auth.py",
         "core",
@@ -259,6 +264,7 @@ PACKAGE_FILES = (
         "src/code_mower/doctor_checks/provider_review_hygiene.py",
         "core",
     ),
+    ("src/code_mower/doctor_checks/devin.py", "src/code_mower/doctor_checks/devin.py", "core"),
     ("src/code_mower/doctor_checks/privacy.py", "src/code_mower/doctor_checks/privacy.py", "core"),
     ("src/code_mower/doctor_checks/providers.py", "src/code_mower/doctor_checks/providers.py", "core"),
     ("src/code_mower/providers/__init__.py", "src/code_mower/providers/__init__.py", "core"),
@@ -318,6 +324,7 @@ PACKAGE_FILES = (
     ("src/code_mower/release_qualify.py", "src/code_mower/release_qualify.py", "core"),
     ("src/code_mower/release_campaigns.py", "src/code_mower/release_campaigns.py", "core"),
     ("src/code_mower/devin_api.py", "src/code_mower/devin_api.py", "core"),
+    ("src/code_mower/devin_readiness.py", "src/code_mower/devin_readiness.py", "core"),
     ("src/code_mower/devin_sessions.py", "src/code_mower/devin_sessions.py", "core"),
     ("src/code_mower/devin_work_orders.py", "src/code_mower/devin_work_orders.py", "core"),
     ("src/code_mower/github_builder_evidence.py", "src/code_mower/github_builder_evidence.py", "core"),
