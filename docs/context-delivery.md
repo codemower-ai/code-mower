@@ -201,4 +201,4 @@ organization search.
 The synthetic local-repository graph fixture uses the common packet validation
 and evidence renderer for all six roles without OAuth identity fields. This
 preserves an extension point for later Graphify evaluation; it does not install
-or qualify Graphify in v1.3.0.
+or qualify Graphify in v1.3.1.

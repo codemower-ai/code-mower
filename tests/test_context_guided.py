@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from code_mower import context_guided, context_session
+from code_mower import context_audit, context_guided, context_session
 from code_mower.context_contract import ContextError
 from code_mower.context_delivery import deliver, read_binding, save_feedback
 from code_mower.context_review import INPUT_HEADER
@@ -301,6 +301,95 @@ class GuidedContextTests(unittest.TestCase):
         encoded = json.dumps(status)
         for private in (saved["revision"], saved["packet"], "EXAMPLE-1", "owner/repo"):
             self.assertNotIn(private, encoded)
+
+    def test_provider_free_cross_process_qualification_is_symmetric_for_both_hosts(self):
+        delivered = []
+
+        def session_store():
+            return ContextStore(self.root / "sessions", vault=mock.Mock())
+
+        def context_store():
+            return ContextStore(self.fixture.store.root, vault=self.fixture.store._vault)
+
+        for index, (host, reviewer) in enumerate((("codex", "claude"), ("claude", "codex"))):
+            with self.subTest(host=host):
+                session_id = format(index + 12, "032x")
+                associations = session_store()
+                selected = context_session.create(
+                    associations,
+                    {
+                        "id": session_id,
+                        "repo": "owner/repo",
+                        "host": host,
+                        "orchestrator": host,
+                        "participants": [{"id": "claude"}, {"id": "codex"}],
+                    },
+                    work_item="EXAMPLE-1",
+                    policy=self.fixture.spec["policy"],
+                )
+                prepared = context_session.update(
+                    associations,
+                    session_id,
+                    expected_generation=selected["generation"],
+                    changes={
+                        "stage": "prepared", "builder": host, "query_mode": "work_item",
+                        "request_hash": "f" * 64,
+                        "packet": self.fixture.result["packet_handle"],
+                        "work_order": f".code-mower/work-orders/{host}.md",
+                    },
+                )
+                # A new store object for every phase models separate CLI
+                # processes while retaining the same protected on-disk state.
+                evidence = context_guided.deliver_session(
+                    session_store(),
+                    context_store(),
+                    prepared,
+                    repo_path=self.root,
+                    backend=self.fixture.backend,
+                )
+                self.assertIn("Private evidence", evidence)
+                delivered.append(evidence)
+                self.comments = []
+                with self.patches()[0], self.patches()[1], self.patches()[2], self.patches()[3], self.patches()[4]:
+                    report, code = context_guided.attach_session(
+                        session_store(),
+                        context_store(),
+                        context_session.read(session_store(), session_id),
+                        repo_path=self.root,
+                        pr=42 + index,
+                        backend=self.fixture.backend,
+                    )
+                self.assertEqual((report["status"], code), ("attached", 0))
+                attached = context_session.read(session_store(), session_id)
+                review = context_audit.prepare(
+                    repository="owner/repo",
+                    pr=42 + index,
+                    head=self.head,
+                    host=reviewer,
+                    authorities=("controller",),
+                    fetch_comments=lambda: list(self.comments),
+                    store=context_store(),
+                    backend=self.fixture.backend,
+                )
+                self.assertTrue(review.ready)
+                self.assertTrue(
+                    review.finish(head=self.head, prose=f"Private {reviewer} finding for {host}.")
+                )
+                with self.patches()[0], self.patches()[1], self.patches()[2]:
+                    feedback = context_guided.feedback_session(
+                        session_store(),
+                        context_store(),
+                        attached,
+                        repo_path=self.root,
+                        reviewer=reviewer,
+                        backend=self.fixture.backend,
+                    )
+                self.assertEqual(feedback, f"Private {reviewer} finding for {host}.")
+                public = json.dumps(report) + "".join(item["body"] for item in self.comments)
+                for private in ("EXAMPLE-1", "one@example.invalid", attached["packet"]):
+                    self.assertNotIn(private, public)
+        self.assertEqual(len(set(delivered)), 1)
+        self.assertEqual(self.fixture.backend.searches, 1)
 
 
 if __name__ == "__main__":

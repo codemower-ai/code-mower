@@ -23,7 +23,7 @@ is the first-class isolated path:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 code-mower==1.3.0
+uv tool install --python 3.12 code-mower==1.3.1
 code-mower --version
 ```
 
@@ -32,11 +32,11 @@ For a laptop or workstation that already uses pipx:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.3.0
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.3.1
 code-mower --version
 ```
 
-`1.3.0` is the supervised-pilot release. If you want a future prerelease instead
+`1.3.1` is the supervised-pilot release. If you want a future prerelease instead
 of this exact verified release, use:
 
 ```bash
@@ -212,6 +212,40 @@ code-mower work-order draft \
 ```
 
 Details: [Planning And Work Orders](planning-work-orders.md).
+
+## Optional: Use organizational context in a session
+
+Install the optional provider dependencies and select a generic repository
+connection. Account and workspace identity remain in the private connection;
+do not put them in repository configuration.
+
+```bash
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
+  'code-mower[coworker]==1.3.1'
+code-mower init --easy --context-connection example-context --dry-run
+code-mower init --easy --context-connection example-context --apply
+code-mower context connect coworker --connection example-context
+code-mower context doctor --connection example-context --online --json
+```
+
+Then let the session carry repository, ticket, participants, connection,
+packet and review revision through the existing work-order and review flow:
+
+```bash
+code-mower session start --repo OWNER/REPO --host codex --work-item EXAMPLE-123
+code-mower session context prepare .code-mower/sessions/SESSION.json
+code-mower session context deliver .code-mower/sessions/SESSION.json
+# build and open PR 42
+code-mower session context attach .code-mower/sessions/SESSION.json --pr 42
+# run the selected independent review
+code-mower session context feedback .code-mower/sessions/SESSION.json \
+  --reviewer claude
+```
+
+Use `--host claude` when Claude starts the session. The host is the implicit
+orchestrator and default builder. Explicit refresh and fresh authorization
+checks remain in force. See [Optional organizational context setup](context-setup.md)
+and [Context delivery](context-delivery.md).
 
 Keep SaaS reviewers such as Gitar, Cursor BugBot, CodeRabbit, Qodo, Greptile,
 and Devin informational/manual until your own calibration data supports
@@ -437,7 +471,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.3.0 \
+  --package-spec code-mower==1.3.1 \
   --allow-package-index \
   --python "$(command -v python3.12)" \
   --json

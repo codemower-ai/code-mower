@@ -134,7 +134,7 @@ rules; a synthetic fixture or structurally valid JSON is not authorization.
 
 ## Implemented commands
 
-The qualified connection and delivery path is available in v1.3.0. See the
+The qualified connection and delivery path is available in v1.3.1. See the
 [setup guide](context-setup.md) for installation and explicit account selection:
 
 ```text
@@ -190,4 +190,4 @@ an OAuth principal or workspace.
 
 The [Graphify candidate](https://github.com/codemower-ai/code-mower/issues/876)
 is later v1.3.x work. Synthetic graph fixtures prove only the extension point;
-they do not establish Graphify compatibility or make it a v1.3.0 dependency.
+they do not establish Graphify compatibility or make it a v1.3.1 dependency.
