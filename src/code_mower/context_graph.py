@@ -4,7 +4,8 @@ A repository-kind connection has no OAuth principal, so the packet bindings in
 ``context_contract`` cannot bound where its citations point. A local graph
 provider indexes a checkout and emits file/line citations, and nothing in the
 generic packet schema stops it from citing its own cache, a sibling worktree,
-or an absolute path outside the indexed root.
+an absolute path outside the indexed root, or an innocently named symlink that
+reaches any of those.
 
 These helpers are provider-neutral. They are the offline half of the Graphify
 evaluation in issue #876: they establish what a local graph adapter must prove
@@ -17,7 +18,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .context_contract import ContextError, _text
 
@@ -31,6 +32,16 @@ MAX_GRAPH_CITATIONS = 200
 #: Compared case-folded: on a case-insensitive filesystem (APFS and NTFS by
 #: default) ``.GIT/config`` names the same directory as ``.git/config``.
 _EXCLUDED_ROOTS = frozenset({".git", ".graph", ".graphify", ".code-mower"})
+
+
+def _names_private_state(parts: Iterable[str]) -> bool:
+    """True when any segment names indexer or version-control private state.
+
+    Every segment is checked, not just the first: a vendored submodule's
+    ``vendor/.git`` is as private as the top-level one, and a resolved symlink
+    target can land inside a nested cache directory.
+    """
+    return any(part.casefold() in _EXCLUDED_ROOTS for part in parts)
 
 
 @dataclass(frozen=True)
@@ -47,7 +58,9 @@ class GraphEvidenceReport:
     """A bounded, shareable quality verdict for one local-repository packet.
 
     ``resolved``/``total`` count line-bearing citations only: a citation with no
-    line span names a file but makes no line claim to resolve. ``revision_state``
+    line span names a file but makes no line claim to resolve. Such a citation
+    is still held to the scope policy, so a full ``resolution_rate`` means every
+    line claim checked out, not that every cited file exists. ``revision_state``
     repeats the packet's own binding so a consumer can refuse stale evidence
     without decoding the private payload again.
     """
@@ -92,6 +105,10 @@ def parse_graph_citation(source: Any) -> GraphCitation:
     Absolute paths, parent traversal, Windows separators, and the indexer's own
     cache directories are rejected here rather than at read time, so an adapter
     cannot launder an out-of-scope path through a structurally valid packet.
+
+    This sees only the text a provider wrote. Where the path actually lands on
+    disk is a separate question, answered by the scope check in
+    ``evaluate_graph_evidence``.
     """
     match = _CITATION.fullmatch(_text(source, maximum=2048))
     if match is None:
@@ -104,7 +121,7 @@ def parse_graph_citation(source: Any) -> GraphCitation:
         or not path.parts
         or any(part in {"", ".", ".."} for part in parts)
         or "\\" in raw
-        or parts[0].lower() in _EXCLUDED_ROOTS
+        or _names_private_state(parts)
     ):
         raise ContextError("local graph citation must stay inside the indexed repository")
     start = match.group("start")
@@ -118,23 +135,51 @@ def parse_graph_citation(source: Any) -> GraphCitation:
     return GraphCitation(raw, start_line, end_line)
 
 
-def _default_resolver(root: Path) -> Callable[[GraphCitation], bool]:
-    """Resolve line spans against the indexed checkout without following links.
+def _scope_checker(anchor: Path) -> Callable[[GraphCitation], bool]:
+    """Hold a citation's real filesystem target to the scope policy.
 
-    ``Path.resolve`` on the candidate is compared to the resolved root so a
-    symlink planted inside the checkout cannot point the citation elsewhere.
+    A textually clean path can still land outside the indexed checkout, or
+    inside private state the policy excludes, because a symlink planted in the
+    checkout redirects it: ``example_pkg/linked.py`` may point at another
+    worktree, and ``metadata/config`` may reach ``.git/config`` under an
+    innocent name. Both are decided here, on the resolved path, so the text
+    check and the filesystem check cannot disagree.
+
+    Applies to every citation, with or without a line span: a citation that
+    makes no line claim is never scored, so this is the only check that bounds
+    where it points.
+    """
+
+    def in_scope(citation: GraphCitation) -> bool:
+        try:
+            candidate = (anchor / citation.path).resolve()
+        except OSError:  # pragma: no cover - platform-specific resolve failure
+            return False
+        try:
+            relative = candidate.relative_to(anchor)
+        except ValueError:
+            return False  # the citation resolved outside the indexed checkout
+        if not relative.parts:
+            return False  # the citation resolved to the checkout root itself
+        return not _names_private_state(relative.parts)
+
+    return in_scope
+
+
+def _default_resolver(anchor: Path) -> Callable[[GraphCitation], bool]:
+    """Confirm line claims against the indexed checkout.
+
+    Only reached for citations the scope check already accepted, so this answers
+    one question: does the cited file really carry the line the graph claimed?
 
     A line claim is confirmed as soon as its last claimed line is seen, so a
     citation into a large generated file costs the lines up to the claim rather
     than a full read. ``MAX_GRAPH_CITATIONS`` bounds how many citations a packet
     may carry, but nothing bounds the size of any single cited file.
     """
-    anchor = root.resolve()
 
     def resolve(citation: GraphCitation) -> bool:
-        candidate = (anchor / citation.path).resolve()
-        if candidate != anchor and anchor not in candidate.parents:
-            return False
+        candidate = anchor / citation.path
         if not candidate.is_file():
             return False
         if citation.start_line is None:
@@ -164,18 +209,29 @@ def evaluate_graph_evidence(
     ``packet`` must already have passed ``context_contract.load_packet``; this
     adds the local-graph rules that generic validation cannot express. Pass
     ``revision_state`` from the ``ValidatedPacket`` rather than recomputing it.
-    Supply ``resolve`` to score without touching a filesystem.
+
+    A citation whose filesystem target escapes the indexed root or lands in
+    excluded private state rejects the whole packet, the same way a textually
+    out-of-scope path does; an unresolvable line claim only lowers the score.
+    Supply ``resolve`` to score line claims without reading files, and omit
+    ``repository_root`` to score with no filesystem at all — then only the
+    text-level scope rules apply, since there is no target to resolve.
     """
     if packet.get("kind") != "repository":
         raise ContextError("local graph evidence requires a repository-kind packet")
     if revision_state not in ("matching", "stale", "unknown"):
         raise ContextError("unsupported local graph revision state")
-    if resolve is None:
-        if repository_root is None:
+    in_scope: Callable[[GraphCitation], bool] | None = None
+    if repository_root is None:
+        if resolve is None:
             raise ContextError("local graph evidence requires an indexed root or a resolver")
+    else:
         if not repository_root.is_absolute():
             raise ContextError("local context repository root must be absolute")
-        resolve = _default_resolver(repository_root)
+        anchor = repository_root.resolve()
+        in_scope = _scope_checker(anchor)
+        if resolve is None:
+            resolve = _default_resolver(anchor)
 
     # A validated packet always carries these; fail closed rather than raising a
     # bare KeyError if a caller scores something load_packet never accepted.
@@ -198,7 +254,13 @@ def evaluate_graph_evidence(
             if not isinstance(citation, Mapping):
                 raise ContextError("local graph citation must be a structured reference")
             parsed = parse_graph_citation(citation.get("source"))
+            if in_scope is not None and not in_scope(parsed):
+                raise ContextError("local graph citation must stay inside the indexed repository")
             if parsed.start_line is None:
+                # Nothing to score: the citation names a file but claims no
+                # line. The scope check above is the only bound it ever gets,
+                # which is why it runs before this skip rather than inside the
+                # resolver.
                 continue
             line_claims += 1
             resolved += bool(resolve(parsed))

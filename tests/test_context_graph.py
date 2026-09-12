@@ -73,6 +73,17 @@ class GraphCitationScopeTests(unittest.TestCase):
                 with self.assertRaises(ContextError):
                     graph.parse_graph_citation(source)
 
+    def test_rejects_excluded_directories_at_any_depth(self) -> None:
+        """A vendored submodule's ``.git`` is as private as the top-level one."""
+        for source in (
+            "vendor/dependency/.git/config",
+            "example_pkg/.code-mower/lane-outcome.json",
+            "tools/.Graphify/cache/nodes.bin",
+        ):
+            with self.subTest(source=source):
+                with self.assertRaises(ContextError):
+                    graph.parse_graph_citation(source)
+
     def test_rejects_malformed_line_spans(self) -> None:
         for source in (
             "example_pkg/config.py#L0",
@@ -99,6 +110,23 @@ class GraphEvidenceReportTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(f"line {n}" for n in range(1, lines + 1)), encoding="utf-8")
         return path
+
+    def link(self, relative: str, target: Path) -> None:
+        """Plant a symlink inside the checkout under an innocent name."""
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.symlink_to(target)
+        except OSError:  # pragma: no cover - platforms without symlink support
+            self.skipTest("symlinks are unavailable on this platform")
+
+    def outside_file(self) -> Path:
+        """A file the indexer was never asked to index, in its own directory."""
+        enclosing = tempfile.TemporaryDirectory()
+        self.addCleanup(enclosing.cleanup)
+        secret = Path(enclosing.name) / "secret.py"
+        secret.write_text("line 1\nline 2\n", encoding="utf-8")
+        return secret
 
     def evaluate(self, data: dict, *, revision_state: str = "matching"):
         return graph.evaluate_graph_evidence(
@@ -156,19 +184,70 @@ class GraphEvidenceReportTests(unittest.TestCase):
         data["documents"][0]["citations"][0]["source"] = "example_pkg/removed.py#L3"
         self.assertEqual(self.evaluate(data).resolved_line_citations, 2)
 
-    def test_symlink_out_of_the_checkout_does_not_resolve(self) -> None:
-        enclosing = tempfile.TemporaryDirectory()
-        self.addCleanup(enclosing.cleanup)
-        outside = Path(enclosing.name)
-        (outside / "secret.py").write_text("line 1\nline 2\n", encoding="utf-8")
-        link = self.root / "example_pkg" / "linked.py"
-        try:
-            link.symlink_to(outside / "secret.py")
-        except OSError:  # pragma: no cover - platforms without symlink support
-            self.skipTest("symlinks are unavailable on this platform")
+    def test_symlink_out_of_the_checkout_rejects_the_packet(self) -> None:
+        """Scope is a gate, not a score: one escaping citation fails the packet.
+
+        Counting it as merely unresolved would let a packet with enough healthy
+        citations carry an out-of-scope one past the 90% gate.
+        """
+        self.link("example_pkg/linked.py", self.outside_file())
         data = packet()
         data["documents"][0]["citations"][0]["source"] = "example_pkg/linked.py#L1"
-        self.assertEqual(self.evaluate(data).resolved_line_citations, 2)
+        with self.assertRaises(ContextError):
+            self.evaluate(data)
+
+    def test_file_only_symlink_out_of_the_checkout_rejects_the_packet(self) -> None:
+        """A citation with no line span is never scored, so scope must bite.
+
+        The third fixture document cites a module without a line claim. Pointing
+        it out of the checkout used to produce a 1.0 resolution rate and pass
+        ``meets_gate`` because line-only scoring never looked at the target.
+        """
+        self.link("example_pkg/linked.py", self.outside_file())
+        data = packet()
+        data["documents"] = [data["documents"][2]]
+        data["documents"][0]["citations"][0]["source"] = "example_pkg/linked.py"
+        with self.assertRaises(ContextError):
+            self.evaluate(data)
+
+    def test_alias_symlink_into_excluded_state_rejects_the_packet(self) -> None:
+        """``metadata -> .git`` must not launder private state past the policy.
+
+        The declared path is textually clean, so only the resolved target can
+        show that the citation reached a cache or version-control directory.
+        """
+        for index, excluded in enumerate((".git", ".graph", ".graphify", ".code-mower")):
+            self.write(f"{excluded}/config", 5)
+            alias = f"metadata{index}"
+            self.link(alias, self.root / excluded)
+            for source in (f"{alias}/config#L1", f"{alias}/config"):
+                with self.subTest(excluded=excluded, source=source):
+                    data = packet()
+                    data["documents"][0]["citations"][0]["source"] = source
+                    with self.assertRaises(ContextError):
+                        self.evaluate(data)
+
+    def test_symlink_inside_the_checkout_still_resolves(self) -> None:
+        """The scope check bounds where a citation lands, not how it got there."""
+        self.link("example_pkg/alias.py", self.root / "example_pkg" / "config.py")
+        data = packet()
+        data["documents"][0]["citations"][0]["source"] = "example_pkg/alias.py#L40"
+        report = self.evaluate(data)
+        self.assertEqual(report.resolved_line_citations, 3)
+        self.assertTrue(report.meets_gate())
+
+    def test_scope_is_enforced_when_line_scoring_is_delegated(self) -> None:
+        """An injected resolver scores line claims; it does not waive scope."""
+        self.link("example_pkg/linked.py", self.outside_file())
+        data = packet()
+        data["documents"][0]["citations"][0]["source"] = "example_pkg/linked.py#L1"
+        with self.assertRaises(ContextError):
+            graph.evaluate_graph_evidence(
+                data,
+                repository_root=self.root,
+                revision_state="matching",
+                resolve=lambda citation: True,
+            )
 
     def test_stale_and_unknown_revision_fail_the_gate(self) -> None:
         for state in ("stale", "unknown"):
@@ -215,7 +294,7 @@ class GraphEvidenceReportTests(unittest.TestCase):
             self.evaluate(data)
 
     def test_resolver_injection_keeps_scoring_offline(self) -> None:
-        """A supplied resolver scores without a filesystem; scope still applies."""
+        """A supplied resolver scores with no filesystem; text scope still applies."""
         report = graph.evaluate_graph_evidence(
             packet(), revision_state="matching", resolve=lambda citation: False
         )

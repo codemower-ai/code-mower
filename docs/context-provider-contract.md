@@ -191,8 +191,11 @@ an OAuth principal or workspace.
 Local repository evidence needs one rule the generic packet schema cannot
 express: a citation must stay inside the indexed checkout. `context_graph`
 parses repository-relative citations with optional line spans, rejects absolute
-paths, parent traversal, and the indexer's own cache directories, and scores how
-many line claims still resolve. Stale or unknown revision binding fails that
+paths, parent traversal, and the indexer's own cache directories, re-applies
+that policy to each citation's resolved target so a symlink cannot alias private
+state or another worktree under an innocent name, and scores how many line
+claims still resolve. Scope is a gate rather than a score: one out-of-scope
+citation rejects the packet. Stale or unknown revision binding fails that
 quality gate even when every citation resolves.
 
 The [Graphify candidate](https://github.com/codemower-ai/code-mower/issues/876)

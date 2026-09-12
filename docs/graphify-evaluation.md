@@ -113,8 +113,9 @@ The contract side of the question is settled and tested offline.
 | Can a local graph packet reach a recipient through the existing delivery path? | Yes, with no OAuth principal, workspace, provider SDK, or network. | `GraphPacketDeliveryCompatibilityTests` |
 | Is stale graph state explicit to a consumer? | Yes. Revision binding resolves to `matching`, `stale`, or `unknown`, and stale/unknown fail the quality gate regardless of citation quality. | `test_stale_graph_is_detected_at_delivery_and_fails_the_gate`, `test_unknown_revision_binding_is_not_reported_as_fresh` |
 | Is incompleteness explicit? | Yes. `completeness` and `truncated` survive into the shareable summary; a `complete` packet may not claim truncation. | `test_truncation_and_completeness_stay_explicit` |
-| Is cache and worktree isolation enforceable? | Yes, but only with the new check. The generic packet schema accepts any citation text, so a graph could cite its own cache, a sibling worktree, or an absolute path outside the indexed root. `context_graph` closes that gap. | `test_rejects_citations_outside_the_indexed_checkout`, `test_excluded_roots_are_matched_case_insensitively`, `test_out_of_scope_citation_rejects_the_whole_packet` |
-| Can citation resolution be scored? | Yes. Line claims past end-of-file, missing files, and symlinks escaping the checkout all count as unresolved rather than silently passing. | `test_line_claim_past_end_of_file_is_unresolved`, `test_line_claim_ending_on_the_last_line_resolves`, `test_symlink_out_of_the_checkout_does_not_resolve` |
+| Is cache and worktree isolation enforceable? | Yes, but only with the new check. The generic packet schema accepts any citation text, so a graph could cite its own cache, a sibling worktree, or an absolute path outside the indexed root. `context_graph` closes that gap. | `test_rejects_citations_outside_the_indexed_checkout`, `test_excluded_roots_are_matched_case_insensitively`, `test_rejects_excluded_directories_at_any_depth`, `test_out_of_scope_citation_rejects_the_whole_packet` |
+| Does the policy hold when a symlink hides the real target? | Yes. The declared path and the resolved repository-relative target are held to the same policy, so an escaping link or an alias such as `metadata -> .git` rejects the packet — including for a citation with no line span, which is never scored. | `test_symlink_out_of_the_checkout_rejects_the_packet`, `test_file_only_symlink_out_of_the_checkout_rejects_the_packet`, `test_alias_symlink_into_excluded_state_rejects_the_packet`, `test_symlink_inside_the_checkout_still_resolves` |
+| Can citation resolution be scored? | Yes. Line claims past end-of-file and missing files count as unresolved rather than silently passing. Scope is a gate rather than a score, so an out-of-scope citation cannot be averaged away by healthy ones. | `test_line_claim_past_end_of_file_is_unresolved`, `test_line_claim_ending_on_the_last_line_resolves`, `test_missing_file_is_unresolved_rather_than_an_error` |
 
 `src/code_mower/context_graph.py` is stdlib-only and performs no retrieval. It
 is worth keeping independent of the Graphify outcome: it hardens the
@@ -135,7 +136,7 @@ the work order and, where they are machine-checkable, implemented in
 | Gate | Where it is checked |
 | --- | --- |
 | No out-of-scope or private file is indexed | `parse_graph_citation` rejects the packet |
-| Every citation stays inside the immutable checkout | `parse_graph_citation`, plus symlink-escape handling in the resolver |
+| Every citation stays inside the immutable checkout | `parse_graph_citation` on the declared path, plus the resolved-target scope check in `evaluate_graph_evidence` |
 | At least 90% of line citations resolve | `GraphEvidenceReport.meets_gate(minimum_resolution=0.9)` |
 | Completeness and truncation are explicit | `completeness` / `truncated` in the shareable summary |
 | Useful incremental relationships on at least half the graph-suited questions | Human judgment against the comparison set below; not automatable |
