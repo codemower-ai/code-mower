@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import tempfile
 import unittest
 from pathlib import Path
 from urllib.parse import unquote
@@ -67,12 +68,47 @@ def _link_destination(raw: str) -> str:
     return raw.split(maxsplit=1)[0]
 
 
+def _text_outside_fences(path: Path) -> str:
+    lines: list[str] = []
+    in_fence = False
+    fence = ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("\u0060" * 3, "~~~")):
+            marker = stripped[:3]
+            if not in_fence:
+                in_fence = True
+                fence = marker
+            elif marker == fence:
+                in_fence = False
+            continue
+        if not in_fence:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 class DocumentationTests(unittest.TestCase):
+    def test_fenced_link_examples_are_not_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "example.md"
+            marker = "\u0060" * 3
+            path.write_text(
+                f"[real](target.md)\n\n{marker}md\n[example](missing.md)\n{marker}\n",
+                encoding="utf-8",
+            )
+
+            destinations = [
+                _link_destination(match.group(1))
+                for match in LINK_RE.finditer(_text_outside_fences(path))
+            ]
+
+        self.assertEqual(destinations, ["target.md"])
+
     def test_relative_markdown_links_and_anchors_resolve(self) -> None:
         anchors_by_path: dict[Path, set[str]] = {}
         failures: list[str] = []
         for source in _markdown_files():
-            text = source.read_text(encoding="utf-8")
+            text = _text_outside_fences(source)
             for match in LINK_RE.finditer(text):
                 destination = _link_destination(match.group(1))
                 if (

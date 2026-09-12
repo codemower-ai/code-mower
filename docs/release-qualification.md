@@ -1,5 +1,9 @@
 # Release Qualification
 
+Examples use `vX.Y.Z`, `code-mower==X.Y.Z`, and
+`campaign-vX.Y.Z`. Replace them with the exact candidate tag, package spec,
+and campaign id for the release being qualified.
+
 The `code-mower release qualify` command runs local release qualification with a stable adoption-result schema.
 
 Release qualification proves that an exact package can be installed and can
@@ -12,8 +16,8 @@ and the [Lane Promotion Policy](lane-promotion-policy.md) for those decisions.
 
 ```bash
 code-mower release qualify \
-  --release-tag v1.3.1 \
-  --package-spec code-mower==1.3.1 \
+  --release-tag vX.Y.Z \
+  --package-spec code-mower==X.Y.Z \
   --output result.json \
   --qualification-context cold_install \
   --execute
@@ -32,8 +36,8 @@ current on production PyPI, add `--package-source testpypi`:
 
 ```bash
 code-mower release qualify \
-  --release-tag v1.3.1 \
-  --package-spec code-mower==1.3.1 \
+  --release-tag vX.Y.Z \
+  --package-spec code-mower==X.Y.Z \
   --output result.json \
   --qualification-context cold_install \
   --package-source testpypi \
@@ -134,7 +138,7 @@ as unclassified failures.
 ## Validation
 
 - Tag must match `v<major>.<minor>.<patch>[-<stage>.<num>]`
-- Package must be an exact index spec: `<name>==<version>`, e.g. `code-mower==1.3.1`.
+- Package must be an exact index spec: `<name>==<version>`, e.g. `code-mower==X.Y.Z`.
   The package identity is derived from that spec and normalized the way a
   package index normalizes it, so `Code_Mower`, `code.mower`, and `code-mower`
   are one identity. Paths, URLs, VCS specs, and inexact requirements are
@@ -175,8 +179,8 @@ The `code-mower release campaign` command coordinates multi-provider qualificati
 
 ```bash
 code-mower release campaign \
-  --release-tag v1.3.1 \
-  --package-spec code-mower==1.3.1 \
+  --release-tag vX.Y.Z \
+  --package-spec code-mower==X.Y.Z \
   --qualification-context cold_install
 ```
 
@@ -194,8 +198,8 @@ Example: Requiring Claude and Codex while running Antigravity, Muse, Cursor Clou
 
 ```bash
 code-mower release campaign \
-  --release-tag v1.3.1 \
-  --package-spec code-mower==1.3.1 \
+  --release-tag vX.Y.Z \
+  --package-spec code-mower==X.Y.Z \
   --providers claude,codex,antigravity,muse,cursor_cloud_agent,devin,devin_cli \
   --required-providers claude,codex \
   --apply
@@ -208,8 +212,8 @@ it is announced or marked current on production PyPI:
 
 ```bash
 code-mower release campaign \
-  --release-tag v1.3.1 \
-  --package-spec code-mower==1.3.1 \
+  --release-tag vX.Y.Z \
+  --package-spec code-mower==X.Y.Z \
   --qualification-context cold_install \
   --package-source testpypi
 ```
@@ -249,7 +253,7 @@ other package-index install; see
 - **One-to-one campaign ids:** A campaign id is its storage key: it is used verbatim as the stem of `.code-mower/campaigns/<campaign-id>.json`, with no substitution. `--campaign-id` accepts only lowercase ASCII letters, digits, `.`, `_`, and `-`, starting with a letter or digit, up to 64 characters; anything else is rejected before any lookup or save with a bounded error and no traceback. Lowercase-only keeps ids stable on case-insensitive volumes -- APFS on macOS is case-insensitive by default -- where `Campaign-A` and `campaign-a` would otherwise be one file holding two campaigns' state. The leading letter-or-digit rule excludes `.`, `..`, and every dotfile spelling (including the `.tmp.` write-staging prefix and the directory lock file), and the alphabet excludes path separators, so an id can neither traverse out of the campaign directory nor address internal storage. The generated default, `campaign-<release-tag>`, always satisfies this contract. Previously ids were sanitized to fit a filename, which made `campaign/a` and `campaign_a` collide on one file so naming either could advance and overwrite the other.
 - **Bounded status lookups:** `--status` with an explicit `--campaign-id` or `--release-tag` reports that campaign or exits non-zero with a bounded "no campaign found" message -- it never falls back to an unrelated campaign's data. Only an unqualified `--status` (no identifier) reports the most recently updated campaign.
 - **Campaign ids resolve by campaign id:** An explicit `--campaign-id` reads only `.code-mower/campaigns/<campaign-id>.json`, and accepts it only when the `campaign_id` stored *inside* it is exactly the id that was asked for. There is no directory scan and no fallback, so naming an id that no campaign is stored under reports "no campaign found" rather than resolving to some other campaign that merely carries that text as its *release tag* -- which status would have reported, and which `resume`/`dispatch` would have advanced and paid for. A file whose name and stored id disagree (hand-edited, copied, or restored from elsewhere) is likewise not treated as that campaign.
-- **Release tags resolve by release tag:** A campaign id is a storage key; a release tag is not. Whenever `--release-tag` alone identifies the campaign -- for `status`, `resume`, `dispatch`, or an implicit advance -- the lookup matches only campaigns whose stored `release_tag` field is exactly that tag, and ignores filenames entirely. A tag that also happens to be a well-formed campaign id (`v1.3.1` is one) therefore cannot select a campaign someone stored under that text as a custom `--campaign-id` for a *different* release. If more than one campaign carries the tag (possible only via custom ids), the request is rejected as ambiguous with a bounded error naming at most a few ids and asking for `--campaign-id`, rather than resolved to whichever file the directory happened to list first. Supplying both `--campaign-id` and `--release-tag` still requires both fields to match. Because creation resolves by tag, the id a new campaign would be created under is checked against the campaign directory first: an id already occupied by a stored file is refused instead of overwritten.
+- **Release tags resolve by release tag:** A campaign id is a storage key; a release tag is not. Whenever `--release-tag` alone identifies the campaign -- for `status`, `resume`, `dispatch`, or an implicit advance -- the lookup matches only campaigns whose stored `release_tag` field is exactly that tag, and ignores filenames entirely. A tag that also happens to be a well-formed campaign id (`vX.Y.Z` is one) therefore cannot select a campaign someone stored under that text as a custom `--campaign-id` for a *different* release. If more than one campaign carries the tag (possible only via custom ids), the request is rejected as ambiguous with a bounded error naming at most a few ids and asking for `--campaign-id`, rather than resolved to whichever file the directory happened to list first. Supplying both `--campaign-id` and `--release-tag` still requires both fields to match. Because creation resolves by tag, the id a new campaign would be created under is checked against the campaign directory first: an id already occupied by a stored file is refused instead of overwritten.
 - **Local resilience:** Campaign files stay in `.code-mower/campaigns/` of the checkout that wrote them, or in an explicit `--campaigns-dir`. Writes never copy, merge, or rewrite another checkout's campaign files merely to discover them. A metadata-only user-level index under `$CODE_MOWER_STATE_DIR/campaign-discovery` (default `~/.cache/code-mower/campaign-discovery`) records repository identity, campaign ids, timestamps, and the directory needed to reopen storage. `status`, `watch`, `upload`, and Board then resolve the same campaign set from another worktree or clone of that repository without an explicit path. `--campaigns-dir` remains authoritative for that invocation. If more than one campaign matches a tag or the same campaign id is stored in more than one directory, the command fails closed and names only safe campaign ids -- never local paths. A missing or malformed index is ignored and the current checkout's repo-local files remain readable. Status against a read-only campaign directory still writes nothing to campaign files. The index is not uploaded.
 - **Board visibility:** Active campaigns surface directly on Code Mower Board with release, provider, environment, elapsed time, state, and actionable next steps. In-flight local CLI adapters checkpointed with attempted_at while still persisted queued render as running on Board only while plausibly live within their effective adapter timeout; once that bounded window is exceeded without completion evidence, Board projects an actionable queued state with retry guidance rather than running indefinitely.
 - **Adoption doctor:** Run `code-mower doctor --adoption` to validate release campaign readiness across configured providers, adapters, credentials, authentication, writable storage, and Board visibility before dispatching.
@@ -448,7 +452,7 @@ The hosted agent sometimes answers on the release pull request linked to the cam
 
 ```bash
 code-mower release campaign dispatch \
-  --release-tag v1.3.1 \
+  --release-tag vX.Y.Z \
   --providers cursor_cloud_agent \
   --issue 123 \
   --release-pr 124 \
@@ -465,8 +469,8 @@ code-mower release campaign dispatch \
 **Example dispatch:**
 ```bash
 code-mower release campaign \
-  --release-tag v1.3.1 \
-  --package-spec code-mower==1.3.1 \
+  --release-tag vX.Y.Z \
+  --package-spec code-mower==X.Y.Z \
   --providers cursor_cloud_agent \
   --issue 123 \
   --repo-slug owner/repo \
@@ -565,8 +569,8 @@ dispatch works without an issue number.
 **Example dispatch:**
 ```bash
 code-mower release campaign \
-  --release-tag v1.3.1 \
-  --package-spec code-mower==1.3.1 \
+  --release-tag vX.Y.Z \
+  --package-spec code-mower==X.Y.Z \
   --providers devin \
   --repo-slug codemower-ai/code-mower \
   --apply
@@ -575,8 +579,8 @@ code-mower release campaign \
 To also record an optional issue marker:
 ```bash
 code-mower release campaign \
-  --release-tag v1.3.1 \
-  --package-spec code-mower==1.3.1 \
+  --release-tag vX.Y.Z \
+  --package-spec code-mower==X.Y.Z \
   --providers devin \
   --repo-slug codemower-ai/code-mower \
   --issue 123 \
@@ -599,7 +603,7 @@ result or contacting Devin again:
 
 ```bash
 code-mower release campaign dispose \
-  --campaign-id campaign-v1.3.1 \
+  --campaign-id campaign-vX.Y.Z \
   --dispose-provider devin \
   --unavailable-reason provider_transport_unavailable \
   --apply
@@ -647,8 +651,8 @@ participant. It is not merge authority until calibrated.
 **Example dispatch:**
 ```bash
 code-mower release campaign \
-  --release-tag v1.3.1 \
-  --package-spec code-mower==1.3.1 \
+  --release-tag vX.Y.Z \
+  --package-spec code-mower==X.Y.Z \
   --providers devin_cli \
   --apply
 ```
@@ -665,7 +669,7 @@ The normal release qualification sequence consists of three steps: **dispatch**,
 Create and dispatch qualification tasks to automated local adapters and hosted providers:
 
 ```bash
-code-mower release campaign dispatch --release-tag v1.3.1 --apply --repo-slug OWNER/REPO --issue 123 --release-pr 124
+code-mower release campaign dispatch --release-tag vX.Y.Z --apply --repo-slug OWNER/REPO --issue 123 --release-pr 124
 ```
 
 `--release-pr` is optional and links the release pull request for this tag as a second allowed result surface, so a hosted provider that answers there instead of on the campaign issue is still discovered by `watch`.
@@ -673,7 +677,7 @@ code-mower release campaign dispatch --release-tag v1.3.1 --apply --repo-slug OW
 Any provider without an automated adapter, credentials, or a bound remote result stays `unavailable`/manual. Record its verified result explicitly once qualification has occurred:
 
 ```bash
-code-mower release campaign --release-tag v1.3.1 \
+code-mower release campaign --release-tag vX.Y.Z \
   --record-result path/to/adoption-result.json \
   --record-provider codex
 ```
@@ -685,14 +689,14 @@ The recorded file is validated against the same closed schema as automated resul
 Follow campaign progression through a bounded watch operation:
 
 ```bash
-code-mower release campaign watch --release-tag v1.3.1
+code-mower release campaign watch --release-tag vX.Y.Z
 ```
 
 Configure custom polling intervals or bounded timeouts as needed, or request machine-readable JSON:
 
 ```bash
-code-mower release campaign watch --release-tag v1.3.1 --interval 5 --timeout 300
-code-mower release campaign watch --release-tag v1.3.1 --json
+code-mower release campaign watch --release-tag vX.Y.Z --interval 5 --timeout 300
+code-mower release campaign watch --release-tag vX.Y.Z --json
 ```
 
 - **Bounded polling:** Polls the stored campaign at a configurable positive interval (`--interval`, default `10.0`s) and bounded duration (`--timeout`, default `600.0`s). Both must be positive numbers. `--interval` is valid only for `watch`. `--timeout` is valid only for `watch` (bounded duration) and `upload` (request timeout); supplying either option to an action where it would be silently ignored is rejected with a bounded error without mutating campaign state.
@@ -715,8 +719,8 @@ Once providers have completed, publish the campaign's evidence to Code Mower
 Cloud. Preview first; the preview and the upload use the same event set:
 
 ```bash
-code-mower release campaign upload --release-tag v1.3.1 --json
-code-mower release campaign upload --release-tag v1.3.1 --yes --json
+code-mower release campaign upload --release-tag vX.Y.Z --json
+code-mower release campaign upload --release-tag vX.Y.Z --yes --json
 ```
 
 - **Preview by default:** without `--yes` nothing leaves the machine. The
