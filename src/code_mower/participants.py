@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 from .config import ConfigError
 from .provider_registry import REFERENCE_PROVIDERS
+from .provider_capabilities import TRANSPORTS, normalize_lane, resolve_transport
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,7 @@ PARTICIPANTS = {
     for item in (
         Participant("claude", "Claude Code", "claude_audit", "claude"),
         Participant("codex", "Codex", "codex", "codex"),
-        Participant("devin", "Devin", "devin_cli", "devin", note="local CLI review; cloud execution requires its own setup"),
+        Participant("devin", "Devin", "devin_cli", "devin", note="transport capabilities and readiness are separate from review authority"),
         Participant("cursor", "Cursor", builder_lane="cursor", note="Bugbot is a separate optional reviewer"),
         Participant("grok-bot", "Grok Bot", note="agent handoff; no dedicated automatic builder/reviewer transport"),
         Participant("antigravity", "Antigravity", "antigravity_cli", note="CLI review; building uses an agent handoff"),
@@ -46,6 +47,7 @@ PARTICIPANTS = {
 ALIASES = {
     "claude-code": "claude", "claude-audit": "claude",
     "devin-cli": "devin", "antigravity-cli": "antigravity", "muse-cli": "muse",
+    "devin-cloud": "devin", "devin-api-v3": "devin",
 }
 
 
@@ -75,6 +77,51 @@ def configured_participants(config: Mapping[str, Any]) -> tuple[str, ...]:
     return parse_participants(",".join(selected))
 
 
+def selected_transports(selected: tuple[str, ...]) -> dict[str, str]:
+    """Keep explicit transport aliases before normalizing product identities."""
+    result: dict[str, str] = {}
+    for raw in selected:
+        key = raw.strip().lower().replace("_", "-").replace(" ", "-")
+        if key in {"devin-cli", "devin-cloud", "devin-api-v3"}:
+            transport = resolve_transport(key).transport
+            if "devin" in result and result["devin"] != transport:
+                raise ConfigError("select one Devin transport per session: devin_cli or devin_api_v3")
+            result["devin"] = transport
+    return result
+
+
+def configured_transports(config: Mapping[str, Any], *, profile: str = "recommended") -> dict[str, str]:
+    defaults = config.get("session_defaults", {})
+    if not isinstance(defaults, Mapping):
+        raise ConfigError("session_defaults must be a mapping")
+    raw = defaults.get("transports", {})
+    if not isinstance(raw, Mapping) or set(raw) - {"devin"}:
+        raise ConfigError("session_defaults.transports must map devin to devin_cli or devin_api_v3")
+    selected = defaults.get("participants", [])
+    if not isinstance(selected, list) or not all(isinstance(x, str) for x in selected):
+        raise ConfigError("session_defaults.participants must be a list of names")
+    aliases = selected_transports(tuple(selected))
+    explicit = {product: resolve_transport(value).transport for product, value in raw.items()}
+    if "devin" in aliases and "devin" in explicit and aliases["devin"] != explicit["devin"]:
+        raise ConfigError("Devin participant alias conflicts with session_defaults.transports.devin; select one transport")
+    inferred = "devin_cli"
+    if not aliases and not explicit:
+        profiles = config.get("profiles", {})
+        active_profile = profiles.get(profile, {}) if isinstance(profiles, Mapping) else {}
+        active = active_profile.get("lanes", []) if isinstance(active_profile, Mapping) else []
+        if isinstance(active, list) and "devin" in active:
+            if "devin_cli" in active:
+                raise ConfigError("Both Devin review transports are active; set session_defaults.transports.devin to devin_cli or devin_api_v3")
+            inferred = "devin_api_v3"
+    return {"devin": inferred, **aliases, **explicit}
+
+
+def review_lane_for(name: str, transports: Mapping[str, str]) -> str | None:
+    if name == "devin":
+        return TRANSPORTS[transports[name]].review_lane
+    return PARTICIPANTS[name].review_lane
+
+
 def picker_initial_participants(config: Mapping[str, Any], *, profile: str) -> tuple[str, ...]:
     """Include active known reviewers when editing an existing setup."""
     selected = set(configured_participants(config)) if "session_defaults" in config else set()
@@ -85,6 +132,8 @@ def picker_initial_participants(config: Mapping[str, Any], *, profile: str) -> t
     if not isinstance(active_lanes, list):
         raise ConfigError(f"profile {profile!r} lanes must be a list")
     selected.update(name for name, item in PARTICIPANTS.items() if item.review_lane in active_lanes)
+    if "devin" in active_lanes:
+        selected.add("devin")
     return tuple(name for name in PARTICIPANTS if name in selected)
 
 
@@ -112,7 +161,10 @@ def reference_review_config(lane_id: str) -> dict[str, Any]:
         data["adapter"] = lane.adapter
     if lane.events:
         data["events"] = list(lane.events)
-    return data
+    if lane.product:
+        data["product"] = lane.product
+        data["transport"] = lane.transport
+    return normalize_lane(lane_id, data)
 
 
 def config_with_participants(
@@ -123,10 +175,11 @@ def config_with_participants(
     lanes = result.get("lanes")
     if not isinstance(profiles, dict) or profile not in profiles or not isinstance(lanes, dict):
         raise ConfigError(f"config must contain lanes and profile {profile!r}")
+    transports = {**configured_transports(config, profile=profile), **selected_transports(selected)}
     selected = parse_participants(",".join(selected))
     review_lanes = []
     for name in selected:
-        lane_id = PARTICIPANTS[name].review_lane
+        lane_id = review_lane_for(name, transports)
         if lane_id:
             if lane_id not in lanes:
                 lanes[lane_id] = reference_review_config(lane_id)
@@ -142,6 +195,8 @@ def config_with_participants(
     if not isinstance(defaults, Mapping):
         raise ConfigError("session_defaults must be a mapping")
     result["session_defaults"] = {**defaults, "participants": list(selected)}
+    if "devin" in selected:
+        result["session_defaults"]["transports"] = {"devin": transports["devin"]}
     return result
 
 

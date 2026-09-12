@@ -2506,6 +2506,7 @@ def render_init_plan(
         config = code_mower_participants.config_with_participants(
             config, participants, profile=profile_id,
         )
+        participants = code_mower_participants.configured_participants(config)
     if tracker == "jira_cloud":
         config = config_with_jira_tracker(config)
     elif tracker == "github":
@@ -2514,6 +2515,8 @@ def render_init_plan(
     if issues:
         raise ConfigError(f"invalid Code Mower config:\n{_format_issues(issues)}")
 
+    from .provider_capabilities import normalize_config
+    config = normalize_config(config)
     profile = _profile(config, profile_id)
     lanes: Mapping[str, Mapping[str, Any]] = config["lanes"]
     selected_lanes = {lane_id: lanes[lane_id] for lane_id in profile.lanes}
@@ -3341,7 +3344,7 @@ def main(argv: list[str] | None = None) -> int:
             tuple(args.add_repo),
         )
         selected_participants = (
-            code_mower_participants.parse_participants(args.participants)
+            tuple(args.participants.split(","))
             if args.participants is not None else None
         )
         if args.interactive:

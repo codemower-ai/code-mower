@@ -64,8 +64,8 @@ the live catalog is untouched.
 | `greptile` | Greptile | GitHub review/check | paid | GitHub App enabled for repo | informational |
 | `qodo` | Qodo | manual opt-in comment/event | paid | GitHub App enabled for repo | informational |
 | `cursor_bugbot` | Cursor BugBot | `bugbot run` or `@cursor review` | paid/Cursor usage | Cursor GitHub App and BugBot repo enablement | informational |
-| `devin` | Devin | Devin Sessions API v3 | paid | service-user `DEVIN_API_KEY`, opaque `DEVIN_ORG_ID`, and exact `OWNER/REPO` in `CODE_MOWER_DEVIN_REPOSITORIES` | canonical hosted Devin; `devin_cloud` accepted alias; issue marker is optional audit evidence |
-| `devin_cli` | Devin CLI | local runner / doctor contract | included/provider account | local checkout plus local auth | informational; not merge authority until calibrated; selectable for release campaigns through the maintained adapter |
+| `devin` | Devin | Devin Sessions API v3 (`devin_api_v3`) | paid | service-user `DEVIN_API_KEY`, opaque `DEVIN_ORG_ID`, and exact `OWNER/REPO` in `CODE_MOWER_DEVIN_REPOSITORIES` | hosted compatibility lane; `devin_cloud` and `devin_api_v3` accepted campaign aliases; informational, not merge authority until independently calibrated; issue marker is optional audit evidence |
+| `devin_cli` | Devin | local CLI transport / doctor contract | included/provider account | local checkout plus local auth | informational; not merge authority until calibrated; selectable for release campaigns through the maintained adapter; shares product `devin` with hosted transport, with distinct execution/provenance |
 | `local_llm` | OpenAI-compatible endpoint | local runner | local or endpoint cost | endpoint receives selected code context | informational |
 | `aider` | Aider CLI | local runner | local/provider account | local checkout plus model auth | informational |
 | `gemini_cli` | Gemini CLI compatibility | local runner | provider account | local checkout plus API/auth | legacy informational |

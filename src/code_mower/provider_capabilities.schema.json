@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Code Mower provider capability declaration",
+  "description": "Maintained integration behavior, independent of runtime readiness and review authority. No provider outputs or private context are accepted.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "product",
+        "transport",
+        "capabilities",
+        "readiness",
+        "capability_gaps"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.providerCapabilities.v1"
+        },
+        "product": {
+          "const": "devin"
+        },
+        "transport": {
+          "const": "devin_cli"
+        },
+        "capabilities": {
+          "const": {
+            "coordinate": "agent_handoff",
+            "build": "local_runner",
+            "review": "local_runner",
+            "message": "unavailable",
+            "cancel": "unavailable",
+            "context": "unavailable",
+            "structured_results": "local_runner"
+          }
+        },
+        "readiness": {
+          "const": "unchecked"
+        },
+        "capability_gaps": {
+          "const": [
+            "message",
+            "cancel",
+            "context"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "product",
+        "transport",
+        "capabilities",
+        "readiness",
+        "capability_gaps"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.providerCapabilities.v1"
+        },
+        "product": {
+          "const": "devin"
+        },
+        "transport": {
+          "const": "devin_api_v3"
+        },
+        "capabilities": {
+          "const": {
+            "coordinate": "unavailable",
+            "build": "agent_handoff",
+            "review": "evidence_only",
+            "message": "unavailable",
+            "cancel": "unavailable",
+            "context": "unavailable",
+            "structured_results": "campaign_only"
+          }
+        },
+        "readiness": {
+          "const": "unchecked"
+        },
+        "capability_gaps": {
+          "const": [
+            "coordinate",
+            "message",
+            "cancel",
+            "context"
+          ]
+        }
+      }
+    }
+  ]
+}

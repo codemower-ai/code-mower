@@ -189,6 +189,8 @@ PROVIDER_ALIAS_MAP: dict[str, str] = {
     "grok_build": "grok_build",
     "devin": "devin",
     "devin_cloud": "devin",
+    "devin_api_v3": "devin",
+    "devin-api-v3": "devin",
     "devin_cli": "devin_cli",
 }
 

@@ -1,12 +1,22 @@
 devin:
   provider: "devin"
+  product: "devin"
+  transport: "devin_api_v3"
+  capabilities:
+    coordinate: "unavailable"
+    build: "agent_handoff"
+    review: "evidence_only"
+    message: "unavailable"
+    cancel: "unavailable"
+    context: "unavailable"
+    structured_results: "campaign_only"
   driver: "hosted_bridge"
   type: "audit"
   adapter: null
   trailer_lane: null
   spend_policy: "paid"
-  merge_authority: true
-  informational: false
+  merge_authority: false
+  informational: true
   enabled_by_default: false
   events: []
   token_env:
@@ -21,7 +31,7 @@ devin:
       - "DEVIN_ORG_ID"
     campaign_repository_scope_env: "CODE_MOWER_DEVIN_REPOSITORIES"
     campaign_response_timeout_seconds: 3600
-    status: "hosted Devin v3 Sessions API transport; issue marker is optional audit evidence"
+    status: "informational hosted Devin v3 Sessions API transport; not merge authority until independently calibrated; issue marker is optional audit evidence"
   review_hygiene:
     workflow: ".github/workflows/devin-clear-stale.yml"
     token_env: "GITHUB_TOKEN"
