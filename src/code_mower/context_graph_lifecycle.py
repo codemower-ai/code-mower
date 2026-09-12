@@ -353,8 +353,16 @@ def _seatbelt_prefix(launcher: str, *, writable: Sequence[str], readable: Sequen
         " (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\"))",
     ]
     if readable:
+        # ``file-map-executable`` alongside the read: being allowed to *read* a
+        # dynamic library is not being allowed to map its pages executable, and
+        # on a ``(deny default)`` profile the second denial is what actually
+        # stops a process. It stops it as a ``SIGABRT`` from inside dyld before
+        # the runtime owns stderr, so the failure arrives as a signalled child
+        # with no output at all rather than as anything naming a path -- which
+        # is how this profile read as "the launcher cannot start a child" on
+        # every macOS host while being a one-rule omission.
         subpaths = " ".join(f"(subpath {_seatbelt_literal(path)})" for path in readable)
-        rules.append(f"(allow file-read* process-exec* {subpaths})")
+        rules.append(f"(allow file-read* file-map-executable process-exec* {subpaths})")
     if writable:
         subpaths = " ".join(f"(subpath {_seatbelt_literal(path)})" for path in writable)
         rules.append(f"(allow file-read* file-write* {subpaths})")
