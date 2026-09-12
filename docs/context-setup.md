@@ -14,10 +14,15 @@ credentials and destination permissions in the separate private connection.
 ```sh
 code-mower init --easy --context-connection example-context --dry-run
 code-mower init --easy --context-connection example-context --apply
-python -m pip install 'code-mower[coworker]'
 code-mower context connect coworker --connection example-context
 code-mower context doctor --connection example-context --online --json
 ```
+
+Before connecting, install the pinned `coworker` extra through the same pipx,
+uv, or contributor environment that owns `code-mower`; the exact commands are
+in [Install And Bootstrap](install.md#optional-coworker-support). The connection
+stores account and workspace details privately and never writes them to the
+repository.
 
 The init preview changes only the selected context policy; it does not sign in,
 search, add participants or change reviewer authority. Context is optional by

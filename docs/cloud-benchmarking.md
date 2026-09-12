@@ -1,176 +1,104 @@
 # Code Mower Cloud Benchmarking
 
-The OSS package should be useful without any cloud dependency. Cloud sharing is
-the premium path for longitudinal reporting, cross-team benchmarks, and
-hosted recommendations.
+The OSS package provides installation, diagnostics, review, calibration, local
+reports, and the local Board without a hosted account. CodeMower.com is an
+optional destination for longitudinal team reporting and future aggregate
+benchmarks.
 
-## Product Role
+## Current v1.3.1 Surface
 
-Local Code Mower answers:
+The current client can:
 
-- Which AI reviewers are useful on this repository?
-- Which lanes should be informational, selective, or merge-gating?
-- What quality, speed, and cost results are visible from local artifacts?
+- build an inspectable local bundle;
+- preview uploads without network transfer;
+- upload only after an explicit `--yes`;
+- send metadata-only Board snapshots with zero reports;
+- send aggregate productivity summaries and provider scorecards;
+- import bounded GitHub Actions history as history rather than calibration
+  evidence; and
+- upload release-qualification outcomes separately from builder-quality and
+  reviewer-promotion evidence.
 
-Cloud Code Mower can add:
-
-- trends over time
-- team dashboards
-- benchmark cohorts by language, repo size, and task class
-- recommendations from larger anonymized populations
-- hosted value reports for builder plus reviewer loops
-- cross-tier comparisons between local CLIs, hosted async agents, SaaS
-  reviewers, and local/API model lanes
-
-Code Mower Cloud should learn from span/trace/score evaluation systems without
-making any of them required for the OSS package. The local bundle should be
-portable enough to upload to Code Mower Cloud later or transform into another
-observability/evaluation backend.
-
-## Release Stages
-
-### Current v1.3.1: Metadata-Only Upload, Board, Productivity, And Qualification
-
-The current v1.3.1 line keeps cloud sharing opt-in for adopters who explicitly
-want to share sanitized benchmark metadata, summarized Board mirrors, or
-aggregate productivity metrics with Code Mower Cloud. The OSS tool is still
-local-first:
+Representative commands:
 
 ```bash
 code-mower productivity report --repo OWNER/REPO --json
+code-mower cloud export --repo-slug OWNER/REPO --json
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --dry-run --json
-code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 code-mower cloud dogfood --json
-code-mower cloud dogfood --event productivity_summary=productivity-summary.json --json
 code-mower cloud board-snapshot --repo-slug OWNER/REPO --json
-code-mower release qualify --release-tag v1.3.1 --package-spec code-mower==1.3.1 --output adoption-result.json --execute
-code-mower cloud export --event adoption_run=adoption-result.json --repo-slug OWNER/REPO --json
 ```
 
-Dry run is the first-class experience. A network upload only happens when the
-caller passes `--yes`, and the default payload is metadata-only. Rich report
-text requires `--include-reports`; Board snapshot uploads contain zero reports.
-Productivity uploads use explicit `productivity_summary` events, so operators
-can review the JSON before sending it. Release qualification uses the closed
-`adoption_run` event contract for categorical outcomes and numeric counts only;
-it does not upload command output and does not establish builder quality or
-reviewer promotion evidence.
+The dry run is the first operation. A network upload requires `--yes`. Report
+text is excluded unless the caller explicitly selects it; a Board snapshot
+always contains zero reports.
 
-### v1.0 Baseline: Local-First, Cloud-Ready
+## What Local And Hosted Views Answer
 
-Ship no network upload by default. The local package may include an opt-in
-upload alpha, but a user should not need a Code Mower Cloud account to get
-value from install, doctor, first audit, calibration, value reports, or cloud
-export.
+Local reports can answer:
 
-Provide:
+- Which reviewer caught known blockers?
+- Which reviewer stayed quiet on known-clean cases?
+- What cost, latency, fix rounds, and interventions were observed?
+- Which lanes have enough local evidence to consider for promotion?
 
-```bash
-code-mower cloud export \
-  --report reviewer-metrics=reviewer-metrics.json \
-  --report lane-policy=lane-policy.json \
-  --report value-report=reviewer-value-report.md \
-  --spend .code-mower/reviewer-spend.json \
-  --output-dir .code-mower/cloud-benchmark-bundle \
-  --json
-```
+The hosted service can add private team history, cross-repository rollups,
+evidence drill-down, and repeated provider/lens comparisons. Cross-team cohorts
+and recommendations from aggregate populations are future capabilities and
+must not be presented as current product value.
 
-The export command creates a local bundle manifest, README, and copied report
-files. It does not upload anything.
+## Data Classes
 
-Reports and future bundle extensions should use the cloud vocabulary:
+The public data contract distinguishes:
 
-- trace: one PR, builder session, or calibration case
-- span: one builder or reviewer run inside a trace
-- score: one adjudicated finding, useful concern, clean pass, miss, or
-  post-merge health result
-- dataset: a starter or team calibration corpus
-- experiment: a repeatable provider, lens, or tier comparison
+- **operational activity:** current runs and uploads;
+- **imported history:** prior workflow activity that was not adjudicated;
+- **calibration evidence:** known-clean/known-blocked cases with reviewed truth;
+- **builder runs:** source-free authoring provenance and outcomes;
+- **reviewer outcomes:** verdicts and finding dispositions; and
+- **productivity summaries:** aggregate counts, rates, time, cost, and outcome
+  fields.
 
-The current v1.0 manifest remains intentionally small. Do not document a field
-as part of the manifest until the exporter emits it and tests cover it.
-
-### v1.1: Broader Opt-In Upload
-
-Promote upload beyond supervised pilots only after the bundle schema, Board
-snapshot event, and hosted ingestion path have real early-adopter mileage:
-
-```bash
-open https://codemower.com/login
-code-mower cloud upload --dry-run
-code-mower cloud upload
-```
-
-Upload must continue to show exactly what will be sent before transfer. A dry
-run should remain the default first experience.
-
-The upload beta should support metadata-only uploads first. Rich report files,
-public-repo slugs, and team identity should each be separate opt-ins. Human
-users manage team ingest tokens from:
-
-```text
-https://codemower.com/dashboard
-```
-
-### v1.2: Premium Reporting
-
-Hosted reporting can include:
-
-- best builders for this repo
-- best reviewers by task class
-- cost per useful finding
-- cost per merged feature
-- false-positive interruption rate
-- post-merge health trends
-- lane promotion recommendations
-- benchmark percentile against similar repos
-- provider-tier comparisons such as local CLI vs hosted async vs local model
-- lens comparisons such as base audit vs security vs operability
+These classes must remain separate in dashboards and analysis. A successful
+transport or installation run is not reviewer-quality evidence.
 
 ## Default Privacy Boundary
 
-The cloud bundle excludes these by default:
+Default bundles exclude:
 
-- source code
-- raw diffs
-- raw model transcripts
-- raw stdout/stderr
-- auth probe output
-- secrets
+- source code;
+- raw diffs;
+- model prompts and transcripts;
+- raw stdout/stderr;
+- auth output;
+- issue body text;
+- credentials and secret values; and
+- private organizational context and account bindings.
 
-Default shareable fields should be metadata and summaries:
-
-- provider id and lane id
-- task class
-- repo-size and language buckets
-- verdict counts by severity
-- disposition counts
-- useful-rate, precision, miss-rate, and clean-pass counts
-- elapsed time and cost estimates
-- merge and post-merge health
-- trace/span/score ids that are random or install-scoped, not content-derived
+Safe fields include bounded provider/lane identifiers, task classes,
+repository buckets, verdict and disposition counts, elapsed time, known cost,
+merge/post-merge outcomes, and random or installation-scoped event IDs.
 
 Do not persist content-derived fingerprints of redacted auth output. Even a
-hash can leak account-state correlation for predictable CLI output.
+hash can correlate predictable account state.
 
 ## Consent Model
 
-Every cloud path should be explicit:
+| Command | Network behavior |
+| --- | --- |
+| `cloud export` | Local files only |
+| `cloud upload --dry-run` | Validates and previews; no transfer |
+| `cloud dogfood --json` | Builds the preview; no transfer |
+| `cloud board-snapshot --json` | Builds a zero-report preview; no transfer |
+| Any supported upload command with `--yes` | Transfers the validated payload using the selected team token |
 
-- `cloud export`: local only
-- `cloud upload --dry-run`: no transfer, prints manifest
-- `cloud upload --yes`: requires a team token and explicit confirmation
+Repository/team identity and rich reports are separate choices. Inspect the
+manifest before uploading.
 
-Support modes:
+## Bundle Contract
 
-- `--anonymous`: remove repo and team identifiers
-- `--team`: attach to an authenticated team
-- `--public-repo`: allow public repository slug
-- `--include-reports`: future opt-in for richer report files
-
-## Bundle Schema
-
-The v1.0 local bundle manifest uses:
+The local manifest uses `code_mower.cloudBenchmarkBundle.v1`. Its core privacy
+shape is:
 
 ```json
 {
@@ -190,26 +118,16 @@ The v1.0 local bundle manifest uses:
 }
 ```
 
-The bundle is intentionally conservative. Premium cloud value should come from
-aggregation, longitudinal history, and comparison, not from requiring users to
-share source code.
+The complete additive event and backward-compatibility rules are in the
+[Cloud Data Contract](cloud-data-contract.md).
 
-Future upload-ready manifests can add explicit `traces`, `spans`, `scores`,
-`datasets`, and `experiments` arrays after `code_mower_cloud.py` emits them and
-the schema tests cover them.
+## Near-Term Direction
 
-## Premium Product Path
+Hosted work should prioritize reliable private-team usefulness: clear evidence
+provenance, understandable recommendations, retention automation, and stable
+export/deletion. Aggregate cohorts should follow only after enough consenting
+teams contribute comparable, adjudicated evidence.
 
-The cloud service becomes valuable when it can answer questions local reports
-cannot answer alone:
-
-- Which AI builders and reviewers are improving over time on this codebase?
-- Which provider tier is best value for this repo and task class?
-- Which review lenses produce useful independent signal without false-positive
-  drag?
-- Which setup resembles this repo and has a better lane policy?
-- What is the cost of one useful finding or one safely merged feature?
-
-OSS v1.0 should therefore make local data capture clean and privacy-preserving.
-Revenue work begins with opt-in upload, longitudinal dashboards, team reports,
-and aggregated recommendations after the local schema has real users.
+Slack task ingress and Graphify repository context do not widen the cloud
+contract by implication. Each needs an explicit privacy and event decision
+before any new field can enter a bundle.

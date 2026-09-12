@@ -245,6 +245,5 @@ orchestrator. It does not:
 - decide merge readiness;
 - replace the normal Code Mower audit protocol.
 
-That boundary is deliberate. The v1.0 path is to make planning artifacts useful
-and measurable first, then add optional provider adapters where the value is
-clear.
+That boundary keeps planning artifacts useful across provider adapters without
+giving the planning command hidden execution or merge authority.

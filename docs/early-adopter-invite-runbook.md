@@ -8,7 +8,7 @@ to 20-50 early OSS users.
 The first invite cohort should prove that a new user can get value without
 knowing the history of the reference repos:
 
-1. install Code Mower from the tagged beta;
+1. install the pinned stable Code Mower release;
 2. run `init --easy` and the repository-targeted adoption doctor preset;
 3. generate the starter calibration/value report;
 4. optionally connect a CodeMower.com team token; and

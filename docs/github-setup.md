@@ -255,7 +255,7 @@ decision.
 
 The public Code Mower source repo can be fetched from GitHub Actions over
 unauthenticated HTTPS. Use that path when possible; it is the lowest-friction
-v1.0 setup and avoids spreading broad personal tokens across repositories.
+public setup and avoids spreading broad personal tokens across repositories.
 
 When a repository consumes a private Code Mower fork, a private source branch,
 or a private package index, GitHub Actions needs an explicit read credential.
@@ -286,7 +286,7 @@ Code Mower lanes therefore support one human-owned automation token by default:
 - `DISPATCH_TOKEN_EXPIRES_AT` as a repository variable containing the PAT expiry
   date in `YYYY-MM-DD` format, or `never` when the PAT has no expiration date
 
-Keep older per-lane token names only as beta compatibility fallbacks:
+Keep older per-lane token names only as compatibility fallbacks:
 
 - `CODEX_AUDIT_LABEL_TOKEN`
 - `CLAUDE_AUDIT_LABEL_TOKEN`
@@ -564,7 +564,7 @@ authority explicit:
 - require the merge-gating audit lanes that the repo has promoted
 - keep new or uncalibrated lanes informational
 
-The default v1.0 posture is:
+The default posture is:
 
 - Codex audit and Claude audit can be merge-authority lanes when configured.
 - Gitar and other SaaS reviewers start informational.
@@ -751,7 +751,7 @@ If repository policy allows a bypass, the maintainer should:
 - avoid counting the failed provider run as PASS evidence; and
 - repair provider auth/setup before relying on that lane again.
 
-Do not make this automatic in v1.0. A provider-unavailable bypass is an explicit
+Do not make this automatic. A provider-unavailable bypass is an explicit
 human or delegated-maintainer action.
 
 Generated dispatchers also treat GitHub API rate limits as infrastructure
@@ -794,7 +794,7 @@ or bootstrap job should fail on warnings.
 
 ## Non-GitHub Systems
 
-v1.0 is GitHub-first.
+Code Mower 1.3.1 is GitHub-first.
 
 GitLab is the best next source-control target because merge requests,
 discussions, labels, approval rules, pipelines, and API concepts map closely to

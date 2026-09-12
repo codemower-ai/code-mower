@@ -154,9 +154,8 @@ code-mower providers provenance-env --provider antigravity_cli --shell
 
 ## Muse CLI Policy
 
-Muse Code is an experimental Meta local CLI lane. It is useful for early
-calibration as a builder/reviewer candidate, but it is not merge-gating in
-v1.0.
+Muse Code is an experimental Meta local CLI lane. It is useful for calibration
+as a builder/reviewer candidate, but it is not merge-gating by default.
 
 Recommended setup:
 
@@ -185,8 +184,8 @@ and cost.
 
 ## Grok Build Policy
 
-Grok Build is an optional local CLI lane. It is useful for early peer-review and
-calibration experiments, but it is not merge-gating in v1.0.
+Grok Build is an optional local CLI lane. It is useful for peer-review and
+calibration experiments, but it is not merge-gating by default.
 
 Recommended setup:
 
@@ -216,7 +215,7 @@ and cost.
 ## Cursor BugBot Policy
 
 Cursor BugBot is useful to test as a convenience reviewer, but it should not be
-merge-gating in v1.0.
+merge-gating until repository-specific calibration supports promotion.
 
 Recommended setup:
 
@@ -240,7 +239,7 @@ examples before promoting the adapter beyond setup diagnostics.
 ## Private Repo Actions Cost Policy
 
 Private GitHub repos can spend Actions minutes even on small metadata
-workflows. The v1.0 posture is:
+workflows. The current default posture is:
 
 - no recurring cron for optional hosted reviewers
 - issue-comment labelers must have job-level trusted-author prefilters before
@@ -318,7 +317,7 @@ Default promotions:
 - Cursor BugBot and other SaaS/manual lanes: informational until calibrated.
 - Local/private model lanes: informational until false-positive rates are low.
 
-## OSS v1.0 Rule
+## OSS Default Rule
 
 Easy mode should never surprise users with provider spend or source exposure.
 Every non-default lane must say:
@@ -330,5 +329,5 @@ Every non-default lane must say:
 - whether it can affect merge readiness
 - how to turn it off
 
-See `docs/privacy-threat-model.md` for the data minimization and cloud export
+See [Privacy And Threat Model](privacy-threat-model.md) for the data minimization and cloud export
 rules that apply across providers.

@@ -6,7 +6,7 @@ widens to 20-50 early adopters.
 The filename is historical from the v0.5 planning pass. The live baseline in
 this document is the current v1.3.1 supervised-pilot release.
 
-Code Mower is beta, bring-your-own-agent-loop software for teams willing to
+Code Mower is supervised-pilot, bring-your-own-agent-loop software for teams willing to
 calibrate reviewers. It is not a drop-in autonomous merge gate.
 
 ## Goal
@@ -14,7 +14,7 @@ calibrate reviewers. It is not a drop-in autonomous merge gate.
 Prove that a fresh user can get value from the public package without knowing
 the private history behind Code Mower:
 
-1. install the public beta;
+1. install the pinned stable release;
 2. run setup/doctor safely;
 3. generate a local value report;
 4. optionally upload a sanitized metadata bundle; and

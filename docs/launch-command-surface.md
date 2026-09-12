@@ -53,7 +53,7 @@ Select any additional builder or reviewer explicitly.
 | `code-mower board doctor --repo OWNER/REPO` | Diagnose Board inputs, local history, gate alerts, owner queue, and optional agent cards with redacted local paths by default. | no | GitHub optional |
 | `code-mower board reset --repo OWNER/REPO --yes` | Delete only the local Board history file after explicit confirmation. | yes, local only | no |
 | `code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json` | Check hosted-builder or orchestrator setup without requiring local Codex/Claude CLIs on this machine. | no | optional GitHub/provider probes |
-| `code-mower doctor --supervised-pilot --repo OWNER/REPO --json` | Summarize v1.0 manual-pilot readiness with blockers, owner actions, warnings, promotion to-dos, cloud token, and Board visibility. | no | optional GitHub/provider probes |
+| `code-mower doctor --supervised-pilot --repo OWNER/REPO --json` | Summarize manual-pilot readiness with blockers, owner actions, warnings, promotion to-dos, cloud token, and Board visibility. | no | optional GitHub/provider probes |
 | `code-mower doctor --promoted-pilot --repo OWNER/REPO --json` | Check the stricter posture needed before green audits may drive auto-merge. | no | optional GitHub/provider probes |
 | `code-mower migration setup-drift --repo-path .` | Classify existing generated setup files before an upgrade PR without printing source or diffs. | no | no |
 | `code-mower migration package-install-rehearsal ...` | Prove install, toy repo, starter report, and cloud dry-run path. | yes, scratch workspace | no uploads |

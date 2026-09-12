@@ -17,7 +17,7 @@ not know the original reference repos.
   as the operator snapshot. The corresponding GitHub tag is
   `v1.3.1`; `doctor --preflight` and `doctor --v05` remain
   compatibility presets for scripts.
-- The v1.0 supervised-pilot release includes Python 3.12+ install hardening,
+- The current supervised-pilot release includes Python 3.12+ install hardening,
   hosted-builder doctor postures, non-expiring token diagnostics, native
   redacted lane status, local Board, Board history, spend/verdict timelines,
   owner queue, optional metadata-only agent cards, Board doctor, Board reset,
@@ -125,7 +125,7 @@ scripts/dev-python -m venv .venv
 .venv/bin/code-mower --version
 .venv/bin/python -m ruff check .
 .venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json
-.venv/bin/code-mower doctor --preflight --json
+.venv/bin/code-mower doctor --adoption --json
 .venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url "$(pwd)" --ref HEAD --python .venv/bin/python --json
 .venv/bin/code-mower migration package-install-rehearsal --package-spec . --python .venv/bin/python --json
 ```
@@ -178,8 +178,7 @@ interpreter.
   the documented happy path. Unsupported direct execution should fail with a
   precise install/remediation message.
 - Keep the package root small enough to explain in one pass. Large root modules
-  should either become subpackages or have an explicit architecture note before
-  v1.0.
+  should either become subpackages or have an explicit architecture note.
 - Add focused unit tests around the large modules instead of relying mostly on
   release-hygiene integration tests.
 - Add static-analysis gates in stages: broaden Ruff for stable subpackages

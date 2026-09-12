@@ -7998,21 +7998,28 @@ def main():
         self.assertIn("available in `code-mower==1.3.1`", sessions)
         self.assertIn("# Code Mower v1.3.1 Release Notes", release_notes)
         self.assertIn("The privacy boundary is unchanged.", release_notes)
-        self.assertLess(
-            readme.index("[v1.1 Release Notes](docs/v11-release-notes.md)"),
-            readme.index("[v1.1.1 Release Notes](docs/v111-release-notes.md)"),
+        release_history = (ROOT / "docs" / "release-history.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "[Release History And Archived Plans](docs/release-history.md)",
+            readme,
         )
         self.assertLess(
-            readme.index("[v1.1.2 Release Notes](docs/v112-release-notes.md)"),
-            readme.index("[v1.2 Release Notes](docs/v12-release-notes.md)"),
+            release_history.index("[v1.1.0 release notes](v11-release-notes.md)"),
+            release_history.index("[v1.0.15 release notes](v1015-release-notes.md)"),
         )
         self.assertLess(
-            readme.index("[v1.2 Release Notes](docs/v12-release-notes.md)"),
-            readme.index("[v1.2.1 Release Notes](docs/v121-release-notes.md)"),
+            release_history.index("[v1.2.2 release notes](v122-release-notes.md)"),
+            release_history.index("[v1.2.1 release notes](v121-release-notes.md)"),
         )
         self.assertLess(
-            readme.index("[v1.2.1 Release Notes](docs/v121-release-notes.md)"),
-            readme.index("[v1.2.2 Release Notes](docs/v122-release-notes.md)"),
+            release_history.index("[v1.2.1 release notes](v121-release-notes.md)"),
+            release_history.index("[v1.2.0 release notes](v12-release-notes.md)"),
+        )
+        self.assertLess(
+            release_history.index("[v1.3.1 release notes](v131-release-notes.md)"),
+            release_history.index("[v1.3.0 release notes](v130-release-notes.md)"),
         )
 
     def test_current_release_docs_record_package_index_procedure(self) -> None:
@@ -8046,7 +8053,7 @@ def main():
             "The current package-index release entrypoint is `code-mower==1.3.1`",
             public_release,
         )
-        self.assertIn("The v1.0 supervised-pilot release includes", public_release)
+        self.assertIn("The current supervised-pilot release includes", public_release)
         self.assertIn(
             "`code-mower lanes status --repo OWNER/REPO` as the operator snapshot",
             " ".join(public_release.split()),
@@ -8071,7 +8078,7 @@ def main():
             oss_checklist,
         )
 
-        self.assertIn("## v1.0 Package-Index Release Procedure", first_user)
+        self.assertIn("## Stable Package-Index Release Procedure", first_user)
         self.assertIn("## Cache-Bypass And Local Wheel Checks", first_user)
         self.assertIn("## Cache Bypass And Propagation Triage", pypi_release)
         for text in (first_user, pypi_release):
@@ -8183,7 +8190,7 @@ def main():
         self.assertIn("## What Calibration Does And Does Not Prove", readme)
         self.assertIn(
             "It does not prove that a reviewer should gate merges.",
-            readme,
+            normalized_readme,
         )
         self.assertIn("[lane promotion policy](docs/lane-promotion-policy.md)", readme)
         self.assertIn("## Start Here", readme)
@@ -8191,8 +8198,11 @@ def main():
         self.assertIn("not a drop-in unattended merge gate", normalized_readme)
         self.assertIn("## Roles", readme)
         self.assertIn("Claude Code, Codex, Cursor-style", readme)
-        self.assertIn("templates now support that loop end to end", readme)
-        self.assertIn("[docs/v06-truth-baseline.md](docs/v06-truth-baseline.md)", readme)
+        self.assertIn("supervised issue-to-merge loop end to end", normalized_readme)
+        self.assertIn(
+            "[Release History And Archived Plans](docs/release-history.md)",
+            readme,
+        )
 
     def test_v06_truth_baseline_records_provider_contract_scope(self) -> None:
         baseline = (ROOT / "docs" / "v06-truth-baseline.md").read_text(
@@ -8240,13 +8250,12 @@ def main():
         self.assertIn("--input /tmp/required-status-checks-patch.json", build_loop_30)
         self.assertNotIn("-F contexts[]=", build_loop_30)
 
-        docs_map = readme.split("## Docs Map", 1)[1]
+        docs_map = readme.split("## Documentation", 1)[1]
         for link in (
             "docs/build-loop-in-30-minutes.md",
             "docs/upgrade-existing-repo.md",
             "docs/orchestrator-prompt-pack.md",
             "docs/planning-work-orders.md",
-            "docs/builders-grok-cursor.md",
             "docs/local-audit-runner.md",
             "docs/self-hosted-mac-runner.md",
             "docs/build-loop.md",
@@ -8254,7 +8263,10 @@ def main():
             "docs/lanes/codex.md",
             "docs/lanes/claude.md",
             "docs/lanes/cursor.md",
-            "docs/v06-truth-baseline.md",
+            "docs/lanes/devin.md",
+            "docs/context-setup.md",
+            "docs/context-delivery.md",
+            "docs/release-history.md",
         ):
             with self.subTest(link=link):
                 self.assertIn(link, docs_map)
@@ -8359,7 +8371,7 @@ def main():
             with self.subTest(schema=schema_name):
                 self.assertIn(schema_name, board_contract)
                 self.assertIn(schema_name, cloud_contract)
-        for text in (readme, board_contract, cloud_contract):
+        for text in (board_contract, cloud_contract):
             with self.subTest(retention_doc=text[:20]):
                 self.assertIn(".code-mower/board/events.jsonl", text)
         self.assertIn("14 days", board_contract)
@@ -8493,17 +8505,10 @@ def main():
             / "docs"
             / "early-adopter-invite-runbook.md",
             "docs/friendly-user-rollout-v05.md": ROOT / "docs" / "friendly-user-rollout-v05.md",
-            "docs/oss-v1-checklist.md": ROOT / "docs" / "oss-v1-checklist.md",
             "docs/pypi-release.md": ROOT / "docs" / "pypi-release.md",
-            "docs/v08-release-notes.md": ROOT / "docs" / "v08-release-notes.md",
-            "docs/v09-release-notes.md": ROOT / "docs" / "v09-release-notes.md",
-            "docs/v10-release-notes.md": ROOT / "docs" / "v10-release-notes.md",
-            "docs/v101-release-notes.md": ROOT / "docs" / "v101-release-notes.md",
-            "docs/v102-release-notes.md": ROOT / "docs" / "v102-release-notes.md",
-            "docs/v103-release-notes.md": ROOT / "docs" / "v103-release-notes.md",
-            "docs/v101-effectiveness-assessment.md": ROOT
-            / "docs"
-            / "v101-effectiveness-assessment.md",
+            "docs/quickstart.md": ROOT / "docs" / "quickstart.md",
+            "docs/install.md": ROOT / "docs" / "install.md",
+            "docs/provider-matrix.md": ROOT / "docs" / "provider-matrix.md",
         }
         stale_phrases = (
             "pipx install --python python3.12 code-mower==1.3.1",
@@ -8520,7 +8525,6 @@ def main():
         for label, path in active_docs.items():
             text = path.read_text(encoding="utf-8")
             with self.subTest(path=label):
-                self.assertRegex(text, r"0\.[89]|1\.\d+")
                 for phrase in stale_phrases:
                     self.assertNotIn(phrase, text)
 
@@ -8553,9 +8557,15 @@ def main():
         self.assertIn("metadata-only", prompt_pack)
         self.assertIn("Do not upload source, raw diffs, transcripts", prompt_pack)
 
-    def test_v09_adoption_polish_docs_cover_cold_start_surface(self) -> None:
+    def test_current_adoption_docs_cover_cold_start_and_history(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+        builder_experiments = (ROOT / "docs" / "builder-experiments.md").read_text(
+            encoding="utf-8",
+        )
+        release_history = (ROOT / "docs" / "release-history.md").read_text(
+            encoding="utf-8",
+        )
         troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(
             encoding="utf-8",
         )
@@ -8563,32 +8573,23 @@ def main():
             encoding="utf-8",
         )
 
-        self.assertIn("Cold adopters should start with the reviewer gate", readme)
-        self.assertIn("code-mower builder-experiment run", readme)
-        self.assertIn("[v0.6 Release Notes](docs/v06-release-notes.md)", readme)
-        self.assertIn("[v0.8 Release Notes](docs/v08-release-notes.md)", readme)
-        self.assertIn("[v0.9 Release Notes](docs/v09-release-notes.md)", readme)
-        self.assertIn("[v1.0 Release Notes](docs/v10-release-notes.md)", readme)
-        self.assertIn("[v1.0.1 Release Notes](docs/v101-release-notes.md)", readme)
-        self.assertIn("[v1.0.2 Release Notes](docs/v102-release-notes.md)", readme)
-        self.assertIn("[v1.0.4 Release Notes](docs/v104-release-notes.md)", readme)
-        self.assertIn("[v1.0.5 Release Notes](docs/v105-release-notes.md)", readme)
-        self.assertIn("[v1.0.6 Release Notes](docs/v106-release-notes.md)", readme)
-        self.assertIn("[v1.0.7 Release Notes](docs/v107-release-notes.md)", readme)
-        self.assertIn("[v1.0.8 Release Notes](docs/v108-release-notes.md)", readme)
-        self.assertIn("[v1.0.9 Release Notes](docs/v109-release-notes.md)", readme)
-        self.assertIn("[v1.0.10 Release Notes](docs/v1010-release-notes.md)", readme)
-        self.assertIn("[v1.0.11 Release Notes](docs/v1011-release-notes.md)", readme)
-        self.assertIn("[v1.0.12 Release Notes](docs/v1012-release-notes.md)", readme)
-        self.assertIn("[v1.0.13 Release Notes](docs/v1013-release-notes.md)", readme)
-        self.assertIn("[v1.0.14 Release Notes](docs/v1014-release-notes.md)", readme)
-        self.assertIn("[v1.0.15 Release Notes](docs/v1015-release-notes.md)", readme)
-        self.assertIn("[v1.1 Release Notes](docs/v11-release-notes.md)", readme)
+        self.assertIn("[Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)", readme)
         self.assertIn(
-            "[v1.0.1 Effectiveness Assessment](docs/v101-effectiveness-assessment.md)",
+            "[Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)",
             readme,
         )
-        self.assertIn("Gemini CLI and Antigravity are distinct lane ids", readme)
+        self.assertIn("code-mower builder-experiment run", builder_experiments)
+        for historical_link in (
+            "(v06-release-notes.md)",
+            "(v08-release-notes.md)",
+            "(v09-release-notes.md)",
+            "(v10-release-notes.md)",
+            "(v101-release-notes.md)",
+            "(v1015-release-notes.md)",
+            "(v11-release-notes.md)",
+            "(v101-effectiveness-assessment.md)",
+        ):
+            self.assertIn(historical_link, release_history)
         self.assertIn("the agent hosting the session is", quickstart)
         self.assertIn(
             "default builder and peer-review pair remains Claude Code plus Codex",
