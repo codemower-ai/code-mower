@@ -255,9 +255,9 @@ def build_next_steps(
         devin_command = "code-mower doctor"
         if config_path:
             devin_command += f" {shlex.quote(config_path)}"
-        if profile != DEFAULT_PROFILE:
-            devin_command += f" --profile {quoted_profile}"
-        devin_command += f" --devin --repo {quoted_repo} --json"
+        devin_command += (
+            f" --profile {quoted_profile} --devin --repo {quoted_repo} --json"
+        )
         steps.append(
             {
                 "id": "devin-readiness",

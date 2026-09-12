@@ -291,6 +291,33 @@ class DevinReadinessPrivacyTests(unittest.TestCase):
         for secret in (FAKE_KEY, FAKE_ORG_ID, "private-org/secret-repo"):
             self.assertNotIn(secret, rendered)
 
+    def test_credential_profile_paths_and_filenames_never_appear(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "code-mower"
+            store.mkdir()
+            profile = store / "devin.env"
+            profile.write_text(f"{DEVIN_API_KEY_ENV}={FAKE_KEY}\n{DEVIN_ORG_ID_ENV}={FAKE_ORG_ID}\n")
+            profile.chmod(0o600)
+            resolved = devin_readiness(_config("devin-api-v3"), env={}, config_dir=store)
+            profile.write_text(f"{DEVIN_API_KEY_ENV}={FAKE_KEY}\n{DEVIN_ORG_ID_ENV}=not-an-org\n")
+            malformed = devin_readiness(_config("devin-api-v3"), env={}, config_dir=store)
+            unresolved = devin_readiness(
+                _config("devin-api-v3"), env={}, config_dir=Path(tmp) / "empty"
+            )
+        self.assertEqual(
+            _finding(resolved, "provider.devin.hosted_credentials").status, "pass"
+        )
+        self.assertNotEqual(
+            _finding(malformed, "provider.devin.hosted_credentials").status, "pass"
+        )
+        for findings in (resolved, malformed, unresolved):
+            credentials = _finding(findings, "provider.devin.hosted_credentials")
+            self.assertNotIn("profile_file", credentials.detail)
+            self.assertNotIn("candidate_files", credentials.detail)
+            rendered = self._rendered(findings)
+            for leak in ("devin.env", "code-mower/devin", str(store), tmp, "~/"):
+                self.assertNotIn(leak, rendered)
+
     def test_doctor_checks_carry_no_credentials_and_group_under_providers(self) -> None:
         checks = check_devin_readiness(
             config=_config("devin-api-v3"),
@@ -404,9 +431,16 @@ class DevinGuidanceTests(unittest.TestCase):
             item for item in devin_steps["steps"] if item["id"] == "devin-readiness"
         )
         self.assertEqual(
-            step["command"], "code-mower doctor --devin --repo codemower-ai/code-mower --json"
+            step["command"],
+            "code-mower doctor --profile recommended --devin "
+            "--repo codemower-ai/code-mower --json",
         )
         self.assertEqual(step["lanes"], ["devin_cli"])
+        self.assertEqual(devin_steps["steps"][-1]["id"], "devin-readiness")
+        self.assertEqual(
+            [step["id"] for step in devin_steps["steps"][:-1]],
+            [step["id"] for step in default_steps["steps"]],
+        )
 
     def test_next_steps_devin_check_preserves_the_selected_config_and_profile(self) -> None:
         templates = json.loads(json.dumps(load_provider_templates(PROVIDER_TEMPLATES)))
@@ -440,10 +474,9 @@ class DevinGuidanceTests(unittest.TestCase):
         step = next(item for item in steps["steps"] if item["id"] == "devin-readiness")
         self.assertEqual(
             step["command"],
-            "code-mower doctor 'dir with spaces/code mower.yml' --devin "
-            "--repo codemower-ai/code-mower --json",
+            "code-mower doctor 'dir with spaces/code mower.yml' "
+            "--profile recommended --devin --repo codemower-ai/code-mower --json",
         )
-        self.assertNotIn("--profile", step["command"])
 
 
 class DevinDocumentationTests(unittest.TestCase):

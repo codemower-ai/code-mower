@@ -65,6 +65,37 @@ DEFAULT_CLI_COMMAND = "devin"
 SELECT_LOCAL_COMMAND = "code-mower init --with claude,codex,devin-cli --apply"
 SELECT_HOSTED_COMMAND = "code-mower init --with claude,codex,devin-api-v3 --apply"
 
+# The credential resolver reports where it searched, including a home-relative
+# profile path and filename, and repeats it in its own remediation. Readiness
+# output stays path-free, so those fields are dropped and remediation for every
+# unresolved outcome is written here instead of being forwarded.
+PATH_DETAIL_FIELDS = frozenset({"profile_file", "candidate_files"})
+
+HOSTED_CREDENTIAL_REMEDIATION = {
+    "ambiguous": (
+        "Several stored credential profiles could satisfy hosted Devin. Keep one "
+        f"profile for the selected configuration profile, or set {DEVIN_API_KEY_ENV} "
+        f"and {DEVIN_ORG_ID_ENV} in the environment, then rerun `code-mower doctor`."
+    ),
+    "malformed": (
+        "The stored hosted credentials could not be parsed. Rewrite the credential "
+        f"profile as `NAME=value` lines for service-user {DEVIN_API_KEY_ENV} and "
+        f"opaque {DEVIN_ORG_ID_ENV} (format `org-...`, not a GitHub owner name), "
+        "then rerun `code-mower doctor`."
+    ),
+    "insecure_permissions": (
+        "The stored hosted credentials are readable beyond their owner. Restrict the "
+        "credential profile to owner-only permissions (`chmod 600`), rotate the "
+        "service-user key, then rerun `code-mower doctor`."
+    ),
+}
+HOSTED_CREDENTIAL_REMEDIATION_DEFAULT = (
+    f"Set service-user {DEVIN_API_KEY_ENV} and opaque {DEVIN_ORG_ID_ENV} "
+    "(format `org-...`, not a GitHub owner name) in the environment or a "
+    "protected credential profile, then rerun `code-mower doctor`. Use "
+    f"{SELECT_LOCAL_COMMAND} instead if this machine should run the local CLI."
+)
+
 # Devin exposes no read-only endpoint that proves session or GitHub connection
 # scope before paid work starts, so these requirements are reported as an owner
 # action instead of being probed.
@@ -274,7 +305,13 @@ def _hosted_credential_finding(
         "authentication": "service_user_credentials",
     }
     if resolution is not None:
-        detail.update(resolution.safe_detail())
+        detail.update(
+            {
+                key: value
+                for key, value in resolution.safe_detail().items()
+                if key not in PATH_DETAIL_FIELDS
+            }
+        )
     if credentials.has_credentials:
         return ReadinessFinding(
             name="provider.devin.hosted_credentials",
@@ -296,12 +333,8 @@ def _hosted_credential_finding(
         f"first unresolved variable: {credentials.missing or DEVIN_API_KEY_ENV}",
         lane=lane,
         detail=detail,
-        remediation=credentials.remediation
-        or (
-            f"Set service-user {DEVIN_API_KEY_ENV} and opaque {DEVIN_ORG_ID_ENV} "
-            "(format `org-...`, not a GitHub owner name) in the environment or a "
-            "protected credential profile, then rerun `code-mower doctor`. Use "
-            f"{SELECT_LOCAL_COMMAND} instead if this machine should run the local CLI."
+        remediation=HOSTED_CREDENTIAL_REMEDIATION.get(
+            credentials.status, HOSTED_CREDENTIAL_REMEDIATION_DEFAULT
         ),
     )
 
