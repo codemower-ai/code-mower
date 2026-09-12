@@ -93,13 +93,15 @@ class WorkOrder:
                       acu_limit: int = 10, context_policy: str = "none",
                       context_work_item: str = "") -> WorkOrder:
         source = manifest.get("source", {})
-        # A tracker-keyed (context-bearing) source may omit the GitHub delivery issue,
-        # which then comes from dispatcher policy alone; a present one must still match.
-        issue_number = source.get("issue_number") if isinstance(source, dict) else None
+        # A tracker-keyed (context-bearing) source may omit the GitHub delivery issue key,
+        # which then comes from dispatcher policy alone; any present value must match exactly.
+        omitted = isinstance(source, dict) and "issue_number" not in source and bool(context_work_item)
         if (manifest.get("schema") != WORK_ORDER_SCHEMA
                 or manifest.get("repo") != repository or not isinstance(source, dict)
                 or source.get("repo") != repository
-                or (str(issue_number) != str(issue) and not (context_work_item and not issue_number))):
+                or not (omitted or (type(source.get("issue_number")) in (str, int)
+                                    and type(source["issue_number"]) is not bool
+                                    and str(source["issue_number"]) == str(issue)))):
             raise RemoteError("work_order_binding_mismatch")
         return cls(repository, issue, branch, base, author_id, author_login, acu_limit, body,
                    context_policy, context_work_item)

@@ -657,8 +657,12 @@ class ContextInjectionTests(WorkOrderCase):
                       author_id=123, author_login="builder[bot]", acu_limit=5, context_policy="required")
         with self.assertRaisesRegex(RemoteError, "work_order_binding_mismatch"):  # No key: the issue is required.
             WorkOrder.from_manifest(manifest, CANARY, **common)
-        with self.assertRaisesRegex(RemoteError, "work_order_binding_mismatch"):  # A present issue must still match.
-            WorkOrder.from_manifest({**manifest, "source": {"repo": "owner/repo", "issue_number": "908"}},
+        for present in ("908", 908, 0, False, "", None, True, 907.0, [907]):  # A present issue must still match.
+            with self.subTest(issue_number=present), self.assertRaisesRegex(RemoteError, "work_order_binding_mismatch"):
+                WorkOrder.from_manifest({**manifest, "source": {"repo": "owner/repo", "issue_number": present}},
+                                        CANARY, **common, context_work_item="EXAMPLE-1")
+        for present in ("907", 907):
+            WorkOrder.from_manifest({**manifest, "source": {"repo": "owner/repo", "issue_number": present}},
                                     CANARY, **common, context_work_item="EXAMPLE-1")
         for bad in ("", " EXAMPLE-1", "EXAMPLE\n1", "x" * 129, 907):
             with self.subTest(work_item=bad), self.assertRaisesRegex(RemoteError, "invalid_work_order|binding_mismatch"):
