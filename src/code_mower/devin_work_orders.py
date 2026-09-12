@@ -492,13 +492,19 @@ class DevinWorkOrders:
                         if record["pr_number"] not in (None, claim["pr_number"]):
                             raise RemoteError("pull_request_binding_mismatch")
                     except RemoteError as exc:
+                        error = str(exc).partition(":")[0]
+                        if error not in {
+                            "stale_completion", "invalid_completion",
+                            "pull_request_binding_mismatch",
+                        }:
+                            raise
                         # Verification consumes no provider mutation. Release only
                         # this compare-bound local artifact/count so a corrected
                         # provider result can be collected on the next attempt.
                         self.remote.discard_private_result(key, claim)
                         reason = (
                             "stale_completion"
-                            if str(exc).startswith("stale_completion")
+                            if error == "stale_completion"
                             else "invalid_completion"
                         )
                         record["completion_rejection"] = {

@@ -346,6 +346,24 @@ class DeliveryTests(WorkOrderCase):
         self.assertEqual(result["verified_pr"]["head_sha"], HEAD)
         self.assertNotIn("completion", result)
 
+    def test_transient_github_failures_preserve_the_collected_result(self):
+        self.run_order("dispatch")
+        self.complete()
+        with patch.object(self.github, "candidates", side_effect=RuntimeError(CANARY)):
+            with self.assertRaisesRegex(RemoteError, "^github_unavailable$"):
+                self.run_order("collect")
+        self.assertEqual(self.remote.private_result(self.key), self.claim())
+        self.assertNotIn("completion", self.run_order("status"))
+
+        self.github.page = Candidates((), False)
+        with self.assertRaisesRegex(RemoteError, "^ambiguous_pull_request$"):
+            self.run_order("collect")
+        self.assertEqual(self.remote.private_result(self.key), self.claim())
+        self.assertNotIn("completion", self.run_order("status"))
+
+        self.github.page = None
+        self.assertEqual(self.run_order("collect")["verified_pr"]["head_sha"], HEAD)
+
     def test_not_ready_and_missing_results_have_no_evidence(self):
         self.run_order("dispatch")
         self.assertIsNone(self.run_order("collect")["verified_pr"])
