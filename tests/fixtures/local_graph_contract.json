@@ -1,0 +1,54 @@
+{
+  "_comment": [
+    "Synthetic local-repository graph packet for issue #876. Every path, symbol",
+    "and relationship is invented against a generic public example tree; this is",
+    "not an export of any indexed repository and it does not establish that any",
+    "graph package produces this shape. It exercises the extension point only:",
+    "repository-kind evidence with file/line citations, extracted vs inferred",
+    "confidence, explicit truncation, and revision binding a consumer can score."
+  ],
+  "schema": "code_mower.contextPacket.v1",
+  "capability_version": 1,
+  "provider": "synthetic-graph",
+  "kind": "repository",
+  "retrieved_at": "2026-01-01T11:59:00Z",
+  "source_revision": "revision-one",
+  "source_built_at": "2026-01-01T11:58:00Z",
+  "completeness": "partial",
+  "truncated": true,
+  "omissions": ["document_limit"],
+  "documents": [
+    {
+      "text": "Callers of parse_config: loader.load reads the parsed mapping directly.",
+      "confidence": "extracted",
+      "citations": [
+        {"source": "example_pkg/config.py#L12-L30", "title": "parse_config definition"},
+        {"source": "example_pkg/loader.py#L44", "title": "loader.load call site"}
+      ]
+    },
+    {
+      "text": "Related tests: the config suite covers parse_config's error branch.",
+      "confidence": "inferred",
+      "citations": [
+        {"source": "tests/test_config.py#L8-L26", "title": "config error-branch test"}
+      ]
+    },
+    {
+      "text": "Blast radius beyond the first two hops was not expanded within the budget.",
+      "confidence": "unknown",
+      "citations": [
+        {"source": "example_pkg/loader.py", "title": "loader module"}
+      ]
+    }
+  ],
+  "binding": {
+    "connection": "example-context",
+    "generation": "generation-one",
+    "identity": {"repository_root": "/example/repository"},
+    "repository": "owner/repo",
+    "work_item": "work-item-one",
+    "policy_version": "v1",
+    "recipients": ["claude", "codex"],
+    "expires_at": "2026-01-01T12:30:00Z"
+  }
+}

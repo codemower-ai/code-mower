@@ -538,6 +538,7 @@ PACKAGE_FILES = (
     ("docs/build-loop.md", "docs/build-loop.md", "doc"),
     ("docs/planning-work-orders.md", "docs/planning-work-orders.md", "doc"),
     ("docs/context-provider-contract.md", "docs/context-provider-contract.md", "doc"),
+    ("docs/graphify-evaluation.md", "docs/graphify-evaluation.md", "doc"),
     ("docs/context-connections.md", "docs/context-connections.md", "doc"),
     ("docs/context-setup.md", "docs/context-setup.md", "doc"),
     ("docs/v130-release-notes.md", "docs/v130-release-notes.md", "doc"),
