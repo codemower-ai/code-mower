@@ -578,12 +578,51 @@ sys.exit(0)
 REQUIRE_CONTAINMENT = "CODE_MOWER_REQUIRE_CONTAINMENT"
 
 
+def containment_evidence() -> str:
+    """Why this host offered no mechanism, in the terms the probe decided in.
+
+    A required job that fails with "none" tells an operator nothing they can
+    act on: a launcher can be absent, present but untrusted, or present and
+    trusted and unable to start a child at all. So the failure carries the
+    control's verdict, each candidate's verdict, and the launcher's own stderr
+    -- which is where a refused namespace or an impossible bind says so.
+    """
+    lines: list[str] = []
+    readable = lifecycle._interpreter_read_paths()
+    with tempfile.TemporaryDirectory() as scratch:
+        lines.append(f"control (no prefix): {lifecycle._classify_probe((), cwd=scratch)}")
+        for name, path in lifecycle._SANDBOX_CANDIDATES:
+            launcher = lifecycle._trusted_launcher(path)
+            if launcher is None:
+                lines.append(f"{name} at {path}: exists={os.path.exists(path)}, not trusted")
+                continue
+            prefix = lifecycle._prefix_for(
+                lifecycle.Containment(name=name, launcher=launcher),
+                writable=(scratch,),
+                readable=readable,
+            )
+            started = subprocess.run(
+                [*prefix, sys.executable, "-c", "print('started')"],
+                check=False,
+                capture_output=True,
+                timeout=120,
+                cwd=scratch,
+            )
+            lines.append(
+                f"{name} at {path}: verdict={lifecycle._classify_probe(prefix, cwd=scratch)}"
+                f" start={started.returncode} stdout={started.stdout[:200]!r}"
+                f" stderr={started.stderr[:400]!r}"
+            )
+    return "\n".join(lines)
+
+
 def require_containment(test: unittest.TestCase) -> lifecycle.Containment:
     mechanism = lifecycle.containment_mechanism()
     if mechanism is None:
         if os.environ.get(REQUIRE_CONTAINMENT) == "1":
             test.fail(
-                "this job requires a verified isolation mechanism and this host offers none"
+                "this job requires a verified isolation mechanism and this host offers none\n"
+                + containment_evidence()
             )
         test.skipTest("this host offers no OS sandbox that contains a child process")
     return mechanism
@@ -623,12 +662,17 @@ class NetworkIsolationTests(unittest.TestCase):
         self.listener.listen(1)
         self.port = self.listener.getsockname()[1]
 
-    def connect(self, prefix: tuple[str, ...]) -> int:
+    def connect(self, prefix: tuple[str, ...], *, cwd: Path | None = None) -> int:
+        # ``cwd`` names a directory inside the exposure, because that is where a
+        # build's provider starts: the boundary does not expose this process's
+        # own working directory, and a child asked to start in a directory its
+        # sandbox does not have never runs at all.
         return subprocess.run(
             [*prefix, sys.executable, "-c", CONNECT_PROBE, str(self.port)],
             check=False,
             capture_output=True,
             timeout=120,
+            cwd=None if cwd is None else str(cwd),
         ).returncode
 
     def test_an_unsandboxed_child_reaches_the_listening_socket(self) -> None:
@@ -645,7 +689,8 @@ class NetworkIsolationTests(unittest.TestCase):
 
     def test_a_sandboxed_child_cannot_reach_the_listening_socket(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
-            self.assertEqual(self.connect(self.real_prefix(Path(scratch))), 1)
+            prefix = self.real_prefix(Path(scratch))
+            self.assertEqual(self.connect(prefix, cwd=Path(scratch)), 1)
 
     def test_the_selected_mechanism_really_contains_a_child_on_this_host(self) -> None:
         """The integration control: the real mechanism, not a stand-in for one.
@@ -660,8 +705,8 @@ class NetworkIsolationTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as scratch:
             prefix = self.real_prefix(Path(scratch))
-            self.assertEqual(lifecycle._classify_probe(()), lifecycle._REACHED)
-            self.assertEqual(lifecycle._classify_probe(prefix), lifecycle._CONTAINED)
+            self.assertEqual(lifecycle._classify_probe((), cwd=scratch), lifecycle._REACHED)
+            self.assertEqual(lifecycle._classify_probe(prefix, cwd=scratch), lifecycle._CONTAINED)
 
     def test_the_selected_mechanism_hides_a_file_outside_the_exposure(self) -> None:
         """The filesystem half, named separately from the classifier that uses it.
@@ -678,20 +723,21 @@ class NetworkIsolationTests(unittest.TestCase):
             exposed.write_text("visible", encoding="utf-8")
             hidden = self.root_outside() / ".env"
             hidden.write_text("SECRET=planted", encoding="utf-8")
-            self.assertEqual(self.read_through(prefix, exposed), 0)
-            self.assertEqual(self.read_through(prefix, hidden), 1)
+            self.assertEqual(self.read_through(prefix, exposed, cwd=Path(scratch)), 0)
+            self.assertEqual(self.read_through(prefix, hidden, cwd=Path(scratch)), 1)
 
     def root_outside(self) -> Path:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         return Path(directory.name)
 
-    def read_through(self, prefix: tuple[str, ...], path: Path) -> int:
+    def read_through(self, prefix: tuple[str, ...], path: Path, *, cwd: Path | None = None) -> int:
         return subprocess.run(
             [*prefix, sys.executable, "-c", READ_PROBE, str(path)],
             check=False,
             capture_output=True,
             timeout=120,
+            cwd=None if cwd is None else str(cwd),
         ).returncode
 
     def test_a_mechanism_that_denies_only_the_network_is_not_a_boundary(self) -> None:
@@ -733,7 +779,9 @@ class NetworkIsolationTests(unittest.TestCase):
             self.assertTrue(os.path.isabs(candidate), candidate)
             self.assertFalse(candidate.startswith(directory.name))
         with mock.patch.dict(os.environ, {"PATH": directory.name}):
-            with mock.patch.object(lifecycle, "_classify_probe", lambda prefix: lifecycle._REACHED):
+            with mock.patch.object(
+                lifecycle, "_classify_probe", lambda prefix, **keywords: lifecycle._REACHED
+            ):
                 # Every candidate classifies as "reached", so nothing can be
                 # selected; the point is that the shadow was never a candidate.
                 self.assertIsNone(lifecycle._probe_containment())
@@ -873,7 +921,9 @@ class NetworkIsolationTests(unittest.TestCase):
         """
         calls: list[tuple[str, ...]] = []
 
-        def classify(prefix):
+        def classify(prefix, **keywords):
+            # The probe child starts inside the exposure, so every call names a
+            # working directory; what this test reads is the prefix.
             calls.append(tuple(prefix))
             return lifecycle._CONTAINED
 
@@ -949,12 +999,16 @@ class ProviderLaunchTests(TemporaryWorkspace):
                     (written / "manifest.json").write_text(json.dumps(report), encoding="utf-8")
             return FakeChild()
 
+        # The stand-in spans the launch as well as the construction: the
+        # exposure is built per run, from what *that* run exposes, so the
+        # prefix is computed inside ``indexer(request)`` and a host with no
+        # real mechanism would otherwise refuse there. ``Popen`` is patched
+        # only around the launch, so the Git calls a build makes are never
+        # intercepted by this stand-in.
         with stand_in_containment(sandbox):
             indexer = lifecycle.subprocess_indexer(executable)
-        # Patched only around the launch, so the Git calls a build makes are
-        # never intercepted by this stand-in.
-        with mock.patch.object(subprocess, "Popen", fake_popen):
-            result = indexer(request)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                result = indexer(request)
         return recorded[0], result
 
     def launched_argv(self, executable: str, *, sandbox=("/sandbox", "--deny")) -> list[str]:
@@ -963,6 +1017,39 @@ class ProviderLaunchTests(TemporaryWorkspace):
     def test_the_provider_is_launched_inside_the_sandbox(self) -> None:
         argv = self.launched_argv("graphify")
         self.assertEqual(argv[:3], ["/sandbox", "--deny", "graphify"])
+
+    def test_the_exposure_is_built_from_what_this_run_writes(self) -> None:
+        """The boundary names this request's copy and this request's scratch.
+
+        A prefix computed once, at construction, could not name either: both
+        are made per build. The launch would then confine the provider to
+        somewhere other than the tree it was asked to index, and the
+        redirected ``HOME`` and ``TMPDIR`` the environment points at would be
+        absent from the child's filesystem view -- a provider that cannot
+        start. So the exposure is read back from the call itself.
+        """
+        scratch = Path(tempfile.mkdtemp(dir=self.root))
+        request = dataclasses.replace(self.request(), writable=(scratch,))
+        recorded: list[dict[str, object]] = []
+
+        def record_prefix(**keywords: object) -> tuple[str, ...]:
+            recorded.append(dict(keywords))
+            return ("/sandbox",)
+
+        def fake_popen(argv, **kwargs):
+            written = request.source_root / ".graphify"
+            written.mkdir(exist_ok=True)
+            (written / "graph.bin").write_bytes(b"graph-bytes")
+            (written / "manifest.json").write_text(json.dumps(FINISHED_REPORT), encoding="utf-8")
+            return FakeChild()
+
+        with stand_in_containment(("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify")
+            with mock.patch.object(lifecycle, "containment_prefix", record_prefix):
+                with mock.patch.object(subprocess, "Popen", fake_popen):
+                    indexer(request)
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0]["writable"], (request.source_root, scratch))
 
     def test_the_provider_is_given_no_stream_this_process_has_to_hold(self) -> None:
         """A talkative indexer must not be able to fill this process's memory.
@@ -1100,8 +1187,8 @@ class ProviderLaunchTests(TemporaryWorkspace):
 
         with stand_in_containment(("/sandbox",)):
             indexer = lifecycle.subprocess_indexer("graphify")
-        with mock.patch.object(subprocess, "Popen", fake_popen):
-            result = indexer(request)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                result = indexer(request)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
 
     def test_a_report_without_affirmative_completion_evidence_is_partial(self) -> None:
@@ -1159,9 +1246,9 @@ class ProviderLaunchTests(TemporaryWorkspace):
 
         with stand_in_containment(("/sandbox",)):
             indexer = lifecycle.subprocess_indexer("graphify")
-        with mock.patch.object(subprocess, "Popen", fake_popen):
-            with mock.patch.object(Path, "read_bytes", refuse_whole_file_read):
-                result = indexer(request)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                with mock.patch.object(Path, "read_bytes", refuse_whole_file_read):
+                    result = indexer(request)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
 
     def test_extraction_refuses_to_run_over_pre_existing_provider_state(self) -> None:
@@ -1183,9 +1270,9 @@ class ProviderLaunchTests(TemporaryWorkspace):
 
         with stand_in_containment(("/sandbox",)):
             indexer = lifecycle.subprocess_indexer("graphify")
-        with mock.patch.object(subprocess, "Popen", fake_popen):
-            with self.assertRaises(ContextError):
-                indexer(request)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                with self.assertRaises(ContextError):
+                    indexer(request)
         self.assertEqual(launched, [])
         self.assertFalse(request.output_path.exists())
 
@@ -1207,11 +1294,11 @@ class ProviderLaunchTests(TemporaryWorkspace):
 
         with stand_in_containment(("/sandbox",)):
             indexer = lifecycle.subprocess_indexer("graphify")
-        with mock.patch.object(subprocess, "Popen", fake_popen):
-            with mock.patch.object(lifecycle, "_terminate_process_group", record_termination):
-                with self.assertRaises(ContextError) as raised:
-                    indexer(request)
-                order.append("reported")
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                with mock.patch.object(lifecycle, "_terminate_process_group", record_termination):
+                    with self.assertRaises(ContextError) as raised:
+                        indexer(request)
+                    order.append("reported")
         self.assertEqual(order, ["stopped", "reported"])
         self.assertIn("time budget", str(raised.exception))
         self.assertFalse(request.output_path.exists())

@@ -414,12 +414,19 @@ def _ran_the_probe(output: bytes, nonce: str) -> bool:
     return expected in output.decode("utf-8", "replace")
 
 
-def _classify_probe(prefix: Sequence[str]) -> str:
+def _classify_probe(prefix: Sequence[str], *, cwd: str | None = None) -> str:
     """Run the probe under ``prefix``: a real listener and a real planted secret.
 
     The secret is written to the host's temporary directory, which no exposure
     this module builds ever includes, so an unconfined child reads it and a
     confined one cannot see it at all.
+
+    ``cwd`` is the directory the probe child starts in, and it belongs inside
+    the exposure being probed. A build's provider starts in the materialized
+    copy, which the boundary always exposes; a probe left in this process's own
+    working directory starts somewhere the boundary deliberately does not
+    expose, which is a launcher failure rather than a finding about the
+    mechanism.
     """
     nonce = secrets.token_hex(16)
     handle, secret = tempfile.mkstemp(prefix="code-mower-containment-probe-")
@@ -444,6 +451,7 @@ def _classify_probe(prefix: Sequence[str]) -> str:
                     check=False,
                     capture_output=True,
                     timeout=60,
+                    cwd=cwd,
                     env={"PATH": os.environ.get("PATH", ""), **_NETWORK_DENY},
                 )
             except (OSError, subprocess.SubprocessError):
@@ -476,9 +484,9 @@ def _classify_probe(prefix: Sequence[str]) -> str:
     return _UNUSABLE
 
 
-def _prefix_confines(prefix: Sequence[str]) -> bool:
+def _prefix_confines(prefix: Sequence[str], *, cwd: str | None = None) -> bool:
     """Watch a child under ``prefix`` fail to reach either thing that is really there."""
-    return _classify_probe(prefix) == _CONTAINED
+    return _classify_probe(prefix, cwd=cwd) == _CONTAINED
 
 
 def _interpreter_read_paths() -> tuple[str, ...]:
@@ -493,22 +501,25 @@ def _interpreter_read_paths() -> tuple[str, ...]:
 def _probe_containment() -> Containment | None:
     if not sys.executable:  # pragma: no cover - a frozen interpreter cannot probe
         return None
-    # The control, first: a child with no prefix must reach the listener *and*
-    # read the planted secret. If it cannot -- no probe interpreter, loopback
-    # blocked, an unreadable temporary directory -- then "could not" proves
-    # nothing about any candidate, and every candidate would pass for a
-    # boundary. Refuse the whole probe instead.
-    if _classify_probe(()) != _REACHED:
-        return None
     readable = _interpreter_read_paths()
+    # The scratch directory is the writable exposure *and* the directory every
+    # probe child starts in, control included, so the control and the candidates
+    # differ in the boundary and in nothing else.
     with tempfile.TemporaryDirectory(prefix="code-mower-containment-") as scratch:
+        # The control, first: a child with no prefix must reach the listener
+        # *and* read the planted secret. If it cannot -- no probe interpreter,
+        # loopback blocked, an unreadable temporary directory -- then "could
+        # not" proves nothing about any candidate, and every candidate would
+        # pass for a boundary. Refuse the whole probe instead.
+        if _classify_probe((), cwd=scratch) != _REACHED:
+            return None
         for name, path in _SANDBOX_CANDIDATES:
             launcher = _trusted_launcher(path)
             if launcher is None:
                 continue
             mechanism = Containment(name=name, launcher=launcher)
             prefix = _prefix_for(mechanism, writable=(scratch,), readable=readable)
-            if _prefix_confines(prefix):
+            if _prefix_confines(prefix, cwd=scratch):
                 return mechanism
     return None
 
