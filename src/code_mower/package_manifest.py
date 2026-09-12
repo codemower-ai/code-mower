@@ -309,6 +309,7 @@ PACKAGE_FILES = (
     ("src/code_mower/release_qualify.py", "src/code_mower/release_qualify.py", "core"),
     ("src/code_mower/release_campaigns.py", "src/code_mower/release_campaigns.py", "core"),
     ("src/code_mower/devin_api.py", "src/code_mower/devin_api.py", "core"),
+    ("src/code_mower/devin_sessions.py", "src/code_mower/devin_sessions.py", "core"),
     ("src/code_mower/jira_cloud.py", "src/code_mower/jira_cloud.py", "core"),
     ("src/code_mower/jira_mutations.py", "src/code_mower/jira_mutations.py", "core"),
     ("src/code_mower/jira_pr_sync.py", "src/code_mower/jira_pr_sync.py", "core"),

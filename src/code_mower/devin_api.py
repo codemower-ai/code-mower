@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Bounded Devin Sessions API v3 transport for release campaigns."""
+"""Release-campaign compatibility adapter and local Devin credentials."""
 
 from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import os
 import re
-import socket
-import urllib.error
-import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
+
+from .devin_sessions import (
+    API_BASE as API_BASE,
+    MAX_RESPONSE_BYTES as MAX_RESPONSE_BYTES,
+    REQUEST_TIMEOUT_SECONDS as REQUEST_TIMEOUT_SECONDS,
+    ApiRunner, DevinApiError, DevinClient, make_api_request as make_api_request,
+)
 
 from .campaign_adapters import (
     ADOPTION_RESULT_JSON_SCHEMA,
@@ -20,12 +23,9 @@ from .campaign_adapters import (
     build_qualification_prompt,
 )
 
-API_BASE = "https://api.devin.ai"
 DEVIN_API_KEY_ENV = "DEVIN_API_KEY"
 DEVIN_ORG_ID_ENV = "DEVIN_ORG_ID"
 DEVIN_REPOSITORIES_ENV = "CODE_MOWER_DEVIN_REPOSITORIES"
-REQUEST_TIMEOUT_SECONDS = 30.0
-MAX_RESPONSE_BYTES = 512 * 1024
 
 _ORG_ID_RE = re.compile(r"^org-[A-Za-z0-9_-]+$")
 # Session ids are opaque API references. Accept any bounded RFC 3986
@@ -42,16 +42,6 @@ SAFE_ERROR_CODES = frozenset(
         "hosted_result_rejected",
     }
 )
-
-ApiRunner = Callable[[str, str, Mapping[str, Any] | None, Mapping[str, str]], Any]
-
-
-class DevinApiError(Exception):
-    """API failure carrying only a closed, persistence-safe reason code."""
-
-    def __init__(self, code: str) -> None:
-        self.code = code if code in SAFE_ERROR_CODES else "devin_api_unavailable"
-        super().__init__(self.code)
 
 
 def validate_devin_org_id(org_id: str) -> bool:
@@ -218,50 +208,6 @@ def credentials_from_env(
     )
 
 
-def make_api_request(
-    method: str,
-    path: str,
-    api_key: str,
-    body: Mapping[str, Any] | None = None,
-    *,
-    api_runner: ApiRunner | None = None,
-    request_timeout: float = REQUEST_TIMEOUT_SECONDS,
-) -> dict[str, Any]:
-    """Make one request and return a bounded JSON object.
-
-    The injected runner keeps tests entirely offline. Raw error bodies and
-    exception messages never cross this boundary.
-    """
-    url = f"{API_BASE}{path}"
-    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
-    if body is not None:
-        headers["Content-Type"] = "application/json"
-    try:
-        if api_runner is not None:
-            value = api_runner(method, url, body, headers)
-        else:
-            encoded = (
-                json.dumps(dict(body), separators=(",", ":")).encode("utf-8")
-                if body is not None
-                else None
-            )
-            request = urllib.request.Request(url, data=encoded, headers=headers, method=method)
-            with urllib.request.urlopen(request, timeout=request_timeout) as response:
-                raw = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(raw) > MAX_RESPONSE_BYTES:
-                raise DevinApiError("devin_api_unavailable")
-            value = json.loads(raw.decode("utf-8"))
-    except DevinApiError:
-        raise
-    except urllib.error.HTTPError as exc:
-        code = "devin_api_rejected" if 400 <= exc.code < 500 else "devin_api_unavailable"
-        raise DevinApiError(code) from exc
-    except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ValueError) as exc:
-        raise DevinApiError("devin_api_unavailable") from exc
-    if not isinstance(value, dict):
-        raise DevinApiError("devin_api_unavailable")
-    return dict(value)
-
 
 def build_devin_session_payload(
     *,
@@ -304,76 +250,41 @@ def build_devin_session_payload(
     }
 
 
+def _campaign_error(code: str) -> str:
+    return "devin_api_rejected" if code in {
+        "invalid_request", "authentication_required", "permission_denied", "devin_api_rejected"
+    } else "devin_api_unavailable"
+
+
 def create_devin_session(
-    org_id: str,
-    payload: Mapping[str, Any],
-    api_key: str,
-    *,
-    api_runner: ApiRunner | None = None,
+    org_id: str, payload: Mapping[str, Any], api_key: str, *,
+    api_runner: ApiRunner | None = None, checkpoint=None,
 ) -> tuple[str, str]:
-    """Create one paid session, returning a bounded reason on failure."""
-    if not _validate_org_id(org_id):
-        return "", "devin_api_rejected"
+    """Compatibility wrapper. Campaigns supply a durable checkpoint callback."""
     try:
-        data = make_api_request(
-            "POST",
-            f"/v3/organizations/{org_id}/sessions",
-            api_key,
-            payload,
-            api_runner=api_runner,
-        )
+        client = DevinClient(org_id, api_key, api_runner=api_runner)
+        return client.create(payload, checkpoint=checkpoint or (lambda attempt: None)), ""
     except DevinApiError as exc:
-        return "", exc.code
-    session_id = data.get("session_id")
-    if not isinstance(session_id, str) or not _validate_session_id(session_id):
-        return "", "devin_api_unavailable"
-    return session_id, ""
+        return "", _campaign_error(exc.code)
 
 
 def poll_devin_session(
-    org_id: str,
-    session_id: str,
-    api_key: str,
-    *,
-    api_runner: ApiRunner | None = None,
+    org_id: str, session_id: str, api_key: str, *, api_runner: ApiRunner | None = None,
 ) -> tuple[str, dict[str, Any] | None, str]:
-    """Read one session snapshot.
-
-    Returns ``(state, structured_output, reason)`` where state is one of
-    ``running``, ``complete``, ``owner_action``, or ``failed``. Campaign watch
-    owns repeated polling and the one-hour deadline.
-    """
-    if not _validate_org_id(org_id) or not _validate_session_id(session_id):
-        return "failed", None, "devin_api_rejected"
+    """Map shared lifecycle snapshots to the established campaign result contract."""
     try:
-        data = make_api_request(
-            "GET",
-            f"/v3/organizations/{org_id}/sessions/{session_id}",
-            api_key,
-            api_runner=api_runner,
-        )
+        session = DevinClient(org_id, api_key, api_runner=api_runner).get(session_id)
     except DevinApiError as exc:
-        return "failed", None, exc.code
-    status = str(data.get("status") or "")
-    detail = str(data.get("status_detail") or "")
-    if status in {"error", "suspended"} or detail in {
-        "error",
-        "usage_limit_exceeded",
-        "out_of_credits",
-        "out_of_quota",
-        "no_quota_allocation",
-        "payment_declined",
-        "org_usage_limit_exceeded",
-        "total_session_limit_exceeded",
-    }:
+        return "failed", None, _campaign_error(exc.code)
+    if session.state in {"failed", "suspended"}:
         return "failed", None, "devin_session_failed"
-    if detail == "waiting_for_approval":
+    # Approval must still be resolved even if an intermediate result exists.
+    if session.state == "owner_action" and session.reason == "approval_required":
         return "owner_action", None, "devin_waiting_for_owner"
-    result = data.get("structured_output")
-    if isinstance(result, dict):
-        return "complete", dict(result), ""
-    if detail == "waiting_for_user":
+    if session.structured_output is not None:
+        return "complete", session.structured_output, ""
+    if session.state == "owner_action":
         return "owner_action", None, "devin_waiting_for_owner"
-    if status == "exit" or detail == "finished":
+    if session.state in {"terminated", "complete", "archived"}:
         return "failed", None, "hosted_result_rejected"
     return "running", None, ""
