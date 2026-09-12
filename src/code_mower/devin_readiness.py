@@ -28,7 +28,12 @@ from .devin_api import (
     credentials_from_env,
     repository_scope_acknowledged,
 )
-from .participants import DEFAULT_PARTICIPANTS, configured_participants, configured_transports
+from .participants import (
+    DEFAULT_PARTICIPANTS,
+    configured_participants,
+    configured_transports,
+    selected_transports,
+)
 from .provider_capabilities import TRANSPORTS
 
 SCHEMA = "code_mower.devinReadiness.v1"
@@ -47,9 +52,12 @@ POSTURE_UNAVAILABLE = "unavailable"
 
 POSTURES = {LOCAL_TRANSPORT: POSTURE_LOCAL_CLI, HOSTED_TRANSPORT: POSTURE_HOSTED_API}
 
-DEVIN_REVIEW_LANES = frozenset(
-    transport.review_lane for transport in TRANSPORTS.values() if transport.product == "devin"
-)
+DEVIN_LANE_TRANSPORTS = {
+    transport.review_lane: name
+    for name, transport in TRANSPORTS.items()
+    if transport.product == "devin"
+}
+DEVIN_REVIEW_LANES = frozenset(DEVIN_LANE_TRANSPORTS)
 
 CLI_COMMAND_ENV = "CODE_MOWER_DEVIN_CLI_COMMAND"
 DEFAULT_CLI_COMMAND = "devin"
@@ -115,15 +123,39 @@ def selected_devin_transport(
     """
     if not isinstance(config, Mapping):
         return None
-    lane_selected = any(lane in DEVIN_REVIEW_LANES for lane in lanes)
-    if lane_selected or "devin" in configured_participants(config):
-        return configured_transports(config, profile=profile)["devin"]
-    return None
+    lane_transport = next(
+        (DEVIN_LANE_TRANSPORTS[lane] for lane in lanes if lane in DEVIN_LANE_TRANSPORTS), None
+    )
+    if lane_transport is None and "devin" not in configured_participants(config):
+        return None
+    configured = configured_transports(config, profile=profile)["devin"]
+    if lane_transport is not None and not _explicit_transport_selected(config):
+        return lane_transport
+    return configured
+
+
+def _explicit_transport_selected(config: Mapping[str, Any]) -> bool:
+    """Report whether the repository names a Devin transport itself.
+
+    Without an explicit alias or `session_defaults.transports.devin`, an active
+    hosted review lane is the only statement of intent, so lane inference must
+    win over the local default even when profile inference is disabled.
+    """
+    defaults = config.get("session_defaults")
+    if not isinstance(defaults, Mapping):
+        return False
+    transports = defaults.get("transports")
+    if isinstance(transports, Mapping) and "devin" in transports:
+        return True
+    selected = defaults.get("participants")
+    if isinstance(selected, list) and all(isinstance(name, str) for name in selected):
+        return "devin" in selected_transports(tuple(selected))
+    return False
 
 
 def _cli_command() -> str:
-    """Report the CLI command basename only, never a configured local path."""
-    return os.path.basename(str(os.environ.get(CLI_COMMAND_ENV) or DEFAULT_CLI_COMMAND))
+    """Return the configured command, which may be an absolute local path."""
+    return str(os.environ.get(CLI_COMMAND_ENV) or DEFAULT_CLI_COMMAND)
 
 
 def _selection_finding(transport: str, lane: str) -> ReadinessFinding:
@@ -182,7 +214,10 @@ def _capability_finding(transport: str, lane: str) -> ReadinessFinding:
 
 
 def _local_cli_finding(lane: str) -> ReadinessFinding:
-    command = _cli_command()
+    configured = _cli_command()
+    # Discovery uses the configured command so an override outside PATH resolves,
+    # while reporting stays a basename so no local path leaves the machine.
+    command = os.path.basename(configured)
     detail: dict[str, Any] = {
         "schema": SCHEMA,
         "posture": POSTURE_LOCAL_CLI,
@@ -191,7 +226,7 @@ def _local_cli_finding(lane: str) -> ReadinessFinding:
         "command_env": CLI_COMMAND_ENV,
         "authentication": "ambient_cli_login",
     }
-    if shutil.which(command):
+    if shutil.which(configured):
         return ReadinessFinding(
             name="provider.devin.local_cli",
             status=STATUS_PASS,
