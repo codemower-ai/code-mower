@@ -1330,7 +1330,31 @@ class ProviderLaunchTests(TemporaryWorkspace):
             lifecycle._resolved_executable("")
 
 
-class ProviderExposureTests(TemporaryWorkspace):
+class ProviderExposureFixture(TemporaryWorkspace):
+    """Shared scaffolding for the two halves of the provider exposure rule."""
+
+    def script(self, path: Path, *, venv: bool = False, config: str | None = None) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if venv or config is not None:
+            (path.parent.parent / "pyvenv.cfg").write_text(
+                "home = /usr/bin\n" if config is None else config, encoding="utf-8"
+            )
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o700)
+        return path
+
+    def interpreter(self, prefix: Path) -> Path:
+        """A base installation the way a separately installed Python really looks."""
+        (prefix / "bin").mkdir(parents=True, exist_ok=True)
+        (prefix / "lib").mkdir(parents=True, exist_ok=True)
+        (prefix / "bin" / "python3").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        return prefix
+
+    def exposure(self, path: Path) -> tuple[str, ...]:
+        return lifecycle._provider_read_paths(str(path), repository=self.repository)
+
+
+class ProviderExposureTests(ProviderExposureFixture):
     """What the sandbox is told to make readable for the provider itself.
 
     The exposure used to be the executable's parent and grandparent, which is a
@@ -1339,17 +1363,6 @@ class ProviderExposureTests(TemporaryWorkspace):
     script directly under a top-level prefix, and a provider living inside the
     checkout being indexed.
     """
-
-    def script(self, path: Path, *, venv: bool = False) -> Path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if venv:
-            (path.parent.parent / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
-        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        path.chmod(0o700)
-        return path
-
-    def exposure(self, path: Path) -> tuple[str, ...]:
-        return lifecycle._provider_read_paths(str(path), repository=self.repository)
 
     def test_a_pinned_virtual_environment_exposes_that_environment_and_no_more(self) -> None:
         environment = self.root / "venv"
@@ -1414,6 +1427,119 @@ class ProviderExposureTests(TemporaryWorkspace):
             lifecycle._provider_read_paths(
                 "code-mower-no-such-provider", repository=self.repository
             )
+
+
+class ProviderBaseRuntimeTests(ProviderExposureFixture):
+    """Whose interpreter gets exposed when the provider was pinned with another.
+
+    The exposure used to name ``sys.base_prefix`` -- the interpreter running
+    Code Mower. That is the provider's base runtime only by coincidence, on a
+    host where both were installed by the same thing. Pin a provider with a
+    ``uv``-managed or otherwise separately installed Python and the child got a
+    runtime it does not use exposed and its own left out of its filesystem view
+    entirely, which is a correctly pinned install failing every build inside
+    the loader.
+    """
+
+    def test_the_providers_own_base_interpreter_is_exposed_not_this_processs(self) -> None:
+        """The finding, reproduced: a ``uv``-managed base outside every system path."""
+        managed = self.interpreter(self.root / "uv" / "python" / "cpython-3.13.1")
+        environment = self.root / "venv"
+        provider = self.script(
+            environment / "bin" / "graphify",
+            config=(
+                f"home = {managed}/bin\n"
+                "implementation = CPython\n"
+                f"base-prefix = {managed}\n"
+                f"base-exec-prefix = {managed}\n"
+                f"base-executable = {managed}/bin/python3\n"
+            ),
+        )
+        exposed = self.exposure(provider)
+        self.assertIn(str(managed), exposed)
+        # And not the runtime this process happens to be running under, which
+        # is what the child was being handed instead of its own.
+        outsider = self.interpreter(self.root / "elsewhere" / "python")
+        with mock.patch.object(sys, "base_prefix", str(outsider)):
+            self.assertNotIn(str(outsider), self.exposure(provider))
+
+    def test_a_standard_library_environment_names_its_base_through_home_alone(self) -> None:
+        """``venv`` before 3.11 records ``home`` and nothing else about the base."""
+        managed = self.interpreter(self.root / "pythons" / "3.12")
+        provider = self.script(
+            self.root / "venv" / "bin" / "graphify",
+            config=f"home = {managed}/bin\ninclude-system-site-packages = false\n",
+        )
+        self.assertIn(str(managed), self.exposure(provider))
+
+    def test_a_base_interpreter_in_the_system_runtime_adds_no_exposure(self) -> None:
+        """Already readable for every child; naming it again would only widen."""
+        environment = self.root / "venv"
+        provider = self.script(environment / "bin" / "graphify", config="home = /usr/bin\n")
+        self.assertEqual(set(self.exposure(provider)), {str(provider), str(environment)})
+
+    def test_a_base_prefix_that_is_the_home_directory_is_refused(self) -> None:
+        """A record read out of a file is not narrower than the same guess."""
+        home = self.interpreter(self.root / "home")
+        provider = self.script(
+            self.root / "venv" / "bin" / "graphify", config=f"base-prefix = {home}\n"
+        )
+        with mock.patch.object(Path, "home", staticmethod(lambda: home)):
+            with self.assertRaises(ContextError):
+                self.exposure(provider)
+
+    def test_a_base_prefix_inside_the_checkout_is_refused(self) -> None:
+        base = self.interpreter(self.repository / "vendor" / "python")
+        provider = self.script(
+            self.root / "venv" / "bin" / "graphify", config=f"base-prefix = {base}\n"
+        )
+        with self.assertRaises(ContextError):
+            self.exposure(provider)
+
+    def test_a_stale_record_does_not_sink_a_live_one(self) -> None:
+        """A base interpreter moved since creation, with another key still good."""
+        managed = self.interpreter(self.root / "pythons" / "3.13")
+        provider = self.script(
+            self.root / "venv" / "bin" / "graphify",
+            config=(
+                f"base-prefix = {self.root}/pythons/removed\n"
+                f"base-executable = {managed}/bin/python3\n"
+            ),
+        )
+        exposed = self.exposure(provider)
+        self.assertIn(str(managed), exposed)
+        self.assertNotIn(f"{self.root}/pythons/removed", exposed)
+
+    def test_an_environment_recording_no_usable_base_is_refused(self) -> None:
+        """Refused with an instruction rather than built against a guessed runtime.
+
+        Every spelling of the base is absent or stale, so there is nothing to
+        expose and no reason to believe a build would work. Failing here names
+        the environment; failing later is a ``SIGABRT`` out of the loader.
+        """
+        provider = self.script(
+            self.root / "venv" / "bin" / "graphify",
+            config=f"implementation = CPython\nhome = {self.root}/gone/bin\n",
+        )
+        with self.assertRaises(ContextError):
+            self.exposure(provider)
+
+    def test_a_relative_or_unparseable_record_is_not_treated_as_a_path(self) -> None:
+        provider = self.script(
+            self.root / "venv" / "bin" / "graphify",
+            config="base-prefix = ../../etc\nthis line has no separator\n",
+        )
+        with self.assertRaises(ContextError):
+            self.exposure(provider)
+
+    def test_an_implausibly_large_config_is_refused_rather_than_read_whole(self) -> None:
+        environment = self.root / "venv"
+        provider = self.script(environment / "bin" / "graphify", venv=True)
+        (environment / "pyvenv.cfg").write_text(
+            "# " + "x" * (lifecycle._MAX_VENV_CONFIG_BYTES + 1) + "\n", encoding="utf-8"
+        )
+        with self.assertRaises(ContextError):
+            self.exposure(provider)
 
 
 @unittest.skipUnless(hasattr(os, "killpg"), "process groups are a POSIX facility")

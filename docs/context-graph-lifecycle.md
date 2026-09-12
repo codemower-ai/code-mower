@@ -135,6 +135,23 @@ read-only system runtime asks for no extra exposure and gets none. Anything
 else is refused with an instruction to pin the provider into its own
 environment, rather than exposed as a guess.
 
+A virtual environment is not self-contained: it reaches its base interpreter
+and standard library through a link out of its own `bin`, so that base
+installation is exposed alongside it. *Which* base is read out of the
+environment's own `pyvenv.cfg` — the `base-prefix`, `base-executable`,
+`executable` and `home` records that `venv`, `virtualenv` and `uv` write — and
+not taken from `sys.base_prefix`, which names the interpreter running Code
+Mower. The two are the same installation only when the provider happened to be
+pinned with this process's Python; pin it with a `uv`-managed or otherwise
+separately installed one, as is entirely ordinary, and the child gets a runtime
+it never uses exposed while its own is absent from its filesystem view. That
+failure arrives from inside the dynamic loader rather than as anything naming a
+path, so a correctly pinned install fails every build for no visible reason.
+Each recorded base is held to exactly the refusals the environment root is —
+being read out of a file makes a path no narrower than guessing it would — and
+an environment that records no base that still exists is refused with an
+instruction rather than built against whatever runtime is lying around.
+
 The prefix a particular build ends up with is probed before that build runs,
 not just the host's mechanism at startup: the readable set of a real build is
 the provider's install rather than the interpreter paths the host probe uses,

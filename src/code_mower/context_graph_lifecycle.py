@@ -1283,9 +1283,135 @@ def _resolved_executable(executable: str) -> str:
 #: install root is recognised rather than guessed at from depth alone.
 _VENV_SCRIPT_DIRECTORIES = ("bin", "Scripts")
 
+#: ``pyvenv.cfg`` is a handful of ``key = value`` lines. Bounded at the stream
+#: anyway: it is a file inside somebody else's install, and a build should not
+#: be able to be stopped by reading one.
+_MAX_VENV_CONFIG_BYTES = 65_536
+
+#: Where a ``pyvenv.cfg`` records the interpreter its environment was created
+#: from, in the spellings the three tools that write the file actually use, and
+#: what each spelling names. ``virtualenv`` writes ``base-prefix`` and
+#: ``base-exec-prefix``; ``uv`` writes those as well; the standard library's
+#: ``venv`` writes ``home`` always and ``executable`` since 3.11. A prefix is
+#: used as it stands, an executable is the interpreter binary and its prefix is
+#: the directory above its script directory, and ``home`` is the script
+#: directory itself.
+_VENV_BASE_PREFIX_KEYS = ("base-prefix", "base-exec-prefix")
+_VENV_BASE_EXECUTABLE_KEYS = ("base-executable", "executable")
+_VENV_BASE_SCRIPT_DIRECTORY_KEY = "home"
+
 
 def _under(path: Path, root: Path) -> bool:
     return path == root or path.is_relative_to(root)
+
+
+def _read_venv_config(root: Path) -> dict[str, str]:
+    """The ``key = value`` pairs of an environment's ``pyvenv.cfg``.
+
+    Unparseable lines are skipped rather than fatal. The file is a record left
+    by whichever tool created the environment, and a key this module does not
+    know about is not a reason to refuse an install that works.
+    """
+    path = root / "pyvenv.cfg"
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(_MAX_VENV_CONFIG_BYTES + 1)
+    except OSError:
+        return {}
+    if len(raw) > _MAX_VENV_CONFIG_BYTES:
+        raise ContextError(
+            "local graph provider's pyvenv.cfg is implausibly large; refusing to derive "
+            "a containment boundary from it"
+        )
+    config: dict[str, str] = {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        key, separator, value = line.partition("=")
+        if not separator:
+            continue
+        config.setdefault(key.strip().lower(), value.strip())
+    return config
+
+
+def _prefix_of_interpreter(executable: Path) -> Path:
+    """The install prefix holding an interpreter binary.
+
+    ``<prefix>/bin/python3.13`` on POSIX, ``<prefix>\\python.exe`` on Windows.
+    The script-directory test is what distinguishes them, so a layout that is
+    neither is left at the directory the binary sits in rather than climbing a
+    level it cannot justify.
+    """
+    if executable.parent.name in _VENV_SCRIPT_DIRECTORIES:
+        return executable.parent.parent
+    return executable.parent
+
+
+def _provider_base_prefixes(root: Path, *, repository: Path) -> tuple[str, ...]:
+    """The base runtime *the provider's own environment* was created from.
+
+    This used to be ``sys.base_prefix``, which is the interpreter running Code
+    Mower. The two coincide only when the provider was pinned with the same
+    Python this process happens to be running under. A provider pinned with a
+    ``uv``-managed or otherwise separately installed interpreter -- an entirely
+    ordinary way to pin one -- got somebody else's runtime exposed and its own
+    left out of the child's filesystem view, so every build failed on a
+    correctly pinned install, and failed from inside the loader rather than
+    with anything naming a path.
+
+    So the environment is asked instead of assumed: ``pyvenv.cfg`` records the
+    interpreter that created it, and that record is what gets exposed. Each
+    candidate is held to exactly the refusals the environment root is held to
+    -- a base prefix that is the operator's home or the checkout is no narrower
+    for having been read out of a file rather than guessed -- and one already
+    inside the read-only system runtime adds nothing.
+    """
+    config = _read_venv_config(root)
+    candidates: list[Path] = []
+    for key in _VENV_BASE_PREFIX_KEYS:
+        value = config.get(key)
+        if value and os.path.isabs(value):
+            candidates.append(Path(value))
+    for key in _VENV_BASE_EXECUTABLE_KEYS:
+        value = config.get(key)
+        if value and os.path.isabs(value):
+            candidates.append(_prefix_of_interpreter(Path(value)))
+    value = config.get(_VENV_BASE_SCRIPT_DIRECTORY_KEY)
+    if value and os.path.isabs(value):
+        script_directory = Path(value)
+        candidates.append(
+            script_directory.parent
+            if script_directory.name in _VENV_SCRIPT_DIRECTORIES
+            else script_directory
+        )
+    system = tuple(Path(os.path.realpath(path)) for path in _SYSTEM_READ_PATHS)
+    exposed: list[str] = []
+    seen: set[Path] = set()
+    resolved_any = False
+    for candidate in candidates:
+        base = Path(os.path.realpath(candidate))
+        if base in seen:
+            continue
+        seen.add(base)
+        if not base.is_dir():
+            # A stale record -- a base interpreter moved or removed since the
+            # environment was created. Not fatal on its own: another key may
+            # still name a live one, and only all of them failing is a broken
+            # pin.
+            continue
+        resolved_any = True
+        # Already covered: inside the read-only runtime every child gets, or
+        # inside the environment root that is being exposed anyway.
+        if any(_under(base, path) for path in system) or _under(base, Path(os.path.realpath(root))):
+            continue
+        _refuse_broad_exposure(base, repository=repository)
+        exposed.append(str(base))
+    if not resolved_any:
+        raise ContextError(
+            "local graph provider's virtual environment does not record a usable base "
+            "interpreter in its pyvenv.cfg, so the runtime it needs cannot be exposed to "
+            "the sandbox; recreate the environment with the interpreter the provider is "
+            "pinned for"
+        )
+    return tuple(exposed)
 
 
 def _refuse_broad_exposure(root: Path, *, repository: Path) -> None:
@@ -1360,15 +1486,11 @@ def _provider_read_paths(command: str, *, repository: Path) -> tuple[str, ...]:
         )
     _refuse_broad_exposure(root, repository=repository)
     # The base interpreter a virtual environment was created from lives outside
-    # it and is what its ``bin/python`` points at, so it is exposed too -- and
-    # held to the same refusals, because ``sys.base_prefix`` is only narrow on
-    # hosts where the interpreter was not installed into one of them.
-    base = Path(os.path.realpath(sys.base_prefix)) if sys.base_prefix else None
-    extra: tuple[str, ...] = ()
-    if base is not None and not any(_under(base, path) for path in system):
-        _refuse_broad_exposure(base, repository=repository)
-        extra = (str(base),)
-    return (*spellings, str(root), *extra)
+    # it and is what its ``bin/python`` points at, so it is exposed too -- read
+    # out of *this* environment's own ``pyvenv.cfg`` rather than taken from the
+    # interpreter Code Mower happens to be running under, which is a different
+    # installation whenever the provider was pinned with a different Python.
+    return (*spellings, str(root), *_provider_base_prefixes(root, repository=repository))
 
 
 #: The subcommand the evaluated release exposes, recorded in
