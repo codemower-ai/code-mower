@@ -241,9 +241,14 @@ def config_with_transport(
 
     Rewriting the whole participant list to change one transport would drop every
     unrelated participant and profile lane, so this touches nothing but the
-    product's own transport, participant alias, and profile lane. A profile whose
+    product's own transport, participant alias, and profile lanes. A profile whose
     product lanes are custom-named cannot be switched this way without editing
     lanes the repository owns, so it is reported instead of rewritten.
+
+    The saved selection lives in `session_defaults`, which is repository-wide, so
+    the switch covers every profile that selects the product rather than leaving
+    another profile declaring a lane the saved selection contradicts. Profiles that
+    do not select the product keep their lanes unchanged.
     """
     item = resolve_transport(transport)
     if item.product != product:
@@ -257,27 +262,50 @@ def config_with_transport(
     lanes = result.get("lanes")
     if not isinstance(profiles, dict) or profile not in profiles or not isinstance(lanes, dict):
         raise ConfigError(f"config must contain lanes and profile {profile!r}")
-    active = profiles[profile].get("lanes", [])
-    if not isinstance(active, list):
-        raise ConfigError(f"profile {profile!r} lanes must be a list")
     canonical = {
         entry.review_lane for entry in TRANSPORTS.values() if entry.product == product
     }
-    product_lanes = [
-        lane_id
-        for lane_id in active
-        if devin_lane_transport_name(
-            lane_id, lanes[lane_id] if isinstance(lanes.get(lane_id), Mapping) else None
-        )
-        is not None
-    ]
-    custom = [lane_id for lane_id in product_lanes if lane_id not in canonical]
-    if custom:
+
+    def selected_product_lanes(name: str) -> list[str]:
+        active = profiles[name].get("lanes", [])
+        if not isinstance(active, list):
+            raise ConfigError(f"profile {name!r} lanes must be a list")
+        return [
+            lane_id
+            for lane_id in active
+            if devin_lane_transport_name(
+                lane_id,
+                lanes[lane_id] if isinstance(lanes.get(lane_id), Mapping) else None,
+            )
+            is not None
+        ]
+
+    # The transport choice is saved in session_defaults, which every profile
+    # resolves against, so a switch applied to one profile alone would make an
+    # untouched profile report or execute a transport its own lane contradicts.
+    # Every profile that selects this product moves together, and a profile whose
+    # lanes the repository named is reported instead of rewritten.
+    affected = {
+        name: selected_product_lanes(name)
+        for name in profiles
+        if isinstance(profiles[name], Mapping)
+    }
+    custom = {
+        name: [lane_id for lane_id in found if lane_id not in canonical]
+        for name, found in affected.items()
+    }
+    named = {name: found for name, found in custom.items() if found}
+    if named:
         raise ConfigError(
-            f"profile {profile!r} selects custom-named {product} lanes ("
-            + ", ".join(custom)
-            + "); edit them interactively instead of replacing the transport with a "
-            "generated command"
+            "profile(s) "
+            + "; ".join(
+                f"{name!r} selects custom-named {product} lanes ("
+                + ", ".join(found)
+                + ")"
+                for name, found in named.items()
+            )
+            + "; edit those lane declarations instead of replacing the transport with "
+            "a generated command"
         )
     target = TRANSPORTS[transport].review_lane
     if target and target not in lanes:
@@ -285,14 +313,17 @@ def config_with_transport(
         builder_lane = PARTICIPANTS[product].builder_lane
         if builder_lane:
             lanes[target]["author_lane"] = builder_lane
-    updated: list[str] = []
-    for lane_id in active:
-        replacement = target if lane_id in product_lanes else lane_id
-        if replacement and replacement not in updated:
-            updated.append(replacement)
-    if target and target not in updated:
-        updated.append(target)
-    profiles[profile] = {**profiles[profile], "lanes": updated}
+    for name, product_lanes in affected.items():
+        if name != profile and not product_lanes:
+            continue  # A profile that never selected the product keeps its lanes.
+        updated: list[str] = []
+        for lane_id in profiles[name].get("lanes", []):
+            replacement = target if lane_id in product_lanes else lane_id
+            if replacement and replacement not in updated:
+                updated.append(replacement)
+        if target and target not in updated:
+            updated.append(target)
+        profiles[name] = {**profiles[name], "lanes": updated}
     defaults = result.get("session_defaults", {})
     if not isinstance(defaults, Mapping):
         raise ConfigError("session_defaults must be a mapping")

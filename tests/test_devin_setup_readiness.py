@@ -1,10 +1,12 @@
 """Optional Devin setup, doctor readiness, guidance, and privacy contracts."""
 
+import copy
 import json
 import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import asdict
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -50,6 +52,7 @@ from code_mower.next_steps import build_next_steps
 from code_mower.package import load_provider_templates
 from code_mower.participants import (
     DEFAULT_PARTICIPANTS,
+    TRANSPORT_PARTICIPANT_ALIASES,
     config_with_participants,
     config_with_transport,
     parse_transport_selection,
@@ -1336,6 +1339,20 @@ class DevinMultiLaneReadinessTests(unittest.TestCase):
                 for lane_id, _ in lanes:
                     self.assertIn(f"`{lane_id}`", selection.remediation)
                 self.assertIn(f"`transport: {wanted}`", selection.remediation)
+                # Editing the four declaration fields alone can leave the
+                # configuration invalid or still selecting the old transport, so
+                # every transport-dependent setting is named too.
+                self.assertIn("`capabilities`", selection.remediation)
+                self.assertIn(
+                    "`provider_config.campaign_transport`", selection.remediation
+                )
+                self.assertIn(
+                    f"`session_defaults.transports.devin: {wanted}`",
+                    selection.remediation,
+                )
+                self.assertIn(
+                    f"`{TRANSPORT_PARTICIPANT_ALIASES[wanted]}`", selection.remediation
+                )
                 self.assertIn(
                     f"`driver: {TRANSPORTS[wanted].driver}`", selection.remediation
                 )
@@ -1343,6 +1360,101 @@ class DevinMultiLaneReadinessTests(unittest.TestCase):
                 self.assertIn("'custom profile'", selection.remediation)
                 for forbidden in ("--interactive", "--with", "--set-transport"):
                     self.assertNotIn(forbidden, selection.remediation)
+
+    @staticmethod
+    def _named_devin_config(transport: str, names: tuple[str, ...]) -> dict:
+        """Return a full maintained declaration renamed to custom lanes.
+
+        Lanes copied from the maintained configuration carry `capabilities` and a
+        `provider_config.campaign_transport`, and the configuration saves its own
+        transport selection and participant alias, so guidance is only complete if
+        performing every edit it names leaves a valid configuration.
+        """
+        config = config_with_transport(load_config(EXAMPLE_CONFIG), "devin", transport)
+        maintained = TRANSPORTS[transport].review_lane
+        source = dict(config["lanes"][maintained])
+        source["capabilities"] = asdict(TRANSPORTS[transport].capabilities)
+        source["provider_config"] = {
+            **dict(source.get("provider_config") or {}),
+            "campaign_transport": transport,
+        }
+        del config["lanes"][maintained]
+        for index, lane_id in enumerate(names):
+            config["lanes"][lane_id] = {
+                **copy.deepcopy(source),
+                "labels": {
+                    "needs": f"needs-{lane_id}",
+                    "done": f"{lane_id}-done",
+                    "blocked": f"{lane_id}-blocked",
+                },
+            }
+            if index:
+                # Same-transport lanes stay distinguishable by their own command.
+                config["lanes"][lane_id]["provider_config"]["command"] = (
+                    f"{lane_id}-devin"
+                )
+        active = [
+            lane for lane in config["profiles"]["recommended"]["lanes"] if lane != maintained
+        ]
+        config["profiles"]["recommended"]["lanes"] = [*active, *names]
+        config["session_defaults"]["transports"] = {"devin": transport}
+        config["session_defaults"]["participants"] = [
+            *DEFAULT_PARTICIPANTS,
+            TRANSPORT_PARTICIPANT_ALIASES[transport],
+        ]
+        return config
+
+    def test_following_the_manual_guidance_retargets_every_named_lane(self) -> None:
+        for names in (("team_devin",), ("team_devin", "night_devin")):
+            for start, wanted in (
+                (LOCAL_TRANSPORT, HOSTED_TRANSPORT),
+                (HOSTED_TRANSPORT, LOCAL_TRANSPORT),
+            ):
+                with self.subTest(lanes=len(names), start=start, wanted=wanted):
+                    config = self._named_devin_config(start, names)
+                    self.assertEqual(validate_config(config), [])
+                    self.assertEqual(selected_devin_transport(config), start)
+                    entry = TRANSPORTS[wanted]
+                    for lane_id in names:
+                        lane = config["lanes"][lane_id]
+                        lane.update(
+                            product="devin",
+                            provider="devin" if wanted == HOSTED_TRANSPORT else "devin_cli",
+                            transport=wanted,
+                            driver=entry.driver,
+                        )
+                        del lane["capabilities"]
+                        lane["provider_config"]["campaign_transport"] = wanted
+                    config["session_defaults"]["transports"]["devin"] = wanted
+                    config["session_defaults"]["participants"] = [
+                        TRANSPORT_PARTICIPANT_ALIASES[wanted]
+                        if name == TRANSPORT_PARTICIPANT_ALIASES[start]
+                        else name
+                        for name in config["session_defaults"]["participants"]
+                    ]
+                    self.assertEqual(validate_config(config), [])
+                    self.assertEqual(selected_devin_transport(config), wanted)
+                    findings = _readiness(
+                        config,
+                        env={},
+                        config_path="ops/custom mower.yml",
+                        config_profile="recommended",
+                    )
+                    selection = _finding(findings, "provider.devin.selection")
+                    self.assertEqual(selection.detail["transport"], wanted)
+                    # Every named lane keeps its own ID, and unrelated participants stay.
+                    for lane_id in names:
+                        self.assertIn(
+                            lane_id, config["profiles"]["recommended"]["lanes"]
+                        )
+                    self.assertEqual(
+                        [
+                            name
+                            for name in config["session_defaults"]["participants"]
+                            if name not in TRANSPORT_PARTICIPANT_ALIASES.values()
+                        ],
+                        list(DEFAULT_PARTICIPANTS),
+                    )
 
 
 class DevinTransportSwitchTests(unittest.TestCase):
@@ -1430,6 +1542,62 @@ class DevinTransportSwitchTests(unittest.TestCase):
             switched["profiles"]["recommended"]["lanes"],
             [*default["profiles"]["recommended"]["lanes"], "devin_cli"],
         )
+
+    def test_every_profile_selecting_devin_follows_the_saved_selection(self) -> None:
+        # The saved selection is repository-wide, so a switch that retargeted one
+        # profile alone would leave another profile declaring the transport its own
+        # readiness contradicts.
+        before = config_with_transport(
+            load_config(EXAMPLE_CONFIG), "devin", LOCAL_TRANSPORT
+        )
+        before["profiles"]["nightly"] = {
+            "description": "Nightly builders with Devin selected.",
+            "lanes": ["codex", "devin_cli"],
+        }
+        before["profiles"]["review_only"] = {
+            "description": "Reviewers without Devin.",
+            "lanes": ["codex", "claude_audit"],
+        }
+        self.assertEqual(validate_config(before), [])
+        after = config_with_transport(before, "devin", HOSTED_TRANSPORT)
+        self.assertEqual(validate_config(after), [])
+        self.assertEqual(
+            after["session_defaults"]["transports"]["devin"], HOSTED_TRANSPORT
+        )
+        for name in ("recommended", "nightly"):
+            with self.subTest(profile=name):
+                lanes = after["profiles"][name]["lanes"]
+                self.assertIn("devin", lanes)
+                self.assertNotIn("devin_cli", lanes)
+                self.assertEqual(
+                    selected_devin_transport(after, profile=name), HOSTED_TRANSPORT
+                )
+        self.assertEqual(
+            after["profiles"]["review_only"], before["profiles"]["review_only"]
+        )
+        self.assertNotIn("devin", after["profiles"]["review_only"]["lanes"])
+
+    def test_a_custom_named_devin_lane_in_any_profile_is_never_rewritten(self) -> None:
+        config = config_with_transport(
+            load_config(EXAMPLE_CONFIG), "devin", LOCAL_TRANSPORT
+        )
+        config["lanes"]["team_devin"] = {
+            **dict(config["lanes"]["devin_cli"]),
+            "labels": {
+                "needs": "needs-team-devin",
+                "done": "team-devin-done",
+                "blocked": "team-devin-blocked",
+            },
+        }
+        config["profiles"]["nightly"] = {
+            "description": "Nightly builders with a lane this repository named.",
+            "lanes": ["codex", "team_devin"],
+        }
+        self.assertEqual(validate_config(config), [])
+        with self.assertRaises(ConfigError) as caught:
+            config_with_transport(config, "devin", HOSTED_TRANSPORT)
+        self.assertIn("team_devin", str(caught.exception))
+        self.assertIn("nightly", str(caught.exception))
 
     def test_a_custom_named_devin_lane_is_never_rewritten(self) -> None:
         config = self._config()

@@ -218,9 +218,12 @@ Pick exactly one posture; the two authentications are not interchangeable.
 | Hosted API | `code-mower init code-mower.yml --profile recommended --set-transport devin=devin_api_v3 --dry-run`, then the same command with `--apply --output-dir .code-mower.generated` (replace the path and profile with the ones you inspect) | dedicated service-user credentials plus exact repository scope | set `DEVIN_API_KEY` and `org-*` `DEVIN_ORG_ID`, and add the exact `OWNER/REPO` to `CODE_MOWER_DEVIN_REPOSITORIES` |
 | Unavailable | keep the default pair | none | report the unavailable capability and hand the work to a selected participant instead of substituting another product |
 
-`--set-transport` replaces only Devin's transport, its own profile lane, and its
+`--set-transport` replaces only Devin's transport, its own profile lanes, and its
 own participant alias: every other participant and profile lane stays exactly as
-configured. `--dry-run` previews it and `--apply` stages a generated tree under
+configured. The saved selection in `session_defaults` is repository-wide, so the
+switch retargets the Devin lane of every profile that selects Devin rather than
+leaving another profile whose declared lane the saved selection contradicts;
+profiles that do not select Devin are untouched. `--dry-run` previews it and `--apply` stages a generated tree under
 `--output-dir`; neither rewrites the configuration you passed. Review the
 generated configuration and support files, install them through your normal setup
 PR, and only then rerun `code-mower doctor <config> --profile <name> --devin` —
@@ -230,8 +233,14 @@ old one.
 A profile whose Devin lanes are custom-named is retargeted by editing those lanes
 yourself: set `product: devin`, `provider: devin_cli` (hosted: `provider: devin`),
 `transport: devin_cli` or `devin_api_v3`, and the matching `driver: local_cli` or
-`hosted_bridge` on each named lane, leave every other lane field, participant, and
-profile lane as configured, review the diff, then rerun the pinned doctor command.
+`hosted_bridge` on each named lane. Drop each lane's `capabilities` block to use the
+maintained defaults for the new transport (or restate them for it) and retarget any
+`provider_config.campaign_transport`, otherwise validation rejects declarations that
+disagree with the transport. Point the saved selection at it too, by setting
+`session_defaults.transports.devin` and replacing any Devin participant alias
+(`devin-cli` local, `devin-api-v3` hosted); a stale selection keeps choosing the old
+transport. Leave every other lane field, participant, and profile lane as
+configured, review the diff, then rerun the pinned doctor command.
 No generated command can retarget a lane your repository named, and the participant
 picker would rebuild the profile around the lanes it knows.
 

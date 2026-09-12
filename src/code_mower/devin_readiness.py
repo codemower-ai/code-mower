@@ -32,6 +32,7 @@ from .devin_api import (
 from .local_cli_commands import candidate_local_cli_commands
 from .participants import (
     DEFAULT_PARTICIPANTS,
+    TRANSPORT_PARTICIPANT_ALIASES,
     configured_participants,
     configured_transports,
     selected_transports,
@@ -852,7 +853,9 @@ def select_transport_command(
         "configuration and support files and install them through the normal setup PR "
         f"before rerunning {doctor_command(config_path=config_path, profile=profile, devin=True)}"
         "; staging writes only that review tree, so the active posture keeps reporting "
-        "the installed configuration until the generated one replaces it"
+        "the installed configuration until the generated one replaces it, and the "
+        "saved selection is repository-wide, so every profile selecting Devin moves "
+        "to this transport"
     )
 
 
@@ -870,6 +873,14 @@ def custom_lane_guidance(
     lane and would rebuild the profile around the lanes it does know, dropping the
     rest; no generated selection is safe here. The answer names only the configured
     lane IDs and the public declaration fields they must carry.
+
+    Editing those four fields alone is not enough to retarget a lane. A lane copied
+    from the maintained configuration carries a `capabilities` block and may pin
+    `provider_config.campaign_transport`, both of which are rejected once they
+    disagree with the new transport, and a saved `session_defaults.transports.devin`
+    or transport-specific participant alias keeps selecting the old transport. The
+    guidance names those settings too, still without reading or echoing the
+    configuration.
     """
     if transport not in SELECTABLE_TRANSPORTS:
         raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
@@ -885,8 +896,13 @@ def custom_lane_guidance(
     action = (
         f"edit {named}{where} so each declares `product: devin`, `provider: "
         f"{LANE_PROVIDERS[transport]}`, `transport: {transport}`, and `driver: "
-        f"{entry.driver}`, leaving every other lane field, participant, and profile "
-        "lane as configured, and review the diff"
+        f"{entry.driver}`; drop each lane's `capabilities` block to use the "
+        f"maintained defaults for {transport} (or restate them for it) and retarget "
+        f"any `provider_config.campaign_transport` to {transport}; point the saved "
+        f"selection at it by setting `session_defaults.transports.devin: {transport}` "
+        f"and replacing any Devin participant alias with "
+        f"`{TRANSPORT_PARTICIPANT_ALIASES[transport]}`; leave every other lane field, "
+        "participant, and profile lane as configured, and review the diff"
     )
     if not profile:
         return f"{action}, then rerun {_unpinned_guidance('code-mower doctor --devin')}"

@@ -3250,7 +3250,9 @@ def main(argv: list[str] | None = None) -> int:
         "--set-transport", dest="set_transport", metavar="PRODUCT=TRANSPORT",
         help=(
             "replace one product's transport, for example devin=devin_cli, keeping "
-            "every other participant and profile lane; previews unless --apply is set"
+            "every other participant and profile lane; the saved selection is "
+            "repository-wide, so every profile selecting that product moves with it; "
+            "previews unless --apply stages a generated tree under --output-dir"
         ),
     )
     parser.add_argument(
