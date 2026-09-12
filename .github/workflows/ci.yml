@@ -142,13 +142,14 @@ jobs:
     # unexecuted. ``sandbox-exec`` ships with the OS, so there is nothing to
     # install -- the job is the evidence that the profile runs at all.
     #
-    # Not required to pass yet. It reports, so that a red result carries the
+    # Required, like the bubblewrap job. macOS containment is a behaviour claim
+    # in ``docs/context-graph-lifecycle.md``, and a claim whose only check is
+    # allowed to be red is not being checked. A red result still carries the
     # probe's own diagnosis of which candidate failed and what the launcher
     # said, which is what turned the equivalent bubblewrap failure into a
     # one-round fix.
     name: graph containment (macOS)
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

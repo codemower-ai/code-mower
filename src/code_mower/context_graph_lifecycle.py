@@ -326,6 +326,19 @@ def _seatbelt_literal(path: str) -> str:
     return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+#: Apple's own bootstrap rules for the dynamic linker. On a ``(deny default)``
+#: profile a modern dyld cannot reach the shared cache, and it does not fail as
+#: a denied open: it aborts inside ``dyld4::CacheFinder`` before it owns stderr,
+#: so the child arrives as ``SIGABRT`` with no stdout and no stderr and the
+#: probe can only report that the launcher started nothing. The rules it needs
+#: are the cryptex cache paths plus the narrow ``syscall-unix``,
+#: ``system-fcntl`` and ``system-mac-syscall`` operations -- exactly what this
+#: profile ships. Importing it grants no general file access; the alternative
+#: that also starts dyld, an unfiltered ``(allow file-read-data)``, would
+#: destroy the filesystem boundary this profile exists to draw.
+_DYLD_SUPPORT_PROFILE = "/System/Library/Sandbox/Profiles/dyld-support.sb"
+
+
 def _seatbelt_prefix(launcher: str, *, writable: Sequence[str], readable: Sequence[str]) -> tuple[str, ...]:
     """A ``sandbox-exec`` profile that denies by default and then names the exposure.
 
@@ -334,8 +347,20 @@ def _seatbelt_prefix(launcher: str, *, writable: Sequence[str], readable: Sequen
     other way round: nothing is permitted, and then the runtime is made readable
     and the build's own directories writable.
     """
-    rules = [
-        "(version 1)",
+    rules = ["(version 1)"]
+    if os.path.exists(_DYLD_SUPPORT_PROFILE):
+        # Directly after ``(version 1)`` and before everything else: Apple's
+        # profile declares version 3, so an import ahead of this file's own
+        # version declaration will not compile. ``(deny default)`` follows it
+        # and remains the default posture -- a default is not a rule that
+        # overrides the import, which is why this placement is the one
+        # observed to both start dyld and keep the boundary. A host old enough
+        # not to ship the profile keeps the previous rules rather than failing
+        # to compile an import of a file that is not there; if its dyld needs
+        # them anyway, that host refuses the build instead of running it
+        # unconfined.
+        rules.append('(import "dyld-support.sb")')
+    rules += [
         "(deny default)",
         "(deny network*)",
         "(allow process-fork)",
@@ -2120,30 +2145,37 @@ class GraphStateRoot:
             raise ContextError("local graph state directory is unavailable or unsafe")
         return handle
 
-    def _revalidate_base(self) -> None:
-        """Prove the full spelling still names the directory the walk verified.
+    def _open_owned(self, *, depth: int) -> int | None:
+        """The descriptor for one owned directory, or ``None`` if it is absent.
 
-        Not everything below is descriptor-relative: a generation is renamed
-        into place and the tree is removed by full path, and a full path is
-        re-resolved from the root on every call. A no-follow walk that passed a
-        moment ago says nothing about the ancestor a rename will travel. So the
-        walk's own inode is compared against the one the path resolves to now,
-        and a redirection becomes a refusal instead of a write into whatever
-        the link points at.
+        This is what every mutation below holds instead of a path. An earlier
+        revision revalidated the base -- compared the walk's inode against the
+        one the full spelling resolved to -- immediately before each rename and
+        removal, which reads as safe and is not: the check and the use are two
+        separate resolutions of the same spelling, and an ancestor swapped
+        between them lands the use somewhere the check never saw. Rechecking a
+        path cannot close that race; not resolving the path a second time is
+        what closes it.
+
+        Unlike ``_walk`` this refuses to return a *shallower* directory when a
+        component is missing: a caller asking for the generations directory
+        must not silently receive the workspace directory and mutate it.
         """
-        handle = self._open_base(missing=_MISSING_REFUSE)
-        if handle is None:  # pragma: no cover - _MISSING_REFUSE raises instead
-            raise ContextError("local graph state directory is unavailable or unsafe")
+        handle = self._open_base(missing=_MISSING_STOP)
+        if handle is None:
+            return None
         try:
-            walked = os.fstat(handle)
-            try:
-                spelled = os.stat(self.base)
-            except OSError:
-                raise ContextError("local graph state directory is unavailable or unsafe") from None
-            if (walked.st_dev, walked.st_ino) != (spelled.st_dev, spelled.st_ino):
-                raise ContextError("local graph state directory is unavailable or unsafe")
-        finally:
+            for component in self._components[:depth]:
+                deeper = _open_private_at(handle, component, missing=_MISSING_STOP)
+                if deeper is None:
+                    os.close(handle)
+                    return None
+                os.close(handle)
+                handle = deeper
+        except BaseException:
             os.close(handle)
+            raise
+        return handle
 
     def _walk(self, *, depth: int, missing: str) -> int:
         """Descend the owned components from the base, one descriptor at a time.
@@ -2344,47 +2376,68 @@ class GraphStateRoot:
         if load_manifest(json.loads(serialized)).generation != manifest.generation:
             raise ContextError("local graph manifest does not match its generation")
         self.ensure()
-        # The renames below travel full paths, so the walk's verdict is
-        # re-established against the spelling they will actually use.
-        self._revalidate_base()
-        staging = self.generations_path / ("." + uuid.uuid4().hex + ".staging")
-        staging.mkdir(mode=0o700)
+        # Every step below runs against a descriptor the no-follow walk opened,
+        # never against a path: ``os.rename`` with ``src_dir_fd``/``dst_dir_fd``
+        # resolves one component on each side, so an ancestor that is swapped
+        # after the walk has nothing left to redirect.
+        generations = self._walk(depth=len(self._components), missing=_MISSING_REFUSE)
         try:
-            _write_private_file(staging / ARTIFACT_NAME, artifact)
-            _write_private_file(staging / MANIFEST_NAME, serialized)
-            _fsync_directory(staging)
-            final = self.generations_path / manifest.generation
-            os.rename(staging, final)
-            _fsync_directory(self.generations_path)
-        except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
-        pointer = self.path / CURRENT_NAME
-        temporary = self.path / ("." + uuid.uuid4().hex + ".tmp")
+            staging = "." + uuid.uuid4().hex + ".staging"
+            os.mkdir(staging, mode=0o700, dir_fd=generations)
+            try:
+                staged = os.open(
+                    staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=generations
+                )
+                try:
+                    _write_private_file(ARTIFACT_NAME, artifact, dir_fd=staged)
+                    _write_private_file(MANIFEST_NAME, serialized, dir_fd=staged)
+                    os.fsync(staged)
+                finally:
+                    os.close(staged)
+                os.rename(
+                    staging,
+                    manifest.generation,
+                    src_dir_fd=generations,
+                    dst_dir_fd=generations,
+                )
+                os.fsync(generations)
+            except BaseException:
+                _remove_tree_at(generations, staging, ignore_errors=True)
+                raise
+        finally:
+            self._close_walk(generations)
+        state = self._walk(depth=len(self._components) - 1, missing=_MISSING_REFUSE)
         try:
-            _write_private_file(temporary, manifest.generation.encode() + b"\n")
-            os.replace(temporary, pointer)
-            _fsync_directory(self.path)
-        except BaseException:
-            temporary.unlink(missing_ok=True)
-            raise
+            temporary = "." + uuid.uuid4().hex + ".tmp"
+            try:
+                _write_private_file(
+                    temporary, manifest.generation.encode() + b"\n", dir_fd=state
+                )
+                os.replace(temporary, CURRENT_NAME, src_dir_fd=state, dst_dir_fd=state)
+                os.fsync(state)
+            except BaseException:
+                _unlink_at(state, temporary, ignore_errors=True)
+                raise
+        finally:
+            self._close_walk(state)
         return manifest
 
     def prune(self, *, keep: str | None) -> list[str]:
         """Remove every generation but ``keep``, including crashed stagings."""
-        removed = []
-        self._revalidate_base()
-        try:
-            names = os.listdir(self.generations_path)
-        except FileNotFoundError:
+        removed: list[str] = []
+        generations = self._open_owned(depth=len(self._components))
+        if generations is None:
             return removed
-        for name in sorted(names):
-            if name == keep:
-                continue
-            shutil.rmtree(self.generations_path / name, ignore_errors=True)
-            if _GENERATION.fullmatch(name):
-                removed.append(name)
-        _fsync_directory(self.generations_path)
+        try:
+            for name in sorted(os.listdir(generations)):
+                if name == keep:
+                    continue
+                _remove_tree_at(generations, name, ignore_errors=True)
+                if _GENERATION.fullmatch(name):
+                    removed.append(name)
+            os.fsync(generations)
+        finally:
+            self._close_walk(generations)
         return removed
 
     def remove_all(self) -> bool:
@@ -2410,12 +2463,31 @@ class GraphStateRoot:
             if not self.path.exists():
                 return False
             # Refuse to delete a tree that is not ours; a loosened or foreign
-            # directory is reported, not recursively removed. The recursion
-            # below travels a full path, so the base is re-established against
-            # that spelling before anything is unlinked.
+            # directory is reported, not recursively removed.
             self.verify_private()
-            self._revalidate_base()
-            shutil.rmtree(self.path)
+            holder = self._open_owned(depth=len(self._components) - 2)
+            if holder is None:  # pragma: no cover - verify_private ran first
+                return False
+            try:
+                # The privacy check and the deletion run against *the same*
+                # descriptor, so a directory swapped in after the check cannot
+                # become the directory that is deleted. Opening the workspace
+                # by full path here would reintroduce the whole finding: a
+                # recursive delete whose root is resolved once more, from ``/``,
+                # through whatever the ancestors have become by then.
+                owned = _open_private_at(holder, self.workspace, missing=_MISSING_STOP)
+                if owned is None:  # pragma: no cover - existence checked above
+                    return False
+                try:
+                    for entry in os.listdir(owned):
+                        _remove_tree_at(owned, entry)
+                    os.fsync(owned)
+                finally:
+                    os.close(owned)
+                os.rmdir(self.workspace, dir_fd=holder)
+                os.fsync(holder)
+            finally:
+                self._close_walk(holder)
             return True
 
 
@@ -2441,8 +2513,16 @@ class _BuildLock:
         return False
 
 
-def _write_private_file(path: Path, payload: bytes) -> None:
-    handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+def _write_private_file(path: Path | str, payload: bytes, *, dir_fd: int | None = None) -> None:
+    """Create one 0600 file, optionally relative to an already-verified directory.
+
+    With ``dir_fd`` the name must be a single component: the kernel resolves it
+    against that descriptor and nothing above it is re-resolved, so an ancestor
+    that becomes a symlink cannot redirect the write.
+    """
+    handle = os.open(
+        path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd
+    )
     with os.fdopen(handle, "wb", closefd=False) as stream:
         stream.write(payload)
         stream.flush()
@@ -2450,12 +2530,56 @@ def _write_private_file(path: Path, payload: bytes) -> None:
     os.close(handle)
 
 
-def _fsync_directory(path: Path) -> None:
-    handle = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+def _unlink_at(parent: int, name: str, *, ignore_errors: bool = False) -> None:
+    """Unlink one component against its parent's descriptor, following nothing."""
     try:
+        os.unlink(name, dir_fd=parent)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        if not ignore_errors:
+            raise ContextError("local graph state directory is unavailable or unsafe") from None
+
+
+def _remove_tree_at(parent: int, name: str, *, ignore_errors: bool = False) -> None:
+    """Delete a tree without ever re-resolving a path from the root.
+
+    ``shutil.rmtree`` cannot be used for this. However carefully it walks
+    *below* its argument, the argument itself is a full path that the kernel
+    resolves from ``/`` at the moment the call is entered -- so an ancestor
+    swapped between the check and that instant sends the whole recursive
+    deletion somewhere else. Re-checking the path first does not help: the
+    check and the use are two resolutions of the same spelling, and the race
+    lives exactly between them.
+
+    Here every descent opens one component against its parent's descriptor with
+    ``O_NOFOLLOW``, and every unlink names one component against the descriptor
+    of the directory that really holds it. There is no second resolution to
+    win, so there is no window to win it in. A symlink encountered anywhere in
+    the tree is unlinked as the link it is and never followed.
+    """
+    try:
+        handle = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    except FileNotFoundError:
+        return
+    except OSError:
+        # ``ENOTDIR`` for an ordinary file, ``ELOOP`` for a symlink: both are
+        # removed by name against this descriptor rather than descended into.
+        _unlink_at(parent, name, ignore_errors=ignore_errors)
+        return
+    try:
+        for entry in os.listdir(handle):
+            _remove_tree_at(handle, entry, ignore_errors=ignore_errors)
         os.fsync(handle)
     finally:
         os.close(handle)
+    try:
+        os.rmdir(name, dir_fd=parent)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        if not ignore_errors:
+            raise ContextError("local graph state directory is unavailable or unsafe") from None
 
 
 @dataclass(frozen=True)

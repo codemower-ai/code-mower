@@ -145,6 +145,16 @@ all; that makes the probed prefix strictly more permissive than the one the
 build runs under, and containment observed there is a sound statement about
 containment here.
 
+A `(deny default)` profile on macOS has to say one thing that is not about the
+build's own exposure at all: Apple's `dyld-support.sb` is imported, because a
+modern dynamic linker cannot reach the shared cache without it. The failure
+without it is worth naming, since it is not a denied `open` — dyld aborts
+inside `CacheFinder` before it owns `stderr`, so the child arrives as a
+`SIGABRT` with no output of any kind and the profile reads as "this launcher
+cannot start a child" on every macOS host. The import grants no general file
+access. The other way to get dyld started, an unfiltered `(allow
+file-read-data)`, would dissolve the boundary the profile exists to draw.
+
 No mechanism is trusted on its name, and none is looked up on `PATH`: each
 candidate is an absolute path whose file and every ancestor directory must be
 owned by root or by this user and unwritable by anyone else, because a launcher

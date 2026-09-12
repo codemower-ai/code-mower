@@ -1827,13 +1827,13 @@ class BuildAndPublishTests(TemporaryWorkspace):
         self.assertFalse((inside / "state" / "graph").exists())
         self.assertEqual(list((inside / "state").iterdir()), [])
 
-    def test_an_ancestor_swapped_after_the_walk_refuses_the_next_operation(self) -> None:
-        """Renames and removals travel full paths, so the walk is re-established.
+    def test_an_ancestor_swapped_before_an_operation_refuses_it(self) -> None:
+        """A swapped ancestor is refused on the walk, not written through.
 
-        ``publish`` renames a staged generation into place and ``remove``
-        recurses over the tree, both by full path, and a full path is resolved
-        from the root on every call. A no-follow walk that passed a moment
-        earlier says nothing about what an ancestor has become since.
+        Every mutation opens its directory by walking from ``/`` with
+        ``O_NOFOLLOW`` on each component, so an ancestor that has become a
+        symlink is refused where it is met rather than resolved into whatever
+        it points at.
         """
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
@@ -1844,12 +1844,76 @@ class BuildAndPublishTests(TemporaryWorkspace):
         decoy = self.root / "decoy"
         os.rename(home, decoy)
         os.symlink(elsewhere, home)
-        (elsewhere / "st").mkdir(mode=0o700)
-        with self.assertRaises(ContextError):
-            state._revalidate_base()
+        # Shaped like real state, so the refusal has to come from the walk
+        # rather than from the tree being absent through the link.
+        (elsewhere / "st" / "graph" / state.workspace / "generations").mkdir(
+            mode=0o700, parents=True
+        )
         with self.assertRaises(ContextError):
             state.prune(keep=None)
-        self.assertFalse((elsewhere / "st" / "graph").exists())
+        with self.assertRaises(ContextError):
+            state.remove_all()
+        self.assertTrue((elsewhere / "st" / "graph" / state.workspace).is_dir())
+
+    def test_a_swap_after_the_walk_cannot_redirect_a_removal(self) -> None:
+        """The half a recheck cannot cover: a swap at the operation boundary.
+
+        Revalidating the base immediately before ``shutil.rmtree(self.path)``
+        reads as safe and is not. The recheck resolves the spelling once and
+        the removal resolves it again, so an ancestor swapped between those two
+        resolutions sends the whole recursive delete somewhere the check never
+        saw -- and the window is real however small, because the attacker picks
+        the instant.
+
+        Here the swap is made deterministic at exactly that boundary: the
+        moment the walk has returned its descriptor and the deletion is about
+        to begin, ``holder`` is renamed aside and replaced with a link to a
+        private victim tree of the same shape. A path-based removal deletes the
+        victim. A descriptor-relative one deletes what the descriptor really
+        names, because there is no second resolution left to hijack.
+        """
+        holder = self.root / "holder"
+        holder.mkdir()
+        state = lifecycle.GraphStateRoot(self.repository, root=holder / "state")
+        state.ensure()
+        victim = self.root / "victim"
+        target = victim / "state" / "graph" / state.workspace / "generations"
+        target.mkdir(mode=0o700, parents=True)
+        secret = target / "secret"
+        secret.write_bytes(b"not this process's to delete")
+        decoy = self.root / "decoy"
+        original = state._open_owned
+
+        def swap_then_hand_over(*, depth: int):
+            handle = original(depth=depth)
+            os.rename(holder, decoy)
+            os.symlink(victim, holder)
+            return handle
+
+        state._open_owned = swap_then_hand_over
+        self.assertTrue(state.remove_all())
+        self.assertTrue(secret.exists())
+        self.assertTrue((victim / "state" / "graph" / state.workspace).is_dir())
+        self.assertFalse((decoy / "state" / "graph" / state.workspace).exists())
+
+    def test_a_symlink_inside_the_tree_is_unlinked_rather_than_followed(self) -> None:
+        """A removal walks its own tree without leaving it.
+
+        A link planted among the generations names a path outside the state
+        root; deleting through it would delete the target. It is removed as the
+        link it is.
+        """
+        outside = self.root / "outside"
+        outside.mkdir()
+        keepsake = outside / "keepsake"
+        keepsake.write_bytes(b"outside the state root")
+        state = lifecycle.GraphStateRoot(self.repository, root=self.root / "st")
+        state.ensure()
+        planted = state.generations_path / "planted"
+        os.symlink(outside, planted)
+        self.assertTrue(state.remove_all())
+        self.assertFalse(state.path.exists())
+        self.assertTrue(keepsake.exists())
 
     def test_a_manifest_no_reader_could_load_publishes_nothing(self) -> None:
         """Publication validates the whole manifest before it touches state.
