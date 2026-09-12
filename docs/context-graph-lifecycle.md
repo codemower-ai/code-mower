@@ -166,6 +166,16 @@ is run in and writes its state beside those sources, which the clean-room run in
 [the evaluation](graphify-evaluation.md) recorded as
 `extract --code-only --no-cluster --max-workers 4`.
 
+**`--code-only` and `--no-cluster` are always passed, whatever the pin says.**
+They are conditions of the adopt decision, not preferences: a pin that named no
+options at all would otherwise have launched the provider into clustering and
+whatever extraction it does by default, both of which are separate decisions
+nobody has taken. They are folded into the pin's own `options` rather than added
+at the launch site, so the manifest records the run that actually happened, and
+a pin that tries to undo one of them — `--cluster`, `--no-code-only`, or a
+valued form such as `--code-only=false` — is refused rather than quietly
+overridden by argument order.
+
 So the adapter collects an artifact afterwards rather than naming one up front.
 The state directory the provider wrote (`.graphify` or `.graph`, both already on
 the excluded-roots list) is packed into a single reproducible archive: names
@@ -173,6 +183,14 @@ sorted, timestamps and ownership fixed, modes normalized, symlinks dropped. Two
 builds of one commit have to produce identical bytes, because the manifest binds
 a digest of them. That state lands inside the throwaway materialized copy, never
 inside the indexed checkout, and the copy is deleted when the build ends.
+
+Packing is bounded as it happens, in both dimensions. The number of entries is
+capped while their names are collected, and the serialized archive is written
+into a buffer that refuses to grow past the artifact budget. Summing file sizes
+is not a bound on the archive: many empty files stay far under the byte budget
+while their headers, padding and extended pathname records are bytes this
+process has to hold, and a budget checked on a finished archive is checked after
+the memory was already taken.
 
 Extraction refuses to run at all over a state directory that already exists.
 The census keeps committed provider state out of the materialized copy, so in a
@@ -255,7 +273,11 @@ code-mower context-graph doctor  [--pin-file PIN]
 ```
 
 `status` exits non-zero when the graph is not usable, so a script can branch on
-it. `doctor` reports `skip` rather than `fail` when nothing is pinned or built:
+it. `build` and `refresh` do the same, and for the same reason: a provider that
+admitted an incomplete run has published a generation `status` will call
+`partial` and refuse, so the build prints `partial` and exits non-zero rather
+than describing it as `current` for as long as it takes to ask again.
+`doctor` reports `skip` rather than `fail` when nothing is pinned or built:
 the lifecycle is optional, and an operator who never opted in has nothing wrong
 with their installation.
 
@@ -270,6 +292,10 @@ marker, or a distribution without an artifact digest:
   "options": ["--code-only", "--no-cluster"]
 }
 ```
+
+`options` is optional and may name extra provider flags, such as
+`--max-workers`. The two restrictions above are added whether or not the file
+lists them; listing them changes nothing, and contradicting them is refused.
 
 `--indexer` is the path to a provider CLI the operator has **already**
 installed. This repository does not download, install, or resolve one, which is

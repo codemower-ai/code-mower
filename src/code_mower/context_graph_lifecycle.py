@@ -69,6 +69,13 @@ MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
 MAX_TRACKED_FILES = 50_000
 MAX_TRACKED_BYTES = 512 * 1024 * 1024
 MAX_BLOB_BYTES = 32 * 1024 * 1024
+#: How many files the provider's state may contribute to one artifact. A byte
+#: budget alone is not a bound on what packing costs: many empty files stay far
+#: under it while their headers, padding and extended pathname records grow the
+#: archive this process holds. Sized to the tracked-file bound, because a graph
+#: of a checkout has no honest reason to hold more entries than the checkout
+#: had files.
+MAX_ARTIFACT_ENTRIES = MAX_TRACKED_FILES
 
 #: Only ordinary blobs are materialized. A symlink (``120000``) can name a
 #: target outside the checkout and a gitlink (``160000``) names a commit in
@@ -234,6 +241,47 @@ def _size(value: Any, maximum: int) -> int:
     return value
 
 
+#: The extraction restrictions the adopt decision was conditioned on, recorded
+#: in ``docs/graphify-evaluation.md``: code-only extraction, and no clustering.
+#: They are not the operator's to omit. Model-based extraction and clustering
+#: are separate explicit decisions nobody has taken, and a pin that simply left
+#: its ``options`` empty would have launched the provider into both.
+_REQUIRED_EXTRACT_OPTIONS = ("--code-only", "--no-cluster")
+
+#: Options that would undo one of the above. Named exactly rather than guessed
+#: at: these are the negations of the two flags this module requires, so a pin
+#: carrying one is asking for behaviour the adoption conditions exclude and is
+#: refused rather than silently overridden by argument order.
+_CONFLICTING_EXTRACT_OPTIONS = frozenset({"--cluster", "--no-code-only"})
+
+
+def _extraction_options(options: Iterable[str]) -> tuple[str, ...]:
+    """The options every extraction runs with: the required ones, then the pin's.
+
+    Required unconditionally rather than merely validated, so a pin written
+    before these conditions existed -- or one with no ``options`` at all --
+    still launches a restricted run. They are prepended into the pin itself
+    rather than added at the call site, so the manifest records what actually
+    ran instead of what was asked for.
+    """
+    extra: list[str] = []
+    for option in options:
+        name = option.split("=", 1)[0].strip()
+        if name in _CONFLICTING_EXTRACT_OPTIONS:
+            raise ContextError(
+                "local graph provider options may not re-enable clustering or non-code extraction"
+            )
+        if name in _REQUIRED_EXTRACT_OPTIONS:
+            if option != name:
+                # ``--code-only=false`` is the same request as ``--no-code-only``.
+                raise ContextError(
+                    "local graph provider options may not give a value to a required extraction flag"
+                )
+            continue
+        extra.append(option)
+    return (*_REQUIRED_EXTRACT_OPTIONS, *extra)
+
+
 @dataclass(frozen=True)
 class GraphifyPin:
     """An exact provider pin. A range would let a build drift silently.
@@ -242,12 +290,19 @@ class GraphifyPin:
     ``docs/graphify-evaluation.md``. It is carried into every build manifest so
     a graph built by a substituted distribution is identifiable after the fact,
     which is the whole point of pinning a lookalike-prone package name.
+
+    ``options`` always carries the required extraction restrictions, whichever
+    way the pin was constructed, so there is no shape of this object that could
+    launch an unrestricted run.
     """
 
     distribution: str
     version: str
     wheel_sha256: str
     options: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "options", _extraction_options(self.options))
 
     @property
     def requirement(self) -> str:
@@ -812,6 +867,23 @@ def _read_completeness(report: Mapping[str, Any] | None) -> IndexResult:
     return IndexResult(completeness=COMPLETE, indexed_files=indexed)
 
 
+class _BoundedBuffer(io.BytesIO):
+    """A buffer that refuses to grow past the artifact budget.
+
+    The budget has to be enforced on what this process allocates, as it is
+    allocated. A check on the finished archive is a check made after the
+    memory was already taken, and a check on the sum of the file sizes is not
+    a bound on the archive at all: headers, padding and extended pathname
+    records are bytes the provider can make this process hold without ever
+    writing content.
+    """
+
+    def write(self, data) -> int:  # type: ignore[override]
+        if self.tell() + len(data) > MAX_ARTIFACT_BYTES:
+            raise ContextError("local graph artifact exceeds its budget; no generation was published")
+        return super().write(data)
+
+
 def _pack_state(state_directory: Path) -> bytes:
     """Collect the provider's state into one reproducible artifact.
 
@@ -820,16 +892,25 @@ def _pack_state(state_directory: Path) -> bytes:
     a digest of them. Only regular files are taken -- a symlink in provider
     state would name a target outside the artifact, which an immutable
     generation cannot carry.
+
+    Both the number of entries and the serialized size are bounded while the
+    archive is being built, so a provider that wrote pathologically many files
+    is refused before this process has held them: even collecting the names to
+    sort them is done against the entry bound rather than into an unbounded
+    list.
     """
-    buffer = io.BytesIO()
-    total = 0
+    entries: list[Path] = []
+    for path in state_directory.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        entries.append(path)
+        if len(entries) > MAX_ARTIFACT_ENTRIES:
+            raise ContextError(
+                "local graph artifact holds more files than its budget allows; no generation was published"
+            )
+    buffer = _BoundedBuffer()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
-        for path in sorted(state_directory.rglob("*"), key=lambda item: str(item.relative_to(state_directory))):
-            if path.is_symlink() or not path.is_file():
-                continue
-            total += path.stat().st_size
-            if total > MAX_ARTIFACT_BYTES:
-                raise ContextError("local graph artifact exceeds its budget; no generation was published")
+        for path in sorted(entries, key=lambda item: str(item.relative_to(state_directory))):
             info = tarfile.TarInfo(str(path.relative_to(state_directory)))
             info.size = path.stat().st_size
             info.mtime = 0
@@ -853,9 +934,9 @@ def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]
     or an uncontainable host fails before a single blob is materialized.
 
     The argv is the interface the adopt decision evaluated, not a guess at a
-    conventional one: ``extract`` with the pinned options, in the materialized
-    copy. Everything the provider leaves behind is then collected and
-    classified from its own report.
+    conventional one: ``extract`` with the required restrictions and then the
+    pinned options, in the materialized copy. Everything the provider leaves
+    behind is then collected and classified from its own report.
     """
     command = _resolved_executable(executable)
     sandbox = network_sandbox_command()
@@ -867,9 +948,14 @@ def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]
 
     def run(request: IndexRequest) -> IndexResult:
         _refuse_pre_existing_provider_state(request.source_root)
+        # Normalized again at the point of launch, not because the pin could
+        # arrive without the restrictions -- it cannot -- but because this is
+        # the line that decides what the provider is actually asked to do, and
+        # it should be readable here without trusting a constructor elsewhere.
+        options = _extraction_options(request.pin.options)
         try:
             completed = subprocess.run(
-                [*sandbox, command, _PROVIDER_EXTRACT, *request.pin.options],
+                [*sandbox, command, _PROVIDER_EXTRACT, *options],
                 check=False,
                 # Neither stream is read, and neither may be buffered: a
                 # provider that logs its progress would otherwise accumulate
@@ -1644,6 +1730,7 @@ __all__: Sequence[str] = (
     "IndexResult",
     "MANIFEST_SCHEMA",
     "MAX_ARTIFACT_BYTES",
+    "MAX_ARTIFACT_ENTRIES",
     "MAX_TRACKED_FILES",
     "PARTIAL",
     "TrackedCensus",

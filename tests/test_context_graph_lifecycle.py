@@ -118,7 +118,38 @@ class PinTests(unittest.TestCase):
             {"distribution": "graphifyy", "version": "0.9.58", "wheel_sha256": "b" * 64}
         )
         self.assertEqual(pin.requirement, "graphifyy==0.9.58")
-        self.assertEqual(pin.options, ())
+        # A pin that names no options is still a restricted pin: the adoption
+        # conditions are not the operator's to omit by leaving a field out.
+        self.assertEqual(pin.options, ("--code-only", "--no-cluster"))
+
+    def test_the_required_extraction_restrictions_are_always_carried(self) -> None:
+        """Code-only and no-cluster are conditions of the adopt decision.
+
+        They are prepended into the pin rather than added at the launch site,
+        so the manifest records the run that actually happened. A pin that
+        already names one keeps exactly one copy of it, and whatever else it
+        names is preserved after them.
+        """
+        pin = lifecycle.load_pin(
+            {"distribution": "graphifyy", "version": "0.9.58", "wheel_sha256": "b" * 64,
+             "options": ["--no-cluster", "--max-workers", "4"]}
+        )
+        self.assertEqual(pin.options, ("--code-only", "--no-cluster", "--max-workers", "4"))
+
+    def test_rejects_options_that_undo_the_extraction_restrictions(self) -> None:
+        """An option that re-enables clustering or non-code extraction is refused.
+
+        Overriding it by argument order would leave the pin claiming one thing
+        and the provider doing another; refusing says so where an operator can
+        see it.
+        """
+        for option in ("--cluster", "--no-code-only", "--code-only=false", "--no-cluster=0"):
+            with self.subTest(option=option):
+                with self.assertRaises(ContextError):
+                    lifecycle.load_pin(
+                        {"distribution": "graphifyy", "version": "0.9.58", "wheel_sha256": "b" * 64,
+                         "options": [option]}
+                    )
 
     def test_rejects_ranges_and_unpinned_shapes(self) -> None:
         """A range, a marker, or a missing digest lets a build drift silently."""
@@ -387,7 +418,7 @@ FINISHED_REPORT = {"complete": True, "code_files": 3, "requeued": 0}
 class ProviderLaunchTests(TemporaryWorkspace):
     """What ``subprocess_indexer`` actually hands the operating system."""
 
-    def request(self) -> lifecycle.IndexRequest:
+    def request(self, pin: lifecycle.GraphifyPin = PIN) -> lifecycle.IndexRequest:
         # A fresh directory per launch, because that is what a build hands the
         # provider: ``materialize_tracked_files`` refuses a destination that
         # already exists, and so the provider never sees state from a prior run.
@@ -396,7 +427,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             source_root=source,
             output_path=self.root / "graph.bin",
             environment={"PATH": os.environ.get("PATH", "")},
-            pin=PIN,
+            pin=pin,
             commit="a" * 40,
             tree="b" * 40,
         )
@@ -408,6 +439,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         sandbox=("/sandbox", "--deny"),
         report: object = FINISHED_REPORT,
         state_directory: str = ".graphify",
+        pin: lifecycle.GraphifyPin = PIN,
     ) -> tuple[list[str], lifecycle.IndexResult]:
         """Launch the adapter with the provider's side of the contract faked.
 
@@ -415,7 +447,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         stand-in has to leave that state behind for the adapter to collect --
         an exit status alone is not a finished build.
         """
-        request = self.request()
+        request = self.request(pin)
         recorded: list[list[str]] = []
         # What the adapter asked the operating system for, kept beside the argv
         # because the stream arrangement is as much of the contract as it is.
@@ -473,6 +505,26 @@ class ProviderLaunchTests(TemporaryWorkspace):
         self.assertNotIn("--source", argv)
         self.assertNotIn("--output", argv)
 
+    def test_extraction_is_restricted_to_code_and_never_clusters(self) -> None:
+        """The adoption conditions are enforced at the launch, not assumed.
+
+        A pin is free to name no options at all, and one that did would
+        otherwise have launched the provider into clustering and whatever
+        extraction it does by default -- both of which are separate decisions
+        nobody has taken.
+        """
+        bare = lifecycle.GraphifyPin(distribution="graphifyy", version="0.9.58", wheel_sha256="a" * 64)
+        argv, _ = self.run_indexer("graphify", pin=bare)
+        self.assertEqual(argv[3:], ["extract", "--code-only", "--no-cluster"])
+
+    def test_the_launch_restricts_extraction_even_if_the_pin_did_not(self) -> None:
+        # The pin normalizes its own options, so this reaches past the
+        # constructor to prove the guarantee does not rest on it alone.
+        stripped = lifecycle.GraphifyPin(distribution="graphifyy", version="0.9.58", wheel_sha256="a" * 64)
+        object.__setattr__(stripped, "options", ())
+        argv, _ = self.run_indexer("graphify", pin=stripped)
+        self.assertEqual(argv[3:], ["extract", "--code-only", "--no-cluster"])
+
     def test_the_collected_artifact_holds_the_state_the_provider_wrote(self) -> None:
         _, result = self.run_indexer("graphify")
         self.assertEqual(result.completeness, lifecycle.COMPLETE)
@@ -492,6 +544,33 @@ class ProviderLaunchTests(TemporaryWorkspace):
         (self.root / "graph.bin").unlink()
         self.run_indexer("graphify")
         self.assertEqual(first, (self.root / "graph.bin").read_bytes())
+
+    def test_packing_is_bounded_by_the_archive_and_not_by_the_file_sizes(self) -> None:
+        """Empty files are not free: their headers are bytes this process holds.
+
+        The budget is enforced on the serialized archive as it is written, so
+        state whose contents sum to nothing at all is still refused once the
+        archive it turns into would exceed what this process may allocate.
+        """
+        state = self.root / "packed"
+        state.mkdir()
+        for index in range(16):
+            (state / f"node-{index:02d}.bin").write_bytes(b"")
+        self.assertEqual(sum(path.stat().st_size for path in state.iterdir()), 0)
+        with mock.patch.object(lifecycle, "MAX_ARTIFACT_BYTES", 2048):
+            with self.assertRaises(ContextError):
+                lifecycle._pack_state(state)
+
+    def test_packing_refuses_more_entries_than_its_budget_allows(self) -> None:
+        # Bounded while the names are collected, before anything is archived.
+        state = self.root / "entries"
+        state.mkdir()
+        for index in range(4):
+            (state / f"node-{index}.bin").write_bytes(b"x")
+        with mock.patch.object(lifecycle, "MAX_ARTIFACT_ENTRIES", 3):
+            with self.assertRaises(ContextError):
+                lifecycle._pack_state(state)
+        self.assertEqual(len(self.archived_names(lifecycle._pack_state(state))), 4)
 
     def test_a_provider_that_wrote_no_state_publishes_nothing(self) -> None:
         with self.assertRaises(ContextError):
@@ -1164,10 +1243,29 @@ class CommandTests(TemporaryWorkspace):
             "--pin-file", str(self.pin_file()),
             "--indexer", str(self.indexer_script(complete=False)),
         )
-        self.assertEqual(code, 0, output)
+        # The build says so itself. Reporting ``current`` here and ``partial``
+        # one command later would describe an unusable generation as usable for
+        # exactly as long as it took to ask again.
+        self.assertEqual(code, 1, output)
+        published = json.loads(output)
+        self.assertFalse(published["usable"])
+        self.assertEqual(published["completeness"], lifecycle.PARTIAL)
         code, output = self.run_command("status", *self.base())
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(output)["state"], "partial")
+
+    def test_an_incomplete_build_is_printed_as_partial(self) -> None:
+        if lifecycle.network_sandbox_command() is None:
+            self.skipTest("this host offers no OS sandbox that denies a child the network")
+        arguments = [argument for argument in self.base() if argument != "--json"]
+        code, output = self.run_command(
+            "build", *arguments,
+            "--pin-file", str(self.pin_file()),
+            "--indexer", str(self.indexer_script(complete=False)),
+        )
+        self.assertEqual(code, 1, output)
+        self.assertIn("Local graph: partial", output)
+        self.assertNotIn("Local graph: current", output)
 
     def test_status_reports_stale_with_a_nonzero_exit(self) -> None:
         self.build()

@@ -102,11 +102,24 @@ def main(argv=None) -> int:
                 revision=args.revision,
                 keep_previous=args.keep_previous,
             )
-            summary = {"status": "published", **manifest.shareable_summary()}
-            _emit(summary, as_json=args.json,
-                  text=lifecycle.render_status_text(
-                      lifecycle.GenerationStatus(state="current", generation=manifest.generation, manifest=manifest)))
-            return 0
+            # The published state is the manifest's, not this command's to
+            # assume: a provider that admitted an incomplete run has published
+            # a generation ``status`` will call ``partial`` and refuse, and
+            # printing ``current`` here would describe it as usable for exactly
+            # as long as it took the operator to ask again.
+            complete = manifest.completeness == lifecycle.COMPLETE
+            published = lifecycle.GenerationStatus(
+                state="current" if complete else "partial",
+                generation=manifest.generation,
+                manifest=manifest,
+                detail="" if complete else "local graph build was incomplete; refresh it",
+            )
+            summary = {"status": "published", "usable": published.usable, **manifest.shareable_summary()}
+            _emit(summary, as_json=args.json, text=lifecycle.render_status_text(published))
+            # Publishing an unusable generation is a reportable condition, not
+            # a crash: exit non-zero for the same reason ``status`` does, so a
+            # script does not have to re-ask to find out what it just built.
+            return 0 if published.usable else 1
         if args.command == "status":
             report = lifecycle.graph_status(
                 args.repo_path,
