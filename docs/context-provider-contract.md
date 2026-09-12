@@ -207,7 +207,8 @@ point; they do not establish Graphify compatibility or make it a v1.3.1
 dependency.
 
 The lifecycle around such a provider — exact pin, immutable tracked-file
-materialization, scrubbed environment, private 0700 state, atomic generations,
+materialization, scrubbed environment, an OS sandbox that denies the provider
+the network, private 0700 state, atomic generations,
 and `code-mower context-graph build/refresh/status/remove/doctor` — is
 described in [Local repository graph](context-graph-lifecycle.md). It builds the
 evidence side; `context_graph` still decides whether a delivered packet's

@@ -47,16 +47,44 @@ provenance at all. If Code Mower does not bind the revision, nothing does.
    directory as a 0600 file. Untracked and ignored files have no path into the
    graph because they are never written, rather than because something filtered
    them out afterwards.
-4. **Run the indexer with a scrubbed environment.** The provider process
-   inherits an allowlist — `PATH`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ` — and
-   nothing else. Every proxy variable is set empty, `no_proxy` is `*`, and
-   `HOME` and the XDG directories point into the build's own scratch area. A
-   newly invented secret variable is excluded by default because the list names
-   what is kept, not what is dropped.
+4. **Run the indexer with a scrubbed environment, inside a network-denying
+   sandbox.** The provider process inherits an allowlist — `PATH`, `TMPDIR`,
+   `LANG`, `LC_ALL`, `TZ` — and nothing else, with `HOME` and the XDG
+   directories pointing into the build's own scratch area. A newly invented
+   secret variable is excluded by default because the list names what is kept,
+   not what is dropped. The network boundary is separate and is described
+   below; the emptied proxy variables are hygiene, not that boundary.
 5. **Publish atomically.** The generation is assembled under a staging name,
    fsynced, renamed into `generations/<id>`, and only then does the `current`
    pointer start naming it. A reader sees the whole previous generation or the
    whole new one.
+
+Publication and pruning happen inside one locked critical section. Two builders
+that race are serialized, and neither can delete the generation the other just
+published while `current` still names it.
+
+## The network boundary
+
+An environment variable is a request, not a boundary: `NO_PROXY=*` asks a
+cooperating client to connect *directly*, and on a host with internet access an
+uncooperative provider is unaffected by any of it. So the provider is launched
+behind an argv prefix that denies it sockets at the operating-system level —
+`sandbox-exec` on macOS, `bwrap --unshare-net` or an unprivileged network
+namespace via `unshare --net` on Linux.
+
+No mechanism is trusted on its name. Each candidate is accepted only after a
+probe child launched behind it has been *observed* failing to open a TCP
+connection with a denial — `EPERM`, `ENETUNREACH`, and the like. A *refused*
+connection is the failure case: it proves the syscall reached the network stack,
+so the candidate is rejected. The result is cached for the process, since it is
+a property of the host.
+
+A host where no candidate passes gets no build. `subprocess_indexer()` raises
+before a single blob is materialized, and `context-graph doctor` reports the
+same condition as a failing `context-graph-isolation` check once a provider is
+pinned. Running an unconfined provider is not offered as a fallback: an
+operator who cannot contain a third-party indexer is better served by knowing
+it than by a build that quietly could have reached the network.
 
 Git itself runs with `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`, and
 `GIT_CONFIG_SYSTEM=/dev/null`: an untrusted checkout's local, global, or system
@@ -142,7 +170,10 @@ marker, or a distribution without an artifact digest:
 
 `--indexer` is the path to a provider CLI the operator has **already**
 installed. This repository does not download, install, or resolve one, which is
-why the executable is named rather than discovered.
+why the executable is named rather than discovered. A relative path such as
+`.venv/bin/graphify` is resolved against the directory the command was invoked
+from, not against the materialized copy the provider runs in; a bare command
+name keeps its `PATH` lookup.
 
 ## State layout
 

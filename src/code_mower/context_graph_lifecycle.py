@@ -20,9 +20,14 @@ The rules a local indexer cannot be trusted to follow on its own:
   name, fsynced, then renamed into place; the ``current`` pointer is replaced
   atomically afterwards. A reader either sees the whole previous generation or
   the whole new one, never a half-written directory.
-* **Scrub the environment.** The indexer runs with an allowlisted environment
-  and proxy-denying network posture, so an ambient token cannot leak into a
-  provider process and the build cannot quietly reach the network.
+* **Scrub the environment.** The indexer runs with an allowlisted environment,
+  so an ambient token cannot leak into a provider process.
+* **Deny the network in the kernel, not by request.** Emptying proxy variables
+  only redirects a client that chooses to honour them. The provider is
+  launched inside an OS sandbox that refuses sockets outright, and the sandbox
+  is accepted only after a probe child has been observed failing to connect. A
+  host that offers no such mechanism gets a refused build, not an unconfined
+  provider.
 
 Nothing here installs, imports, or requires a graph package. The indexer is an
 injected callable, so the whole lifecycle is provable offline; the bundled
@@ -38,6 +43,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -82,8 +88,10 @@ PARTIAL = "partial"
 #: variable is excluded by default instead of needing a new denylist entry.
 _ENVIRONMENT_ALLOWLIST = ("PATH", "TMPDIR", "LANG", "LC_ALL", "TZ")
 
-#: Denying every proxy and refusing terminal prompts turns an attempted
-#: network call into a fast local failure instead of an outbound request.
+#: Hygiene, not the boundary. Emptying proxy variables stops a cooperating
+#: client from finding a proxy and ``GIT_TERMINAL_PROMPT=0`` stops a child
+#: blocking on a credential prompt, but on a host with direct connectivity
+#: neither denies anything. The boundary is ``network_sandbox_command``.
 _NETWORK_DENY = {
     "no_proxy": "*",
     "NO_PROXY": "*",
@@ -96,6 +104,102 @@ _NETWORK_DENY = {
     "GIT_TERMINAL_PROMPT": "0",
     "PYTHONNOUSERSITE": "1",
 }
+
+#: Argv prefixes that place a child in a network-denying OS sandbox, most
+#: specific first. Each is a mechanism the host either has or does not; none is
+#: trusted on its name, because a prefix that silently degrades to running the
+#: command unconfined would be worse than no prefix at all.
+_SANDBOX_CANDIDATES: tuple[tuple[str, ...], ...] = (
+    ("/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)(deny network*)"),
+    ("bwrap", "--unshare-net", "--dev-bind", "/", "/", "--"),
+    ("unshare", "--net", "--map-current-user", "--"),
+    ("unshare", "--net", "--map-root-user", "--"),
+)
+
+#: The probe connects to the discard port on loopback, where a host without a
+#: sandbox refuses the connection. Refusal is the *failure* case here: it proves
+#: the syscall reached the network stack. Only an outright denial -- no
+#: permission, no route, no address family -- proves the child was contained.
+#: The probe exits ``7`` only on a denial; every other exit code -- a refused
+#: connection, a launcher that could not start, a child that never ran -- means
+#: the candidate is not usable as a boundary.
+_PROBE_PORT = 9
+_PROBE_DENIED = 7
+_DENIAL_PROBE = """
+import errno
+import socket
+import sys
+
+DENIED = frozenset({
+    errno.EPERM,
+    errno.EACCES,
+    errno.ENETUNREACH,
+    errno.ENETDOWN,
+    errno.EHOSTUNREACH,
+    errno.EADDRNOTAVAIL,
+    errno.EAFNOSUPPORT,
+    errno.EPROTONOSUPPORT,
+})
+try:
+    probe = socket.socket()
+    probe.settimeout(5)
+    probe.connect(("127.0.0.1", int(sys.argv[1])))
+except OSError as error:
+    sys.exit(7 if error.errno in DENIED else 3)
+sys.exit(3)
+"""
+
+_sandbox_prefix: tuple[str, ...] | None = None
+_sandbox_probed = False
+
+
+def _launcher_path(name: str) -> str | None:
+    if os.path.isabs(name):
+        return name if os.access(name, os.X_OK) else None
+    return shutil.which(name)
+
+
+def _sandbox_denies_network(prefix: Sequence[str]) -> bool:
+    """Watch a child under ``prefix`` fail to open a connection, or say no."""
+    try:
+        completed = subprocess.run(
+            [*prefix, sys.executable, "-c", _DENIAL_PROBE, str(_PROBE_PORT)],
+            check=False,
+            capture_output=True,
+            timeout=60,
+            env={"PATH": os.environ.get("PATH", ""), **_NETWORK_DENY},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == _PROBE_DENIED
+
+
+def _probe_network_sandbox() -> tuple[str, ...] | None:
+    if not sys.executable:  # pragma: no cover - a frozen interpreter cannot probe
+        return None
+    for candidate in _SANDBOX_CANDIDATES:
+        launcher = _launcher_path(candidate[0])
+        if launcher is None:
+            continue
+        prefix = (launcher, *candidate[1:])
+        if _sandbox_denies_network(prefix):
+            return prefix
+    return None
+
+
+def network_sandbox_command() -> tuple[str, ...] | None:
+    """The argv prefix that denies a provider process the network, if any.
+
+    Probed once per process and cached, because the answer is a property of the
+    host rather than of a build. ``None`` means this host offers no mechanism
+    this build could *observe* working, and a build refuses rather than running
+    a provider it cannot contain.
+    """
+    global _sandbox_prefix, _sandbox_probed
+    if not _sandbox_probed:
+        _sandbox_prefix = _probe_network_sandbox()
+        _sandbox_probed = True
+    return _sandbox_prefix
 
 
 def _object_name(value: Any) -> str:
@@ -435,20 +539,48 @@ class IndexResult:
     notes: tuple[str, ...] = ()
 
 
+def _resolved_executable(executable: str) -> str:
+    """Bind a relative provider path to the invocation directory.
+
+    The provider runs with its working directory set to the materialized copy,
+    so ``--indexer .venv/bin/graphify`` would otherwise be looked up inside the
+    frozen source tree, where the operator's install is not. A bare command
+    name keeps its ``PATH`` lookup, which is unaffected by the child's
+    directory.
+    """
+    if not isinstance(executable, str) or not executable:
+        raise ContextError("local graph provider executable must be named")
+    separators = [os.sep, os.altsep] if os.altsep else [os.sep]
+    if any(separator in executable for separator in separators):
+        return str(Path(executable).resolve())
+    return executable
+
+
 def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]:
-    """Run a pinned provider CLI over the materialized copy.
+    """Run a pinned provider CLI over the materialized copy, without a network.
 
     Kept as a factory so the lifecycle never imports or requires a graph
     package: a deployment that has installed the pin supplies the executable,
     and everything else -- including every test in this repository -- injects
-    its own callable. The child sees only ``request.environment``.
+    its own callable. The child sees only ``request.environment``, and it sees
+    it from inside a sandbox that denies it sockets. Resolving the executable
+    and the sandbox here, rather than at build time, means an unusable provider
+    or an uncontainable host fails before a single blob is materialized.
     """
+    command = _resolved_executable(executable)
+    sandbox = network_sandbox_command()
+    if sandbox is None:
+        raise ContextError(
+            "local graph builds need an OS sandbox that denies the provider network access; "
+            "this host offers none that could be verified"
+        )
 
     def run(request: IndexRequest) -> IndexResult:
         try:
             completed = subprocess.run(
                 [
-                    executable,
+                    *sandbox,
+                    command,
                     "index",
                     "--source",
                     str(request.source_root),
@@ -928,10 +1060,14 @@ def build_graph(
                 indexed_files=min(_size(result.indexed_files, MAX_TRACKED_FILES), census.file_count),
             )
             published = state.publish(manifest, artifact)
+            if not keep_previous:
+                # Inside the lock, with publication. Pruning after the lock is
+                # released would let a second builder publish first and then
+                # have its generation -- or its staging directory -- deleted by
+                # this one, leaving ``current`` naming a directory that is gone.
+                state.prune(keep=published.generation)
         finally:
             shutil.rmtree(build_root, ignore_errors=True)
-    if not keep_previous:
-        state.prune(keep=published.generation)
     return published
 
 
@@ -1030,9 +1166,23 @@ def doctor_report(
 
     if pin is None:
         record("context-graph-pin", "skip", "no local graph provider is pinned; the lifecycle is optional")
+        record("context-graph-isolation", "skip", "no provider is pinned, so nothing would be launched")
     else:
         record("context-graph-pin", "pass", "local graph provider is pinned to one exact release",
                requirement=pin.requirement, wheel_sha256=pin.wheel_sha256)
+        # Named while it is still a posture question. Discovering that this
+        # host cannot contain a provider is worth knowing before a build
+        # refuses, and the check reports the mechanism rather than its
+        # arguments, which would be noise.
+        sandbox = network_sandbox_command()
+        if sandbox is None:
+            record("context-graph-isolation", "fail",
+                   "no OS sandbox on this host was observed denying a child process the network; "
+                   "builds will refuse")
+        else:
+            record("context-graph-isolation", "pass",
+                   "the provider would run inside a network-denying OS sandbox",
+                   mechanism=os.path.basename(sandbox[0]))
 
     state = GraphStateRoot(repository, root=root)
     if not state.path.exists():

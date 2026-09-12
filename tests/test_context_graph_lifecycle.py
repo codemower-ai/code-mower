@@ -2,10 +2,15 @@
 
 Every test here builds a real throwaway Git repository and runs the whole
 lifecycle against it with an injected indexer. No graph package is installed,
-imported, or required, and nothing reaches the network: the provider seam is a
+imported, or required, and nothing leaves this machine: the provider seam is a
 callable, so the parts this repository is responsible for -- what gets
 materialized, what the manifest binds, how a generation is published, and when
 a consumer must refuse one -- are all provable locally.
+
+``NetworkIsolationTests`` is the one place a socket is opened at all. It binds a
+listener on loopback in this process and proves a sandboxed child cannot reach
+it, which is the only honest way to test a network boundary: an assertion about
+proxy variables would have passed on code that had none.
 """
 
 from __future__ import annotations
@@ -13,12 +18,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from code_mower import context_graph_command as command
 from code_mower import context_graph_lifecycle as lifecycle
@@ -253,6 +261,117 @@ class ScrubbedEnvironmentTests(TemporaryWorkspace):
         self.assertEqual(set(environment) - allowed, set())
 
 
+CONNECT_PROBE = """
+import socket
+import sys
+
+try:
+    socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5).close()
+except OSError:
+    sys.exit(1)
+sys.exit(0)
+"""
+
+
+class NetworkIsolationTests(unittest.TestCase):
+    """The provider's network boundary, against a socket that is really there."""
+
+    def setUp(self) -> None:
+        self.listener = socket.socket()
+        self.addCleanup(self.listener.close)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(1)
+        self.port = self.listener.getsockname()[1]
+
+    def connect(self, prefix: tuple[str, ...]) -> int:
+        return subprocess.run(
+            [*prefix, sys.executable, "-c", CONNECT_PROBE, str(self.port)],
+            check=False,
+            capture_output=True,
+            timeout=120,
+        ).returncode
+
+    def test_an_unsandboxed_child_reaches_the_listening_socket(self) -> None:
+        # The control. Without it, a sandboxed child that failed to start for
+        # some unrelated reason would read as proof of isolation.
+        self.assertEqual(self.connect(()), 0)
+
+    def test_a_sandboxed_child_cannot_reach_the_listening_socket(self) -> None:
+        sandbox = lifecycle.network_sandbox_command()
+        if sandbox is None:
+            self.skipTest("this host offers no OS sandbox that denies a child the network")
+        self.assertEqual(self.connect(sandbox), 1)
+
+    def test_a_candidate_that_does_not_deny_the_network_is_rejected(self) -> None:
+        # ``env`` runs its argument unchanged: a prefix that contains nothing
+        # must not be mistaken for a boundary just because it launches.
+        passthrough = ("/usr/bin/env",)
+        if not os.access(passthrough[0], os.X_OK):  # pragma: no cover - platform
+            self.skipTest("no pass-through launcher to test against")
+        self.assertFalse(lifecycle._sandbox_denies_network(passthrough))
+
+
+class ProviderLaunchTests(TemporaryWorkspace):
+    """What ``subprocess_indexer`` actually hands the operating system."""
+
+    def request(self) -> lifecycle.IndexRequest:
+        source = self.root / "source"
+        source.mkdir(exist_ok=True)
+        return lifecycle.IndexRequest(
+            source_root=source,
+            output_path=self.root / "graph.bin",
+            environment={"PATH": os.environ.get("PATH", "")},
+            pin=PIN,
+            commit="a" * 40,
+            tree="b" * 40,
+        )
+
+    def launched_argv(self, executable: str, *, sandbox=("/sandbox", "--deny")) -> list[str]:
+        recorded: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            recorded.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: sandbox):
+            indexer = lifecycle.subprocess_indexer(executable)
+        # Patched only around the launch, so the Git calls a build makes are
+        # never intercepted by this stand-in.
+        with mock.patch.object(subprocess, "run", fake_run):
+            indexer(self.request())
+        return recorded[0]
+
+    def test_the_provider_is_launched_inside_the_sandbox(self) -> None:
+        argv = self.launched_argv("graphify")
+        self.assertEqual(argv[:3], ["/sandbox", "--deny", "graphify"])
+
+    def test_a_host_without_a_sandbox_refuses_to_launch_a_provider(self) -> None:
+        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: None):
+            with self.assertRaises(ContextError):
+                lifecycle.subprocess_indexer("graphify")
+
+    def test_a_relative_provider_path_binds_to_the_invocation_directory(self) -> None:
+        # The child runs in the materialized copy, so a relative path left
+        # unresolved would be looked up there instead of where it is installed.
+        installed = self.root / "venv" / "bin"
+        installed.mkdir(parents=True)
+        provider = installed / "graphify"
+        provider.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        provider.chmod(0o700)
+        previous = Path.cwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, previous)
+        argv = self.launched_argv(os.path.join("venv", "bin", "graphify"))
+        self.assertEqual(argv[2], str(provider))
+
+    def test_a_bare_command_name_keeps_its_path_lookup(self) -> None:
+        self.assertEqual(lifecycle._resolved_executable("graphify"), "graphify")
+
+    def test_an_unnamed_provider_is_refused(self) -> None:
+        with self.assertRaises(ContextError):
+            lifecycle._resolved_executable("")
+
+
 class BuildAndPublishTests(TemporaryWorkspace):
     def test_manifest_binds_every_required_fact(self) -> None:
         manifest = self.build()
@@ -312,6 +431,30 @@ class BuildAndPublishTests(TemporaryWorkspace):
         git(self.repository, "commit", "-q", "-am", "change")
         second = self.build()
         self.assertEqual(list(lifecycle.iter_generations(self.repository, root=self.state)), [second.generation])
+
+    def test_pruning_happens_before_the_build_lock_is_released(self) -> None:
+        """Pruning after unlocking can delete a concurrent builder's generation.
+
+        A builder that released the lock, paused, and only then pruned would
+        remove whatever a second builder published in the meantime -- or that
+        builder's staging directory -- leaving ``current`` naming a directory
+        that no longer exists, with both builds reporting success.
+        """
+        order: list[str] = []
+        prune, release = lifecycle.GraphStateRoot.prune, lifecycle._BuildLock.__exit__
+
+        def record_prune(state, *, keep):
+            order.append("prune")
+            return prune(state, keep=keep)
+
+        def record_release(lock, *exception):
+            order.append("unlock")
+            return release(lock, *exception)
+
+        with mock.patch.object(lifecycle.GraphStateRoot, "prune", record_prune), \
+                mock.patch.object(lifecycle._BuildLock, "__exit__", record_release):
+            self.build()
+        self.assertEqual(order, ["prune", "unlock"])
 
     def test_a_failed_build_publishes_nothing(self) -> None:
         first = self.build()
@@ -496,8 +639,24 @@ class DoctorTests(TemporaryWorkspace):
 
     def test_a_healthy_build_passes(self) -> None:
         self.build()
-        report = lifecycle.doctor_report(self.repository, pin=PIN, root=self.state)
+        # Isolation is a property of the host, not of this build; a host that
+        # offers a sandbox is the healthy case being described here.
+        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
+            report = lifecycle.doctor_report(self.repository, pin=PIN, root=self.state)
         self.assertEqual(report["status"], "pass")
+
+    def test_a_host_that_cannot_contain_a_provider_fails_doctor(self) -> None:
+        self.build()
+        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: None):
+            report = lifecycle.doctor_report(self.repository, pin=PIN, root=self.state)
+        self.assertEqual(report["status"], "fail")
+        isolation = [check for check in report["checks"] if check["check"] == "context-graph-isolation"]
+        self.assertEqual([check["status"] for check in isolation], ["fail"])
+
+    def test_isolation_is_not_asked_about_when_nothing_is_pinned(self) -> None:
+        report = lifecycle.doctor_report(self.repository, pin=None, root=self.state)
+        isolation = [check for check in report["checks"] if check["check"] == "context-graph-isolation"]
+        self.assertEqual([check["status"] for check in isolation], ["skip"])
 
     def test_a_stale_graph_fails_doctor(self) -> None:
         self.build()
@@ -546,6 +705,10 @@ class CommandTests(TemporaryWorkspace):
         return ["--repo-path", str(self.repository), "--state-dir", str(self.state), "--json"]
 
     def test_build_status_refresh_remove_round_trip(self) -> None:
+        # The only test that launches a provider for real, so it is also the
+        # only one that needs the host to offer the sandbox a build requires.
+        if lifecycle.network_sandbox_command() is None:
+            self.skipTest("this host offers no OS sandbox that denies a child the network")
         pin, indexer = str(self.pin_file()), str(self.indexer_script())
         code, output = self.run_command("build", *self.base(), "--pin-file", pin, "--indexer", indexer)
         self.assertEqual(code, 0, output)
