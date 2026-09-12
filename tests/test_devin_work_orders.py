@@ -187,6 +187,27 @@ class DeliveryTests(WorkOrderCase):
         with self.assertRaisesRegex(RemoteError, "pull_request_binding"):
             self.run_order("collect")
 
+    def test_exact_author_id_accepts_only_the_terminal_bot_login_alias(self):
+        self.run_order("dispatch")
+        self.complete()
+        original = self.github.pr
+
+        self.github.pr = replace(original, author_login="builder")
+        self.assertEqual(self.run_order("collect")["verified_pr"]["author_id"], 123)
+
+        rejected = (
+            {"author_id": 456, "author_login": "builder"},
+            {"author_login": "imposter"},
+            {"author_login": "builder[bot]-other"},
+            {"author_login": "builder[bot][bot]"},
+            {"author_login": None},
+        )
+        for mutation in rejected:
+            with self.subTest(mutation=mutation):
+                self.github.pr = replace(original, **mutation)
+                with self.assertRaisesRegex(RemoteError, "pull_request_binding"):
+                    self.run_order("collect")
+
     def test_completion_validation_and_private_adapter_failures(self):
         self.run_order("dispatch")
         self.complete()
