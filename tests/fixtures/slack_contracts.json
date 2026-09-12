@@ -1,0 +1,225 @@
+{
+  "grant": {
+    "identity": {
+      "installation": "install_example",
+      "team": "team_example",
+      "actor": "actor_example",
+      "repository": "repo_binding_example",
+      "channel": "channel_example",
+      "thread": "thread_example",
+      "session": "session_example",
+      "runner": "codex_remote",
+      "visibility": "public"
+    },
+    "operations": [
+      "start",
+      "status",
+      "message",
+      "clarification_reply",
+      "cancel",
+      "completion"
+    ],
+    "allow_public": true,
+    "active": true
+  },
+  "requests": [
+    {
+      "schema": "code_mower.slack_ingress.v1",
+      "kind": "command",
+      "operation": "start",
+      "identity": {
+        "installation": "install_example",
+        "team": "team_example",
+        "actor": "actor_example",
+        "repository": "repo_binding_example",
+        "channel": "channel_example",
+        "thread": "thread_example",
+        "session": "session_example",
+        "runner": "codex_remote",
+        "visibility": "public"
+      },
+      "delivery": "delivery_start",
+      "retry": 0,
+      "scope": "private",
+      "text": "Sanitized example input."
+    },
+    {
+      "schema": "code_mower.slack_ingress.v1",
+      "kind": "command",
+      "operation": "status",
+      "identity": {
+        "installation": "install_example",
+        "team": "team_example",
+        "actor": "actor_example",
+        "repository": "repo_binding_example",
+        "channel": "channel_example",
+        "thread": "thread_example",
+        "session": "session_example",
+        "runner": "codex_remote",
+        "visibility": "public"
+      },
+      "delivery": "delivery_status",
+      "retry": 0,
+      "scope": "private",
+      "text": ""
+    },
+    {
+      "schema": "code_mower.slack_ingress.v1",
+      "kind": "command",
+      "operation": "message",
+      "identity": {
+        "installation": "install_example",
+        "team": "team_example",
+        "actor": "actor_example",
+        "repository": "repo_binding_example",
+        "channel": "channel_example",
+        "thread": "thread_example",
+        "session": "session_example",
+        "runner": "codex_remote",
+        "visibility": "public"
+      },
+      "delivery": "delivery_message",
+      "retry": 0,
+      "scope": "private",
+      "text": "Sanitized example input."
+    },
+    {
+      "schema": "code_mower.slack_ingress.v1",
+      "kind": "command",
+      "operation": "clarification_reply",
+      "identity": {
+        "installation": "install_example",
+        "team": "team_example",
+        "actor": "actor_example",
+        "repository": "repo_binding_example",
+        "channel": "channel_example",
+        "thread": "thread_example",
+        "session": "session_example",
+        "runner": "codex_remote",
+        "visibility": "public"
+      },
+      "delivery": "delivery_clarification_reply",
+      "retry": 0,
+      "scope": "private",
+      "text": "Sanitized example input."
+    },
+    {
+      "schema": "code_mower.slack_ingress.v1",
+      "kind": "command",
+      "operation": "cancel",
+      "identity": {
+        "installation": "install_example",
+        "team": "team_example",
+        "actor": "actor_example",
+        "repository": "repo_binding_example",
+        "channel": "channel_example",
+        "thread": "thread_example",
+        "session": "session_example",
+        "runner": "codex_remote",
+        "visibility": "public"
+      },
+      "delivery": "delivery_cancel",
+      "retry": 0,
+      "scope": "private",
+      "text": ""
+    },
+    {
+      "schema": "code_mower.slack_ingress.v1",
+      "kind": "completion_response",
+      "operation": "completion",
+      "identity": {
+        "installation": "install_example",
+        "team": "team_example",
+        "actor": "actor_example",
+        "repository": "repo_binding_example",
+        "channel": "channel_example",
+        "thread": "thread_example",
+        "session": "session_example",
+        "runner": "codex_remote",
+        "visibility": "public"
+      },
+      "delivery": "delivery_completion",
+      "retry": 0,
+      "scope": "private",
+      "text": ""
+    },
+    {
+      "schema": "code_mower.slack_ingress.v1",
+      "kind": "modal_submission",
+      "operation": "start",
+      "identity": {
+        "installation": "install_example",
+        "team": "team_example",
+        "actor": "actor_example",
+        "repository": "repo_binding_example",
+        "channel": "channel_example",
+        "thread": "thread_example",
+        "session": "session_example",
+        "runner": "codex_remote",
+        "visibility": "public"
+      },
+      "delivery": "delivery_modal",
+      "retry": 0,
+      "scope": "private",
+      "text": "Sanitized example input."
+    },
+    {
+      "schema": "code_mower.slack_ingress.v1",
+      "kind": "command",
+      "operation": "start",
+      "identity": {
+        "installation": "install_example",
+        "team": "team_example",
+        "actor": "actor_example",
+        "repository": "repo_binding_example",
+        "channel": "channel_example",
+        "thread": "thread_example",
+        "session": "session_example",
+        "runner": "codex_remote",
+        "visibility": "public"
+      },
+      "delivery": "delivery_start",
+      "retry": 1,
+      "scope": "private",
+      "text": "Sanitized example input."
+    },
+    {
+      "schema": "code_mower.slack_ingress.v1",
+      "kind": "command",
+      "operation": "status",
+      "identity": {
+        "installation": "install_example",
+        "team": "team_example",
+        "actor": "actor_example",
+        "repository": "repo_binding_example",
+        "channel": "channel_example",
+        "thread": "thread_example",
+        "session": "session_example",
+        "runner": "codex_remote",
+        "visibility": "public"
+      },
+      "delivery": "delivery_status",
+      "retry": 0,
+      "scope": "public",
+      "text": ""
+    }
+  ],
+  "lifecycle": {
+    "schema": "code_mower.remote_session.v1",
+    "state": "complete",
+    "reason": "none",
+    "next_action": "none",
+    "counts": {
+      "dispatch": 1,
+      "message": 0,
+      "cancel": 0,
+      "collect": 1
+    }
+  },
+  "retention": {
+    "schema": "code_mower.slack_retention.v1",
+    "private_content_seconds": 3600,
+    "dedupe_seconds": 172800,
+    "outbox_seconds": 3600
+  }
+}
