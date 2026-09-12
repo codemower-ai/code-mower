@@ -127,6 +127,10 @@ The repository gate combines current trusted verdict evidence with configured
 policy. A reviewer starts informational unless its repository-specific
 known-clean and known-blocked evidence supports promotion.
 
+The private [Devin review adapters](devin-review-parity.md) normalize local CLI
+and hosted v3 evidence over the existing remote lifecycle. Both remain
+informational and revalidate the current head and context before consumption.
+
 ## Context Contract
 
 Context connections are private machine state. Repository configuration stores
