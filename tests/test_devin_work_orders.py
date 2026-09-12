@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from dataclasses import asdict, replace
@@ -12,11 +13,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from code_mower.context_contract import ContextError, ValidatedPacket
-from code_mower.context_packets import fetch
+from code_mower.context_contract import ContextRequest
+from code_mower.context_connections import connect, disconnect
+from code_mower.context_packets import fetch, load_authorized
+from code_mower.context_store import ContextStore
 from code_mower.devin_sessions import DevinClient
 from code_mower.devin_work_orders import (
-    COMPLETION_SCHEMA, Candidates, DevinWorkOrders, PacketContext, PullRequest, WorkOrder, _hash, packet_context,
+    COMPLETION_SCHEMA, Candidates, DevinWorkOrders, PullRequest, WorkOrder, _hash, packet_context,
 )
 from code_mower.remote_session import FakeProvider, RemoteError, RemoteSessions, _key
 from code_mower.work_orders import WORK_ORDER_SCHEMA
@@ -304,12 +307,20 @@ class Crash(Exception):
 PAUSED = {"outcome": "UNKNOWN", "state": "paused", "reason": "context_unavailable"}
 
 
-def _fail():
-    raise ContextError("context search unavailable")
+def _expire(proof):
+    proof.expires_at = int(time.time()) - 1
+    return proof
 
 
-def _identity(packet):
-    return uuid.UUID(hex=packet.sha256[:32]).hex
+def _packet_of(context, order):
+    """Test-only view of the authorized packet a bound context names for this order."""
+    return load_authorized(context.store, context.name, context.handle, context.policy,
+                           ContextRequest(order.repository, order.work_item, "devin:builder"),
+                           backend=context.backend)
+
+
+class Unprotected(ContextStore):
+    """A store subclass a caller might substitute; never accepted at the work-order boundary."""
 
 
 @unittest.skipUnless(os.name == "posix", "private packets need POSIX protections")
@@ -321,6 +332,9 @@ class ContextInjectionTests(WorkOrderCase):
         self.order = replace(self.order, context_policy="required")
         self.key = self.service._key(self.order)
         self.optional_order = replace(self.order, context_policy="optional")
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        self.outside = Path(outside.name).resolve()
         self.fixture = fixtures.ContextDeliveryTests(methodName="runTest")
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
@@ -337,6 +351,41 @@ class ContextInjectionTests(WorkOrderCase):
         return packet_context(self.fixture.store, "example", handle or self.result["packet_handle"],
                               policy or self.policy, order=order or self.order, backend=self.backend)
 
+    def synthetic(self, *, text=None, recipients=None, order=None, handle=None):
+        """A local packet outside the protected store with this order's own binding fields."""
+        order = order or self.order
+        context = self.context if handle is None else replace(self.context, handle=handle)
+        payload = _packet_of(context, order).private_payload()
+        if recipients is not None:
+            payload["binding"]["recipients"] = recipients
+        if text is not None:
+            payload["documents"][0]["text"] = text
+        root = Path(tempfile.mkdtemp(dir=self.outside))
+        store = ContextStore(root)
+        with self.fixture.store.locked("example") as locked:
+            index = locked.artifact("i-" + hashlib.sha256(b"example").hexdigest()[:48]).read()
+        with store.locked("example") as locked:
+            for entry in index["entries"]:
+                entry["reference"] = None
+            raw = json.dumps(payload, sort_keys=True).encode()
+            entry = next(e for e in index["entries"] if e["handle"] == context.handle)
+            entry["reference"] = {"path": ".p-" + entry["handle"] + ".json", "sha256": hashlib.sha256(raw).hexdigest()}
+            (root / entry["reference"]["path"]).write_bytes(raw)
+            locked.artifact("i-" + hashlib.sha256(b"example").hexdigest()[:48]).write(index)
+        self.assertEqual(payload["binding"]["repository"], order.repository)
+        self.assertEqual(payload["binding"]["work_item"], order.work_item)
+        return replace(context, store=store)
+
+    def reconnect(self, recipients):
+        disconnect(self.fixture.store, "example", backend=self.backend)
+        connect(self.fixture.store, "example", {"principal": "one@example.invalid", "workspace": "example",
+                "repositories": ["owner/repo"], "recipients": recipients}, backend=self.backend)
+
+    def unavailable(self):
+        """A bound context whose store no longer holds an authorizable connection."""
+        empty = ContextStore(Path(tempfile.mkdtemp(dir=self.outside)))
+        return replace(self.context, store=empty)
+
     def run_optional(self, command, **kwargs):
         return self.service.run(command, self.optional_order, apply=True, **kwargs)
 
@@ -352,8 +401,7 @@ class ContextInjectionTests(WorkOrderCase):
 
     def assert_not_persisted(self, *outputs):
         serialized = json.dumps(outputs)
-        for private in (CONTEXT_CANARY, "Packet identity", "one@example.invalid", self.result["packet_handle"],
-                        _identity(self.context.load())):
+        for private in (CONTEXT_CANARY, "Packet identity", "one@example.invalid", self.result["packet_handle"]):
             self.assertNotIn(private, serialized)
         for path in self.private_files():
             self.assertNotIn(CONTEXT_CANARY.encode(), path.read_bytes())
@@ -365,8 +413,17 @@ class ContextInjectionTests(WorkOrderCase):
         self.assertNotIn("session", output)
 
     def test_packet_context_carries_no_identity_and_policy_must_agree_with_the_order(self):
-        self.assertEqual(tuple(self.context.__dataclass_fields__), ("load",))
+        self.assertEqual(tuple(self.context.__dataclass_fields__), ("store", "name", "handle", "policy", "backend"))
         self.assertNotIn(CONTEXT_CANARY, repr(self.context))
+        self.assertNotIn(self.result["packet_handle"], repr(self.context))
+        for handle in ("", "not-a-handle", self.result["packet_handle"].upper(), None):
+            with self.subTest(handle=handle), self.assertRaisesRegex(RemoteError, "invalid_request"):
+                packet_context(self.fixture.store, "example", handle, self.policy, order=self.order,
+                               backend=self.backend)
+        for store in (self.fixture.store.root, Unprotected(self.fixture.store.root)):
+            with self.subTest(store=type(store).__name__), self.assertRaisesRegex(RemoteError, "invalid_request"):
+                packet_context(store, "example", self.result["packet_handle"], self.policy,
+                               order=self.order, backend=self.backend)
         with self.assertRaises(RemoteError):
             replace(self.order, context_policy="always")
         for order, policy in ((self.order, self.optional_policy), (self.optional_order, self.policy),
@@ -377,20 +434,16 @@ class ContextInjectionTests(WorkOrderCase):
                                order=order, backend=self.backend)
 
     def test_preview_never_retrieves_context(self):
-        calls = []
-        def spy():
-            calls.append(1)
-            return self.context.load()
-        context = PacketContext(spy)
-        for command in ("dispatch", "clarify", "fix"):
-            output = self.service.run(command, self.order, context=context, request="r", prose="p")
-            self.assertTrue(output["apply_required"])
-        self.assertEqual(calls, [])
+        with patch("code_mower.devin_work_orders.load_authorized", wraps=load_authorized) as load:
+            for command in ("dispatch", "clarify", "fix"):
+                output = self.service.run(command, self.order, context=self.context, request="r", prose="p")
+                self.assertTrue(output["apply_required"])
+        self.assertEqual(load.call_count, 0)
         self.assertFalse((self.root / "builder").exists())
 
     def test_create_and_message_receive_the_common_evidence_once_each(self):
         outputs = []
-        identity = "Packet identity: " + _identity(self.context.load())
+        identity = "Packet identity: " + self.result["packet_handle"]
         with patch.object(self.provider, "create", wraps=self.provider.create) as create, \
                 patch.object(self.provider, "message", wraps=self.provider.message) as message:
             outputs.append(self.run_order("dispatch", context=self.context))
@@ -399,7 +452,6 @@ class ContextInjectionTests(WorkOrderCase):
             self.assertIn(CANARY, prompt)
             self.assertIn(CONTEXT_CANARY, prompt)
             self.assertIn(identity, prompt)
-            self.assertNotIn(self.result["packet_handle"], prompt)
             self.assertNotIn("one@example.invalid", prompt)
             self.assertEqual(prompt.split("\n").count("Private evidence for this work item. " + identity), 1)
             outputs.append(self.run_order("dispatch", context=self.context))
@@ -423,10 +475,10 @@ class ContextInjectionTests(WorkOrderCase):
 
     def test_rejected_dispatch_context_writes_no_reservation(self):
         with patch.object(self.provider, "create", wraps=self.provider.create) as create:
-            for context in (PacketContext(_fail), None, self.bind(order=replace(self.order, issue=908))):
+            for context in (self.unavailable(), None, self.bind(handle=uuid.uuid4().hex)):
                 self.assert_paused(self.run_order("dispatch", context=context), "dispatch")
             with self.assertRaisesRegex(RemoteError, "context_binding_mismatch"):
-                self.run_order("dispatch", context=self.context.load)
+                self.run_order("dispatch", context=self.result["packet_handle"])
             with self.assertRaisesRegex(RemoteError, "context_budget_exceeded"):
                 self.service.run("dispatch", replace(self.order, body=CANARY + "b" * 47_000), apply=True,
                                  context=self.large())
@@ -450,41 +502,44 @@ class ContextInjectionTests(WorkOrderCase):
         spec_b = {**self.spec, "work_item": "908"}
         handle_b = fetch(self.fixture.store, "example", spec_b, backend=self.backend, refresh=True)["packet_handle"]
         valid_b = self.bind(order=ticket_b, handle=handle_b)
-        packet_b = valid_b.load()
         self.service.run("dispatch", ticket_b, apply=True, context=valid_b)  # Ticket B's own packet is fine.
-        # A wrapper pointed at another order authorizes against that order and fails closed.
-        self.assert_paused(self.run_order("dispatch", context=self.bind(order=replace(self.order, repository="other/repo"))),
-                           "dispatch")
-        # A packet bound to ticket A whose authorized recipients never included devin:builder.
-        payload = self.context.load().private_payload()
-        payload["binding"]["recipients"] = ["codex:builder", "claude:reviewer"]
-        encoded = json.dumps(payload, sort_keys=True).encode()
-        narrow_packet = ValidatedPacket(encoded, hashlib.sha256(encoded).hexdigest(), "current")
-        self.assertEqual(narrow_packet.private_payload()["binding"]["work_item"], "907")
+        # The context names a packet only; the order it is used with supplies the binding.
+        self.assertEqual(self.bind(order=replace(self.order, repository="other/repo")), self.context)
         policy_none = replace(self.order, issue=909, branch="devin/909", context_policy="none")
-        cases = {
-            "packet_for_ticket_b": (self.order, valid_b),
-            "wrapper_relabelled_for_ticket_a": (self.order, PacketContext(valid_b.load)),
-            "ticket_b_packet_returned_directly": (self.order, PacketContext(lambda: packet_b)),
-            "wrong_recipient": (self.order, PacketContext(lambda: narrow_packet)),
-            "unbound_callable": (self.order, self.context.load),
-            "not_a_packet": (self.order, PacketContext(lambda: "Packet identity: forged\n" + CONTEXT_CANARY)),
-            "policy_none_order_with_context": (policy_none, PacketContext(self.context.load)),
+        paused = {
+            "packet_for_ticket_b": (self.order, valid_b),  # Ticket B's handle does not authorize for A.
+            "wrong_recipient": (self.order, self.synthetic(recipients=["codex:builder", "claude:reviewer"])),
+            "synthetic_same_binding_changed_text": (self.order, self.synthetic(text="forged " + CONTEXT_CANARY)),
+            "synthetic_verbatim_copy": (self.order, self.synthetic()),
         }
-        for name, (order, context) in cases.items():
+        for name, (order, context) in paused.items():
+            with self.subTest(case=name), patch.object(self.provider, "create", wraps=self.provider.create) as create:
+                self.assert_paused(self.service.run("dispatch", order, apply=True, context=context), "dispatch")
+                self.assertEqual(create.call_count, 0)
+        mismatched = {
+            "bare_handle": (self.order, self.result["packet_handle"]),
+            "bare_packet": (self.order, _packet_of(self.context, self.order)),
+            "evidence_text": (self.order, "Packet identity: forged\n" + CONTEXT_CANARY),
+            "look_alike": (self.order, type("PacketContext", (), dict(asdict(self.context)))()),
+            "store_subclass": (self.order, replace(self.context, store=Unprotected(self.fixture.store.root))),
+            "policy_none_order_with_context": (policy_none, self.context),
+        }
+        for name, (order, context) in mismatched.items():
             with self.subTest(case=name), patch.object(self.provider, "create", wraps=self.provider.create) as create:
                 with self.assertRaisesRegex(RemoteError, "context_binding_mismatch"):
                     self.service.run("dispatch", order, apply=True, context=context)
                 self.assertEqual(create.call_count, 0)
-        # Evidence is rendered from the bound packet itself, never supplied alongside it.
+        with self.assertRaisesRegex(RemoteError, "work_order_not_found"):
+            self.run_order("status")
+        # Evidence is rendered from the authorized packet itself under its own handle.
         with patch.object(self.provider, "create", wraps=self.provider.create) as create:
             self.run_order("dispatch", context=self.context)
-            self.assertIn("Packet identity: " + _identity(self.context.load()), create.call_args.args[0])
-            self.assertNotIn(_identity(packet_b), create.call_args.args[0])
+            self.assertIn("Packet identity: " + self.result["packet_handle"], create.call_args.args[0])
+            self.assertNotIn(handle_b, create.call_args.args[0])
+            self.assertNotIn("forged", create.call_args.args[0])
         with patch.object(self.provider, "message", wraps=self.provider.message) as message:
-            for context in (PacketContext(valid_b.load), PacketContext(lambda: narrow_packet)):
-                with self.assertRaisesRegex(RemoteError, "context_binding_mismatch"):
-                    self.run_order("clarify", request="c-1", prose=CANARY, context=context)
+            for context in (valid_b, self.synthetic(recipients=["codex:builder"])):
+                self.assert_paused(self.run_order("clarify", request="c-1", prose=CANARY, context=context), "message")
             self.assertEqual(message.call_count, 0)
         self.assertEqual(self.run_order("status")["round"], 0)
 
@@ -497,8 +552,12 @@ class ContextInjectionTests(WorkOrderCase):
                              backend=self.backend, refresh=True)["packet_handle"])),
             "changed_evidence": lambda: fetch(self.fixture.store, "example", self.spec,
                                               backend=self.backend, refresh=True),
-            "garbage": lambda: setattr(self, "context", PacketContext(_fail)),
+            "expired": lambda: setattr(self.backend, "proof", lambda expected, sequence: _expire(proof(expected, sequence))),
+            "changed_recipients": lambda: self.reconnect(["codex:builder", "claude:reviewer"]),
+            "synthetic_packet": lambda: setattr(self, "context", self.synthetic(text="forged " + CONTEXT_CANARY)),
+            "store_without_connection": lambda: setattr(self, "context", self.unavailable()),
         }
+        proof = self.backend.proof
         for name, arrange in cases.items():
             with self.subTest(case=name):
                 self.setUp()
@@ -512,7 +571,7 @@ class ContextInjectionTests(WorkOrderCase):
         self.setUp()
         self.run_order("dispatch", context=self.context)
         with patch.object(self.provider, "message", wraps=self.provider.message) as message:
-            for context in (PacketContext(_fail), None):
+            for context in (self.unavailable(), None):
                 self.assert_paused(self.run_order("clarify", request="c-1", prose=CANARY, context=context), "message")
             self.assertEqual(message.call_count, 0)
         self.assertEqual(self.run_order("status")["round"], 0)  # No local round was consumed.
@@ -526,7 +585,7 @@ class ContextInjectionTests(WorkOrderCase):
         self.assertEqual((status["round"], status["context"]["message"]), (1, "delivered"))
 
     def test_optional_context_degrades_explicitly_and_states_persist(self):
-        unavailable = PacketContext(_fail)
+        unavailable = self.unavailable()
         with patch.object(self.provider, "create", wraps=self.provider.create) as create:
             output = self.run_optional("dispatch", context=unavailable)
             self.assertEqual(output["context"], {"policy": "optional", "dispatch": "degraded", "message": None})
@@ -535,16 +594,20 @@ class ContextInjectionTests(WorkOrderCase):
             with self.assertRaisesRegex(RemoteError, "request_conflict"):
                 self.run_optional("dispatch", context=self.optional)  # Input changed.
             self.assertEqual(self.run_optional("dispatch", context=unavailable)["context"]["dispatch"], "degraded")
-        with self.assertRaisesRegex(RemoteError, "context_binding_mismatch"):  # Optional never relaxes binding.
-            handle_b = fetch(self.fixture.store, "example", {**self.spec, "work_item": "908"},
-                             backend=self.backend, refresh=True)["packet_handle"]
-            other = self.bind(order=replace(self.optional_order, issue=908), policy=self.optional_policy, handle=handle_b)
-            self.run_optional("clarify", request="c-0", prose=CANARY, context=PacketContext(other.load))
+        handle_b = fetch(self.fixture.store, "example", {**self.spec, "work_item": "908"},
+                         backend=self.backend, refresh=True)["packet_handle"]
+        with patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            # Optional never relaxes binding: another ticket's packet degrades to code-only, not delivery.
+            output = self.run_optional("clarify", request="c-0", prose=CANARY,
+                                       context=replace(self.optional, handle=handle_b))
+            self.assertEqual(output["context"]["message"], "degraded")
+            self.assertNotIn(CONTEXT_CANARY, message.call_args.args[1])
+            self.assertNotIn("Packet identity", message.call_args.args[1])
         with patch.object(self.provider, "message", wraps=self.provider.message) as message:
             output = self.run_optional("clarify", request="c-1", prose=CANARY, context=None)
-            self.assertEqual((output["context"]["message"], output["round"]), ("omitted", 1))
+            self.assertEqual((output["context"]["message"], output["round"]), ("omitted", 2))
             output = self.run_optional("clarify", request="c-2", prose=CANARY, context=self.optional)
-            self.assertEqual((output["context"]["message"], output["round"]), ("delivered", 2))
+            self.assertEqual((output["context"]["message"], output["round"]), ("delivered", 3))
             self.assertIn(CONTEXT_CANARY, message.call_args.args[1])
             # Acknowledging a delivered message preserves its saved state instead of "omitted".
             output = self.run_optional("clarify", request="c-2", prose=CANARY, acknowledge_delivered=True)
@@ -552,7 +615,7 @@ class ContextInjectionTests(WorkOrderCase):
             self.assertEqual(message.call_count, 2)
         status = self.run_optional("status")
         self.assertEqual(status["context"], {"policy": "optional", "dispatch": "degraded", "message": "delivered"})
-        self.assertEqual(status["round"], 2)
+        self.assertEqual(status["round"], 3)
         with self.service.store.locked(self.service._key(self.optional_order)) as locked:
             record = locked.read()
         self.assertEqual((record["context"], record["message"]["context"]), ("degraded", "delivered"))
@@ -567,7 +630,7 @@ class ContextInjectionTests(WorkOrderCase):
         self.assertEqual((record["round"], record["message"]["pending"], record["message"]["context"]),
                          (1, True, "delivered"))
         with patch.object(self.provider, "message", wraps=self.provider.message) as message:
-            for context in (None, PacketContext(_fail)):
+            for context in (None, self.unavailable()):
                 with self.assertRaisesRegex(RemoteError, "request_conflict"):
                     self.run_optional("clarify", request="c-1", prose=CANARY, context=context)
             fetch(self.fixture.store, "example", self.spec, backend=self.backend, refresh=True)
@@ -586,9 +649,86 @@ class ContextInjectionTests(WorkOrderCase):
         output = self.run_optional("dispatch", context=self.optional)
         self.assertEqual(output["context"]["dispatch"], "delivered")
 
+    def test_tracker_key_binds_context_while_the_github_issue_binds_the_pull_request(self):
+        """A guided Jira session keeps its own work item; the delivery issue stays the integer one."""
+        manifest = {"schema": WORK_ORDER_SCHEMA, "repo": "owner/repo", "source": {"repo": "owner/repo"},
+                    "output_path": CANARY, "context_manifest": CANARY}
+        common = dict(repository="owner/repo", issue=907, branch="devin/907", base="main",
+                      author_id=123, author_login="builder[bot]", acu_limit=5, context_policy="required")
+        with self.assertRaisesRegex(RemoteError, "work_order_binding_mismatch"):  # No key: the issue is required.
+            WorkOrder.from_manifest(manifest, CANARY, **common)
+        with self.assertRaisesRegex(RemoteError, "work_order_binding_mismatch"):  # A present issue must still match.
+            WorkOrder.from_manifest({**manifest, "source": {"repo": "owner/repo", "issue_number": "908"}},
+                                    CANARY, **common, context_work_item="EXAMPLE-1")
+        for bad in ("", " EXAMPLE-1", "EXAMPLE\n1", "x" * 129, 907):
+            with self.subTest(work_item=bad), self.assertRaisesRegex(RemoteError, "invalid_work_order|binding_mismatch"):
+                WorkOrder.from_manifest(manifest, CANARY, **common, context_work_item=bad)
+        with self.assertRaisesRegex(RemoteError, "invalid_work_order"):  # Context-free orders carry no key.
+            replace(self.order, context_policy="none", context_work_item="EXAMPLE-1")
+        self.order = WorkOrder.from_manifest(manifest, CANARY, **common, context_work_item="EXAMPLE-1")
+        self.key = self.service._key(self.order)
+        self.assertEqual((self.order.issue, self.order.work_item), (907, "EXAMPLE-1"))
+        self.assertEqual(self.service._fields(self.order)["context_work_item"], "EXAMPLE-1")
+        self.assertNotEqual(self.service._binding(self.order),
+                            self.service._binding(replace(self.order, context_work_item="EXAMPLE-2")))
+        # The GitHub issue's packet is not this order's context; the Jira packet is.
+        github_packet = self.bind()
+        jira_handle = self.fixture.result["packet_handle"]
+        self.assertNotEqual(jira_handle, self.result["packet_handle"])
+        jira = self.bind(handle=jira_handle)
+        with patch.object(self.provider, "create", wraps=self.provider.create) as create:
+            self.assert_paused(self.run_order("dispatch", context=github_packet), "dispatch")
+            self.assert_paused(self.run_order("dispatch", context=self.synthetic(order=self.order, handle=jira_handle,
+                                                                                 text="forged")), "dispatch")
+            self.assertEqual(create.call_count, 0)
+            with self.assertRaisesRegex(RemoteError, "work_order_not_found"):
+                self.run_order("status")
+            output = self.run_order("dispatch", context=jira)
+            self.assertEqual(output["context"], {"policy": "required", "dispatch": "delivered", "message": None})
+            prompt = create.call_args.args[0]
+            self.assertIn("Packet identity: " + jira_handle, prompt)
+            self.assertNotIn(self.result["packet_handle"], prompt)
+            self.assertNotIn("forged", prompt)
+        # Cross-participant identity: the Claude/Codex peer paths render the very same handle.
+        current = self.fixture.attach("codex")
+        for recipient in ("claude:reviewer", "codex:builder", "devin:builder"):
+            peer = self.fixture.delivery(current, recipient)
+            self.assertEqual(peer.binding["handle"], jira_handle)
+            self.assertIn("Packet identity: " + jira_handle, peer.text)
+        # The retry digest binds the Jira packet; a refreshed or absent packet conflicts.
+        with patch.object(self.remote, "run", side_effect=Crash()), self.assertRaises(Crash):
+            self.run_order("clarify", request="c-1", prose=CANARY, context=jira)
+        with patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            for context in (None, self.unavailable(), github_packet):
+                self.assert_paused(self.run_order("clarify", request="c-1", prose=CANARY, context=context), "message")
+            refreshed = fetch(self.fixture.store, "example", self.fixture.spec, backend=self.backend, refresh=True)
+            self.assertNotEqual(refreshed["packet_handle"], jira_handle)
+            with self.assertRaisesRegex(RemoteError, "request_conflict"):  # Refreshed packet: input differs.
+                self.run_order("clarify", request="c-1", prose=CANARY, context=self.bind(handle=refreshed["packet_handle"]))
+            self.assert_paused(self.run_order("clarify", request="c-1", prose=CANARY, context=jira), "message")
+            self.assertEqual(message.call_count, 0)
+        self.assertEqual(self.run_order("status")["context"]["message"], "delivered")
+        # A fresh Jira session: PR verification still closes and checks the integer GitHub issue only.
+        self.setUp()
+        self.order = WorkOrder.from_manifest(manifest, CANARY, **common, context_work_item="EXAMPLE-1")
+        self.key = self.service._key(self.order)
+        jira_handle = self.fixture.result["packet_handle"]
+        jira = self.bind(handle=jira_handle)
+        self.run_order("dispatch", context=jira)
+        with patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            self.assertEqual(self.run_order("clarify", request="c-1", prose=CANARY, context=jira)["round"], 1)
+            self.assertIn("Packet identity: " + jira_handle, message.call_args.args[1])
+        self.complete(round=1)
+        verified = self.run_order("collect")["verified_pr"]
+        self.assertEqual((verified["issue"], verified["pr_number"]), (907, 42))
+        self.assertNotIn("EXAMPLE-1", json.dumps(verified))
+        self.github.pr = replace(self.github.pr, linked_issues=(("owner/repo", 908),))
+        with self.assertRaisesRegex(RemoteError, "pull_request_binding_mismatch"):
+            self.run_order("collect")
+
     def test_context_free_orders_keep_their_pre_context_binding_and_input(self):
         legacy = replace(self.order, context_policy="none")
-        legacy_fields = {k: v for k, v in asdict(legacy).items() if k != "context_policy"}
+        legacy_fields = {k: v for k, v in asdict(legacy).items() if k not in ("context_policy", "context_work_item")}
         self.assertEqual(self.service._binding(legacy),
                          _hash([legacy_fields, self.provider.name, self.provider.account]))
         self.assertIn(json.dumps({k: v for k, v in legacy_fields.items() if k != "body"}, sort_keys=True)[1:-1],

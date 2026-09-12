@@ -80,22 +80,35 @@ logs, tracked files, PR descriptions, and shared artifacts.
 A trusted hosted work order can carry the packet to `devin:builder` without a
 local prompt file. The trusted context decision is part of the work order:
 `WorkOrder.context_policy` is `none`, `optional`, or `required`, comes from
-dispatcher policy, and is included in the durable binding. The embedding binds
-one packet with `devin_work_orders.packet_context(store, name, handle, policy,
-order=order)`, which derives the packet request from the order's repository and
-issue number, requires the trusted policy's `required` flag to agree with the
-order, and returns a `PacketContext` holding only a packet-loading closure. That
-value
-is passed as `context=` to `dispatch`, `clarify`, or `fix`.
+dispatcher policy, and is included in the durable binding. A context-bearing
+order also carries the trusted `WorkOrder.context_work_item`: the tracker-neutral
+identity from the session or manifest context binding (a Jira key, for example),
+which may differ from the integer GitHub delivery issue `WorkOrder.issue`. Only
+the integer issue closes and verifies the pull request; only the work item binds
+the packet. When a key is supplied the prepared source may omit `issue_number`,
+though a present one must still match. Context-free orders carry no key, and
+their serialized binding is unchanged.
+
+The embedding binds one packet with `devin_work_orders.packet_context(store,
+name, handle, policy, order=order)`, which validates the handle and the trusted
+policy (its `required` flag must agree with the order) and returns a
+`PacketContext` holding only the protected store, connection name, packet
+handle, normalized policy, and backend. It carries no packet, evidence, callable,
+or identity of its own: the request is derived from the order it is used with.
+That value is passed as `context=` to `dispatch`, `clarify`, or `fix`.
 
 Immediately before each paid create or message write, and never in preview, the
-context performs a new online authorization for `devin:builder`, and the loaded
-packet's own binding is compared with the order: its repository and work item
-must match and `devin:builder` must be among its bound recipients. The evidence
-is then rendered inside the work-order boundary from that exact validated
-packet, with an identity derived from the packet digest; no separately supplied
-evidence text is ever accepted. A packet for another ticket, a packet without
-the recipient, a relabelled wrapper, a bare callable or string, or any context
+work-order boundary itself calls `load_authorized()` with the order's repository,
+work item, and `devin:builder`: a new online authorization under the store lock
+for the selected account, current authorization, revocation and expiry, then the
+packet's own binding, freshness, and recipients. The evidence is rendered inside
+that boundary from the exact packet the authorized load returned, under the
+exact authorized packet handle as its `Packet identity`, the same identity the
+Claude and Codex peer paths render; no separately supplied packet or evidence is
+ever accepted, and a synthetic local packet with matching binding fields never
+reaches the store lookup. A handle for another ticket, a packet without the
+recipient, or a store without an authorizable connection is `unavailable`; a
+bare handle, packet, string, look-alike object, store subclass, or any context
 on a `none` order fails as `context_binding_mismatch`. Rendering and the 64 KiB
 combined-size check (`context_budget_exceeded`) happen before the work-order
 record, branch reservation, or a new round is written, so a rejected input
@@ -123,8 +136,9 @@ for each message intent is persisted and reported by every command as
 `context: {policy, dispatch, message}`; replay, acknowledgement, status, and
 collect return the saved state rather than recomputing it. Durable records
 written before the context field existed keep their original binding and
-dispatch input: a `none` order serializes without `context_policy`, and records
-without context or input digests are read as context-free.
+dispatch input: a `none` order serializes without `context_policy` or
+`context_work_item`, and records without context or input digests are read as
+context-free.
 
 ## Attach evidence to independent review
 

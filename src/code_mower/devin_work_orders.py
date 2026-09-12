@@ -9,14 +9,13 @@ import hashlib
 import json
 import math
 import re
-import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 
-from .context_contract import ContextError, ContextRequest, ValidatedPacket, normalize_policy
+from .context_contract import ContextError, ContextRequest, ValidatedPacket, _text, normalize_policy
 from .context_delivery import render_evidence
-from .context_packets import load_authorized
+from .context_packets import _handle, load_authorized
 from .context_store import ContextStore
 from .devin_sessions import REPO, DevinClient
 from .provider_capabilities import resolve_transport
@@ -58,6 +57,13 @@ def _branch(value) -> bool:
                     for p in value.split("/")) and not value.endswith("/"))
 
 
+def _work_item(value) -> bool:
+    try:
+        return _text(value, maximum=128) == value.strip()
+    except ContextError:
+        return False
+
+
 def _positive(value) -> bool:
     return type(value) is int and 0 < value <= 2**53 - 1
 
@@ -79,19 +85,24 @@ class WorkOrder:
     acu_limit: int
     body: str = field(repr=False)
     context_policy: str = "none"
+    context_work_item: str = ""  # Tracker-neutral packet work item; defaults to the GitHub issue.
 
     @classmethod
     def from_manifest(cls, manifest: dict, body: str, *, repository: str, issue: int,
                       branch: str, base: str, author_id: int, author_login: str,
-                      acu_limit: int = 10, context_policy: str = "none") -> WorkOrder:
+                      acu_limit: int = 10, context_policy: str = "none",
+                      context_work_item: str = "") -> WorkOrder:
         source = manifest.get("source", {})
+        # A tracker-keyed (context-bearing) source may omit the GitHub delivery issue,
+        # which then comes from dispatcher policy alone; a present one must still match.
+        issue_number = source.get("issue_number") if isinstance(source, dict) else None
         if (manifest.get("schema") != WORK_ORDER_SCHEMA
                 or manifest.get("repo") != repository or not isinstance(source, dict)
                 or source.get("repo") != repository
-                or str(source.get("issue_number")) != str(issue)):
+                or (str(issue_number) != str(issue) and not (context_work_item and not issue_number))):
             raise RemoteError("work_order_binding_mismatch")
         return cls(repository, issue, branch, base, author_id, author_login, acu_limit, body,
-                   context_policy)
+                   context_policy, context_work_item)
 
     def __post_init__(self):
         if (not isinstance(self.repository, str) or len(self.repository) > 256
@@ -101,8 +112,15 @@ class WorkOrder:
                 or not LOGIN.fullmatch(self.author_login)
                 or type(self.acu_limit) is not int or not 1 <= self.acu_limit <= 100
                 or not isinstance(self.body, str) or not self.body.strip()
-                or len(self.body.encode()) > 48000 or self.context_policy not in CONTEXT_POLICIES):
+                or len(self.body.encode()) > 48000 or self.context_policy not in CONTEXT_POLICIES
+                or not isinstance(self.context_work_item, str)
+                or (self.context_work_item and (self.context_policy == "none" or not _work_item(self.context_work_item)))):
             raise RemoteError("invalid_work_order")
+
+    @property
+    def work_item(self) -> str:
+        """The packet work-item identity: the tracker key when bound, else the GitHub issue."""
+        return self.context_work_item or str(self.issue)
 
 
 @dataclass(frozen=True, repr=False)
@@ -144,40 +162,42 @@ class GitHub(Protocol):
 
 @dataclass(frozen=True, repr=False)
 class PacketContext:
-    """Loads one authorized packet; carries no caller-editable identity, policy, or text.
+    """Names one packet in a protected store; carries no packet, evidence, or identity.
 
-    The trusted context decision lives on ``WorkOrder.context_policy``. The loaded
-    packet's own repository, work-item, and recipient binding is checked against
-    the order and the evidence is rendered from that exact packet inside the
-    work-order boundary, so this wrapper can supply neither another ticket's
-    packet nor separately authored evidence.
+    The trusted context decision lives on ``WorkOrder.context_policy``. The
+    work-order boundary itself performs ``load_authorized`` for these inputs
+    with a request derived from the order, checks the loaded packet's own
+    repository, work-item, and recipient binding, and renders the evidence
+    from that exact packet under the authorized handle, so a caller can supply
+    neither a synthetic packet, another ticket's packet, nor authored evidence.
     """
-    load: Callable[[], ValidatedPacket] = field(repr=False)
+    store: ContextStore = field(repr=False)
+    name: str = field(repr=False)
+    handle: str = field(repr=False)
+    policy: dict = field(repr=False)
+    backend: object = field(default=None, repr=False)
 
 
 def packet_context(store: ContextStore, name: str, handle: str, policy, *, order: WorkOrder,
                    backend=None) -> PacketContext:
     """Bind one authorized packet to the hosted builder before its PR exists.
 
-    The packet request is derived from the work order (repository and issue
-    number as the work item), never from caller-supplied identity, and the
+    The packet request is derived from the work order (repository and its
+    tracker-neutral ``work_item``), never from caller-supplied identity, and the
     trusted policy's ``required`` flag must agree with the order's declared
     context policy. Each render performs a new online authorization for
     ``devin:builder``; nothing is cached or written.
     """
     try:
         normalized = normalize_policy(policy)
+        _handle(handle)
     except ContextError:
         raise RemoteError("invalid_request") from None
-    if normalized is None or order.context_policy == "none" \
-            or normalized["required"] != (order.context_policy == "required"):
+    if (normalized is None or order.context_policy == "none"
+            or normalized["required"] != (order.context_policy == "required")
+            or type(store) is not ContextStore or not isinstance(name, str)):
         raise RemoteError("invalid_request")
-    request = ContextRequest(order.repository, str(order.issue), CONTEXT_RECIPIENT)
-
-    def load() -> ValidatedPacket:
-        return load_authorized(store, name, handle, policy, request, backend=backend)
-
-    return PacketContext(load)
+    return PacketContext(store, name, handle, normalized, backend)
 
 
 def _github_call(method, *args, **kwargs):
@@ -210,6 +230,8 @@ class DevinWorkOrders:
         fields = asdict(order)
         if fields["context_policy"] == "none":
             del fields["context_policy"]
+        if not fields["context_work_item"]:
+            del fields["context_work_item"]
         return fields
 
     def _binding(self, order):
@@ -235,12 +257,13 @@ class DevinWorkOrders:
     def _evidence(order, context):
         """Render freshly reauthorized evidence for exactly one create/message input.
 
-        ``context`` loads the authorized packet for ``devin:builder`` through the
-        ordinary online authorization path, immediately before the paid provider
-        write and never in preview. The packet's embedded binding must name this
-        order's repository and work item and the ``devin:builder`` recipient; the
-        evidence is then rendered here from that exact packet, with an identity
-        derived from the packet digest, and is never persisted. The order's
+        The packet named by ``context`` is loaded here through ``load_authorized``
+        for ``devin:builder`` with a request derived from the order, immediately
+        before the paid provider write and never in preview. The packet's
+        embedded binding must name this order's repository and work item and the
+        ``devin:builder`` recipient; the evidence is then rendered here from that
+        exact packet under the authorized handle, the same packet identity peer
+        Claude/Codex delivery renders, and is never persisted. The order's
         trusted ``context_policy`` decides the outcome: required context fails
         closed (``context_unavailable``), optional context degrades to code-only,
         and a missing packet is ``omitted`` only when the policy allows it.
@@ -251,10 +274,13 @@ class DevinWorkOrders:
             if required:
                 raise RemoteError("context_unavailable")
             return None, "omitted"
-        if order.context_policy == "none" or not isinstance(context, PacketContext):
+        if (order.context_policy == "none" or type(context) is not PacketContext
+                or type(context.store) is not ContextStore):
             raise RemoteError("context_binding_mismatch")
+        request = ContextRequest(order.repository, order.work_item, CONTEXT_RECIPIENT)
         try:
-            packet = context.load()
+            packet = load_authorized(context.store, context.name, context.handle, context.policy,
+                                     request, backend=context.backend)
             if not isinstance(packet, ValidatedPacket):
                 raise RemoteError("context_binding_mismatch")
             binding = packet.private_payload().get("binding")
@@ -262,10 +288,10 @@ class DevinWorkOrders:
                 raise RemoteError("context_binding_mismatch")
             recipients = binding.get("recipients")
             if (binding.get("repository") != order.repository
-                    or binding.get("work_item") != str(order.issue)
+                    or binding.get("work_item") != order.work_item
                     or not isinstance(recipients, list) or CONTEXT_RECIPIENT not in recipients):
                 raise RemoteError("context_binding_mismatch")
-            evidence = render_evidence(packet, uuid.UUID(hex=packet.sha256[:32]).hex)
+            evidence = render_evidence(packet, context.handle)
         except ContextError:
             if required:
                 raise RemoteError("context_unavailable") from None
