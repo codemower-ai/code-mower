@@ -56,15 +56,23 @@ The cap applies to the same session across clarification and fix rounds.
 Completion has exactly `schema`, `round`, `repository`, `issue`, `pr_number`, and
 `head_sha`. It is collected in the remote session's private artifact. Provider PR URLs,
 messages, prose, extra fields, and provider assertions of verification are not evidence.
-A missing result remains unavailable; malformed or stale results fail closed.
+A missing result remains unavailable; malformed or stale results fail closed. Devin may
+leave a resumable session at `running` or `waiting_for_user` after accepting this
+structured result. The lifecycle treats that result as complete. Explicit failure,
+suspension, and `waiting_for_approval` still block collection even when an intermediate
+structured result exists.
 
 The GitHub adapter makes one query for at most two PRs on the exact head branch,
 including closed/merged PRs, then two fresh reads of the claimed PR. Each call has a
 30-second deadline, a 512 KiB response bound, no redirects, no retries, and no automatic
 pagination. It requests metadata only. Incomplete candidate or closing-issue pages,
 multiple candidates, extra issue links, wrong repository, forks, wrong author numeric
-ID/login, wrong base/head branch, non-open PRs, and any disagreement about the exact
-40-character head SHA fail closed. Later rounds must retain the original PR number.
+ID/login, wrong base/head branch, closed-unmerged PRs, and any disagreement about the
+exact 40-character head SHA fail closed. An exact-bound merged PR is accepted for
+retrospective crash recovery; it must pass the same three fresh observations as an open
+PR. The author ID always matches exactly; login comparison allows only GitHub's terminal
+`[bot]` suffix alias between actor and GraphQL spellings for that same numeric account.
+Later rounds must retain the original PR number.
 `GitHub` can instead be implemented by an embedding client under the documented bounded
 protocol; it must query GitHub independently, never normalize provider assertions into
 observations. The built-in adapter's `runner(query, variables, headers)` and the Devin

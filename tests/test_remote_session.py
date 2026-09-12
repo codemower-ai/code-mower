@@ -106,6 +106,54 @@ class RemoteSessionTests(unittest.TestCase):
             self.provider.set_state(self.record()["binding"], "owner_action", reason=reason)
             self.assertEqual(self.service.run("status", "work")["state"], state)
 
+    def test_structured_result_precedence_matches_devin_campaigns(self):
+        self.dispatch()
+        binding = self.record()["binding"]
+        result = {"schema": "code_mower.builderCompletion.v1", "round": 10}
+        cases = (
+            ("pending", "", "complete"),
+            ("running", "", "complete"),
+            ("owner_action", "waiting_for_owner", "complete"),
+            ("failed", "", "failed"),
+            ("suspended", "", "suspended"),
+            ("owner_action", "approval_required", "waiting_for_approval"),
+            ("complete", "", "complete"),
+            ("terminated", "", "complete"),
+            ("archived", "", "complete"),
+        )
+        for provider_state, reason, expected in cases:
+            with self.subTest(provider_state=provider_state, reason=reason):
+                self.provider.set_state(binding, provider_state, reason=reason, result=result)
+                self.assertEqual(self.service.run("status", "work")["state"], expected)
+
+        self.provider.set_state(binding, "running", result=result)
+        self.assertEqual(self.service.run("collect", "work", apply=True)["state"], "complete")
+        self.assertEqual(self.service.private_result("work"), result)
+
+        self.provider.set_state(binding, "invalid-provider-state", result=result)
+        with self.assertRaisesRegex(RemoteError, "invalid_response"):
+            self.service.run("status", "work")
+
+    def test_states_without_a_result_keep_provider_neutral_meaning(self):
+        self.dispatch()
+        binding = self.record()["binding"]
+        cases = (
+            ("running", "", "running", "none"),
+            ("owner_action", "waiting_for_owner", "waiting_for_user", "user_input_required"),
+            ("owner_action", "approval_required", "waiting_for_approval", "approval_required"),
+            ("failed", "", "failed", "session_failed"),
+            ("suspended", "", "suspended", "session_suspended"),
+            ("complete", "", "complete", "none"),
+            ("terminated", "", "terminated", "none"),
+            ("archived", "", "archived", "none"),
+        )
+        for provider_state, reason, expected_state, expected_reason in cases:
+            with self.subTest(provider_state=provider_state, reason=reason):
+                self.provider.set_state(binding, provider_state, reason=reason)
+                observed = self.service.run("status", "work")
+                self.assertEqual((observed["state"], observed["reason"]),
+                                 (expected_state, expected_reason))
+
     def test_preview_has_no_io(self):
         self.assertEqual(self.service.run("dispatch", "work", prose="secret", repo="owner/repo")["mode"], "dry_run")
         self.assertFalse(self.root.exists())
@@ -268,9 +316,6 @@ class RemoteSessionTests(unittest.TestCase):
         self.assertEqual(sum(method == "POST" for method, _ in calls), 1)
         self.assertEqual(self.service.run("collect", "work", apply=True)["reason"], "result_not_ready")
         status.update(status_detail="waiting_for_user")
-        self.assertEqual(self.service.run("status", "work")["state"], "waiting_for_user")
-        self.service.run("message", "work", request="m1", prose="private message", apply=True)
-        status.update(status="exit", status_detail="finished")
         self.service.run("collect", "work", apply=True)
         self.assertEqual(self.service.private_result("work"), {"secret": "result"})
         self.service.run("cancel", "work", request="c1", apply=True)

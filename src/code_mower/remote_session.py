@@ -145,9 +145,21 @@ def public_projection(record: dict) -> dict:
 
 def _observe(record, snapshot):
     state = snapshot.state
-    if state == "owner_action":
-        state = ("waiting_for_approval" if snapshot.reason == "approval_required"
-                 else "waiting_for_user")
+    if state != "owner_action" and state not in STATES - {"uncertain"}:
+        # A result must not turn an invalid provider state into valid completion.
+        raise RemoteError("invalid_response")
+    # Devin may keep a resumable session running, waiting or terminal after
+    # accepting its schema-bound result.  Match the campaign adapter's result
+    # precedence: failures, suspension and approval still win; otherwise the
+    # private result is ready even though the raw session has not exited.
+    if state in {"failed", "suspended"}:
+        pass
+    elif state == "owner_action" and snapshot.reason == "approval_required":
+        state = "waiting_for_approval"
+    elif snapshot.structured_output is not None:
+        state = "complete"
+    elif state == "owner_action":
+        state = "waiting_for_user"
     if state not in STATES - {"uncertain"}:
         raise RemoteError("invalid_response")
     record["state"] = state

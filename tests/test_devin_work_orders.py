@@ -164,6 +164,50 @@ class DeliveryTests(WorkOrderCase):
             self.run_order("collect")
         self.assertIsNone(self.run_order("status")["verified_pr"])
 
+    def test_exact_pr_can_be_recovered_before_or_after_merge(self):
+        self.run_order("dispatch")
+        self.complete()
+        self.assertEqual(self.run_order("collect")["verified_pr"]["head_sha"], HEAD)
+
+        exact_merged = replace(self.github.pr, state="merged")
+        self.github.pr = exact_merged
+        self.assertEqual(self.run_order("collect")["verified_pr"]["head_sha"], HEAD)
+
+        for mutation in ({"repository": "other/repo"},
+                         {"linked_issues": (("owner/repo", 908),)},
+                         {"author_id": 456}, {"author_login": "imposter"},
+                         {"head_repository": "fork/repo"}, {"head_branch": "other"},
+                         {"head_sha": "b" * 40}, {"base_branch": "other"}):
+            with self.subTest(merged_mutation=mutation):
+                self.github.pr = replace(exact_merged, **mutation)
+                with self.assertRaisesRegex(RemoteError, "pull_request_binding"):
+                    self.run_order("collect")
+
+        self.github.pr = replace(exact_merged, state="closed")
+        with self.assertRaisesRegex(RemoteError, "pull_request_binding"):
+            self.run_order("collect")
+
+    def test_exact_author_id_accepts_only_the_terminal_bot_login_alias(self):
+        self.run_order("dispatch")
+        self.complete()
+        original = self.github.pr
+
+        self.github.pr = replace(original, author_login="builder")
+        self.assertEqual(self.run_order("collect")["verified_pr"]["author_id"], 123)
+
+        rejected = (
+            {"author_id": 456, "author_login": "builder"},
+            {"author_login": "imposter"},
+            {"author_login": "builder[bot]-other"},
+            {"author_login": "builder[bot][bot]"},
+            {"author_login": None},
+        )
+        for mutation in rejected:
+            with self.subTest(mutation=mutation):
+                self.github.pr = replace(original, **mutation)
+                with self.assertRaisesRegex(RemoteError, "pull_request_binding"):
+                    self.run_order("collect")
+
     def test_completion_validation_and_private_adapter_failures(self):
         self.run_order("dispatch")
         self.complete()
@@ -275,14 +319,24 @@ class DeliveryTests(WorkOrderCase):
         client = DevinClient("org-example", "test-key", api_runner=runner)
         self.service = DevinWorkOrders.hosted(self.root / "hosted", client, self.github)
         self.run_order("dispatch")
-        status.update(status="exit", status_detail="finished", structured_output=self.claim())
+        status.update(status="running", status_detail="waiting_for_approval",
+                      structured_output=self.claim())
+        result = self.run_order("collect")
+        self.assertEqual(result["session"]["state"], "waiting_for_approval")
+        self.assertIsNone(result["verified_pr"])
+        # Devin's resumable API may hold a final result in waiting_for_user rather
+        # than transitioning to exit.  This is the observed #932 recovery shape.
+        status.update(status="running", status_detail="waiting_for_user",
+                      structured_output=self.claim())
         result = self.run_order("collect")
         self.assertEqual(result["observed_acu"], 3.25)
         self.assertEqual(result["transport"], "devin_api_v3")
         self.assertEqual(result["verified_pr"]["pr_number"], 42)
         self.run_order("fix", request="fix-1", prose=CANARY, reviewed_head=HEAD)
         self.github.pr = replace(self.github.pr, head_sha="b" * 40)
-        status.update(status="exit", status_detail="finished",
+        # A valid result can also arrive while the raw resumable session remains
+        # running without an owner-action detail, as observed during #940.
+        status.update(status="running", status_detail=None,
                       structured_output=self.claim(round=1, head_sha="b" * 40))
         self.assertEqual(self.run_order("collect")["verified_pr"]["head_sha"], "b" * 40)
         self.assertEqual(self.run_order("cancel", request="c1")["session"]["state"], "terminated")
