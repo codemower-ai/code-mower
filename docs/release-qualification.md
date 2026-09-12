@@ -561,6 +561,22 @@ variables across every process.
 - Credentials are scoped exclusively to Devin API checks, dispatch, and polling. They never enter subprocess environments for Codex, Claude, Muse, Antigravity, Cursor, or any other provider, and campaigns that do not select Devin perform no Devin credential discovery.
 - To rotate credentials, update the values in `~/.config/code-mower/devin.env` or switch profiles.
 
+New Devin campaign sessions have a 10 ACU ceiling. Before a paid create,
+Code Mower saves a unique attempt tag and organization reference locally.
+After a timeout or interruption, resume searches up to five pages of 100
+sessions in that organization. Exactly one matching session is reused. Zero
+matches, multiple matches, incomplete pagination, or denied access leave the
+attempt unresolved; none triggers another paid create. Older attempts without
+a saved tag still require manual reconciliation.
+
+Session requests use the official HTTPS API host, reject redirects, cap request
+and response bodies at 512 KiB, and use a 30-second socket timeout with a
+remaining-time budget while reading the response. Local DNS resolution follows
+the operating system's timeout. Credentials and task/message text are never
+added to campaign checkpoints or uploaded events. Session termination is
+irreversible; sending a message can resume a suspended session. These follow
+[Devin's session lifecycle](https://docs.devin.ai/api-reference/v3/sessions/delete-organizations-sessions).
+
 The API call, not a GitHub comment, is the execution trigger. If `--issue` is
 supplied, Code Mower posts the existing campaign marker to the issue as audit
 evidence, but it does not post `@devin run` or rely on a bot comment. The

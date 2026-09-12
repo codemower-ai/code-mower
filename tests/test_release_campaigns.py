@@ -1915,7 +1915,7 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             def fake_api_runner(method: str, url: str, body: Any = None, headers: Any = None) -> dict[str, Any]:
                 called_urls.append(url)
-                return {"status_enum": "running"}
+                return {"status": "running"}
 
             release_campaigns.campaign_command(
                 action="resume",
@@ -2039,7 +2039,7 @@ class ReleaseCampaignTests(unittest.TestCase):
 
             def fake_api_runner(method: str, url: str, body: Any = None, headers: Any = None) -> dict[str, Any]:
                 called_urls.append(url)
-                return {"status_enum": "running"}
+                return {"status": "running"}
 
             release_campaigns.campaign_command(
                 action="resume",

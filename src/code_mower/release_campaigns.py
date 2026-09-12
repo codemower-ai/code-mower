@@ -34,7 +34,7 @@ if __package__ in {None, ""}:
         resolve_repo_identity,
     )
     from code_mower.file_locks import FileLockError, exclusive_file_lock
-    from code_mower import devin_api
+    from code_mower import devin_api, devin_sessions
     from code_mower.provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from code_mower.release_qualify import (
         ADOPTION_RESULT_FIELDS,
@@ -63,7 +63,7 @@ else:
         resolve_repo_identity,
     )
     from .file_locks import FileLockError, exclusive_file_lock
-    from . import devin_api
+    from . import devin_api, devin_sessions
     from .provider_registry import REFERENCE_PROVIDERS, ProviderLane
     from .release_qualify import (
         ADOPTION_RESULT_FIELDS,
@@ -1905,15 +1905,10 @@ def _poll_devin_running(
     raw_ref = provider_data.get("dispatch_ref")
     dispatch_ref = raw_ref if isinstance(raw_ref, Mapping) else {}
     session_id = str(dispatch_ref.get("session_id") or "")
-    if not session_id:
-        # The create request may have crossed the network before an interrupted
-        # process could persist its response. Never infer that no paid session
-        # exists, and never create another one on ordinary resume.
+    if not session_id and not dispatch_ref.get("reconciliation_tag"):
         provider_data["state"] = "running"
         provider_data["error"] = _safe_error("devin_api_unavailable")
-        provider_data["next_action"] = (
-            "reconcile the Devin API session or explicitly dispose/retry this attempt"
-        )
+        provider_data["next_action"] = "reconcile the Devin API session or explicitly dispose/retry this attempt"
         provider_data["next_detail"] = "session creation outcome is unknown"
         return
 
@@ -1943,6 +1938,26 @@ def _poll_devin_running(
 
     api_key = creds.api_key
     org_id = creds.org_id
+
+    if not session_id:
+        tag = dispatch_ref.get("reconciliation_tag")
+        if tag:
+            try:
+                match = devin_sessions.DevinClient(creds.org_id, creds.api_key, api_runner=api_runner).reconcile(
+                    devin_sessions.CreateCheckpoint(dispatch_ref.get("reconciliation_org_id", ""), tag)
+                )
+                if match.state == "matched":
+                    session_id = match.session_id
+                    provider_data["dispatch_ref"]["session_id"] = session_id
+                else:
+                    provider_data["next_detail"] = "session reconciliation: " + match.state
+            except devin_sessions.DevinApiError:
+                provider_data["next_detail"] = "session reconciliation unavailable"
+        if not session_id:
+            provider_data["state"] = "running"
+            provider_data["error"] = _safe_error("devin_api_unavailable")
+            provider_data["next_action"] = "reconcile the existing Devin attempt; creation will not repeat"
+            return
 
     poll_state, result, err = devin_api.poll_devin_session(
         org_id,
@@ -2141,8 +2156,13 @@ def _dispatch_devin_api(
         _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
         return ""
 
+    def checkpoint(attempt):
+        provider_data["dispatch_ref"]["reconciliation_tag"] = attempt.tag
+        provider_data["dispatch_ref"]["reconciliation_org_id"] = attempt.org_id
+        _save_campaign_progress(campaign, campaigns_dir, now_utc=now_utc)
+
     session_id, create_error = devin_api.create_devin_session(
-        org_id, payload, api_key, api_runner=api_runner
+        org_id, payload, api_key, api_runner=api_runner, checkpoint=checkpoint
     )
     if create_error:
         provider_data["error"] = _safe_error(create_error)
