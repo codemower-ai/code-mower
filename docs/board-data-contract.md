@@ -397,6 +397,47 @@ When GitHub is unavailable, the owner queue returns `available: false`, an empty
 entry list, and a generic message. Existing local event and spend timelines can
 still render from local files in the same Board response.
 
+## Presentation Rules
+
+The browser view derives the rules below from the payload described above. They
+add no fields to any schema; they only bound what the page is allowed to assert.
+
+- **Hierarchy.** The current-work summary (`Work Now`), the owner queue, and
+  lane work are rendered before aggregate productivity and release history.
+- **One work item per PR.** `owner_queue.entries[]` carries one entry per
+  attention reason. The page groups entries by `pr_number` into a single work
+  item with grouped reasons, one primary responsible role, and one next action,
+  so several reasons for one PR cannot inflate the owner count.
+- **Role.** `blocked-audit`, `failing-check`, `rebase-needed` and `draft` are
+  builder work; `stale-gate` is orchestrator work. Owner attention requires an
+  explicit permission, budget, policy, product-decision or owner-request label
+  already present in the PR's own label groups; a reason that claims owner
+  attention without such evidence is shown as orchestrator triage.
+- **Missing measurements.** A time, cost, quality or productivity value that is
+  not a real JSON number renders as `not recorded`. Absent values are never
+  coerced to zero, and an unknown or unavailable state is never green or `pass`.
+- **Gate verdict.** Only the `code-mower/gate` commit status is the verdict.
+  The publisher is an allowlist of the canonical names that publish it — the
+  `Code Mower gate` workflow and its `publish Code Mower gate status` job —
+  compared case- and whitespace-insensitively. Those are labelled as
+  publishers, so a successful publisher run cannot make a pending, blocked or
+  unrecorded verdict look passing. An unrelated check whose name merely
+  contains `gate`, such as `security-gate`, is an ordinary check.
+- **Observation age.** Snapshots replayed from local history, snapshots older
+  than ten minutes, snapshots served from a `board.cache.state` other than
+  `fresh`, and snapshots taken while GitHub was unavailable are shown as
+  `last observed <age> ago` and may not claim that work is running now. The
+  age shown is the older of the observation time and `board.cache.age_seconds`.
+  When neither records a parseable time the page reports `observation time not
+  recorded` neutrally, with no `live` claim and no synthetic age.
+- **Campaign liveness.** A campaign's `elapsed_seconds` is recorded provider
+  work time, not age, and is labelled that way. A `running` campaign with no
+  unexpired provider `response_deadline_at` is shown as `last reported running`.
+- **Local data.** When GitHub data is fresh but local session inputs (agent
+  adapter cards, orchestrator lease, reviewer verdict history, reviewer spend
+  rows) are absent, GitHub information stays useful and the page names the
+  local data that is unavailable instead of rendering it as zero.
+
 ## Agent Adapters
 
 The Board embeds `code_mower.boardAgentAdapters.v1` in `/api/status`. Agent
