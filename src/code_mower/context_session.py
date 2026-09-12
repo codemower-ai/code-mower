@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from . import session_lease
 from .context_contract import ContextError, _object, _text, normalize_policy
@@ -18,6 +19,7 @@ ASSOCIATION_SCHEMA = "code_mower.contextSession.v1"
 STATUS_SCHEMA = "code_mower.contextSessionStatus.v1"
 STAGES = frozenset(("selected", "preparing", "prepared", "attached", "reviewed"))
 ATTACHMENT_STATES = frozenset(("none", "pending", "published", "uncertain"))
+QUERY_MODES = frozenset(("work_item", "stdin"))
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _HEX = re.compile(r"[a-f0-9]{32}\Z")
 _SHA = re.compile(r"(?:[a-f0-9]{40}|[a-f0-9]{64})\Z")
@@ -29,9 +31,50 @@ def default_association_root() -> Path:
     return default_context_root() / "sessions"
 
 
+def _upgrade_g1_record(value: Any) -> Any:
+    new_fields = ("builder", "query_mode", "retrieval_source", "request_hash")
+    if (
+        isinstance(value, Mapping)
+        and value.get("schema") == ASSOCIATION_SCHEMA
+        and all(field not in value for field in new_fields)
+    ):
+        return {**dict(value), **{field: None for field in new_fields}}
+    return value
+
+
+class AssociationStore(ContextStore):
+    """Session namespace with one-time migration from the G1 custom layout."""
+
+    def __init__(self, root: Path, *, legacy_root: Path | None = None):
+        super().__init__(root)
+        self.legacy_root = legacy_root
+
+    @contextmanager
+    def locked(self, connection: str, *, timeout_seconds: float = 35) -> Iterator[Any]:
+        if self.legacy_root is None:
+            with super().locked(connection, timeout_seconds=timeout_seconds) as locked:
+                yield locked
+            return
+        legacy_store = ContextStore(self.legacy_root)
+        with legacy_store.locked(connection, timeout_seconds=timeout_seconds) as legacy:
+            legacy_value = _upgrade_g1_record(legacy.read())
+            with super().locked(connection, timeout_seconds=timeout_seconds) as current:
+                current_value = _upgrade_g1_record(current.read())
+                if legacy_value is not None:
+                    if not isinstance(legacy_value, Mapping) or legacy_value.get("schema") != ASSOCIATION_SCHEMA:
+                        raise ContextError("legacy private session context state is invalid")
+                    if current_value is not None and current_value != legacy_value:
+                        raise ContextError("private session context migration found conflicting state")
+                    if current_value is None:
+                        current.write(legacy_value)
+                    legacy.delete()
+                yield current
+
+
 def association_store(context_root: Path | None = None) -> ContextStore:
     root = Path(context_root) if context_root is not None else default_context_root()
-    return ContextStore(root / "sessions")
+    legacy = root if context_root is not None else None
+    return AssociationStore(root / "sessions", legacy_root=legacy)
 
 
 def _now() -> str:
@@ -87,10 +130,12 @@ def work_order_reference(value: Any) -> str:
 
 def validate(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the complete private association; callers never render it."""
+    value = _upgrade_g1_record(value)
     fields = {
         "schema", "session_id", "repo", "work_item", "connection", "policy",
         "host", "orchestrator", "participants", "builder", "generation", "stage",
-        "request_hash", "packet", "work_order", "pr", "head", "revision", "attachment_state",
+        "query_mode", "retrieval_source", "request_hash", "packet", "work_order",
+        "pr", "head", "revision", "attachment_state",
         "created_at", "updated_at",
     }
     value = _object(value, fields)
@@ -129,6 +174,12 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ContextError("private session context generation is invalid")
     if value["stage"] not in STAGES or value["attachment_state"] not in ATTACHMENT_STATES:
         raise ContextError("private session context lifecycle state is invalid")
+    query_mode = value["query_mode"]
+    if query_mode is not None and query_mode not in QUERY_MODES:
+        raise ContextError("private session context query mode is invalid")
+    retrieval_source = value["retrieval_source"]
+    if retrieval_source is not None:
+        retrieval_source = _text(retrieval_source, maximum=80)
     request_hash = value["request_hash"]
     if request_hash is not None and (
         not isinstance(request_hash, str) or not _HASH.fullmatch(request_hash)
@@ -149,17 +200,21 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
         if parsed.tzinfo is None:
             raise ContextError("private session context timestamp is invalid")
     if value["stage"] == "selected" and any(
-        item is not None for item in (builder, request_hash, packet, work_order, pr, head, revision)
+        item is not None
+        for item in (
+            builder, query_mode, retrieval_source, request_hash, packet, work_order,
+            pr, head, revision,
+        )
     ):
         raise ContextError("private session context selected state has unexpected progress")
     if value["stage"] == "preparing" and (
-        builder is None or request_hash is None or work_order is not None or any(
+        builder is None or query_mode is None or request_hash is None or any(
             item is not None for item in (pr, head, revision)
         )
     ):
         raise ContextError("private session context preparing state is invalid")
     if value["stage"] in {"prepared", "attached", "reviewed"} and any(
-        item is None for item in (builder, request_hash, packet, work_order)
+        item is None for item in (builder, query_mode, request_hash, packet, work_order)
     ):
         raise ContextError("private session context prepared state is incomplete")
     if value["attachment_state"] == "none" and revision is not None:
@@ -168,7 +223,9 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
         **dict(value), "session_id": session_id, "repo": repo, "work_item": work_item,
         "connection": connection, "policy": policy, "host": host,
         "orchestrator": orchestrator, "participants": normalized_participants, "builder": builder,
-        "request_hash": request_hash, "packet": packet, "work_order": work_order, "pr": pr, "head": head,
+        "query_mode": query_mode, "retrieval_source": retrieval_source,
+        "request_hash": request_hash, "packet": packet, "work_order": work_order,
+        "pr": pr, "head": head,
         "revision": revision,
     }
 
@@ -219,7 +276,8 @@ def create(
         "work_item": work_item, "connection": connection, "policy": normalized_policy,
         "host": session["host"], "orchestrator": session["orchestrator"],
         "participants": participants, "builder": None, "generation": 0, "stage": "selected",
-        "request_hash": None, "packet": None, "work_order": None, "pr": None, "head": None,
+        "query_mode": None, "retrieval_source": None, "request_hash": None,
+        "packet": None, "work_order": None, "pr": None, "head": None,
         "revision": None, "attachment_state": "none", "created_at": now,
         "updated_at": now,
     })

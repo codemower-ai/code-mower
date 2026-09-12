@@ -169,6 +169,26 @@ class ContextPrepareTests(unittest.TestCase):
         self.assertNotEqual(first_packet, refreshed["packet"])
         self.assertNotIn("second bounded query", json.dumps(refreshed))
 
+    def test_completed_stdin_query_reauthorizes_without_reentering_query(self):
+        record = self.create_record()
+        _report, code = self.prepare(record, query="one private bounded query")
+        self.assertEqual(code, 0)
+        saved = context_session.read(self.associations, record["session_id"])
+        report, code = self.prepare(saved)
+        self.assertEqual((code, report["status"], report["reused"]), (0, "prepared", True))
+        self.assertEqual(self.backend.searches, 1)
+
+    def test_retrieval_source_drift_requires_refresh_even_for_the_default_query(self):
+        record = self.create_record()
+        _report, code = self.prepare(record)
+        self.assertEqual(code, 0)
+        saved = context_session.read(self.associations, record["session_id"])
+        with self.assertRaisesRegex(ContextError, "input changed"):
+            self.prepare(saved, source="jira")
+        report, code = self.prepare(saved, source="jira", refresh=True)
+        self.assertEqual((code, report["status"]), (0, "prepared"))
+        self.assertEqual(self.backend.searches, 2)
+
     def test_work_order_interruption_resumes_without_another_search(self):
         record = self.create_record()
         with mock.patch.object(
@@ -188,6 +208,30 @@ class ContextPrepareTests(unittest.TestCase):
         report, code = self.prepare(resumable)
         self.assertEqual((code, report["status"]), (0, "prepared"))
         self.assertEqual(self.backend.searches, 1)
+
+    def test_completed_work_order_survives_final_state_write_interruption(self):
+        record = self.create_record()
+        real_update = context_session.update
+
+        def fail_final_update(*args, **kwargs):
+            if kwargs.get("changes") == {"stage": "prepared"}:
+                raise ContextError("simulated final state interruption")
+            return real_update(*args, **kwargs)
+
+        with mock.patch.object(
+            context_prepare.context_session, "update", side_effect=fail_final_update,
+        ):
+            with self.assertRaisesRegex(ContextError, "simulated final state interruption"):
+                self.prepare(record)
+        resumable = context_session.read(self.associations, record["session_id"])
+        work_order = self.repo / resumable["work_order"]
+        original = work_order.read_text(encoding="utf-8")
+        work_order.write_text(original + "\nHuman note that must survive.\n", encoding="utf-8")
+
+        report, code = self.prepare(resumable)
+        self.assertEqual((code, report["status"]), (0, "prepared"))
+        self.assertEqual(self.backend.searches, 1)
+        self.assertIn("Human note that must survive.", work_order.read_text(encoding="utf-8"))
 
     def test_claude_and_codex_hosts_get_symmetric_independent_lanes(self):
         expectations = (("codex", "a" * 32, "claude_audit"), ("claude", "b" * 32, "codex"))
@@ -219,11 +263,18 @@ class ContextPrepareTests(unittest.TestCase):
         _report, code = self.prepare(record)
         self.assertEqual(code, 0)
         saved = context_session.read(self.associations, record["session_id"])
+        old_work_order = self.repo / saved["work_order"]
+        old_work_order.write_text(
+            old_work_order.read_text(encoding="utf-8") + "\nHuman edit.\n",
+            encoding="utf-8",
+        )
         report, code = self.prepare(saved, builder="claude")
         self.assertEqual((code, report["status"]), (0, "prepared"))
         changed = context_session.read(self.associations, record["session_id"])
         self.assertEqual(changed["builder"], "claude")
+        self.assertNotEqual(changed["work_order"], saved["work_order"])
         self.assertEqual(self.backend.searches, 1)
+        self.assertIn("Human edit.", old_work_order.read_text(encoding="utf-8"))
         text = (self.repo / changed["work_order"]).read_text(encoding="utf-8")
         self.assertIn("- Builder: `claude`", text)
         self.assertIn("- codex", text)
