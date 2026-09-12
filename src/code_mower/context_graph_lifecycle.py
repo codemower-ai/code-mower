@@ -294,22 +294,31 @@ def _trusted_launcher(path: str) -> str | None:
     return path
 
 
-def _existing(paths: Iterable[Path | str]) -> tuple[str, ...]:
-    """Resolved, de-duplicated, existing paths, in the order they were given.
+def _existing(paths: Iterable[Path | str], *, follow: bool = True) -> tuple[str, ...]:
+    """De-duplicated existing paths, in the order they were given.
 
-    Resolved because both mechanisms match on the kernel's path, not the
-    caller's spelling: macOS puts ``/tmp`` and ``/var`` behind links into its
-    ``private`` directory, so an unresolved exposure would name a path the
-    sandbox never sees.
+    ``follow`` is which spelling the mechanism decides on. A seatbelt
+    ``subpath`` matches the kernel's resolved path -- macOS puts ``/tmp`` and
+    ``/var`` behind links into its ``private`` directory -- so an unresolved
+    exposure there would name a path the sandbox never sees.
+
+    A bind mount is the other way round. The destination is a literal path in
+    an otherwise empty root, and Linux's ``/lib64 -> usr/lib64`` compatibility
+    links are how every ELF binary names its program interpreter. A root with
+    ``/usr/lib64`` and no ``/lib64`` cannot exec anything at all, and says so
+    as an ``execvp`` ENOENT naming the binary rather than the loader it could
+    not find. So a mechanism that does not follow gets both spellings.
     """
     seen: dict[str, None] = {}
     for path in paths:
+        literal = os.fspath(path)
         try:
-            real = os.path.realpath(path)
+            real = os.path.realpath(literal)
         except OSError:  # pragma: no cover - realpath does not raise on absent paths
             continue
-        if os.path.exists(real):
-            seen.setdefault(real, None)
+        for candidate in (real,) if follow else (literal, real):
+            if os.path.exists(candidate):
+                seen.setdefault(candidate, None)
     return tuple(seen)
 
 
@@ -379,9 +388,13 @@ def _bubblewrap_prefix(launcher: str, *, writable: Sequence[str], readable: Sequ
     return tuple(argv)
 
 
-_PREFIX_BUILDERS: Mapping[str, Callable[..., tuple[str, ...]]] = {
-    "sandbox-exec": _seatbelt_prefix,
-    "bwrap": _bubblewrap_prefix,
+#: Each mechanism's prefix builder, and whether it decides on the resolved
+#: path. A seatbelt rule matches what the kernel resolved to; a bind mount
+#: names a destination in an empty root, where a link's own spelling is a path
+#: the child still has to be able to walk.
+_PREFIX_BUILDERS: Mapping[str, tuple[Callable[..., tuple[str, ...]], bool]] = {
+    "sandbox-exec": (_seatbelt_prefix, True),
+    "bwrap": (_bubblewrap_prefix, False),
 }
 
 
@@ -391,10 +404,11 @@ def _prefix_for(
     writable: Sequence[Path | str],
     readable: Sequence[Path | str],
 ) -> tuple[str, ...]:
-    return _PREFIX_BUILDERS[mechanism.name](
+    builder, follow = _PREFIX_BUILDERS[mechanism.name]
+    return builder(
         mechanism.launcher,
-        writable=_existing(writable),
-        readable=_existing([*_SYSTEM_READ_PATHS, *readable]),
+        writable=_existing(writable, follow=follow),
+        readable=_existing([*_SYSTEM_READ_PATHS, *readable], follow=follow),
     )
 
 
@@ -490,10 +504,15 @@ def _prefix_confines(prefix: Sequence[str], *, cwd: str | None = None) -> bool:
 
 
 def _interpreter_read_paths() -> tuple[str, ...]:
-    """The minimum a probe child needs to be a running Python at all."""
+    """The minimum a probe child needs to be a running Python at all.
+
+    Both spellings of the interpreter: a virtual environment's ``bin/python``
+    is a link, and the child is launched by the name this process knows it by,
+    not by the name it resolves to.
+    """
     return tuple(
         path
-        for path in (os.path.realpath(sys.executable), sys.prefix, sys.base_prefix)
+        for path in (sys.executable, os.path.realpath(sys.executable), sys.prefix, sys.base_prefix)
         if path
     )
 
@@ -1206,8 +1225,13 @@ def _provider_read_paths(command: str) -> tuple[str, ...]:
     if not located:
         raise ContextError("local graph provider executable could not be located for containment")
     real = Path(os.path.realpath(located))
+    # ``located`` as well as its resolved self: the child is launched by the
+    # name this process resolved the command to, and a console script in a
+    # virtual environment reaches its libraries through that environment's own
+    # spelling rather than through whatever the link points at.
     return tuple(
-        str(path) for path in (real, real.parent, real.parent.parent, Path(sys.base_prefix))
+        str(path)
+        for path in (located, real, real.parent, real.parent.parent, Path(sys.base_prefix))
     )
 
 
