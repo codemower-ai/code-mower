@@ -2589,6 +2589,113 @@ class BoardPresentationTruthTests(TestCase):
         self.assertFalse(complete["unverified"])
         self.assertEqual(complete["label"], "complete")
 
+    def test_terminal_provider_cards_keep_their_styling_with_expired_deadlines(self) -> None:
+        # `complete` and `blocked` are release_campaigns' terminal evidence
+        # states and `unavailable` never dispatched. All three can retain the
+        # response deadline they were given, and that stale timestamp is not
+        # evidence of a late provider.
+        past = (NOW - timedelta(hours=6)).isoformat().replace("+00:00", "Z")
+        now_ms = int(NOW.timestamp() * 1000)
+        cards = [
+            {"provider": "devin", "state": state, "response_deadline_at": past}
+            for state in ("complete", "blocked", "unavailable", "running")
+        ]
+
+        liveness = _eval_board_truth(
+            "ARGS[0].map(card => cardLiveness(card, ARGS[1]))", cards, now_ms
+        )
+        done, blocked, unavailable, control = liveness
+
+        # A passed qualification stays green, not yellow.
+        self.assertEqual((done["label"], done["class"]), ("complete", "ok"))
+        self.assertFalse(done["awaiting"])
+        self.assertFalse(done["overdue"])
+        self.assertEqual(done["overdue_for"], "")
+        # A failed qualification stays red; it is never downgraded to yellow.
+        self.assertEqual((blocked["label"], blocked["class"]), ("blocked", "bad"))
+        self.assertFalse(blocked["overdue"])
+        # A provider that never dispatched is neutral, not overdue.
+        self.assertEqual((unavailable["label"], unavailable["class"]), ("unavailable", "muted"))
+        self.assertFalse(unavailable["overdue"])
+        # Nonterminal control: a card still awaiting a response past its
+        # deadline is still reported as overdue and last reported.
+        self.assertTrue(control["awaiting"])
+        self.assertTrue(control["overdue"])
+        self.assertEqual((control["label"], control["class"]), ("last reported running", "warn"))
+        self.assertEqual(control["overdue_for"], "6.0h")
+
+        # A `queued` card is awaiting a response too, so its expired deadline
+        # still counts -- but queued is not a running claim, so its own label
+        # and state styling are untouched.
+        queued = _eval_board_truth(
+            "cardLiveness(ARGS[0], ARGS[1])",
+            {"provider": "devin", "state": "queued", "response_deadline_at": past},
+            now_ms,
+        )
+        self.assertTrue(queued["awaiting"])
+        self.assertTrue(queued["overdue"])
+        self.assertEqual(queued["label"], "queued")
+
+    def test_finished_card_deadline_cannot_verify_a_running_campaign(self) -> None:
+        # The only unexpired deadline belongs to a card that already answered,
+        # so no card is actually awaiting a response and the campaign-level
+        # running claim stays unverified.
+        future = (NOW + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        past = (NOW - timedelta(hours=6)).isoformat().replace("+00:00", "Z")
+
+        liveness = _eval_board_truth(
+            "campaignLiveness(ARGS[0], ARGS[1])",
+            {
+                "status": "running",
+                "elapsed_seconds": 30.0,
+                "cards": [
+                    {"provider": "devin", "state": "complete", "response_deadline_at": future},
+                    {"provider": "cursor_cloud_agent", "state": "running", "response_deadline_at": past},
+                ],
+            },
+            int(NOW.timestamp() * 1000),
+        )
+
+        self.assertTrue(liveness["unverified"])
+        self.assertEqual(liveness["label"], "last reported running")
+        self.assertEqual(liveness["cards"][0]["class"], "ok")
+        self.assertEqual(liveness["cards"][1]["label"], "last reported running")
+
+    def test_terminal_card_renders_without_an_overdue_warning(self) -> None:
+        past = (NOW - timedelta(hours=6)).isoformat().replace("+00:00", "Z")
+        nodes = _render_board_dom(
+            _status(
+                release_campaigns={
+                    "available": True,
+                    "campaigns": [
+                        {
+                            "release_tag": "v0.9.0",
+                            "status": "complete",
+                            "dry_run": False,
+                            "qualification_context": "release",
+                            "elapsed_seconds": 90.0,
+                            "next_action": "campaign complete; all providers passed",
+                            "cards": [
+                                {
+                                    "provider": "devin",
+                                    "posture": "required",
+                                    "state": "complete",
+                                    "environment": "hosted",
+                                    "elapsed_seconds": 90.0,
+                                    "response_deadline_at": past,
+                                    "next_action": "none",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+        )
+
+        self.assertIn('<span class="ok">complete</span>', nodes["campaigns"])
+        self.assertNotIn("deadline passed", nodes["campaigns"])
+        self.assertNotIn("last reported", nodes["campaigns"])
+
     def test_campaign_section_labels_elapsed_time_as_recorded_work(self) -> None:
         past = (NOW - timedelta(hours=6)).isoformat().replace("+00:00", "Z")
         nodes = _render_board_dom(

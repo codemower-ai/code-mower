@@ -1583,17 +1583,30 @@ def render_board_html(config: BoardConfig) -> str:
       }};
     }}
     const CLAIMS_RUNNING_RE = /^(running|dispatched|in_progress)$/i;
+    // The provider states in which a card is still waiting for a response.
+    // Of release_campaigns' five valid provider states, `complete` and
+    // `blocked` are terminal qualification evidence (its
+    // TERMINAL_EVIDENCE_STATES) and `unavailable` never dispatched, so only
+    // `queued` and `running` are awaiting one.
+    const AWAITING_CARD_STATE_RE = /^(queued|running|dispatched|in_progress)$/i;
     // A campaign file records accumulated provider work time, not liveness.
     // The one wall-clock signal it carries is a provider response deadline:
     // once that has passed -- or was never recorded -- nothing in the payload
     // shows the provider still working.
     function cardLiveness(card, nowMs) {{
-      const deadline = parseMs(card?.response_deadline_at);
-      const overdue = deadline !== null && deadline < nowMs;
       const state = text(card?.state).trim() || "unknown";
+      const deadline = parseMs(card?.response_deadline_at);
+      const awaiting = AWAITING_CARD_STATE_RE.test(state);
+      // A card that already answered, or never dispatched, can still carry the
+      // deadline it was given. That retained timestamp says nothing about a
+      // late provider, so it must not mark the card overdue and repaint a
+      // terminal state -- turning a passed `complete` yellow, or downgrading a
+      // failed `blocked` from red to yellow.
+      const overdue = awaiting && deadline !== null && deadline < nowMs;
       const suppressed = CLAIMS_RUNNING_RE.test(state) && (overdue || deadline === null);
       return {{
         label: suppressed ? `last reported ${{state}}` : state,
+        awaiting,
         overdue,
         deadline_recorded: deadline !== null,
         overdue_for: overdue ? ageText((nowMs - deadline) / 1000) : "",
@@ -1603,7 +1616,10 @@ def render_board_html(config: BoardConfig) -> str:
     function campaignLiveness(campaign, nowMs) {{
       const status = text(campaign?.status).trim() || "unknown";
       const cards = (Array.isArray(campaign?.cards) ? campaign.cards : []).map(card => cardLiveness(card, nowMs));
-      const unverified = CLAIMS_RUNNING_RE.test(status) && !cards.some(card => card.deadline_recorded && !card.overdue);
+      // Only a card actually awaiting a response can evidence a live campaign:
+      // an unexpired deadline retained by a finished card proves nothing.
+      const unverified = CLAIMS_RUNNING_RE.test(status)
+        && !cards.some(card => card.awaiting && card.deadline_recorded && !card.overdue);
       return {{
         cards,
         unverified,
