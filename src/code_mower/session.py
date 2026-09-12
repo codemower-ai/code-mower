@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import context_guided, context_prepare, context_session, session_lease
+from . import context_guided, context_prepare, context_session, remote_session_cli, session_lease
 from .config import ConfigError, _format_issues, load_config, validate_config
 from .context_contract import ContextError, normalize_policy
 from .context_store import ContextStore
@@ -384,6 +384,7 @@ def _run_context_command(args: argparse.Namespace) -> tuple[dict[str, Any], int]
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    remote_session_cli.register(sub)
     start = sub.add_parser("start", help="prepare an operating brief for the current agent")
     start.add_argument("--repo", required=True)
     start.add_argument("--with", dest="participants", help="comma-separated participants; defaults to saved setup or Claude + Codex")
@@ -493,6 +494,8 @@ def main(argv: list[str] | None = None) -> int:
     context_feedback_parser.add_argument("--base-ref", default="origin/main")
     context_feedback_parser.set_defaults(json=False)
     args = parser.parse_args(argv)
+    if args.command in remote_session_cli.COMMANDS:
+        return remote_session_cli.run(args)
     render = render_session
     exit_code = 0
     try:

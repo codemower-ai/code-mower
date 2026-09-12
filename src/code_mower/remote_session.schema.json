@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "code_mower.remote_session.v1",
+  "title": "Remote session v1: metadata and no-I/O preview",
+  "description": "Only this closed projection may enter Board or cloud telemetry. Private records and results are not event payloads.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/metadata"
+    },
+    {
+      "$ref": "#/$defs/preview"
+    }
+  ],
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "state",
+        "reason",
+        "next_action",
+        "counts"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.remote_session.v1"
+        },
+        "state": {
+          "enum": [
+            "archived",
+            "complete",
+            "failed",
+            "pending",
+            "running",
+            "suspended",
+            "terminated",
+            "uncertain",
+            "waiting_for_approval",
+            "waiting_for_user"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "approval_required",
+            "inspect_provider_then_acknowledge",
+            "none",
+            "provider_unavailable",
+            "reconcile_dispatch",
+            "result_not_ready",
+            "result_unavailable",
+            "session_failed",
+            "session_suspended",
+            "user_input_required"
+          ]
+        },
+        "next_action": {
+          "enum": [
+            "acknowledge_delivered",
+            "inspect_provider",
+            "none",
+            "status"
+          ]
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dispatch",
+            "message",
+            "cancel",
+            "collect"
+          ],
+          "properties": {
+            "dispatch": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "message": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "cancel": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "collect": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            }
+          }
+        }
+      }
+    },
+    "preview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "mode",
+        "operation",
+        "apply_required"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.remote_session.v1"
+        },
+        "mode": {
+          "const": "dry_run"
+        },
+        "operation": {
+          "enum": [
+            "dispatch",
+            "status",
+            "message",
+            "cancel",
+            "collect"
+          ]
+        },
+        "apply_required": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

@@ -365,3 +365,93 @@ not a Jira reliability issue.
 Optional organizational context uses the [context setup](context-setup.md) policy.
 Session briefs report redacted readiness and pause dependent work when required
 context is unchecked; account identity is never inferred from the host account.
+
+## Remote Work (Contributor Checkout)
+
+`session start` continues to create an operating brief. The separate remote-work
+commands use a private local alias, not a brief filename; they do not acquire,
+renew, or confer a repository orchestrator lease. The coordinating host remains
+responsible for that lease and one writer per branch.
+
+Preview and dispatch a bounded task using a private UTF-8 file:
+
+```bash
+code-mower session dispatch example --provider fake --repo OWNER/REPO --input-file task.txt
+code-mower session dispatch example --provider fake --repo OWNER/REPO --input-file task.txt --apply
+code-mower session status example --provider fake
+code-mower session message example --provider fake --request followup-1 --input-file message.txt --apply
+code-mower session cancel example --provider fake --request cancel-1 --apply
+code-mower session collect example --provider fake --apply
+```
+
+The default provider is the fully offline `fake` simulator. Select `--provider
+devin` for the reusable organization-scoped Devin v3 adapter. Live dispatch
+requires existing Devin credentials and the exact repository acknowledgement
+`CODE_MOWER_DEVIN_REPOSITORIES`; `--max-acu-limit` defaults to 10 (range 1–100).
+There are no automatic provider mutation retries. Credentials are resolved for
+each invocation and never saved in remote-session records. Keep the same
+provider and organization on subsequent calls; changed bindings fail closed.
+The fake provider persists its simulated remote state across CLI processes;
+its Python `set_state` seam supports waiting, completion, and private-result fixtures.
+
+All mutating commands default to preview; live mutations require `--apply`.
+`--dry-run` is mutually exclusive with `--apply` and performs no input-file,
+credential, state, or provider access. `status` performs provider reads only,
+while saving observations/reconciled bindings locally under the lock. It may
+therefore require writable private local state. `status --dry-run` performs
+neither reads nor writes. `collect --apply` reads the provider and saves a
+private result only after normalized completion; approval blocks collection.
+It never prints result content. Repeated collection keeps the first result.
+JSON metadata output is the same with or without `--json`.
+
+The versioned `code_mower.remote_session.v1` contract has a closed
+[public schema](../src/code_mower/remote_session.schema.json). Normalized states
+include distinct `waiting_for_user` / `user_input_required` and
+`waiting_for_approval` / `approval_required` pairs. `Provider` is the small
+create/reconcile/get/message/cancel adapter seam; `RemoteSessions.run` is the
+common lifecycle for both adapters. `RemoteSessions.private_result(alias)` is
+an explicitly private local consumer API, never a telemetry source.
+
+Storage defaults to `~/.local/share/code-mower/remote-sessions`. An explicit
+`--remote-state-dir` must be an absolute, owner-protected directory outside
+Git repositories, without symlinks. Directories are mode 0700 and files 0600;
+unsafe existing permissions, links, and unsupported file protection platforms
+fail closed. Each alias has an OS lock and atomically replaced, fsynced state.
+Provider bindings, account identifiers, request fingerprints, reconciliation
+checkpoints, and private results stay there. Input prose is transient. Private
+results are bounded to 256 KiB by the local store; oversized results fail closed.
+A session accepts at most 128 message/cancel request keys.
+
+Use the same alias and identical task/repository/budget to retry dispatch.
+The intent is durably reserved before create; the Devin reconciliation tag is
+fsynced before its paid POST. After a lost response or process death, `status`
+or repeated dispatch only tries read-only reconciliation. A unique match
+recovers the binding. No match, multiple matches, incomplete pagination, or
+an intent without a checkpoint requires inspecting the provider account;
+none authorizes another create. Preserve the original state. Only after
+account inspection establishes that a separate dispatch is appropriate should
+the operator deliberately choose a new alias (which can incur another charge).
+There is no automatic abandonment, paid retry, or manual binding import.
+
+Messages and cancellation require stable `--request` keys. A completed key
+returns without repeating the mutation; a changed message under the same key
+fails. An interrupted request blocks new message/cancel mutations. Check the
+provider directly, then, only after confirming delivery/cancellation, acknowledge
+that same request without replaying it:
+
+```bash
+code-mower session message example --provider devin --request followup-1 --acknowledge-delivered --apply
+code-mower session cancel example --provider devin --request cancel-1 --acknowledge-delivered --apply
+```
+
+If delivery cannot be established, leave the request unresolved. Acknowledgement
+is an operator assertion, not a remote verification or approval grant.
+
+Board/cloud consumers may use **only** `public_projection`: fixed schema,
+normalized state, counters, and closed reason/next-action codes. Neither alias,
+request keys, bindings, account IDs, task prose, provider messages, repository
+paths, credentials, raw provider errors, nor results enter that projection.
+These commands emit no Board/cloud events automatically. Future adapters must
+bind the closed projection, never serialize a private record. The contract has
+no Slack-specific fields and does not change release-campaign behavior or the
+capability declarations for operating briefs.
