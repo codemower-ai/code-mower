@@ -289,8 +289,80 @@ class DeliveryTests(WorkOrderCase):
             self.assertEqual(result["round"], 1)
             self.assertEqual(message.call_count, 1)
         self.complete()  # Provider replays a completion from before the message.
-        with self.assertRaisesRegex(RemoteError, "invalid_completion"):
+        with self.assertRaisesRegex(RemoteError, "stale_completion"):
             self.run_order("collect")
+
+    def test_stale_round_is_released_for_exact_round_retry_without_provider_mutation(self):
+        self.run_order("dispatch")
+        self.run_order("clarify", request="clarification", prose=CANARY)
+        self.complete(round=0)
+        with (patch.object(self.provider, "create", wraps=self.provider.create) as create,
+              patch.object(self.provider, "message", wraps=self.provider.message) as message,
+              patch.object(self.provider, "cancel", wraps=self.provider.cancel) as cancel):
+            with self.assertRaisesRegex(RemoteError, "^stale_completion"):
+                self.run_order("collect")
+            create.assert_not_called()
+            message.assert_not_called()
+            cancel.assert_not_called()
+
+        self.assertIsNone(self.remote.private_result(self.key))
+        with self.remote.store.locked(_key(self.key)) as locked:
+            self.assertEqual(locked.read()["counts"]["collect"], 0)
+        status = self.run_order("status")
+        self.assertEqual(status["completion"], {
+            "state": "rejected", "reason": "stale_completion",
+            "next_action": "collect_after_provider_update",
+        })
+        self.assertNotIn(CANARY, json.dumps(status))
+
+        replacement_head = "b" * 40
+        self.github.pr = replace(self.github.pr, head_sha=replacement_head)
+        self.complete(round=1, head_sha=replacement_head)
+        verified = self.run_order("collect")
+        self.assertEqual(verified["verified_pr"]["head_sha"], replacement_head)
+        self.assertNotIn("completion", verified)
+        with self.remote.store.locked(_key(self.key)) as locked:
+            self.assertEqual(locked.read()["counts"]["collect"], 1)
+
+    def test_malformed_and_pr_binding_rejections_allow_safe_recollection(self):
+        self.run_order("dispatch")
+        self.provider.set_state(self.binding(), "complete", result={"raw": CANARY})
+        with self.assertRaisesRegex(RemoteError, "^invalid_completion$"):
+            self.run_order("collect")
+        self.assertIsNone(self.remote.private_result(self.key))
+        self.assertEqual(
+            self.run_order("status")["completion"]["next_action"],
+            "collect_after_provider_update",
+        )
+
+        self.complete()
+        original = self.github.pr
+        self.github.pr = replace(original, head_sha="b" * 40)
+        with self.assertRaisesRegex(RemoteError, "pull_request_binding"):
+            self.run_order("collect")
+        self.assertIsNone(self.remote.private_result(self.key))
+        self.github.pr = original
+        result = self.run_order("collect")
+        self.assertEqual(result["verified_pr"]["head_sha"], HEAD)
+        self.assertNotIn("completion", result)
+
+    def test_transient_github_failures_preserve_the_collected_result(self):
+        self.run_order("dispatch")
+        self.complete()
+        with patch.object(self.github, "candidates", side_effect=RuntimeError(CANARY)):
+            with self.assertRaisesRegex(RemoteError, "^github_unavailable$"):
+                self.run_order("collect")
+        self.assertEqual(self.remote.private_result(self.key), self.claim())
+        self.assertNotIn("completion", self.run_order("status"))
+
+        self.github.page = Candidates((), False)
+        with self.assertRaisesRegex(RemoteError, "^ambiguous_pull_request$"):
+            self.run_order("collect")
+        self.assertEqual(self.remote.private_result(self.key), self.claim())
+        self.assertNotIn("completion", self.run_order("status"))
+
+        self.github.page = None
+        self.assertEqual(self.run_order("collect")["verified_pr"]["head_sha"], HEAD)
 
     def test_not_ready_and_missing_results_have_no_evidence(self):
         self.run_order("dispatch")
