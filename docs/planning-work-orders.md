@@ -247,3 +247,7 @@ orchestrator. It does not:
 
 That boundary keeps planning artifacts useful across provider adapters without
 giving the planning command hidden execution or merge authority.
+
+Trusted hosted Devin delivery is available through the packaged
+[work-order library seam](devin-work-orders.md), with paid-create reconciliation,
+private completion collection, and independent exact-head GitHub verification.

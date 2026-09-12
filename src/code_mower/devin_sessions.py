@@ -339,6 +339,17 @@ class DevinClient:
             raise DevinApiError("invalid_response")
         return sid
 
+    def session_acu(self, session_id: str) -> float:
+        sid = self._path(session_id)
+        data = make_api_request(
+            "GET", f"/v3/organizations/{self.org_id}/consumption/daily/sessions{sid}",
+            self._api_key, api_runner=self._runner,
+        )
+        value = data.get("total_acus")
+        if type(value) not in (int, float) or not 0 <= value <= 1e9 or not math.isfinite(value):
+            raise DevinApiError("invalid_response")
+        return float(value)
+
     def get(self, session_id: str) -> Session:
         return normalize_session(self._request("GET", self._path(session_id)), session_id)
 
