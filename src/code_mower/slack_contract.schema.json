@@ -1,0 +1,552 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "code_mower.slack_contract.v1",
+  "title": "Slack transport contracts; private records are never cloud events",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/inbox"
+    },
+    {
+      "$ref": "#/$defs/outbox"
+    },
+    {
+      "$ref": "#/$defs/retention"
+    },
+    {
+      "$ref": "#/$defs/error"
+    },
+    {
+      "$ref": "#/$defs/event"
+    }
+  ],
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "installation",
+        "team",
+        "actor",
+        "repository",
+        "channel",
+        "thread",
+        "session",
+        "runner",
+        "visibility"
+      ],
+      "properties": {
+        "installation": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "team": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "actor": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "channel": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "thread": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "session": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "runner": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "visibility": {
+          "enum": [
+            "public",
+            "private",
+            "direct"
+          ]
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "operation",
+        "identity",
+        "delivery",
+        "retry",
+        "scope",
+        "text"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.slack_ingress.v1"
+        },
+        "kind": {
+          "enum": [
+            "command",
+            "modal_submission",
+            "completion_response"
+          ]
+        },
+        "operation": {
+          "enum": [
+            "start",
+            "status",
+            "message",
+            "clarification_reply",
+            "cancel",
+            "completion"
+          ]
+        },
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "delivery": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "retry": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "scope": {
+          "enum": [
+            "private",
+            "public"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 16000
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "operations",
+        "allow_public",
+        "active"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "start",
+              "status",
+              "message",
+              "clarification_reply",
+              "cancel",
+              "completion"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true
+        },
+        "allow_public": {
+          "type": "boolean"
+        },
+        "active": {
+          "const": true
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "state",
+        "reason",
+        "next_action",
+        "counts"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.remote_session.v1"
+        },
+        "state": {
+          "enum": [
+            "archived",
+            "complete",
+            "failed",
+            "pending",
+            "running",
+            "suspended",
+            "terminated",
+            "uncertain",
+            "waiting_for_approval",
+            "waiting_for_user"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "approval_required",
+            "inspect_provider_then_acknowledge",
+            "none",
+            "provider_unavailable",
+            "reconcile_dispatch",
+            "result_not_ready",
+            "result_unavailable",
+            "session_failed",
+            "session_suspended",
+            "user_input_required"
+          ]
+        },
+        "next_action": {
+          "enum": [
+            "acknowledge_delivered",
+            "inspect_provider",
+            "none",
+            "status"
+          ]
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dispatch",
+            "message",
+            "cancel",
+            "collect"
+          ],
+          "properties": {
+            "dispatch": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "message": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "cancel": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "collect": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            }
+          }
+        }
+      }
+    },
+    "inbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "key",
+        "fingerprint",
+        "state",
+        "expires_at"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.slack_inbox.v1"
+        },
+        "key": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "maxLength": 64
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "maxLength": 64
+        },
+        "state": {
+          "enum": [
+            "accepted",
+            "handed_off",
+            "uncertain",
+            "done",
+            "rejected"
+          ]
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 253402300799
+        }
+      }
+    },
+    "outbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "key",
+        "identity",
+        "scope",
+        "state",
+        "lifecycle",
+        "expires_at"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.slack_outbox.v1"
+        },
+        "key": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "maxLength": 64
+        },
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "scope": {
+          "enum": [
+            "private",
+            "public"
+          ]
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "sent",
+            "uncertain",
+            "expired"
+          ]
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/lifecycle"
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 253402300799
+        }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "private_content_seconds",
+        "dedupe_seconds",
+        "outbox_seconds"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.slack_retention.v1"
+        },
+        "private_content_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        },
+        "dedupe_seconds": {
+          "type": "integer",
+          "minimum": 172800,
+          "maximum": 604800
+        },
+        "outbox_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "code",
+        "scope"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.slack_error.v1"
+        },
+        "code": {
+          "enum": [
+            "invalid_contract",
+            "unauthorized",
+            "unverified_request",
+            "request_conflict",
+            "expired",
+            "delivery_uncertain"
+          ]
+        },
+        "scope": {
+          "const": "private"
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "transport",
+        "kind",
+        "operation",
+        "scope",
+        "state",
+        "reason",
+        "next_action"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.slack_event.v1"
+        },
+        "transport": {
+          "const": "slack"
+        },
+        "kind": {
+          "enum": [
+            "accepted",
+            "duplicate",
+            "rejected",
+            "lifecycle",
+            "delivery"
+          ]
+        },
+        "operation": {
+          "enum": [
+            "start",
+            "status",
+            "message",
+            "clarification_reply",
+            "cancel",
+            "completion"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "private",
+            "public"
+          ]
+        },
+        "state": {
+          "enum": [
+            "archived",
+            "complete",
+            "failed",
+            "pending",
+            "running",
+            "suspended",
+            "terminated",
+            "uncertain",
+            "waiting_for_approval",
+            "waiting_for_user"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "approval_required",
+            "inspect_provider_then_acknowledge",
+            "none",
+            "provider_unavailable",
+            "reconcile_dispatch",
+            "result_not_ready",
+            "result_unavailable",
+            "session_failed",
+            "session_suspended",
+            "user_input_required"
+          ]
+        },
+        "next_action": {
+          "enum": [
+            "acknowledge_delivered",
+            "inspect_provider",
+            "none",
+            "status"
+          ]
+        }
+      }
+    },
+    "intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "operation",
+        "session",
+        "runner",
+        "request",
+        "fingerprint",
+        "scope"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.remote_session.v1"
+        },
+        "operation": {
+          "enum": [
+            "dispatch",
+            "status",
+            "message",
+            "cancel",
+            "collect"
+          ]
+        },
+        "session": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "runner": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "request": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "maxLength": 64
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "maxLength": 64
+        },
+        "scope": {
+          "enum": [
+            "private",
+            "public"
+          ]
+        }
+      }
+    }
+  }
+}
