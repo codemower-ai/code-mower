@@ -75,6 +75,16 @@ CANONICAL_LANES = frozenset(
     if entry.product == "devin" and entry.review_lane
 )
 
+# `init --apply` stages a reviewable tree; it never rewrites the configuration it
+# read, so a switch is only active once the generated configuration is installed
+# through the normal setup PR. A test pins this directory to init's own default.
+GENERATED_OUTPUT_DIR = ".code-mower.generated"
+
+# The public declaration fields a lane names for each transport. A repository that
+# named its own Devin lanes edits these fields itself: no generated command can
+# retarget a lane it cannot name without rebuilding the profile around it.
+LANE_PROVIDERS = {LOCAL_TRANSPORT: "devin_cli", HOSTED_TRANSPORT: "devin"}
+
 # The credential resolver reports where it searched, including a home-relative
 # profile path and filename, and repeats it in its own remediation. Readiness
 # output stays path-free, so those fields are dropped and remediation for every
@@ -238,6 +248,7 @@ class _Pin:
     # A generated transport switch can only replace canonical Devin lanes; a
     # custom-named lane is edited by its owner instead of rewritten.
     targeted_switch: bool = True
+    custom_lanes: tuple[str, ...] = ()
 
     def doctor(self, *, devin: bool = False, flags: tuple[str, ...] = ()) -> str:
         return doctor_command(
@@ -260,11 +271,7 @@ class _Pin:
             config_path=self.config_path,
             profile=self.profile,
             targeted=self.targeted_switch,
-        )
-
-    def interactive(self) -> str:
-        return interactive_select_command(
-            config_path=self.config_path, profile=self.profile
+            lanes=self.custom_lanes,
         )
 
 
@@ -325,14 +332,14 @@ def _selection_finding(
     if transport == LOCAL_TRANSPORT:
         authentication = "ambient Devin Desktop/CLI login"
         remediation = (
-            "Keep local execution, or switch to hosted service-user credentials with "
+            "Keep local execution, or switch to hosted service-user credentials: "
             f"{pin.select(HOSTED_TRANSPORT)}. Selection never grants review or merge "
             "authority."
         )
     else:
         authentication = "hosted v3 service-user credentials with exact repository scope"
         remediation = (
-            "Keep hosted execution, or switch to the local Devin CLI login with "
+            "Keep hosted execution, or switch to the local Devin CLI login: "
             f"{pin.select(LOCAL_TRANSPORT)}. Selection never grants review or merge "
             "authority."
         )
@@ -450,15 +457,15 @@ def _local_cli_finding(
         remediation = (
             f"{install}, run `devin auth login` in a trusted environment, then rerun "
             f"{pin.doctor(devin=True)}. Hosted credentials do not enable this "
-            f"transport: select it with {pin.select(HOSTED_TRANSPORT)} instead."
+            f"transport; to select it instead: {pin.select(HOSTED_TRANSPORT)}."
         )
     else:
         remediation = (
             f"Install the Devin CLI as `{DEFAULT_CLI_COMMAND}` on PATH or set "
             f"{CLI_COMMAND_ENV} to its absolute path, run `devin auth login` in a trusted "
             f"environment, then rerun {pin.doctor(devin=True)}. Hosted credentials do "
-            "not enable this transport: select it with "
-            f"{pin.select(HOSTED_TRANSPORT)} instead."
+            "not enable this transport; to select it instead: "
+            f"{pin.select(HOSTED_TRANSPORT)}."
         )
     return ReadinessFinding(
         name="provider.devin.local_cli",
@@ -491,9 +498,8 @@ def _hosted_credential_remediation(status: str, *, pin: _Pin) -> str:
     if cause is not None:
         return f"{cause}, then rerun {pin.readiness()}."
     return (
-        f"{HOSTED_CREDENTIAL_CAUSE_DEFAULT}, then rerun {pin.readiness()}. Use "
-        f"{pin.select(LOCAL_TRANSPORT)} instead if this machine should run the local "
-        "CLI."
+        f"{HOSTED_CREDENTIAL_CAUSE_DEFAULT}, then rerun {pin.readiness()}. If this "
+        f"machine should run the local CLI instead: {pin.select(LOCAL_TRANSPORT)}."
     )
 
 
@@ -715,9 +721,9 @@ def _unselected_findings(pin: _Pin) -> tuple[ReadinessFinding, ...]:
                 "default_participants": list(DEFAULT_PARTICIPANTS),
             },
             remediation=(
-                f"Add Devin with {pin.interactive()} or {pin.select(LOCAL_TRANSPORT)} "
-                f"(hosted: {pin.select(HOSTED_TRANSPORT)}), then rerun "
-                f"{pin.doctor(devin=True)}."
+                "Add Devin by naming its transport in this configuration: "
+                f"{pin.select(LOCAL_TRANSPORT)}. Name `devin={HOSTED_TRANSPORT}` in "
+                "the same commands for hosted execution instead."
             ),
         ),
         ReadinessFinding(
@@ -733,8 +739,8 @@ def _unselected_findings(pin: _Pin) -> tuple[ReadinessFinding, ...]:
             remediation=(
                 "Choose one posture before assigning Devin work; hosted credentials do "
                 "not enable local execution, and a local login does not authorize hosted "
-                f"sessions. Select the local CLI with {pin.select(LOCAL_TRANSPORT)} or "
-                f"the hosted API with {pin.select(HOSTED_TRANSPORT)}."
+                f"sessions. To select the local CLI: {pin.select(LOCAL_TRANSPORT)}. Name "
+                f"`devin={HOSTED_TRANSPORT}` in the same commands for the hosted API."
             ),
         ),
     )
@@ -808,36 +814,87 @@ def select_transport_command(
     config_path: str = "",
     profile: str = "",
     targeted: bool = True,
+    lanes: tuple[str, ...] = (),
 ) -> str:
-    """Return the init command that selects `transport` for this configuration.
+    """Return the steps that select `transport` for this configuration.
 
     A transport switch is only actionable against the configuration and profile
     the finding describes: a bare `code-mower init` writes the default starter
     configuration under the recommended profile instead. It must also change
     nothing else, so it names the product's transport rather than a participant
-    list, which would drop every unrelated participant and profile lane. When the
-    profile's Devin lanes are custom-named, no generated command can replace them
-    safely, so the pinned interactive editor is the next action. The Code Mower
-    `--profile` selects the configuration profile and is never the credential
+    list, which would drop every unrelated participant and profile lane.
+
+    `init` never rewrites the configuration it read: `--apply` stages a reviewable
+    generated tree, so the steps are a dry-run preview, an apply into an explicit
+    output directory, an install of the reviewed output through the normal setup
+    PR, and only then a rerun of readiness. Claiming the posture switched because
+    files were staged would misreport the active configuration.
+
+    When the profile's Devin lanes are custom-named, no generated command can
+    retarget them, so bounded manual guidance names those lanes instead. The Code
+    Mower `--profile` selects the configuration profile and is never the credential
     `--provider-profile`.
     """
     if transport not in SELECTABLE_TRANSPORTS:
         raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
     if not targeted:
-        return interactive_select_command(config_path=config_path, profile=profile)
-    selection = f"{TRANSPORT_OPTION} devin={transport} --apply"
+        return custom_lane_guidance(
+            transport, config_path=config_path, profile=profile, lanes=lanes
+        )
+    selection = f"{TRANSPORT_OPTION} devin={transport}"
     if not profile:
         return _unpinned_guidance(f"code-mower init {selection}")
-    command = _pinned("code-mower init", config_path=config_path, profile=profile)
-    return f"`{command} {selection}`"
+    pinned = _pinned("code-mower init", config_path=config_path, profile=profile)
+    staged = shlex.quote(GENERATED_OUTPUT_DIR)
+    return (
+        f"preview it with `{pinned} {selection} --dry-run`, stage it with `{pinned} "
+        f"{selection} --apply --output-dir {staged}`, then review the generated "
+        "configuration and support files and install them through the normal setup PR "
+        f"before rerunning {doctor_command(config_path=config_path, profile=profile, devin=True)}"
+        "; staging writes only that review tree, so the active posture keeps reporting "
+        "the installed configuration until the generated one replaces it"
+    )
 
 
-def interactive_select_command(*, config_path: str = "", profile: str = "") -> str:
-    """Return the interactive init command scoped to this configuration."""
+def custom_lane_guidance(
+    transport: str,
+    *,
+    config_path: str = "",
+    profile: str = "",
+    lanes: tuple[str, ...] = (),
+) -> str:
+    """Return bounded manual guidance for retargeting custom-named Devin lanes.
+
+    A repository that named its own Devin lanes owns them. The participant picker
+    selects products and canonical reviewer lanes, so it cannot transform a named
+    lane and would rebuild the profile around the lanes it does know, dropping the
+    rest; no generated selection is safe here. The answer names only the configured
+    lane IDs and the public declaration fields they must carry.
+    """
+    if transport not in SELECTABLE_TRANSPORTS:
+        raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
+    entry = TRANSPORTS[transport]
+    named = (
+        ", ".join(f"`{lane}`" for lane in lanes)
+        if lanes
+        else "this profile's custom-named Devin lanes"
+    )
+    where = f" in {shlex.quote(config_path)}" if config_path else ""
+    if profile:
+        where += f" under profile {shlex.quote(profile)}"
+    action = (
+        f"edit {named}{where} so each declares `product: devin`, `provider: "
+        f"{LANE_PROVIDERS[transport]}`, `transport: {transport}`, and `driver: "
+        f"{entry.driver}`, leaving every other lane field, participant, and profile "
+        "lane as configured, and review the diff"
+    )
     if not profile:
-        return _unpinned_guidance("code-mower init --interactive")
-    command = _pinned("code-mower init", config_path=config_path, profile=profile)
-    return f"`{command} --interactive`"
+        return f"{action}, then rerun {_unpinned_guidance('code-mower doctor --devin')}"
+    return (
+        f"{action}, then rerun "
+        f"{doctor_command(config_path=config_path, profile=profile, devin=True)}; no "
+        "generated command can retarget a lane this repository named"
+    )
 
 
 def setup_instructions(
@@ -920,11 +977,13 @@ def devin_readiness(
     else:
         selected_lanes = ()
     lane_ids = tuple(name for name, _ in selected_lanes)
+    custom_lanes = tuple(name for name in lane_ids if name not in CANONICAL_LANES)
     pin = _Pin(
         config_path=config_path,
         profile=config_profile or "",
         repo_slug=repo_slug,
-        targeted_switch=all(name in CANONICAL_LANES for name in lane_ids),
+        targeted_switch=not custom_lanes,
+        custom_lanes=custom_lanes,
     )
     if selected is None:
         return _unselected_findings(pin) if include_unselected else ()
