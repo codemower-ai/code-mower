@@ -64,10 +64,16 @@ DEFAULT_CLI_COMMAND = "devin"
 OBSERVER_POSTURES = frozenset({"hosted-builders", "orchestrator-only"})
 DEFAULT_ADOPTION_POSTURE = "reviewer-gate"
 
-SELECT_ALIASES = {
-    LOCAL_TRANSPORT: "claude,codex,devin-cli",
-    HOSTED_TRANSPORT: "claude,codex,devin-api-v3",
-}
+# A transport switch is generated as a targeted mutation of one product's
+# transport. Rewriting the participant list instead would delete every unrelated
+# participant and profile lane the repository selected.
+TRANSPORT_OPTION = "--set-transport"
+SELECTABLE_TRANSPORTS = (LOCAL_TRANSPORT, HOSTED_TRANSPORT)
+CANONICAL_LANES = frozenset(
+    entry.review_lane
+    for entry in TRANSPORTS.values()
+    if entry.product == "devin" and entry.review_lane
+)
 
 # The credential resolver reports where it searched, including a home-relative
 # profile path and filename, and repeats it in its own remediation. Readiness
@@ -229,6 +235,9 @@ class _Pin:
     config_path: str = ""
     profile: str = ""
     repo_slug: str = ""
+    # A generated transport switch can only replace canonical Devin lanes; a
+    # custom-named lane is edited by its owner instead of rewritten.
+    targeted_switch: bool = True
 
     def doctor(self, *, devin: bool = False, flags: tuple[str, ...] = ()) -> str:
         return doctor_command(
@@ -247,7 +256,10 @@ class _Pin:
 
     def select(self, transport: str) -> str:
         return select_transport_command(
-            transport, config_path=self.config_path, profile=self.profile
+            transport,
+            config_path=self.config_path,
+            profile=self.profile,
+            targeted=self.targeted_switch,
         )
 
     def interactive(self) -> str:
@@ -302,7 +314,13 @@ def _cli_commands(
     return _LocalDiscovery(tuple(ordered), command_env, lane_configured)
 
 
-def _selection_finding(transport: str, lane: str, pin: _Pin) -> ReadinessFinding:
+def _selection_finding(
+    transport: str,
+    lane: str | None,
+    pin: _Pin,
+    *,
+    lane_ids: tuple[str, ...] = (),
+) -> ReadinessFinding:
     posture = POSTURES[transport]
     if transport == LOCAL_TRANSPORT:
         authentication = "ambient Devin Desktop/CLI login"
@@ -318,24 +336,30 @@ def _selection_finding(transport: str, lane: str, pin: _Pin) -> ReadinessFinding
             f"{pin.select(LOCAL_TRANSPORT)}. Selection never grants review or merge "
             "authority."
         )
+    detail: dict[str, Any] = {
+        "schema": SCHEMA,
+        "posture": posture,
+        "transport": transport,
+        "authentication": authentication,
+        "default_participants": list(DEFAULT_PARTICIPANTS),
+    }
+    if len(lane_ids) > 1:
+        # The posture belongs to the product, so it is stated once; the lanes that
+        # share it are named here instead of one of them being reported as the
+        # lane every product finding came from.
+        detail["lanes"] = list(lane_ids)
     return ReadinessFinding(
         name="provider.devin.selection",
         status=STATUS_PASS,
         message=f"Devin selected as an optional participant: {transport} ({posture}); "
         f"authentication is the {authentication}",
         lane=lane,
-        detail={
-            "schema": SCHEMA,
-            "posture": posture,
-            "transport": transport,
-            "authentication": authentication,
-            "default_participants": list(DEFAULT_PARTICIPANTS),
-        },
+        detail=detail,
         remediation=remediation,
     )
 
 
-def _capability_finding(transport: str, lane: str) -> ReadinessFinding:
+def _capability_finding(transport: str, lane: str | None) -> ReadinessFinding:
     brief = TRANSPORTS[transport].brief()
     gaps = brief["capability_gaps"]
     modes = ", ".join(f"{name}={mode}" for name, mode in brief["capabilities"].items())
@@ -360,7 +384,7 @@ def _capability_finding(transport: str, lane: str) -> ReadinessFinding:
 
 
 def _local_cli_finding(
-    lane: str,
+    lane: str | None,
     *,
     lane_config: Mapping[str, Any] | None,
     env: Mapping[str, str],
@@ -474,7 +498,7 @@ def _hosted_credential_remediation(status: str, *, pin: _Pin) -> str:
 
 
 def _hosted_credential_finding(
-    lane: str,
+    lane: str | None,
     *,
     env: Mapping[str, str] | None,
     credential_file: Path | None,
@@ -538,7 +562,7 @@ def _hosted_credential_finding(
 
 
 def _repository_scope_finding(
-    lane: str,
+    lane: str | None,
     *,
     repo_slug: str,
     env: Mapping[str, str] | None,
@@ -603,7 +627,7 @@ def _repository_scope_finding(
     )
 
 
-def _permission_finding(transport: str, lane: str) -> ReadinessFinding:
+def _permission_finding(transport: str, lane: str | None) -> ReadinessFinding:
     return ReadinessFinding(
         name="provider.devin.permissions",
         # Reported, not probed: Devin exposes no read-only permission preflight,
@@ -628,7 +652,7 @@ def _permission_finding(transport: str, lane: str) -> ReadinessFinding:
     )
 
 
-def _lifecycle_finding(transport: str, lane: str) -> ReadinessFinding:
+def _lifecycle_finding(transport: str, lane: str | None) -> ReadinessFinding:
     if transport == LOCAL_TRANSPORT:
         return ReadinessFinding(
             name="provider.devin.lifecycle",
@@ -783,18 +807,25 @@ def select_transport_command(
     *,
     config_path: str = "",
     profile: str = "",
+    targeted: bool = True,
 ) -> str:
     """Return the init command that selects `transport` for this configuration.
 
     A transport switch is only actionable against the configuration and profile
     the finding describes: a bare `code-mower init` writes the default starter
-    configuration under the recommended profile instead. The Code Mower
-    `--profile` selects that configuration profile and is never the credential
+    configuration under the recommended profile instead. It must also change
+    nothing else, so it names the product's transport rather than a participant
+    list, which would drop every unrelated participant and profile lane. When the
+    profile's Devin lanes are custom-named, no generated command can replace them
+    safely, so the pinned interactive editor is the next action. The Code Mower
+    `--profile` selects the configuration profile and is never the credential
     `--provider-profile`.
     """
-    if transport not in SELECT_ALIASES:
+    if transport not in SELECTABLE_TRANSPORTS:
         raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
-    selection = f"--with {SELECT_ALIASES[transport]} --apply"
+    if not targeted:
+        return interactive_select_command(config_path=config_path, profile=profile)
+    selection = f"{TRANSPORT_OPTION} devin={transport} --apply"
     if not profile:
         return _unpinned_guidance(f"code-mower init {selection}")
     command = _pinned("code-mower init", config_path=config_path, profile=profile)
@@ -858,6 +889,7 @@ def devin_readiness(
     config_path: str = "",
     lane_config: Mapping[str, Any] | None = None,
     lane_id: str = "",
+    lane_configs: tuple[tuple[str, Mapping[str, Any] | None], ...] = (),
     adoption_posture: str = DEFAULT_ADOPTION_POSTURE,
     include_unselected: bool = False,
 ) -> tuple[ReadinessFinding, ...]:
@@ -865,36 +897,54 @@ def devin_readiness(
 
     ``profile`` names the stored credential profile; ``config_profile`` names the
     configuration profile whose lanes decide which transport is selected.
-    ``lane_id`` is the selected effective lane, which a valid configuration may
-    name anything: reporting the canonical lane instead would attribute doctor
-    and Board metadata to a lane the repository does not have. A repository
-    without Devin produces no findings unless the caller explicitly asks for the
-    unselected guidance.
+    ``lane_configs`` are the selected effective Devin lanes, which a valid
+    configuration may name anything and may declare more than one of on the same
+    transport. Reporting a canonical lane instead would attribute doctor and
+    Board metadata to a lane the repository does not have, and reporting one of
+    several lanes as the source of a product-level answer would be equally
+    untrue: the posture, capabilities, permissions, lifecycle, and hosted
+    credential answers belong to the product and are stated once, while every
+    executable answer is stated per lane against its own configuration. A
+    repository without Devin produces no findings unless the caller explicitly
+    asks for the unselected guidance.
     """
-    pin = _Pin(
-        config_path=config_path, profile=config_profile or "", repo_slug=repo_slug
-    )
     selected = transport or selected_devin_transport(
         config, lanes=lanes, profile=config_profile
     )
+    if selected is not None and selected not in TRANSPORTS:
+        raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
+    if lane_configs:
+        selected_lanes = tuple(lane_configs)
+    elif selected is not None:
+        selected_lanes = ((lane_id or TRANSPORTS[selected].review_lane, lane_config),)
+    else:
+        selected_lanes = ()
+    lane_ids = tuple(name for name, _ in selected_lanes)
+    pin = _Pin(
+        config_path=config_path,
+        profile=config_profile or "",
+        repo_slug=repo_slug,
+        targeted_switch=all(name in CANONICAL_LANES for name in lane_ids),
+    )
     if selected is None:
         return _unselected_findings(pin) if include_unselected else ()
-    if selected not in TRANSPORTS:
-        raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
-    lane = lane_id or TRANSPORTS[selected].review_lane
+    # One selected lane owns every finding; several sharing the transport own only
+    # their own runtime findings.
+    lane = lane_ids[0] if len(lane_ids) == 1 else None
     findings = [
-        _selection_finding(selected, lane, pin),
+        _selection_finding(selected, lane, pin, lane_ids=lane_ids),
         _capability_finding(selected, lane),
     ]
     if selected == LOCAL_TRANSPORT:
-        findings.append(
+        findings.extend(
             _local_cli_finding(
-                lane,
-                lane_config=lane_config,
+                name,
+                lane_config=configured,
                 env=os.environ if env is None else env,
                 pin=pin,
                 adoption_posture=adoption_posture,
             )
+            for name, configured in selected_lanes or ((lane, None),)
         )
     else:
         findings.append(

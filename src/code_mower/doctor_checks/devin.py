@@ -16,6 +16,7 @@ from .models import DoctorCheck
 __all__ = [
     "check_devin_readiness",
     "devin_effective_lane",
+    "devin_effective_lanes",
     "devin_readiness_selected",
     "devin_selection_ambiguity",
 ]
@@ -57,23 +58,24 @@ def devin_selection_ambiguity(
     return None
 
 
-def devin_effective_lane(
+def devin_effective_lanes(
     effective_lanes: Iterable[tuple[str, Mapping[str, Any]]],
     transport: str | None = None,
-) -> tuple[str, Mapping[str, Any]] | None:
-    """Return the selected Devin review lane as its ID and effective config.
+) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    """Return the selected Devin lanes as their IDs and effective configs.
 
-    Both Devin lanes can be active at once, so the selected transport names the
-    one lane whose configured command readiness must agree with: returning
-    whichever lane appears first would check the other lane's executable. A lane
-    is matched by what it declares, so a valid custom-named lane supplies its own
-    command configuration exactly as a canonical lane does, and its own ID so
-    findings name the lane the repository actually has.
+    A lane is matched by what it declares, so a valid custom-named lane supplies
+    its own command configuration exactly as a canonical lane does, and its own
+    ID so findings name the lane the repository actually has. A profile may
+    validly select several Devin lanes on one transport, each with its own
+    command: all of them are returned, because rejecting the configuration or
+    reporting one lane's executable under another lane's identity would both be
+    wrong. Lanes on the other transport are excluded once the transport is
+    resolved.
 
     Raises:
-        ConfigError: when more than one active lane could be the selected one,
-            because readiness would otherwise report one lane's posture under
-            another lane's identity.
+        ConfigError: when the active lanes span both transports and none was
+            selected, because the posture itself is then unknown.
     """
     wanted = (
         transport
@@ -81,16 +83,39 @@ def devin_effective_lane(
         else None
     )
     matched: list[tuple[str, Mapping[str, Any]]] = []
+    declared_transports: set[str] = set()
     for lane_id, effective in effective_lanes:
         declared = devin_lane_transport_name(lane_id, effective)
         if declared is not None and wanted in (None, declared):
             matched.append((lane_id, effective))
+            declared_transports.add(declared)
+    if len(declared_transports) > 1:
+        raise code_mower_config.ConfigError(
+            "active Devin lanes select both transports ("
+            + ", ".join(lane_id for lane_id, _ in matched)
+            + "); scope the check to one Code Mower --profile or name the transport "
+            "with session_defaults.transports.devin"
+        )
+    return tuple(matched)
+
+
+def devin_effective_lane(
+    effective_lanes: Iterable[tuple[str, Mapping[str, Any]]],
+    transport: str | None = None,
+) -> tuple[str, Mapping[str, Any]] | None:
+    """Return the one selected Devin review lane, for single-lane callers.
+
+    Raises:
+        ConfigError: when several lanes are selected, because a single answer
+            would report one lane's configuration under another lane's identity.
+    """
+    matched = devin_effective_lanes(effective_lanes, transport)
     if len(matched) > 1:
         raise code_mower_config.ConfigError(
-            "several active Devin lanes could be the selected one ("
+            "several active Devin lanes are selected ("
             + ", ".join(lane_id for lane_id, _ in matched)
-            + "); keep one Devin lane in the Code Mower --profile being inspected, or "
-            "name its transport with session_defaults.transports.devin"
+            + "); a single-lane caller must scope the Code Mower --profile being "
+            "inspected to one Devin lane"
         )
     return matched[0] if matched else None
 
@@ -124,10 +149,7 @@ def check_devin_readiness(
         selected = transport or selected_devin_transport(
             config, lanes=lanes, profile=config_profile
         )
-        lane_id, effective_lane = devin_effective_lane(effective_lanes, selected) or (
-            "",
-            None,
-        )
+        selected_lanes = devin_effective_lanes(effective_lanes, selected)
         findings = devin_readiness(
             config,
             lanes=lanes,
@@ -138,8 +160,7 @@ def check_devin_readiness(
             config_profile=config_profile,
             config_dir=provider_config_dir,
             config_path=config_path,
-            lane_config=effective_lane,
-            lane_id=lane_id,
+            lane_configs=selected_lanes,
             adoption_posture=adoption_posture,
             include_unselected=include_unselected,
         )

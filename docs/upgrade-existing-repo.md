@@ -214,9 +214,16 @@ Pick exactly one posture; the two authentications are not interchangeable.
 
 | Posture | Selection | Authentication | Next action when not ready |
 |---|---|---|---|
-| Local CLI | `code-mower init --with claude,codex,devin-cli --apply` | the ambient Devin Desktop/CLI login on this machine | install `devin` on PATH (or set `CODE_MOWER_DEVIN_CLI_COMMAND`), then run `devin auth login` in a trusted environment |
-| Hosted API | `code-mower init --with claude,codex,devin-api-v3 --apply` | dedicated service-user credentials plus exact repository scope | set `DEVIN_API_KEY` and `org-*` `DEVIN_ORG_ID`, and add the exact `OWNER/REPO` to `CODE_MOWER_DEVIN_REPOSITORIES` |
+| Local CLI | `code-mower init code-mower.yml --profile recommended --set-transport devin=devin_cli --apply` (replace the path and profile with the ones you inspect) | the ambient Devin Desktop/CLI login on this machine | install `devin` on PATH (or set `CODE_MOWER_DEVIN_CLI_COMMAND`), then run `devin auth login` in a trusted environment |
+| Hosted API | `code-mower init code-mower.yml --profile recommended --set-transport devin=devin_api_v3 --apply` (replace the path and profile with the ones you inspect) | dedicated service-user credentials plus exact repository scope | set `DEVIN_API_KEY` and `org-*` `DEVIN_ORG_ID`, and add the exact `OWNER/REPO` to `CODE_MOWER_DEVIN_REPOSITORIES` |
 | Unavailable | keep the default pair | none | report the unavailable capability and hand the work to a selected participant instead of substituting another product |
+
+`--set-transport` replaces only Devin's transport, its own profile lane, and its
+own participant alias: every other participant and profile lane stays exactly as
+configured. It previews the change unless `--apply` is set. A profile whose Devin
+lanes are custom-named is edited with `code-mower init <config> --profile <name>
+--interactive` instead, because no generated command can rewrite a lane the
+repository owns.
 
 Hosted credentials do not enable local execution, and a local login does not
 authorize hosted sessions. Hosted Devin also cannot coordinate a session: use

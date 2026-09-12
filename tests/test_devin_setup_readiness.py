@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 from code_mower import doctor as code_mower_doctor
-from code_mower.config import ConfigError, load_config
+from code_mower import init as code_mower_init
+from code_mower.config import ConfigError, load_config, validate_config
 from code_mower.devin_readiness import (
     CLI_COMMAND_ENV,
     DEFAULT_CLI_COMMAND,
@@ -35,7 +36,10 @@ from code_mower.doctor_checks import (
     doctor_check_group_id,
 )
 from code_mower.doctor_checks.common import OBSERVER_ADOPTION_POSTURES
-from code_mower.doctor_checks.devin import devin_effective_lane
+from code_mower.doctor_checks.devin import (
+    devin_effective_lane,
+    devin_effective_lanes,
+)
 from code_mower.doctor_checks.provider_local_cli_commands import (
     resolved_local_cli_command,
 )
@@ -43,7 +47,12 @@ from code_mower.doctor_checks.providers import check_lane_runtime
 from code_mower.local_cli_commands import candidate_local_cli_commands
 from code_mower.next_steps import build_next_steps
 from code_mower.package import load_provider_templates
-from code_mower.participants import DEFAULT_PARTICIPANTS, config_with_participants
+from code_mower.participants import (
+    DEFAULT_PARTICIPANTS,
+    config_with_participants,
+    config_with_transport,
+    parse_transport_selection,
+)
 from code_mower.session import build_session
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -748,7 +757,7 @@ class DevinDoctorStageTests(unittest.TestCase):
             devin_effective_lane(lanes, HOSTED_TRANSPORT), ("devin", hosted)
         )
 
-    def test_an_unidentifiable_effective_lane_fails_closed(self) -> None:
+    def test_an_unresolved_mixed_transport_selection_fails_closed(self) -> None:
         hosted = {"provider": "devin", "driver": "hosted_bridge"}
         local = {
             "provider": "devin_cli",
@@ -756,22 +765,33 @@ class DevinDoctorStageTests(unittest.TestCase):
             "product": "devin",
             "transport": "devin_cli",
         }
-        # Neither an unresolved transport across two transports nor two custom
-        # lanes sharing one transport identifies the lane a finding belongs to.
+        # Lanes spanning both transports leave the posture itself unknown, so the
+        # selection fails closed; lanes sharing one transport are a valid
+        # configuration and only the single-lane helper rejects them.
         with self.assertRaises(ConfigError):
             devin_effective_lane([("devin", hosted), ("devin_cli", local)], "claude_cli")
+        with self.assertRaises(ConfigError):
+            devin_effective_lanes(
+                [("devin", hosted), ("devin_cli", local)], "claude_cli"
+            )
         with self.assertRaises(ConfigError):
             devin_effective_lane(
                 [("team_devin", local), ("night_devin", local)], LOCAL_TRANSPORT
             )
+        self.assertEqual(
+            devin_effective_lanes(
+                [("team_devin", local), ("night_devin", local)], LOCAL_TRANSPORT
+            ),
+            (("team_devin", local), ("night_devin", local)),
+        )
         checks = check_devin_readiness(
-            config=_config("devin-cli"),
-            transport=LOCAL_TRANSPORT,
-            effective_lanes=(("team_devin", local), ("night_devin", local)),
+            config={"lanes": {"devin": hosted, "devin_cli": local}},
+            lanes=("devin", "devin_cli"),
+            effective_lanes=(("devin", hosted), ("devin_cli", local)),
             provider_config_dir=Path(_ISOLATED_STORE.name),
         )
         self.assertEqual([check.status for check in checks], ["fail"])
-        self.assertIn("team_devin", checks[0].remediation)
+
 
     def _custom_lane_config(self, directory: str, *, hosted: bool) -> Path:
         labels = (
@@ -1087,6 +1107,8 @@ class DevinPinnedRemediationTests(unittest.TestCase):
     PROFILE = "custom profile"
     DOCTOR = "code-mower doctor 'ops/custom mower.yml' --profile 'custom profile'"
     INIT = "code-mower init 'ops/custom mower.yml' --profile 'custom profile'"
+    SWITCH_LOCAL = "--set-transport devin=devin_cli --apply"
+    SWITCH_HOSTED = "--set-transport devin=devin_api_v3 --apply"
 
     def _findings(self, *participants: str, **kwargs):
         kwargs.setdefault("env", {})
@@ -1099,14 +1121,16 @@ class DevinPinnedRemediationTests(unittest.TestCase):
             findings = self._findings("claude", "codex", "devin-cli")
         selection = _finding(findings, "provider.devin.selection")
         self.assertIn(
-            f"`{self.INIT} --with claude,codex,devin-api-v3 --apply`",
+            f"`{self.INIT} {self.SWITCH_HOSTED}`",
             selection.remediation,
         )
         cli = _finding(findings, "provider.devin.local_cli")
         self.assertIn(f"`{self.DOCTOR} --devin`", cli.remediation)
-        self.assertIn(
-            f"`{self.INIT} --with claude,codex,devin-api-v3 --apply`", cli.remediation
-        )
+        self.assertIn(f"`{self.INIT} {self.SWITCH_HOSTED}`", cli.remediation)
+        # A switch never rewrites the participant list, which would delete every
+        # unrelated participant and profile lane the configuration selected.
+        for finding in findings:
+            self.assertNotIn("--with", finding.remediation)
         # Public detail and cloud metadata stay path-free even though the
         # locally rendered remediation may repeat the caller's path.
         for finding in findings:
@@ -1116,7 +1140,7 @@ class DevinPinnedRemediationTests(unittest.TestCase):
         findings = self._findings("devin-api-v3")
         selection = _finding(findings, "provider.devin.selection")
         self.assertIn(
-            f"`{self.INIT} --with claude,codex,devin-cli --apply`",
+            f"`{self.INIT} {self.SWITCH_LOCAL}`",
             selection.remediation,
         )
         credentials = _finding(findings, "provider.devin.hosted_credentials")
@@ -1139,13 +1163,13 @@ class DevinPinnedRemediationTests(unittest.TestCase):
         selection = _finding(findings, "provider.devin.selection")
         self.assertIn(f"`{self.INIT} --interactive`", selection.remediation)
         self.assertIn(
-            f"`{self.INIT} --with claude,codex,devin-cli --apply`",
+            f"`{self.INIT} {self.SWITCH_LOCAL}`",
             selection.remediation,
         )
         self.assertIn(f"`{self.DOCTOR} --devin`", selection.remediation)
         postures = _finding(findings, "provider.devin.postures")
         self.assertIn(
-            f"`{self.INIT} --with claude,codex,devin-api-v3 --apply`",
+            f"`{self.INIT} {self.SWITCH_HOSTED}`",
             postures.remediation,
         )
 
@@ -1161,11 +1185,341 @@ class DevinPinnedRemediationTests(unittest.TestCase):
         )
         self.assertIn(
             "`code-mower init code-mower.yml --profile recommended "
-            "--with claude,codex,devin-api-v3 --apply`",
+            "--set-transport devin=devin_api_v3 --apply`",
             cli.remediation,
         )
         # The credential profile selector is never conflated with it.
         self.assertNotIn("--provider-profile", cli.remediation)
+
+
+class DevinMultiLaneReadinessTests(unittest.TestCase):
+    """A profile may validly select several Devin lanes on one transport."""
+
+    def _local_lane(self, command: str) -> dict:
+        return {
+            "provider": "devin_cli",
+            "driver": "local_cli",
+            "product": "devin",
+            "transport": LOCAL_TRANSPORT,
+            "provider_config": {"command": command},
+        }
+
+    def _hosted_lane(self) -> dict:
+        return {
+            "provider": "devin",
+            "driver": "hosted_bridge",
+            "product": "devin",
+            "transport": HOSTED_TRANSPORT,
+        }
+
+    def _checks(self, lanes, **kwargs):
+        return check_devin_readiness(
+            config=_config("devin-cli" if kwargs.pop("local", True) else "devin-api-v3"),
+            effective_lanes=tuple(lanes),
+            provider_config_dir=Path(_ISOLATED_STORE.name),
+            **kwargs,
+        )
+
+    def test_one_custom_lane_owns_every_finding(self) -> None:
+        for local, lane in ((True, self._local_lane("team-devin")), (False, self._hosted_lane())):
+            with self.subTest(local=local):
+                with mock.patch(
+                    "code_mower.devin_readiness.shutil.which", return_value=None
+                ):
+                    checks = self._checks([("team_devin", lane)], local=local)
+                self.assertEqual({check.lane for check in checks}, {"team_devin"})
+
+    def test_same_transport_local_lanes_report_their_own_executables(self) -> None:
+        lanes = [
+            ("team_devin", self._local_lane("team-devin")),
+            ("night_devin", self._local_lane("night-devin")),
+        ]
+        installed = {"team-devin"}
+
+        def which(command: str) -> str | None:
+            return f"/usr/local/bin/{command}" if command in installed else None
+
+        with mock.patch(
+            "code_mower.devin_readiness.shutil.which", side_effect=which
+        ):
+            checks = self._checks(lanes)
+        names = [check.name for check in checks]
+        # The posture, capabilities, permissions, and lifecycle belong to the
+        # product, so they are stated once and never attributed to one of the
+        # lanes that share them.
+        for name in (
+            "provider.devin.selection",
+            "provider.devin.capabilities",
+            "provider.devin.permissions",
+            "provider.devin.lifecycle",
+        ):
+            self.assertEqual(names.count(name), 1, name)
+            product = next(check for check in checks if check.name == name)
+            self.assertIsNone(product.lane)
+        selection = next(
+            check for check in checks if check.name == "provider.devin.selection"
+        )
+        self.assertEqual(selection.detail["lanes"], ["team_devin", "night_devin"])
+        runtime = [
+            check for check in checks if check.name == "provider.devin.local_cli"
+        ]
+        self.assertEqual([check.lane for check in runtime], ["team_devin", "night_devin"])
+        self.assertEqual(
+            [check.detail["commands"] for check in runtime],
+            [["team-devin"], ["night-devin"]],
+        )
+        # Each lane reports its own executable, so a configuration is neither
+        # rejected nor reported as ready on another lane's behalf.
+        self.assertEqual([check.status for check in runtime], ["pass", "warn"])
+
+    def test_same_transport_hosted_lanes_report_credentials_once(self) -> None:
+        lanes = [("team_devin", self._hosted_lane()), ("night_devin", self._hosted_lane())]
+        checks = self._checks(lanes, local=False, transport=HOSTED_TRANSPORT)
+        names = [check.name for check in checks]
+        for name in (
+            "provider.devin.hosted_credentials",
+            "provider.devin.repository_scope",
+        ):
+            self.assertEqual(names.count(name), 1, name)
+            self.assertIsNone(
+                next(check for check in checks if check.name == name).lane
+            )
+        self.assertNotIn("provider.devin.local_cli", names)
+
+    def test_custom_lanes_are_switched_by_the_pinned_interactive_editor(self) -> None:
+        # No generated command can rewrite a lane the repository owns, so the
+        # switch must not offer one that would delete it.
+        with mock.patch("code_mower.devin_readiness.shutil.which", return_value=None):
+            checks = self._checks(
+                [("team_devin", self._local_lane("team-devin"))],
+                config_path="ops/custom mower.yml",
+                config_profile="custom profile",
+            )
+        selection = next(
+            check for check in checks if check.name == "provider.devin.selection"
+        )
+        self.assertIn("--interactive", selection.remediation)
+        self.assertNotIn("--set-transport", selection.remediation)
+        self.assertNotIn("--with", selection.remediation)
+
+
+class DevinTransportSwitchTests(unittest.TestCase):
+    """A transport switch replaces Devin's transport and nothing else."""
+
+    PARTICIPANTS = ("claude", "codex", "cursor", "gitar", "devin-cli")
+    CUSTOM_LANE = (
+        "lanes:\n"
+        "  house_review:\n"
+        "    type: audit\n"
+        "    driver: local_cli\n"
+        "    provider: codex\n"
+        "    informational: true\n"
+        "    labels:\n"
+        "      needs: needs-house-review\n"
+        "      done: house-review-done\n"
+        "      blocked: house-review-blocked\n"
+    )
+
+    def _config_text(self) -> str:
+        """Return an example config that also selects an unrelated custom lane."""
+        text = EXAMPLE_CONFIG.read_text(encoding="utf-8")
+        text = text.replace("\nlanes:\n", "\n" + self.CUSTOM_LANE, 1)
+        return text.replace(
+            "  recommended:\n"
+            "    description: Start with Codex and Claude as local peer reviewers.\n"
+            "    lanes:\n"
+            "      - codex\n"
+            "      - claude_audit\n",
+            "  recommended:\n"
+            "    description: Start with Codex and Claude as local peer reviewers.\n"
+            "    lanes:\n"
+            "      - codex\n"
+            "      - claude_audit\n"
+            "      - house_review\n",
+            1,
+        )
+
+    def _config(self) -> dict:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "code-mower.yml"
+            path.write_text(self._config_text(), encoding="utf-8")
+            config = config_with_participants(load_config(path), self.PARTICIPANTS)
+        # A scripted participant selection covers the catalog products only, so the
+        # repository's own lane is selected the way an operator would keep it.
+        active = config["profiles"]["recommended"]["lanes"]
+        config["profiles"]["recommended"]["lanes"] = [*active, "house_review"]
+        return config
+
+    def test_the_selection_parses_a_product_and_transport(self) -> None:
+        self.assertEqual(
+            parse_transport_selection("devin=devin_api_v3"), ("devin", HOSTED_TRANSPORT)
+        )
+        for invalid in ("devin", "=devin_cli", "devin=", "claude=devin_cli"):
+            with self.subTest(invalid=invalid), self.assertRaises(ConfigError):
+                parse_transport_selection(invalid)
+
+    def test_switching_the_transport_keeps_every_other_selection(self) -> None:
+        before = self._config()
+        after = config_with_transport(before, "devin", HOSTED_TRANSPORT)
+        self.assertEqual(
+            after["profiles"]["recommended"]["lanes"],
+            ["claude_audit", "codex", "gitar", "devin", "house_review"],
+        )
+        self.assertEqual(
+            after["session_defaults"]["participants"],
+            list(before["session_defaults"]["participants"]),
+        )
+        self.assertEqual(
+            after["session_defaults"]["transports"]["devin"], HOSTED_TRANSPORT
+        )
+        for lane_id, lane in before["lanes"].items():
+            self.assertEqual(after["lanes"][lane_id], lane, lane_id)
+        self.assertEqual(validate_config(after), [])
+        # The fresh default pair still switches, and a configuration that saved no
+        # participant list is not narrowed to a generated selection.
+        default = load_config(EXAMPLE_CONFIG)
+        switched = config_with_transport(default, "devin", LOCAL_TRANSPORT)
+        self.assertEqual(validate_config(switched), [])
+        self.assertEqual(
+            switched["session_defaults"]["participants"],
+            [*DEFAULT_PARTICIPANTS, "devin-cli"],
+        )
+        self.assertEqual(
+            switched["profiles"]["recommended"]["lanes"],
+            [*default["profiles"]["recommended"]["lanes"], "devin_cli"],
+        )
+
+    def test_a_custom_named_devin_lane_is_never_rewritten(self) -> None:
+        config = self._config()
+        config["lanes"]["team_devin"] = dict(config["lanes"]["devin_cli"])
+        config["profiles"]["recommended"]["lanes"] = [
+            "team_devin" if lane == "devin_cli" else lane
+            for lane in config["profiles"]["recommended"]["lanes"]
+        ]
+        with self.assertRaises(ConfigError):
+            config_with_transport(config, "devin", HOSTED_TRANSPORT)
+
+    def _init(self, path: Path, *args: str) -> dict:
+        stream = StringIO()
+        with redirect_stdout(stream):
+            code_mower_init.main([str(path), *args])
+        return json.loads(stream.getvalue())
+
+    def test_init_switches_only_the_devin_transport_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "custom mower.yml"
+            source.write_text(self._config_text(), encoding="utf-8")
+            selected = root / "selected"
+            self._init(
+                source,
+                "--profile",
+                "recommended",
+                "--with",
+                ",".join(self.PARTICIPANTS),
+                "--apply",
+                "--output-dir",
+                str(selected),
+                "--json",
+            )
+            written = selected / "code-mower.yml"
+            text = written.read_text(encoding="utf-8")
+            marker = '\n      - "devin_cli"\n'
+            self.assertIn(marker, text)
+            written.write_text(
+                text.replace(marker, marker + '      - "house_review"\n', 1),
+                encoding="utf-8",
+            )
+            before = load_config(written)
+            # The generated configuration is compared against one written by the
+            # same path without a transport switch, so only the switch's own
+            # difference can appear.
+            kept = root / "kept"
+            self._init(
+                written,
+                "--profile",
+                "recommended",
+                "--tracker",
+                "github",
+                "--apply",
+                "--output-dir",
+                str(kept),
+                "--json",
+            )
+            baseline = load_config(kept / "code-mower.yml")
+            switched = root / "switched"
+            applied = self._init(
+                written,
+                "--profile",
+                "recommended",
+                "--set-transport",
+                "devin=devin_api_v3",
+                "--apply",
+                "--output-dir",
+                str(switched),
+                "--json",
+            )
+            self.assertIn(str(switched / "code-mower.yml"), applied["written_files"])
+            after = load_config(switched / "code-mower.yml")
+            # Only Devin's transport, its own lane, and its own alias move; every
+            # unrelated participant and profile lane survives the switch.
+            self.assertEqual(
+                after["session_defaults"]["participants"],
+                before["session_defaults"]["participants"],
+            )
+            self.assertEqual(
+                after["session_defaults"]["transports"]["devin"], HOSTED_TRANSPORT
+            )
+            self.assertEqual(
+                [
+                    lane
+                    for lane in after["profiles"]["recommended"]["lanes"]
+                    if lane != "devin"
+                ],
+                [
+                    lane
+                    for lane in before["profiles"]["recommended"]["lanes"]
+                    if lane != "devin_cli"
+                ],
+            )
+            self.assertIn("devin", after["profiles"]["recommended"]["lanes"])
+            self.assertIn("house_review", after["profiles"]["recommended"]["lanes"])
+            self.assertEqual(
+                set(after["lanes"]) - set(baseline["lanes"]), {"devin"}
+            )
+            for lane_id, lane in baseline["lanes"].items():
+                self.assertEqual(after["lanes"][lane_id], lane, lane_id)
+            self.assertEqual(
+                {name: profile for name, profile in after["profiles"].items()
+                 if name != "recommended"},
+                {name: profile for name, profile in baseline["profiles"].items()
+                 if name != "recommended"},
+            )
+
+    def test_a_preview_switches_nothing_on_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "custom mower.yml"
+            text = self._config_text()
+            source.write_text(text, encoding="utf-8")
+            output = root / "preview"
+            plan = self._init(
+                source,
+                "--profile",
+                "recommended",
+                "--set-transport",
+                "devin=devin_cli",
+                "--dry-run",
+                "--json",
+                "--output-dir",
+                str(output),
+            )
+            self.assertEqual(
+                plan["transport_selection"],
+                {"product": "devin", "transport": LOCAL_TRANSPORT},
+            )
+            self.assertEqual(source.read_text(encoding="utf-8"), text)
+            self.assertFalse(output.exists())
 
 
 class DevinDocumentationTests(unittest.TestCase):
