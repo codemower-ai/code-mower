@@ -298,7 +298,10 @@ product/transport declaration fails with instructions to set
 calibrated repository promotion requires explicit product and transport fields;
 selection never performs that promotion. Contradictory driver/transport pairs or
 capability overrides fail validation; remove `capabilities` to use maintained
-defaults. Keep `provider: devin_cli` for local execution and `provider: devin`
+defaults. The one exception is the exact earlier maintained hosted declaration
+(`devin_api_v3` with `context: unavailable`), which earlier templates wrote:
+it is read as the current declaration in memory, again without file writes, and
+any other deviation still fails. Keep `provider: devin_cli` for local execution and `provider: devin`
 for hosted compatibility, with `product: devin` in both cases.
 
 Devin Cloud needs its own execution setup. Cursor's agent

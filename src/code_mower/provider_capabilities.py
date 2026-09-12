@@ -73,6 +73,13 @@ TRANSPORTS = MappingProxyType({
     ),
 })
 
+# Earlier maintained declarations, still accepted and migrated in memory to the current ones.
+LEGACY_CAPABILITIES = MappingProxyType({
+    "devin_api_v3": (
+        {**asdict(TRANSPORTS["devin_api_v3"].capabilities), "context": "unavailable"},
+    ),
+})
+
 TRANSPORT_ALIASES = MappingProxyType({
     "devin": "devin_api_v3",  # legacy hosted lane/provider, not the product default
     "devin_cloud": "devin_api_v3",
@@ -116,7 +123,8 @@ def lane_transport(lane_id: str, lane: Mapping[str, Any]) -> ProviderTransport |
         raise ConfigError("Keep existing Devin lane identities: devin_cli is local; devin is hosted. Select a transport without repurposing its lane.")
     if lane.get("driver") != transport.driver:
         raise ConfigError("Devin transport and driver disagree; devin_cli requires local_cli; devin_api_v3 requires hosted_bridge")
-    if "capabilities" in lane and lane["capabilities"] != asdict(transport.capabilities):
+    if "capabilities" in lane and lane["capabilities"] != asdict(transport.capabilities) \
+            and lane["capabilities"] not in LEGACY_CAPABILITIES.get(transport.transport, ()):
         raise ConfigError("Devin capabilities must match the declared transport; remove capabilities to use maintained defaults")
     provider_config = lane.get("provider_config", {})
     if isinstance(provider_config, Mapping) and "campaign_transport" in provider_config:
