@@ -3344,14 +3344,22 @@ def main(argv: list[str] | None = None) -> int:
             tuple(args.add_repo),
         )
         selected_participants = (
-            tuple(args.participants.split(","))
+            code_mower_participants.parse_participants(args.participants)
             if args.participants is not None else None
+        )
+        participant_transports = (
+            code_mower_participants.selected_transports(tuple(args.participants.split(",")))
+            if args.participants is not None else {}
         )
         if args.interactive:
             selected_participants = code_mower_participants.pick_participants(
                 selected_participants or code_mower_participants.picker_initial_participants(
                     config, profile=args.profile,
                 ),
+            )
+        if selected_participants is not None:
+            selected_participants = tuple(
+                participant_transports.get(name, name) for name in selected_participants
             )
         tracker_choice = "jira_cloud" if args.jira else args.tracker
         plan = render_init_plan(

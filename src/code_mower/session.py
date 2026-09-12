@@ -532,9 +532,12 @@ def main(argv: list[str] | None = None) -> int:
             if config and (issues := validate_config(config)):
                 raise ConfigError("invalid repository configuration:\n" + _format_issues(issues))
             selected = (
-                tuple(args.participants.split(",")) if args.participants is not None
+                parse_participants(args.participants) if args.participants is not None
                 else configured_participants(config)
             )
+            if args.participants is not None:
+                transports = selected_transports(tuple(args.participants.split(",")))
+                selected = tuple(transports.get(name, name) for name in selected)
             payload = build_session(
                 repo=args.repo, host=host, selected=selected,
                 config=config, orchestrator=args.orchestrator,

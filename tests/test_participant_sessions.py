@@ -134,6 +134,48 @@ class ParticipantTests(unittest.TestCase):
         with mock.patch("sys.stdin.isatty", return_value=True), mock.patch("builtins.input", side_effect=["bad", "3", ""]), redirect_stderr(io.StringIO()):
             self.assertEqual(participants.pick_participants(participants.DEFAULT_PARTICIPANTS), ("claude", "codex", "devin"))
 
+    def test_init_cli_normalizes_selection_and_keeps_transport_through_picker(self):
+        for interactive in (False, True):
+            for transport in ("devin_cli", "devin_api_v3", "Devin Cloud"):
+                with self.subTest(interactive=interactive, transport=transport), tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+                    output = io.StringIO()
+                    args = ["--with", f" Claude Code , CODEX , {transport} , claude_audit , devin ", "--json"]
+                    if interactive:
+                        args.append("--interactive")
+                    with mock.patch.object(participants, "pick_participants", wraps=participants.pick_participants) as picker, mock.patch("sys.stdin.isatty", return_value=True), mock.patch("builtins.input", return_value=""), redirect_stderr(io.StringIO()), redirect_stdout(output):
+                        self.assertEqual(init.main(args), 0)
+                    if interactive:
+                        picker.assert_called_once_with(("claude", "codex", "devin"))
+                    else:
+                        picker.assert_not_called()
+                    plan = json.loads(output.getvalue())
+                    saved = next(item["config_data"] for item in plan["generated_files"] if item["path"] == "code-mower.yml")
+                    self.assertEqual(saved["session_defaults"]["participants"], ["claude", "codex", "devin"])
+                    expected = "devin_cli" if transport == "devin_cli" else "devin_api_v3"
+                    self.assertEqual(saved["session_defaults"]["transports"], {"devin": expected})
+                    self.assertEqual(config.validate_config(saved), [])
+                    self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_cli_rejects_invalid_selections_before_building_or_picking(self):
+        for raw in ("", " ", ",claude", "claude,", "claude,,codex", "claude, ,codex", "mystery-agent", "devin_cli,devin_api_v3"):
+            for command in ("session", "init", "interactive-init"):
+                with self.subTest(raw=raw, command=command), tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+                    error = io.StringIO()
+                    with mock.patch.object(participants, "pick_participants") as picker, mock.patch.object(session, "build_session") as build, mock.patch.object(init, "render_init_plan") as render, redirect_stderr(error):
+                        if command == "session":
+                            rc = session.main(["start", "--repo", "owner/repo", "--host", "codex", "--with", raw, "--dry-run"])
+                        else:
+                            args = ["--with", raw]
+                            if command == "interactive-init":
+                                args.append("--interactive")
+                            rc = init.main(args)
+                    self.assertEqual(rc, 1)
+                    self.assertIn("error:", error.getvalue())
+                    picker.assert_not_called()
+                    build.assert_not_called()
+                    render.assert_not_called()
+                    self.assertEqual(list(Path(tmp).iterdir()), [])
+
     def test_picker_can_cancel_and_refuses_noninteractive_input(self):
         with mock.patch("sys.stdin.isatty", return_value=False), self.assertRaisesRegex(config.ConfigError, "--with"):
             participants.pick_participants(participants.DEFAULT_PARTICIPANTS)
@@ -159,6 +201,23 @@ class ParticipantTests(unittest.TestCase):
 
 
 class SessionTests(unittest.TestCase):
+    def test_cli_normalizes_participants_and_preserves_explicit_transport(self):
+        for transport in ("devin_cli", "devin_api_v3", "Devin Cloud"):
+            with self.subTest(transport=transport), tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    rc = session.main([
+                        "start", "--repo", "owner/repo", "--host", "codex", "--with",
+                        f" Claude Code , CODEX , {transport} , claude_audit , devin ",
+                        "--dry-run", "--json",
+                    ])
+                self.assertEqual(rc, 0)
+                members = json.loads(output.getvalue())["participants"]
+                self.assertEqual([member["id"] for member in members], ["claude", "codex", "devin"])
+                expected = "devin_cli" if transport == "devin_cli" else "devin_api_v3"
+                self.assertEqual(members[-1]["execution"]["transport"], expected)
+                self.assertEqual(list(Path(tmp).iterdir()), [])
+
     def test_optional_context_does_not_change_default_participants_or_host(self):
         for host in ('claude', 'codex'):
             plan = session.build_session(repo='owner/repo', host=host, selected=('claude', 'codex'),
