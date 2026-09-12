@@ -1346,8 +1346,9 @@ class BuildAndPublishTests(TemporaryWorkspace):
 
     def test_an_ordinary_symlinked_ancestor_is_resolved_not_refused(self) -> None:
         # Resolving, not rejecting: private roots legitimately sit behind
-        # links -- macOS reaches ``/tmp`` through ``/private/tmp`` -- so a
-        # symlinked ancestor outside any repository must still build.
+        # links -- macOS reaches ``/tmp`` through a link into its ``private``
+        # directory -- so a symlinked ancestor outside any repository must
+        # still build.
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
         os.symlink(elsewhere, self.root / "linked-state")

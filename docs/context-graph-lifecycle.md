@@ -369,7 +369,7 @@ is checked on the resolved path as well as the given one: `--state-dir
 `/outside/link` points inside one, and the `O_NOFOLLOW` opens cover only the
 final component of each directory this module creates. Symlinked ancestors are
 resolved rather than rejected — ordinary private roots have them, macOS reaches
-`/tmp` through `/private/tmp`.
+`/tmp` through a link into its `private` directory.
 
 ## What this does not do
 

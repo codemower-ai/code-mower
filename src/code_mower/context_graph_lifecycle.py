@@ -1527,7 +1527,8 @@ class GraphStateRoot:
         # symlinked ancestor free to be retargeted in between -- the check
         # passes against one directory and the writes land in another. Ordinary
         # private roots do have symlinked ancestors (macOS puts ``/tmp`` behind
-        # ``/private/tmp``), so they are resolved rather than refused.
+        # a link into its ``private`` directory), so they are resolved rather
+        # than refused.
         self.base = Path(os.path.realpath(base))
         self.workspace = workspace_id(self.repository)
         self.path = self.base / "graph" / self.workspace
