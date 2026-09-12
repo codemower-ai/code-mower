@@ -190,6 +190,36 @@ appear in `CODE_MOWER_DEVIN_REPOSITORIES`; a same-name personal fork therefore
 cannot satisfy the intended organization target. The opaque `org-*`
 `DEVIN_ORG_ID` is not compared with the GitHub owner name.
 
+### Check One Devin Posture Before Assigning Work
+
+Devin stays optional: Claude + Codex remain the default pair, and a repository
+that never selected Devin sees no Devin checks. After selecting it, run one
+command for the whole optional setup:
+
+```bash
+code-mower doctor --devin --repo OWNER/REPO --json
+```
+
+The `--devin` flag also works before selection and prints the local CLI, hosted
+API, and unavailable postures with the next action for each. Doctor reports the
+selected transport, which authentication belongs to it, the create/view/manage
+permissions the account owner must grant, the capabilities the transport does
+not support, and the lifecycle recovery commands. It never reports credential
+values, the service-user identity, the organization identifier, the configured
+repository inventory, a local path, or raw provider output.
+
+Pick exactly one posture; the two authentications are not interchangeable.
+
+| Posture | Selection | Authentication | Next action when not ready |
+|---|---|---|---|
+| Local CLI | `code-mower init --with claude,codex,devin-cli --apply` | the ambient Devin Desktop/CLI login on this machine | install `devin` on PATH (or set `CODE_MOWER_DEVIN_CLI_COMMAND`), then run `devin auth login` in a trusted environment |
+| Hosted API | `code-mower init --with claude,codex,devin-api-v3 --apply` | dedicated service-user credentials plus exact repository scope | set `DEVIN_API_KEY` and `org-*` `DEVIN_ORG_ID`, and add the exact `OWNER/REPO` to `CODE_MOWER_DEVIN_REPOSITORIES` |
+| Unavailable | keep the default pair | none | report the unavailable capability and hand the work to a selected participant instead of substituting another product |
+
+Hosted credentials do not enable local execution, and a local login does not
+authorize hosted sessions. Hosted Devin also cannot coordinate a session: use
+`devin_cli`, Codex, or Claude as the host.
+
 ## Local Devin Builder Lane
 
 Separately from the `devin_cli` reviewer contract above, `devin` can now also

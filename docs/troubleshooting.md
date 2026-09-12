@@ -60,6 +60,39 @@ status-code fields such as `api_error_status`, `status_code`, or `http_status`.
 Doctor only reports sanitized auth status codes (`401` or `403`), never raw
 provider-supplied status text.
 
+## Devin Is Selected But Not Ready
+
+Devin is optional. Claude + Codex stay the default pair, and a repository that
+never selected Devin produces no Devin checks at all. When it is selected, one
+command reports the whole optional setup:
+
+```bash
+code-mower doctor --devin --repo OWNER/REPO --json
+```
+
+Read `provider.devin.selection` first: it names the selected transport and the
+authentication that belongs to it. The two authentications are separate, and one
+never substitutes for the other.
+
+| Symptom | Meaning | Next action |
+|---|---|---|
+| `provider.devin.local_cli` warns that the command was not found | `devin_cli` runs Devin locally and needs the CLI on this machine | install `devin` on PATH or point `CODE_MOWER_DEVIN_CLI_COMMAND` at it, then run `devin auth login` in a trusted environment |
+| `provider.devin.hosted_credentials` reports missing or malformed credentials | `devin_api_v3` needs dedicated service-user credentials; a local CLI login does not authorize it | set `DEVIN_API_KEY` and the opaque `org-*` `DEVIN_ORG_ID` in the environment or a protected credential profile |
+| `provider.devin.repository_scope` does not acknowledge the repository | hosted Devin has no read-only preflight that proves GitHub connection scope, so the exact slug must be acknowledged locally | add the exact `OWNER/REPO` to `CODE_MOWER_DEVIN_REPOSITORIES`; a same-name fork is never accepted |
+| `provider.devin.repository_scope` is skipped | no repository target was selected | rerun with `--repo OWNER/REPO` before dispatching paid work |
+| `provider.devin.permissions` is skipped | Devin exposes no read-only permission probe, so the requirement is reported rather than verified | have the account owner confirm the create, view, and manage permissions listed in the check |
+| `provider.devin.capabilities` lists capability gaps | the transport does not support those capabilities at all | report the unavailable capability and hand that work to a selected participant instead of substituting another product |
+
+Two capability gaps come up most often. Hosted Devin cannot coordinate a
+session, so use `devin_cli`, Codex, or Claude as the host. Neither transport
+supports remote message or cancel, so a stalled local run is a local process
+action, and an uncertain hosted dispatch is recovered with
+`code-mower session status ALIAS --provider devin` — never a second dispatch.
+
+Devin checks report metadata only: no credential values, service-user identity,
+organization identifier, configured repository inventory, local path, or raw
+provider output.
+
 ## Board Shows An Older Version After Upgrade
 
 `code-mower board serve --repo OWNER/REPO` is a long-running local process. If

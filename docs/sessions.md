@@ -291,6 +291,21 @@ unavailable capability pauses. The same contract is reported by doctor and
 specified in the packaged
 [`provider_capabilities.schema.json`](../src/code_mower/provider_capabilities.schema.json).
 
+One command reports the whole optional Devin setup for the selected posture:
+
+```bash
+code-mower doctor --devin --repo OWNER/REPO --json
+```
+
+It names the selected transport and its authentication, the create/view/manage
+permissions the account owner must grant, the capabilities the transport does not
+support, and the lifecycle recovery commands, without reporting credential
+values, identities, the configured repository inventory, or raw provider output.
+Repositories that never selected Devin get no Devin checks; `--devin` also lists
+the local CLI, hosted API, and unavailable postures before selection. See
+[Troubleshooting](troubleshooting.md#devin-is-selected-but-not-ready) for the
+per-symptom next actions.
+
 Legacy lane configurations infer product and transport in memory without
 rewriting files. A legacy Devin lane with `merge_authority: true` and no explicit
 product/transport declaration fails with instructions to set

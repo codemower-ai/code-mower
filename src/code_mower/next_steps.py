@@ -250,6 +250,24 @@ def build_next_steps(
             "why": "This selection has no configured reviewer lanes. Select reviewers or establish a manual independent review process before merging.",
         }
 
+    devin_lanes = [lane for lane in lanes if lane in {"devin", "devin_cli"}]
+    if devin_lanes:
+        steps.append(
+            {
+                "id": "devin-readiness",
+                "title": "Check the optional Devin posture before assigning work",
+                "command": f"code-mower doctor --devin --repo {repo} --json",
+                "why": (
+                    "Reports which Devin transport is selected, whether that posture uses "
+                    "the local Devin CLI login or hosted service-user credentials with an "
+                    "exact repository acknowledgement, which create/view/manage "
+                    "permissions the owner must grant, and which capabilities are "
+                    "unavailable. Identities and credential values are never reported."
+                ),
+                "lanes": devin_lanes,
+            }
+        )
+
     if advanced:
         steps.extend(
             _advanced_steps(
