@@ -11,8 +11,11 @@ import math
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
+from .context_contract import ContextError, ContextRequest
+from .context_delivery import render_evidence
+from .context_packets import load_authorized
 from .context_store import ContextStore
 from .devin_sessions import REPO, DevinClient
 from .provider_capabilities import resolve_transport
@@ -33,6 +36,8 @@ COMPLETION_JSON_SCHEMA = {
         "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     },
 }
+MAX_INPUT_BYTES = 65536
+CONTEXT_RECIPIENT = "devin:builder"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?\Z")
 
@@ -131,6 +136,22 @@ class GitHub(Protocol):
     def read(self, repository: str, number: int) -> PullRequest: ...
 
 
+def packet_context(store: ContextStore, name: str, handle: str, policy, *, repository: str,
+                   work_item: str, backend=None) -> Callable[[], str]:
+    """Bind one authorized packet to the hosted builder before its PR exists.
+
+    Each call performs a new online authorization for ``devin:builder`` and
+    renders the common evidence payload; nothing is cached or written.
+    """
+    request = ContextRequest(repository, work_item, CONTEXT_RECIPIENT)
+
+    def render() -> str:
+        packet = load_authorized(store, name, handle, policy, request, backend=backend)
+        return render_evidence(packet, handle)
+
+    return render
+
+
 def _github_call(method, *args, **kwargs):
     try:
         return method(*args, **kwargs)
@@ -174,6 +195,33 @@ class DevinWorkOrders:
             + "\nApproved work order:\n" + order.body
         )
 
+    @staticmethod
+    def _evidence(context):
+        """Render freshly reauthorized evidence for exactly one create/message input.
+
+        ``context`` renders the authorized packet for ``devin:builder`` through
+        the ordinary online authorization path. It runs immediately before the
+        paid provider write, never in preview, and its text is never persisted.
+        """
+        if context is None:
+            return None
+        try:
+            evidence = context()
+        except ContextError:
+            raise RemoteError("context_unavailable") from None
+        if not isinstance(evidence, str) or "Packet identity: " not in evidence:
+            raise RemoteError("context_unavailable")
+        return evidence
+
+    @staticmethod
+    def _with_evidence(prose, evidence):
+        if evidence is None:
+            return prose
+        combined = prose + "\n" + evidence
+        if len(combined.encode()) > MAX_INPUT_BYTES:
+            raise RemoteError("context_budget_exceeded")
+        return combined
+
     def _verify(self, order, claim, round_number):
         if (not isinstance(claim, dict) or set(claim) != set(COMPLETION_JSON_SCHEMA["required"])
                 or claim.get("schema") != COMPLETION_SCHEMA
@@ -207,7 +255,8 @@ class DevinWorkOrders:
 
     def run(self, command: str, order: WorkOrder, *, apply: bool = False,
             request: str = "", prose: str = "", reviewed_head: str = "",
-            acknowledge_delivered: bool = False) -> dict:
+            acknowledge_delivered: bool = False,
+            context: Callable[[], str] | None = None) -> dict:
         if command not in {"dispatch", "status", "collect", "clarify", "fix", "cancel"}:
             raise RemoteError("invalid_request")
         # Library equivalent of --apply: no reads, writes or provider calls in preview.
@@ -234,8 +283,11 @@ class DevinWorkOrders:
                     branch_lock.write({"issue_key": key})
             remote_command = command
             kwargs = {}
+            if context is not None and command not in {"dispatch", "fix", "clarify"}:
+                raise RemoteError("invalid_request")
             if command == "dispatch":
-                kwargs.update(prose=self._prompt(order), repo=order.repository, limit=order.acu_limit)
+                kwargs.update(prose=self._with_evidence(self._prompt(order), self._evidence(context)),
+                              repo=order.repository, limit=order.acu_limit)
             elif command in {"fix", "clarify"}:
                 if (not isinstance(request, str) or not request.strip() or len(request) > 128
                         or not isinstance(prose, str) or not prose.strip() or len(prose.encode()) > 48000):
@@ -258,6 +310,7 @@ class DevinWorkOrders:
                         raise RemoteError("fix_requires_reviewed_head")
                     if record["round"] >= 100:
                         raise RemoteError("request_limit_reached")
+                    evidence = self._evidence(context)  # Before any local or remote mutation.
                     record["round"] += 1
                     record.update(claim=None, evidence=None, message={
                         "request": request, "fingerprint": fingerprint, "pending": True})
@@ -265,12 +318,15 @@ class DevinWorkOrders:
                     locked.write(record)  # Invalidate evidence before any remote mutation.
                 elif previous["fingerprint"] != fingerprint:
                     raise RemoteError("request_conflict")
+                else:
+                    evidence = None if acknowledge_delivered else self._evidence(context)
                 remote_command = "message"
-                kwargs.update(prose=(f"Continue the same work order, repository and sole writer branch. "
-                                     f"Completion round: {record['round']}. "
-                                     f"Reviewed head: {reviewed_head or 'none'}. "
-                                     "Before editing, stop if the branch head differs from the reviewed head "
-                                     "when supplied. Keep the original ACU cap and completion schema.\n" + prose))
+                message = (f"Continue the same work order, repository and sole writer branch. "
+                           f"Completion round: {record['round']}. "
+                           f"Reviewed head: {reviewed_head or 'none'}. "
+                           "Before editing, stop if the branch head differs from the reviewed head "
+                           "when supplied. Keep the original ACU cap and completion schema.\n" + prose)
+                kwargs.update(prose=self._with_evidence(message, evidence))
             result = self.remote.run(remote_command, key, apply=apply, request=request,
                                      acknowledge_delivered=acknowledge_delivered, **kwargs)
             if command in {"fix", "clarify"}:

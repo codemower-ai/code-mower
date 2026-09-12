@@ -13,8 +13,10 @@ from .context_packets import _handle, _index, load_authorized
 
 SCHEMA = "code_mower.contextDelivery.v1"
 MAX_DELIVERY_BYTES = 80_000
-SUPPORTED_RECIPIENTS = frozenset(f"{host}:{role}" for host in ("claude", "codex")
-                                for role in ("orchestrator", "builder", "reviewer"))
+SUPPORTED_HOSTS = ("claude", "codex", "devin")
+SUPPORTED_ROLES = ("orchestrator", "builder", "reviewer")
+SUPPORTED_RECIPIENTS = frozenset(f"{host}:{role}" for host in SUPPORTED_HOSTS for role in SUPPORTED_ROLES)
+SUPPORTED_PROVIDERS = ("Claude", "Codex", "Devin")
 
 
 def render_evidence(packet: ValidatedPacket, revision: str) -> str:
@@ -59,7 +61,7 @@ def _binding(value):
     if metadata["revision"] != value["revision"] or metadata["required"] != policy["required"]:
         raise ContextError("context delivery metadata does not match its binding")
     feedback = value["feedback"]
-    if (not isinstance(feedback, dict) or feedback.keys() - {"claude", "codex"}
+    if (not isinstance(feedback, dict) or feedback.keys() - set(SUPPORTED_HOSTS)
             or any(not isinstance(v, str) or len(v.encode("utf-8")) > 100_000 for v in feedback.values())):
         raise ContextError("context feedback exceeds its private storage budget")
     return dict(value)
@@ -237,7 +239,7 @@ def deliver(store, revision, *, repository, pr, head, recipient, current, backen
 
 def save_feedback(store, delivery: Delivery, host, prose):
     """Only credential-free verdict prose is retained, under connection cleanup."""
-    if host not in ("claude", "codex") or not isinstance(prose, str) or len(prose.encode()) > 100_000:
+    if host not in SUPPORTED_HOSTS or not isinstance(prose, str) or len(prose.encode()) > 100_000:
         raise ContextError("private review feedback exceeds its supported budget")
     with store.locked(delivery.binding["connection"]) as locked:
         artifact = locked.artifact("d-" + delivery.metadata["revision"])
@@ -251,7 +253,7 @@ def save_feedback(store, delivery: Delivery, host, prose):
 def public_verdict(delivery, *, provider, head, verdict, counts, trailer,
                    actions_run_id=None, merge_authority=True):
     """Never publish model-authored prose when private context was supplied."""
-    if provider not in ("Claude", "Codex") or verdict not in ("PASS", "BLOCKED", "UNKNOWN", "STALE"):
+    if provider not in SUPPORTED_PROVIDERS or verdict not in ("PASS", "BLOCKED", "UNKNOWN", "STALE"):
         raise ContextError("unsupported context review metadata")
     if len(counts) != 4 or any(type(value) is not int or not 0 <= value <= 1000 for value in counts):
         raise ContextError("invalid context review counts")

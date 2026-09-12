@@ -11,6 +11,7 @@ from . import context_review, context_session
 from .claude_audit_pr import _decision_authorities_for_repo
 from .context_contract import ContextError, ContextRequest
 from .context_delivery import (
+    SUPPORTED_HOSTS,
     SUPPORTED_RECIPIENTS,
     abandon_attachment,
     deliver,
@@ -197,8 +198,8 @@ def attach_session(
         raise ContextError("prepare the selected context before attaching it")
     if record["stage"] not in {"prepared", "attached", "reviewed"}:
         raise ContextError("prepare the selected context before attaching it")
-    if record["host"] not in {"claude", "codex"}:
-        raise ContextError("guided private context currently supports Claude and Codex hosts")
+    if record["host"] not in SUPPORTED_HOSTS:
+        raise ContextError("guided private context currently supports Claude, Codex, and Devin hosts")
 
     token, authorities = _github_access(repo_path, base_ref)
     with association_store.locked(_workflow_key(record)):
@@ -344,7 +345,7 @@ def _builder_recipient(record: Mapping[str, Any]) -> str:
     recipient = builder + ":builder"
     if recipient not in SUPPORTED_RECIPIENTS:
         raise ContextError(
-            "the selected builder cannot consume private context in this release; choose Claude or Codex"
+            "the selected builder cannot consume private context in this release; choose Claude, Codex, or Devin"
         )
     return recipient
 
@@ -416,12 +417,12 @@ def feedback_session(
     record = context_session.validate(record)
     reviewer = participant_id(reviewer)
     if (
-        reviewer not in {"claude", "codex"}
+        reviewer not in SUPPORTED_HOSTS
         or reviewer not in record["participants"]
         or reviewer == record["builder"]
         or PARTICIPANTS[reviewer].review_lane is None
     ):
-        raise ContextError("--reviewer must name a selected independent Claude or Codex reviewer")
+        raise ContextError("--reviewer must name a selected independent Claude, Codex, or Devin reviewer")
     if record["attachment_state"] != "published":
         raise ContextError("attach context and complete the independent review before reading feedback")
     recipient = _builder_recipient(record)

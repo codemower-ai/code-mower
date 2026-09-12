@@ -1,7 +1,7 @@
-# Share optional evidence with Claude and Codex
+# Share optional evidence with Claude, Codex, and Devin
 
 An approved context packet can now accompany a work order and its independent
-review. Both hosts use the same evidence renderer and authorization checks.
+review. Every host uses the same evidence renderer and authorization checks.
 The calling host remains the orchestrator; a context provider gains no builder,
 reviewer, tracker-write, or merge authority. Ordinary sessions without context
 keep their existing behavior and do not load the optional Coworker SDK.
@@ -10,9 +10,10 @@ Start with a verified [private connection](context-connections.md). The guided
 path below fetches once for the work item and retains the opaque packet handle;
 the lower-level workflow can still fetch it explicitly. Every delivery verifies
 authorization online; it does not repeat the search.
-Only Claude and Codex orchestrator, builder, and reviewer roles are supported
-for private delivery in this release. Each role must be explicitly approved in
-the private connection configuration.
+Only Claude, Codex, and Devin orchestrator, builder, and reviewer roles are
+supported for private delivery in this release. Each role must be explicitly
+approved in the private connection configuration as `<host>:<role>`; a
+connection without `devin:*` recipients never delivers to Devin.
 
 ## Guided session path
 
@@ -53,8 +54,8 @@ and diagnostics.
 `session context deliver` derives the repository, work item, connection, policy,
 packet, and selected builder from protected state. It writes the private
 evidence to stdout for the builder's prompt; keep that output out of tracked
-files and public logs. The selected builder must be Claude or Codex in this
-release.
+files and public logs. The selected builder must be Claude, Codex, or Devin in
+this release.
 
 ## Work order and builder
 
@@ -73,6 +74,26 @@ The private JSON request has exactly `repository`, `work_item`, and `policy`.
 Use the same scope and policy as the original fetch. Evidence is written to
 stdout for the approved participant's prompt. Keep it out of public terminal
 logs, tracked files, PR descriptions, and shared artifacts.
+
+### Hosted Devin builder
+
+A trusted hosted work order can carry the packet to `devin:builder` without a
+local prompt file. The embedding binds one packet with
+`devin_work_orders.packet_context(...)` and passes the resulting callable as
+`context=` to `dispatch`, `clarify`, or `fix`. Immediately before each paid
+create or message write, and never in preview, the callable performs a new
+online authorization for `devin:builder` and renders the common evidence
+payload. That text is appended only to the provider input; the local work-order
+record and remote-session record keep only their existing digests, and status,
+collect, and cancel reject a context argument.
+
+Wrong account, revoked or expired authorization, a repository or recipient
+outside the connection, a refreshed or invalidated packet, or a payload without
+the packet identity fails closed as `context_unavailable` before any local
+round or provider write. Omitting `context=` is the only way to degrade to a
+code-only work order, and the remote session's dispatch fingerprint prevents a
+later dispatch from silently replaying with different input. The combined input
+is bounded at 64 KiB (`context_budget_exceeded`).
 
 ## Attach evidence to independent review
 

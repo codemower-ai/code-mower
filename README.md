@@ -116,7 +116,7 @@ execution remains an explicit handoff or provider-specific transport. See
 ## Optional Organizational Context
 
 The base installation works without an organizational-memory provider. The
-optional Coworker integration gives approved Claude and Codex roles the same
+optional Coworker integration gives approved Claude, Codex, and Devin roles the same
 bounded, cited evidence through an explicitly selected private account. Account
 identity and credentials stay outside the repository.
 

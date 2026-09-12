@@ -1,5 +1,6 @@
 """Offline trusted-work-order delivery and hostile builder evidence fixtures."""
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -9,12 +10,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from code_mower.context_packets import fetch
 from code_mower.devin_sessions import DevinClient
 from code_mower.devin_work_orders import (
-    COMPLETION_SCHEMA, Candidates, DevinWorkOrders, PullRequest, WorkOrder,
+    COMPLETION_SCHEMA, MAX_INPUT_BYTES, Candidates, DevinWorkOrders, PullRequest, WorkOrder, packet_context,
 )
 from code_mower.remote_session import FakeProvider, RemoteError, RemoteSessions, _key
 from code_mower.work_orders import WORK_ORDER_SCHEMA
+import test_context_delivery as fixtures
 
 CANARY = "PRIVATE_PROSE_SOURCE_DIFF_CREDENTIAL_RESULT"
 HEAD = "a" * 40
@@ -37,7 +40,7 @@ class GitHubFixture:
         return self.reads.pop(0) if self.reads else self.pr
 
 
-class DeliveryTests(unittest.TestCase):
+class WorkOrderCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -68,6 +71,8 @@ class DeliveryTests(unittest.TestCase):
     def complete(self, **kwargs):
         self.provider.set_state(self.binding(), "complete", result=self.claim(**kwargs))
 
+
+class DeliveryTests(WorkOrderCase):
     def test_preview_and_manifest_binding(self):
         self.assertTrue(self.service.run("dispatch", self.order)["apply_required"])
         self.assertFalse((self.root / "builder").exists())
@@ -286,6 +291,133 @@ class DeliveryTests(unittest.TestCase):
         client = DevinClient("org-example", "test-key", api_runner=runner)
         self.assertEqual(client.session_acu("devin-one"), 2.5)
         self.assertTrue(calls[0][1].endswith("/consumption/daily/sessions/devin-one"))
+
+
+CONTEXT_CANARY = "PRIVATE_CONTEXT_PACKET_CANARY_TEXT"
+
+
+@unittest.skipUnless(os.name == "posix", "private packets need POSIX protections")
+class ContextInjectionTests(WorkOrderCase):
+    """The hosted builder receives the common packet only inside create/message input."""
+
+    def setUp(self):
+        super().setUp()
+        self.fixture = fixtures.ContextDeliveryTests(methodName="runTest")
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.backend = self.fixture.backend
+        self.backend.result["result"]["results"][0]["text"] = CONTEXT_CANARY
+        self.result = fetch(self.fixture.store, "example", self.fixture.spec, backend=self.backend, refresh=True)
+        self.context = packet_context(
+            self.fixture.store, "example", self.result["packet_handle"], self.fixture.spec["policy"],
+            repository="owner/repo", work_item="EXAMPLE-1", backend=self.backend)
+
+    def private_files(self):
+        return [path for path in self.root.rglob("*") if path.is_file()]
+
+    def assert_not_persisted(self, *outputs):
+        serialized = json.dumps(outputs)
+        for private in (CONTEXT_CANARY, "Packet identity", "one@example.invalid", self.result["packet_handle"]):
+            self.assertNotIn(private, serialized)
+        for path in self.private_files():
+            self.assertNotIn(CONTEXT_CANARY.encode(), path.read_bytes())
+
+    def test_preview_never_retrieves_context(self):
+        calls = []
+        def spy():
+            calls.append(1)
+            return self.context()
+        for command in ("dispatch", "clarify", "fix"):
+            output = self.service.run(command, self.order, context=spy, request="r", prose="p")
+            self.assertTrue(output["apply_required"])
+        self.assertEqual(calls, [])
+        self.assertFalse((self.root / "builder").exists())
+
+    def test_create_and_message_receive_the_common_evidence_once_each(self):
+        outputs = []
+        with patch.object(self.provider, "create", wraps=self.provider.create) as create, \
+                patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            outputs.append(self.run_order("dispatch", context=self.context))
+            prompt = create.call_args.args[0]
+            self.assertIn(CANARY, prompt)
+            self.assertIn(CONTEXT_CANARY, prompt)
+            self.assertIn("Packet identity: " + self.result["packet_handle"], prompt)
+            self.assertNotIn("one@example.invalid", prompt)
+            self.assertEqual(prompt.split("\n").count("Private evidence for this work item. "
+                                                     "Packet identity: " + self.result["packet_handle"]), 1)
+            outputs.append(self.run_order("dispatch", context=self.context))
+            self.assertEqual(create.call_count, 1)
+            with self.assertRaisesRegex(RemoteError, "request_conflict"):
+                self.run_order("dispatch")  # Changed create input, even by omission, never redispatches.
+            self.assertEqual(create.call_count, 1)
+            outputs.append(self.run_order("clarify", request="c-1", prose=CANARY, context=self.context))
+            self.assertIn(CONTEXT_CANARY, message.call_args.args[1])
+            self.assertIn(CANARY, message.call_args.args[1])
+            outputs.append(self.run_order("clarify", request="c-2", prose=CANARY))
+            self.assertNotIn(CONTEXT_CANARY, message.call_args.args[1])
+            self.complete(round=2)
+            outputs.append(self.run_order("collect"))
+            outputs.append(self.run_order("fix", request="fix-1", prose=CANARY, reviewed_head=HEAD,
+                                          context=self.context))
+            self.assertIn(CONTEXT_CANARY, message.call_args.args[1])
+            self.assertEqual(message.call_count, 3)
+        self.assert_not_persisted(*outputs)
+        with self.remote.store.locked(_key(self.key)) as locked:
+            self.assertNotIn(CONTEXT_CANARY, json.dumps(locked.read()))
+
+    def test_status_collect_and_cancel_reject_context(self):
+        self.run_order("dispatch")
+        for command in ("status", "collect", "cancel"):
+            with self.subTest(command=command), self.assertRaisesRegex(RemoteError, "invalid_request"):
+                self.run_order(command, request="cancel-1", context=self.context)
+
+    def test_authorization_is_rechecked_and_fails_closed_without_a_provider_write(self):
+        cases = {
+            "wrong_identity": lambda: setattr(self.backend, "wrong_identity", True),
+            "revoked": lambda: setattr(self.backend, "revoked", True),
+            "wrong_repository": lambda: setattr(
+                self, "context", packet_context(
+                    self.fixture.store, "example", self.result["packet_handle"], self.fixture.spec["policy"],
+                    repository="other/repo", work_item="EXAMPLE-1", backend=self.backend)),
+            "changed_evidence": lambda: fetch(self.fixture.store, "example", self.fixture.spec,
+                                              backend=self.backend, refresh=True),
+            "garbage": lambda: setattr(self, "context", lambda: CANARY),
+        }
+        for name, arrange in cases.items():
+            with self.subTest(case=name):
+                self.setUp()
+                arrange()
+                with patch.object(self.provider, "create", wraps=self.provider.create) as create:
+                    with self.assertRaisesRegex(RemoteError, "context_unavailable"):
+                        self.run_order("dispatch", context=self.context)
+                    self.assertEqual(create.call_count, 0)
+                self.assertNotIn(CONTEXT_CANARY.encode(), b"".join(p.read_bytes() for p in self.private_files()))
+        self.setUp()
+        self.run_order("dispatch", context=self.context)
+        with patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            with self.assertRaisesRegex(RemoteError, "context_unavailable"):
+                self.run_order("clarify", request="c-1", prose=CANARY, context=lambda: CANARY)
+            self.assertEqual(message.call_count, 0)
+        self.assertEqual(self.run_order("status")["round"], 0)  # No local round was consumed.
+        self.assertEqual(self.run_order("clarify", request="c-1", prose=CANARY,
+                                        context=self.context)["round"], 1)
+        self.backend.revoked = True
+        with patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            with self.assertRaisesRegex(RemoteError, "context_unavailable"):
+                self.run_order("clarify", request="c-2", prose=CANARY, context=self.context)
+            self.assertEqual(message.call_count, 0)
+        self.assertEqual(self.run_order("status")["round"], 1)
+
+    def test_optional_context_is_omitted_only_by_explicit_choice(self):
+        with patch.object(self.provider, "create", wraps=self.provider.create) as create:
+            self.run_order("dispatch", context=None)
+            self.assertNotIn("Packet identity", create.call_args.args[0])
+
+    def test_combined_input_is_bounded(self):
+        with patch.object(self.provider, "create", wraps=self.provider.create) as create:
+            with self.assertRaisesRegex(RemoteError, "context_budget_exceeded"):
+                self.run_order("dispatch", context=lambda: "Packet identity: x\n" + "y" * MAX_INPUT_BYTES)
+            self.assertEqual(create.call_count, 0)
 
 
 if __name__ == "__main__":

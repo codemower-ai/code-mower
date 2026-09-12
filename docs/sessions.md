@@ -136,7 +136,7 @@ different participant; review lanes then exclude that builder. `--output`
 accepts a repository-relative path only.
 
 The command rechecks the session lease and trusted context policy, authorizes
-the calling Claude or Codex host, fetches through the existing bounded provider
+the calling Claude, Codex, or Devin host, fetches through the existing bounded provider
 contract, drafts through the existing work-order contract, and saves only a
 request hash plus opaque packet and work-order references in private session
 state. Its output does not contain the work-item identity, query, connection,
@@ -182,7 +182,7 @@ Running `prepare` while publication is pending or uncertain preserves the saved
 intent and directs the session back to `attach`; it never drops the revision or
 repeats provider authorization while publication recovery is unresolved.
 
-After a selected Claude or Codex reviewer finishes, give its private findings
+After a selected Claude, Codex, or Devin reviewer finishes, give its private findings
 to the selected builder without copying the revision:
 
 ```bash
