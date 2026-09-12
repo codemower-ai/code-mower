@@ -1358,6 +1358,16 @@ class DevinMultiLaneReadinessTests(unittest.TestCase):
                 )
                 self.assertIn("'ops/custom mower.yml'", selection.remediation)
                 self.assertIn("'custom profile'", selection.remediation)
+                # The saved selection is repository-wide, so it cannot be aligned
+                # for one profile while another Devin profile keeps a named lane
+                # the new selection contradicts. Profiles are described, not
+                # enumerated, so nothing outside the selected lanes is echoed.
+                self.assertIn("every profile that selects Devin", selection.remediation)
+                self.assertIn(
+                    "if profiles intentionally keep different Devin transports",
+                    selection.remediation,
+                )
+                self.assertIn("`devin`", selection.remediation)
                 for forbidden in ("--interactive", "--with", "--set-transport"):
                     self.assertNotIn(forbidden, selection.remediation)
 
@@ -1455,6 +1465,92 @@ class DevinMultiLaneReadinessTests(unittest.TestCase):
                         ],
                         list(DEFAULT_PARTICIPANTS),
                     )
+
+    @staticmethod
+    def _retarget_lane(config: dict, lane_id: str, transport: str) -> None:
+        """Apply the lane edits the manual guidance names, and nothing else."""
+        lane = config["lanes"][lane_id]
+        lane.update(
+            product="devin",
+            provider="devin" if transport == HOSTED_TRANSPORT else "devin_cli",
+            transport=transport,
+            driver=TRANSPORTS[transport].driver,
+        )
+        lane.pop("capabilities", None)
+        lane["provider_config"]["campaign_transport"] = transport
+
+    def test_guidance_keeps_multiple_devin_profiles_coherent(self) -> None:
+        """Aligning one profile must not contradict another Devin profile.
+
+        The saved selection is repository-wide, so guidance that changed it for the
+        inspected profile while leaving a second profile's named lane alone would
+        make that profile report a transport it does not declare. Both offered
+        routes are followed here: align every Devin profile together, or keep the
+        transports apart under the generic selection with no saved transport.
+        """
+        for start, wanted in (
+            (LOCAL_TRANSPORT, HOSTED_TRANSPORT),
+            (HOSTED_TRANSPORT, LOCAL_TRANSPORT),
+        ):
+            with self.subTest(start=start, wanted=wanted):
+                shared = self._named_devin_config(start, ("team_devin",))
+                shared["lanes"]["night_devin"] = {
+                    **copy.deepcopy(shared["lanes"]["team_devin"]),
+                    "labels": {
+                        "needs": "needs-night-devin",
+                        "done": "night-devin-done",
+                        "blocked": "night-devin-blocked",
+                    },
+                }
+                shared["profiles"]["nightly"] = {
+                    "description": "Nightly builders with a lane this repository named.",
+                    "lanes": ["codex", "night_devin"],
+                }
+                self.assertEqual(validate_config(shared), [])
+                together = copy.deepcopy(shared)
+                for lane_id in ("team_devin", "night_devin"):
+                    self._retarget_lane(together, lane_id, wanted)
+                together["session_defaults"]["transports"]["devin"] = wanted
+                together["session_defaults"]["participants"] = [
+                    TRANSPORT_PARTICIPANT_ALIASES[wanted]
+                    if name == TRANSPORT_PARTICIPANT_ALIASES[start]
+                    else name
+                    for name in together["session_defaults"]["participants"]
+                ]
+                self.assertEqual(validate_config(together), [])
+                for name in ("recommended", "nightly"):
+                    self.assertEqual(
+                        selected_devin_transport(
+                            together,
+                            lanes=tuple(together["profiles"][name]["lanes"]),
+                            profile=name,
+                        ),
+                        wanted,
+                    )
+
+                apart = copy.deepcopy(shared)
+                self._retarget_lane(apart, "team_devin", wanted)
+                del apart["session_defaults"]["transports"]
+                apart["session_defaults"]["participants"] = [
+                    "devin" if name == TRANSPORT_PARTICIPANT_ALIASES[start] else name
+                    for name in apart["session_defaults"]["participants"]
+                ]
+                self.assertEqual(validate_config(apart), [])
+                for name, transport in (("recommended", wanted), ("nightly", start)):
+                    active = tuple(apart["profiles"][name]["lanes"])
+                    self.assertEqual(
+                        selected_devin_transport(apart, lanes=active, profile=name),
+                        transport,
+                    )
+                    findings = _readiness(
+                        apart,
+                        env={},
+                        lanes=active,
+                        config_path="ops/custom mower.yml",
+                        config_profile=name,
+                    )
+                    selection = _finding(findings, "provider.devin.selection")
+                    self.assertEqual(selection.detail["transport"], transport)
 
 
 class DevinTransportSwitchTests(unittest.TestCase):

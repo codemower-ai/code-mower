@@ -268,7 +268,10 @@ hosted review retains lane `devin` and its existing labels. Aliases that name a
 transport preserve it through setup and session creation. Selecting both
 transports in one product session fails with a bounded selection message. An
 existing recommended profile containing only the hosted lane retains that choice.
-If both lanes are active, set `session_defaults.transports.devin` explicitly.
+If both lanes are active, set `session_defaults.transports.devin` explicitly. That
+setting is repository-wide: it applies to every profile, so align each Devin
+profile's lanes with it, or leave it unset when profiles intentionally keep
+different Devin transports and let each profile's lane declaration select its own.
 
 Briefs expose an `execution` block with versioned capability metadata, unchecked
 readiness, and explicit gaps. The modes describe maintained Code Mower paths:

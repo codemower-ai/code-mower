@@ -881,6 +881,14 @@ def custom_lane_guidance(
     or transport-specific participant alias keeps selecting the old transport. The
     guidance names those settings too, still without reading or echoing the
     configuration.
+
+    That saved selection is repository-wide, so it cannot be aligned for one
+    profile in isolation: another profile selecting its own named Devin lane would
+    then be contradicted by it. The guidance therefore states the coherent
+    contract — align every Devin-selecting profile's named lanes before saving a
+    transport, or, when profiles intentionally keep different Devin transports,
+    save no transport-specific selection or alias at all and let each profile's
+    lane declaration select its own. Profiles are described, never enumerated.
     """
     if transport not in SELECTABLE_TRANSPORTS:
         raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
@@ -898,11 +906,16 @@ def custom_lane_guidance(
         f"{LANE_PROVIDERS[transport]}`, `transport: {transport}`, and `driver: "
         f"{entry.driver}`; drop each lane's `capabilities` block to use the "
         f"maintained defaults for {transport} (or restate them for it) and retarget "
-        f"any `provider_config.campaign_transport` to {transport}; point the saved "
-        f"selection at it by setting `session_defaults.transports.devin: {transport}` "
-        f"and replacing any Devin participant alias with "
-        f"`{TRANSPORT_PARTICIPANT_ALIASES[transport]}`; leave every other lane field, "
-        "participant, and profile lane as configured, and review the diff"
+        f"any `provider_config.campaign_transport` to {transport}; the saved "
+        "selection is repository-wide, so inspect every profile that selects Devin "
+        "and retarget its named lanes the same way before setting "
+        f"`session_defaults.transports.devin: {transport}` and replacing any Devin "
+        f"participant alias with `{TRANSPORT_PARTICIPANT_ALIASES[transport]}` — if "
+        "profiles intentionally keep different Devin transports, save no "
+        "`session_defaults.transports.devin` and no transport-specific alias (name "
+        "the product as `devin`) so each profile's lane declaration selects its own "
+        "transport; leave every other lane field, participant, and profile lane as "
+        "configured, and review the diff"
     )
     if not profile:
         return f"{action}, then rerun {_unpinned_guidance('code-mower doctor --devin')}"

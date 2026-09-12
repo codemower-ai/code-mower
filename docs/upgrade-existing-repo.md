@@ -236,10 +236,15 @@ yourself: set `product: devin`, `provider: devin_cli` (hosted: `provider: devin`
 `hosted_bridge` on each named lane. Drop each lane's `capabilities` block to use the
 maintained defaults for the new transport (or restate them for it) and retarget any
 `provider_config.campaign_transport`, otherwise validation rejects declarations that
-disagree with the transport. Point the saved selection at it too, by setting
-`session_defaults.transports.devin` and replacing any Devin participant alias
-(`devin-cli` local, `devin-api-v3` hosted); a stale selection keeps choosing the old
-transport. Leave every other lane field, participant, and profile lane as
+disagree with the transport. The saved selection is repository-wide, so inspect
+every profile that selects Devin and retarget its named lanes the same way before
+setting `session_defaults.transports.devin` and replacing any Devin participant
+alias (`devin-cli` local, `devin-api-v3` hosted); a stale selection keeps choosing
+the old transport, and a selection aligned for one profile alone contradicts
+another profile's named lane. If your profiles intentionally keep different Devin
+transports, save no `session_defaults.transports.devin` and no transport-specific
+alias — name the product as `devin` and let each profile's lane declaration select
+its own transport. Leave every other lane field, participant, and profile lane as
 configured, review the diff, then rerun the pinned doctor command.
 No generated command can retarget a lane your repository named, and the participant
 picker would rebuild the profile around the lanes it knows.
