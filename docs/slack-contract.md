@@ -187,3 +187,7 @@ not to user-controlled contract fields.
 Run `python -m unittest discover -s tests -p test_slack_contract.py` with Python
 3.12+. The module imports only the standard library and the schema is included by
 the package's existing `*.json` package-data rule. No setup defaults change.
+
+The authenticated boundary and minimal manifest are now implemented by #917;
+see [Slack authenticated ingress](slack-ingress.md) for the bounded HTTP seam,
+receipt-store interface, supported surface and remaining deployment obligations.
