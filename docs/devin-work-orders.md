@@ -62,6 +62,15 @@ structured result. The lifecycle treats that result as complete. Explicit failur
 suspension, and `waiting_for_approval` still block collection even when an intermediate
 structured result exists.
 
+After a clarification or fix advances the expected round, Devin may briefly replay the
+previous structured result. Work-order verification reports `stale_completion`, releases
+only that compare-bound private local artifact and collect count, and records a safe
+`collect_after_provider_update` next action. A later collect can then read the exact new
+round. Malformed results and PR-binding failures receive the same local recovery without
+weakening verification. This path sends no provider request and never repeats paid
+dispatch; status exposes only the closed rejection reason and next action, not result
+content.
+
 The GitHub adapter makes one query for at most two PRs on the exact head branch,
 including closed/merged PRs, then two fresh reads of the claimed PR. Each call has a
 30-second deadline, a 512 KiB response bound, no redirects, no retries, and no automatic

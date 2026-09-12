@@ -332,11 +332,18 @@ class DevinWorkOrders:
     def _verify(self, order, claim, round_number):
         if (not isinstance(claim, dict) or set(claim) != set(COMPLETION_JSON_SCHEMA["required"])
                 or claim.get("schema") != COMPLETION_SCHEMA
-                or type(claim.get("round")) is not int or claim["round"] != round_number
+                or type(claim.get("round")) is not int
                 or claim.get("repository") != order.repository
                 or type(claim.get("issue")) is not int or claim["issue"] != order.issue
                 or not _positive(claim.get("pr_number"))
                 or not isinstance(claim.get("head_sha"), str) or not SHA.fullmatch(claim["head_sha"])):
+            raise RemoteError("invalid_completion")
+        if claim["round"] < round_number:
+            raise RemoteError(
+                "stale_completion: wait for the provider to publish the current work-order "
+                "round, then collect again"
+            )
+        if claim["round"] != round_number:
             raise RemoteError("invalid_completion")
         page = _github_call(self.github.candidates, order.repository, order.branch, limit=2)
         if (not isinstance(page, Candidates) or page.complete is not True
@@ -408,7 +415,8 @@ class DevinWorkOrders:
                     raise RemoteError("work_order_not_found")
                 record = {"binding": self._binding(order), "round": 0, "claim": None,
                           "evidence": None, "message": None, "observed_acu": None, "pr_number": None,
-                          "requests": [], "context": context_state, "input": input_digest}
+                          "requests": [], "context": context_state, "input": input_digest,
+                          "completion_rejection": None}
                 locked.write(record)  # Stable identity survives remote create uncertainty.
             if record["binding"] != self._binding(order):
                 raise RemoteError("work_order_binding_mismatch")
@@ -452,7 +460,7 @@ class DevinWorkOrders:
                     evidence, context_state = self._evidence(order, context)
                     message = self._message(record["round"] + 1, reviewed_head, prose, evidence)
                     record["round"] += 1
-                    record.update(claim=None, evidence=None, message={
+                    record.update(claim=None, evidence=None, completion_rejection=None, message={
                         "request": request, "fingerprint": fingerprint, "pending": True,
                         "context": context_state, "input": _hash([message])})
                     record["requests"].append(request)
@@ -479,22 +487,43 @@ class DevinWorkOrders:
                 locked.write(record)
                 if result["state"] == "complete" and result["reason"] == "none":
                     claim = self.remote.private_result(key)
-                    evidence = self._verify(order, claim, record["round"])
-                    if record["pr_number"] not in (None, claim["pr_number"]):
-                        raise RemoteError("pull_request_binding_mismatch")
+                    try:
+                        evidence = self._verify(order, claim, record["round"])
+                        if record["pr_number"] not in (None, claim["pr_number"]):
+                            raise RemoteError("pull_request_binding_mismatch")
+                    except RemoteError as exc:
+                        # Verification consumes no provider mutation. Release only
+                        # this compare-bound local artifact/count so a corrected
+                        # provider result can be collected on the next attempt.
+                        self.remote.discard_private_result(key, claim)
+                        reason = (
+                            "stale_completion"
+                            if str(exc).startswith("stale_completion")
+                            else "invalid_completion"
+                        )
+                        record["completion_rejection"] = {
+                            "state": "rejected", "reason": reason,
+                            "next_action": "collect_after_provider_update",
+                        }
+                        locked.write(record)
+                        raise
                     acu = self.remote.observed_acu(key)
                     if acu is not None and (type(acu) not in (int, float)
                                             or not 0 <= acu <= 1e9 or not math.isfinite(acu)):
                         raise RemoteError("invalid_usage")
                     record.update(claim=claim, evidence=evidence, observed_acu=acu,
-                                  pr_number=claim["pr_number"])
+                                  pr_number=claim["pr_number"], completion_rejection=None)
                     locked.write(record)
             # Evidence is returned only on freshly verified collect, never status/dispatch.
-            return {"schema": EVIDENCE_SCHEMA, "builder": self.transport.product,
-                    "transport": "fake" if self.remote.provider.name == "fake" else self.transport.transport,
-                    "session": result, "round": record["round"],
-                    "acu_limit": order.acu_limit, "observed_acu": record["observed_acu"],
-                    "verified_pr": record["evidence"] if command == "collect" else None,
-                    "context": {"policy": order.context_policy, "dispatch": record.get("context"),
-                                "message": (record["message"] or {}).get("context")},
-                    "merge_authority": False}
+            response = {"schema": EVIDENCE_SCHEMA, "builder": self.transport.product,
+                        "transport": "fake" if self.remote.provider.name == "fake" else self.transport.transport,
+                        "session": result, "round": record["round"],
+                        "acu_limit": order.acu_limit, "observed_acu": record["observed_acu"],
+                        "verified_pr": record["evidence"] if command == "collect" else None,
+                        "context": {"policy": order.context_policy,
+                                    "dispatch": record.get("context"),
+                                    "message": (record["message"] or {}).get("context")},
+                        "merge_authority": False}
+            if record.get("completion_rejection") is not None:
+                response["completion"] = record["completion_rejection"]
+            return response
