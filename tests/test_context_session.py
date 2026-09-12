@@ -87,12 +87,35 @@ class ContextSessionContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ContextError, "different work item"):
             context_session.create(self.store, self.session, work_item="ITEM-2", policy=POLICY)
 
+    def test_g1_custom_layout_and_shape_migrate_without_losing_the_binding(self):
+        legacy_root = self.root / "legacy"
+        legacy = private_store(legacy_root)
+        record = context_session.create(
+            legacy, self.session, work_item="ITEM-1", policy=POLICY,
+        )
+        g1_record = {
+            key: value
+            for key, value in record.items()
+            if key not in {"builder", "query_mode", "retrieval_source", "request_hash"}
+        }
+        with legacy.locked("session-" + self.session["id"]) as locked:
+            locked.write(g1_record)
+
+        migrated_store = context_session.association_store(legacy_root)
+        migrated = context_session.read(migrated_store, self.session["id"])
+        self.assertEqual(migrated, record)
+        self.assertFalse((legacy_root / ("session-" + self.session["id"] + ".json")).exists())
+        self.assertTrue(
+            (legacy_root / "sessions" / ("session-" + self.session["id"] + ".json")).is_file()
+        )
+
     def test_generation_update_detects_concurrency_and_cannot_change_identity(self):
         context_session.create(self.store, self.session, work_item="ITEM-1", policy=POLICY)
         changed = context_session.update(
             self.store, self.session["id"], expected_generation=0,
             changes={
-                "stage": "prepared", "builder": "codex", "request_hash": "c" * 64,
+                "stage": "prepared", "builder": "codex", "query_mode": "work_item",
+                "request_hash": "c" * 64,
                 "packet": "b" * 32, "work_order": "work-order.md",
             },
         )
@@ -136,7 +159,7 @@ class ContextSessionContractTests(unittest.TestCase):
             with self.subTest(work_order=work_order), self.assertRaises(ContextError):
                 context_session.validate({
                     **copy.deepcopy(record), "stage": "prepared", "builder": "codex",
-                    "request_hash": "c" * 64,
+                    "query_mode": "work_item", "request_hash": "c" * 64,
                     "packet": "b" * 32, "work_order": work_order,
                 })
 

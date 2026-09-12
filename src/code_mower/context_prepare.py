@@ -86,6 +86,60 @@ def _work_order_destination(
     return reference, destination
 
 
+def _replacement_reference(session_id: str, generation: int) -> str:
+    return f".code-mower/work-orders/session-{session_id}-g{generation}.md"
+
+
+def _reuse_existing_work_order(
+    path: Path,
+    *,
+    title: str,
+    repo: str,
+    builder: str,
+    packet: str,
+    review_lanes: tuple[str, ...],
+) -> bool:
+    manifest_path = path.with_suffix(".json")
+    event_path = path.with_name(f"{path.stem}.cloud-event.json")
+    artifacts = (path, manifest_path, event_path)
+    if not any(item.exists() for item in artifacts):
+        return False
+    if not all(item.is_file() for item in artifacts):
+        raise ContextError(
+            "guided work-order output already exists or is incomplete; choose a different --output"
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise ContextError(
+            "guided work-order output already exists or is incomplete; choose a different --output"
+        ) from None
+    expected_source = {
+        "type": "guided_context_session", "repo": repo, "builder": builder,
+    }
+    matches = (
+        isinstance(manifest, Mapping)
+        and manifest.get("schema") == work_orders.WORK_ORDER_SCHEMA
+        and manifest.get("title") == title
+        and manifest.get("repo") == repo
+        and manifest.get("output_path") == str(path)
+        and manifest.get("context_packet") == packet
+        and manifest.get("role_lenses") == ["implementation"]
+        and manifest.get("review_lanes") == list(review_lanes)
+        and manifest.get("source") == expected_source
+        and manifest.get("manifest_path") == str(manifest_path)
+        and manifest.get("cloud_event_path") == str(event_path)
+        and isinstance(event, Mapping)
+        and event == work_orders.build_work_order_cloud_event(manifest)
+    )
+    if not matches:
+        raise ContextError(
+            "guided work-order output already exists for different input; choose a different --output"
+        )
+    return True
+
+
 def _report(
     status: str,
     *,
@@ -176,14 +230,29 @@ def prepare(
     effective_source = _text(source, maximum=80) if source is not None else None
     recipient = record["host"] + ":orchestrator"
     fingerprint = _request_hash(effective_query, effective_source, recipient)
-    if explicit_query and record["request_hash"] not in (None, fingerprint) and not refresh:
-        raise ContextError("retrieval input changed; rerun prepare with --refresh")
+    if not refresh and record["request_hash"] is not None:
+        source_changed = record["retrieval_source"] != effective_source
+        query_changed = (
+            explicit_query or record["query_mode"] == "work_item"
+        ) and record["request_hash"] != fingerprint
+        if source_changed or query_changed:
+            raise ContextError("retrieval input changed; rerun prepare with --refresh")
 
     body = _work_order_body(body_file)
     title = _text(title or "Selected work item", maximum=200)
     lanes = _review_lanes(record, selected_builder)
+    replacement = refresh or (
+        record["builder"] is not None and record["builder"] != selected_builder
+    )
+    existing_work_order = record["work_order"]
+    if output is None and record["stage"] != "selected" and (
+        replacement or existing_work_order is None
+    ):
+        existing_work_order = _replacement_reference(
+            record["session_id"], record["generation"] + 1,
+        )
     work_order_ref, work_order_path = _work_order_destination(
-        repo_root, record["session_id"], output, record["work_order"],
+        repo_root, record["session_id"], output, existing_work_order,
     )
     packet_store = packet_store or ContextStore(context_root)
 
@@ -230,7 +299,8 @@ def prepare(
             record["session_id"],
             expected_generation=record["generation"],
             changes={
-                "stage": "preparing", "builder": selected_builder, "work_order": None,
+                "stage": "preparing", "builder": selected_builder,
+                "work_order": work_order_ref,
             },
         )
 
@@ -243,7 +313,7 @@ def prepare(
             association_store,
             record["session_id"],
             expected_generation=record["generation"],
-            changes={"builder": selected_builder},
+            changes={"builder": selected_builder, "work_order": work_order_ref},
         )
 
     if record["stage"] == "preparing" and record["packet"] is None and not refresh:
@@ -259,9 +329,11 @@ def prepare(
             changes={
                 "stage": "preparing",
                 "builder": selected_builder,
+                "query_mode": "stdin" if explicit_query else "work_item",
+                "retrieval_source": effective_source,
                 "request_hash": fingerprint,
                 "packet": None,
-                "work_order": None,
+                "work_order": work_order_ref,
                 "pr": None,
                 "head": None,
                 "revision": None,
@@ -310,29 +382,37 @@ def prepare(
             changes={"packet": packet_handle},
         )
 
-    try:
-        work_orders.draft_work_order(
-            title=title,
-            source_text=body,
-            repo=record["repo"],
-            role_lenses=("implementation",),
-            review_lanes=lanes,
-            source={
-                "type": "guided_context_session",
-                "repo": record["repo"],
-                "builder": selected_builder,
-            },
-            output=work_order_path,
-            force=True,
-            context_packet=packet_handle,
-        )
-    except (OSError, ValueError) as exc:
-        raise ContextError("guided work-order preparation did not complete") from exc
+    if not _reuse_existing_work_order(
+        work_order_path,
+        title=title,
+        repo=record["repo"],
+        builder=selected_builder,
+        packet=packet_handle,
+        review_lanes=lanes,
+    ):
+        try:
+            work_orders.draft_work_order(
+                title=title,
+                source_text=body,
+                repo=record["repo"],
+                role_lenses=("implementation",),
+                review_lanes=lanes,
+                source={
+                    "type": "guided_context_session",
+                    "repo": record["repo"],
+                    "builder": selected_builder,
+                },
+                output=work_order_path,
+                force=False,
+                context_packet=packet_handle,
+            )
+        except (OSError, ValueError) as exc:
+            raise ContextError("guided work-order preparation did not complete") from exc
     record = context_session.update(
         association_store,
         record["session_id"],
         expected_generation=record["generation"],
-        changes={"stage": "prepared", "work_order": work_order_ref},
+        changes={"stage": "prepared"},
     )
     return _report(
         "prepared",

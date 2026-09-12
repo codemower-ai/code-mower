@@ -44,8 +44,10 @@ command performs the existing online authorization and packet fetch, writes a
 local context-aware work order, and records its opaque references in protected
 session state. Repeating it reauthorizes the packet without repeating the
 search. Use `--refresh` only to retry a failed/interrupted search or intentionally
-replace changed retrieval input. The lower-level commands below remain useful
-for expert scripting and diagnostics.
+replace changed retrieval input. Refreshes and builder handoffs create a new
+generated work-order path so local edits to the previous work order are not
+overwritten. The lower-level commands below remain useful for expert scripting
+and diagnostics.
 
 ## Work order and builder
 

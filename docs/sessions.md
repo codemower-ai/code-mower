@@ -142,13 +142,17 @@ request hash plus opaque packet and work-order references in private session
 state. Its output does not contain the work-item identity, query, connection,
 account, packet handle, citations, or provider diagnostics. The work order is
 local under `.code-mower/` and names only the opaque packet needed by approved
-participants.
+participants. Custom private-state roots move any G1 flat session association
+into the `sessions/` namespace under the same protected locks when first read.
 
 Repeating a completed prepare reauthorizes and reuses the packet without
 another organization search. A packet retrieved before a local work-order
 write was interrupted is also reused on resume. A search that failed or was
 interrupted before its packet was recorded remains reserved; verify access and
 rerun with explicit `--refresh`. Changed query text also requires `--refresh`.
+Builder handoffs and refreshes write a new generated work-order path, preserving
+the prior work order and any local edits. A crash after all work-order artifacts
+were written reuses those matching artifacts rather than overwriting them.
 Optional context failure leaves ordinary work usable, while required context
 failure pauses dependent work. A session with no context provider reports
 `not_configured` and keeps its ordinary workflow.
