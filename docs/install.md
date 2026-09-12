@@ -122,6 +122,42 @@ uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mowe
 code-mower --version
 ```
 
+## Optional Coworker Support
+
+The base install is enough for Claude, Codex, sessions, reviews, and local
+reports. Install the `coworker` extra only when a repository will use an
+authorized Coworker organizational-context connection. Use the same installer
+and interpreter that own the `code-mower` command.
+
+With pipx:
+
+```bash
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
+  'code-mower[coworker]==1.3.1'
+code-mower context --help
+```
+
+With uv:
+
+```bash
+uv tool install --python 3.12 --reinstall --refresh-package code-mower \
+  'code-mower[coworker]==1.3.1'
+code-mower context --help
+```
+
+For a contributor checkout:
+
+```bash
+.venv/bin/python -m pip install -e ".[test,coworker]"
+.venv/bin/code-mower context --help
+```
+
+Do not install this extra through an unrelated ambient `python -m pip`; that
+can place the dependency outside the pipx, uv, or contributor environment that
+runs Code Mower. Account identity, workspace selection, and credentials remain
+in the private connection store. See [Optional Organizational Context
+Setup](context-setup.md) for the connection flow.
+
 ## Switching Between pipx And uv
 
 Avoid leaving two different `code-mower` commands competing on `PATH`. If this

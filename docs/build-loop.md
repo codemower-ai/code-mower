@@ -149,7 +149,7 @@ Run `code-mower board record --repo OWNER/REPO` for a one-shot local history
 snapshot, or `code-mower board serve --repo OWNER/REPO --record-events` when
 you want the browser Board to append redacted snapshots while it polls.
 
-For the v1.0 supervised pilot, run the controller in dry-run mode before an
+For a supervised pilot, run the controller in dry-run mode before an
 orchestrator acts on the queue:
 
 ```bash

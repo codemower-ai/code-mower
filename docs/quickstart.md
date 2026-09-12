@@ -120,9 +120,12 @@ The prompt smoke is the real readiness check. If `claude auth status` says
 logged in but the prompt returns an auth error, follow
 [Troubleshooting](troubleshooting.md#claude-code-reports-logged-in-but-audits-fail).
 
-## 4. Create The Automation Tokens
+## 4. Optional: Prepare Automation Tokens
 
-Create these before you run Easy Mode on a real repository:
+Skip this section for the first manual audit. Easy Mode, adoption doctor, local
+audits, and manual merges work without automation tokens. Add these values only
+when you are ready to let generated workflows dispatch builders, post labels or
+comments, and rearm audit lanes:
 
 - `DISPATCH_TOKEN`: a human-owned fine-grained PAT stored as a repository
   Actions secret.
@@ -162,7 +165,7 @@ from those events, and tools such as Cursor ignore bot-authored `@cursor`
 mentions. Code Mower uses the human-owned token for generated agent PR labels,
 fix-round comments, and audit rearming so the automation actually fires.
 
-Keep these per-lane names only as compatibility fallbacks when an existing beta
+Keep these per-lane names only as compatibility fallbacks when an existing
 install already uses separate credentials:
 
 - `CODEX_AUDIT_LABEL_TOKEN`
@@ -247,12 +250,13 @@ orchestrator and default builder. Explicit refresh and fresh authorization
 checks remain in force. See [Optional organizational context setup](context-setup.md)
 and [Context delivery](context-delivery.md).
 
-Keep SaaS reviewers such as Gitar, Cursor BugBot, CodeRabbit, Qodo, Greptile,
-and Devin informational/manual until your own calibration data supports
+Keep optional hosted reviewers such as Gitar, Cursor BugBot, CodeRabbit, Qodo,
+and Greptile informational/manual until your own calibration data supports
 promotion. Gitar is informational and quota-bound. Automatic processing can
 pause until the provider quota resets, and a manual `Gitar review` comment may
 be needed to refresh its signal. It is never required for the default Code
-Mower gate.
+Mower gate. Devin's hosted transport is a builder lane; `devin_cli` can run
+local build or audit commands, but it remains informational until calibrated.
 
 ## 5. Run Easy Mode
 
@@ -382,7 +386,7 @@ wrapper env gaps as setup tasks for the machine that will execute those lanes.
 When default adoption output shows local provider setup gaps on an observer
 host, doctor includes the same posture commands as next-step hints in text and
 JSON.
-`doctor --supervised-pilot` adds a compact v1.0 readiness rollup. Manual pilot
+`doctor --supervised-pilot` adds a compact readiness rollup. Manual pilot
 mode separates blockers from warnings and promotion to-dos, while
 `--promoted-pilot` treats a missing required `code-mower/gate`, repository
 auto-merge, or merge-capable gate credential as a blocker before green audits

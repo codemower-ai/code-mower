@@ -143,27 +143,9 @@ Cut a v0.5 alpha or beta only after:
   with an operator-token fallback; and
 - the privacy boundary is documented and tested.
 
-## Current Release
+## Current Documentation
 
-`v1.3.1` is the current supervised-pilot release. It keeps the
-local-first package path from alpha.1, the cloud doctor service-readiness check
-from alpha.5, the hardened provider-auth doctor diagnostics needed for
-early-adopter troubleshooting, the dogfood dry-run path that feeds the
-CodeMower.com dashboard, and the draft auto-discovery path that helps first
-users reach a reviewable value report without hand-building every corpus item.
-It also adds a first-user readiness scorecard to the package-install rehearsal
-so install, doctor, report, and cloud dry-run privacy gates can be checked at a
-glance, and it carries provider/model/version provenance through cloud bundles
-so CodeMower.com can separate benchmark-grade evidence from operational
-dogfood. The current release also carries the provider-contract hardening queue,
-the `code-mower lanes status` operator snapshot, Antigravity/Gemini lane
-separation, builder-experiment metadata capture, and the hosted Cursor lane id
-as `cursor` while accepting legacy `grok-bot` inputs during the migration
-window. Later v0.5 beta dogfood follow-ups keep owner-bound work out of lane WIP,
-add lane-liveness and fix-round template support, make human-token posture
-first-class in setup/doctor, separates owner-decision escalation from raw owner
-notifications, and teaches provider-integration prompts to avoid ambiguous
-sandbox/live shared namespaces. Earlier alpha hardening also keeps the package
-materializer self-hosting from installed checkouts, gates release readiness on
-generated standalone package versions, and rejects unsafe structured cloud
-metadata before export or upload instead of relying on hosted-side cleanup.
+This historical plan is not maintained as a current release summary. Use
+[Current State And Roadmap](current-state-and-roadmap.md) for present
+capabilities and limits, and [Release History](release-history.md) for the
+version-by-version record.

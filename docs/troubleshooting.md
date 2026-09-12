@@ -125,7 +125,7 @@ command -v code-mower
 code-mower --version
 ```
 
-If pipx should own the command, reinstall the exact beta with cache bypass:
+If pipx should own the command, reinstall the exact release with cache bypass:
 
 ```bash
 export CODE_MOWER_PYTHON="$(command -v python3.12)"

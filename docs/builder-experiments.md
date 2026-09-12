@@ -8,9 +8,9 @@ Reviewer calibration answers which reviewers catch useful defects. Builder
 experiments answer which peer-programmer loop can safely carry a task from
 agreed direction to merged, verified code with the least waste.
 
-The important distinction for v1.0: this is a measurement harness, not a
-requirement to adopt a full orchestrator. Manual Codex, Claude, Devin, or other
-agent sessions can write the same result artifacts as an automated runner.
+Builder experiments are a measurement harness. They do not require a hosted
+orchestrator: manual Codex, Claude, Devin, or other agent sessions can write the
+same result artifacts as a Code Mower runner.
 
 ## What To Measure
 
@@ -29,9 +29,10 @@ A builder experiment should record:
 - merge result and post-merge health
 - known cost where the provider exposes it
 
-The first implementation is intentionally harness-only. It plans runs and
-reports results, but it does not run autonomous authoring itself. That keeps the
-measurement surface useful while preserving the normal Code Mower merge bar.
+The command can plan a comparison, execute one explicitly supplied local
+authoring command, and report results. Provider builders may also run through
+the build-loop adapters. Code Mower records metadata and leaves source,
+transcripts, and raw command output out of cloud-bound artifacts.
 
 If you are starting from product requirements or a GitHub Issue, use the
 planning layer first:
@@ -207,14 +208,14 @@ Code Mower audit lanes still decide whether the PR is merge-ready.
 
 ## Orchestrator Adapter Posture
 
-Systems that manage agent sessions, worktrees, policies, or sub-agents can be
-valuable future adapters. They should feed Code Mower's measurement contract
-instead of replacing it. A good adapter reports task contract, branch/worktree,
-provider, lens, elapsed time, spend, audit iterations, and merge health while
-leaving source and credentials local.
+Code Mower sessions provide a shared brief and a single-orchestrator lease;
+generated build-loop workflows and provider runners handle supported delivery
+transports. New adapters should feed the same measurement contract: task,
+branch/worktree, provider, lens, elapsed time, spend, audit iterations, and
+merge health, while leaving source and credentials local.
 
-Until the manual builder-experiment path is useful, orchestrator integrations
-should stay experimental and disabled by default.
+Keep a new orchestrator or transport experimental and disabled by default until
+its delivery and recovery paths are qualified.
 
 ## How This Connects To Lenses
 

@@ -1,10 +1,10 @@
 # Sample Doctor Output
 
-This page shows the kind of signal `code-mower doctor --preflight` is meant to
+This page shows the kind of signal `code-mower doctor --adoption` is meant to
 produce before you enable reviewer lanes.
 
-`--preflight` is the friendly first-run preset; `doctor --v05` remains
-equivalent for older scripts.
+`--adoption` is the recommended first-run preset. `--preflight` and `--v05`
+remain equivalent compatibility aliases for older scripts.
 
 The exact checks depend on your repository, GitHub auth, provider CLIs, and
 optional cloud-token setup. This sample is sanitized and intentionally generic.
@@ -12,7 +12,7 @@ optional cloud-token setup. This sample is sanitized and intentionally generic.
 ## Human-Readable Shape
 
 ```text
-$ code-mower doctor --preflight
+$ code-mower doctor --adoption --repo owner/repo
 Code Mower doctor
 Status: warn
 Config: /path/to/code-mower.example.yml
@@ -71,7 +71,7 @@ local run, start without `--strict`.
 Use JSON mode for support, automation, or CI:
 
 ```bash
-code-mower doctor --preflight --json > code-mower-doctor.json
+code-mower doctor --adoption --repo owner/repo --json > code-mower-doctor.json
 ```
 
 The output includes:

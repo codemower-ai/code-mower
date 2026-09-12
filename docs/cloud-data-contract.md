@@ -739,7 +739,7 @@ Nothing uploads unless `--yes` is supplied:
 code-mower cloud upload .code-mower/cloud-benchmark-bundle --yes --json
 ```
 
-## Hosted Storage In The Current Beta
+## Hosted Storage In The Current Release
 
 The current hosted service stores upload ids and timestamps, token/team
 linkage, repository slug when supplied, report summaries and counts, structured
@@ -749,7 +749,7 @@ recommendation inputs derived from metadata.
 It should not store source, raw diffs, raw transcripts, stdout/stderr, auth
 output, or secrets by default.
 
-## Data Controls In The Current Beta
+## Data Controls In The Current Release
 
 Current controls:
 

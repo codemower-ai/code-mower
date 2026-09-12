@@ -11,10 +11,12 @@ connection and authorized participants from the session. The lower-level
 manage private request files and identifiers.
 
 Use the [optional setup and readiness guide](context-setup.md) to select a connection
-without changing your participants. The connection lifecycle is available with the optional extra:
+without changing your participants. Install the pinned optional extra through
+the same environment that owns `code-mower`, as shown in [Install And
+Bootstrap](install.md#optional-coworker-support). The connection lifecycle is
+then available with:
 
 ```sh
-python -m pip install 'code-mower[coworker]'
 code-mower context connect coworker --connection example-context
 code-mower context verify --connection example-context --json
 code-mower context status --connection example-context --json

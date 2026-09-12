@@ -1,190 +1,201 @@
 # Architecture
 
-Code Mower is a local-first CLI plus generated GitHub support files. It helps a
-team set up AI reviewer lanes, run diagnostics, calibrate those lanes against
-known PR outcomes, and optionally upload sanitized metadata to CodeMower.com.
+Code Mower is a local-first Python CLI plus generated GitHub support files. It
+coordinates supervised AI builder and reviewer lanes, records bounded evidence,
+and can optionally upload sanitized metadata to CodeMower.com.
+
+## Product Boundaries
+
+Code Mower owns:
+
+- participant and role selection;
+- operating briefs, work orders, local session leases, and recovery state;
+- builder provenance and delivery outcomes;
+- reviewer invocation, structured verdicts, and current-head validity;
+- calibration, lane-promotion evidence, and local reports;
+- generated GitHub labels, workflows, gates, and support wrappers;
+- guarded tracker operations; and
+- explicit context and cloud-data boundaries.
+
+Provider products still own their models, authentication, execution sandboxes,
+usage charges, and product-specific sessions. GitHub remains authoritative for
+pull requests, checks, and merge state. Selecting a provider does not grant it
+review or merge authority.
 
 ## Core Concepts
 
-- **Profile:** a named setup posture, such as easy-mode local/manual lanes.
-- **Provider:** an adapter for a reviewer or coding system such as Codex,
-  Claude, Gitar, Antigravity/Gemini, Hermes, CodeRabbit, Cursor BugBot, Qodo,
-  Greptile, Devin, or a local LLM.
-- **Lane:** a provider plus trigger policy, prompt/lens, and merge posture.
-- **Lens:** a review doctrine that changes what a reviewer looks for, without
-  changing the underlying provider.
-- **Context pack:** a bounded set of surrounding files that can be supplied to
-  reviewers when a diff alone is insufficient.
-- **Calibration corpus:** known-clean, known-blocked, or subtle-risk PRs used
+- **Participant:** a selected product identity such as Claude, Codex, or Devin.
+- **Provider transport:** the CLI, API, GitHub app, or manual handoff used for a
+  participant's specific job.
+- **Orchestrator:** the hosting agent by default; coordinates assignments,
+  evidence, reviews, and recovery.
+- **Builder:** the single writer for one branch.
+- **Reviewer lane:** a provider plus trigger, prompt/lens, verdict contract, and
+  merge posture.
+- **Context provider:** a source of approved bounded evidence. It is separate
+  from participant roles.
+- **Session:** a local operating brief, selected participants, optional work
+  item/context association, and single-orchestrator lease.
+- **Calibration corpus:** known-clean, known-blocked, or subtle-risk cases used
   to measure reviewer usefulness.
-- **Value report:** a local report that compares useful findings, false
-  positives, cost, latency, and lane recommendations.
-- **Run role:** a normalized purpose for a measured event, such as
-  `implement`, `review`, `calibrate`, `release`, or `explore`.
-- **Builder experiment:** a bounded authoring run that measures which builder
-  plus reviewer loop produces verified code with the best quality, speed, and
-  cost.
-- **Cloud bundle:** an inspectable metadata-only export that can optionally be
-  uploaded to CodeMower.com.
+- **Builder experiment:** a source-free measurement record for an authoring
+  attempt and its review/merge outcome.
+- **Cloud bundle:** an inspectable export that uploads only after an explicit
+  command.
+
+## Runtime Shape
+
+```mermaid
+flowchart LR
+  U["CLI / hosting agent"] --> S["Session and work order"]
+  S --> P["Participant/provider transports"]
+  P --> B["Builder: one branch writer"]
+  P --> R["Independent reviewers"]
+  C["Optional context provider"] --> S
+  B --> G["GitHub pull request"]
+  R --> G
+  G --> M["Gate and repository merge policy"]
+  S --> L["Local Board, calibration, reports"]
+  L --> X{"Explicit cloud upload?"}
+  X -->|No| K["Keep local"]
+  X -->|Yes| H["CodeMower.com metadata"]
+```
+
+`code-mower session start` creates the operating state and lease. It does not
+act as a universal process launcher. The host invokes a maintained local or
+hosted transport where one exists and otherwise records an explicit handoff.
 
 ## Package Layout
 
 ```text
 src/code_mower/
-  cli.py                         command routing
-  init.py                        easy-mode generated setup
+  cli.py                         top-level command routing
+  init.py, next_steps.py         setup and first-run guidance
+  session.py                     participant brief and orchestrator lease
+  context_session.py             protected guided context state
+  context_guided.py              prepare/deliver/attach/feedback workflow
+  context_*.py                   connection, packet, delivery, and review contracts
   doctor.py                      thin doctor CLI adapter
-  doctor_checks/                 runtime, provider, GitHub, Actions cost, cloud, output checks
-  provider_registry.py           provider metadata and posture
-  prompts.py                     lane prompt loading
-  reviewer_metrics.py            reviewer value/report calculations
-  cloud.py                       thin cloud CLI adapter
-  cloud_client/                  export, upload, setup, doctor, events, operations
-  tracker_contract.py            provider-neutral work-tracker contract
-  package_paths.py               package materializer provider-template path helpers
-  migration.py                   thin migration CLI adapter
-  migration_install.py           venv, pip, command, and toy-repo helpers
-  migration_mirror.py            mirror-removal planning and runner aliases
-  migration_rehearsal.py         package install and fresh-repo rehearsal flow
-  migration_readiness.py         first-user readiness scorecards
-  *_audit_pr.py                  provider-specific audit runners
-  adapters/                      hosted/SaaS adapter helpers
-  lane_configs/                  provider lane declarations
-  templates/                     generated config, workflows, prompts, support
-tests/                           unit and release-hygiene tests
-scripts/                         smoke, privacy, fresh-clone, Python wrapper
-docs/                            public setup, privacy, roadmap, release docs
+  doctor_checks/                 runtime, provider, GitHub, tracker, cloud checks
+  participants.py               participant identity and role mapping
+  provider_registry.py           reviewer lane metadata and posture
+  providers/                     shared provider metadata helpers
+  provider_runners/              checkout, process, verdict, and GitHub primitives
+  lane_configs/                  provider-specific lane declarations
+  *_audit_pr.py                  provider-specific audit adapters
+  work_orders.py                 planning and implementation contracts
+  builder_runs.py                source-free builder provenance
+  calibration/                   corpus, evidence, policy, metrics, reports
+  tracker_*.py, jira_*.py        work-item contracts and guarded Jira operations
+  cloud.py, cloud_client/        export, upload, setup, and metadata operations
+  package_*.py, migration_*.py   generated package and rehearsal support
+  templates/                     generated config, workflows, prompts, wrappers
+tests/                           behavior, privacy, and release-hygiene tests
+scripts/                         smoke, privacy, fresh-clone, and Python helpers
+docs/                            current guides and historical release records
 ```
 
-The package intentionally keeps provider-specific behavior in adapters and lane
-configs. Generic orchestration should not know provider-specific auth quirks
-unless they are part of the declared provider contract.
+Shared provider-runner modules implement stable mechanics such as isolated PR
+checkouts, subprocess cleanup, verdict artifacts, and GitHub posting. Provider
+adapters retain authentication, sandbox, prompt, parser, and API differences.
+The goal is one role contract, not identical vendor mechanics.
 
-`code_mower.provider_runners` is the incremental shared contract layer for
-provider wrappers. Keep broad prompt execution, parser behavior, and provider
-quirks in the Codex/Claude/Gemini/Antigravity modules until tests prove a
-smaller primitive is stable enough to share.
+## Session And Participant Contract
 
-## Work Tracker Contract
+Participant selection is independent from role and merge authority. A session
+stores normalized participants and host identity. Repository configuration and
+the reviewer registry decide which transports and review policies apply.
 
-`code_mower.trackerWorkItem.v1` is a provider-neutral normalized work item.
-GitHub Issues is the default work tracker when a config omits `tracker`.
-An opt-in `jira_cloud` tracker kind adds configuration validation, read-only
-adoption diagnostics via `code-mower doctor --adoption`, guarded mutation
-planning and owner-authorized execution, and guarded GitHub-to-Jira PR status
-synchronization. See [Jira Cloud Setup](jira-cloud-setup.md),
-[Jira Adoption Rehearsal](jira-adoption-rehearsal.md), and
-`docs/tracker-data-contract.md`.
+One local working copy can have one mutating orchestrator lease. One PR branch
+can have one writer. These are different controls: the session lease prevents
+two orchestrators from coordinating the same working copy, while the branch
+rule prevents a reviewer or second builder from changing the owner's branch.
 
-## Local Runner And Optional Cloud
+Codex, Claude Code, and Cursor are qualified session hosts in v1.3.1. Other host
+identities can receive the same brief and telemetry shape, but Code Mower does
+not claim execution parity until the relevant transport and recovery behavior
+are qualified. See [Participants And Sessions](sessions.md).
 
-Code Mower's security model depends on a simple split:
+## Review And Merge Contract
 
-- local runners hold source code, diffs, provider credentials, GitHub tokens,
-  worktrees, raw transcripts, and raw command output;
-- generated GitHub support files coordinate labels, comments, workflows, and
-  wrapper entrypoints in the user's repository; and
-- CodeMower.com receives only explicit, metadata-only uploads when the user opts
-  in.
+Reviewers consume the PR diff and task/context contract, not the builder's raw
+transcript. Structured verdicts bind to the exact PR head. When required
+context is selected, they also bind to the current context input revision.
 
-The hosted service should not be required for install, doctor, first audit, or
-local value reports. It exists to turn repeated sanitized events into private
-team dashboards and eventually aggregate benchmarks.
+Generated workflows clear stale terminal audit labels after the head changes.
+The repository gate combines current trusted verdict evidence with configured
+policy. A reviewer starts informational unless its repository-specific
+known-clean and known-blocked evidence supports promotion.
+
+## Context Contract
+
+Context connections are private machine state. Repository configuration stores
+only a generic connection alias and policy. Packets retain bounded evidence,
+citations, provenance, expiry, and integrity metadata in a protected local
+store.
+
+The provider adapter may fetch or authorize evidence, but the common Code Mower
+packet, delivery, attachment, and review contracts decide how it enters a work
+order or review. Every delivery reauthorizes. Context providers gain no role or
+tracker authority. See [Context Provider Contract](context-provider-contract.md).
+
+## Tracker Contract
+
+`code_mower.trackerWorkItem.v1` normalizes a bounded work item. GitHub Issues is
+the default. Jira Cloud is opt-in; queue reads and all writes use Code Mower's
+REST transport. Writes require both repository configuration and an explicit
+apply command and are revalidated against live scope. Connected Atlassian MCP
+can enrich local reading but cannot authorize a mutation. See
+[Work Tracker Data Contract](tracker-data-contract.md).
+
+## Local And Cloud Boundary
+
+Local runners hold source, diffs, credentials, worktrees, prompts, raw provider
+output, and private context. The Board reads redacted local/GitHub metadata and
+serves on loopback. It does not upload data.
+
+Cloud export is a separate explicit operation. Default uploads exclude source,
+raw diffs, raw model transcripts, raw stdout/stderr, auth output, issue body
+text, credentials, and private context. Provider verdict artifacts and cloud
+events pass Code Mower-owned schema and privacy validation before posting or
+upload. See [Cloud Data Contract](cloud-data-contract.md).
 
 ## First-Run Flow
 
 ```mermaid
 flowchart TD
-  A["Install Code Mower"] --> B["code-mower init --easy"]
-  B --> C["Generate .code-mower.generated"]
-  C --> D["code-mower doctor --adoption --repo OWNER/REPO"]
-  D --> E["code-mower lanes status --repo OWNER/REPO"]
-  E --> F["code-mower board serve --repo OWNER/REPO"]
-  F --> G["Run local/manual audits"]
-  G --> H["Build calibration corpus"]
-  H --> I["Generate reviewer value report"]
-  I --> J{"Opt into cloud?"}
-  J -->|No| K["Use local reports"]
-  J -->|Yes| L["Export metadata-only bundle"]
-  L --> M["Dry-run upload"]
-  M --> N["Upload with team token"]
+  A["Install pinned package"] --> B["Preview init --easy"]
+  B --> C["Generate reviewable setup"]
+  C --> D["doctor --adoption"]
+  D --> E["Open setup PR"]
+  E --> F["Run manual Codex and Claude audits"]
+  F --> G["Inspect lane status and local reports"]
+  G --> H{"Add automation?"}
+  H -->|No| I["Continue manual supervised pilot"]
+  H -->|Yes| J["Configure dispatch, gate, and runner"]
 ```
 
-## Provider And Lane Posture
+Automation credentials and auto-merge configuration follow the first manual
+audit. Optional Coworker context, additional participants, Jira, and cloud
+sharing are independent additions.
 
-Code Mower starts conservative:
+## Release Validation
 
-- local structured audits first;
-- hosted reviewers informational until calibrated;
-- no recurring schedules by default;
-- no merge-gating lane until that repo's data supports it; and
-- no cloud upload unless explicitly configured.
-
-Provider integrations should expose setup docs, auth/runtime doctor checks,
-source/diff exposure posture, local/hosted/manual/automatic posture, and
-cost/latency fields when available.
-
-Provider parser and verdict-artifact fixtures live under `tests/fixtures/` and
-lock the current reviewer output contract before shared provider-runner code is
-extracted. Keep those fixtures sanitized: no source, raw diffs, transcripts,
-issue bodies, stdout/stderr, auth output, or secrets.
-
-## Builder And Orchestrator Boundary
-
-Code Mower can learn from orchestrator systems without becoming one by default.
-The v1.0 architecture should keep the first builder-experiment layer
-harness-only:
-
-- one task contract per run;
-- one worktree/branch per builder attempt;
-- provider/lens/context-pack metadata captured as structured events;
-- reviewer isolation through diff plus task contract rather than builder
-  transcript;
-- normal Code Mower audit gates before merge; and
-- optional metadata upload after local inspection.
-
-Future orchestrator adapters can drive authoring sessions, but the public core
-should first make the measurement loop reliable and source-free by default.
-
-## Generated Product Support
-
-`code-mower init --easy --apply` writes generated support files into a target
-directory. Product repositories should treat generated files as reviewable
-configuration and thin wrappers, not as a fork of the implementation.
-
-The long-term rule is: product repos consume a pinned package version and keep
-only product-specific config/support files.
-
-## Cloud Boundary
-
-The OSS package can export and upload a cloud bundle, but the hosted service is
-optional. Default bundles exclude source code, raw diffs, raw model
-transcripts, raw stdout/stderr, auth output, and secrets.
-
-Provider verdict artifacts and cloud events are validated at Code Mower-owned
-boundaries before repost/export/upload. Validation checks required field shapes
-and privacy-safety patterns while still allowing additive beta metadata fields.
-
-See `docs/cloud-data-contract.md` for the public upload contract.
-
-## Release Hygiene
-
-Before a public alpha promotion, run:
+From a contributor checkout:
 
 ```bash
 scripts/dev-python -m venv .venv
 .venv/bin/python -m pip install -e ".[test]"
 .venv/bin/python -m ruff check .
 .venv/bin/python -m unittest discover -s tests
-.venv/bin/python -m pytest -q
 .venv/bin/python scripts/privacy_scan.py
-.venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json
-.venv/bin/python scripts/fresh_clone_rehearsal.py --repo-url . --ref HEAD --python .venv/bin/python --json
+.venv/bin/python scripts/smoke_easy_mode.py \
+  --code-mower-bin .venv/bin/code-mower --json
+.venv/bin/python scripts/fresh_clone_rehearsal.py \
+  --repo-url . --ref HEAD --python .venv/bin/python --json
 git diff --check
 ```
 
-`scripts/dev-python` is the preferred source-checkout Python entrypoint. It
-refuses stale or old Python interpreters so release work does not accidentally
-run under an unsafe ambient `python3`. Public docs and shipped entrypoints
-should point source-checkout users at that wrapper plus an installed editable
-venv, not raw source-path environment commands.
+Package-index publication and live provider campaigns are separate release
+checks. See [Public Release Checklist](public-release-checklist.md) and
+[Release Qualification](release-qualification.md).

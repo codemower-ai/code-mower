@@ -291,8 +291,9 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
-During beta testing, `--package-spec` should normally be the published PyPI
-beta. Use a local path or git URL only when debugging a release candidate. The
+For a stable-release rehearsal, `--package-spec` should normally be the exact
+published PyPI version. Use a local path, wheel, or git URL only when validating
+a release candidate or debugging packaging. The
 rehearsal installs Code Mower non-editably in a clean venv, proves the
 easy-mode starter path in a fresh toy repo, then compares product-wrapper
 behavior against the installed package. `migration mirror-removal-plan` treats

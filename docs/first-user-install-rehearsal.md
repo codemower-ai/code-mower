@@ -298,7 +298,7 @@ Treat the rehearsal as passing only when:
 
 If this fails, fix the first-user path before cutting or promoting a release.
 
-## v1.0 Package-Index Release Procedure
+## Stable Package-Index Release Procedure
 
 Publish and rehearse the package-index artifacts in this order. After the
 release tag exists at the release commit, dispatch both package-index

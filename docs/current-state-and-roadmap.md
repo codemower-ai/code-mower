@@ -1,491 +1,202 @@
 # Code Mower Current State And Roadmap
 
-This is the short source-of-truth snapshot for the public OSS package, the
-hosted CodeMower.com surface, and the near-term path from the current v1.3.1
-line toward broader supervised adoption.
+This page is the short source of truth for the public OSS package and its
+near-term product direction. Release-specific history belongs in the
+[changelog](../CHANGELOG.md) and [release-history index](release-history.md).
 
-## Positioning
+## Product Position
 
-Code Mower is the fastest way to create a peer-programmer and reviewer system
-around the top AI coding agents and reviewers. The OSS core helps teams move
-from plan to merge at maximum safe velocity while preserving code quality,
-architecture, and deployment confidence.
+Code Mower is a supervised operating layer for teams using multiple AI coding
+agents. It coordinates roles and evidence around the tools rather than hiding
+provider differences:
 
-The current Code Mower release line is supervised-pilot software for teams
-willing to calibrate reviewers and keep a human or trusted orchestrator
-responsible for the loop. It is not a drop-in unattended merge gate for
-arbitrary repositories.
+- the hosting agent is the default orchestrator;
+- one builder owns each branch;
+- independent reviewers evaluate the current pull-request head;
+- repository policy decides which reviews can affect merge readiness; and
+- optional context providers supply evidence without gaining build, review,
+  tracker-write, or merge authority.
 
-It also creates a quality, speed, and cost benchmark loop on a team's actual
-product: which AI builders and reviewers produce useful results on this
-codebase, at what cost, and with which review policy.
+The product is useful without CodeMower.com. Cloud sharing is optional and
+dry-run-first.
 
-## Current OSS State
-
-Version 1.3 adds optional Coworker organizational context with explicit private
-account selection, bounded cited packets and context-aware independent review.
-The [qualification scorecard](v130-context-qualification.md) reports mixed retrieval
-relevance without claiming productivity gains. Graphify remains a later candidate.
-
-The public OSS repository is:
-
-```text
-https://github.com/codemower-ai/code-mower
-```
+## Current Public Release
 
 The current package-index release baseline is `v1.3.1`, with pinned package
 install spec `code-mower==1.3.1`. Release evidence is recorded on the GitHub
-release and in the first-user install rehearsal. It is intended to be installed
-from the package index for supervised pilots, with GitHub tag/source installs
-kept as a fallback and development path.
+release and in the first-user install rehearsal.
 
-The v1.3.1 supervised-pilot release keeps the Python 3.12+ runtime contract,
-pipx/uv install matrix, non-expiring dispatch-token diagnostics, native redacted
-lane status, the local Board, Board history and admin commands, spend/verdict
-timelines, owner queue, optional metadata-only agent cards, explicit cloud Board
-snapshots, the CodeMower.com Board mirror, and a public Board demo rehearsal. It
-adds controller dry-run policy, supervised-pilot doctor readiness,
-provider-diversity fixtures, the common install/upgrade prompt pack, Board
-multi-instance handling, local productivity reports, Board productivity
-summaries, provider scorecards, CodeMower.com productivity views, setup drift
-reporting, quieter hosted-builder and orchestrator-only doctor postures,
-truth-preserving unavailable/warn states, current Codex CLI smoke flags, clearer
-install/upgrade docs, explicit package-index rehearsal opt-ins, local release
-qualification, resumable multi-provider campaigns on Board, and opt-in
-metadata-only `adoption_run` aggregation on CodeMower.com. Operational release
-qualification is deliberately separate from builder experiments and reviewer
-promotion evidence. v1.0.8 adds closed TestPyPI qualification, cross-checkout
-campaign discovery, deterministic local-provider runtime and result checks,
-complete retry chronology, explicit Antigravity project isolation, distinct
-Cursor builder and Grok reviewer identities, and verified hosted Cursor and
-Devin dispatch/result transport. It also adds deterministic Board refresh
-recovery, bounded package-install failure diagnostics, and explicit required
-versus informational release-campaign providers. v1.2 adds a shared Jira
-authority brief for all orchestrator hosts, a local single-orchestrator lease
-with Board visibility, controller orchestrator telemetry, explicit Cursor
-orchestrator qualification, and reproducible hosted release-qualification
-commands. See the
-[v1.0.1 Effectiveness Assessment](v101-effectiveness-assessment.md) for the
-latest published dogfood assessment and lane-readiness interpretation; the
-[Post-v0.8 Effectiveness Assessment](post-v08-effectiveness-assessment.md)
-remains historical context.
+Version 1.3.1 requires Python 3.12 or newer. It provides:
 
-This baseline keeps the PyPI-first install path, trusted publishing, release
-rehearsal, production dogfood upload shape, catch-up provenance, stale-audit
-inspection, AI tool/model source diagnostics, CodeMower.com trust guidance,
-generated gate hardening, owner-bound WIP hygiene, lane liveness checks,
-fix-round templates, human-token diagnostics, owner-decision escalation, and
-provider sandbox/live guardrails in one coherent supervised-pilot release line.
-The beta-to-v1.0 line has proved:
+- pipx, uv tool, and contributor installation paths;
+- safe setup previews and selectable participants;
+- a Claude + Codex default reviewer and builder profile;
+- host-led session briefs with a local single-orchestrator lease;
+- local and hosted builder provenance, delivery, and recovery contracts;
+- current-head Codex and Claude audit lanes;
+- a GitHub-first reviewer gate and optional guarded Jira Cloud tracker;
+- local lane status, Board, productivity, calibration, and provider scorecards;
+- release qualification and resumable provider campaigns; and
+- optional Coworker organizational context through a protected local store.
 
-- source checkout and package-install rehearsals from a clean Python 3.12 path;
-- `code-mower init --easy`, `doctor --adoption --repo OWNER/REPO`,
-  `next-steps`, and starter value-report generation;
-- `code-mower checks detect` and `code-mower checks run` for repository-native
-  lint/test/build discovery instead of assuming Ruff, ESLint, or any other
-  single check surface applies to every codebase;
-- merge-authority stale-audit protection via generated workflow/template
-  support and `clear-stale`, so stale `*-audit-done` / `*-audit-blocked` labels
-  cannot satisfy a merge bar after new commits land;
-- pinned standalone consumption from the private reference/product repos;
-- mirror-removal pilots where product repos use package-backed wrappers instead
-  of maintaining duplicate implementation files;
-- self-hosted package materialization from installed checkouts, with generated
-  package metadata stamped from the source checkout version;
-- release-readiness checks that materialize the standalone package and fail if
-  generated package versions drift from source metadata;
-- generated product-support wrappers for compatibility shims and shell-safe
-  GitHub comments;
-- optional sanitized cloud export/upload commands with fail-closed structured
-  event metadata guards for raw output, auth previews, transcripts, and
-  secret-like values;
-- `code-mower doctor --adoption --repo OWNER/REPO` as the friendly
-  early-adopter preset for easy mode, runtime probes, GitHub/private-repo
-  setup, Actions cost diagnostics, and optional cloud-token setup.
-  `doctor --preflight` and `doctor --v05` remain compatibility presets for
-  scripts. Doctor JSON now exposes a top-level `run_plan`, and human output
-  prints the same plan near the header so support tooling and first-time users
-  can see exactly which optional GitHub/cloud stages ran;
-- Code Mower Cloud dogfood events from the OSS repo, CodeMower.com, and two
-  private reference/product repos, with the current release preserving that client
-  path for the next rollout; and
-- metadata-only AI tool/model provenance in cloud bundles and structured
-  events, so dashboards can distinguish known provider/model/version signal
-  from missing provenance before making benchmark claims. Local CLI provenance
-  now resolves configured alternate command names before declaring tool/version
-  metadata missing, which matters for transitions such as Gemini CLI to
-  Antigravity-style commands; and
-- calibration result normalization that preserves provider-observed model ids
-  from structured CLI stats when explicit model configuration is absent.
-  This improves Google/Antigravity-style value-report provenance without uploading
-  raw prompts, diffs, or transcripts; and
-- local project-context and work-order planning commands:
-  `project-context init`, `context add --external`, `plan from-issue`,
-  `work-order draft`, `work-order critique-plan`, and
-  `work-order builder-experiment`. These give teams a source-free path from
-  issue/spec context to implementation contracts and builder-experiment seeds
-  without turning Code Mower into a mandatory agent orchestrator; and
-- a real metadata-only `repo-sync --mode catch-up --limit 100` import across
-  the OSS repo, hosted service repo, and two private reference/product repos,
-  with imported history flagged as `history_only: true` and
-  `calibration_evidence: false`; and
-- a package-installed calibration/value-report pipeline target that keeps
-  reviewer metrics, lane policy, value-report artifacts, and sanitized report
-  upload in the release rehearsal path; and
-- a private-repo install rehearsal target against an external TypeScript
-  product repository that proved the package-installed CLI can detect and
-  dry-run repository-native checks in an external private repo without
-  committing support files first.
-  The rehearsal passed with 10/10 first-user readiness and 0 readiness
-  warnings, detected `npm run lint`, `npm run typecheck`, and `npm run test`
-  from `package.json`, and separately reported only expected setup diagnostics
-  for optional provider tokens and unprobed GitHub auth; and
-- report-snapshot provenance cleanup, so Code Mower-generated value-report and
-  lane-policy snapshot events carry Code Mower reporter provenance by default
-  instead of appearing as unknown-provider benchmark gaps; and
-- provider-vs-lens effect-report output cleanup, so `--output` writes a
-  human-readable report while `--json` remains structured stdout for automation;
-  and
-- a friendly-user rollout plan that turns install, doctor, first report,
-  optional cloud dry-run/upload, and dashboard usefulness into explicit
-  acceptance criteria for the first 5-10 users; and
-- the current public PyPI package-install rehearsal from `v1.3.1` /
-  `code-mower==1.3.1` with a
-  10/10 first-user readiness score, proving install, generated setup, doctor,
-  draft calibration, value-report, cloud export, and dry-run dogfood without a
-  local Code Mower checkout. The earlier beta.52 package rehearsal remains
-  historical evidence, not the current adoption proof; and
-- stable CodeMower.com evidence URLs for signed-in users, with per-upload and
-  per-event detail pages plus token-safe JSON export links for support,
-  debugging, and dashboard trust checks; and
-- a first-class CodeMower.com lineage drilldown at `/dashboard/lineage`, so
-  signed-in users can inspect issue -> posted plan -> work order -> pull
-  request -> reviewer checks -> merge -> upload chains without confusing
-  operational dogfood with calibrated reviewer evidence; and
-- a clearer cloud catch-up story: routine dogfood uploads represent current
-  metadata, while historical imports must be run explicitly through
-  `code-mower cloud catch-up` or `repo-sync --mode catch-up` and are displayed
-  as imported history rather than calibrated reviewer evidence; and
-- a local Codex dogfood proof using a dashboard-issued token: the public package
-  uploaded current metadata for Code Mower OSS, CodeMower.com, and two private
-  reference/product repos, preserving metadata-only payloads and surfacing
-  provider/model provenance gaps without blocking operational uploads; and
-- GitHub-first setup checks, including private-repo Actions cost visibility.
-- public repo hygiene artifacts: issue templates, pull request template,
-  Dependabot config, security policy, and an explicit repo-hardening checklist.
-- first-impression adoption improvements: README sample output,
-  `docs/sample-doctor-output.md`, and a clearer cloud value-exchange section.
-- first-run and trust docs: `CHANGELOG.md`, `docs/first-run-transcript.md`,
-  `docs/architecture.md`, `docs/cloud-data-contract.md`, and
-  `docs/code-structure-roadmap.md`.
-- `migration package-install-rehearsal` now emits a first-user readiness
-  scorecard, so release candidates can show install, doctor, first-report, and
-  cloud dry-run privacy gates in one compact JSON artifact.
-- CI now runs the package-install first-user rehearsal from the current
-  checkout, turning the public installed-package path into a routine PR gate
-  instead of a purely manual pre-release check.
-- `code_mower_calibration.py` has been reduced to a backwards-compatible CLI
-  adapter; calibration corpus, evidence, policy, value-report, context-pack,
-  command-materialization, run-result, and runner logic now live under
-  `code_mower.calibration`.
-- `doctor.py` is now a much thinner backwards-compatible CLI adapter.
-  Runtime/toolchain, cloud-token, GitHub, provider, and Actions diagnostics
-  plus human-readable output rendering, first-run presets, and package-aware
-  config/template path resolution live under `code_mower.doctor_checks`. Doctor
-  report orchestration also now lives under `code_mower.doctor_checks.runner`,
-  leaving `doctor.py` as a small CLI adapter. Provider doctor checks are now
-  split into token/env checks, local CLI discovery/probes, API-model probes,
-  and a thin provider catalog/runtime orchestrator.
-  GitHub doctor internals are also split so redacted API calls and Actions
-  billing/cost diagnostics can evolve without bloating repo setup checks.
-- `cloud.py` has completed its first major transition into a thin compatibility
-  adapter: local cloud setup/token handling, cloud doctor diagnostics, local
-  bundle materialization, structured event/repo helpers, and dogfood/catch-up/
-  reviewer-run/repo-sync orchestration now live under `code_mower.cloud_client`,
-  reducing the CLI adapter significantly while preserving the public command
-  surface.
-- provider metadata helpers now live under `code_mower.providers`, including
-  local CLI version probes used by doctor and cloud provenance. This is the
-  start of the broader provider-adapter cleanup while keeping the CLI-first API
-  stable for existing users.
-- Package materialization has started the same intentional split:
-  package file manifests now live under `code_mower.package_manifest`, and
-  generated package content builders and CLI command inventory now live under
-  `code_mower.package_content`; generated static package file bodies live under
-  `code_mower.package_static`; YAML/provider-catalog rendering helpers live
-  under `code_mower.package_rendering`.
-  Package-aware config/template path helpers live under
-  `code_mower.package_paths`, while `package.py` remains the
-  backwards-compatible CLI and manifest-generation surface.
-- Package-install rehearsal flow now lives under
-  `code_mower.migration_rehearsal`; clean-venv/pip/toy-repo command primitives
-  live under `code_mower.migration_install`; first-user readiness scoring lives
-  under `code_mower.migration_readiness`; and mirror-removal planning plus
-  runner-alias reporting live under `code_mower.migration_mirror`.
-  `migration.py` remains the backwards-compatible migration command adapter for
-  wrapper rehearsal, release-readiness routing, mirror planning, and
-  package-install orchestration.
-- native local visibility through `code-mower lanes status` and
-  `code-mower board serve`, with local paths redacted by default, explicit
-  local-history recording, Board doctor/reset commands, and an explicit
-  zero-report `cloud board-snapshot` upload path for CodeMower.com mirrors.
-- local productivity and provider-scorecard visibility through
-  `code-mower productivity report --repo OWNER/REPO` and the Board's embedded
-  productivity block, backed by metadata-only `productivity_summary` events for
-  CodeMower.com.
+The v1.3.1 guided context workflow derives repository, work item, selected
+connection, policy, packet, builder, pull-request head, input revision, reviewer,
+and feedback recipient from the session. Fetch, delivery, attachment, review,
+and feedback retain explicit authorization, expiry, and refresh checks.
 
-Code Mower is ready for small, supervised pilots in real repositories. It is not
-yet ready for broad, automatic org-wide rollout or uncalibrated merge gates.
-The v0.6 provider-contract hardening queue started from the dated
-[v0.6 truth baseline](v06-truth-baseline.md), which records the current
-release, provider-runner, Gemini/Antigravity, SDK-research, and privacy-boundary
-facts that future refactors must preserve.
+## Capability Matrix
 
-## Current CodeMower.com State
+| Capability | Current behavior |
+| --- | --- |
+| Default participants | Claude Code and Codex |
+| Participant selection | `init --interactive` or `init --with` |
+| Session orchestration | Host-led operating brief and local lease; the command does not launch every provider |
+| Qualified session hosts | Codex, Claude Code, and Cursor |
+| Recognized session hosts | Devin, Grok Bot, Antigravity, Muse, and custom identities; explicit handoff/provider transport required |
+| First-class local builders | Codex and Claude; maintained Devin builder lane is opt-in |
+| Hosted builders | Explicit provider-specific dispatch and provenance; no implicit trust or merge authority |
+| Merge-eligible reviewers | Codex and Claude after repository setup and calibration |
+| Informational reviewers | Devin CLI and other optional providers until their evidence supports promotion |
+| Organizational context | Optional Coworker packets for approved Claude/Codex orchestrator, builder, and reviewer roles |
+| Repository context graph | Provider-neutral packet extension exists; Graphify is not installed or qualified |
+| Work tracking | GitHub Issues by default; Jira Cloud optional, bounded, and dry-run-first for writes |
+| Team interaction | CLI, GitHub, local Board, and optional CodeMower.com metadata views; no Slack ingress yet |
 
-The hosted surface is:
+Provider selection, execution transport, and review authority are separate.
+For example, selecting Devin does not promote the Devin reviewer, and selecting
+Coworker does not make it a participant. The detailed source of truth is the
+[Provider Matrix](provider-matrix.md).
 
-```text
-https://codemower.com
-```
+## Installation And First Use
 
-Current live paths:
+The supported first-use sequence is:
 
-- `https://codemower.com/api/health`
-- `https://codemower.com/api/ingest`
-- `https://codemower.com/login`
-- `https://codemower.com/dashboard`
-- `https://codemower.com/dashboard/productivity`
+1. Install one pinned Code Mower command using the path appropriate to the
+   machine.
+2. Preview `code-mower init --easy`.
+3. Generate reviewable output with `--apply`.
+4. Run `code-mower doctor --adoption --repo OWNER/REPO`.
+5. Open a small setup PR and run the Codex and Claude audits manually.
+6. Add automation tokens, recurring builder dispatch, and promoted merge policy
+   only after the manual loop works.
 
-The cloud service currently supports:
+Use [Install And Bootstrap](install.md) for exact commands and
+[Try Code Mower In 10 Minutes](try-in-10-minutes.md) for the first audited PR.
+Existing repositories should inspect setup drift before copying new generated
+files; see [Upgrade An Existing Repository](upgrade-existing-repo.md).
 
-- metadata-only ingest bundles;
-- structured benchmark events;
-- per-team ingest tokens;
-- a protected dashboard for team/token management;
-- GitHub, Google, and Apple login UI through Supabase Auth;
-- dogfood uploads from Code Mower and product development;
-- per-upload and per-event evidence detail URLs plus JSON export links for
-  signed-in users; and
-- productivity-summary and provider-scorecard views from metadata-only
-  `productivity_summary` events; and
-- self-service metadata export and deletion for signed-in team members/admins.
+Published-release evidence belongs on the corresponding GitHub release and
+release PR. Maintainers can reproduce the package path with the
+[First-User Install Rehearsal](first-user-install-rehearsal.md).
 
-The next CodeMower.com product slice is dashboard usefulness rather than raw
-receipt volume: clearer imported-history versus calibrated-evidence labeling,
-more visual provider/lens signal, and team-level recommendations that answer
-"what should I enable next?" That plan is maintained in the CodeMower.com
-operator docs so the public OSS repository stays focused on the installable
-client and metadata contract.
+## Local And Cloud Boundaries
 
-It does not yet provide automated retention jobs or true cross-team cohort
-benchmark calculations. Those are preconditions for broad cloud-data collection
-beyond friendly pilots.
+Local runners hold source code, diffs, worktrees, provider credentials, raw
+provider output, and private context. Generated GitHub files coordinate labels,
+comments, checks, and workflow entrypoints.
 
-Dashboard provenance is part of the product contract: routine dogfood/current
-metadata, imported GitHub Actions history, and calibrated reviewer/lens evidence
-must stay visually and analytically distinct. Workflow history can prove
-activity and upload health, but it is not the same as reviewer-quality evidence.
+Default cloud bundles exclude:
 
-OAuth, Supabase, Vercel, DNS, and hosted-secret setup are CodeMower.com
-operator responsibilities. OSS users should only need a dashboard-issued or
-operator-issued developer/team token when they opt into cloud sharing.
+- source code and raw diffs;
+- model prompts and transcripts;
+- raw stdout/stderr and auth output;
+- issue body text;
+- credentials and secret values; and
+- private Coworker evidence and account bindings.
 
-## Current Supervised-Pilot Goal
+CodeMower.com currently exposes a health endpoint, sign-in, private dashboards,
+metadata ingestion, evidence/detail views, productivity summaries, provider
+scorecards, and self-service metadata export/deletion. Dashboard routes require
+sign-in. Cross-team cohort benchmarks and automated retention jobs remain
+future hosted-service work.
 
-The current v1.0 release is the shareable supervised-pilot package line for
-20-50 early OSS users who can follow a guide without knowing the original
-reference repos.
+## Known Limits
 
-The early-adopter experience should be:
-
-1. install Code Mower from PyPI;
-2. run `code-mower init --easy`;
-3. run `code-mower doctor --adoption --repo OWNER/REPO`;
-4. run a first manual/local audit;
-5. run `code-mower lanes status --repo OWNER/REPO` and
-   `code-mower board serve --repo OWNER/REPO`;
-6. generate a local reviewer value report;
-7. optionally create or receive a CodeMower.com developer/team token; and
-8. optionally upload sanitized benchmark metadata and an explicit Board
-   snapshot.
-
-The default lane policy remains conservative: Codex and Claude are the first
-local structured audit lanes; Gitar and other hosted reviewers start
-informational/manual until a user's own data supports promotion.
-
-## Senior-Engineer Readiness Gate
-
-The next product gate is a first-impression gate, not a new-provider gate. A
-fresh senior engineer landing on the public repository should be able to answer
-these questions in the first few minutes:
-
-- What problem does Code Mower solve that a single local agent does not?
-- What happens locally, and what is optional cloud sharing?
-- What commands prove the install path without mutating a repository?
-- What data, if any, leaves the machine?
-- Which provider lanes are safe to try first?
-- What would make a lane eligible for merge-gating?
-- Where is the code intentionally structured, and where is it still being
-  refactored from extraction-era shape?
-
-The v1.3.1 line now gives adopters that trust test plus first productivity
-visibility. More provider adapters are useful only when install, doctor, first
-report, privacy, measurement, and code structure remain boring and credible.
-
-## v0.5 Beta Learning Addendum
-
-A short PRD addendum captures the v0.5 beta lessons without rewriting the
-product requirements: installed-package rehearsals are release-gating, dashboard
-trust depends on provenance labels, and current dogfood metadata is not the same
-as historical benchmark backfill. See
-[`docs/prd-addendum-v05-beta.md`](prd-addendum-v05-beta.md).
-
-## Fresh-Eyes Feedback Incorporated
-
-Recent external first-impression reviews converged on the same pattern: the
-thesis, privacy posture, and package layout are compelling, but the path from
-"I found this repo" to "I learned which AI reviewer is useful on my codebase"
-still has too much setup friction.
-
-These were v1.0 product gates and remain regression standards as adoption
-widens:
-
-- **Install friction:** GitHub-tag installs are acceptable as a fallback, but
-  public adoption should default to the PyPI package path.
-- **CLI overwhelm:** default help should show the launch-safe commands first;
-  provider bridges, labelers, migration internals, and operator commands belong
-  behind `code-mower --help-all` or deeper docs.
-- **Time to value:** users should not have to hand-build a full calibration
-  corpus before seeing a useful report. The current auto-discovery command
-  bootstraps a draft corpus from recent merged PRs and known review signals;
-  release rehearsals prove that path and docs should keep emphasizing human
-  disposition review before lane promotion.
-- **Code confidence:** release hygiene tests prove broad behavior, and 1.x
-  should keep adding focused unit coverage around doctor checks, cloud bundle privacy,
-  calibration math, verdict parsing, and provider-runner seams.
-- **Cloud incentive:** CodeMower.com must show immediate insight after upload,
-  not just receipt rows. Cohort benchmarks, recommendation quality, and
-  public/dogfood examples are the reasons a careful team would opt in.
-
-Fresh-eyes review also established an engineering-readiness standard: the 1.x
-implementation should look intentional to a senior engineer reading the
-package for the first time. Remaining "extraction-era" seams are product work,
-not cleanup churn:
-
-- **Provider wrappers:** `codex_audit_pr.py`, `claude_audit_pr.py`,
-  `gemini_cli_audit_pr.py`, `local_llm_audit_pr.py`, and similar wrappers
-  should share a provider-runner base instead of duplicating checkout, PR
-  loading, subprocess, verdict parsing, comment posting, and cleanup flow.
-- **CLI/package imports:** direct-source compatibility shims and `tools`
-  fallbacks should be removed from shipped package entrypoints once the PyPI
-  path is the public happy path. A direct source checkout can fail with a clear
-  "install the package or use scripts/dev-python" message instead of carrying
-  confusing legacy import branches.
-- **Top-level shape:** provider-specific runners, package/materialization
-  internals, cloud commands, and experiment harnesses should continue moving
-  into subpackages until the package root reads like a product API, not a
-  scripts directory.
-- **Static confidence:** broaden lint/type checks gradually. Ruff should move
-  beyond syntax/undefined-name once module boundaries stabilize, and a
-  narrowly scoped type-checking gate should start with the most stable domain
-  modules before becoming a repo-wide requirement.
-- **Zero-config first value:** `init --easy` and
-  `doctor --adoption --repo OWNER/REPO` are good, but a future
-  `code-mower try OWNER/REPO` or equivalent should produce a draft
-  corpus/value report from recent PR history with minimal setup.
-
-## v1.0 Operating Principles
-
-v1.0 is "easy mode with a path to power":
-
-- GitHub-first, with private-repo behavior and Actions cost made explicit.
-- Local-first, with cloud export/upload strictly optional.
-- No source code, raw diffs, raw model transcripts, stdout/stderr, auth output,
-  or secrets in default cloud bundles.
-- Provider and lens expansion gated by calibration evidence, not enthusiasm.
-- Product repos consume a pinned standalone package instead of mirrored
-  implementation files.
-- Public docs explain Code Mower as a local operating layer for peer
-  programmers and reviewer lanes, not as a hosted service that must be adopted
-  wholesale.
-
-GitLab, Bitbucket, ACP bridges, hosted builder harnesses that launch sessions,
-and fully automated authoring-run capture remain post-v1.0 work. v0.6 includes
-source-free builder provenance through `code-mower builder record` and the
-first subprocess-backed `code-mower builder-experiment run` path: hosted or
-local builders can open a PR, then Code Mower records provider/executor, issue,
-work order, PR, branch, model/version hints, timing, status, and intervention
-metadata without source, diffs, or transcripts.
-
-## Builder And Orchestrator Direction
-
-Reviewer calibration is the current executable loop: compare reviewers and
-lenses against known-clean, known-blocked, and subtle-risk PRs. Builder-side
-experiments are the next major extension: compare which AI peer programmer plus
-review policy ships verified code fastest and cleanest. The first supported
-posture is observation, not orchestration: Grok Bot, Cursor Cloud Agents, Devin,
-Claude, Codex, or another builder can create a branch/PR through their normal
-surface, then `code-mower builder record` captures the source-free delivery
-provenance.
-
-The roadmap should borrow the useful shape from multi-agent/orchestrator
-systems without adopting their full runtime:
-
-- record a normalized `run_role` or `purpose` such as `implement`, `review`,
-  `calibrate`, `release`, or `explore`;
-- keep one worktree/branch per builder run;
-- review via diff plus task contract, not builder transcript;
-- record provider, lens, context pack, elapsed time, user interventions, audit
-  blocker iterations, checks, merge result, post-merge health, and known cost;
-- keep local runners responsible for source and credentials;
-- keep CodeMower.com responsible for optional metadata storage, private team
-  dashboards, and future aggregate benchmarks.
-
-This keeps Code Mower's center of gravity GitHub-native and local-first while
-leaving room for future orchestrator adapters.
+- Code Mower remains GitHub-first for pull requests, checks, and merge gates.
+- `session start` prepares state and instructions; it is not a universal
+  multi-provider process launcher.
+- Devin has stronger builder support than reviewer or orchestrator support.
+- Private Coworker delivery is limited to explicitly approved Claude and Codex
+  roles in v1.3.1.
+- Graphify and Slack are not included in v1.3.1.
+- Provider cost fields remain unknown when the provider does not return them.
+- A successful release campaign proves installation and operational transport,
+  not builder quality or reviewer promotion readiness.
+- Auto-discovered calibration cases are proposals that require human
+  adjudication.
+- Broad unattended rollout and uncalibrated merge gates are outside the current
+  product posture.
 
 ## Near-Term Roadmap
 
-1. Keep each PyPI release aligned with the GitHub Latest release, README pin,
-   release notes, generated-workflow checks, fresh-clone rehearsal, and exact
-   package-install rehearsal.
-2. Repeat cold-repo and existing-repo adoption rehearsals with experienced
-   users; turn real friction into small, tested follow-up issues.
-3. Continue metadata-only dogfood uploads while keeping operational activity
-   distinct from adjudicated reviewer-quality evidence.
-4. Route bounded work through Claude, Codex, Cursor/Grok Bot, Antigravity,
-   Devin, Muse, and other available lanes so promotion decisions can use
-   measured quality, latency, intervention, and cost data.
-5. Expand the calibration corpus with known-clean, known-blocked, and subtle
-   architecture-risk PRs; promote lanes only when the policy evidence supports
-   it.
-6. Keep the public repository the OSS source of truth. Private product repos
-   consume pinned releases and keep product-specific configuration private.
-7. Add a short public recording of install, `doctor --adoption`, `lanes
-   status`, Board, and the first report; keep the static transcript as the
-   accessible fallback.
-8. Continue extracting shared provider-runner primitives and reducing legacy
-   import shims where that materially improves contributor comprehension.
-9. Broaden static analysis and module-boundary checks gradually around stable
-   contracts rather than as a single repository-wide migration.
-10. Keep repository-native checks central: detect and run each repo's declared
-    lint, test, and build surface instead of treating Code Mower's own tooling
-    as a universal policy.
-11. Improve CodeMower.com authentication, retention, export/deletion, and
-    productivity views before inviting broad cloud-data participation.
-12. Keep commercial implementation, hosted reporting, telemetry products, and
-    monetization plans in the private CodeMower.com repository.
+The next three capabilities should ship as independently gated epics rather
+than one cross-cutting implementation PR.
+
+### 1. Devin Peer Support
+
+Make Devin implement the same user-facing participant lifecycle as Claude and
+Codex while keeping local CLI and hosted API mechanics inside separate
+transports. The target includes:
+
+- session dispatch, progress, messaging, cancellation, result collection, and
+  recovery;
+- qualification as a host/orchestrator;
+- Coworker and later Graphify context delivery;
+- structured current-head reviewer output; and
+- a clean/blocked calibration campaign before any reviewer promotion.
+
+The maintained local builder and hosted Sessions API work are the starting
+point. Reviewer authority remains evidence-based.
+
+### 2. Graphify Repository Context
+
+Treat Graphify as a repository-context provider beside Coworker, not as a
+participant. Start local and code-only:
+
+- finish [Graphify evaluation issue #876](https://github.com/codemower-ai/code-mower/issues/876);
+- add a provider registry and multiple context attachments per session;
+- build and refresh graphs with commit/freshness validation;
+- consume a pinned structured JSON contract;
+- generate bounded impact, dependency, symbol, and related-test packets; and
+- deliver the same packet shape to Claude, Codex, and Devin.
+
+Code Mower should own refresh policy and should not rely permanently on parsing
+human-oriented MCP prose.
+
+### 3. Slack Task And Status Interaction
+
+Treat Slack as an interaction channel, not an orchestrator. A Slack-started
+session uses the project or channel's configured default orchestrator unless the
+request supplies an explicit one. The first local integration should use Socket
+Mode and provide:
+
+- allowlisted workspace, channel, user, and repository mappings;
+- idempotent task creation and Slack-thread-to-session binding;
+- redacted progress and completion updates;
+- clarification questions with reply-to-resume behavior;
+- cancellation and restart reconciliation; and
+- no raw private context or private reviewer findings in Slack.
+
+Slack should consume the durable session lifecycle and event surface introduced
+for Devin rather than scrape terminal or Board output.
+
+## Delivery Order
+
+1. Ship Devin lifecycle, host, context-recipient, and reviewer parity first.
+2. Run the bounded Graphify evaluation in parallel, then ship the local context
+   provider after the shared context registry is stable.
+3. Define Slack's command and identity contract in parallel, but merge its
+   worker only after session lifecycle and recovery are stable.
+
+Each child issue should produce one reviewable PR with one branch writer,
+independent current-head review, the normal gate, and package-level validation.
+The roadmap issue and epics track the work; they should not become umbrella
+implementation PRs.
 
 ## Documentation Ownership
 
-Public OSS docs live in the Code Mower repo. Private SaaS deployment docs live
-in the CodeMower.com repo. Product repos should keep only thin support wrappers
-and product-specific notes.
-
-Keep setup docs split by persona:
-
-- OSS user docs: install, `doctor`, first audit, first report, optional
-  developer/team token.
-- CodeMower.com operator docs: Supabase/Postgres, Vercel, OAuth, DNS,
-  service-role/admin secrets, token fallback, retention, and hosted reporting.
+Current OSS install, operation, privacy, and protocol documentation belongs in
+this repository. Release-specific notes and completed planning records are
+historical and must not be used as current installation instructions. Private
+CodeMower.com deployment, OAuth, database, DNS, and service-secret procedures
+belong in the hosted-service repository.

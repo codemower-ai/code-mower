@@ -1,250 +1,110 @@
 # Code Structure Roadmap
 
-Code Mower started as extracted tooling from real product repositories. That
-gave it useful battle scars, but the public OSS package should increasingly
-look like an intentionally designed product rather than a bundle of scripts.
-
-This document tracks the structure hardening path.
+Code Mower began as tooling extracted from product repositories. The package is
+now the source of truth, but several orchestration modules have grown as the
+product added sessions, context, provider campaigns, Jira, and Board support.
+This page records the current contributor-facing structure work. Runtime
+behavior is described in [Architecture](architecture.md).
 
 ## Current Shape
 
-The package is usable and has public release gates. The first calibration split
-is largely complete, and the doctor check registry now contains the first real
-runtime/cloud check implementations. Several modules are still large enough to
-slow contributor onboarding:
+The CLI is the primary public API. Internal package seams already isolate much
+of the domain behavior:
 
-| Module | Approximate Lines | Current Responsibility |
+- `calibration/` owns corpora, evidence, metrics, policy, and reports;
+- `doctor_checks/` owns runtime, provider, GitHub, tracker, cloud, and privacy
+  diagnostics;
+- `provider_runners/` owns shared checkout, process, verdict, and GitHub
+  mechanics;
+- `cloud_client/` owns bundle validation, redaction, upload, and cloud setup;
+- `providers/` and `lane_configs/` own provider metadata and lane declarations;
+  and
+- package and migration helpers own generated files, setup drift, rehearsals,
+  and mirror-removal support.
+
+Some root modules are still large. Approximate sizes at v1.3.1 are useful as
+orientation, not as an API promise:
+
+| Module | Lines | Main responsibility |
 | --- | ---: | --- |
-| `codex_audit_pr.py` | 1,730 | Codex audit wrapper, diff prep, subprocess isolation, verdict posting |
-| `local_llm_audit_pr.py` | 1,351 | local model audit wrapper, prompt setup, subprocess isolation |
-| `claude_audit_pr.py` | 1,120 | Claude audit wrapper, budget handling, verdict posting |
-| `gemini_cli_audit_pr.py` | 940 | Gemini/Antigravity-era local CLI wrapper, prompt setup, subprocess isolation |
-| `init.py` | 865 | easy-mode generated-file planning and package/template materialization glue |
-| `saas_reviewer_labeler.py` | 810 | SaaS reviewer label detection and trailer/label state orchestration |
+| `release_campaigns.py` | 8,100 | persistent multi-provider qualification campaigns |
+| `init.py` | 3,450 | setup planning, participant selection, generated package materialization |
+| `codex_audit_pr.py` | 2,700 | Codex audit transport and verdict lifecycle |
+| `board.py` | 2,500 | local Board snapshots, history, process state, and server |
+| `jira_mutations.py` | 2,450 | bounded Jira write planning and execution |
+| `claude_audit_pr.py` | 2,050 | Claude audit transport and verdict lifecycle |
+| `work_orders.py` | 1,850 | plan-to-delivery contracts and metadata |
+| `jira_cloud.py` | 1,750 | Jira reads, mapping, and readiness |
+| `campaign_adapters.py` | 1,600 | provider-specific qualification dispatch and recovery |
+| `devin_cli_audit_pr.py` | 1,450 | local Devin audit transport |
 
-The calibration adapter is no longer on this list: `code_mower_calibration.py`
-is now roughly 600 lines and delegates most domain behavior to
-`code_mower.calibration`.
-`doctor.py` is no longer on this list either: it is now roughly 200 lines and
-acts as a backwards-compatible CLI adapter around `code_mower.doctor_checks`.
-`cloud.py` has also dropped off this list: it is now roughly 680 lines and acts
-as a backwards-compatible CLI adapter around `code_mower.cloud_client`.
-`package.py` has also dropped off this list: it is now roughly 670 lines and
-acts as a materializer adapter around package manifest, content, static,
-rendering, and path helper modules.
-`migration.py` has also dropped off this list: package-install rehearsal flow
-lives under `code_mower.migration_rehearsal`, install/toy-repo command
-primitives live under `code_mower.migration_install`, first-user readiness
-scoring lives under `code_mower.migration_readiness`, and mirror-removal
-planning plus runner aliases now live under `code_mower.migration_mirror`.
-`migration.py` remains a smaller migration CLI/compatibility adapter.
-The GitHub doctor checks also now keep redacted `gh api` helpers in
-`code_mower.doctor_checks.github_api` and Actions billing/cost probes in
-`code_mower.doctor_checks.github_actions`, leaving `github.py` focused on
-repository-level setup orchestration.
-Doctor privacy redaction now lives in `code_mower.doctor_checks.privacy`, so
-auth probe outputs can report shape metadata without preserving account names,
-emails, scopes, or token-adjacent diagnostics.
-The doctor boundary is now test-enforced: `doctor.py` should remain a CLI and
-compatibility adapter, while runtime, GitHub, provider, Actions-cost, cloud,
-output, and privacy implementation details live under `code_mower.doctor_checks`.
-
-These are not urgent correctness problems. They are readability and evolution
-risks: new contributors cannot quickly tell which functions are stable API,
-which are command plumbing, and which are legacy compatibility paths.
+Large modules are an onboarding and change-isolation risk. Their size alone is
+not a reason for a broad rewrite; extraction should follow tested domain seams
+and preserve the CLI and artifact contracts.
 
 ## Public API Direction
 
-The CLI should remain the primary user API:
+Keep the stable user surface CLI-first:
 
 ```text
 code-mower init --easy
-code-mower doctor --preflight
+code-mower doctor --adoption --repo OWNER/REPO
+code-mower session ...
+code-mower lanes status --repo OWNER/REPO
 code-mower calibration ...
 code-mower cloud ...
 ```
 
-Internally, command routing should have one source of truth. `cli.py` now uses
-`COMMAND_HANDLERS` so adding a command means registering it once and testing the
-registry. Keep moving command-specific argument parsing and orchestration into
-small command modules instead of growing `cli.py`.
-
-Python import APIs should stay conservative until v1.0. The stable importable
-surface should eventually be small:
-
-- configuration loading and validation;
-- provider/lane registry inspection;
-- calibration corpus and value-report primitives;
-- cloud metadata bundle creation;
-- doctor check primitives for embedders.
-
-Everything else can remain CLI-first.
-
-## Senior-Engineer Readability Goal
-
-The structure goal for v1.0 is that a new contributor can answer four questions
-quickly:
-
-1. where command parsing ends and domain logic begins;
-2. where provider-specific behavior belongs;
-3. where privacy-sensitive cloud bundle decisions are enforced; and
-4. which modules are stable seams versus compatibility adapters.
-
-That is why the next refactors should prefer small packages with clear names
-over broad rewrites. A module can stay large temporarily if it is behind a
-tested seam and docs call out the planned split.
-
-## Structural Progress
-
-The first hardening slice keeps the public API CLI-first while introducing
-tested internal seams:
-
-- `code_mower.calibration` now owns corpus parsing helpers, artifact identity,
-  evidence disposition constants, metric normalization, the built-in
-  calibration arm catalog, reviewer run-status normalization,
-  lane-promotion thresholds, lane-policy report construction, value-report
-  rendering, command materialization, context-pack input materialization,
-  run-result normalization, and calibration command execution.
-  `code_mower_calibration.py` remains the backwards-compatible command
-  adapter.
-- `code_mower.doctor_checks` now owns doctor result models, named check groups,
-  runtime/toolchain checks, optional cloud-token checks, GitHub/provider/Actions
-  diagnostics, human-readable output rendering, first-run presets, and
-  package-aware config/template path resolution. Provider diagnostics are split
-  into token/env checks, local CLI discovery/probes, API-model probes, and a
-  thin provider catalog/runtime orchestrator. GitHub API and Actions-cost
-  internals are split into `doctor_checks.github_api` and
-  `doctor_checks.github_actions`. Privacy-preserving auth-probe output details
-  are split into `doctor_checks.privacy`. It also owns doctor report
-  orchestration through `code_mower.doctor_checks.runner`; `doctor.py` remains
-  the backwards-compatible CLI adapter.
-- `code_mower.provider_runners` now owns shared GitHub token resolution for
-  stdin-safe audit wrappers and local CLI lanes, shared PR metadata/comment
-  helpers, repo-path parsing, audit comment truncation, text/schema helpers, and
-  verdict artifact write/load/repost helpers.
-- `code_mower.cloud_client` now owns cloud endpoint probing, cloud doctor
-  diagnostics, bundle schema and privacy metadata, bundle materialization,
-  dogfood report discovery, dry-run preview shape, upload payload construction,
-  network posting, local cloud setup/token handling, structured event/repo
-  helper logic, and dogfood/catch-up/reviewer-run/repo-sync orchestration.
-  `cloud.py` remains the CLI adapter for export, doctor, setup, dogfood,
-  repo-sync, and upload.
-- `code_mower.package_manifest`, `code_mower.package_content`,
-  `code_mower.package_static`, `code_mower.package_rendering`, and
-  `code_mower.package_paths` now own package file manifests, generated content
-  builders, static generated file bodies, YAML/provider-catalog rendering, CLI
-  command inventory, and provider-template path resolution. `package.py`
-  remains the materializer adapter for package plans and output writes.
-- `code_mower.migration_rehearsal` now owns the package-install rehearsal flow;
-  `code_mower.migration_install` owns clean-venv, pip install, command-running,
-  and toy-repo helpers; `code_mower.migration_readiness` owns first-user
-  readiness artifacts and scorecards.
-- `code_mower.migration_mirror` now owns mirror-removal planning, workflow
-  dependency detection, local fallback detection, and runner-alias reporting.
-  `migration.py` remains the compatibility adapter for migration subcommands,
-  wrapper comparisons, release-readiness routing, mirror planning, and
-  package-install orchestration.
-- `builder-experiment` and authoring-intelligence docs establish the future
-  `run_role`/`purpose` event shape without requiring a full orchestrator runtime
-  before v1.0.
-
-These are intentionally package seams, not a full rewrite. The next slices can
-move larger chunks of implementation behind those seams without breaking
-existing commands.
+`cli.py` uses a command registry so parsing and dispatch have one source of
+truth. Importable Python APIs should be introduced only for concrete embedders
+and kept smaller than the corresponding CLI surface.
 
 ## Recommended Refactor Order
 
-1. **Calibration package split**
-   - Completed: corpus parsing, truth models, evidence constants,
-     metric helpers, lane-policy math, experiment arms, run-status
-     categorization, command materialization, context-pack inputs,
-     run-result normalization, report rendering, and runner orchestration now
-     live under `code_mower.calibration`.
-   - Keep `code_mower_calibration.py` as the backwards-compatible CLI adapter
-     until v1.0.
-   - Next calibration cleanup should be small: reduce repeated import
-     compatibility plumbing only if it clarifies contributor onboarding without
-     breaking direct-script users.
+1. **Release campaigns.** Split storage and locking, campaign state changes,
+   provider dispatch, watch/recovery, qualification evaluation, and cloud event
+   rendering. Keep one compatibility command adapter and preserve stored
+   campaign formats.
+2. **Setup generation.** Separate participant/profile decisions from repository
+   inspection and file rendering. This makes first-run changes easier to test
+   without loading every generated template.
+3. **Audit runners.** Move repeated PR-head validation, isolated checkout,
+   subprocess lifecycle, verdict validation, comment posting, and cleanup into
+   shared runner primitives. Provider modules should mainly describe auth,
+   command construction, output parsing, and provider-specific limits.
+4. **Board.** Separate snapshot collection, history/event persistence, process
+   liveness, presentation models, and HTTP serving.
+5. **Jira.** Keep read models, write planning, mutation execution, and recovery
+   distinct. Preserve dry-run-first writes and idempotency contracts.
+6. **Work orders and sessions.** Share participant, task, delivery, and
+   provenance types where they already describe the same concept. Avoid a new
+   umbrella abstraction until it removes a demonstrated mismatch.
 
-2. **Doctor check registry**
-   - Completed: result models, group registry, runtime/toolchain checks, and
-     optional cloud-token checks now live under `code_mower.doctor_checks`.
-   - GitHub repository diagnostics, provider token/env checks, local CLI
-     discovery/probes, API-model probes, and Actions cost checks now also live
-     behind that seam.
-   - Completed: human-readable output rendering and auth-probe privacy
-     redaction now live behind the same registry seam.
-   - Next: reduce import-compatibility plumbing only where it improves
-     contributor comprehension; the main doctor domain boundaries are now
-     established and guarded by `tests/test_doctor_boundaries.py`.
-   - Keep `doctor --preflight` behavior unchanged.
-   - Add tests at the check-result level, not only command-output level.
+## Provider Consistency Rule
 
-3. **Provider runner base**
-   - Completed: shared GitHub token handling, repo-path parsing, PR metadata,
-     PR comment posting, audit comment truncation, text/schema helpers, and
-     verdict artifact persistence/reposting.
-   - Next: extract shared audit-wrapper primitives from Codex, Claude, Gemini,
-     Antigravity, Hermes, and local LLM wrappers for diff context and
-     subprocess execution.
-   - Provider modules should mostly describe provider-specific commands and
-     output parsing.
+Every provider should map to the same role-level lifecycle where the product
+supports it: readiness, dispatch, progress, clarification, cancellation,
+result, recovery, and provenance. Provider adapters may implement that
+lifecycle through a local CLI, hosted API, GitHub app, or manual handoff.
 
-4. **Cloud client package**
-   - Completed: metadata bundle materialization is separate from network
-     upload. Cloud setup/token handling, structured event/repo helpers, cloud
-     doctor diagnostics, and dogfood/catch-up/reviewer-run/repo-sync
-     orchestration now live under `code_mower.cloud_client`.
-   - Keep source/diff/transcript exclusion rules near the bundle schema.
-   - `build_cloud_bundle(...)` is the current small bundle primitive for tests
-     and future UI integrations.
-   - Next: reduce remaining import-compatibility plumbing only where it makes
-     first-read comprehension better; the main cloud domain logic now has a
-     tested package seam.
+Do not force vendor mechanics into a false common denominator. Keep OAuth,
+sandbox flags, session identifiers, rate limits, webhook behavior, and output
+parsers in the provider adapter. Promote a provider to a peer role only after
+the relevant lifecycle is qualified.
 
-5. **Builder experiment primitives**
-   - Normalize `run_role`/`purpose`, task contract identity, provider/lens,
-     worktree/branch, PR, elapsed time, intervention counts, blocker
-     iterations, checks, merge result, post-merge health, and known cost.
-   - Keep these primitives source-free by default so they can feed local
-     reports and optional cloud events.
-   - Do not add a full orchestrator dependency until the metadata contract is
-     useful from manual and semi-manual runs.
+## Completion Criteria For Each Slice
 
-6. **Package/migration boundary**
-   - Completed: package-install rehearsal flow now lives under
-     `code_mower.migration_rehearsal`; install/toy-repo command primitives now
-     live under `code_mower.migration_install`; first-user readiness artifacts
-     and scorecards now live under `code_mower.migration_readiness`.
-   - Completed: mirror-removal planning and runner-alias reporting now live
-     under `code_mower.migration_mirror`.
-   - Next: keep product-repo wrapper support as command plumbing unless a
-     concrete external API consumer needs import-level stability.
-   - Product-repo wrapper support should read like a compatibility layer, not
-     the center of the project.
+A structural change is complete when:
 
-## API Simplification Candidates
+- the user-facing CLI and artifact schema remain compatible or have an explicit
+  migration;
+- new seams have focused behavior tests;
+- privacy and current-head review guarantees remain enforced;
+- the full unit, Ruff, privacy, easy-mode, and package rehearsal checks pass;
+  and
+- this roadmap and [Architecture](architecture.md) still describe the resulting
+  layout accurately.
 
-- Prefer one friendly first-run command: `doctor --preflight`.
-- Keep versioned aliases such as `doctor --v05` for scripts, but docs should
-  lead with the human name.
-- Make `init --easy`, `doctor --preflight`, `calibration value-report`, and
-  `cloud upload --dry-run` the golden path.
-- Group experimental lanes behind clear names and docs rather than promoting
-  every provider wrapper equally.
-- Add `code-mower demo` or `code-mower first-run` only if it removes actual
-  first-user friction; avoid another umbrella command until evidence supports it.
-
-## Definition Of Done
-
-Before v1.0, the codebase should satisfy:
-
-- no core module above roughly 1,500 lines unless it is mostly data/templates;
-- command registry remains tested as the CLI source of truth;
-- calibration and doctor have small tested submodules;
-- provider wrappers share common audit-runner primitives;
-- public docs explain the package layout;
-- builder-experiment metadata has a small source-free model before any
-  orchestrator adapter is promoted;
-- `ruff`, privacy scan, unit tests, easy-mode smoke, and fresh-clone rehearsal
-  stay green after each structural slice.
+Prefer bounded extractions tied to product work. They are easier to review and
+less likely to destabilize a provider or release path than a package-wide
+rewrite.

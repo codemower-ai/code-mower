@@ -7,10 +7,14 @@ Thanks for helping make Code Mower boringly reliable.
 Use Python 3.12 or newer. CI exercises Python 3.12, 3.13, and 3.14.
 
 ```bash
-python3.12 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
+scripts/dev-python --version
+scripts/dev-python -m venv .venv
 .venv/bin/python -m pip install -e ".[test]"
 ```
+
+The checked-in wrapper selects Python 3.12 or newer and rejects stale system
+shims. Upgrade pip only for a deliberate package-index or release rehearsal;
+normal contributor setup should remain reproducible and offline-friendly.
 
 ## Local Checks
 
