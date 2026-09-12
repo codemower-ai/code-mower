@@ -181,19 +181,73 @@ _SANDBOX_CANDIDATES: tuple[tuple[str, str], ...] = (
 #: library, the system interpreters. Everything outside this list and the
 #: exposure a build asks for is not in the child's filesystem view -- not
 #: unreadable by permission, absent.
+#:
+#: Named one runtime directory at a time rather than one top-level directory at
+#: a time. This list used to say ``/usr``, ``/etc`` and ``/Library``, which is a
+#: far larger claim than "what a runtime needs to start": ``/usr`` carries
+#: ``/usr/local`` -- Homebrew's whole prefix, its ``etc`` and ``var`` included --
+#: and ``/usr/src``, either of which can hold a checkout; ``/etc`` carries
+#: whatever service credentials the host's packages left world-readable; and
+#: ``/Library`` carries ``Keychains``, ``Preferences``, ``Application Support``
+#: and the rest of a Mac's machine-wide operator data. Every one of those was
+#: added to every build unconditionally, so the refusals that guard an exposure
+#: root never saw them, and a checkout under one of them stayed readable beside
+#: the materialized copy that exists to replace it.
+#:
+#: The narrowing is deliberately fail-closed: a host whose runtime needs
+#: something not named here refuses builds (the probe cannot start a child, so
+#: no mechanism is verified) instead of running a provider with more exposed
+#: than this list admits to.
 _SYSTEM_READ_PATHS: tuple[str, ...] = (
-    "/usr",
-    "/bin",
-    "/sbin",
+    # The dynamic loader and the C library, in every spelling a distribution
+    # uses. ``/lib64`` and friends are how an ELF binary names its program
+    # interpreter even where they are links into ``/usr``.
     "/lib",
     "/lib64",
     "/lib32",
-    "/etc",
-    "/private/etc",
+    "/usr/lib",
+    "/usr/lib64",
+    "/usr/lib32",
+    "/usr/libexec",
+    # System executables a runtime execs or reads: the system interpreters
+    # themselves live here.
+    "/bin",
+    "/sbin",
+    "/usr/bin",
+    "/usr/sbin",
+    # Architecture-independent runtime data: locales, time zones, ICU. Package
+    # data rather than operator data, and the runtime reads it during start-up.
+    "/usr/share",
+    # Apple's signed system volume, which no operator writes and no checkout
+    # can live on, plus the dyld cache's and time zone database's own state.
     "/System",
-    "/Library",
     "/private/var/db/dyld",
     "/private/var/db/timezone",
+    # The two places on a Mac that hold a *runtime* rather than operator data:
+    # a python.org interpreter installs itself into ``/Library/Frameworks``, and
+    # Apple's command line tools keep their interpreter and its shared
+    # libraries inside their own bundle. Nothing else under ``/Library`` is a
+    # runtime dependency, and the rest of it is exactly the machine-wide data
+    # this boundary exists to keep away from a provider.
+    "/Library/Frameworks",
+    "/Library/Developer/CommandLineTools/usr/lib",
+    "/Library/Developer/CommandLineTools/Library/Frameworks",
+    # ``/etc``, entry by entry. The loader's cache and configuration, the time
+    # zone, the account databases a runtime resolves a home directory through,
+    # and OpenSSL's configuration file -- which its own providers read on
+    # initialization. Not ``/etc/ssl/private``, not a service's credentials,
+    # not whatever else a host keeps here.
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/etc/alternatives",
+    "/etc/localtime",
+    "/etc/timezone",
+    "/etc/passwd",
+    "/etc/group",
+    "/etc/nsswitch.conf",
+    "/etc/os-release",
+    "/etc/ssl/openssl.cnf",
 )
 
 #: The probe reports two facts about one run, as a bitmask offset from a base
@@ -601,6 +655,7 @@ def containment_prefix(
     *,
     writable: Sequence[Path | str],
     readable: Sequence[Path | str],
+    repository: Path,
 ) -> tuple[str, ...]:
     """The argv prefix confining a child to ``writable`` plus a read-only runtime.
 
@@ -611,6 +666,15 @@ def containment_prefix(
     install and whose writable set is that build's own directories. A widened
     exposure that happened to reopen the boundary would otherwise be caught by
     nothing between here and the provider.
+
+    ``repository`` is the checkout being indexed, and it is here because the
+    refusals have to be applied to the *whole* readable set rather than to each
+    root a caller asks for. Every exposure a build requests goes through
+    :func:`_refuse_broad_exposure`; the read-only runtime this module adds on
+    top of it never did, so the set the child is really confined to was never
+    checked as a set. That is what let a runtime path that happened to contain
+    the checkout leave the live working tree readable beside the materialized
+    copy that exists to replace it.
 
     The probe's own exposure is this one plus the interpreter, because the
     probe child is a Python that has to be able to start at all. That makes the
@@ -624,6 +688,12 @@ def containment_prefix(
             "local graph builds need an OS sandbox that denies the provider the network and "
             "the host filesystem; this host offers none that could be verified"
         )
+    # Both spellings of everything the child could read, which is a superset of
+    # what either mechanism is handed: whichever spelling a mechanism decides
+    # on, it is checked here.
+    _refuse_broad_readable(
+        _existing([*_SYSTEM_READ_PATHS, *readable], follow=False), repository=repository
+    )
     prefix = _prefix_for(mechanism, writable=writable, readable=readable)
     probe = _prefix_for(
         mechanism,
@@ -1263,25 +1333,51 @@ class IndexResult:
 
 
 def _resolved_executable(executable: str) -> str:
-    """Bind a relative provider path to the invocation directory.
+    """Bind the provider to one absolute path, decided in the invocation directory.
 
     The provider runs with its working directory set to the materialized copy,
     so ``--indexer .venv/bin/graphify`` would otherwise be looked up inside the
-    frozen source tree, where the operator's install is not. A bare command
-    name keeps its ``PATH`` lookup, which is unaffected by the child's
-    directory.
+    frozen source tree, where the operator's install is not.
+
+    A bare command name is resolved here too, rather than left for the launch to
+    look up again. ``PATH`` is not independent of the child's directory: an entry
+    on it may itself be relative -- ``PATH=provider-venv/bin:$PATH`` is an
+    ordinary thing to have in a shell sitting in a project -- and a relative
+    entry names a different directory once the child starts in the materialized
+    copy. Containment then drew its boundary around the install this process
+    found while the launch searched again from somewhere else, so a correctly
+    installed provider failed to launch at all; worse, a repository that happens
+    to carry that path would answer the second search with a *tracked file*,
+    which is a build executing content it was only ever meant to read. One
+    lookup, in the directory the operator invoked from, and both the exposure
+    and the argv are that one absolute path.
     """
     if not isinstance(executable, str) or not executable:
         raise ContextError("local graph provider executable must be named")
     separators = [os.sep, os.altsep] if os.altsep else [os.sep]
     if any(separator in executable for separator in separators):
         return str(Path(executable).resolve())
-    return executable
+    located = shutil.which(executable)
+    if not located:
+        raise ContextError(
+            "local graph provider executable could not be found on PATH; name it by path "
+            "or install the pinned provider where this process can see it"
+        )
+    return str(Path(located).resolve())
 
 
 #: The directory a console script sits in, by platform convention. Named so an
 #: install root is recognised rather than guessed at from depth alone.
 _VENV_SCRIPT_DIRECTORIES = ("bin", "Scripts")
+
+#: What a runtime needs readable *inside* an install prefix, for the case where
+#: the prefix itself is too wide to expose. ``/usr`` is the ordinary base for an
+#: environment created from the system Python, and exposing it whole is the
+#: exposure this module just spent a list narrowing away; these are the
+#: directories an interpreter and its standard library actually live in, and on
+#: a prefix like ``/usr`` they are already the read-only runtime every child
+#: gets, so the narrowing adds nothing rather than widening anything.
+_RUNTIME_SUBDIRECTORIES = ("lib", "lib64", "lib32", "libexec", "bin", "share")
 
 #: ``pyvenv.cfg`` is a handful of ``key = value`` lines. Bounded at the stream
 #: anyway: it is a file inside somebody else's install, and a build should not
@@ -1403,6 +1499,19 @@ def _provider_base_prefixes(root: Path, *, repository: Path) -> tuple[str, ...]:
         if any(_under(base, path) for path in system) or _under(base, Path(os.path.realpath(root))):
             continue
         _refuse_broad_exposure(base, repository=repository)
+        if any(_under(path, base) for path in system):
+            # A prefix that *contains* the read-only runtime is not a narrow
+            # install: ``/usr`` is what an environment created from the system
+            # Python records, and exposing it whole hands the provider
+            # ``/usr/local``, ``/usr/src``, and anything else the host keeps
+            # there. The runtime directories inside it are exposed instead --
+            # which, for a prefix like that one, are the system paths every
+            # child already has, so nothing is added at all.
+            for name in _RUNTIME_SUBDIRECTORIES:
+                runtime = base / name
+                if runtime.is_dir() and not any(_under(runtime, path) for path in system):
+                    exposed.append(str(runtime))
+            continue
         exposed.append(str(base))
     if not resolved_any:
         raise ContextError(
@@ -1414,8 +1523,8 @@ def _provider_base_prefixes(root: Path, *, repository: Path) -> tuple[str, ...]:
     return tuple(exposed)
 
 
-def _refuse_broad_exposure(root: Path, *, repository: Path) -> None:
-    """Refuse an exposure root that would hand over somebody's whole world.
+def _is_broad_exposure(root: Path, *, repository: Path) -> bool:
+    """Would exposing ``root`` hand over somebody's whole world?
 
     The filesystem root, the operator's home, the checkout being indexed, and
     every ancestor of either: each of these is a directory whose contents are
@@ -1434,12 +1543,45 @@ def _refuse_broad_exposure(root: Path, *, repository: Path) -> None:
     refused = {Path(resolved.anchor), checkout, *checkout.parents}
     if home is not None:
         refused.update({home, *home.parents})
-    if resolved in refused or _under(resolved, checkout):
+    return resolved in refused or _under(resolved, checkout)
+
+
+def _refuse_broad_exposure(root: Path, *, repository: Path) -> None:
+    """Refuse an exposure root a provider install cannot justify."""
+    if _is_broad_exposure(root, repository=repository):
         raise ContextError(
             "local graph provider must be pinned into its own virtual environment; "
             "exposing its install would expose the filesystem root, your home directory, "
             "or the checkout being indexed"
         )
+
+
+def _refuse_broad_readable(readable: Iterable[str], *, repository: Path) -> None:
+    """Hold the *whole* readable set to the refusals one exposure root is held to.
+
+    Each root a build asks for is checked as it is derived, and that was the
+    only check there was: the read-only runtime is added afterwards and
+    unconditionally, so the set the child ends up confined to was never examined
+    as a set. A runtime path that contained the checkout -- a checkout under
+    ``/usr/local/src`` when this module exposed ``/usr``, say -- therefore left
+    the live working tree readable beside the materialized copy that exists
+    precisely so the provider never sees it, and no amount of care in deriving
+    the *provider's* exposure could notice.
+
+    So the final set is checked, whatever put a path in it. A build whose
+    runtime exposure would reach the operator's home or the checkout is refused
+    rather than narrowed silently: on an ordinary host nothing here is close to
+    either, and on a host where one of them is, the boundary this module claims
+    does not hold and saying so is the only honest answer.
+    """
+    for path in readable:
+        if _is_broad_exposure(Path(path), repository=repository):
+            raise ContextError(
+                "the read-only runtime this build would expose to the local graph provider "
+                "reaches the filesystem root, your home directory, or the checkout being "
+                "indexed, so the provider could read the working tree the materialized copy "
+                "replaces; no generation was published"
+            )
 
 
 def _provider_read_paths(command: str, *, repository: Path) -> tuple[str, ...]:
@@ -1942,6 +2084,7 @@ def subprocess_indexer(executable: str, *, repository: Path) -> Callable[[IndexR
         sandbox = containment_prefix(
             writable=(request.source_root, *request.writable),
             readable=runtime,
+            repository=repository,
         )
         # Normalized again at the point of launch, not because the pin could
         # arrive without the restrictions -- it cannot -- but because this is

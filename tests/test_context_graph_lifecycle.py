@@ -683,8 +683,12 @@ class NetworkIsolationTests(unittest.TestCase):
     def real_prefix(self, scratch: Path) -> tuple[str, ...]:
         """The argv this host would really confine a build with."""
         require_containment(self)
+        # A checkout of its own: the readable set is now checked against the
+        # tree a build would be indexing, so this call has to name one.
         return lifecycle.containment_prefix(
-            writable=(scratch,), readable=lifecycle._interpreter_read_paths()
+            writable=(scratch,),
+            readable=lifecycle._interpreter_read_paths(),
+            repository=self.root_outside(),
         )
 
     def test_a_sandboxed_child_cannot_reach_the_listening_socket(self) -> None:
@@ -946,6 +950,20 @@ class ProviderLaunchTests(TemporaryWorkspace):
         # Every artifact path this fixture has handed out, newest last, so a
         # test that launches more than once can name the run it means.
         self.artifacts: list[Path] = []
+        # A provider on ``PATH``, because a bare ``--indexer graphify`` is
+        # resolved once at construction now rather than looked up again by the
+        # launch. The stand-in sits outside the repository: a provider inside
+        # the checkout is refused, and that refusal has its own test.
+        self.provider_directory = Path(tempfile.mkdtemp(dir=self.root))
+        self.provider = self.provider_directory / "graphify"
+        self.provider.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.provider.chmod(0o700)
+        path = mock.patch.dict(
+            os.environ,
+            {"PATH": os.pathsep.join([str(self.provider_directory), os.environ.get("PATH", "")])},
+        )
+        path.start()
+        self.addCleanup(path.stop)
 
     def request(self, pin: lifecycle.GraphifyPin = PIN) -> lifecycle.IndexRequest:
         # A fresh directory per launch, because that is what a build hands the
@@ -1016,7 +1034,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
 
     def test_the_provider_is_launched_inside_the_sandbox(self) -> None:
         argv = self.launched_argv("graphify")
-        self.assertEqual(argv[:3], ["/sandbox", "--deny", "graphify"])
+        self.assertEqual(argv[:3], ["/sandbox", "--deny", str(self.provider)])
 
     def test_the_exposure_is_built_from_what_this_run_writes(self) -> None:
         """The boundary names this request's copy and this request's scratch.
@@ -1322,8 +1340,47 @@ class ProviderLaunchTests(TemporaryWorkspace):
         argv = self.launched_argv(os.path.join("venv", "bin", "graphify"))
         self.assertEqual(argv[2], str(provider))
 
-    def test_a_bare_command_name_keeps_its_path_lookup(self) -> None:
-        self.assertEqual(lifecycle._resolved_executable("graphify"), "graphify")
+    def test_a_bare_command_name_is_resolved_once_to_an_absolute_path(self) -> None:
+        """One lookup, kept, rather than a name the launch looks up again."""
+        self.assertEqual(lifecycle._resolved_executable("graphify"), str(self.provider))
+
+    def test_a_bare_name_on_a_relative_PATH_entry_binds_to_the_invocation_directory(self) -> None:
+        """The finding: ``PATH=provider-venv/bin`` names two directories.
+
+        A relative ``PATH`` entry is resolved against whoever is looking, and
+        the launch looks from the materialized copy rather than from where the
+        operator invoked. Containment was drawn around the install this process
+        found while the child searched somewhere else, so a correctly installed
+        provider never launched -- and a repository carrying that same relative
+        path would have answered the child's search with a tracked file, which
+        is a build executing content it was only meant to read.
+
+        Both hazards are arranged at once: the provider is installed under the
+        invocation directory, and a *different* executable of the same name is
+        planted at the same relative path inside the materialized copy.
+        """
+        installed = self.root / "invoked-from" / "provider-venv" / "bin"
+        installed.mkdir(parents=True)
+        provider = installed / "graphify"
+        provider.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        provider.chmod(0o700)
+        previous = Path.cwd()
+        os.chdir(self.root / "invoked-from")
+        self.addCleanup(os.chdir, previous)
+        request = self.request()
+        decoy = request.source_root / "provider-venv" / "bin"
+        decoy.mkdir(parents=True)
+        (decoy / "graphify").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (decoy / "graphify").chmod(0o700)
+        with mock.patch.dict(os.environ, {"PATH": os.path.join("provider-venv", "bin")}):
+            resolved = lifecycle._resolved_executable("graphify")
+        self.assertEqual(resolved, str(provider))
+        self.assertNotEqual(resolved, str(decoy / "graphify"))
+
+    def test_a_bare_name_that_is_on_no_PATH_entry_is_refused(self) -> None:
+        with mock.patch.dict(os.environ, {"PATH": str(self.root / "empty")}):
+            with self.assertRaises(ContextError):
+                lifecycle._resolved_executable("graphify")
 
     def test_an_unnamed_provider_is_refused(self) -> None:
         with self.assertRaises(ContextError):
@@ -1532,6 +1589,49 @@ class ProviderBaseRuntimeTests(ProviderExposureFixture):
         with self.assertRaises(ContextError):
             self.exposure(provider)
 
+    def test_a_base_prefix_that_contains_the_runtime_exposes_no_more_than_the_runtime(self) -> None:
+        """``/usr``: the ordinary base for an environment made from system Python.
+
+        Exposing it whole is what the unconditional runtime list used to do by
+        another route -- and it carries ``/usr/local``, ``/usr/src``, and
+        anything else the host keeps there. A prefix that *contains* the
+        read-only runtime is narrowed to the runtime directories inside it, and
+        on a prefix like that one those are already what every child gets, so
+        the exposure does not grow at all.
+        """
+        base = self.interpreter(self.root / "system")
+        (base / "local" / "src" / "someones-checkout").mkdir(parents=True)
+        provider = self.script(
+            self.root / "venv" / "bin" / "graphify", config=f"base-prefix = {base}\n"
+        )
+        runtime = (str(base / "lib"), str(base / "bin"))
+        with mock.patch.object(lifecycle, "_SYSTEM_READ_PATHS", runtime):
+            exposed = self.exposure(provider)
+        self.assertNotIn(str(base), exposed)
+        self.assertNotIn(str(base / "local"), exposed)
+        # And nothing new: both runtime directories are already exposed to every
+        # child, so the narrowing adds no path rather than a narrower one.
+        self.assertEqual(
+            [path for path in exposed if str(base) in path],
+            [],
+        )
+
+    def test_a_runtime_directory_the_prefix_holds_but_the_runtime_does_not_is_exposed(self) -> None:
+        """The narrowing exposes what is missing, rather than nothing at all.
+
+        A prefix wide enough to contain one runtime path may still hold the
+        interpreter's own library directory somewhere the runtime list does not
+        name, and a child that cannot read it does not start.
+        """
+        base = self.interpreter(self.root / "system")
+        provider = self.script(
+            self.root / "venv" / "bin" / "graphify", config=f"base-prefix = {base}\n"
+        )
+        with mock.patch.object(lifecycle, "_SYSTEM_READ_PATHS", (str(base / "bin"),)):
+            exposed = self.exposure(provider)
+        self.assertIn(str(base / "lib"), exposed)
+        self.assertNotIn(str(base), exposed)
+
     def test_an_implausibly_large_config_is_refused_rather_than_read_whole(self) -> None:
         environment = self.root / "venv"
         provider = self.script(environment / "bin" / "graphify", venv=True)
@@ -1540,6 +1640,104 @@ class ProviderBaseRuntimeTests(ProviderExposureFixture):
         )
         with self.assertRaises(ContextError):
             self.exposure(provider)
+
+
+class RuntimeExposureTests(ProviderExposureFixture):
+    """The read-only runtime every build adds, and who checks it.
+
+    This list used to be ``/usr``, ``/etc`` and ``/Library``, added to every
+    exposure unconditionally, which meant the refusals that guard an exposure
+    root never saw the set the child was actually confined to: a checkout under
+    ``/usr/local/src`` stayed readable beside the materialized copy that exists
+    to replace it, and every machine-wide credential under ``/Library`` and
+    ``/etc`` with it.
+    """
+
+    #: Directories that carry operator data, checkouts, or machine-wide
+    #: credentials rather than a runtime. Naming any of them in the runtime list
+    #: is the finding, whatever else changes around it.
+    FORBIDDEN = (
+        "/",
+        "/usr",
+        "/usr/local",
+        "/etc",
+        "/private/etc",
+        "/Library",
+        "/Library/Keychains",
+        "/Library/Preferences",
+        "/Library/Application Support",
+        "/home",
+        "/Users",
+        "/opt",
+        "/var",
+        "/private/var",
+        "/tmp",
+        "/root",
+        "/mnt",
+        "/media",
+        "/srv",
+    )
+
+    def test_the_runtime_list_names_runtime_directories_and_not_whole_worlds(self) -> None:
+        named = set(lifecycle._SYSTEM_READ_PATHS)
+        for forbidden in self.FORBIDDEN:
+            self.assertNotIn(forbidden, named)
+        for path in lifecycle._SYSTEM_READ_PATHS:
+            # Absolute and already normalized: a runtime path is a constant in
+            # this module, not something resolved against a caller's directory.
+            self.assertTrue(os.path.isabs(path), path)
+            self.assertEqual(os.path.normpath(path), path)
+
+    def test_a_runtime_path_that_contains_the_checkout_refuses_the_build(self) -> None:
+        """The finding, reproduced against the set rather than against one root.
+
+        Nothing the *caller* asks for is wrong here -- the readable set it
+        passes is empty. The runtime list alone puts the live working tree
+        inside the child's filesystem view, which is the case no per-root check
+        could ever see.
+        """
+        with mock.patch.object(lifecycle, "_SYSTEM_READ_PATHS", (str(self.root),)):
+            with mock.patch.object(
+                lifecycle, "containment_mechanism", lambda: lifecycle.Containment("stand-in", "/sandbox")
+            ):
+                with self.assertRaises(ContextError) as raised:
+                    lifecycle.containment_prefix(
+                        writable=(self.root / "scratch",),
+                        readable=(),
+                        repository=self.repository,
+                    )
+        self.assertIn("checkout", str(raised.exception))
+
+    def test_the_real_runtime_list_is_accepted_on_this_host(self) -> None:
+        """The control, and a guard on the list itself.
+
+        A runtime path that is the operator's home, an ancestor of it, or an
+        ancestor of an ordinary checkout would refuse every build on this host
+        rather than expose anything, so the check needs a positive case on the
+        real list: the refusal above must come from the planted path and not
+        from something this module ships.
+        """
+        with mock.patch.object(
+            lifecycle, "containment_mechanism", lambda: lifecycle.Containment("stand-in", "/sandbox")
+        ):
+            with mock.patch.object(lifecycle, "_prefix_for", lambda *_, **__: ("/sandbox",)):
+                with mock.patch.object(lifecycle, "_prefix_confines", lambda *_, **__: True):
+                    prefix = lifecycle.containment_prefix(
+                        writable=(self.root,), readable=(), repository=self.repository
+                    )
+        self.assertEqual(prefix, ("/sandbox",))
+
+    def test_a_readable_set_reaching_the_home_directory_is_refused(self) -> None:
+        home = self.root / "home"
+        home.mkdir()
+        with mock.patch.object(Path, "home", staticmethod(lambda: home)):
+            with mock.patch.object(
+                lifecycle, "containment_mechanism", lambda: lifecycle.Containment("stand-in", "/sandbox")
+            ):
+                with self.assertRaises(ContextError):
+                    lifecycle.containment_prefix(
+                        writable=(self.root,), readable=(home,), repository=self.repository
+                    )
 
 
 @unittest.skipUnless(hasattr(os, "killpg"), "process groups are a POSIX facility")

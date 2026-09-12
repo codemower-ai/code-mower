@@ -119,6 +119,34 @@ unreadable — they are absent. `unshare --net` used to be a candidate and is
 gone: it denies the network and leaves the host filesystem in place, which is
 half a boundary.
 
+"The system runtime" is a list of runtime directories, not a list of top-level
+ones. It used to say `/usr`, `/etc` and `/Library`, which claims far more than
+"what a runtime needs to start": `/usr` carries `/usr/local` — Homebrew's whole
+prefix, its `etc` and `var` included — and `/usr/src`, either of which can hold
+a checkout; `/etc` carries whatever service credentials a host's packages left
+world-readable; and `/Library` carries `Keychains`, `Preferences`,
+`Application Support` and the rest of a Mac's machine-wide operator data. Now it
+names the loader and C library directories, the system binary directories,
+`/usr/share`, Apple's signed `/System` volume, the dyld and time-zone databases,
+the two `/Library` paths that hold a runtime rather than operator data
+(`/Library/Frameworks` and the command line tools' own bundle), and `/etc` one
+entry at a time — the loader's cache and configuration, the time zone, the
+account databases, OpenSSL's configuration file. Nothing else. A host whose
+runtime needs something outside that list refuses builds, because the probe
+cannot start a child under the boundary; it does not get a wider boundary.
+
+The refusals are applied to the **whole readable set**, not only to each root a
+build asks for. Every exposure a build derives is checked as it is derived, but
+the runtime above is added afterwards and unconditionally, so the set the child
+is really confined to was never examined as a set — which is how a runtime path
+that contained the checkout could leave the live working tree readable beside
+the materialized copy that exists to replace it, with every per-root check
+passing. A base interpreter prefix wide enough to contain the runtime is handled
+the same way from the other side: `/usr`, which is what an environment created
+from the system Python records, is narrowed to the runtime directories inside it
+rather than exposed whole, and on a prefix like that one those are already what
+every child gets, so the exposure does not grow at all.
+
 "The provider's own install" is a layout this module *proves* rather than one
 it infers from depth. It used to expose the executable's parent and
 grandparent, on the reasoning that a console script lives in a virtual
@@ -433,10 +461,18 @@ always round-trips through the manifest it is recorded in.
 
 `--indexer` is the path to a provider CLI the operator has **already**
 installed. This repository does not download, install, or resolve one, which is
-why the executable is named rather than discovered. A relative path such as
-`.venv/bin/graphify` is resolved against the directory the command was invoked
-from, not against the materialized copy the provider runs in; a bare command
-name keeps its `PATH` lookup.
+why the executable is named rather than discovered. Whatever is named is bound
+to one absolute path, decided in the directory the command was invoked from: a
+relative path such as `.venv/bin/graphify` is resolved against that directory
+rather than against the materialized copy the provider runs in, and a bare
+command name is looked up on `PATH` there, once. `PATH` is not independent of
+the child's directory — an entry on it can itself be relative, and
+`PATH=provider-venv/bin` names a different directory once the child starts in
+the materialized copy. Leaving the lookup to the launch meant containment was
+drawn around the install this process found while the child searched somewhere
+else, so a correctly installed provider failed to start; and a repository
+carrying that same relative path would have answered the child's search with a
+tracked file, which is a build executing content it was only ever meant to read.
 
 ## State layout
 
