@@ -319,6 +319,7 @@ def run_doctor(
                 provider_profile=provider_profile,
                 provider_config_dir=provider_config_dir,
                 config_profile=profile,
+                config_path=str(config_path),
                 effective_lane=devin_effective_lane(effective_lanes, devin_transport),
                 adoption_posture=adoption_posture,
             )

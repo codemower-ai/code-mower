@@ -149,6 +149,26 @@ def lane_transport(lane_id: str, lane: Mapping[str, Any]) -> ProviderTransport |
     return transport
 
 
+def devin_lane_transport_name(
+    lane_id: str, lane: Mapping[str, Any] | None = None
+) -> str | None:
+    """Return the Devin transport a lane declares, or None for a non-Devin lane.
+
+    A lane identifier is a name, not a declaration: `team_devin` with
+    `product: devin` and a canonical provider/transport/driver is as much a Devin
+    lane as `devin_cli`, so callers that decide selection, discovery, or guidance
+    read the declaration. A contradictory declaration answers None here and is
+    reported by the capability check, which is the surface that explains it.
+    """
+    if isinstance(lane, Mapping):
+        try:
+            transport = lane_transport(lane_id, lane)
+        except ConfigError:
+            return None
+        return transport.transport if transport else None
+    return TRANSPORT_ALIASES.get(lane_id)
+
+
 def normalize_lane(lane_id: str, lane: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(lane)
     transport = lane_transport(lane_id, lane)

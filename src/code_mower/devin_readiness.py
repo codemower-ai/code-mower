@@ -36,7 +36,7 @@ from .participants import (
     configured_transports,
     selected_transports,
 )
-from .provider_capabilities import TRANSPORTS
+from .provider_capabilities import TRANSPORTS, devin_lane_transport_name
 
 SCHEMA = "code_mower.devinReadiness.v1"
 
@@ -53,13 +53,6 @@ POSTURE_HOSTED_API = "hosted_api"
 POSTURE_UNAVAILABLE = "unavailable"
 
 POSTURES = {LOCAL_TRANSPORT: POSTURE_LOCAL_CLI, HOSTED_TRANSPORT: POSTURE_HOSTED_API}
-
-DEVIN_LANE_TRANSPORTS = {
-    transport.review_lane: name
-    for name, transport in TRANSPORTS.items()
-    if transport.product == "devin"
-}
-DEVIN_REVIEW_LANES = frozenset(DEVIN_LANE_TRANSPORTS)
 
 CLI_COMMAND_ENV = "CODE_MOWER_DEVIN_CLI_COMMAND"
 DEFAULT_CLI_COMMAND = "devin"
@@ -81,11 +74,6 @@ SELECT_HOSTED_COMMAND = "code-mower init --with claude,codex,devin-api-v3 --appl
 PATH_DETAIL_FIELDS = frozenset({"profile_file", "candidate_files"})
 
 HOSTED_CREDENTIAL_REMEDIATION = {
-    "ambiguous": (
-        "Several stored credential profiles could satisfy hosted Devin. Keep one "
-        f"profile for the selected configuration profile, or set {DEVIN_API_KEY_ENV} "
-        f"and {DEVIN_ORG_ID_ENV} in the environment, then rerun `code-mower doctor`."
-    ),
     "malformed": (
         "The stored hosted credentials could not be parsed. Rewrite the credential "
         f"profile as `NAME=value` lines for service-user {DEVIN_API_KEY_ENV} and "
@@ -163,9 +151,8 @@ def selected_devin_transport(
     """
     if not isinstance(config, Mapping):
         return None
-    lane_transports = {
-        DEVIN_LANE_TRANSPORTS[lane] for lane in lanes if lane in DEVIN_LANE_TRANSPORTS
-    }
+    selected_lane_transports = _lane_transports(config, lanes)
+    lane_transports = set(selected_lane_transports.values())
     explicit = _explicit_transport_selected(config)
     if len(lane_transports) > 1 and not explicit:
         # Lane order is not a selection, so an unscoped pair of transports is
@@ -175,15 +162,35 @@ def selected_devin_transport(
             "profile with --profile or set session_defaults.transports.devin to "
             "devin_cli or devin_api_v3"
         )
-    lane_transport = next(
-        (DEVIN_LANE_TRANSPORTS[lane] for lane in lanes if lane in DEVIN_LANE_TRANSPORTS), None
-    )
+    lane_transport = next(iter(selected_lane_transports.values()), None)
     if lane_transport is None and "devin" not in configured_participants(config):
         return None
     configured = configured_transports(config, profile=profile)["devin"]
     if lane_transport is not None and not explicit:
         return lane_transport
     return configured
+
+
+def _lane_transports(
+    config: Mapping[str, Any], lanes: tuple[str, ...]
+) -> dict[str, str]:
+    """Map each selected Devin lane to the transport its declaration names.
+
+    Selection follows the lane declaration rather than the lane identifier, so a
+    valid custom-named lane such as `team_devin` selects its declared transport
+    exactly as the canonical lanes do.
+    """
+    lane_configs = config.get("lanes")
+    declarations = lane_configs if isinstance(lane_configs, Mapping) else {}
+    resolved: dict[str, str] = {}
+    for lane in lanes:
+        declaration = declarations.get(lane)
+        transport = devin_lane_transport_name(
+            lane, declaration if isinstance(declaration, Mapping) else None
+        )
+        if transport is not None:
+            resolved[lane] = transport
+    return resolved
 
 
 def _explicit_transport_selected(config: Mapping[str, Any]) -> bool:
@@ -205,31 +212,50 @@ def _explicit_transport_selected(config: Mapping[str, Any]) -> bool:
     return False
 
 
+@dataclass(frozen=True)
+class _LocalDiscovery:
+    """How the selected local lane looks for its executable."""
+
+    candidates: tuple[str, ...]
+    command_env: str
+    lane_configured: bool
+
+
 def _cli_commands(
     lane_config: Mapping[str, Any] | None, env: Mapping[str, str]
-) -> tuple[str, ...]:
-    """Return the candidate commands, which may be absolute local paths.
+) -> _LocalDiscovery:
+    """Return the discovery the lane performs, whose candidates may be paths.
 
     A configured lane's own discovery order is the whole answer, because lane
     runtime resolves exactly those candidates: appending the historical override
     or the default would let readiness pass on an executable the lane would
-    never run. Those two only answer for a caller with no lane configuration.
-    Every lookup reads the injected environment so readiness never depends on
-    the host.
+    never run, and naming them in guidance would send the operator to a variable
+    the lane ignores. Those two only answer for a caller with no lane
+    configuration. Every lookup reads the injected environment so readiness never
+    depends on the host.
     """
     if isinstance(lane_config, Mapping):
         candidates = list(candidate_local_cli_commands(lane_config, env=env))
+        provider_config = lane_config.get("provider_config")
+        command_env = (
+            str(provider_config.get("command_env") or "")
+            if isinstance(provider_config, Mapping)
+            else ""
+        )
+        lane_configured = True
     else:
         candidates = []
         override = str(env.get(CLI_COMMAND_ENV) or "")
         if override:
             candidates.append(override)
         candidates.append(DEFAULT_CLI_COMMAND)
+        command_env = CLI_COMMAND_ENV
+        lane_configured = False
     ordered: list[str] = []
     for command in candidates:
         if command not in ordered:
             ordered.append(command)
-    return tuple(ordered)
+    return _LocalDiscovery(tuple(ordered), command_env, lane_configured)
 
 
 def _selection_finding(transport: str, lane: str) -> ReadinessFinding:
@@ -294,21 +320,26 @@ def _local_cli_finding(
     env: Mapping[str, str],
     adoption_posture: str = DEFAULT_ADOPTION_POSTURE,
 ) -> ReadinessFinding:
-    candidates = _cli_commands(lane_config, env)
-    resolved = next((command for command in candidates if shutil.which(command)), None)
-    # Discovery uses each configured command so an override outside PATH resolves,
-    # while reporting stays a basename so no local path leaves the machine.
-    command = os.path.basename(resolved or candidates[0])
+    discovery = _cli_commands(lane_config, env)
+    candidates = discovery.candidates
+    # Reporting stays a basename so no local path leaves the machine, even though
+    # a configured candidate may be an absolute path.
+    basenames = tuple(dict.fromkeys(os.path.basename(name) for name in candidates))
     detail: dict[str, Any] = {
         "schema": SCHEMA,
         "posture": POSTURE_LOCAL_CLI,
         "transport": LOCAL_TRANSPORT,
-        "command": command,
-        "command_env": CLI_COMMAND_ENV,
+        "command": basenames[0],
+        "commands": list(basenames),
         "authentication": "ambient_cli_login",
         "adoption_posture": adoption_posture,
+        "discovery": "lane_configured" if discovery.lane_configured else "default",
     }
+    if discovery.command_env:
+        detail["command_env"] = discovery.command_env
     if adoption_posture in OBSERVER_POSTURES:
+        # Skipping before any lookup keeps the statement literally true: nothing
+        # about this machine's executables was inspected.
         return ReadinessFinding(
             name="provider.devin.local_cli",
             status=STATUS_SKIP,
@@ -322,7 +353,10 @@ def _local_cli_finding(
                 "on the machine that executes the lane."
             ),
         )
+    resolved = next((command for command in candidates if shutil.which(command)), None)
     if resolved is not None:
+        command = os.path.basename(resolved)
+        detail["command"] = command
         return ReadinessFinding(
             name="provider.devin.local_cli",
             status=STATUS_PASS,
@@ -335,18 +369,63 @@ def _local_cli_finding(
                 "expired, and `code-mower doctor --probe-runtime` for bounded auth status."
             ),
         )
-    return ReadinessFinding(
-        name="provider.devin.local_cli",
-        status=STATUS_WARN,
-        message=f"{command} was not found, so local Devin execution is unavailable",
-        lane=lane,
-        detail=detail,
-        remediation=(
+    if discovery.lane_configured:
+        # Naming the historical override here would send the operator to a
+        # variable this lane's runtime never reads.
+        named = ", ".join(f"`{name}`" for name in basenames)
+        install = f"Install the Devin CLI as one of the lane's configured commands ({named})"
+        if discovery.command_env:
+            install += f" or point {discovery.command_env} at the executable to run"
+        remediation = (
+            f"{install}, run `devin auth login` in a trusted environment, then rerun "
+            "`code-mower doctor`. Hosted credentials do not enable this transport: "
+            f"select it with {SELECT_HOSTED_COMMAND} instead."
+        )
+    else:
+        remediation = (
             f"Install the Devin CLI as `{DEFAULT_CLI_COMMAND}` on PATH or set "
             f"{CLI_COMMAND_ENV} to its absolute path, run `devin auth login` in a trusted "
             "environment, then rerun `code-mower doctor`. Hosted credentials do not "
             f"enable this transport: select it with {SELECT_HOSTED_COMMAND} instead."
-        ),
+        )
+    return ReadinessFinding(
+        name="provider.devin.local_cli",
+        status=STATUS_WARN,
+        message=f"{basenames[0]} was not found, so local Devin execution is unavailable",
+        lane=lane,
+        detail=detail,
+        remediation=remediation,
+    )
+
+
+def _hosted_credential_remediation(
+    status: str,
+    *,
+    config_path: str,
+    config_profile: str,
+    repo_slug: str,
+) -> str:
+    """Return the next action for an unresolved hosted credential outcome.
+
+    A credential profile is not the Code Mower configuration profile, so several
+    stored credential profiles are resolved by naming one with
+    `--provider-profile`, while the same configuration and `--profile` keep
+    describing the same posture. Profile names, filenames, and locations stay out
+    of the answer.
+    """
+    if status == "ambiguous":
+        check = readiness_command(
+            config_path=config_path, profile=config_profile, repo_slug=repo_slug
+        )
+        return (
+            "Several stored credential profiles could satisfy hosted Devin. Rerun "
+            f"{check} with `--provider-profile NAME` naming the credential profile to "
+            "use, or set service-user "
+            f"{DEVIN_API_KEY_ENV} and {DEVIN_ORG_ID_ENV} in the environment. The Code "
+            "Mower --profile still selects the configuration profile."
+        )
+    return HOSTED_CREDENTIAL_REMEDIATION.get(
+        status, HOSTED_CREDENTIAL_REMEDIATION_DEFAULT
     )
 
 
@@ -357,6 +436,9 @@ def _hosted_credential_finding(
     credential_file: Path | None,
     profile: str,
     config_dir: Path | None,
+    config_path: str = "",
+    config_profile: str = "",
+    repo_slug: str = "",
 ) -> ReadinessFinding:
     credentials = credentials_from_env(
         env, credential_file=credential_file, profile=profile, config_dir=config_dir
@@ -391,15 +473,29 @@ def _hosted_credential_finding(
             ),
         )
     status = STATUS_WARN if credentials.status == "missing" else STATUS_FAIL
+    # The resolver reports its own status where a variable name would go for
+    # outcomes like an ambiguous credential profile, so only a genuinely required
+    # variable is named as unresolved.
+    missing = (
+        credentials.missing
+        if credentials.missing in {DEVIN_API_KEY_ENV, DEVIN_ORG_ID_ENV}
+        else ""
+    )
+    message = f"hosted service-user credentials are {credentials.status}"
+    if missing:
+        message += f"; first unresolved variable: {missing}"
+        detail["missing_variable"] = missing
     return ReadinessFinding(
         name="provider.devin.hosted_credentials",
         status=status,
-        message=f"hosted service-user credentials are {credentials.status}; "
-        f"first unresolved variable: {credentials.missing or DEVIN_API_KEY_ENV}",
+        message=message,
         lane=lane,
         detail=detail,
-        remediation=HOSTED_CREDENTIAL_REMEDIATION.get(
-            credentials.status, HOSTED_CREDENTIAL_REMEDIATION_DEFAULT
+        remediation=_hosted_credential_remediation(
+            credentials.status,
+            config_path=config_path,
+            config_profile=config_profile,
+            repo_slug=repo_slug,
         ),
     )
 
@@ -654,6 +750,7 @@ def devin_readiness(
     profile: str = "",
     config_profile: str | None = "recommended",
     config_dir: Path | None = None,
+    config_path: str = "",
     lane_config: Mapping[str, Any] | None = None,
     adoption_posture: str = DEFAULT_ADOPTION_POSTURE,
     include_unselected: bool = False,
@@ -694,6 +791,9 @@ def devin_readiness(
                 credential_file=credential_file,
                 profile=profile,
                 config_dir=config_dir,
+                config_path=config_path,
+                config_profile=config_profile or "",
+                repo_slug=repo_slug,
             )
         )
         findings.append(

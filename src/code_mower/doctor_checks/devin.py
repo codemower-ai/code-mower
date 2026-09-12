@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from code_mower import config as code_mower_config
-from code_mower.provider_capabilities import TRANSPORTS
+from code_mower.provider_capabilities import TRANSPORTS, devin_lane_transport_name
 
 from .models import DoctorCheck
 
@@ -19,12 +19,6 @@ __all__ = [
     "devin_readiness_selected",
     "devin_selection_ambiguity",
 ]
-
-DEVIN_REVIEW_LANES = frozenset(
-    transport.review_lane
-    for transport in TRANSPORTS.values()
-    if transport.product == "devin"
-)
 
 
 def devin_readiness_selected(
@@ -71,15 +65,18 @@ def devin_effective_lane(
 
     Both Devin lanes can be active at once, so the selected transport names the
     one lane whose configured command readiness must agree with: returning
-    whichever lane appears first would check the other lane's executable.
+    whichever lane appears first would check the other lane's executable. A lane
+    is matched by what it declares, so a valid custom-named lane supplies its own
+    command configuration exactly as a canonical lane does.
     """
     wanted = (
-        {TRANSPORTS[transport].review_lane}
+        transport
         if transport in TRANSPORTS and TRANSPORTS[transport].product == "devin"
-        else DEVIN_REVIEW_LANES
+        else None
     )
     for lane_id, effective in effective_lanes:
-        if lane_id in wanted:
+        declared = devin_lane_transport_name(lane_id, effective)
+        if declared is not None and wanted in (None, declared):
             return effective
     return None
 
@@ -95,6 +92,7 @@ def check_devin_readiness(
     provider_profile: str = "",
     provider_config_dir: Path | None = None,
     config_profile: str | None = "recommended",
+    config_path: str = "",
     effective_lane: Mapping[str, Any] | None = None,
     adoption_posture: str = "reviewer-gate",
 ) -> list[DoctorCheck]:
@@ -110,6 +108,7 @@ def check_devin_readiness(
             profile=provider_profile,
             config_profile=config_profile,
             config_dir=provider_config_dir,
+            config_path=config_path,
             lane_config=effective_lane,
             adoption_posture=adoption_posture,
             include_unselected=include_unselected,

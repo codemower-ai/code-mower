@@ -168,6 +168,38 @@ def _skip_local_cli_checks(
     ]
 
 
+def _capability_remediation(brief: Mapping[str, Any]) -> str:
+    """Describe the lane's real capability posture from its declared modes.
+
+    Naming a fixed set of gaps contradicts the transport whose modes the same
+    finding reports, so the sentence is derived: a mode the transport supports is
+    named as supported, and only a truly `unavailable` capability is named as a
+    gap.
+    """
+    capabilities = brief.get("capabilities", {})
+    modes = capabilities if isinstance(capabilities, Mapping) else {}
+    gaps = [str(name) for name in brief.get("capability_gaps", ())]
+    supported = [
+        f"{name}={modes[name]}"
+        for name in ("message", "cancel", "structured_results", "context")
+        if isinstance(modes.get(name), str) and modes[name] != "unavailable"
+    ]
+    parts = ["Use only declared capability modes"]
+    if supported:
+        parts.append("this transport supports " + ", ".join(supported))
+    if gaps:
+        parts.append(
+            "unavailable capabilities (" + ", ".join(gaps) + ") pause dependent work; "
+            "report them instead of substituting another product"
+        )
+    parts.append(
+        "authorized context reaches only the hosted builder input, never the local CLI "
+        "reviewer, and review stays informational: selection does not grant merge "
+        "authority"
+    )
+    return "; ".join(parts) + "."
+
+
 def check_lane_runtime(
     lane_id: str,
     lane: Mapping[str, Any],
@@ -199,11 +231,12 @@ def check_lane_runtime(
         ))
         return checks
     if transport:
+        brief = transport.brief()
         checks.append(DoctorCheck(
             name="provider.capabilities", status=STATUS_WARN, lane=lane_id,
-            message=f"{transport.product} via {transport.transport}: unavailable capabilities: " + ", ".join(transport.brief()["capability_gaps"]),
-            detail=transport.brief(),
-            remediation="Use only declared capability modes; session messaging and cancellation are unavailable, and authorized context reaches only the hosted builder input (never the local CLI reviewer). Selection does not grant merge authority.",
+            message=f"{transport.product} via {transport.transport}: unavailable capabilities: " + ", ".join(brief["capability_gaps"]),
+            detail=brief,
+            remediation=_capability_remediation(brief),
         ))
     driver = str(lane.get("driver", ""))
     skip_local_cli_runtime = (

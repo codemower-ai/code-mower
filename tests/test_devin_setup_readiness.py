@@ -394,6 +394,87 @@ class DevinReadinessFindingTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             _readiness(_config("devin"), transport="devin_desktop", env={})
 
+    def test_observer_postures_inspect_no_executable_at_all(self) -> None:
+        for posture in sorted(OBSERVER_POSTURES):
+            with self.subTest(posture=posture):
+                with mock.patch(
+                    "code_mower.devin_readiness.shutil.which"
+                ) as which:
+                    findings = _readiness(
+                        _config("devin-cli"), env={}, adoption_posture=posture
+                    )
+                which.assert_not_called()
+                finding = _finding(findings, "provider.devin.local_cli")
+                self.assertEqual(finding.status, "skip")
+                self.assertIn("was not inspected", finding.message)
+
+    def test_configured_lane_remediation_names_only_its_own_candidates(self) -> None:
+        lane = {
+            "provider": "devin_cli",
+            "driver": "local_cli",
+            "provider_config": {
+                "command": "/opt/private/devin-lane",
+                "command_env": "TEAM_DEVIN_CLI",
+                "alternate_commands": ["devin-lane-fallback"],
+            },
+        }
+        with mock.patch("code_mower.devin_readiness.shutil.which", return_value=None):
+            findings = _readiness(
+                _config("devin-cli"),
+                env={CLI_COMMAND_ENV: "devin-override"},
+                lane_config=lane,
+            )
+        finding = _finding(findings, "provider.devin.local_cli")
+        self.assertEqual(finding.status, STATUS_WARN)
+        self.assertEqual(finding.detail["command_env"], "TEAM_DEVIN_CLI")
+        self.assertEqual(
+            finding.detail["commands"], ["devin-lane", "devin-lane-fallback"]
+        )
+        self.assertIn("devin-lane", finding.remediation)
+        self.assertIn("devin-lane-fallback", finding.remediation)
+        self.assertIn("TEAM_DEVIN_CLI", finding.remediation)
+        # The lane's runtime never reads the historical override or default, so
+        # remediation must not send the operator to either of them.
+        self.assertNotIn(CLI_COMMAND_ENV, finding.remediation)
+        self.assertNotIn(f"`{DEFAULT_CLI_COMMAND}`", finding.remediation)
+        rendered = finding.message + finding.remediation + str(finding.detail)
+        self.assertNotIn("/opt/private", rendered)
+
+    def test_lane_without_configuration_keeps_the_historical_guidance(self) -> None:
+        with mock.patch("code_mower.devin_readiness.shutil.which", return_value=None):
+            findings = _readiness(_config("devin-cli"), env={})
+        finding = _finding(findings, "provider.devin.local_cli")
+        self.assertEqual(finding.detail["command_env"], CLI_COMMAND_ENV)
+        self.assertIn(CLI_COMMAND_ENV, finding.remediation)
+        self.assertIn(f"`{DEFAULT_CLI_COMMAND}`", finding.remediation)
+
+    def test_ambiguous_credential_profiles_name_no_variable_or_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            for name in ("devin.env", "devin-team.env"):
+                profile = store / name
+                profile.write_text(
+                    f"{DEVIN_API_KEY_ENV}={FAKE_KEY}\n{DEVIN_ORG_ID_ENV}={FAKE_ORG_ID}\n"
+                )
+                profile.chmod(0o600)
+            findings = devin_readiness(
+                _config("devin-api-v3"),
+                env={},
+                config_dir=store,
+                config_path="ops/code-mower.yml",
+                config_profile="hosted-devin",
+            )
+        finding = _finding(findings, "provider.devin.hosted_credentials")
+        self.assertEqual(finding.status, "fail")
+        self.assertIn("ambiguous", finding.message)
+        self.assertNotIn("first unresolved variable", finding.message)
+        self.assertIn("--provider-profile NAME", finding.remediation)
+        self.assertIn("--profile hosted-devin", finding.remediation)
+        self.assertIn("ops/code-mower.yml", finding.remediation)
+        rendered = finding.message + finding.remediation + str(finding.detail)
+        for secret in ("devin-team", "devin.env", tmp, FAKE_KEY, FAKE_ORG_ID):
+            self.assertNotIn(secret, rendered)
+
 
 class DevinReadinessPrivacyTests(unittest.TestCase):
     def _rendered(self, findings) -> str:
@@ -662,6 +743,107 @@ class DevinDoctorStageTests(unittest.TestCase):
         self.assertEqual(devin_effective_lane(lanes, LOCAL_TRANSPORT), local)
         self.assertEqual(devin_effective_lane(lanes, HOSTED_TRANSPORT), hosted)
         self.assertEqual(devin_effective_lane(lanes, "claude_cli"), hosted)
+
+    def _custom_lane_config(self, directory: str, *, hosted: bool) -> Path:
+        labels = (
+            "    labels:\n"
+            "      needs: needs-team-devin-audit\n"
+            "      done: team-devin-audit-done\n"
+            "      blocked: team-devin-audit-blocked\n"
+        )
+        if hosted:
+            lane = (
+                "lanes:\n"
+                "  team_devin:\n"
+                "    type: audit\n"
+                "    driver: hosted_bridge\n"
+                "    provider: devin\n"
+                "    product: devin\n"
+                "    transport: devin_api_v3\n"
+                "    informational: true\n"
+                f"{labels}"
+            )
+        else:
+            lane = (
+                "lanes:\n"
+                "  team_devin:\n"
+                "    type: audit\n"
+                "    driver: local_cli\n"
+                "    provider: devin_cli\n"
+                "    product: devin\n"
+                "    transport: devin_cli\n"
+                "    informational: true\n"
+                f"{labels}"
+                "    provider_config:\n"
+                "      command: team-devin\n"
+                "      command_env: TEAM_DEVIN_CLI\n"
+            )
+        text = EXAMPLE_CONFIG.read_text(encoding="utf-8")
+        text = text.replace("\nlanes:\n", "\n" + lane, 1)
+        text = text.replace(
+            "\nprofiles:\n",
+            "\nprofiles:\n"
+            "  team-devin:\n"
+            "    description: A custom-named Devin lane.\n"
+            "    lanes:\n"
+            "      - codex\n"
+            "      - team_devin\n",
+            1,
+        )
+        path = Path(directory) / "code-mower.yml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_custom_named_devin_lanes_reach_readiness_and_next_steps(self) -> None:
+        for hosted, transport, posture in (
+            (False, LOCAL_TRANSPORT, POSTURE_LOCAL_CLI),
+            (True, HOSTED_TRANSPORT, POSTURE_HOSTED_API),
+        ):
+            with self.subTest(hosted=hosted), tempfile.TemporaryDirectory() as directory:
+                config_path = self._custom_lane_config(directory, hosted=hosted)
+                result = self._report(
+                    [
+                        str(config_path),
+                        "--profile",
+                        "team-devin",
+                        "--provider-templates",
+                        str(PROVIDER_TEMPLATES),
+                        "--json",
+                    ]
+                )
+                checks = {
+                    check["name"]: check for check in result["report"]["checks"]
+                }
+                selection = checks["provider.devin.selection"]
+                self.assertEqual(selection["detail"]["transport"], transport)
+                self.assertEqual(selection["detail"]["posture"], posture)
+                if hosted:
+                    self.assertIn("provider.devin.hosted_credentials", checks)
+                else:
+                    local = checks["provider.devin.local_cli"]
+                    # The custom lane's own command configuration decides
+                    # readiness, exactly as its runtime does.
+                    self.assertEqual(local["detail"]["commands"], ["team-devin"])
+                    self.assertEqual(
+                        local["detail"]["command_env"], "TEAM_DEVIN_CLI"
+                    )
+                config = load_config(config_path)
+                payload = build_next_steps(
+                    {
+                        "profiles": config.get("profiles"),
+                        "provider_templates": config.get("lanes"),
+                    },
+                    profile="team-devin",
+                    repo="codemower-ai/code-mower",
+                    pr="123",
+                )
+                step = next(
+                    item
+                    for item in payload["steps"]
+                    if item["id"] == "devin-readiness"
+                )
+                self.assertEqual(step["lanes"], ["team_devin"])
+                self.assertIn("--profile team-devin", step["command"])
 
     def test_a_configured_lane_command_is_the_only_readiness_candidate(self) -> None:
         lane = {

@@ -290,6 +290,32 @@ class DevinCapabilityTests(unittest.TestCase):
             self.assertEqual(transport.transport == "devin_cli", "context" in check.message)
             self.assertEqual(check.status, "warn")
 
+    def test_generic_capability_guidance_matches_the_declared_modes(self):
+        remediation = {}
+        for transport in TRANSPORTS.values():
+            checks = check_lane_runtime(
+                transport.review_lane,
+                participants.reference_review_config(transport.review_lane),
+                probe_runtime=False,
+                http_timeout=1,
+                adoption_posture="orchestrator-only",
+            )
+            check = next(
+                item for item in checks if item.name == "provider.capabilities"
+            )
+            remediation[transport.transport] = check.remediation
+            for capability, mode in transport.brief()["capabilities"].items():
+                if mode == "unavailable":
+                    self.assertIn(capability, check.remediation)
+            self.assertIn("merge authority", check.remediation)
+        hosted = remediation["devin_api_v3"]
+        self.assertIn("message=remote_session", hosted)
+        self.assertIn("cancel=remote_session", hosted)
+        self.assertNotIn("cancellation are unavailable", hosted)
+        local = remediation["devin_cli"]
+        self.assertNotIn("remote_session", local)
+        self.assertIn("message", local)
+
     def test_hosted_remote_session_modes_name_real_provider_operations(self):
         """Each hosted `remote_session` mode must have a shipped operation behind it."""
         from code_mower.remote_session import DevinProvider
