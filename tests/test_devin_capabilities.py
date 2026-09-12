@@ -13,7 +13,7 @@ from pathlib import Path
 from code_mower import config, init, participants, session
 from code_mower.doctor_checks.providers import check_lane_runtime
 from code_mower.provider_capabilities import (
-    TRANSPORTS, lane_transport, normalize_config, normalize_lane, resolve_transport,
+    LEGACY_CAPABILITIES, TRANSPORTS, lane_transport, normalize_config, normalize_lane, resolve_transport,
 )
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 from code_mower.package_rendering import _render_yaml
@@ -71,6 +71,55 @@ class DevinCapabilityTests(unittest.TestCase):
         self.assertEqual(rendered["transport"], "devin_api_v3")
         self.assertIn("informational", rendered["flags"])
         self.assertNotIn("merge-authority", rendered["flags"])
+
+    def test_pre_context_hosted_capabilities_migrate_and_only_that_declaration(self):
+        current = participants.reference_review_config("devin")
+        self.assertEqual(current["capabilities"]["context"], "agent_handoff")
+        legacy = copy.deepcopy(current)
+        legacy["capabilities"]["context"] = "unavailable"  # Exact pre-D5 template declaration.
+        self.assertEqual(LEGACY_CAPABILITIES, {"devin_api_v3": (legacy["capabilities"],)})
+        lane = normalize_lane("devin", legacy)
+        self.assertEqual(lane["capabilities"], current["capabilities"])
+        self.assertEqual((lane["transport"], lane["driver"]), ("devin_api_v3", "hosted_bridge"))
+        self.assertFalse(lane["merge_authority"])
+        source = config.load_config(STARTER)
+        source["lanes"]["devin"] = legacy
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "code-mower.yml"
+            path.write_text("\n".join(_render_yaml(source)) + "\n")
+            before = path.read_bytes()
+            loaded = config.load_config(path)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(config.validate_config(loaded), [])
+            self.assertEqual(loaded["lanes"]["devin"]["capabilities"]["context"], "unavailable")
+            self.assertEqual(normalize_config(loaded)["lanes"]["devin"]["capabilities"], current["capabilities"])
+            rendered = config.render_dry_run(loaded).data["lanes"]["devin"]
+            self.assertEqual(rendered["transport"], "devin_api_v3")
+            brief = session.build_session(repo="owner/repo", host="codex", selected=("devin_api_v3",), config=loaded)
+            self.assertEqual(brief["participants"][0]["execution"], TRANSPORTS["devin_api_v3"].brief())
+            self.assertIn("context=agent_handoff", session.render_session(brief))
+            self.assertEqual(participants.configured_transports(loaded), participants.configured_transports(
+                {**loaded, "lanes": {**loaded["lanes"], "devin": current}}))
+        for change in (
+            {"context": "local_runner"}, {"context": "unavailable", "review": "agent_handoff"},
+            {"context": "unavailable", "message": "agent_handoff"}, {"context": "unavailable", "extra": "x"},
+            {"context": "unavailable", "coordinate": "agent_handoff"},
+        ):
+            drifted = copy.deepcopy(current)
+            drifted["capabilities"] = {**current["capabilities"], **change}
+            with self.subTest(change=change), self.assertRaisesRegex(config.ConfigError, "capabilities must match"):
+                normalize_lane("devin", drifted)
+        missing = copy.deepcopy(legacy)
+        del missing["capabilities"]["structured_results"]
+        with self.assertRaisesRegex(config.ConfigError, "capabilities must match"):
+            normalize_lane("devin", missing)
+        # The local transport never had another maintained declaration.
+        local = participants.reference_review_config("devin_cli")
+        local["capabilities"]["context"] = "agent_handoff"
+        with self.assertRaisesRegex(config.ConfigError, "capabilities must match"):
+            normalize_lane("devin_cli", local)
+        with self.assertRaisesRegex(config.ConfigError, "lane identities"):
+            normalize_lane("devin_cli", legacy)
 
     def test_shipped_root_config_loads_without_semantic_normalization(self):
         loaded = config.load_config(ROOT / "code-mower.yml")
@@ -165,8 +214,10 @@ class DevinCapabilityTests(unittest.TestCase):
                 self.assertTrue(member["reviewer"]["informational"])
                 rendered = session.render_session(brief)
                 self.assertIn(expected, rendered)
-                for capability in ("message", "cancel", "context"):
+                for capability in ("message", "cancel"):
                     self.assertIn(capability + "=unavailable", rendered)
+                self.assertIn("context=" + TRANSPORTS[expected].capabilities.context, rendered)
+                self.assertEqual(expected == "devin_api_v3", "context=agent_handoff" in rendered)
 
     def test_hosted_transport_cannot_coordinate(self):
         with self.assertRaisesRegex(config.ConfigError, "cannot coordinate"):
@@ -220,7 +271,8 @@ class DevinCapabilityTests(unittest.TestCase):
             checks = check_lane_runtime(transport.review_lane, participants.reference_review_config(transport.review_lane), probe_runtime=False, http_timeout=1, adoption_posture="orchestrator-only")
             check = next(check for check in checks if check.name == "provider.capabilities")
             self.assertEqual(check.detail, transport.brief())
-            self.assertIn("message, cancel, context", check.message)
+            self.assertIn("message, cancel", check.message)
+            self.assertEqual(transport.transport == "devin_cli", "context" in check.message)
             self.assertEqual(check.status, "warn")
 
     def test_shipped_schema_matches_each_complete_transport_contract(self):

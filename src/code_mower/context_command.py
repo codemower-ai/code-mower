@@ -13,7 +13,7 @@ from pathlib import Path
 from . import context_review
 from .claude_audit_pr import _decision_authorities_for_repo
 from .context_contract import ContextError, ContextRequest, _object, normalize_policy
-from .context_delivery import attach, deliver, read_binding, render_evidence
+from .context_delivery import SUPPORTED_HOSTS, SUPPORTED_RECIPIENTS, attach, deliver, read_binding, render_evidence
 from .context_packets import load_authorized
 from .context_store import ContextStore, strict_json
 from .provider_runners import fetch_issue_comments, fetch_pull_request, post_pr_comment
@@ -39,7 +39,7 @@ def main(argv=None):
     attach_parser.add_argument("--connection", required=True)
     attach_parser.add_argument("--unavailable", action="store_true", help="Explicitly declare unavailable context; optional work may continue with a fresh code-only review")
     attach_parser.add_argument("--request-stdin", action="store_true", required=True)
-    attach_parser.add_argument("--host", choices=("claude", "codex"), default=os.environ.get("CODE_MOWER_HOST"))
+    attach_parser.add_argument("--host", choices=SUPPORTED_HOSTS, default=os.environ.get("CODE_MOWER_HOST"))
     for verb in ("deliver", "feedback"):
         command = sub.add_parser(verb, help="Output private evidence or findings only after authorization")
         command.add_argument("--revision", help="Previously attached PR input revision")
@@ -48,7 +48,7 @@ def main(argv=None):
         command.add_argument("--request-stdin", action="store_true")
         command.add_argument("--recipient", required=True, help="Approved host:role, such as codex:builder")
         if verb == "feedback":
-            command.add_argument("--reviewer", choices=("claude", "codex"), required=True)
+            command.add_argument("--reviewer", choices=SUPPORTED_HOSTS, required=True)
     for command in (attach_parser, *[sub.choices[name] for name in ("deliver", "feedback")]):
         command.add_argument("--state-dir", type=Path)
         command.add_argument("--repo-path", type=Path, default=Path.cwd(), help="Target repository checkout for trusted base configuration")
@@ -60,7 +60,7 @@ def main(argv=None):
             if args.revision or not args.connection or not args.request_stdin:
                 raise ContextError("packet delivery requires a connection and private request on stdin")
             spec = _object(_private_spec(), {"repository", "work_item", "policy"})
-            if args.recipient not in ("claude:orchestrator", "codex:orchestrator", "claude:builder", "codex:builder"):
+            if args.recipient not in SUPPORTED_RECIPIENTS or args.recipient.endswith(":reviewer"):
                 raise ContextError("independent reviewers consume an attached review revision")
             packet = load_authorized(store, args.connection, args.packet, spec["policy"],
                 ContextRequest(spec["repository"], spec["work_item"], args.recipient))
@@ -76,7 +76,7 @@ def main(argv=None):
             policy = normalize_policy(spec['policy'])
             if policy is None or policy['connection'] != args.connection:
                 raise ContextError('select the connection named by the work-item policy')
-            if args.host not in ("claude", "codex"):
+            if args.host not in SUPPORTED_HOSTS:
                 raise ContextError("supply the calling host when attaching context")
             if type(spec["pr"]) is not int or spec["pr"] < 1:
                 raise ContextError("context attachment requires a PR number")

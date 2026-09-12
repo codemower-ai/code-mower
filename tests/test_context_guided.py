@@ -157,6 +157,75 @@ class GuidedContextTests(unittest.TestCase):
             context_session.read(self.associations, self.session["id"])["stage"], "reviewed"
         )
 
+    def test_devin_host_builder_and_reviewer_use_the_common_packet(self):
+        self.session.update(host="devin", orchestrator="devin",
+                            participants=[{"id": "claude"}, {"id": "devin"}])
+        selected = context_session.create(
+            self.associations, {**self.session, "id": "e" * 32}, work_item="EXAMPLE-1",
+            policy=self.fixture.spec["policy"],
+        )
+        self.session["id"] = "e" * 32
+        self.record = context_session.update(
+            self.associations, self.session["id"], expected_generation=selected["generation"],
+            changes={"stage": "prepared", "builder": "devin", "query_mode": "work_item",
+                     "request_hash": "c" * 64, "packet": self.fixture.result["packet_handle"],
+                     "work_order": ".code-mower/work-orders/example.md"},
+        )
+        before = context_guided.deliver_session(
+            self.associations, self.fixture.store, self.record, repo_path=self.root,
+            backend=self.fixture.backend,
+        )
+        self.assertIn("Private evidence", before)
+        report, code = self.attach()
+        self.assertEqual((report["status"], code), ("attached", 0))
+        saved = context_session.read(self.associations, self.session["id"])
+        current = read_binding(self.fixture.store, saved["revision"])["metadata"]
+        texts = {
+            deliver(self.fixture.store, saved["revision"], repository="owner/repo", pr=42, head=self.head,
+                    recipient=recipient, current=current, backend=self.fixture.backend).text
+            for recipient in ("devin:orchestrator", "devin:builder", "devin:reviewer", "claude:reviewer")
+        }
+        self.assertEqual(len(texts), 1)
+        review = deliver(self.fixture.store, saved["revision"], repository="owner/repo", pr=42,
+                         head=self.head, recipient="devin:reviewer", current=current,
+                         backend=self.fixture.backend)
+        save_feedback(self.fixture.store, review, "devin", "Private Devin finding.")
+        with self.patches()[0], self.patches()[1], self.patches()[2]:
+            with self.assertRaises(ContextError):
+                context_guided.feedback_session(
+                    self.associations, self.fixture.store, saved, repo_path=self.root,
+                    reviewer="devin", backend=self.fixture.backend,
+                )
+        for private in ("Private Devin finding.", "one@example.invalid", saved["packet"]):
+            self.assertNotIn(private, self.comments[0]["body"])
+
+    def test_devin_reviewer_feedback_reaches_a_different_builder(self):
+        self.session.update(participants=[{"id": "codex"}, {"id": "devin"}])
+        selected = context_session.create(
+            self.associations, {**self.session, "id": "f" * 32}, work_item="EXAMPLE-1",
+            policy=self.fixture.spec["policy"],
+        )
+        self.session["id"] = "f" * 32
+        context_session.update(
+            self.associations, self.session["id"], expected_generation=selected["generation"],
+            changes={"stage": "prepared", "builder": "codex", "query_mode": "work_item",
+                     "request_hash": "c" * 64, "packet": self.fixture.result["packet_handle"],
+                     "work_order": ".code-mower/work-orders/example.md"},
+        )
+        self.attach()
+        saved = context_session.read(self.associations, self.session["id"])
+        current = read_binding(self.fixture.store, saved["revision"])["metadata"]
+        review = deliver(self.fixture.store, saved["revision"], repository="owner/repo", pr=42,
+                         head=self.head, recipient="devin:reviewer", current=current,
+                         backend=self.fixture.backend)
+        save_feedback(self.fixture.store, review, "devin", "Private Devin finding.")
+        with self.patches()[0], self.patches()[1], self.patches()[2]:
+            feedback = context_guided.feedback_session(
+                self.associations, self.fixture.store, saved, repo_path=self.root,
+                reviewer="devin", backend=self.fixture.backend,
+            )
+        self.assertEqual(feedback, "Private Devin finding.")
+
     def test_lost_comment_response_reconciles_without_a_duplicate(self):
         self.fail_comment = RuntimeError("response lost")
         report, code = self.attach()

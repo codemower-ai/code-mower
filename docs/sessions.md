@@ -136,7 +136,7 @@ different participant; review lanes then exclude that builder. `--output`
 accepts a repository-relative path only.
 
 The command rechecks the session lease and trusted context policy, authorizes
-the calling Claude or Codex host, fetches through the existing bounded provider
+the calling Claude, Codex, or Devin host, fetches through the existing bounded provider
 contract, drafts through the existing work-order contract, and saves only a
 request hash plus opaque packet and work-order references in private session
 state. Its output does not contain the work-item identity, query, connection,
@@ -182,7 +182,7 @@ Running `prepare` while publication is pending or uncertain preserves the saved
 intent and directs the session back to `attach`; it never drops the revision or
 repeats provider authorization while publication recovery is unresolved.
 
-After a selected Claude or Codex reviewer finishes, give its private findings
+After a selected Claude, Codex, or Devin reviewer finishes, give its private findings
 to the selected builder without copying the revision:
 
 ```bash
@@ -280,7 +280,7 @@ readiness, and explicit gaps. The modes describe maintained Code Mower paths:
 | Review | Local runner | Evidence only |
 | Message | Unavailable | Unavailable |
 | Cancel | Unavailable | Unavailable |
-| Authorized context delivery | Unavailable | Unavailable |
+| Authorized context delivery | Unavailable | Agent handoff (authorized packet in hosted builder input) |
 | Structured results | Local runner | Release campaign only |
 
 These declarations describe the current integration; they do not launch a
@@ -298,7 +298,10 @@ product/transport declaration fails with instructions to set
 calibrated repository promotion requires explicit product and transport fields;
 selection never performs that promotion. Contradictory driver/transport pairs or
 capability overrides fail validation; remove `capabilities` to use maintained
-defaults. Keep `provider: devin_cli` for local execution and `provider: devin`
+defaults. The one exception is the exact earlier maintained hosted declaration
+(`devin_api_v3` with `context: unavailable`), which earlier templates wrote:
+it is read as the current declaration in memory, again without file writes, and
+any other deviation still fails. Keep `provider: devin_cli` for local execution and `provider: devin`
 for hosted compatibility, with `product: devin` in both cases.
 
 Devin Cloud needs its own execution setup. Cursor's agent
