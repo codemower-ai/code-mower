@@ -231,6 +231,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "when omitted"
         ),
     )
+    parser.add_argument(
+        "--devin",
+        action="store_true",
+        help=(
+            "report optional Devin readiness even when Devin is not selected: "
+            "local CLI, hosted v3, and unavailable postures with their next actions"
+        ),
+    )
     parser.add_argument("--probe-runtime", action="store_true")
     parser.add_argument(
         "--github",
@@ -317,6 +325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             adoption=args.adoption,
             adoption_posture=args.adoption_posture,
+            devin=args.devin,
             supervised_pilot=bool(
                 args.supervised_pilot or args.manual_pilot or args.promoted_pilot
             ),

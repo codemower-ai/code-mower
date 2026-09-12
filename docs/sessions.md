@@ -268,7 +268,10 @@ hosted review retains lane `devin` and its existing labels. Aliases that name a
 transport preserve it through setup and session creation. Selecting both
 transports in one product session fails with a bounded selection message. An
 existing recommended profile containing only the hosted lane retains that choice.
-If both lanes are active, set `session_defaults.transports.devin` explicitly.
+If both lanes are active, set `session_defaults.transports.devin` explicitly. That
+setting is repository-wide: it applies to every profile, so align each Devin
+profile's lanes with it, or leave it unset when profiles intentionally keep
+different Devin transports and let each profile's lane declaration select its own.
 
 Briefs expose an `execution` block with versioned capability metadata, unchecked
 readiness, and explicit gaps. The modes describe maintained Code Mower paths:
@@ -278,10 +281,10 @@ readiness, and explicit gaps. The modes describe maintained Code Mower paths:
 | Coordinate | Agent handoff | Unavailable |
 | Build | Local runner | External agent handoff |
 | Review | Local runner | Evidence only |
-| Message | Unavailable | Unavailable |
-| Cancel | Unavailable | Unavailable |
+| Message | Unavailable | Remote session |
+| Cancel | Unavailable | Remote session |
 | Authorized context delivery | Unavailable | Agent handoff (authorized packet in hosted builder input) |
-| Structured results | Local runner | Release campaign only |
+| Structured results | Local runner | Remote session |
 
 These declarations describe the current integration; they do not launch a
 process, verify credentials, enable a session lifecycle, or confer merge
@@ -291,6 +294,24 @@ unavailable capability pauses. The same contract is reported by doctor and
 specified in the packaged
 [`provider_capabilities.schema.json`](../src/code_mower/provider_capabilities.schema.json).
 
+One command reports the whole optional Devin setup for the selected posture:
+
+```bash
+code-mower doctor --profile recommended --devin --repo OWNER/REPO --json
+```
+
+Replace `recommended` with the profile you selected; pinning it keeps the check
+on that profile's Devin lane instead of another profile's.
+
+It names the selected transport and its authentication, the create/view/manage
+permissions the account owner must grant, the capabilities the transport does not
+support, and the lifecycle recovery commands, without reporting credential
+values, identities, the configured repository inventory, or raw provider output.
+Repositories that never selected Devin get no Devin checks; `--devin` also lists
+the local CLI, hosted API, and unavailable postures before selection. See
+[Troubleshooting](troubleshooting.md#devin-is-selected-but-not-ready) for the
+per-symptom next actions.
+
 Legacy lane configurations infer product and transport in memory without
 rewriting files. A legacy Devin lane with `merge_authority: true` and no explicit
 product/transport declaration fails with instructions to set
@@ -298,10 +319,11 @@ product/transport declaration fails with instructions to set
 calibrated repository promotion requires explicit product and transport fields;
 selection never performs that promotion. Contradictory driver/transport pairs or
 capability overrides fail validation; remove `capabilities` to use maintained
-defaults. The one exception is the exact earlier maintained hosted declaration
-(`devin_api_v3` with `context: unavailable`), which earlier templates wrote:
-it is read as the current declaration in memory, again without file writes, and
-any other deviation still fails. Keep `provider: devin_cli` for local execution and `provider: devin`
+defaults. The exceptions are the exact earlier maintained hosted declarations
+(`devin_api_v3` before remote-session message, cancel, and structured results,
+with or without `context: unavailable`), which earlier templates wrote: they are
+read as the current declaration in memory, again without file writes, and any
+other deviation still fails. Keep `provider: devin_cli` for local execution and `provider: devin`
 for hosted compatibility, with `product: devin` in both cases.
 
 Devin Cloud needs its own execution setup. Cursor's agent
