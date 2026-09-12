@@ -61,6 +61,18 @@ class GraphCitationScopeTests(unittest.TestCase):
                 with self.assertRaises(ContextError):
                     graph.parse_graph_citation(source)
 
+    def test_excluded_roots_are_matched_case_insensitively(self) -> None:
+        """APFS and NTFS default to case-insensitive: ``.GIT`` is ``.git``."""
+        for source in (
+            ".GIT/config",
+            ".Graphify/cache/nodes.bin",
+            ".Graph/index.db",
+            ".Code-Mower/lane-outcome.json",
+        ):
+            with self.subTest(source=source):
+                with self.assertRaises(ContextError):
+                    graph.parse_graph_citation(source)
+
     def test_rejects_malformed_line_spans(self) -> None:
         for source in (
             "example_pkg/config.py#L0",
@@ -126,6 +138,18 @@ class GraphEvidenceReportTests(unittest.TestCase):
         self.assertEqual(report.resolved_line_citations, 2)
         self.assertAlmostEqual(report.resolution_rate, 2 / 3)
         self.assertFalse(report.meets_gate())
+
+    def test_line_claim_ending_on_the_last_line_resolves(self) -> None:
+        """The resolver stops at the claimed line; the boundary must be exact.
+
+        ``example_pkg/config.py`` has 40 lines, so a span ending on line 40
+        resolves and one reaching line 41 does not.
+        """
+        for span, resolved in (("#L39-L40", 3), ("#L40-L41", 2)):
+            with self.subTest(span=span):
+                data = packet()
+                data["documents"][0]["citations"][1]["source"] = f"example_pkg/config.py{span}"
+                self.assertEqual(self.evaluate(data).resolved_line_citations, resolved)
 
     def test_missing_file_is_unresolved_rather_than_an_error(self) -> None:
         data = packet()

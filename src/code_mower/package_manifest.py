@@ -35,6 +35,7 @@ PACKAGE_FILES = (
     ("src/code_mower/context_prepare.py", "src/code_mower/context_prepare.py", "core"),
     ("src/code_mower/context_readiness.py", "src/code_mower/context_readiness.py", "core"),
     ("src/code_mower/context_session.py", "src/code_mower/context_session.py", "core"),
+    ("src/code_mower/context_graph.py", "src/code_mower/context_graph.py", "core"),
     ("src/code_mower/productivity_report.py", "src/code_mower/productivity_report.py", "core"),
     ("tools/code_mower_requirements.txt", "requirements/requirements.txt", "tooling"),
     ("tools/code_mower_calibration.py", "src/code_mower/code_mower_calibration.py", "core"),

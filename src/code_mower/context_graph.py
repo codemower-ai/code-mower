@@ -28,6 +28,8 @@ MAX_GRAPH_CITATIONS = 200
 
 #: Directories a local indexer writes to or reads across. Citing into one of
 #: these means the graph escaped the immutable checkout it was asked to index.
+#: Compared case-folded: on a case-insensitive filesystem (APFS and NTFS by
+#: default) ``.GIT/config`` names the same directory as ``.git/config``.
 _EXCLUDED_ROOTS = frozenset({".git", ".graph", ".graphify", ".code-mower"})
 
 
@@ -102,7 +104,7 @@ def parse_graph_citation(source: Any) -> GraphCitation:
         or not path.parts
         or any(part in {"", ".", ".."} for part in parts)
         or "\\" in raw
-        or parts[0] in _EXCLUDED_ROOTS
+        or parts[0].lower() in _EXCLUDED_ROOTS
     ):
         raise ContextError("local graph citation must stay inside the indexed repository")
     start = match.group("start")
@@ -121,6 +123,11 @@ def _default_resolver(root: Path) -> Callable[[GraphCitation], bool]:
 
     ``Path.resolve`` on the candidate is compared to the resolved root so a
     symlink planted inside the checkout cannot point the citation elsewhere.
+
+    A line claim is confirmed as soon as its last claimed line is seen, so a
+    citation into a large generated file costs the lines up to the claim rather
+    than a full read. ``MAX_GRAPH_CITATIONS`` bounds how many citations a packet
+    may carry, but nothing bounds the size of any single cited file.
     """
     anchor = root.resolve()
 
@@ -132,12 +139,15 @@ def _default_resolver(root: Path) -> Callable[[GraphCitation], bool]:
             return False
         if citation.start_line is None:
             return True
+        claimed = citation.end_line or citation.start_line
         try:
             with candidate.open("rb") as source:
-                lines = sum(1 for _ in source)
+                for seen, _ in enumerate(source, start=1):
+                    if seen >= claimed:
+                        return True
         except OSError:
             return False
-        return (citation.end_line or citation.start_line) <= lines
+        return False  # the file ended before the claimed line
 
     return resolve
 

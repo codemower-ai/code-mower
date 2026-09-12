@@ -196,7 +196,9 @@ many line claims still resolve. Stale or unknown revision binding fails that
 quality gate even when every citation resolves.
 
 The [Graphify candidate](https://github.com/codemower-ai/code-mower/issues/876)
-is **deferred**; see the [evaluation record](graphify-evaluation.md) for the
-decision, the unresolved package identity, and the adopt gate a later run must
-meet. Synthetic graph fixtures prove only the extension point; they do not
-establish Graphify compatibility or make it a v1.3.1 dependency.
+is **adopted as an optional, bounded local provider** behind this contract; see
+the [evaluation record](graphify-evaluation.md) for the decision, the pinned
+package record, and the conditions an implementing change must meet. Nothing is
+installed or required yet. Synthetic graph fixtures prove only the extension
+point; they do not establish Graphify compatibility or make it a v1.3.1
+dependency.
