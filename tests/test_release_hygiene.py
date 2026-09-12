@@ -375,6 +375,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "cloud",
                 "config",
                 "context",
+                "context-graph",
                 "context-packs",
                 "controller",
                 "coderabbit-cli",
