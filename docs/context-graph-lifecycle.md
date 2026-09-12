@@ -86,6 +86,16 @@ pinned. Running an unconfined provider is not offered as a fallback: an
 operator who cannot contain a third-party indexer is better served by knowing
 it than by a build that quietly could have reached the network.
 
+A Linux host that restricts unprivileged user namespaces — Ubuntu 24.04 and
+GitHub's hosted runners among them — offers no mechanism by default, and both
+`unshare` and `bwrap` fail there. Installing bubblewrap (`apt install
+bubblewrap`), which ships an AppArmor profile permitting the namespaces it
+needs, is the least invasive way to give such a host one. The alternative is to
+lift the restriction system-wide
+(`sysctl kernel.apparmor_restrict_unprivileged_userns=0`), which is a decision
+about the whole machine rather than about this build, and not one this
+repository makes on an operator's behalf.
+
 Git itself runs with `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`, and
 `GIT_CONFIG_SYSTEM=/dev/null`: an untrusted checkout's local, global, or system
 configuration can otherwise install clean/smudge filters and hook paths that run

@@ -302,6 +302,29 @@ class NetworkIsolationTests(unittest.TestCase):
             self.skipTest("this host offers no OS sandbox that denies a child the network")
         self.assertEqual(self.connect(sandbox), 1)
 
+    def launcher(self, exit_code: int) -> str:
+        """A stand-in launcher, so the classifier is pinned on every host.
+
+        A host that offers no real mechanism -- a Linux host with unprivileged
+        user namespaces restricted, say -- would otherwise leave both halves of
+        the accept/reject decision untested.
+        """
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "launcher"
+        path.write_text(f"#!/bin/sh\nexit {exit_code}\n", encoding="utf-8")
+        path.chmod(0o700)
+        return str(path)
+
+    def test_a_child_that_reports_a_denial_is_accepted(self) -> None:
+        self.assertTrue(lifecycle._sandbox_denies_network((self.launcher(lifecycle._PROBE_DENIED),)))
+
+    def test_a_child_that_reached_the_network_stack_is_rejected(self) -> None:
+        self.assertFalse(lifecycle._sandbox_denies_network((self.launcher(3),)))
+
+    def test_a_launcher_that_cannot_start_is_rejected(self) -> None:
+        self.assertFalse(lifecycle._sandbox_denies_network(("/nonexistent/launcher",)))
+
     def test_a_candidate_that_does_not_deny_the_network_is_rejected(self) -> None:
         # ``env`` runs its argument unchanged: a prefix that contains nothing
         # must not be mistaken for a boundary just because it launches.
