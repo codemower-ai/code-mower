@@ -145,9 +145,17 @@ def public_projection(record: dict) -> dict:
 
 def _observe(record, snapshot):
     state = snapshot.state
+    # Devin may keep a resumable session waiting for another user message after
+    # accepting its schema-bound result.  That result is ready for the private
+    # consumer even though the raw session has not exited.  Approval remains a
+    # hard boundary: an intermediate result never bypasses it.
     if state == "owner_action":
-        state = ("waiting_for_approval" if snapshot.reason == "approval_required"
-                 else "waiting_for_user")
+        if snapshot.reason == "approval_required":
+            state = "waiting_for_approval"
+        elif snapshot.structured_output is not None:
+            state = "complete"
+        else:
+            state = "waiting_for_user"
     if state not in STATES - {"uncertain"}:
         raise RemoteError("invalid_response")
     record["state"] = state
