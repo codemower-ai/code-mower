@@ -12,8 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import session_lease
+from . import context_session, session_lease
 from .config import ConfigError, _format_issues, load_config, validate_config
+from .context_contract import ContextError, normalize_policy
 from .participants import (
     PARTICIPANTS,
     configured_participants,
@@ -191,6 +192,15 @@ def render_session(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_context_status(payload: Mapping[str, Any]) -> str:
+    return (
+        f"Session context: {payload['stage']}\n"
+        f"Dependent work: {payload['dependent_work']}\n"
+        f"Owner action: {'yes' if payload['owner_action'] else 'no'}\n"
+        f"Next: {payload['next_action']}\n"
+    )
+
+
 def _mark_read_only(payload: dict[str, Any]) -> None:
     """Record that this brief carries no mutating orchestration authority."""
     payload["lease"] = {"state": session_lease.STATE_ABSENT, "mutating": False}
@@ -230,6 +240,26 @@ def _run_lease_command(args: argparse.Namespace) -> dict[str, Any]:
     return session_lease.release_lease(session_id=args.session_id, force=args.force)
 
 
+def _run_context_command(args: argparse.Namespace) -> dict[str, Any]:
+    saved = context_session.load_session(args.session_file)
+    store = context_session.association_store(args.context_state_dir)
+    record = context_session.read(store, saved["id"])
+    config_path = Path(args.config) if args.config else Path(args.repo_path) / "code-mower.yml"
+    source = load_config(config_path) if config_path.is_file() else {}
+    if source and (issues := validate_config(source)):
+        raise ConfigError("invalid repository configuration:\n" + _format_issues(issues))
+    trusted_policy = normalize_policy(source.get("context")) if source.get("context") is not None else None
+    if record is not None:
+        if record["policy"] != trusted_policy:
+            raise ContextError("context policy changed after session start; start a new session")
+        context_session.resolve_bound("repository", record["repo"], saved["repo"])
+    live = session_lease.verify_live_lease(
+        repo=saved["repo"], session_id=saved["id"], orchestrator=saved["orchestrator"],
+        root=args.repo_path,
+    )
+    return context_session.status(record, lease_live=bool(live.get("mutating")))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -240,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("--orchestrator", help="explicit coordinator override; otherwise the calling agent")
     start.add_argument("--config", help="repository configuration; defaults to code-mower.yml when present")
     start.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
+    start.add_argument("--work-item", help="authoritative work-item identity for a guided context session")
+    start.add_argument("--context-state-dir", type=Path, help="private session-context directory outside repositories")
     start.add_argument("--dry-run", action="store_true", help="preview without saving a session")
     start.add_argument(
         "--no-lease", dest="lease", action="store_false",
@@ -273,6 +305,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     for lease_parser in (lease_show, lease_renew, lease_release):
         lease_parser.add_argument("--json", action="store_true")
+    context = sub.add_parser("context", help="inspect or advance private context for the selected work item")
+    context_sub = context.add_subparsers(dest="context_command", required=True)
+    context_status = context_sub.add_parser("status", help="show redacted guided-context progress")
+    context_status.add_argument("session_file", type=Path)
+    context_status.add_argument("--repo-path", type=Path, default=Path.cwd())
+    context_status.add_argument("--config")
+    context_status.add_argument("--context-state-dir", type=Path)
+    context_status.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     render = render_session
     try:
@@ -291,7 +331,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "lease":
             payload = _run_lease_command(args)
             render = session_lease.render_lease
+        elif args.command == "context":
+            payload = _run_context_command(args)
+            render = render_context_status
         else:
+            if args.work_item and not args.lease:
+                raise ConfigError("--work-item requires a mutating session lease; omit --no-lease")
+            if args.context_state_dir is not None and not args.work_item:
+                raise ConfigError("--context-state-dir requires --work-item")
             host = args.host or os.environ.get("CODE_MOWER_HOST")
             if not host:
                 raise ConfigError("the calling agent must supply --host (for example codex or claude), or set CODE_MOWER_HOST")
@@ -307,6 +354,8 @@ def main(argv: list[str] | None = None) -> int:
                 repo=args.repo, host=host, selected=selected,
                 config=config, orchestrator=args.orchestrator,
             )
+            if args.work_item:
+                payload["work_item"] = {"selected": True}
             if args.dry_run:
                 _mark_read_only(payload)
             else:
@@ -315,12 +364,20 @@ def main(argv: list[str] | None = None) -> int:
                 record = _acquire_startup_lease(args, payload)
                 destination = Path(args.state_dir) / f"{payload['id']}.json"
                 payload["session_file"] = str(destination.resolve())
+                association = None
+                store = None
                 try:
+                    if args.work_item:
+                        context_session.require_live_session(payload)
+                        store = context_session.association_store(args.context_state_dir)
+                        association = context_session.create(
+                            store, payload, work_item=args.work_item, policy=config.get("context"),
+                        )
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     with destination.open("x", encoding="utf-8") as handle:
                         json.dump(payload, handle, indent=2, sort_keys=True)
                         handle.write("\n")
-                except OSError:
+                except (OSError, ContextError):
                     # A brief that was never written has no orchestrator, so the
                     # lease this call just took must not outlive the failure --
                     # whether the write itself failed or the destination
@@ -328,6 +385,11 @@ def main(argv: list[str] | None = None) -> int:
                     # force-took the lease in this narrow window, cleanup must
                     # not delete the new holder's lease or mask the original
                     # failure.
+                    if association is not None and store is not None:
+                        try:
+                            context_session.delete(store, payload["id"])
+                        except (ContextError, OSError):
+                            pass
                     if record is not None:
                         try:
                             session_lease.release_lease(session_id=payload["id"])
@@ -336,6 +398,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise
         print(json.dumps(payload, indent=2, sort_keys=True) if args.json else render(payload), end="\n" if args.json else "")
         return 0
-    except (ConfigError, OSError, ValueError, KeyError, TypeError, session_lease.SessionLeaseError) as exc:
+    except (ConfigError, ContextError, OSError, ValueError, KeyError, TypeError,
+            session_lease.SessionLeaseError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
