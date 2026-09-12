@@ -641,7 +641,7 @@ def stand_in_containment(prefix: tuple[str, ...]):
         lifecycle, "containment_mechanism", lambda: lifecycle.Containment("stand-in", "/sandbox")
     ):
         with mock.patch.object(lifecycle, "containment_prefix", lambda **keywords: prefix):
-            with mock.patch.object(lifecycle, "_provider_read_paths", lambda command: ()):
+            with mock.patch.object(lifecycle, "_provider_read_paths", lambda command, **_: ()):
                 yield
 
 
@@ -1006,7 +1006,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         # only around the launch, so the Git calls a build makes are never
         # intercepted by this stand-in.
         with stand_in_containment(sandbox):
-            indexer = lifecycle.subprocess_indexer(executable)
+            indexer = lifecycle.subprocess_indexer(executable, repository=self.repository)
             with mock.patch.object(subprocess, "Popen", fake_popen):
                 result = indexer(request)
         return recorded[0], result
@@ -1044,7 +1044,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             return FakeChild()
 
         with stand_in_containment(("/sandbox",)):
-            indexer = lifecycle.subprocess_indexer("graphify")
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository)
             with mock.patch.object(lifecycle, "containment_prefix", record_prefix):
                 with mock.patch.object(subprocess, "Popen", fake_popen):
                     indexer(request)
@@ -1186,7 +1186,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             return FakeChild()
 
         with stand_in_containment(("/sandbox",)):
-            indexer = lifecycle.subprocess_indexer("graphify")
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository)
             with mock.patch.object(subprocess, "Popen", fake_popen):
                 result = indexer(request)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
@@ -1245,7 +1245,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             raise AssertionError(f"{self} was read whole")
 
         with stand_in_containment(("/sandbox",)):
-            indexer = lifecycle.subprocess_indexer("graphify")
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository)
             with mock.patch.object(subprocess, "Popen", fake_popen):
                 with mock.patch.object(Path, "read_bytes", refuse_whole_file_read):
                     result = indexer(request)
@@ -1269,7 +1269,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             return FakeChild()
 
         with stand_in_containment(("/sandbox",)):
-            indexer = lifecycle.subprocess_indexer("graphify")
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository)
             with mock.patch.object(subprocess, "Popen", fake_popen):
                 with self.assertRaises(ContextError):
                     indexer(request)
@@ -1293,7 +1293,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             order.append("stopped")
 
         with stand_in_containment(("/sandbox",)):
-            indexer = lifecycle.subprocess_indexer("graphify")
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository)
             with mock.patch.object(subprocess, "Popen", fake_popen):
                 with mock.patch.object(lifecycle, "_terminate_process_group", record_termination):
                     with self.assertRaises(ContextError) as raised:
@@ -1306,7 +1306,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
     def test_a_host_without_a_sandbox_refuses_to_launch_a_provider(self) -> None:
         with no_containment():
             with self.assertRaises(ContextError):
-                lifecycle.subprocess_indexer("graphify")
+                lifecycle.subprocess_indexer("graphify", repository=self.repository)
 
     def test_a_relative_provider_path_binds_to_the_invocation_directory(self) -> None:
         # The child runs in the materialized copy, so a relative path left
@@ -1328,6 +1328,92 @@ class ProviderLaunchTests(TemporaryWorkspace):
     def test_an_unnamed_provider_is_refused(self) -> None:
         with self.assertRaises(ContextError):
             lifecycle._resolved_executable("")
+
+
+class ProviderExposureTests(TemporaryWorkspace):
+    """What the sandbox is told to make readable for the provider itself.
+
+    The exposure used to be the executable's parent and grandparent, which is a
+    guess about a layout rather than knowledge of one. These hold the rule to
+    the layouts where that guess was widest: a script in a home directory, a
+    script directly under a top-level prefix, and a provider living inside the
+    checkout being indexed.
+    """
+
+    def script(self, path: Path, *, venv: bool = False) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if venv:
+            (path.parent.parent / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o700)
+        return path
+
+    def exposure(self, path: Path) -> tuple[str, ...]:
+        return lifecycle._provider_read_paths(str(path), repository=self.repository)
+
+    def test_a_pinned_virtual_environment_exposes_that_environment_and_no_more(self) -> None:
+        environment = self.root / "venv"
+        provider = self.script(environment / "bin" / "graphify", venv=True)
+        exposed = self.exposure(provider)
+        self.assertIn(str(environment), exposed)
+        self.assertIn(str(provider), exposed)
+        # Neither the directory the environment sits in nor anything above it.
+        self.assertNotIn(str(self.root), exposed)
+        self.assertNotIn(str(environment.parent), exposed)
+
+    def test_a_script_in_a_home_directory_does_not_expose_the_home_directory(self) -> None:
+        """``~/bin/graphify``: the grandparent is the operator's whole home."""
+        home = self.root / "home"
+        provider = self.script(home / "bin" / "graphify")
+        with mock.patch.object(Path, "home", staticmethod(lambda: home)):
+            with self.assertRaises(ContextError):
+                self.exposure(provider)
+
+    def test_a_script_directly_under_a_top_level_prefix_does_not_expose_the_root(self) -> None:
+        """``/opt/graphify``: the grandparent the old heuristic exposed is ``/``.
+
+        Refused on the layout, before the question of how wide the grandparent
+        happens to be arises: a directory that is not a script directory beside
+        a ``pyvenv.cfg`` is not an install this module can draw a boundary
+        around, whatever it contains.
+        """
+        provider = self.script(self.root / "opt" / "graphify")
+        with self.assertRaises(ContextError):
+            self.exposure(provider)
+
+    def test_a_provider_inside_the_checkout_does_not_expose_the_working_tree(self) -> None:
+        """A proven layout is still refused when the layout is the live checkout.
+
+        This one carries a real ``pyvenv.cfg``, so the layout proof passes and
+        the refusal has to come from where the environment *is*: inside the
+        repository, whose ignored files are the thing the materialized copy
+        exists to keep away from the provider.
+        """
+        provider = self.script(self.repository / ".venv" / "bin" / "graphify", venv=True)
+        with self.assertRaises(ContextError):
+            self.exposure(provider)
+
+    def test_an_environment_that_is_the_home_directory_is_refused(self) -> None:
+        home = self.root / "home"
+        provider = self.script(home / "bin" / "graphify", venv=True)
+        with mock.patch.object(Path, "home", staticmethod(lambda: home)):
+            with self.assertRaises(ContextError):
+                self.exposure(provider)
+
+    def test_a_provider_in_the_system_runtime_asks_for_no_extra_exposure(self) -> None:
+        """Already inside the read-only runtime every child gets.
+
+        Exposing the enclosing prefix would widen that exposure rather than
+        narrow it, so nothing but the executable's own spellings is added.
+        """
+        exposed = lifecycle._provider_read_paths("/bin/sh", repository=self.repository)
+        self.assertEqual(set(exposed), {"/bin/sh", os.path.realpath("/bin/sh")})
+
+    def test_a_provider_that_cannot_be_located_is_refused_rather_than_guessed_at(self) -> None:
+        with self.assertRaises(ContextError):
+            lifecycle._provider_read_paths(
+                "code-mower-no-such-provider", repository=self.repository
+            )
 
 
 @unittest.skipUnless(hasattr(os, "killpg"), "process groups are a POSIX facility")
@@ -1708,6 +1794,62 @@ class BuildAndPublishTests(TemporaryWorkspace):
         with self.assertRaises(ContextError):
             state.ensure()
         self.assertFalse((inside / "state").exists())
+
+    def test_a_precreated_root_behind_a_new_ancestor_symlink_is_refused(self) -> None:
+        """The bypass a deepest-existing-prefix walk leaves open.
+
+        Finding the deepest component that exists and opening *that* with
+        ``O_NOFOLLOW`` refuses an ancestor link only while the final directory
+        is still absent -- because then the walk has to create it, one
+        component at a time. Pre-create the final directory behind the link and
+        the walk has nothing left to create: it opens the whole absolute base
+        in one call, ``O_NOFOLLOW`` clears the leaf it was pointed at, and every
+        ancestor above the leaf is resolved exactly as the planted link
+        intended. The previous test leaves that directory absent and so never
+        reaches this.
+
+        Here the root is absent at construction, ``<repo>/subdir/state`` is
+        pre-created, and the missing ancestor becomes a link to
+        ``<repo>/subdir``. The walk has to refuse on the ancestor itself.
+        """
+        outside = self.root / "outside"
+        outside.mkdir()
+        absent = outside / "deep" / "state"
+        state = lifecycle.GraphStateRoot(self.repository, root=absent)
+        inside = self.repository / "subdir"
+        (inside / "state").mkdir(parents=True)
+        os.symlink(inside, outside / "deep")
+        # The leaf really is a directory and really is not a link, so nothing
+        # about the final component can catch this.
+        self.assertTrue(absent.is_dir())
+        with self.assertRaises(ContextError):
+            state.ensure()
+        self.assertFalse((inside / "state" / "graph").exists())
+        self.assertEqual(list((inside / "state").iterdir()), [])
+
+    def test_an_ancestor_swapped_after_the_walk_refuses_the_next_operation(self) -> None:
+        """Renames and removals travel full paths, so the walk is re-established.
+
+        ``publish`` renames a staged generation into place and ``remove``
+        recurses over the tree, both by full path, and a full path is resolved
+        from the root on every call. A no-follow walk that passed a moment
+        earlier says nothing about what an ancestor has become since.
+        """
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        home = self.root / "home"
+        home.mkdir()
+        state = lifecycle.GraphStateRoot(self.repository, root=home / "st")
+        state.ensure()
+        decoy = self.root / "decoy"
+        os.rename(home, decoy)
+        os.symlink(elsewhere, home)
+        (elsewhere / "st").mkdir(mode=0o700)
+        with self.assertRaises(ContextError):
+            state._revalidate_base()
+        with self.assertRaises(ContextError):
+            state.prune(keep=None)
+        self.assertFalse((elsewhere / "st" / "graph").exists())
 
     def test_a_manifest_no_reader_could_load_publishes_nothing(self) -> None:
         """Publication validates the whole manifest before it touches state.
@@ -2099,8 +2241,18 @@ class CommandTests(TemporaryWorkspace):
         It answers to ``extract`` and writes its state into the directory it
         was run in, which is the contract ``docs/graphify-evaluation.md``
         records for the evaluated release.
+
+        Laid out as a virtual environment -- ``<root>/bin/<script>`` beside a
+        ``pyvenv.cfg`` -- because that is the layout the containment boundary
+        proves before it exposes anything. A loose script in a temporary
+        directory is refused now, and these end-to-end tests should run against
+        the arrangement an operator is actually told to pin into rather than
+        one the rule would reject.
         """
-        path = self.root / "fake-indexer"
+        environment = self.root / "provider-venv"
+        (environment / "bin").mkdir(parents=True, exist_ok=True)
+        (environment / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        path = environment / "bin" / "fake-indexer"
         path.write_text(
             "#!/bin/sh\n"
             '[ "$1" = "extract" ] || exit 64\n'

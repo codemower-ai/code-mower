@@ -344,8 +344,13 @@ def _seatbelt_prefix(launcher: str, *, writable: Sequence[str], readable: Sequen
         "(allow mach-lookup)",
         "(allow ipc-posix-shm)",
         "(allow file-read-metadata)",
-        "(allow file-write-data (literal \"/dev/null\") (literal \"/dev/zero\")"
-        " (literal \"/dev/random\") (literal \"/dev/urandom\"))",
+        # Read *and* write on the same four devices. Granting write without
+        # read is an asymmetry nothing wants: a runtime opens ``/dev/null``
+        # read-write to detach a stream, and reads ``/dev/urandom`` to seed
+        # itself, so a profile that denies the read denies the process its
+        # start rather than denying it anything an operator cares about.
+        "(allow file-read-data file-write-data (literal \"/dev/null\")"
+        " (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\"))",
     ]
     if readable:
         subpaths = " ".join(f"(subpath {_seatbelt_literal(path)})" for path in readable)
@@ -564,14 +569,44 @@ def containment_prefix(
     writable: Sequence[Path | str],
     readable: Sequence[Path | str],
 ) -> tuple[str, ...]:
-    """The argv prefix confining a child to ``writable`` plus a read-only runtime."""
+    """The argv prefix confining a child to ``writable`` plus a read-only runtime.
+
+    Verified against *this* exposure before it is returned, not merely built
+    from it. The host probe establishes that a mechanism can confine a child
+    when it is handed the interpreter paths; it says nothing about the prefix a
+    particular build ends up with, whose readable set is the pinned provider's
+    install and whose writable set is that build's own directories. A widened
+    exposure that happened to reopen the boundary would otherwise be caught by
+    nothing between here and the provider.
+
+    The probe's own exposure is this one plus the interpreter, because the
+    probe child is a Python that has to be able to start at all. That makes the
+    probed prefix strictly more permissive than the returned one, so a probe
+    that still observes containment is a sound statement about the prefix a
+    build actually runs under.
+    """
     mechanism = containment_mechanism()
     if mechanism is None:
         raise ContextError(
             "local graph builds need an OS sandbox that denies the provider the network and "
             "the host filesystem; this host offers none that could be verified"
         )
-    return _prefix_for(mechanism, writable=writable, readable=readable)
+    prefix = _prefix_for(mechanism, writable=writable, readable=readable)
+    probe = _prefix_for(
+        mechanism,
+        writable=writable,
+        readable=(*readable, *_interpreter_read_paths()),
+    )
+    # Inside the exposure, because that is where the confined child starts: a
+    # probe launched in a directory the boundary deliberately does not expose
+    # fails to start and says nothing about the boundary.
+    inside = next((str(path) for path in writable if os.path.isdir(path)), None)
+    if not _prefix_confines(probe, cwd=inside):
+        raise ContextError(
+            "the sandbox this build would run the local graph provider under could not be "
+            "observed denying it the network and the host filesystem; no generation was published"
+        )
+    return prefix
 
 
 def _object_name(value: Any) -> str:
@@ -1211,28 +1246,96 @@ def _resolved_executable(executable: str) -> str:
     return executable
 
 
-def _provider_read_paths(command: str) -> tuple[str, ...]:
+#: The directory a console script sits in, by platform convention. Named so an
+#: install root is recognised rather than guessed at from depth alone.
+_VENV_SCRIPT_DIRECTORIES = ("bin", "Scripts")
+
+
+def _under(path: Path, root: Path) -> bool:
+    return path == root or path.is_relative_to(root)
+
+
+def _refuse_broad_exposure(root: Path, *, repository: Path) -> None:
+    """Refuse an exposure root that would hand over somebody's whole world.
+
+    The filesystem root, the operator's home, the checkout being indexed, and
+    every ancestor of either: each of these is a directory whose contents are
+    exactly what this boundary exists to keep away from the provider. A root
+    that *is* one of them is not a narrow install however it was arrived at,
+    and a root *inside the checkout* is the live working tree -- ignored
+    secrets and all -- which the materialized copy exists precisely to avoid
+    showing anyone.
+    """
+    resolved = Path(os.path.realpath(root))
+    checkout = Path(os.path.realpath(repository))
+    try:
+        home = Path(os.path.realpath(Path.home()))
+    except (OSError, RuntimeError):  # pragma: no cover - a host with no home
+        home = None
+    refused = {Path(resolved.anchor), checkout, *checkout.parents}
+    if home is not None:
+        refused.update({home, *home.parents})
+    if resolved in refused or _under(resolved, checkout):
+        raise ContextError(
+            "local graph provider must be pinned into its own virtual environment; "
+            "exposing its install would expose the filesystem root, your home directory, "
+            "or the checkout being indexed"
+        )
+
+
+def _provider_read_paths(command: str, *, repository: Path) -> tuple[str, ...]:
     """The install the pinned provider needs to be readable, and nothing beside it.
 
-    A console script is one file in a virtual environment whose libraries live
-    beside it, so the environment root -- the executable's grandparent -- is
-    what has to be exposed, plus the base interpreter it was created from. An
-    executable this process cannot even locate is refused here rather than
-    exposed as a guess: the alternative is a boundary drawn around a path that
-    is not where the provider is.
+    The executable's parent and grandparent used to be exposed on the reasoning
+    that a console script lives in a virtual environment's ``bin``. That is a
+    guess about a layout, not knowledge of one, and the guess is wrong in the
+    directions that matter most: ``~/bin/graphify`` makes the grandparent the
+    operator's home, ``/opt/graphify`` makes it ``/``, and a provider inside the
+    checkout makes it the live working tree the materialized copy exists to
+    avoid showing anybody. The boundary was then drawn around whatever that
+    came out to, and the probe -- which exercises only the interpreter paths --
+    never touched it.
+
+    So the layout is *proved* instead. An install root is a directory holding a
+    ``pyvenv.cfg`` whose script directory holds this executable: a virtual
+    environment, which is what pinning a provider produces, and whose root is
+    narrow by construction. A provider that already lives inside the read-only
+    system runtime needs no extra exposure at all and gets none. Anything else
+    is refused with an instruction rather than exposed as a guess, and whatever
+    root is arrived at is put through ``_refuse_broad_exposure`` regardless --
+    a proof of layout is not a proof that the layout is narrow.
     """
     located = command if os.path.isabs(command) else shutil.which(command)
     if not located:
         raise ContextError("local graph provider executable could not be located for containment")
     real = Path(os.path.realpath(located))
-    # ``located`` as well as its resolved self: the child is launched by the
-    # name this process resolved the command to, and a console script in a
-    # virtual environment reaches its libraries through that environment's own
-    # spelling rather than through whatever the link points at.
-    return tuple(
-        str(path)
-        for path in (located, real, real.parent, real.parent.parent, Path(sys.base_prefix))
-    )
+    # Both spellings of the executable itself: the child is launched by the name
+    # this process resolved the command to, and a console script reaches its
+    # environment through that environment's own spelling rather than through
+    # whatever the link points at.
+    spellings = tuple(dict.fromkeys((str(located), str(real))))
+    system = tuple(Path(os.path.realpath(path)) for path in _SYSTEM_READ_PATHS)
+    if any(_under(real, path) for path in system):
+        # Already inside the read-only runtime every child gets. Adding the
+        # enclosing prefix would widen that exposure, not narrow it.
+        return spellings
+    root = real.parent.parent
+    if real.parent.name not in _VENV_SCRIPT_DIRECTORIES or not (root / "pyvenv.cfg").is_file():
+        raise ContextError(
+            "local graph provider must be pinned into its own virtual environment so its "
+            "install can be exposed to the sandbox without exposing anything around it"
+        )
+    _refuse_broad_exposure(root, repository=repository)
+    # The base interpreter a virtual environment was created from lives outside
+    # it and is what its ``bin/python`` points at, so it is exposed too -- and
+    # held to the same refusals, because ``sys.base_prefix`` is only narrow on
+    # hosts where the interpreter was not installed into one of them.
+    base = Path(os.path.realpath(sys.base_prefix)) if sys.base_prefix else None
+    extra: tuple[str, ...] = ()
+    if base is not None and not any(_under(base, path) for path in system):
+        _refuse_broad_exposure(base, repository=repository)
+        extra = (str(base),)
+    return (*spellings, str(root), *extra)
 
 
 #: The subcommand the evaluated release exposes, recorded in
@@ -1651,7 +1754,7 @@ def _run_contained(
             _terminate_process_group(child, group)
 
 
-def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]:
+def subprocess_indexer(executable: str, *, repository: Path) -> Callable[[IndexRequest], IndexResult]:
     """Run a pinned provider CLI over the materialized copy, without a network.
 
     Kept as a factory so the lifecycle never imports or requires a graph
@@ -1673,7 +1776,7 @@ def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]
             "local graph builds need an OS sandbox that denies the provider the network and "
             "the host filesystem; this host offers none that could be verified"
         )
-    runtime = _provider_read_paths(command)
+    runtime = _provider_read_paths(command, repository=repository)
 
     def run(request: IndexRequest) -> IndexResult:
         _refuse_pre_existing_provider_state(request.source_root)
@@ -1848,23 +1951,36 @@ def _open_private_at(parent: int | None, name: str, *, missing: str, private: bo
     a symlink between the check and the creation -- the state-root defect this
     replaces -- and no later check on the leaf can see that it happened.
     """
-    if missing == _MISSING_CREATE:
-        try:
-            os.mkdir(name, mode=0o700, dir_fd=parent)
-        except FileExistsError:
-            pass
-        except OSError:
-            raise ContextError("local graph state directory is unavailable or unsafe") from None
+    unsafe = "local graph state directory is unavailable or unsafe"
     try:
         handle = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
     except FileNotFoundError:
         if missing == _MISSING_STOP:
             return None
-        raise ContextError("local graph state directory is unavailable or unsafe") from None
+        if missing != _MISSING_CREATE:
+            raise ContextError(unsafe) from None
+        # Opened before it is created, rather than creating unconditionally and
+        # reading the errno: this walk now traverses the whole absolute base,
+        # including ancestors like ``/usr`` that exist and that nobody may
+        # write. Whether such a ``mkdir`` reports ``EEXIST`` or ``EACCES``
+        # first is the kernel's business, and a boundary should not rest on it.
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent)
+        except FileExistsError:
+            pass
+        except OSError:
+            raise ContextError(unsafe) from None
+        try:
+            handle = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        except OSError:
+            # Created as a directory and already something else, or something
+            # else won the race: either way this is not a directory this walk
+            # may descend.
+            raise ContextError(unsafe) from None
     except OSError:
         # ``ELOOP`` lands here: the component is a symlink, and a symlink is
         # not a directory this class owns however private its target may be.
-        raise ContextError("local graph state directory is unavailable or unsafe") from None
+        raise ContextError(unsafe) from None
     if not private:
         # An ancestor *above* the operator's private root: this class does not
         # own its mode and must not judge it. What matters there is only that
@@ -1909,6 +2025,11 @@ class GraphStateRoot:
         self.base = Path(os.path.realpath(base))
         self.workspace = workspace_id(self.repository)
         self.path = self.base / "graph" / self.workspace
+        #: The device and inode the base was first observed as, established by
+        #: the no-follow walk and re-checked by every later one. Canonicalizing
+        #: at construction settles what the ancestors mean *now*; this is what
+        #: notices that they stopped meaning it.
+        self._identity: tuple[int, int] | None = None
 
     @property
     def generations_path(self) -> Path:
@@ -1935,37 +2056,84 @@ class GraphStateRoot:
     def _components(self) -> tuple[str, ...]:
         return ("graph", self.workspace, "generations")
 
-    def _create_base(self) -> None:
-        """Create the private root itself, one no-follow component at a time.
+    def _open_base(self, *, missing: str) -> int | None:
+        """Open the private root by walking it from ``/``, following nothing.
 
-        The root an operator names may not exist yet, ancestors and all, and
-        creating it is what a first build does. ``mkdir(parents=True)`` cannot
-        be what does it: a path component that does not exist *cannot* be
-        canonicalized at construction, so a component created as a symlink
-        afterwards -- pointing into a repository, say -- would be followed by
-        the recursive creation, and the state would land somewhere no check
-        ever looked at. So the walk starts at the deepest component that really
-        exists and creates each missing one against its parent's descriptor:
-        the components above the root are not judged for privacy, which is not
-        this class's business, but none of them is traversed through a link.
+        A single ``open(base, O_NOFOLLOW)`` is not this, and the difference is
+        the whole of the defect it replaces. ``O_NOFOLLOW`` refuses only the
+        *final* component; every ancestor above it is resolved by the kernel
+        exactly as a symlink planted there would want. So a base whose ancestor
+        was replaced by a link after construction passes the leaf check --
+        because the leaf really is a directory and really is not a link. It is
+        simply not the directory that was checked. Finding the deepest existing
+        prefix first does not help: that prefix is still opened by its full
+        absolute spelling, in one call, through whatever its ancestors have
+        become.
+
+        Every component is opened against its parent's descriptor instead, so
+        the kernel resolves exactly one name at a time and ``O_NOFOLLOW``
+        covers all of it. The base was canonicalized in ``__init__``, so on an
+        untampered host no component of it is a link and this walk is a
+        restatement of the path; a component that has become one since is
+        precisely what must fail, whether or not the components below it exist
+        already.
+
+        Components above the operator's root are traversed but not judged for
+        ownership or mode -- that is not this class's to own. What matters
+        there is only that each was a real directory rather than a link.
         """
-        existing = self.base
-        pending: list[str] = []
-        while not existing.exists() and existing != existing.parent:
-            pending.append(existing.name)
-            existing = existing.parent
-        handle = _open_private_at(None, str(existing), missing=_MISSING_REFUSE, private=False)
+        parts = self.base.parts
+        # The root is not a component anybody can replace, and mkdir on it is
+        # meaningless; it is opened, never created.
+        handle = _open_private_at(None, parts[0], missing=_MISSING_REFUSE, private=False)
         if handle is None:  # pragma: no cover - _MISSING_REFUSE raises instead
-            return
+            return None
         try:
-            for name in reversed(pending):
-                deeper = _open_private_at(
-                    handle, name, missing=_MISSING_CREATE, private=False
-                )
-                if deeper is None:  # pragma: no cover - creation returns a handle
-                    return
+            for name in parts[1:]:
+                deeper = _open_private_at(handle, name, missing=missing, private=False)
+                if deeper is None:
+                    os.close(handle)
+                    return None
                 os.close(handle)
                 handle = deeper
+        except BaseException:
+            os.close(handle)
+            raise
+        info = os.fstat(handle)
+        identity = (info.st_dev, info.st_ino)
+        if self._identity is None:
+            self._identity = identity
+        elif self._identity != identity:
+            # The walk was clean and still arrived somewhere else than it did
+            # last time: an ancestor was swapped between two operations on the
+            # same root. Refuse rather than carry on against a directory this
+            # instance never checked.
+            os.close(handle)
+            raise ContextError("local graph state directory is unavailable or unsafe")
+        return handle
+
+    def _revalidate_base(self) -> None:
+        """Prove the full spelling still names the directory the walk verified.
+
+        Not everything below is descriptor-relative: a generation is renamed
+        into place and the tree is removed by full path, and a full path is
+        re-resolved from the root on every call. A no-follow walk that passed a
+        moment ago says nothing about the ancestor a rename will travel. So the
+        walk's own inode is compared against the one the path resolves to now,
+        and a redirection becomes a refusal instead of a write into whatever
+        the link points at.
+        """
+        handle = self._open_base(missing=_MISSING_REFUSE)
+        if handle is None:  # pragma: no cover - _MISSING_REFUSE raises instead
+            raise ContextError("local graph state directory is unavailable or unsafe")
+        try:
+            walked = os.fstat(handle)
+            try:
+                spelled = os.stat(self.base)
+            except OSError:
+                raise ContextError("local graph state directory is unavailable or unsafe") from None
+            if (walked.st_dev, walked.st_ino) != (spelled.st_dev, spelled.st_ino):
+                raise ContextError("local graph state directory is unavailable or unsafe")
         finally:
             os.close(handle)
 
@@ -1978,13 +2146,7 @@ class GraphStateRoot:
         built needs. Nothing below a component that failed its privacy check is
         ever opened, because there is no descriptor left to open it against.
         """
-        if missing == _MISSING_CREATE:
-            self._create_base()
-        opened = _open_private_at(
-            None,
-            str(self.base),
-            missing=_MISSING_STOP if missing == _MISSING_STOP else _MISSING_REFUSE,
-        )
+        opened = self._open_base(missing=missing)
         if opened is None:
             return -1
         handle = opened
@@ -2174,6 +2336,9 @@ class GraphStateRoot:
         if load_manifest(json.loads(serialized)).generation != manifest.generation:
             raise ContextError("local graph manifest does not match its generation")
         self.ensure()
+        # The renames below travel full paths, so the walk's verdict is
+        # re-established against the spelling they will actually use.
+        self._revalidate_base()
         staging = self.generations_path / ("." + uuid.uuid4().hex + ".staging")
         staging.mkdir(mode=0o700)
         try:
@@ -2200,6 +2365,7 @@ class GraphStateRoot:
     def prune(self, *, keep: str | None) -> list[str]:
         """Remove every generation but ``keep``, including crashed stagings."""
         removed = []
+        self._revalidate_base()
         try:
             names = os.listdir(self.generations_path)
         except FileNotFoundError:
@@ -2236,8 +2402,11 @@ class GraphStateRoot:
             if not self.path.exists():
                 return False
             # Refuse to delete a tree that is not ours; a loosened or foreign
-            # directory is reported, not recursively removed.
+            # directory is reported, not recursively removed. The recursion
+            # below travels a full path, so the base is re-established against
+            # that spelling before anything is unlinked.
             self.verify_private()
+            self._revalidate_base()
             shutil.rmtree(self.path)
             return True
 

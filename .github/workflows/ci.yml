@@ -134,6 +134,41 @@ jobs:
           CODE_MOWER_REQUIRE_CONTAINMENT: "1"
         run: python -m unittest discover -s tests -p test_context_graph_lifecycle.py -v
 
+  graph_containment_macos:
+    # The Seatbelt half of the same claim. The bubblewrap job above proves the
+    # Linux boundary and nothing whatever about this one, and macOS is the
+    # platform this tool is developed on: leaving the profile to be exercised
+    # only by whoever happens to run the suite on a laptop is how it stayed
+    # unexecuted. ``sandbox-exec`` ships with the OS, so there is nothing to
+    # install -- the job is the evidence that the profile runs at all.
+    #
+    # Not required to pass yet. It reports, so that a red result carries the
+    # probe's own diagnosis of which candidate failed and what the launcher
+    # said, which is what turned the equivalent bubblewrap failure into a
+    # one-round fix.
+    name: graph containment (macOS)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Confirm the system sandbox is present
+        run: test -x /usr/bin/sandbox-exec
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Real containment tests
+        env:
+          CODE_MOWER_REQUIRE_CONTAINMENT: "1"
+        run: python -m unittest discover -s tests -p test_context_graph_lifecycle.py -v
+
   package:
     name: package
     runs-on: ubuntu-latest

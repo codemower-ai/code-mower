@@ -97,7 +97,7 @@ def main(argv=None) -> int:
             manifest = lifecycle.build_graph(
                 args.repo_path,
                 pin=pin,
-                indexer=lifecycle.subprocess_indexer(args.indexer),
+                indexer=lifecycle.subprocess_indexer(args.indexer, repository=args.repo_path),
                 root=args.state_dir,
                 revision=args.revision,
                 keep_previous=args.keep_previous,

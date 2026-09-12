@@ -119,6 +119,32 @@ unreadable — they are absent. `unshare --net` used to be a candidate and is
 gone: it denies the network and leaves the host filesystem in place, which is
 half a boundary.
 
+"The provider's own install" is a layout this module *proves* rather than one
+it infers from depth. It used to expose the executable's parent and
+grandparent, on the reasoning that a console script lives in a virtual
+environment's `bin`; where that reasoning is wrong it is wrong in the widest
+possible direction, because `~/bin/graphify` makes the grandparent the
+operator's entire home, `/opt/graphify` makes it `/`, and a provider installed
+inside the checkout makes it the live working tree the materialized copy exists
+to keep away from the provider. So an install root is now a directory holding a
+`pyvenv.cfg` whose script directory holds the executable — a virtual
+environment, which is what pinning a provider produces — and the root arrived
+at is refused outright if it is the filesystem root, the operator's home, the
+checkout being indexed, or an ancestor of either. A provider already inside the
+read-only system runtime asks for no extra exposure and gets none. Anything
+else is refused with an instruction to pin the provider into its own
+environment, rather than exposed as a guess.
+
+The prefix a particular build ends up with is probed before that build runs,
+not just the host's mechanism at startup: the readable set of a real build is
+the provider's install rather than the interpreter paths the host probe uses,
+and a widened exposure that reopened the boundary would otherwise meet nothing
+between the exposure and the provider. The verification probe is handed this
+build's exposure *plus* the interpreter, so that the probe child can start at
+all; that makes the probed prefix strictly more permissive than the one the
+build runs under, and containment observed there is a sound statement about
+containment here.
+
 No mechanism is trusted on its name, and none is looked up on `PATH`: each
 candidate is an absolute path whose file and every ancestor directory must be
 owned by root or by this user and unwritable by anyone else, because a launcher
@@ -162,6 +188,15 @@ lift the restriction system-wide
 (`sysctl kernel.apparmor_restrict_unprivileged_userns=0`), which is a decision
 about the whole machine rather than about this build, and not one this
 repository makes on an operator's behalf.
+
+macOS has its own job, `graph containment (macOS)`, because the Linux job
+proves the bubblewrap boundary and nothing whatever about the Seatbelt one, and
+leaving the profile to be exercised only by whoever happened to run the suite
+on a laptop is how it went unexecuted. `sandbox-exec` ships with the OS, so
+there is nothing to install and the job is simply the evidence that the profile
+runs at all. It does not gate merges yet: a red result there carries the
+probe's own account of which candidate failed and what the launcher said on
+stderr, which is the diagnosis the equivalent Linux failure was fixed from.
 
 Git itself runs with `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`, and
 `GIT_CONFIG_SYSTEM=/dev/null`: an untrusted checkout's local, global, or system
@@ -392,10 +427,26 @@ can never read each other's generations. State is refused inside any Git
 repository, which is the enforcement half of adoption condition 2. The refusal
 is checked on the resolved path as well as the given one: `--state-dir
 /outside/link/state` names no repository in its own spelling while
-`/outside/link` points inside one, and the `O_NOFOLLOW` opens cover only the
-final component of each directory this module creates. Symlinked ancestors are
-resolved rather than rejected — ordinary private roots have them, macOS reaches
-`/tmp` through a link into its `private` directory.
+`/outside/link` points inside one. Symlinked ancestors are resolved rather than
+rejected — ordinary private roots have them, macOS reaches `/tmp` through a
+link into its `private` directory.
+
+Resolving settles what the ancestors mean at construction and nothing about
+what they become afterwards, so the root is opened by walking it from `/` one
+component at a time, each against its parent's descriptor with `O_NOFOLLOW`.
+Opening the whole absolute path in one call would not do: `O_NOFOLLOW` refuses
+only the *final* component, and every ancestor above it is resolved exactly as
+a link planted there would want. Nor does finding the deepest existing prefix
+first — that prefix is still opened by its full spelling. A pre-created root
+behind a newly inserted ancestor link therefore used to be accepted, because
+the leaf really is a directory and really is not a link; it is simply not the
+directory that was checked.
+
+Renames and removals still travel full paths — a staged generation is renamed
+into place, a removed tree is recursed over — and a full path is re-resolved
+from the root on every call. Before each of those, the inode the no-follow walk
+arrived at is compared against the one the path spells now, and a mismatch is a
+refusal rather than a write into whatever the link points at.
 
 ## What this does not do
 
