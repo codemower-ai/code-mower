@@ -15,6 +15,7 @@ proxy variables would have passed on code that had none.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import io
@@ -560,6 +561,58 @@ sys.exit(0)
 """
 
 
+READ_PROBE = """
+import sys
+
+try:
+    with open(sys.argv[1], "rb") as handle:
+        handle.read(1)
+except OSError:
+    sys.exit(1)
+sys.exit(0)
+"""
+
+#: Set by the CI job that installs a real isolation mechanism. There, a host
+#: without one is a broken job rather than a host that cannot be asked, so the
+#: skip becomes a failure: coverage that silently skips is coverage nobody has.
+REQUIRE_CONTAINMENT = "CODE_MOWER_REQUIRE_CONTAINMENT"
+
+
+def require_containment(test: unittest.TestCase) -> lifecycle.Containment:
+    mechanism = lifecycle.containment_mechanism()
+    if mechanism is None:
+        if os.environ.get(REQUIRE_CONTAINMENT) == "1":
+            test.fail(
+                "this job requires a verified isolation mechanism and this host offers none"
+            )
+        test.skipTest("this host offers no OS sandbox that contains a child process")
+    return mechanism
+
+
+@contextlib.contextmanager
+def stand_in_containment(prefix: tuple[str, ...]):
+    """A verified mechanism whose argv is a fixed stand-in.
+
+    The real prefix is a function of the host, so a test that wants to read the
+    argv a launch was given -- rather than to prove containment -- pins it.
+    ``_provider_read_paths`` goes with it: the exposure a build computes names
+    an install that only a host with the pinned provider on it actually has.
+    """
+    with mock.patch.object(
+        lifecycle, "containment_mechanism", lambda: lifecycle.Containment("stand-in", "/sandbox")
+    ):
+        with mock.patch.object(lifecycle, "containment_prefix", lambda **keywords: prefix):
+            with mock.patch.object(lifecycle, "_provider_read_paths", lambda command: ()):
+                yield
+
+
+@contextlib.contextmanager
+def no_containment():
+    """A host that offers no mechanism at all."""
+    with mock.patch.object(lifecycle, "containment_mechanism", lambda: None):
+        yield
+
+
 class NetworkIsolationTests(unittest.TestCase):
     """The provider's network boundary, against a socket that is really there."""
 
@@ -583,28 +636,127 @@ class NetworkIsolationTests(unittest.TestCase):
         # some unrelated reason would read as proof of isolation.
         self.assertEqual(self.connect(()), 0)
 
+    def real_prefix(self, scratch: Path) -> tuple[str, ...]:
+        """The argv this host would really confine a build with."""
+        require_containment(self)
+        return lifecycle.containment_prefix(
+            writable=(scratch,), readable=lifecycle._interpreter_read_paths()
+        )
+
     def test_a_sandboxed_child_cannot_reach_the_listening_socket(self) -> None:
-        sandbox = lifecycle.network_sandbox_command()
-        if sandbox is None:
-            self.skipTest("this host offers no OS sandbox that denies a child the network")
-        self.assertEqual(self.connect(sandbox), 1)
+        with tempfile.TemporaryDirectory() as scratch:
+            self.assertEqual(self.connect(self.real_prefix(Path(scratch))), 1)
 
     def test_the_selected_mechanism_really_contains_a_child_on_this_host(self) -> None:
         """The integration control: the real mechanism, not a stand-in for one.
 
         The synthetic launchers below pin the classification *algorithm* on
         every host, including hosts with no sandbox at all. They cannot show
-        that ``sandbox-exec``, ``bwrap --unshare-net``, or ``unshare --net`` as
-        this module spells them actually confines anything. Where one of them is
-        available, this runs it for real: an unconfined child must reach a
-        listener that is really there, and a child under the selected prefix
-        must not.
+        that ``sandbox-exec`` or ``bwrap`` as this module spells them actually
+        confines anything. Where one of them is available, this runs it for
+        real: an unconfined child must reach a listener that is really there
+        and read a secret planted outside its exposure, and a child under the
+        selected prefix must do neither.
         """
-        prefix = lifecycle.network_sandbox_command()
-        if prefix is None:
-            self.skipTest("this host offers no OS sandbox that denies a child the network")
-        self.assertEqual(lifecycle._classify_probe(()), lifecycle._REACHED)
-        self.assertEqual(lifecycle._classify_probe(prefix), lifecycle._CONTAINED)
+        with tempfile.TemporaryDirectory() as scratch:
+            prefix = self.real_prefix(Path(scratch))
+            self.assertEqual(lifecycle._classify_probe(()), lifecycle._REACHED)
+            self.assertEqual(lifecycle._classify_probe(prefix), lifecycle._CONTAINED)
+
+    def test_the_selected_mechanism_hides_a_file_outside_the_exposure(self) -> None:
+        """The filesystem half, named separately from the classifier that uses it.
+
+        The reproduction this replaces read an external ignored ``.env`` through
+        the selected sandbox: the macOS profile denied the network and allowed
+        the whole host filesystem, and ``--dev-bind / /`` did the same on Linux.
+        A working directory is not a boundary. What is exposed is exposed; a
+        secret beside it is not there at all.
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            prefix = self.real_prefix(Path(scratch))
+            exposed = Path(scratch) / "inside"
+            exposed.write_text("visible", encoding="utf-8")
+            hidden = self.root_outside() / ".env"
+            hidden.write_text("SECRET=planted", encoding="utf-8")
+            self.assertEqual(self.read_through(prefix, exposed), 0)
+            self.assertEqual(self.read_through(prefix, hidden), 1)
+
+    def root_outside(self) -> Path:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return Path(directory.name)
+
+    def read_through(self, prefix: tuple[str, ...], path: Path) -> int:
+        return subprocess.run(
+            [*prefix, sys.executable, "-c", READ_PROBE, str(path)],
+            check=False,
+            capture_output=True,
+            timeout=120,
+        ).returncode
+
+    def test_a_mechanism_that_denies_only_the_network_is_not_a_boundary(self) -> None:
+        """Half a boundary classifies as none.
+
+        A launcher that gives its child an empty network namespace and leaves
+        the host filesystem in place is exactly what this module used to select.
+        The child reports it, and the classification refuses it rather than
+        recording the half it liked.
+        """
+        launcher = self.network_only_launcher(self.closed_port())
+        self.assertEqual(lifecycle._classify_probe((launcher,)), lifecycle._UNUSABLE)
+
+    def network_only_launcher(self, port: int) -> str:
+        """Redirects the probe at a closed port but leaves the secret readable."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "network-only-launcher"
+        path.write_text(f'#!/bin/sh\nexec "$1" "$2" "$3" {port} "$5" "$6"\n', encoding="utf-8")
+        path.chmod(0o700)
+        return str(path)
+
+    def test_a_launcher_on_PATH_cannot_shadow_a_trusted_one(self) -> None:
+        """Every candidate is an absolute path, so ``PATH`` decides nothing.
+
+        A launcher resolved through the inherited ``PATH`` can be shadowed by a
+        program that computes the probe's evidence and reports containment
+        without establishing any, and the whole verdict is then forged. The
+        shadow is planted with the names this module looks for and must not be
+        selected -- nor even consulted.
+        """
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for name in ("bwrap", "unshare", "sandbox-exec"):
+            shadow = Path(directory.name) / name
+            shadow.write_text("#!/bin/sh\nexit 40\n", encoding="utf-8")
+            shadow.chmod(0o700)
+        for _, candidate in lifecycle._SANDBOX_CANDIDATES:
+            self.assertTrue(os.path.isabs(candidate), candidate)
+            self.assertFalse(candidate.startswith(directory.name))
+        with mock.patch.dict(os.environ, {"PATH": directory.name}):
+            with mock.patch.object(lifecycle, "_classify_probe", lambda prefix: lifecycle._REACHED):
+                # Every candidate classifies as "reached", so nothing can be
+                # selected; the point is that the shadow was never a candidate.
+                self.assertIsNone(lifecycle._probe_containment())
+
+    def test_a_launcher_anybody_could_replace_is_not_trusted(self) -> None:
+        """Ownership and ancestry, not just the file's own mode.
+
+        An executable in a directory somebody else may write can be replaced
+        between the probe that trusted it and the build that runs it. A
+        system launcher is the positive control: root-owned, in root-owned
+        directories nobody else may write.
+        """
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        launcher = Path(directory.name) / "launcher"
+        launcher.write_text("#!/bin/sh\nexit 40\n", encoding="utf-8")
+        launcher.chmod(0o700)
+        os.chmod(directory.name, 0o777)
+        self.assertIsNone(lifecycle._trusted_launcher(str(launcher)))
+        self.assertIsNone(lifecycle._trusted_launcher("/nonexistent/launcher"))
+        if not os.path.isfile("/usr/bin/env"):  # pragma: no cover - platform
+            self.skipTest("no system launcher to use as the positive control")
+        self.assertEqual(lifecycle._trusted_launcher("/usr/bin/env"), "/usr/bin/env")
 
     def launcher(self, exit_code: int) -> str:
         """A stand-in launcher, so the classifier is pinned on every host.
@@ -640,14 +792,19 @@ class NetworkIsolationTests(unittest.TestCase):
         loopback really comes up inside the new namespace, and the connection is
         *refused* because the host's listener is not in there with it. The
         launcher runs the probe it was handed against a port nothing is on,
-        which is what the child would have seen. ``$5`` is the nonce, forwarded
-        so the child can still show it ran: a launcher that swallowed it would
-        be a launcher that did not run the probe.
+        which is what the child would have seen, and points it at a path that
+        does not exist in place of the planted secret, which is what a child
+        with no view of the host filesystem sees. ``$6`` is the nonce,
+        forwarded so the child can still show it ran: a launcher that swallowed
+        it would be a launcher that did not run the probe.
         """
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         path = Path(directory.name) / "namespace-launcher"
-        path.write_text(f'#!/bin/sh\nexec "$1" "$2" "$3" {port} "$5"\n', encoding="utf-8")
+        path.write_text(
+            f'#!/bin/sh\nexec "$1" "$2" "$3" {port} /nonexistent/secret "$6"\n',
+            encoding="utf-8",
+        )
         path.chmod(0o700)
         return str(path)
 
@@ -661,10 +818,10 @@ class NetworkIsolationTests(unittest.TestCase):
         it as a boundary and every build would then run its provider
         unconfined. The child's per-run evidence is what separates the two.
         """
-        self.assertFalse(lifecycle._sandbox_denies_network((self.launcher(lifecycle._PROBE_DENIED),)))
+        self.assertFalse(lifecycle._prefix_confines((self.launcher(lifecycle._PROBE_BASE),)))
 
     def test_a_child_that_reached_the_network_stack_is_rejected(self) -> None:
-        self.assertFalse(lifecycle._sandbox_denies_network((self.launcher(lifecycle._PROBE_REACHED),)))
+        self.assertFalse(lifecycle._prefix_confines((self.launcher(lifecycle._PROBE_BASE + lifecycle._PROBE_REACHED_LISTENER),)))
 
     def test_evidence_from_another_run_does_not_prove_this_one(self) -> None:
         """A replayed transcript is not a child that ran.
@@ -678,14 +835,14 @@ class NetworkIsolationTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         path = Path(directory.name) / "replaying-launcher"
         path.write_text(
-            f"#!/bin/sh\necho {stale}\necho \"$@\"\nexit {lifecycle._PROBE_DENIED}\n",
+            f"#!/bin/sh\necho {stale}\necho \"$@\"\nexit {lifecycle._PROBE_BASE}\n",
             encoding="utf-8",
         )
         path.chmod(0o700)
-        self.assertFalse(lifecycle._sandbox_denies_network((str(path),)))
+        self.assertFalse(lifecycle._prefix_confines((str(path),)))
 
     def test_a_launcher_that_cannot_start_is_rejected(self) -> None:
-        self.assertFalse(lifecycle._sandbox_denies_network(("/nonexistent/launcher",)))
+        self.assertFalse(lifecycle._prefix_confines(("/nonexistent/launcher",)))
 
     def test_a_candidate_that_does_not_deny_the_network_is_rejected(self) -> None:
         # ``env`` runs its argument unchanged: a prefix that contains nothing
@@ -693,7 +850,7 @@ class NetworkIsolationTests(unittest.TestCase):
         passthrough = ("/usr/bin/env",)
         if not os.access(passthrough[0], os.X_OK):  # pragma: no cover - platform
             self.skipTest("no pass-through launcher to test against")
-        self.assertFalse(lifecycle._sandbox_denies_network(passthrough))
+        self.assertFalse(lifecycle._prefix_confines(passthrough))
 
     def test_a_refused_connection_inside_a_namespace_is_containment(self) -> None:
         """The bubblewrap case: refused by an empty namespace, not by the host.
@@ -704,7 +861,7 @@ class NetworkIsolationTests(unittest.TestCase):
         to build at all. The verdict is taken at the listener instead: nothing
         arrived, so the child was contained.
         """
-        self.assertTrue(lifecycle._sandbox_denies_network((self.redirecting_launcher(self.closed_port()),)))
+        self.assertTrue(lifecycle._prefix_confines((self.redirecting_launcher(self.closed_port()),)))
 
     def test_the_probe_proves_its_own_apparatus_before_trusting_a_refusal(self) -> None:
         """No candidate passes if an unsandboxed child cannot reach the listener.
@@ -721,7 +878,7 @@ class NetworkIsolationTests(unittest.TestCase):
             return lifecycle._CONTAINED
 
         with mock.patch.object(lifecycle, "_classify_probe", classify):
-            self.assertIsNone(lifecycle._probe_network_sandbox())
+            self.assertIsNone(lifecycle._probe_containment())
         # The control ran, and nothing was probed after it failed.
         self.assertEqual(calls, [()])
 
@@ -792,7 +949,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
                     (written / "manifest.json").write_text(json.dumps(report), encoding="utf-8")
             return FakeChild()
 
-        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: sandbox):
+        with stand_in_containment(sandbox):
             indexer = lifecycle.subprocess_indexer(executable)
         # Patched only around the launch, so the Git calls a build makes are
         # never intercepted by this stand-in.
@@ -941,7 +1098,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             (written / "manifest.json").write_bytes(b"{not json")
             return FakeChild()
 
-        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
+        with stand_in_containment(("/sandbox",)):
             indexer = lifecycle.subprocess_indexer("graphify")
         with mock.patch.object(subprocess, "Popen", fake_popen):
             result = indexer(request)
@@ -1000,7 +1157,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         def refuse_whole_file_read(self: Path) -> bytes:
             raise AssertionError(f"{self} was read whole")
 
-        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
+        with stand_in_containment(("/sandbox",)):
             indexer = lifecycle.subprocess_indexer("graphify")
         with mock.patch.object(subprocess, "Popen", fake_popen):
             with mock.patch.object(Path, "read_bytes", refuse_whole_file_read):
@@ -1024,7 +1181,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             launched.append(list(argv))
             return FakeChild()
 
-        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
+        with stand_in_containment(("/sandbox",)):
             indexer = lifecycle.subprocess_indexer("graphify")
         with mock.patch.object(subprocess, "Popen", fake_popen):
             with self.assertRaises(ContextError):
@@ -1048,7 +1205,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         def record_termination(child, group) -> None:
             order.append("stopped")
 
-        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
+        with stand_in_containment(("/sandbox",)):
             indexer = lifecycle.subprocess_indexer("graphify")
         with mock.patch.object(subprocess, "Popen", fake_popen):
             with mock.patch.object(lifecycle, "_terminate_process_group", record_termination):
@@ -1060,7 +1217,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         self.assertFalse(request.output_path.exists())
 
     def test_a_host_without_a_sandbox_refuses_to_launch_a_provider(self) -> None:
-        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: None):
+        with no_containment():
             with self.assertRaises(ContextError):
                 lifecycle.subprocess_indexer("graphify")
 
@@ -1133,6 +1290,27 @@ raise SystemExit(5)
                 return True
             time.sleep(0.05)
         return False
+
+    def test_a_group_that_cannot_be_established_as_empty_fails_the_run(self) -> None:
+        """Sending SIGKILL is not the group being gone.
+
+        The caller's next act is to pack or delete the state these processes
+        are writing, so returning on the strength of a signal that was sent --
+        rather than on a group that was observed empty -- hands the rest of the
+        build a race it cannot see. A group that outlasts the kill fails the
+        run instead.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(lifecycle, "_group_is_empty", lambda group: False):
+                with mock.patch.object(lifecycle, "_await_group_exit", lambda group, timeout: None):
+                    with self.assertRaises(ContextError) as raised:
+                        lifecycle._run_contained(
+                            [sys.executable, "-c", "pass"],
+                            environment={"PATH": os.environ.get("PATH", "")},
+                            cwd=directory,
+                            timeout=30.0,
+                        )
+        self.assertIn("could not be stopped", str(raised.exception))
 
     def test_a_timed_out_run_takes_the_workers_it_started_with_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1422,6 +1600,27 @@ class BuildAndPublishTests(TemporaryWorkspace):
         self.assertTrue(state.path.is_relative_to(safe))
         self.assertTrue((safe / "graph-state" / "graph").is_dir())
         self.assertFalse((inside / "graph-state").exists())
+
+    def test_a_component_that_becomes_a_symlink_before_creation_is_refused(self) -> None:
+        """The half a canonical snapshot cannot cover: a component that is not there yet.
+
+        Resolving the root at construction settles what its *existing*
+        ancestors mean. It cannot settle what a component nobody has created
+        yet will mean, and a recursive ``mkdir`` would follow whatever appears
+        there. Here the nested root is absent at construction and an ancestor
+        of it is created as a link into the repository before ``ensure``: the
+        creation must refuse rather than write state inside the repository.
+        """
+        outside = self.root / "outside"
+        outside.mkdir()
+        absent = outside / "deep" / "state"
+        state = lifecycle.GraphStateRoot(self.repository, root=absent)
+        inside = self.repository / "subdir"
+        inside.mkdir()
+        os.symlink(inside, outside / "deep")
+        with self.assertRaises(ContextError):
+            state.ensure()
+        self.assertFalse((inside / "state").exists())
 
     def test_a_manifest_no_reader_could_load_publishes_nothing(self) -> None:
         """Publication validates the whole manifest before it touches state.
@@ -1770,13 +1969,13 @@ class DoctorTests(TemporaryWorkspace):
         self.build()
         # Isolation is a property of the host, not of this build; a host that
         # offers a sandbox is the healthy case being described here.
-        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
+        with stand_in_containment(("/sandbox",)):
             report = lifecycle.doctor_report(self.repository, pin=PIN, root=self.state)
         self.assertEqual(report["status"], "pass")
 
     def test_a_host_that_cannot_contain_a_provider_fails_doctor(self) -> None:
         self.build()
-        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: None):
+        with no_containment():
             report = lifecycle.doctor_report(self.repository, pin=PIN, root=self.state)
         self.assertEqual(report["status"], "fail")
         isolation = [check for check in report["checks"] if check["check"] == "context-graph-isolation"]
@@ -1842,8 +2041,7 @@ class CommandTests(TemporaryWorkspace):
     def test_build_status_refresh_remove_round_trip(self) -> None:
         # The only test that launches a provider for real, so it is also the
         # only one that needs the host to offer the sandbox a build requires.
-        if lifecycle.network_sandbox_command() is None:
-            self.skipTest("this host offers no OS sandbox that denies a child the network")
+        require_containment(self)
         pin, indexer = str(self.pin_file()), str(self.indexer_script())
         code, output = self.run_command("build", *self.base(), "--pin-file", pin, "--indexer", indexer)
         self.assertEqual(code, 0, output)
@@ -1872,8 +2070,7 @@ class CommandTests(TemporaryWorkspace):
         # End to end through the real launcher: the provider exits zero and
         # writes state, and the build is still refused because its own report
         # denies completion. Exit status is not completion evidence.
-        if lifecycle.network_sandbox_command() is None:
-            self.skipTest("this host offers no OS sandbox that denies a child the network")
+        require_containment(self)
         code, output = self.run_command(
             "build", *self.base(),
             "--pin-file", str(self.pin_file()),
@@ -1891,8 +2088,7 @@ class CommandTests(TemporaryWorkspace):
         self.assertEqual(json.loads(output)["state"], "partial")
 
     def test_an_incomplete_build_is_printed_as_partial(self) -> None:
-        if lifecycle.network_sandbox_command() is None:
-            self.skipTest("this host offers no OS sandbox that denies a child the network")
+        require_containment(self)
         arguments = [argument for argument in self.base() if argument != "--json"]
         code, output = self.run_command(
             "build", *arguments,

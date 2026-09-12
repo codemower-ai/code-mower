@@ -22,13 +22,18 @@ The rules a local indexer cannot be trusted to follow on its own:
   the whole new one, never a half-written directory.
 * **Scrub the environment.** The indexer runs with an allowlisted environment,
   so an ambient token cannot leak into a provider process.
-* **Deny the network in the kernel, not by request.** Emptying proxy variables
-  only redirects a client that chooses to honour them. The provider is
-  launched inside an OS sandbox that refuses sockets outright, and the sandbox
-  is accepted only after a probe child has been observed failing to reach a
-  socket this process is really listening on -- observed at the listener, not
-  believed from the child's errno. A host that offers no such mechanism gets a
-  refused build, not an unconfined provider.
+* **Deny the network and the host filesystem in the kernel, not by request.**
+  Emptying proxy variables only redirects a client that chooses to honour them,
+  and a working directory is not a boundary. The provider is launched inside an
+  OS sandbox whose filesystem view is the materialized copy, the build's own
+  scratch directories, and a read-only runtime -- the operator's home, their
+  other checkouts, and every ignored ``.env`` beside them are absent from it,
+  not merely unreadable. The mechanism is accepted only after a probe child has
+  been observed failing at *both*: failing to reach a socket this process is
+  really listening on, observed at the listener rather than believed from the
+  child's errno, and failing to read a secret file planted outside its
+  exposure. A host that offers no such mechanism gets a refused build, not an
+  unconfined provider.
 
 Nothing here installs, imports, or requires a graph package. The indexer is an
 injected callable, so the whole lifecycle is provable offline; the bundled
@@ -48,9 +53,11 @@ import secrets
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -138,7 +145,7 @@ _ENVIRONMENT_ALLOWLIST = ("PATH", "TMPDIR", "LANG", "LC_ALL", "TZ")
 #: Hygiene, not the boundary. Emptying proxy variables stops a cooperating
 #: client from finding a proxy and ``GIT_TERMINAL_PROMPT=0`` stops a child
 #: blocking on a credential prompt, but on a host with direct connectivity
-#: neither denies anything. The boundary is ``network_sandbox_command``.
+#: neither denies anything. The boundary is ``containment_prefix``.
 _NETWORK_DENY = {
     "no_proxy": "*",
     "NO_PROXY": "*",
@@ -152,68 +159,243 @@ _NETWORK_DENY = {
     "PYTHONNOUSERSITE": "1",
 }
 
-#: Argv prefixes that place a child in a network-denying OS sandbox, most
-#: specific first. Each is a mechanism the host either has or does not; none is
-#: trusted on its name, because a prefix that silently degrades to running the
-#: command unconfined would be worse than no prefix at all.
-_SANDBOX_CANDIDATES: tuple[tuple[str, ...], ...] = (
-    ("/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)(deny network*)"),
-    ("bwrap", "--unshare-net", "--dev-bind", "/", "/", "--"),
-    ("unshare", "--net", "--map-current-user", "--"),
-    ("unshare", "--net", "--map-root-user", "--"),
+#: Isolation mechanisms, most specific first, each named by an absolute path.
+#:
+#: Absolute, deliberately: a launcher looked up on an inherited ``PATH`` can be
+#: shadowed by a program that answers the probe without confining anything, and
+#: the probe's verdict is only as good as its knowledge of what it ran. The
+#: paths are the system locations these tools install into, and each is checked
+#: for trusted ownership and unwritable ancestry before it is run.
+#:
+#: ``unshare --net`` used to be here and is gone. It denies the network and
+#: nothing else: the child keeps the host's whole filesystem, which is not the
+#: boundary this module claims. A host with no mechanism that confines *both*
+#: gets a refused build.
+_SANDBOX_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ("sandbox-exec", "/usr/bin/sandbox-exec"),
+    ("bwrap", "/usr/bin/bwrap"),
+    ("bwrap", "/usr/local/bin/bwrap"),
 )
 
-#: The probe connects to a socket this process is really listening on, and the
-#: verdict is whether the connection *arrived* -- not which errno the child saw.
-#: Classifying by errno cannot work: a network namespace brings its own loopback
-#: up, so a contained child gets ``ECONNREFUSED`` from an empty namespace while
-#: an unconfined child gets ``ECONNREFUSED`` from an unused host port. The two
-#: are indistinguishable at the child. They are not indistinguishable at the
-#: listener, which either accepts a connection or does not.
+#: Read-only host paths a runtime needs to start at all: the loader, the C
+#: library, the system interpreters. Everything outside this list and the
+#: exposure a build asks for is not in the child's filesystem view -- not
+#: unreadable by permission, absent.
+_SYSTEM_READ_PATHS: tuple[str, ...] = (
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/lib32",
+    "/etc",
+    "/private/etc",
+    "/System",
+    "/Library",
+    "/private/var/db/dyld",
+    "/private/var/db/timezone",
+)
+
+#: The probe reports two facts about one run, as a bitmask offset from a base
+#: no shell error code lands on: whether the child could read a secret file
+#: planted outside its exposure, and whether it could open a socket to a port
+#: this process is really listening on.
 #:
-#: The probe exits ``7`` when it could not connect and ``3`` when it could;
-#: every other code -- a launcher that could not start, a child that never ran
-#: -- means the candidate is not usable as a boundary.
+#: The network verdict is taken at the *listener*, not from the child's errno.
+#: Classifying by errno cannot work: a network namespace brings its own
+#: loopback up, so a contained child gets ``ECONNREFUSED`` from an empty
+#: namespace while an unconfined child gets ``ECONNREFUSED`` from an unused host
+#: port. Indistinguishable at the child; obvious at the listener, which either
+#: accepted a connection or did not.
 #:
 #: An exit code alone is not evidence that the child ran: a launcher that exits
-#: ``7`` without executing anything produces the same code as a contained child,
-#: and would be accepted as a boundary while confining nothing. So the child
-#: first prints a value only running it can produce -- the digest of a nonce
-#: this process generated for this run -- and a run with no such evidence is
-#: unusable whatever its exit code. Echoing the argv is not enough: the digest
-#: is computed by the child, and the nonce is fresh per run, so neither a
-#: launcher that parrots its arguments nor one that replays an earlier probe
-#: can produce it.
-_PROBE_DENIED = 7
-_PROBE_REACHED = 3
-_DENIAL_PROBE = """
+#: with the contained code without executing anything would be accepted as a
+#: boundary while confining nothing. So the child first prints a value only
+#: running it can produce -- the digest of a nonce generated for this run -- and
+#: a run with no such evidence is unusable whatever its exit code. Echoing the
+#: argv is not enough: the digest is computed by the child and the nonce is
+#: fresh, so neither a launcher that parrots its arguments nor one that replays
+#: an earlier probe can produce it.
+_PROBE_BASE = 40
+_PROBE_READ_SECRET = 1
+_PROBE_REACHED_LISTENER = 2
+_CONTAINMENT_PROBE = """
 import hashlib
 import socket
 import sys
 
-print(hashlib.sha256(sys.argv[2].encode()).hexdigest(), flush=True)
+print(hashlib.sha256(sys.argv[3].encode()).hexdigest(), flush=True)
+seen = 0
 try:
-    probe = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+    with open(sys.argv[2], "rb") as secret:
+        secret.read(1)
 except OSError:
-    sys.exit(7)
-probe.close()
-sys.exit(3)
+    pass
+else:
+    seen |= 1
+try:
+    reached = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+except OSError:
+    pass
+else:
+    reached.close()
+    seen |= 2
+sys.exit(40 + seen)
 """
 
-#: How a probe run classifies: the child reached this process's listener, the
-#: child ran and could not, or nothing usable happened.
+#: How a probe run classifies: the child was outside the boundary in at least
+#: one respect, the child was inside it in both, or nothing usable happened.
+#: A mechanism that denies only one of the two is ``_UNUSABLE``, not a
+#: boundary -- half a boundary is what this finding was about.
 _REACHED = "reached"
 _CONTAINED = "contained"
 _UNUSABLE = "unusable"
 
-_sandbox_prefix: tuple[str, ...] | None = None
-_sandbox_probed = False
+
+@dataclass(frozen=True)
+class Containment:
+    """One verified isolation mechanism on this host.
+
+    The argv is built per build rather than cached, because the boundary is a
+    function of what that build is allowed to expose. What is cached is the
+    finding that this mechanism, at this path, was observed confining a child.
+    """
+
+    name: str
+    launcher: str
 
 
-def _launcher_path(name: str) -> str | None:
-    if os.path.isabs(name):
-        return name if os.access(name, os.X_OK) else None
-    return shutil.which(name)
+_containment: Containment | None = None
+_containment_probed = False
+
+
+def _trusted_launcher(path: str) -> str | None:
+    """A launcher only a trusted account could have replaced, or ``None``.
+
+    The file and every ancestor directory: an executable that is itself
+    root-owned but sits in a directory somebody else may write can be swapped
+    for one that reports containment it never established. A symlink anywhere
+    in the chain is refused rather than followed -- what it names now is not
+    what it will name later, and this decision is cached for the process.
+    """
+    trusted = {0, os.geteuid()}
+    for current in (Path(path), *Path(path).parents):
+        try:
+            entry = os.lstat(current)
+        except OSError:
+            return None
+        if entry.st_uid not in trusted or entry.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return None
+        if stat.S_ISLNK(entry.st_mode):
+            return None
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or not os.access(path, os.X_OK):
+        return None
+    return path
+
+
+def _existing(paths: Iterable[Path | str]) -> tuple[str, ...]:
+    """Resolved, de-duplicated, existing paths, in the order they were given.
+
+    Resolved because both mechanisms match on the kernel's path, not the
+    caller's spelling: macOS puts ``/tmp`` and ``/var`` behind links into its
+    ``private`` directory, so an unresolved exposure would name a path the
+    sandbox never sees.
+    """
+    seen: dict[str, None] = {}
+    for path in paths:
+        try:
+            real = os.path.realpath(path)
+        except OSError:  # pragma: no cover - realpath does not raise on absent paths
+            continue
+        if os.path.exists(real):
+            seen.setdefault(real, None)
+    return tuple(seen)
+
+
+def _seatbelt_literal(path: str) -> str:
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _seatbelt_prefix(launcher: str, *, writable: Sequence[str], readable: Sequence[str]) -> tuple[str, ...]:
+    """A ``sandbox-exec`` profile that denies by default and then names the exposure.
+
+    ``(allow default)(deny network*)`` -- what this module used to pass -- denies
+    sockets and leaves the host filesystem wide open. The order here is the
+    other way round: nothing is permitted, and then the runtime is made readable
+    and the build's own directories writable.
+    """
+    rules = [
+        "(version 1)",
+        "(deny default)",
+        "(deny network*)",
+        "(allow process-fork)",
+        "(allow signal)",
+        "(allow sysctl-read)",
+        "(allow mach-lookup)",
+        "(allow ipc-posix-shm)",
+        "(allow file-read-metadata)",
+        "(allow file-write-data (literal \"/dev/null\") (literal \"/dev/zero\")"
+        " (literal \"/dev/random\") (literal \"/dev/urandom\"))",
+    ]
+    if readable:
+        subpaths = " ".join(f"(subpath {_seatbelt_literal(path)})" for path in readable)
+        rules.append(f"(allow file-read* process-exec* {subpaths})")
+    if writable:
+        subpaths = " ".join(f"(subpath {_seatbelt_literal(path)})" for path in writable)
+        rules.append(f"(allow file-read* file-write* {subpaths})")
+    return (launcher, "-p", "\n".join(rules))
+
+
+def _bubblewrap_prefix(launcher: str, *, writable: Sequence[str], readable: Sequence[str]) -> tuple[str, ...]:
+    """A ``bwrap`` mount namespace containing only the exposure.
+
+    ``--dev-bind / /`` -- what this module used to pass -- hands the child the
+    host's entire filesystem, read *and* write, and isolates the network alone.
+    The new root is empty: the runtime is bound read-only, the build's own
+    directories are bound writable, and ``/tmp`` is a tmpfs, so a path nobody
+    named does not exist for this child.
+    """
+    argv = [
+        launcher,
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-pid",
+        "--unshare-cgroup-try",
+        "--new-session",
+        "--die-with-parent",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+    ]
+    for path in readable:
+        argv += ["--ro-bind-try", path, path]
+    # After the read-only runtime, so an exposure that lives under one of those
+    # paths is writable rather than shadowed by the read-only bind.
+    for path in writable:
+        argv += ["--bind", path, path]
+    argv.append("--")
+    return tuple(argv)
+
+
+_PREFIX_BUILDERS: Mapping[str, Callable[..., tuple[str, ...]]] = {
+    "sandbox-exec": _seatbelt_prefix,
+    "bwrap": _bubblewrap_prefix,
+}
+
+
+def _prefix_for(
+    mechanism: Containment,
+    *,
+    writable: Sequence[Path | str],
+    readable: Sequence[Path | str],
+) -> tuple[str, ...]:
+    return _PREFIX_BUILDERS[mechanism.name](
+        mechanism.launcher,
+        writable=_existing(writable),
+        readable=_existing([*_SYSTEM_READ_PATHS, *readable]),
+    )
 
 
 def _accepted(listener: socket.socket) -> bool:
@@ -233,81 +415,133 @@ def _ran_the_probe(output: bytes, nonce: str) -> bool:
 
 
 def _classify_probe(prefix: Sequence[str]) -> str:
-    """Run the probe under ``prefix`` against a listener in this process."""
+    """Run the probe under ``prefix``: a real listener and a real planted secret.
+
+    The secret is written to the host's temporary directory, which no exposure
+    this module builds ever includes, so an unconfined child reads it and a
+    confined one cannot see it at all.
+    """
     nonce = secrets.token_hex(16)
-    with socket.socket() as listener:
-        try:
-            listener.bind(("127.0.0.1", 0))
-            listener.listen(1)
-        except OSError:  # pragma: no cover - a host that cannot listen on loopback
-            return _UNUSABLE
-        # The child connects and exits; the connection waits in the backlog
-        # until it is accepted below, so the accept order does not matter.
-        listener.settimeout(1)
-        port = listener.getsockname()[1]
-        try:
-            completed = subprocess.run(
-                [*prefix, sys.executable, "-c", _DENIAL_PROBE, str(port), nonce],
-                check=False,
-                capture_output=True,
-                timeout=60,
-                env={"PATH": os.environ.get("PATH", ""), **_NETWORK_DENY},
-            )
-        except (OSError, subprocess.SubprocessError):
-            return _UNUSABLE
-        arrived = _accepted(listener)
+    handle, secret = tempfile.mkstemp(prefix="code-mower-containment-probe-")
+    try:
+        os.write(handle, secrets.token_hex(32).encode())
+    finally:
+        os.close(handle)
+    try:
+        with socket.socket() as listener:
+            try:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+            except OSError:  # pragma: no cover - a host that cannot listen on loopback
+                return _UNUSABLE
+            # The child connects and exits; the connection waits in the backlog
+            # until it is accepted below, so the accept order does not matter.
+            listener.settimeout(1)
+            port = listener.getsockname()[1]
+            try:
+                completed = subprocess.run(
+                    [*prefix, sys.executable, "-c", _CONTAINMENT_PROBE, str(port), secret, nonce],
+                    check=False,
+                    capture_output=True,
+                    timeout=60,
+                    env={"PATH": os.environ.get("PATH", ""), **_NETWORK_DENY},
+                )
+            except (OSError, subprocess.SubprocessError):
+                return _UNUSABLE
+            arrived = _accepted(listener)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(secret)
     # Before anything is read from the exit code: a run that cannot show its
     # child executed classifies as nothing at all. This is the control that
     # keeps "denied" from being the default answer for a launcher that never
     # started the probe.
     if not _ran_the_probe(completed.stdout, nonce):
         return _UNUSABLE
-    if arrived:
-        return _REACHED
-    if completed.returncode == _PROBE_REACHED:
-        # The child says it connected but nothing arrived here; treat the
-        # disagreement as a probe that proved nothing rather than as isolation.
+    observed = completed.returncode - _PROBE_BASE
+    if observed not in (0, 1, 2, 3):
         return _UNUSABLE
-    return _CONTAINED if completed.returncode == _PROBE_DENIED else _UNUSABLE
+    read_secret = bool(observed & _PROBE_READ_SECRET)
+    if arrived != bool(observed & _PROBE_REACHED_LISTENER):
+        # The child and the listener disagree about whether a connection
+        # happened; treat that as a probe that proved nothing.
+        return _UNUSABLE
+    if arrived and read_secret:
+        return _REACHED
+    if not arrived and not read_secret:
+        return _CONTAINED
+    # Exactly one boundary held. A mechanism that denies sockets while leaving
+    # the host filesystem readable is not the boundary this module claims, and
+    # accepting it is the defect this classification exists to refuse.
+    return _UNUSABLE
 
 
-def _sandbox_denies_network(prefix: Sequence[str]) -> bool:
-    """Watch a child under ``prefix`` fail to reach a socket that is really there."""
+def _prefix_confines(prefix: Sequence[str]) -> bool:
+    """Watch a child under ``prefix`` fail to reach either thing that is really there."""
     return _classify_probe(prefix) == _CONTAINED
 
 
-def _probe_network_sandbox() -> tuple[str, ...] | None:
+def _interpreter_read_paths() -> tuple[str, ...]:
+    """The minimum a probe child needs to be a running Python at all."""
+    return tuple(
+        path
+        for path in (os.path.realpath(sys.executable), sys.prefix, sys.base_prefix)
+        if path
+    )
+
+
+def _probe_containment() -> Containment | None:
     if not sys.executable:  # pragma: no cover - a frozen interpreter cannot probe
         return None
-    # The control, first: a child with no prefix must reach the listener. If it
-    # cannot -- no probe interpreter, loopback blocked, sockets unavailable --
-    # then "could not connect" proves nothing about any candidate, and every
-    # candidate would pass for a boundary. Refuse the whole probe instead.
+    # The control, first: a child with no prefix must reach the listener *and*
+    # read the planted secret. If it cannot -- no probe interpreter, loopback
+    # blocked, an unreadable temporary directory -- then "could not" proves
+    # nothing about any candidate, and every candidate would pass for a
+    # boundary. Refuse the whole probe instead.
     if _classify_probe(()) != _REACHED:
         return None
-    for candidate in _SANDBOX_CANDIDATES:
-        launcher = _launcher_path(candidate[0])
-        if launcher is None:
-            continue
-        prefix = (launcher, *candidate[1:])
-        if _sandbox_denies_network(prefix):
-            return prefix
+    readable = _interpreter_read_paths()
+    with tempfile.TemporaryDirectory(prefix="code-mower-containment-") as scratch:
+        for name, path in _SANDBOX_CANDIDATES:
+            launcher = _trusted_launcher(path)
+            if launcher is None:
+                continue
+            mechanism = Containment(name=name, launcher=launcher)
+            prefix = _prefix_for(mechanism, writable=(scratch,), readable=readable)
+            if _prefix_confines(prefix):
+                return mechanism
     return None
 
 
-def network_sandbox_command() -> tuple[str, ...] | None:
-    """The argv prefix that denies a provider process the network, if any.
+def containment_mechanism() -> Containment | None:
+    """The isolation mechanism this host was observed providing, if any.
 
     Probed once per process and cached, because the answer is a property of the
     host rather than of a build. ``None`` means this host offers no mechanism
-    this build could *observe* working, and a build refuses rather than running
-    a provider it cannot contain.
+    this build could *observe* denying a child both the network and the host
+    filesystem, and a build refuses rather than running a provider it cannot
+    contain.
     """
-    global _sandbox_prefix, _sandbox_probed
-    if not _sandbox_probed:
-        _sandbox_prefix = _probe_network_sandbox()
-        _sandbox_probed = True
-    return _sandbox_prefix
+    global _containment, _containment_probed
+    if not _containment_probed:
+        _containment = _probe_containment()
+        _containment_probed = True
+    return _containment
+
+
+def containment_prefix(
+    *,
+    writable: Sequence[Path | str],
+    readable: Sequence[Path | str],
+) -> tuple[str, ...]:
+    """The argv prefix confining a child to ``writable`` plus a read-only runtime."""
+    mechanism = containment_mechanism()
+    if mechanism is None:
+        raise ContextError(
+            "local graph builds need an OS sandbox that denies the provider the network and "
+            "the host filesystem; this host offers none that could be verified"
+        )
+    return _prefix_for(mechanism, writable=writable, readable=readable)
 
 
 def _object_name(value: Any) -> str:
@@ -913,6 +1147,12 @@ class IndexRequest:
     pin: GraphifyPin
     commit: str
     tree: str
+    #: The scratch directories the provider may write to besides the copy --
+    #: the redirected ``HOME`` and ``TMPDIR``. Named here rather than inferred
+    #: because they are also exactly what the filesystem boundary exposes: a
+    #: directory the environment points at but the sandbox does not expose is a
+    #: provider that cannot start.
+    writable: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -939,6 +1179,25 @@ def _resolved_executable(executable: str) -> str:
     if any(separator in executable for separator in separators):
         return str(Path(executable).resolve())
     return executable
+
+
+def _provider_read_paths(command: str) -> tuple[str, ...]:
+    """The install the pinned provider needs to be readable, and nothing beside it.
+
+    A console script is one file in a virtual environment whose libraries live
+    beside it, so the environment root -- the executable's grandparent -- is
+    what has to be exposed, plus the base interpreter it was created from. An
+    executable this process cannot even locate is refused here rather than
+    exposed as a guess: the alternative is a boundary drawn around a path that
+    is not where the provider is.
+    """
+    located = command if os.path.isabs(command) else shutil.which(command)
+    if not located:
+        raise ContextError("local graph provider executable could not be located for containment")
+    real = Path(os.path.realpath(located))
+    return tuple(
+        str(path) for path in (real, real.parent, real.parent.parent, Path(sys.base_prefix))
+    )
 
 
 #: The subcommand the evaluated release exposes, recorded in
@@ -1282,6 +1541,18 @@ def _terminate_process_group(child: subprocess.Popen[bytes], group: int | None) 
     _signal_group(group, signal.SIGKILL)
     if leader_running:
         _reap(child)
+    # Sending the signal is not the same as the group being gone, and the
+    # caller's next act is to pack or delete the state these processes are
+    # writing. ``SIGKILL`` is not refusable, so this waits on the kernel rather
+    # than on a cooperating child -- but a process stuck in uninterruptible
+    # sleep can still outlive it, and a group that cannot be established as
+    # empty fails the build instead of being assumed gone.
+    _await_group_exit(group, _REAP_TIMEOUT_SECONDS)
+    if not _group_is_empty(group):
+        raise ContextError(
+            "local graph provider left processes running that could not be stopped; "
+            "no generation was published"
+        )
 
 
 def _reap(child: subprocess.Popen[bytes]) -> None:
@@ -1362,15 +1633,23 @@ def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]
     behind is then collected and classified from its own report.
     """
     command = _resolved_executable(executable)
-    sandbox = network_sandbox_command()
-    if sandbox is None:
+    if containment_mechanism() is None:
         raise ContextError(
-            "local graph builds need an OS sandbox that denies the provider network access; "
-            "this host offers none that could be verified"
+            "local graph builds need an OS sandbox that denies the provider the network and "
+            "the host filesystem; this host offers none that could be verified"
         )
+    runtime = _provider_read_paths(command)
 
     def run(request: IndexRequest) -> IndexResult:
         _refuse_pre_existing_provider_state(request.source_root)
+        # Built per run, because the boundary is a function of what this build
+        # exposes: the materialized copy and the build's own scratch areas are
+        # writable, the pinned provider's install is readable, and nothing else
+        # on this host is in the child's filesystem view at all.
+        sandbox = containment_prefix(
+            writable=(request.source_root, *request.writable),
+            readable=runtime,
+        )
         # Normalized again at the point of launch, not because the pin could
         # arrive without the restrictions -- it cannot -- but because this is
         # the line that decides what the provider is actually asked to do, and
@@ -1514,13 +1793,48 @@ def workspace_id(repository: Path) -> str:
     return hashlib.sha256(str(Path(repository).resolve()).encode()).hexdigest()[:32]
 
 
-def _open_private_directory(path: Path, *, create: bool) -> int:
-    if create:
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+#: What a missing component means to a walk: create it, stop there, or refuse.
+_MISSING_CREATE = "create"
+_MISSING_STOP = "stop"
+_MISSING_REFUSE = "refuse"
+
+
+def _open_private_at(parent: int | None, name: str, *, missing: str, private: bool = True) -> int | None:
+    """Open one directory *relative to a descriptor*, following nothing.
+
+    ``parent`` is the descriptor the name is resolved against, so the kernel
+    resolves exactly one component and ``O_NOFOLLOW`` covers all of it. That is
+    the difference between checking a path and traversing one: a path opened by
+    its full spelling is re-resolved from the root every time, and any ancestor
+    may have become a symlink since it was last looked at.
+
+    ``mkdir`` runs against the same descriptor for the same reason. Creating
+    with ``parents=True`` from a full path would follow an ancestor that became
+    a symlink between the check and the creation -- the state-root defect this
+    replaces -- and no later check on the leaf can see that it happened.
+    """
+    if missing == _MISSING_CREATE:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent)
+        except FileExistsError:
+            pass
+        except OSError:
+            raise ContextError("local graph state directory is unavailable or unsafe") from None
     try:
-        handle = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError:
+        handle = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    except FileNotFoundError:
+        if missing == _MISSING_STOP:
+            return None
         raise ContextError("local graph state directory is unavailable or unsafe") from None
+    except OSError:
+        # ``ELOOP`` lands here: the component is a symlink, and a symlink is
+        # not a directory this class owns however private its target may be.
+        raise ContextError("local graph state directory is unavailable or unsafe") from None
+    if not private:
+        # An ancestor *above* the operator's private root: this class does not
+        # own its mode and must not judge it. What matters there is only that
+        # it was traversed as a directory rather than through a link.
+        return handle
     try:
         _private(handle, directory=True)
     except ContextError:
@@ -1577,15 +1891,83 @@ class GraphStateRoot:
         """
         return self.path.parent / f"{self.workspace}.lock"
 
+    #: The components this class owns below the canonical base, outermost
+    #: first. Spelled out one at a time because each is created and opened
+    #: against its parent's descriptor: ``mkdir(parents=True)`` would both
+    #: apply ``0o700`` to the leaf only -- leaving intermediates at the process
+    #: umask -- and follow an ancestor that became a symlink in between.
     @property
-    def _chain(self) -> tuple[Path, ...]:
-        """Every directory this class owns, outermost first.
+    def _components(self) -> tuple[str, ...]:
+        return ("graph", self.workspace, "generations")
 
-        Spelled out because ``mkdir(mode=0o700, parents=True)`` applies its mode
-        to the leaf only: intermediate directories would be created with the
-        process umask and end up group- or world-readable.
+    def _create_base(self) -> None:
+        """Create the private root itself, one no-follow component at a time.
+
+        The root an operator names may not exist yet, ancestors and all, and
+        creating it is what a first build does. ``mkdir(parents=True)`` cannot
+        be what does it: a path component that does not exist *cannot* be
+        canonicalized at construction, so a component created as a symlink
+        afterwards -- pointing into a repository, say -- would be followed by
+        the recursive creation, and the state would land somewhere no check
+        ever looked at. So the walk starts at the deepest component that really
+        exists and creates each missing one against its parent's descriptor:
+        the components above the root are not judged for privacy, which is not
+        this class's business, but none of them is traversed through a link.
         """
-        return (self.path.parent.parent, self.path.parent, self.path, self.generations_path)
+        existing = self.base
+        pending: list[str] = []
+        while not existing.exists() and existing != existing.parent:
+            pending.append(existing.name)
+            existing = existing.parent
+        handle = _open_private_at(None, str(existing), missing=_MISSING_REFUSE, private=False)
+        if handle is None:  # pragma: no cover - _MISSING_REFUSE raises instead
+            return
+        try:
+            for name in reversed(pending):
+                deeper = _open_private_at(
+                    handle, name, missing=_MISSING_CREATE, private=False
+                )
+                if deeper is None:  # pragma: no cover - creation returns a handle
+                    return
+                os.close(handle)
+                handle = deeper
+        finally:
+            os.close(handle)
+
+    def _walk(self, *, depth: int, missing: str) -> int:
+        """Descend the owned components from the base, one descriptor at a time.
+
+        Returns the deepest descriptor reached; the caller closes it. With
+        ``missing=_MISSING_STOP`` a component that does not exist ends the walk
+        rather than failing it, which is what a read of state that was never
+        built needs. Nothing below a component that failed its privacy check is
+        ever opened, because there is no descriptor left to open it against.
+        """
+        if missing == _MISSING_CREATE:
+            self._create_base()
+        opened = _open_private_at(
+            None,
+            str(self.base),
+            missing=_MISSING_STOP if missing == _MISSING_STOP else _MISSING_REFUSE,
+        )
+        if opened is None:
+            return -1
+        handle = opened
+        try:
+            for component in self._components[:depth]:
+                deeper = _open_private_at(handle, component, missing=missing)
+                if deeper is None:
+                    return handle
+                os.close(handle)
+                handle = deeper
+        except BaseException:
+            os.close(handle)
+            raise
+        return handle
+
+    def _close_walk(self, handle: int) -> None:
+        if handle >= 0:
+            os.close(handle)
 
     def verify_private(self, *, create: bool = False) -> None:
         """Re-check ownership and mode on every directory this class owns.
@@ -1595,9 +1977,8 @@ class GraphStateRoot:
         chmod -- must fail closed rather than be trusted because it was private
         when it was written.
         """
-        for directory in self._chain:
-            if create or directory.exists():
-                os.close(_open_private_directory(directory, create=create))
+        missing = _MISSING_CREATE if create else _MISSING_STOP
+        self._close_walk(self._walk(depth=len(self._components), missing=missing))
 
     def ensure(self) -> None:
         """Create the private tree, refusing to place state inside a repository."""
@@ -1609,26 +1990,34 @@ class GraphStateRoot:
 
         A lexical walk alone reads ``--state-dir /outside/link/state`` as being
         outside every repository even when ``/outside/link`` points at
-        ``/repo/subdir``, and the ``O_NOFOLLOW`` opens elsewhere would not catch
-        it either: they protect the final component of each directory this class
-        owns, not an ancestor somebody else created. The path walked here is the
-        canonical one built in ``__init__``, which is also the one every write
-        goes through, so this check cannot be satisfied by one directory and
-        then applied to another.
+        ``/repo/subdir``. The path walked here is the canonical one built in
+        ``__init__``, so a symlinked ancestor that exists now is resolved before
+        it is judged.
+
+        An ancestor that does *not* exist yet cannot be resolved by anybody, and
+        this check alone would miss a component created as a symlink afterwards.
+        That case is answered by construction rather than by re-checking: every
+        component below the base is created and opened against its parent's
+        descriptor with ``O_NOFOLLOW``, so a component that is a symlink when
+        the build reaches it is refused outright instead of traversed. The two
+        together leave no window: what exists is resolved, and what does not
+        exist yet can only be created here, by this process, as a real
+        directory.
         """
         if any((parent / ".git").exists() for parent in (self.path, *self.path.parents)):
             raise ContextError("local graph state must stay outside Git repositories")
 
-    def _ensure_lock_directory(self) -> None:
+    def _ensure_lock_directory(self) -> int:
         """Create only what the lock file needs, not the generations tree.
 
         ``remove`` takes the same lock, and a removal that first created the
         state it was asked to delete would report success for a tree it made
-        itself.
+        itself. Returns the descriptor of the directory the lock file lives in,
+        so the lock is opened relative to the directory that was just checked
+        rather than re-resolved from the root.
         """
         self._refuse_state_inside_a_repository()
-        for directory in self._chain[:2]:
-            os.close(_open_private_directory(directory, create=True))
+        return self._walk(depth=1, missing=_MISSING_CREATE)
 
     def lock(self):
         """Serialize builds *and removals* for one checkout.
@@ -1639,8 +2028,19 @@ class GraphStateRoot:
         mutate state for one checkout is serialized rather than just the pair
         that was obviously racy.
         """
-        self._ensure_lock_directory()
-        handle = os.open(self.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        parent = self._ensure_lock_directory()
+        try:
+            handle = os.open(
+                self.lock_path.name,
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent,
+            )
+        finally:
+            # The lock file is opened against the descriptor the walk verified,
+            # so the directory it lands in is the directory that was checked
+            # and not whatever that path spells by the time this line runs.
+            self._close_walk(parent)
         stream = os.fdopen(handle, "a+", encoding="utf-8")
         try:
             _private(stream.fileno())
@@ -1684,7 +2084,9 @@ class GraphStateRoot:
         if not _GENERATION.fullmatch(generation):
             raise ContextError("local graph generation must be an opaque identifier")
         directory = self.generations_path / generation
-        os.close(_open_private_directory(directory, create=False))
+        handle = _open_private_at(None, str(directory), missing=_MISSING_REFUSE)
+        if handle is not None:  # _MISSING_REFUSE raises rather than returning None
+            os.close(handle)
         try:
             handle = os.open(directory / MANIFEST_NAME, os.O_RDONLY | os.O_NOFOLLOW)
         except OSError:
@@ -1918,6 +2320,10 @@ def build_graph(
                     pin=pin,
                     commit=commit,
                     tree=tree,
+                    # The same two directories the scrubbed environment points
+                    # at, so what the provider is told to use and what it is
+                    # allowed to write are one decision rather than two.
+                    writable=(home, temporary),
                 )
             )
             if not isinstance(result, IndexResult) or result.completeness not in (COMPLETE, PARTIAL):
@@ -2101,15 +2507,16 @@ def doctor_report(
         # host cannot contain a provider is worth knowing before a build
         # refuses, and the check reports the mechanism rather than its
         # arguments, which would be noise.
-        sandbox = network_sandbox_command()
-        if sandbox is None:
+        mechanism = containment_mechanism()
+        if mechanism is None:
             record("context-graph-isolation", "fail",
-                   "no OS sandbox on this host was observed denying a child process the network; "
-                   "builds will refuse")
+                   "no OS sandbox on this host was observed denying a child process both the "
+                   "network and the host filesystem; builds will refuse")
         else:
             record("context-graph-isolation", "pass",
-                   "the provider would run inside a network-denying OS sandbox",
-                   mechanism=os.path.basename(sandbox[0]))
+                   "the provider would run inside a sandbox that denies it the network and "
+                   "everything outside the build's own directories",
+                   mechanism=mechanism.name)
 
     state = GraphStateRoot(repository, root=root)
     if not state.path.exists():
@@ -2174,6 +2581,7 @@ __all__: Sequence[str] = (
     "ARTIFACT_NAME",
     "BuildManifest",
     "COMPLETE",
+    "Containment",
     "EXTRACTION_TIMEOUT_SECONDS",
     "GenerationStatus",
     "GraphStateRoot",
@@ -2189,6 +2597,8 @@ __all__: Sequence[str] = (
     "TrackedCensus",
     "TrackedEntry",
     "build_graph",
+    "containment_mechanism",
+    "containment_prefix",
     "doctor_report",
     "git_environment",
     "graph_status",

@@ -100,31 +100,50 @@ again — otherwise a healthy refresh would surface as `invalid` or `corrupt`. A
 verdict about the generation `current` still names is returned as it stands; the
 retry is for a moved pointer, not a poll.
 
-## The network boundary
+## The containment boundary
 
 An environment variable is a request, not a boundary: `NO_PROXY=*` asks a
 cooperating client to connect *directly*, and on a host with internet access an
-uncooperative provider is unaffected by any of it. So the provider is launched
-behind an argv prefix that denies it sockets at the operating-system level —
-`sandbox-exec` on macOS, `bwrap --unshare-net` or an unprivileged network
-namespace via `unshare --net` on Linux.
+uncooperative provider is unaffected by any of it. A working directory is not a
+boundary either: pointing a provider at the materialized copy does not stop it
+reading the checkout next door. So the provider is launched behind an argv
+prefix that denies it, at the operating-system level, both the network and
+every path outside the build's own directories — `sandbox-exec` with a
+`(deny default)` profile on macOS, `bwrap` with an empty new root on Linux.
 
-No mechanism is trusted on its name. Each candidate is accepted only after a
-probe child launched behind it has been *observed* failing to reach a TCP
-listener this process is really holding open on loopback. The verdict is taken
-at the listener, not from the child's errno: a network namespace brings up its
-own loopback, so a correctly contained child sees the same `ECONNREFUSED` that
-an unconfined child sees from an unused host port. Those two are
-indistinguishable at the child and obvious at the listener, which either
-accepted a connection or did not. A candidate passes only when the child
-reported that it could not connect *and* nothing arrived, so a launcher that
-never started its child cannot pass for a boundary.
+What the child can see is the whole of it: the materialized copy and the
+build's redirected `HOME` and `TMPDIR`, writable; the pinned provider's own
+install and the system runtime it needs to start, read-only. The operator's
+home, their other checkouts, and every ignored `.env` beside them are not
+unreadable — they are absent. `unshare --net` used to be a candidate and is
+gone: it denies the network and leaves the host filesystem in place, which is
+half a boundary.
 
-An unsandboxed control child runs first and must reach the listener. If it
-cannot — no probe interpreter, loopback unavailable — then "could not connect"
-proves nothing about any candidate, every candidate would pass, and the probe
-refuses outright instead. The result is cached for the process, since it is a
-property of the host.
+No mechanism is trusted on its name, and none is looked up on `PATH`: each
+candidate is an absolute path whose file and every ancestor directory must be
+owned by root or by this user and unwritable by anyone else, because a launcher
+somebody else can replace is a verdict somebody else can forge.
+
+A candidate is accepted only after a probe child launched behind it has been
+*observed* failing at both halves: failing to reach a TCP listener this process
+is really holding open on loopback, and failing to read a secret file planted
+outside its exposure. The network verdict is taken at the listener, not from
+the child's errno: a network namespace brings up its own loopback, so a
+correctly contained child sees the same `ECONNREFUSED` that an unconfined child
+sees from an unused host port. Those two are indistinguishable at the child and
+obvious at the listener, which either accepted a connection or did not. A child
+that fails one half and not the other is not a boundary; it classifies as
+unusable.
+
+The child also prints a digest of a nonce generated for that run, so a launcher
+that never started its child cannot pass for a boundary by exiting with the
+contained code.
+
+An unsandboxed control child runs first and must reach the listener *and* read
+the planted secret. If it cannot — no probe interpreter, loopback unavailable —
+then "could not" proves nothing about any candidate, every candidate would
+pass, and the probe refuses outright instead. The result is cached for the
+process, since it is a property of the host.
 
 A host where no candidate passes gets no build. `subprocess_indexer()` raises
 before a single blob is materialized, and `context-graph doctor` reports the
@@ -134,10 +153,11 @@ operator who cannot contain a third-party indexer is better served by knowing
 it than by a build that quietly could have reached the network.
 
 A Linux host that restricts unprivileged user namespaces — Ubuntu 24.04 and
-GitHub's hosted runners among them — offers no mechanism by default, and both
-`unshare` and `bwrap` fail there. Installing bubblewrap (`apt install
-bubblewrap`), which ships an AppArmor profile permitting the namespaces it
-needs, is the least invasive way to give such a host one. The alternative is to
+GitHub's hosted runners among them — offers no mechanism by default. Installing
+bubblewrap (`apt install bubblewrap`), which ships an AppArmor profile
+permitting the namespaces it needs, is the least invasive way to give such a
+host one, and is what the `graph containment` CI job does before running these
+tests for real rather than skipping them. The alternative is to
 lift the restriction system-wide
 (`sysctl kernel.apparmor_restrict_unprivileged_userns=0`), which is a decision
 about the whole machine rather than about this build, and not one this

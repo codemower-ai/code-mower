@@ -89,6 +89,37 @@ jobs:
           --timeout 240
           --json
 
+  graph_containment:
+    # The local-graph boundary, against the real kernel mechanism rather than a
+    # stand-in for one. The unit suite skips these when a host offers no
+    # mechanism, which is right for a laptop and useless as coverage: this job
+    # installs bubblewrap and sets CODE_MOWER_REQUIRE_CONTAINMENT, which turns
+    # that skip into a failure.
+    name: graph containment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          test -x /usr/bin/bwrap
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Real containment tests
+        env:
+          CODE_MOWER_REQUIRE_CONTAINMENT: "1"
+        run: python -m unittest discover -s tests -p test_context_graph_lifecycle.py -v
+
   package:
     name: package
     runs-on: ubuntu-latest
