@@ -45,13 +45,18 @@ class Provider(Protocol):
 class DevinProvider:
     name = "devin"
 
-    def __init__(self, client: DevinClient):
+    def __init__(self, client: DevinClient, *, completion_schema: dict | None = None):
+        self.completion_schema = completion_schema
         self.client = client
         self.account = client.org_id
 
     def create(self, prompt, repo, limit, checkpoint):
+        payload = create_payload(prompt, repositories=(repo,), max_acu_limit=limit)
+        if self.completion_schema is not None:
+            payload.update(structured_output_required=True,
+                           structured_output_schema=self.completion_schema)
         return self.client.create(
-            create_payload(prompt, repositories=(repo,), max_acu_limit=limit),
+            payload,
             checkpoint=lambda attempt: checkpoint(asdict(attempt)),
         )
 
@@ -67,6 +72,9 @@ class DevinProvider:
 
     def cancel(self, binding):
         return self.client.terminate(binding)
+
+    def usage(self, binding):
+        return self.client.session_acu(binding)
 
 
 class FakeProvider:
@@ -162,6 +170,16 @@ class RemoteSessions:
         self.store = ContextStore(root)
         self.provider = provider
 
+    def observed_acu(self, session: str) -> float | None:
+        """Read billing metadata for the durable binding, never completion assertions."""
+        with self.store.locked(_key(session)) as locked:
+            record = locked.read()
+            if (not record or record.get("provider") != self.provider.name
+                    or record.get("account") != self.provider.account or not record.get("binding")):
+                raise RemoteError("binding_mismatch")
+            usage = getattr(self.provider, "usage", None)
+            return _call(usage, record["binding"]) if usage else None
+
     def private_result(self, session: str) -> dict | None:
         """Explicit local consumer seam. NEVER pass this value to telemetry adapters."""
         key = _key(session)
@@ -253,6 +271,10 @@ class RemoteSessions:
                         if len(record["operations"]) >= 128:
                             raise RemoteError("request_limit_reached")
                         record["operations"][opkey] = {"state": "pending", "fingerprint": fingerprint}
+                        if command == "message":
+                            # A resumed writer invalidates all previously collected completion data.
+                            record["counts"]["collect"] = 0
+                            locked.artifact(key).delete()
                         locked.write(record)
                         if command == "message":
                             _call(self.provider.message, record["binding"], prose)
