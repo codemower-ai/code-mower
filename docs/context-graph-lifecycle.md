@@ -131,6 +131,13 @@ as the complete list of permitted transports. `protocol.allow=never` travels on
 the command line because that is the only level that outranks the repository's
 own `.git/config`, which belongs to the untrusted checkout and is always read.
 
+The same environment carries `GIT_NO_REPLACE_OBJECTS=1`. A `refs/replace` entry
+substitutes one object's bytes for another's on every ordinary read, so without
+it a census and a materialization could bind content the commit and tree the
+manifest records do not contain — and removing the replacement afterwards would
+leave `status` still reporting `current`, because staleness is decided by
+comparing object names.
+
 That still leaves the repository *shape* that makes a read reach out at all, so
 **a build refuses a partial clone outright**. Where `extensions.partialclone` or
 a promisor remote is configured, `ls-tree` and `cat-file` can fetch a missing
@@ -224,6 +231,16 @@ tracked-content budget nor the artifact one. Inheriting them is not the
 alternative: diagnostics can echo indexed source, and the process that launched
 the build may be writing a machine-readable report to its own stdout.
 
+**Extraction runs in its own process group, and a run that overruns is stopped
+as a group.** The adapter waits on the child itself rather than handing the run
+to `subprocess.run`, whose timeout kills only the immediate child: an indexer
+that started workers — and under a launcher such as `sandbox-exec` the direct
+child is the launcher, not the indexer — would otherwise leave them running,
+still holding CPU and still writing into a scratch directory the build deletes
+as soon as it reports the failure. The group gets `SIGTERM`, a short grace
+period, then `SIGKILL`, and the timeout is reported only once nothing is left
+running. A new session is safe here precisely because no stream is inherited.
+
 The subcommand, the state-directory names, and the report counters are constants
 in one place in `context_graph_lifecycle.py`. They encode the interface as the
 evaluation recorded it; the first installation against a real pinned release
@@ -296,6 +313,9 @@ marker, or a distribution without an artifact digest:
 `options` is optional and may name extra provider flags, such as
 `--max-workers`. The two restrictions above are added whether or not the file
 lists them; listing them changes nothing, and contradicting them is refused.
+The list is bounded, and the bound is counted on the options as they will
+actually run — the two required flags included — so a pin that passes validation
+always round-trips through the manifest it is recorded in.
 
 `--indexer` is the path to a provider CLI the operator has **already**
 installed. This repository does not download, install, or resolve one, which is

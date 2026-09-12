@@ -43,6 +43,7 @@ import os
 import re
 import io
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -254,6 +255,15 @@ _REQUIRED_EXTRACT_OPTIONS = ("--code-only", "--no-cluster")
 #: refused rather than silently overridden by argument order.
 _CONFLICTING_EXTRACT_OPTIONS = frozenset({"--cluster", "--no-code-only"})
 
+#: How many options an extraction may carry, counted on the normalized tuple --
+#: the one the launcher passes and the manifest records -- rather than on what a
+#: pin file happened to spell. Counting the raw list instead would let a pin
+#: pass validation and then normalize into a value its own ``as_metadata`` could
+#: no longer be read back through: a build could publish a generation whose
+#: manifest is rejected the moment anything reloads it, pruning the last usable
+#: generation in favour of one nothing can read.
+MAX_EXTRACT_OPTIONS = 16
+
 
 def _extraction_options(options: Iterable[str]) -> tuple[str, ...]:
     """The options every extraction runs with: the required ones, then the pin's.
@@ -263,6 +273,11 @@ def _extraction_options(options: Iterable[str]) -> tuple[str, ...]:
     still launches a restricted run. They are prepended into the pin itself
     rather than added at the call site, so the manifest records what actually
     ran instead of what was asked for.
+
+    The result is a fixed point: the required flags are dropped from the input
+    wherever they appear and re-prepended exactly once, so normalizing an
+    already-normalized tuple returns it unchanged and a pin round-trips through
+    ``as_metadata`` and :func:`load_pin` without changing length or meaning.
     """
     extra: list[str] = []
     for option in options:
@@ -279,7 +294,10 @@ def _extraction_options(options: Iterable[str]) -> tuple[str, ...]:
                 )
             continue
         extra.append(option)
-    return (*_REQUIRED_EXTRACT_OPTIONS, *extra)
+    normalized = (*_REQUIRED_EXTRACT_OPTIONS, *extra)
+    if len(normalized) > MAX_EXTRACT_OPTIONS:
+        raise ContextError("local graph provider options must be a bounded list")
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -328,7 +346,10 @@ def load_pin(source: Mapping[str, Any]) -> GraphifyPin:
     if not isinstance(version, str) or not _VERSION.fullmatch(version):
         raise ContextError("local graph provider pin must name one exact released version")
     options = source.get("options", [])
-    if not isinstance(options, list) or len(options) > 16:
+    # A cheap guard on the untrusted list before any of it is copied; the
+    # binding bound is applied to the normalized tuple in ``_extraction_options``
+    # below, which is what the launcher and the manifest actually carry.
+    if not isinstance(options, list) or len(options) > MAX_EXTRACT_OPTIONS:
         raise ContextError("local graph provider options must be a bounded list")
     return GraphifyPin(
         distribution=_identifier(source.get("distribution")),
@@ -388,6 +409,13 @@ def git_environment() -> dict[str, str]:
     partial clone fetching a missing object mid-read, and an empty
     ``GIT_ALLOW_PROTOCOL`` leaves no transport on the allowlist, so a fetch
     that was somehow attempted anyway has nothing to attempt it over.
+
+    ``GIT_NO_REPLACE_OBJECTS`` is the third: a ``refs/replace`` entry in the
+    checkout substitutes one object's bytes for another's on every read, so a
+    census and a materialization would bind content that the commit and tree
+    this manifest records do not contain. Deleting the replacement afterwards
+    would leave ``graph_status`` reporting ``current`` for a graph of bytes
+    that revision never had, because it compares object names and nothing else.
     """
     environment = dict(_NETWORK_DENY)
     for name in _ENVIRONMENT_ALLOWLIST:
@@ -400,6 +428,7 @@ def git_environment() -> dict[str, str]:
         GIT_ATTR_NOSYSTEM="1",
         GIT_OPTIONAL_LOCKS="0",
         GIT_NO_LAZY_FETCH="1",
+        GIT_NO_REPLACE_OBJECTS="1",
         # An empty allowlist, not an absent one: git treats the variable as the
         # complete set of permitted transports, so "" permits none.
         GIT_ALLOW_PROTOCOL="",
@@ -922,6 +951,109 @@ def _pack_state(state_directory: Path) -> bytes:
     return buffer.getvalue()
 
 
+#: How long one extraction may run. A bound on the wall clock a build can cost,
+#: not a guess at how long a real one takes.
+EXTRACTION_TIMEOUT_SECONDS = 900
+
+#: How long a timed-out provider group is given to exit on its own terms before
+#: the group is killed outright. Short: the run has already exceeded its whole
+#: time budget, and the caller is about to delete the directory these processes
+#: are writing into.
+_TERMINATION_GRACE_SECONDS = 5.0
+
+#: How long to wait for a killed process to be reaped. ``SIGKILL`` is not
+#: refusable, so this bounds a wait on the kernel rather than on the child.
+_REAP_TIMEOUT_SECONDS = 10.0
+
+
+def _signal_group(group: int, number: int) -> None:
+    try:
+        os.killpg(group, number)
+    except OSError:
+        # Already gone, or never ours to signal. Either way there is nothing
+        # left to stop, and a failure here must not mask the timeout.
+        pass
+
+
+def _terminate_process_group(child: subprocess.Popen[bytes]) -> None:
+    """Stop a timed-out provider and everything it started.
+
+    ``subprocess.run``'s own timeout kills the immediate child only. A provider
+    that forks workers -- and under a launcher such as ``sandbox-exec`` the
+    process that is signalled may be the launcher rather than the indexer --
+    would leave those workers running, still holding CPU and still writing into
+    a scratch directory the build is about to delete. The child leads its own
+    session, so one signal to its group reaches every descendant that has not
+    deliberately left it.
+    """
+    try:
+        group = os.getpgid(child.pid)
+    except OSError:
+        group = None
+    if group is None or group == os.getpgid(0):
+        # The child never reached a group of its own. Kill what can be named
+        # directly rather than signalling the group this process is in.
+        child.kill()
+        _reap(child)
+        return
+    _signal_group(group, signal.SIGTERM)
+    try:
+        child.wait(timeout=_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+    # Unconditionally, and after the direct child has been waited for: that one
+    # exiting says nothing about workers it started, and this is the last moment
+    # anything can stop them.
+    _signal_group(group, signal.SIGKILL)
+    _reap(child)
+
+
+def _reap(child: subprocess.Popen[bytes]) -> None:
+    try:
+        child.wait(timeout=_REAP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:  # pragma: no cover - a killed child is reapable
+        pass
+
+
+def _run_contained(
+    argv: Sequence[str],
+    *,
+    environment: Mapping[str, str],
+    cwd: str,
+    timeout: float,
+) -> int:
+    """Run one child in its own process group, killing the group on timeout.
+
+    Raises :class:`subprocess.TimeoutExpired` once the group has been stopped,
+    so a caller reports the timeout only after there is nothing left running.
+    """
+    with subprocess.Popen(  # noqa: S603 - argv is a resolved executable and validated options
+        list(argv),
+        # Neither stream is read, and neither may be buffered: a provider that
+        # logs its progress would otherwise accumulate unbounded output in this
+        # process for up to the timeout, outside both the tracked-content and
+        # artifact budgets. The streams are discarded at the kernel rather than
+        # inherited, because provider diagnostics can echo indexed source and
+        # this process may be writing a machine-readable report. ``stdin`` goes
+        # the same way: the child has no operator to prompt.
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=dict(environment),
+        cwd=cwd,
+        # A new session, so the child leads a process group that can be
+        # signalled as a unit and that this process is not a member of. Safe
+        # only because no stream is inherited: nothing here needs a controlling
+        # terminal.
+        start_new_session=True,
+    ) as child:
+        try:
+            return child.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(child)
+            raise
+
+
 def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]:
     """Run a pinned provider CLI over the materialized copy, without a network.
 
@@ -954,27 +1086,21 @@ def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]
         # it should be readable here without trusting a constructor elsewhere.
         options = _extraction_options(request.pin.options)
         try:
-            completed = subprocess.run(
+            returncode = _run_contained(
                 [*sandbox, command, _PROVIDER_EXTRACT, *options],
-                check=False,
-                # Neither stream is read, and neither may be buffered: a
-                # provider that logs its progress would otherwise accumulate
-                # unbounded output in this process for up to the timeout,
-                # outside both the tracked-content and artifact budgets. The
-                # streams are discarded at the kernel rather than inherited,
-                # because provider diagnostics can echo indexed source and this
-                # process may be writing a machine-readable report. ``stdin``
-                # goes the same way: the child has no operator to prompt.
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=dict(request.environment),
+                environment=request.environment,
                 cwd=str(request.source_root),
-                timeout=900,
+                timeout=EXTRACTION_TIMEOUT_SECONDS,
             )
+        except subprocess.TimeoutExpired:
+            # Raised only once the whole process group has been stopped, so the
+            # caller may delete the scratch directory without racing a worker.
+            raise ContextError(
+                "local graph provider exceeded its time budget; no generation was published"
+            ) from None
         except (OSError, subprocess.SubprocessError):
             raise ContextError("local graph provider could not be run from its pinned install") from None
-        if completed.returncode != 0:
+        if returncode != 0:
             raise ContextError("local graph provider failed; no generation was published")
         state_directory = _provider_state_directory(request.source_root)
         result = _read_completeness(_provider_report(state_directory))
@@ -1723,6 +1849,7 @@ __all__: Sequence[str] = (
     "ARTIFACT_NAME",
     "BuildManifest",
     "COMPLETE",
+    "EXTRACTION_TIMEOUT_SECONDS",
     "GenerationStatus",
     "GraphStateRoot",
     "GraphifyPin",
@@ -1731,6 +1858,7 @@ __all__: Sequence[str] = (
     "MANIFEST_SCHEMA",
     "MAX_ARTIFACT_BYTES",
     "MAX_ARTIFACT_ENTRIES",
+    "MAX_EXTRACT_OPTIONS",
     "MAX_TRACKED_FILES",
     "PARTIAL",
     "TrackedCensus",

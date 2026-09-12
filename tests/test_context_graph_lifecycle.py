@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,6 +79,41 @@ def make_repository(root: Path) -> Path:
     (repository / "scratch" / "notes.txt").write_text("private working note\n", encoding="utf-8")
     (repository / "untracked-secret.env").write_text("TOKEN=not-a-real-secret\n", encoding="utf-8")
     return repository
+
+
+class FakeChild:
+    """Enough of ``subprocess.Popen`` to stand in for the provider process.
+
+    The adapter no longer hands the run to ``subprocess.run``: it opens the
+    child itself so the child can lead its own process group and the whole
+    group can be stopped if the run overruns. A stand-in is therefore a context
+    manager that gets waited on, and a ``CompletedProcess`` no longer describes
+    what the launch produces.
+
+    ``pid`` is deliberately never a live process. A stand-in that carried a real
+    pid -- this process's own, say -- would have a test signalling a process
+    group it is itself a member of.
+    """
+
+    def __init__(self, returncode: int = 0, *, overruns: bool = False) -> None:
+        self.returncode = returncode
+        self.pid = -1
+        self.killed = False
+        self._overruns = overruns
+
+    def __enter__(self) -> "FakeChild":
+        return self
+
+    def __exit__(self, *exception: object) -> bool:
+        return False
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._overruns:
+            raise subprocess.TimeoutExpired("graphify", timeout or 0)
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
 
 
 def recording_indexer(payload: bytes = b"graph-bytes", *, completeness: str = lifecycle.COMPLETE,
@@ -150,6 +186,47 @@ class PinTests(unittest.TestCase):
                         {"distribution": "graphifyy", "version": "0.9.58", "wheel_sha256": "b" * 64,
                          "options": [option]}
                     )
+
+    def test_the_options_bound_is_applied_to_what_actually_runs(self) -> None:
+        """The bound counts the normalized tuple, not what the file spelled.
+
+        Counting the raw list let a pin pass validation and then normalize into
+        one option too many, so its own ``as_metadata`` could no longer be read
+        back: a build could publish a generation whose manifest is invalid the
+        moment anything reloads it, pruning the last usable generation for one
+        nothing can read. The bound now refuses it wherever the pin is made.
+        """
+        source = {
+            "distribution": "graphifyy",
+            "version": "0.9.58",
+            "wheel_sha256": "b" * 64,
+            "options": [f"--flag-{index}" for index in range(lifecycle.MAX_EXTRACT_OPTIONS - 1)],
+        }
+        with self.assertRaises(ContextError):
+            lifecycle.load_pin(source)
+        with self.assertRaises(ContextError):
+            lifecycle.GraphifyPin(
+                distribution="graphifyy",
+                version="0.9.58",
+                wheel_sha256="b" * 64,
+                options=tuple(source["options"]),
+            )
+
+    def test_a_pin_at_the_bound_round_trips_through_its_own_metadata(self) -> None:
+        """Normalization is a fixed point, so a published manifest can be reread.
+
+        The required flags are dropped wherever they appear and re-prepended
+        exactly once, so a pin holding the most options it may hold reloads to
+        an equal pin rather than growing by two each time it is written out.
+        """
+        extra = [f"--flag-{index}" for index in range(lifecycle.MAX_EXTRACT_OPTIONS - 2)]
+        pin = lifecycle.load_pin(
+            {"distribution": "graphifyy", "version": "0.9.58", "wheel_sha256": "b" * 64,
+             "options": extra}
+        )
+        self.assertEqual(len(pin.options), lifecycle.MAX_EXTRACT_OPTIONS)
+        self.assertEqual(lifecycle.load_pin(pin.as_metadata()), pin)
+        self.assertEqual(lifecycle.load_pin(pin.as_metadata()).options, pin.options)
 
     def test_rejects_ranges_and_unpinned_shapes(self) -> None:
         """A range, a marker, or a missing digest lets a build drift silently."""
@@ -465,7 +542,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         # because the stream arrangement is as much of the contract as it is.
         self.launch_options: list[dict[str, object]] = []
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             recorded.append(list(argv))
             self.launch_options.append(dict(kwargs))
             if state_directory:
@@ -474,13 +551,13 @@ class ProviderLaunchTests(TemporaryWorkspace):
                 (written / "graph.bin").write_bytes(b"graph-bytes")
                 if report is not None:
                     (written / "manifest.json").write_text(json.dumps(report), encoding="utf-8")
-            return subprocess.CompletedProcess(argv, 0, b"", b"")
+            return FakeChild()
 
         with mock.patch.object(lifecycle, "network_sandbox_command", lambda: sandbox):
             indexer = lifecycle.subprocess_indexer(executable)
         # Patched only around the launch, so the Git calls a build makes are
         # never intercepted by this stand-in.
-        with mock.patch.object(subprocess, "run", fake_run):
+        with mock.patch.object(subprocess, "Popen", fake_popen):
             result = indexer(request)
         return recorded[0], result
 
@@ -507,6 +584,17 @@ class ProviderLaunchTests(TemporaryWorkspace):
         self.assertEqual(options["stdout"], subprocess.DEVNULL)
         self.assertEqual(options["stderr"], subprocess.DEVNULL)
         self.assertEqual(options["stdin"], subprocess.DEVNULL)
+
+    def test_the_provider_leads_its_own_process_group(self) -> None:
+        """A group, so a timed-out run can be stopped as a whole.
+
+        The signal that ends an overrun has to reach workers the provider
+        started -- under a launcher such as ``sandbox-exec`` the direct child is
+        the launcher, not the indexer -- and a group is the only handle on them
+        this process has. Safe only because no stream is inherited.
+        """
+        self.launched_argv("graphify")
+        self.assertIs(self.launch_options[0]["start_new_session"], True)
 
     def test_the_provider_is_invoked_through_its_documented_extract_interface(self) -> None:
         # The interface the adopt decision evaluated, recorded in
@@ -607,16 +695,16 @@ class ProviderLaunchTests(TemporaryWorkspace):
     def test_an_unparseable_report_is_partial_rather_than_complete(self) -> None:
         request = self.request()
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             written = request.source_root / ".graph"
             written.mkdir(exist_ok=True)
             (written / "graph.bin").write_bytes(b"graph-bytes")
             (written / "manifest.json").write_bytes(b"{not json")
-            return subprocess.CompletedProcess(argv, 0, b"", b"")
+            return FakeChild()
 
         with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
             indexer = lifecycle.subprocess_indexer("graphify")
-        with mock.patch.object(subprocess, "run", fake_run):
+        with mock.patch.object(subprocess, "Popen", fake_popen):
             result = indexer(request)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
 
@@ -663,19 +751,19 @@ class ProviderLaunchTests(TemporaryWorkspace):
         request = self.request()
         oversized = b'{"complete": true, "code_files": 3, "pad": "' + b"x" * lifecycle.MAX_MANIFEST_BYTES + b'"}'
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             written = request.source_root / ".graphify"
             written.mkdir(exist_ok=True)
             (written / "graph.bin").write_bytes(b"graph-bytes")
             (written / "manifest.json").write_bytes(oversized)
-            return subprocess.CompletedProcess(argv, 0, b"", b"")
+            return FakeChild()
 
         def refuse_whole_file_read(self: Path) -> bytes:
             raise AssertionError(f"{self} was read whole")
 
         with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
             indexer = lifecycle.subprocess_indexer("graphify")
-        with mock.patch.object(subprocess, "run", fake_run):
+        with mock.patch.object(subprocess, "Popen", fake_popen):
             with mock.patch.object(Path, "read_bytes", refuse_whole_file_read):
                 result = indexer(request)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
@@ -693,16 +781,43 @@ class ProviderLaunchTests(TemporaryWorkspace):
         (request.source_root / ".graphify" / "cache.json").write_text("{}", encoding="utf-8")
         launched: list[list[str]] = []
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             launched.append(list(argv))
-            return subprocess.CompletedProcess(argv, 0, b"", b"")
+            return FakeChild()
 
         with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
             indexer = lifecycle.subprocess_indexer("graphify")
-        with mock.patch.object(subprocess, "run", fake_run):
+        with mock.patch.object(subprocess, "Popen", fake_popen):
             with self.assertRaises(ContextError):
                 indexer(request)
         self.assertEqual(launched, [])
+        self.assertFalse(request.output_path.exists())
+
+    def test_an_overrun_is_stopped_before_it_is_reported_as_one(self) -> None:
+        """The error arrives after the group is stopped, not before.
+
+        ``build_graph`` deletes the scratch directory as soon as the adapter
+        raises. If the report came first, a worker that outlived the timeout
+        would still be writing into a directory being removed underneath it.
+        """
+        request = self.request()
+        order: list[str] = []
+
+        def fake_popen(argv, **kwargs):
+            return FakeChild(overruns=True)
+
+        def record_termination(child) -> None:
+            order.append("stopped")
+
+        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify")
+        with mock.patch.object(subprocess, "Popen", fake_popen):
+            with mock.patch.object(lifecycle, "_terminate_process_group", record_termination):
+                with self.assertRaises(ContextError) as raised:
+                    indexer(request)
+                order.append("reported")
+        self.assertEqual(order, ["stopped", "reported"])
+        self.assertIn("time budget", str(raised.exception))
         self.assertFalse(request.output_path.exists())
 
     def test_a_host_without_a_sandbox_refuses_to_launch_a_provider(self) -> None:
@@ -730,6 +845,68 @@ class ProviderLaunchTests(TemporaryWorkspace):
     def test_an_unnamed_provider_is_refused(self) -> None:
         with self.assertRaises(ContextError):
             lifecycle._resolved_executable("")
+
+
+@unittest.skipUnless(hasattr(os, "killpg"), "process groups are a POSIX facility")
+class ExtractionOverrunTests(unittest.TestCase):
+    """What a timed-out provider leaves running, proved against real processes.
+
+    An assertion about which signal was sent would have passed on code that
+    signalled only the direct child, which is the whole defect: an indexer that
+    forks workers -- and a launcher such as ``sandbox-exec``, where the direct
+    child is the launcher rather than the indexer -- outlives that signal and
+    keeps writing into a scratch directory the build is about to delete.
+    """
+
+    #: Stands in for a provider that starts a worker and then overruns. The
+    #: worker's pid is written where the test can read it, because the point is
+    #: what happens to a process this module never had a handle on.
+    PROVIDER = """
+import subprocess
+import sys
+import time
+
+worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+with open(sys.argv[1], "w") as handle:
+    handle.write(str(worker.pid))
+time.sleep(300)
+"""
+
+    def reaped(self, pid: int, *, within: float = 15.0) -> bool:
+        deadline = time.monotonic() + within
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_a_timed_out_run_takes_the_workers_it_started_with_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            recorded = Path(directory) / "worker.pid"
+            with self.assertRaises(subprocess.TimeoutExpired):
+                lifecycle._run_contained(
+                    [sys.executable, "-c", self.PROVIDER, str(recorded)],
+                    environment={"PATH": os.environ.get("PATH", "")},
+                    cwd=directory,
+                    timeout=3.0,
+                )
+            worker = int(recorded.read_text(encoding="utf-8"))
+            self.assertNotEqual(worker, os.getpid())
+            self.assertTrue(self.reaped(worker), "a worker outlived the run that started it")
+
+    def test_a_run_that_finishes_in_time_reports_its_own_status(self) -> None:
+        # The containment is not a behaviour change for an ordinary run: the
+        # exit status still comes back, and nothing is signalled.
+        with tempfile.TemporaryDirectory() as directory:
+            returncode = lifecycle._run_contained(
+                [sys.executable, "-c", "raise SystemExit(3)"],
+                environment={"PATH": os.environ.get("PATH", "")},
+                cwd=directory,
+                timeout=60.0,
+            )
+        self.assertEqual(returncode, 3)
 
 
 class BuildAndPublishTests(TemporaryWorkspace):
@@ -1030,6 +1207,37 @@ class GitBoundaryTests(TemporaryWorkspace):
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(environment["GIT_CONFIG_SYSTEM"], os.devnull)
+
+    def test_git_children_ignore_replacement_objects(self) -> None:
+        self.assertEqual(lifecycle.git_environment()["GIT_NO_REPLACE_OBJECTS"], "1")
+
+    def test_a_replacement_object_cannot_substitute_committed_content(self) -> None:
+        """``refs/replace`` changes what a read returns, not what a commit names.
+
+        Every ordinary Git read honours a replacement, so a census and a
+        materialization would bind bytes the recorded commit and tree do not
+        contain -- and deleting the replacement afterwards would leave
+        ``graph_status`` still reporting ``current``, because it compares object
+        names and nothing else. The unguarded read is asserted first so this
+        cannot pass by the replacement quietly not applying.
+        """
+        tracked = "example_pkg/config.py"
+        committed = (self.repository / tracked).read_text(encoding="utf-8")
+        blob = git(self.repository, "rev-parse", f"HEAD:{tracked}").strip()
+        decoy = self.root / "decoy.py"
+        decoy.write_text("VALUE = 'substituted'\n", encoding="utf-8")
+        substitute = git(self.repository, "hash-object", "-w", str(decoy)).strip()
+        git(self.repository, "replace", blob, substitute)
+        self.assertEqual(git(self.repository, "cat-file", "blob", blob), decoy.read_text(encoding="utf-8"))
+
+        census = lifecycle.read_tracked_census(self.repository, self.commit())
+        entry = next(item for item in census.entries if item.path == tracked)
+        # ``ls-tree --long`` reports the replacement's size while still naming
+        # the original blob, so the census is bound too, not only the content.
+        self.assertEqual(entry.size, len(committed.encode("utf-8")))
+        destination = self.root / "materialized"
+        lifecycle.materialize_tracked_files(self.repository, census, destination)
+        self.assertEqual((destination / tracked).read_text(encoding="utf-8"), committed)
 
     def test_git_children_inherit_no_ambient_secret(self) -> None:
         with mock.patch.dict(os.environ, {"AWS_SECRET_ACCESS_KEY": "not-a-real-secret"}):
