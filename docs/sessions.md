@@ -88,6 +88,36 @@ Creating the brief does not launch provider processes, authenticate tools, or
 prove they are available. Readiness remains unchecked until the agent verifies
 the chosen execution path. Live PR progress remains in `code-mower lanes status`.
 
+## Bind One Work Item For Guided Context
+
+When one authoritative work item will carry optional organizational context,
+select it as the mutating session starts:
+
+```bash
+code-mower session start --repo OWNER/REPO --host codex --work-item EXAMPLE-123
+```
+
+The saved operating brief records only that a work item was selected. Its
+identity and configured context policy live in protected local context state
+outside the repository. Account/workspace identity, credentials, query text,
+packets, citations, review findings, and future PR bindings are not added to the
+brief. A read-only `--no-lease` session cannot bind work; `--dry-run` previews
+the selection without writing private state.
+
+Inspect the resumable lifecycle without displaying its private identifiers:
+
+```bash
+code-mower session context status .code-mower/sessions/SESSION.json
+```
+
+The closed status reports whether a work item and context are configured, the
+current lifecycle stage, whether dependent work may continue, and the next
+action. It rechecks the working copy's live lease and trusted repository context
+configuration. A changed repository or connection fails closed and requires a
+new session. Existing sessions without a selected work item report
+`not_selected`; repositories without context report `not_configured` and keep
+the ordinary workflow usable.
+
 ## Single Orchestrator Lease
 
 `session start` takes a local lease before it saves anything, so one repository
