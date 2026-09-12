@@ -248,12 +248,192 @@ class SlackIngressTests(unittest.TestCase):
         self.assertEqual(self.events.count('commit'), 1)
 
     def test_authentication_precedes_parsing_and_dependencies(self):
-        body = b'[' * 2000
-        headers = self.headers(body)[:-1] + (('X-Slack-Signature', 'v0=' + '0' * 64),)
-        with patch('code_mower.slack_ingress._json', side_effect=AssertionError):
-            self.assertEqual(self.call(body, headers).status, 401)
+        bodies = (
+            (urlencode(self.form).encode(), 'application/x-www-form-urlencoded'),
+            (urlencode({'payload': json.dumps(self.modal())}).encode(),
+             'application/x-www-form-urlencoded'),
+            (b'{"type":"url_verification","challenge":"synthetic"}', 'application/json'),
+            (b'[' * 2000, 'application/json'),
+            (b'payload=%FF', 'application/x-www-form-urlencoded'),
+        )
+        for body, content_type in bodies:
+            for failure in ('invalid_signature', 'stale', 'future'):
+                with self.subTest(content_type=content_type, failure=failure):
+                    self.setUp()
+                    timestamp = self.clock.wall + {'invalid_signature': 0, 'stale': -301,
+                                                   'future': 301}[failure]
+                    headers = self.headers(body, timestamp, content_type)
+                    if failure == 'invalid_signature':
+                        headers = headers[:-1] + (('X-Slack-Signature', 'v0=' + '0' * 64),)
+                    # Explicit call assertions matter: handle catches decoder exceptions.
+                    with (patch('code_mower.slack_ingress._form', side_effect=AssertionError) as form,
+                          patch('code_mower.slack_ingress._json', side_effect=AssertionError) as decoder,
+                          patch.object(self.bindings, 'resolve', side_effect=AssertionError) as resolve,
+                          patch.object(self.store, 'reserve', side_effect=AssertionError) as reserve):
+                        response = self.call(body, headers)
+                        self.assertEqual(response.status, 401)
+                        self.assertEqual(json.loads(response.body)['code'], 'unverified_request')
+                        for dependency in (form, decoder, resolve, reserve):
+                            dependency.assert_not_called()
+                    self.assertEqual(self.events, ['response'])
+                    self.assertEqual(self.store.records, {})
+
+    def modal_call(self, value):
+        return self.call(urlencode({'payload': json.dumps(value)}).encode())
+
+    def exact_binding(self, *, installed_team=None, enterprise='', view_team=''):
+        # A server-held one-time context, independent of submitted payload fields.
+        expected = (self.form['api_app_id'], self.form['team_id'],
+                    installed_team or self.form['team_id'], enterprise, False,
+                    self.form['user_id'], 'synthetic_view', 'start', view_team)
+        def resolve(submission, *, deadline):
+            self.events.append('resolve')
+            actual = (submission.app, submission.team, submission.installed_team,
+                      submission.enterprise, submission.is_enterprise_install,
+                      submission.actor, submission.correlation, submission.operation,
+                      submission.view_team)
+            if actual != expected:
+                raise ValueError('unresolved binding')
+            return self.bindings.grant
+        return patch.object(self.bindings, 'resolve', side_effect=resolve)
+
+    def test_workspace_in_grid_metadata_is_ephemeral(self):
+        for kind in ('command', 'modal'):
+            with self.subTest(kind=kind):
+                self.setUp()
+                enterprise = 'synthetic_enterprise'
+                if kind == 'command':
+                    self.form.update(enterprise_id=enterprise, enterprise_name='Synthetic org',
+                                     is_enterprise_install='false')
+                    body = urlencode(self.form).encode()
+                else:
+                    value = self.modal()
+                    value.update(enterprise={'id': enterprise, 'name': 'Synthetic org'},
+                                 is_enterprise_install=False)
+                    body = urlencode({'payload': json.dumps(value)}).encode()
+                with patch.object(self.bindings, 'resolve', wraps=self.bindings.resolve) as resolve:
+                    response = self.call(body)
+                    self.assertEqual(response.status, 200)
+                    submission = resolve.call_args.args[0]
+                    self.assertEqual(submission.enterprise, enterprise)
+                    self.assertFalse(submission.is_enterprise_install)
+                    self.assertEqual(submission.team, self.form['team_id'])
+                    self.assertEqual(submission.installed_team, self.form['team_id'])
+                receipt = next(iter(self.store.records.values()))
+                persisted = json.dumps([receipt.request, receipt.intent])
+                for private in (enterprise, 'Synthetic org', submission.team):
+                    self.assertNotIn(private, persisted)
+                    self.assertNotIn(private, repr(submission))
+                    self.assertNotIn(private.encode(), response.body)
+
+    def test_grid_rejects_org_unresolved_and_unbounded_metadata(self):
+        for fields in (
+            {'is_enterprise_install': 'true'}, {'is_enterprise_install': 'False'},
+            {'team_id': ''}, {'enterprise_id': 'x' * 257},
+            {'enterprise_name': 'x' * 257}, {'enterprise_id': '', 'enterprise_name': 'name'},
+        ):
+            with self.subTest(fields=list(fields)):
+                self.setUp()
+                form = dict(self.form, enterprise_id='synthetic_enterprise',
+                            is_enterprise_install='false')
+                form.update(fields)
+                self.assertEqual(self.call(urlencode(form).encode()).status, 400)
+                self.assertEqual(self.events, ['response'])
+        for mutate in (
+            lambda v: v.update(is_enterprise_install=True),
+            lambda v: v.update(is_enterprise_install='false'),
+            lambda v: v.update(team=None),
+            lambda v: v['team'].update(id=''),
+            lambda v: v.update(enterprise={}),
+            lambda v: v.update(enterprise={'id': 'x' * 257}),
+            lambda v: v.update(enterprise={'id': 'synthetic', 'name': []}),
+            lambda v: v.update(enterprise={'id': 'synthetic', 'unknown': True}),
+        ):
+            self.setUp()
+            value = self.modal()
+            value.update(enterprise={'id': 'synthetic_enterprise'}, is_enterprise_install=False)
+            mutate(value)
+            self.assertEqual(self.modal_call(value).status, 400)
+            self.assertEqual(self.events, ['response'])
+
+    def test_modal_exact_install_and_slack_connect_correlation(self):
+        for connected in (False, True):
+            for include_view_team in (False, True):
+                self.setUp()
+                installed = 'synthetic_installed_team' if connected else self.form['team_id']
+                value = self.modal()
+                value.update(enterprise={'id': 'synthetic_enterprise'}, is_enterprise_install=False)
+                value['view']['app_installed_team_id'] = installed
+                view_team = installed if include_view_team else ''
+                if include_view_team:
+                    value['view']['team_id'] = view_team
+                with self.exact_binding(installed_team=installed, view_team=view_team,
+                                        enterprise='synthetic_enterprise'):
+                    self.assertEqual(self.modal_call(value).status, 200)
+                    self.assertEqual(self.modal_call(value).status, 200)
+                    if not connected:
+                        del value['view']['app_installed_team_id']
+                        self.assertEqual(self.modal_call(value).status, 200)
+                self.assertEqual(self.events.count('commit'), 1)
+                receipt = next(iter(self.store.records.values()))
+                self.assertNotIn(installed, json.dumps([receipt.request, receipt.intent]))
+
+    def test_modal_cross_install_and_unknown_correlation_denied(self):
+        for mutate in (
+            lambda v: v['view'].update(app_installed_team_id='synthetic_other_install'),
+            lambda v: v['view'].pop('app_installed_team_id'),
+            lambda v: v['team'].update(id='synthetic_other_action_team'),
+            lambda v: v.update(api_app_id='synthetic_other_app'),
+            lambda v: v['user'].update(id='synthetic_other_actor'),
+            lambda v: v['view'].update(id='synthetic_unknown_view'),
+            lambda v: v['view'].update(callback_id='clarification_reply'),
+            lambda v: v.update(enterprise={'id': 'synthetic_other_enterprise'}),
+        ):
+            self.setUp()
+            value = self.modal()
+            value['view']['app_installed_team_id'] = 'synthetic_installed_team'
+            mutate(value)
+            with self.exact_binding(installed_team='synthetic_installed_team'):
+                self.assertEqual(self.modal_call(value).status, 403)
+            self.assertEqual(self.events, ['resolve', 'response'])
+            self.assertEqual(self.store.records, {})
+        for installed in (None, '', [], True, 'x' * 257):
+            self.setUp()
+            value = self.modal()
+            value['view']['app_installed_team_id'] = installed
+            self.assertEqual(self.modal_call(value).status, 400)
+            self.assertEqual(self.events, ['response'])
+        self.setUp()
+        value = self.modal()
+        value['view'].update(app_installed_team_id='synthetic_install', team_id='synthetic_unrelated')
+        self.assertEqual(self.modal_call(value).status, 400)
         self.assertEqual(self.events, ['response'])
-        self.assertEqual(self.store.records, {})
+
+    def test_modal_optional_mutable_hash_and_content_conflict(self):
+        value = self.modal()
+        del value['view']['hash']
+        with self.exact_binding():
+            self.assertEqual(self.modal_call(value).status, 200)
+            receipt = next(iter(self.store.records.values()))
+            self.assertEqual(self.modal_call(value).status, 200)
+            for revision in ('synthetic_revision', 'synthetic_new_revision'):
+                value['view']['hash'] = revision
+                self.assertEqual(self.modal_call(value).status, 200)
+                self.assertIs(next(iter(self.store.records.values())), receipt)
+            value['view']['state']['values']['input']['text']['value'] = 'changed input'
+            value['view']['hash'] = 'synthetic_changed_revision'
+            self.assertEqual(self.modal_call(value).status, 409)
+            del value['view']['hash']
+            self.assertEqual(self.modal_call(value).status, 409)
+        self.assertEqual(self.events.count('commit'), 1)
+        self.assertEqual(len(self.store.records), 1)
+        self.assertIs(next(iter(self.store.records.values())), receipt)
+        for revision in (None, '', [], True, 'x' * 257):
+            self.setUp()
+            value = self.modal()
+            value['view']['hash'] = revision
+            self.assertEqual(self.modal_call(value).status, 400)
+            self.assertEqual(self.events, ['response'])
 
     def test_policy_and_registration_denials(self):
         for mutate in (

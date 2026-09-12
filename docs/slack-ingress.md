@@ -51,13 +51,35 @@ app/team/trigger fields, stable across timestamp and retry-header changes.
 Changed normalized content under that delivery conflicts. Modal submissions
 support callback IDs `start` and `clarification_reply`, one input block `input`
 with plain_text_input action `text`, and empty private_metadata/external_id.
-Modal delivery derives from authenticated app/team/view ID/hash. A modal opens
-only in a later integration; this handler neither opens nor updates views.
+Modal delivery derives from app/installed-team/view ID, bound to a server-held
+one-time correlation. The optional `view.hash` is a mutable revision, not a
+delivery identifier: hash changes alone remain duplicates, while changed
+normalized request content conflicts under the same view ID. A modal opens only
+in a later integration; this handler neither opens nor updates views.
+
+Workspace installs within Enterprise Grid accept bounded enterprise ID/name
+metadata and a false `is_enterprise_install` (omitted defaults to false). True
+organization-wide installs and missing concrete action workspaces are rejected.
+`Submission.enterprise` and `is_enterprise_install` are ephemeral binding inputs;
+enterprise names are validated and discarded. No Slack installation metadata is
+added to the provider-neutral contract or durable receipt.
+
+For Slack Connect modals, `Submission.team` remains the action workspace and
+`installed_team` prefers `view.app_installed_team_id`, falling back to the action
+team only when absent. A present installed-team ID must be nonempty and bounded.
+The optional `view_team` is also preserved for correlation and must match either
+the action or installed workspace. The installation lookup must use app plus
+installed team and independently resolve its enterprise membership; the payload
+enterprise alone cannot establish that relationship across Slack Connect.
 
 `Bindings.resolve` receives ephemeral routing IDs and must independently resolve
-an active policy for the exact app, team, actor and conversation. For modals,
+an active policy for the exact app, action team, installed team, enterprise/install
+scope, actor and conversation. For modals,
 resolve the view ID against server-held correlation, including the operation,
-original actor/conversation/session and waiting-for-user grant. Never infer a
+both teams, view team, original actor/conversation/session and waiting-for-user
+grant. Deny unknown or cross-install mismatches, even when the other installation
+is otherwise authorized. Preserve that same one-time context through the dedupe
+retention window so exact retries reconcile without authorizing new work. Never infer a
 grant from modal metadata, Slack membership, or a user-provided session. The seam
 validates the returned policy and calls `slack_contract.normalize(verified=True)`.
 Binding and storage dependencies must not log inputs, perform remote work, or
@@ -103,6 +125,10 @@ routing values and signing keys in memory; no captured Slack traffic is used.
   documents ephemeral acknowledgements and the three-second response deadline.
 - [URL verification](https://docs.slack.dev/reference/events/url_verification/)
   describes the challenge handshake.
+- [View interaction payloads](https://docs.slack.dev/reference/interaction-payloads/view-interactions-payload/)
+  documents workspace-in-Grid enterprise metadata and optional mutable hashes.
+- [Bolt installation lookup](https://docs.slack.dev/tools/bolt-python/reference/request/internals.html)
+  prefers `view.app_installed_team_id` for Slack Connect modal submissions.
 
 Run `python -m unittest discover -s tests -p 'test_slack*.py'`. Offline tests cover
 raw-byte signing, malformed/unknown/oversized inputs, replay and conflicts,

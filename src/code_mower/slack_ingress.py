@@ -42,6 +42,10 @@ class Submission:
     correlation: str
     text: str
     delivery: str
+    installed_team: str
+    enterprise: str
+    is_enterprise_install: bool
+    view_team: str = ''
 
 
 class Bindings(Protocol):
@@ -50,6 +54,12 @@ class Bindings(Protocol):
 
         Bind every routing field to the tenant/actor/conversation/session. Modal
         correlation must resolve server-held context, never private_metadata.
+        Look up installations by app and installed_team (not the action team).
+        Match enterprise/install scope and both teams against that installation
+        and the one-time view context; deny unresolved cross-install contexts.
+        Enterprise is payload context, not proof of the installed team's org
+        in Slack Connect. Resolve that relationship from private server state.
+        Retain the same correlation mapping for retries throughout dedupe TTL.
         Do not perform work, remote calls, or side effects here.
         """
         ...
@@ -210,8 +220,13 @@ def _form(raw):
 def _modal(value):
     _closed(value, ('type', 'team', 'user', 'api_app_id', 'view'),
             ('token', 'enterprise', 'is_enterprise_install', 'trigger_id', 'response_urls'))
-    if value['type'] != 'view_submission' or value.get('enterprise') is not None or value.get('is_enterprise_install', False) is not False:
+    if value['type'] != 'view_submission' or value.get('is_enterprise_install', False) is not False:
         _invalid()
+    enterprise = ''
+    if value.get('enterprise') is not None:
+        _closed(value['enterprise'], ('id',), ('name',))
+        enterprise = _string(value['enterprise']['id'])
+        _scalars(value['enterprise'], ('name',))
     if value.get('response_urls', []) != []:
         _invalid()
     _closed(value['team'], ('id',), ('domain',))
@@ -220,13 +235,18 @@ def _modal(value):
     _scalars(value['team'], ('domain',))
     _scalars(value['user'], ('name', 'username', 'team_id'))
     view = value['view']
-    _closed(view, ('id', 'type', 'callback_id', 'state', 'hash'),
-            ('team_id', 'app_id', 'bot_id', 'title', 'submit', 'close', 'blocks',
+    _closed(view, ('id', 'type', 'callback_id', 'state'),
+            ('hash', 'app_installed_team_id', 'team_id', 'app_id', 'bot_id', 'title', 'submit', 'close', 'blocks',
              'private_metadata', 'external_id', 'root_view_id', 'previous_view_id',
              'clear_on_close', 'notify_on_close'))
     _scalars(view, ('team_id', 'app_id', 'bot_id', 'private_metadata', 'external_id'),
              ('clear_on_close', 'notify_on_close'), ('root_view_id', 'previous_view_id'))
-    if (view.get('team_id', value['team']['id']) != value['team']['id']
+    team = _string(value['team']['id'])
+    installed_team = _string(view.get('app_installed_team_id', team))
+    view_team = _string(view['team_id']) if 'team_id' in view else ''
+    if 'hash' in view:
+        _string(view['hash'])
+    if ((view_team and view_team not in {team, installed_team})
             or view.get('app_id', value['api_app_id']) != value['api_app_id']
             or value['user'].get('team_id', value['team']['id']) != value['team']['id']):
         _invalid()
@@ -269,12 +289,12 @@ def _modal(value):
     if field['type'] != 'plain_text_input':
         _invalid()
     app = _string(value['api_app_id'])
-    team = _string(value['team']['id'])
     correlation = _string(view['id'])
     return Submission('modal_submission', view['callback_id'], app, team,
                       _string(value['user']['id']), '', correlation,
                       _string(field['value'], 16000),
-                      _digest([app, team, correlation, _string(view['hash'])]))
+                      _digest([app, installed_team, correlation]),
+                      installed_team, enterprise, False, view_team)
 
 
 def _submission(form):
@@ -284,7 +304,11 @@ def _submission(form):
     _closed(form, ('command', 'text', 'api_app_id', 'team_id', 'user_id', 'channel_id', 'trigger_id'),
             ('token', 'team_domain', 'enterprise_id', 'enterprise_name', 'channel_name',
              'user_name', 'response_url', 'is_enterprise_install'))
-    if form['command'] != '/code-mower' or form.get('enterprise_id', '') or form.get('is_enterprise_install', 'false') != 'false':
+    if form['command'] != '/code-mower' or form.get('is_enterprise_install', 'false') != 'false':
+        _invalid()
+    enterprise = _string(form.get('enterprise_id', ''), empty=True)
+    _scalars(form, ('enterprise_name',))
+    if form.get('enterprise_name') and not enterprise:
         _invalid()
     parts = form['text'].split(maxsplit=1)
     if not parts or parts[0] not in OPERATIONS:
@@ -294,7 +318,8 @@ def _submission(form):
     app, team = _string(form['api_app_id']), _string(form['team_id'])
     return Submission('command', operation, app, team, _string(form['user_id']),
                       _string(form['channel_id']), '', text,
-                      _digest([app, team, _string(form['trigger_id'])]))
+                      _digest([app, team, _string(form['trigger_id'])]),
+                      team, enterprise, False)
 
 
 class Ingress:
