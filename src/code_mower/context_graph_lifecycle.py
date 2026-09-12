@@ -38,11 +38,13 @@ pinned provider without this module depending on it.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
 import io
+import secrets
 import shutil
 import signal
 import socket
@@ -157,15 +159,25 @@ _SANDBOX_CANDIDATES: tuple[tuple[str, ...], ...] = (
 #:
 #: The probe exits ``7`` when it could not connect and ``3`` when it could;
 #: every other code -- a launcher that could not start, a child that never ran
-#: -- means the candidate is not usable as a boundary. A candidate is accepted
-#: only when the child reported a failed connection *and* nothing reached the
-#: listener, so a child that never ran cannot pass for a contained one.
+#: -- means the candidate is not usable as a boundary.
+#:
+#: An exit code alone is not evidence that the child ran: a launcher that exits
+#: ``7`` without executing anything produces the same code as a contained child,
+#: and would be accepted as a boundary while confining nothing. So the child
+#: first prints a value only running it can produce -- the digest of a nonce
+#: this process generated for this run -- and a run with no such evidence is
+#: unusable whatever its exit code. Echoing the argv is not enough: the digest
+#: is computed by the child, and the nonce is fresh per run, so neither a
+#: launcher that parrots its arguments nor one that replays an earlier probe
+#: can produce it.
 _PROBE_DENIED = 7
 _PROBE_REACHED = 3
 _DENIAL_PROBE = """
+import hashlib
 import socket
 import sys
 
+print(hashlib.sha256(sys.argv[2].encode()).hexdigest(), flush=True)
 try:
     probe = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
 except OSError:
@@ -200,8 +212,15 @@ def _accepted(listener: socket.socket) -> bool:
     return True
 
 
+def _ran_the_probe(output: bytes, nonce: str) -> bool:
+    """Did this run's probe child actually execute under the launcher?"""
+    expected = hashlib.sha256(nonce.encode()).hexdigest()
+    return expected in output.decode("utf-8", "replace")
+
+
 def _classify_probe(prefix: Sequence[str]) -> str:
     """Run the probe under ``prefix`` against a listener in this process."""
+    nonce = secrets.token_hex(16)
     with socket.socket() as listener:
         try:
             listener.bind(("127.0.0.1", 0))
@@ -214,7 +233,7 @@ def _classify_probe(prefix: Sequence[str]) -> str:
         port = listener.getsockname()[1]
         try:
             completed = subprocess.run(
-                [*prefix, sys.executable, "-c", _DENIAL_PROBE, str(port)],
+                [*prefix, sys.executable, "-c", _DENIAL_PROBE, str(port), nonce],
                 check=False,
                 capture_output=True,
                 timeout=60,
@@ -222,8 +241,15 @@ def _classify_probe(prefix: Sequence[str]) -> str:
             )
         except (OSError, subprocess.SubprocessError):
             return _UNUSABLE
-        if _accepted(listener):
-            return _REACHED
+        arrived = _accepted(listener)
+    # Before anything is read from the exit code: a run that cannot show its
+    # child executed classifies as nothing at all. This is the control that
+    # keeps "denied" from being the default answer for a launcher that never
+    # started the probe.
+    if not _ran_the_probe(completed.stdout, nonce):
+        return _UNUSABLE
+    if arrived:
+        return _REACHED
     if completed.returncode == _PROBE_REACHED:
         # The child says it connected but nothing arrived here; treat the
         # disagreement as a probe that proved nothing rather than as isolation.
@@ -527,6 +553,98 @@ def _git(repository: Path, *arguments: str, capture: bool = True, permit_failure
     return completed.stdout
 
 
+#: The longest NUL-delimited ``ls-tree`` record a census will hold before it has
+#: seen the delimiter that ends it. A record is fixed-width metadata plus one
+#: path, and Git's own path ceiling is far under this, so a longer run of bytes
+#: means the stream is not the one this build asked for.
+MAX_CENSUS_RECORD_BYTES = 16 * 1024
+
+#: How much of the listing to read at a time. Small enough that a refusal costs
+#: one chunk rather than a whole repository's metadata.
+_CENSUS_CHUNK_BYTES = 64 * 1024
+
+
+def _stop_reader(process: subprocess.Popen[bytes]) -> None:
+    """Stop a streaming Git child and reap it, whatever the caller is doing.
+
+    Closing the pipe first is what makes an early refusal cheap: Git writes into
+    a broken pipe and exits on its own, rather than being left to finish
+    enumerating a tree nobody is going to read.
+    """
+    if process.stdout is not None:
+        with contextlib.suppress(OSError):
+            process.stdout.close()
+    if process.poll() is None:
+        with contextlib.suppress(OSError):
+            process.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=_REAP_TIMEOUT_SECONDS)
+
+
+@contextlib.contextmanager
+def _git_records(repository: Path, *arguments: str) -> Iterator[Iterator[str]]:
+    """Yield the NUL-delimited records of one Git child, one at a time.
+
+    ``subprocess.run`` would hold the whole listing in memory before the first
+    budget could be checked, so a tree far past every census bound would exhaust
+    this process instead of being refused at the bound. Streaming lets the
+    consumer stop at the record that breaks its budget; leaving the child to
+    this context manager means it is terminated there rather than whenever a
+    generator happens to be collected.
+    """
+    try:
+        process = subprocess.Popen(
+            ["git", "-C", str(repository), "--no-optional-locks", *_GIT_SAFETY_OPTIONS, *arguments],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=git_environment(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise ContextError("local graph build could not read the target repository") from None
+    try:
+        yield _read_records(process)
+    finally:
+        _stop_reader(process)
+
+
+def _read_records(process: subprocess.Popen[bytes]) -> Iterator[str]:
+    stream = process.stdout
+    assert stream is not None
+    pending = b""
+    while True:
+        chunk = stream.read(_CENSUS_CHUNK_BYTES)
+        if not chunk:
+            break
+        pending += chunk
+        while True:
+            record, delimiter, rest = pending.partition(b"\0")
+            if not delimiter:
+                break
+            if len(record) > MAX_CENSUS_RECORD_BYTES:
+                raise ContextError("local graph build could not read the repository census")
+            pending = rest
+            yield _record_text(record)
+        # The same bound on what has *not* been delimited yet: a stream with no
+        # delimiter in it would otherwise grow a chunk at a time forever.
+        if len(pending) > MAX_CENSUS_RECORD_BYTES:
+            raise ContextError("local graph build could not read the repository census")
+    if pending:
+        # ``-z`` terminates every record, so a trailing remainder is a stream
+        # that stopped mid-record: a killed child, or output this build did not
+        # ask for. Either way the census it would produce is incomplete.
+        raise ContextError("local graph build could not read the repository census")
+    if process.wait() != 0:
+        raise ContextError("local graph build could not read the target repository")
+
+
+def _record_text(record: bytes) -> str:
+    try:
+        return record.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ContextError("local graph build could not read the repository census") from None
+
+
 def refuse_lazy_object_fetch(repository: Path) -> None:
     """Refuse a partial clone, where reading the tree can call out to a remote.
 
@@ -586,9 +704,23 @@ def read_tracked_census(repository: Path, commit: str) -> TrackedCensus:
     excluded from the census, so it is excluded from the census digest too, and
     a build over a repository that tracks a ``.graphify`` directory binds a
     census that says so instead of quietly indexing somebody else's graph.
+
+    The listing is consumed as it arrives rather than captured whole: every
+    budget here is checked against the records seen so far, so a tree past one
+    of them is refused at that record, with the reader stopped, instead of
+    after a repository's worth of metadata has been buffered.
     """
     refuse_lazy_object_fetch(repository)
-    listing = _git(
+    entries: list[TrackedEntry] = []
+    skipped: list[tuple[str, str]] = []
+    total = 0
+
+    def skip(path: str, reason: str) -> None:
+        if len(skipped) >= MAX_SKIPPED_PATHS:
+            raise ContextError("skipped path census exceeds the local graph budget")
+        skipped.append((path, reason))
+
+    with _git_records(
         repository,
         "ls-tree",
         "-r",
@@ -596,41 +728,34 @@ def read_tracked_census(repository: Path, commit: str) -> TrackedCensus:
         "--long",
         "--full-tree",
         _object_name(commit),
-    )
-    entries: list[TrackedEntry] = []
-    skipped: list[tuple[str, str]] = []
-
-    def skip(path: str, reason: str) -> None:
-        if len(skipped) >= MAX_SKIPPED_PATHS:
-            raise ContextError("skipped path census exceeds the local graph budget")
-        skipped.append((path, reason))
-
-    for record in listing.split("\0"):
-        if not record:
-            continue
-        metadata, _, path = record.partition("\t")
-        fields = metadata.split()
-        if len(fields) != 4 or not path:
-            raise ContextError("local graph build could not read the repository census")
-        mode, kind, blob, raw_size = fields
-        if mode in _SKIPPED_MODES:
-            skip(path, _SKIPPED_MODES[mode])
-            continue
-        if _is_provider_state(path):
-            skip(path, "provider state")
-            continue
-        if mode not in _REGULAR_MODES or kind != "blob":
-            skip(path, "unsupported")
-            continue
-        if len(entries) >= MAX_TRACKED_FILES:
-            raise ContextError("tracked file census exceeds the local graph budget")
-        size = int(raw_size) if raw_size.isdigit() else -1
-        if not 0 <= size <= MAX_BLOB_BYTES:
-            raise ContextError("tracked file exceeds the local graph per-file budget")
-        entries.append(TrackedEntry(mode=mode, blob=_object_name(blob), path=path, size=size))
+    ) as records:
+        for record in records:
+            if not record:
+                continue
+            metadata, _, path = record.partition("\t")
+            fields = metadata.split()
+            if len(fields) != 4 or not path:
+                raise ContextError("local graph build could not read the repository census")
+            mode, kind, blob, raw_size = fields
+            if mode in _SKIPPED_MODES:
+                skip(path, _SKIPPED_MODES[mode])
+                continue
+            if _is_provider_state(path):
+                skip(path, "provider state")
+                continue
+            if mode not in _REGULAR_MODES or kind != "blob":
+                skip(path, "unsupported")
+                continue
+            if len(entries) >= MAX_TRACKED_FILES:
+                raise ContextError("tracked file census exceeds the local graph budget")
+            size = int(raw_size) if raw_size.isdigit() else -1
+            if not 0 <= size <= MAX_BLOB_BYTES:
+                raise ContextError("tracked file exceeds the local graph per-file budget")
+            total += size
+            if total > MAX_TRACKED_BYTES:
+                raise ContextError("tracked content exceeds the local graph budget")
+            entries.append(TrackedEntry(mode=mode, blob=_object_name(blob), path=path, size=size))
     entries.sort(key=lambda entry: entry.path)
-    if sum(entry.size for entry in entries) > MAX_TRACKED_BYTES:
-        raise ContextError("tracked content exceeds the local graph budget")
     return TrackedCensus(
         entries=tuple(entries),
         skipped=tuple(sorted(skipped)),
@@ -1029,7 +1154,7 @@ def _signal_group(group: int, number: int) -> None:
 
 
 def _terminate_process_group(child: subprocess.Popen[bytes]) -> None:
-    """Stop a timed-out provider and everything it started.
+    """Stop an abandoned provider and everything it started.
 
     ``subprocess.run``'s own timeout kills the immediate child only. A provider
     that forks workers -- and under a launcher such as ``sandbox-exec`` the
@@ -1075,7 +1200,7 @@ def _run_contained(
     cwd: str,
     timeout: float,
 ) -> int:
-    """Run one child in its own process group, killing the group on timeout.
+    """Run one child in its own process group, killing the group on any exit.
 
     Raises :class:`subprocess.TimeoutExpired` once the group has been stopped,
     so a caller reports the timeout only after there is nothing left running.
@@ -1102,7 +1227,15 @@ def _run_contained(
     ) as child:
         try:
             return child.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        except BaseException:
+            # Every way out of this wait except returning, not the timeout
+            # alone. An operator's Ctrl-C raises ``KeyboardInterrupt`` here, and
+            # the provider does not see that signal: it leads its own session,
+            # so the terminal's SIGINT never reaches it. ``Popen.__exit__``
+            # would then wait for a child nobody has asked to stop, while
+            # ``build_graph`` deletes the scratch directory underneath it. The
+            # group is stopped first, so unwinding leaves nothing running
+            # against state that is about to be removed.
             _terminate_process_group(child)
             raise
 
@@ -1310,8 +1443,17 @@ class GraphStateRoot:
         base = Path(root) if root is not None else default_context_root()
         if not base.is_absolute():
             raise ContextError("local graph state requires an absolute private directory")
+        # Canonicalized once, here, and never spelled lexically again: every
+        # later open, mkdir, lock, and removal travels the path that
+        # ``_refuse_state_inside_a_repository`` checked. Checking a resolved
+        # snapshot and then writing through the original spelling would leave a
+        # symlinked ancestor free to be retargeted in between -- the check
+        # passes against one directory and the writes land in another. Ordinary
+        # private roots do have symlinked ancestors (macOS puts ``/tmp`` behind
+        # ``/private/tmp``), so they are resolved rather than refused.
+        self.base = Path(os.path.realpath(base))
         self.workspace = workspace_id(self.repository)
-        self.path = base / "graph" / self.workspace
+        self.path = self.base / "graph" / self.workspace
 
     @property
     def generations_path(self) -> Path:
@@ -1359,19 +1501,17 @@ class GraphStateRoot:
     def _refuse_state_inside_a_repository(self) -> None:
         """No generation may be written inside a repository, by any spelling.
 
-        Checked on the *resolved* path as well as the given one. A lexical walk
-        alone reads ``--state-dir /outside/link/state`` as being outside every
-        repository even when ``/outside/link`` points at ``/repo/subdir``, and
-        the ``O_NOFOLLOW`` opens below would not catch it either: they protect
-        the final component of each directory this class owns, not an ancestor
-        somebody else created. Symlinked ancestors are resolved rather than
-        refused, because ordinary private roots have them -- macOS puts
-        ``/tmp`` behind ``/private/tmp``.
+        A lexical walk alone reads ``--state-dir /outside/link/state`` as being
+        outside every repository even when ``/outside/link`` points at
+        ``/repo/subdir``, and the ``O_NOFOLLOW`` opens elsewhere would not catch
+        it either: they protect the final component of each directory this class
+        owns, not an ancestor somebody else created. The path walked here is the
+        canonical one built in ``__init__``, which is also the one every write
+        goes through, so this check cannot be satisfied by one directory and
+        then applied to another.
         """
-        resolved = Path(os.path.realpath(self.path))
-        for candidate in dict.fromkeys((self.path, resolved)):
-            if any((parent / ".git").exists() for parent in (candidate, *candidate.parents)):
-                raise ContextError("local graph state must stay outside Git repositories")
+        if any((parent / ".git").exists() for parent in (self.path, *self.path.parents)):
+            raise ContextError("local graph state must stay outside Git repositories")
 
     def _ensure_lock_directory(self) -> None:
         """Create only what the lock file needs, not the generations tree.

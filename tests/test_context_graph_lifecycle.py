@@ -441,6 +441,65 @@ class ScrubbedEnvironmentTests(TemporaryWorkspace):
         self.assertEqual(set(environment) - allowed, set())
 
 
+class ListingStreamTests(unittest.TestCase):
+    """The census consumes its listing as it arrives, bounded, and stops the reader.
+
+    Capturing the whole listing first put a repository's worth of metadata in
+    this process before any census bound could be checked, so a tree far past
+    every budget exhausted memory instead of being refused at the budget. The
+    reader is a stand-in here because a repository large enough to prove the
+    bound for real would be the thing the bound exists to avoid.
+    """
+
+    class Reader:
+        """Enough of ``Popen`` for the record stream: a pipe and an exit status."""
+
+        def __init__(self, payload: bytes, returncode: int = 0) -> None:
+            self.stdout = io.BytesIO(payload)
+            self.returncode = returncode
+            self.killed = False
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode
+
+        def poll(self) -> int | None:
+            return self.returncode if self.killed else None
+
+        def kill(self) -> None:
+            self.killed = True
+
+    def records(self, payload: bytes, returncode: int = 0) -> list[str]:
+        return list(lifecycle._read_records(self.Reader(payload, returncode)))
+
+    def test_records_are_split_on_the_delimiter(self) -> None:
+        self.assertEqual(self.records(b"one\0two\0"), ["one", "two"])
+
+    def test_a_run_of_bytes_past_the_record_bound_is_refused(self) -> None:
+        # No delimiter, so nothing can be classified and nothing can be
+        # released: this is exactly the shape that grows without limit.
+        with self.assertRaises(ContextError):
+            self.records(b"x" * (lifecycle.MAX_CENSUS_RECORD_BYTES + 1) + b"\0")
+
+    def test_a_stream_that_ends_mid_record_is_refused(self) -> None:
+        with self.assertRaises(ContextError):
+            self.records(b"one\0two")
+
+    def test_a_reader_that_failed_is_refused_even_after_a_clean_stream(self) -> None:
+        with self.assertRaises(ContextError):
+            self.records(b"one\0", returncode=1)
+
+    def test_a_consumer_that_stops_early_stops_the_reader_with_it(self) -> None:
+        """A refused census must not leave Git enumerating the rest of the tree."""
+        reader = self.Reader(b"one\0two\0")
+        with mock.patch.object(subprocess, "Popen", lambda *arguments, **keywords: reader):
+            with self.assertRaises(ContextError):
+                with lifecycle._git_records(Path("/nonexistent"), "ls-tree") as records:
+                    next(records)
+                    raise ContextError("the consumer reached its budget")
+        self.assertTrue(reader.stdout.closed)
+        self.assertTrue(reader.killed)
+
+
 CONNECT_PROBE = """
 import socket
 import sys
@@ -482,6 +541,23 @@ class NetworkIsolationTests(unittest.TestCase):
             self.skipTest("this host offers no OS sandbox that denies a child the network")
         self.assertEqual(self.connect(sandbox), 1)
 
+    def test_the_selected_mechanism_really_contains_a_child_on_this_host(self) -> None:
+        """The integration control: the real mechanism, not a stand-in for one.
+
+        The synthetic launchers below pin the classification *algorithm* on
+        every host, including hosts with no sandbox at all. They cannot show
+        that ``sandbox-exec``, ``bwrap --unshare-net``, or ``unshare --net`` as
+        this module spells them actually confines anything. Where one of them is
+        available, this runs it for real: an unconfined child must reach a
+        listener that is really there, and a child under the selected prefix
+        must not.
+        """
+        prefix = lifecycle.network_sandbox_command()
+        if prefix is None:
+            self.skipTest("this host offers no OS sandbox that denies a child the network")
+        self.assertEqual(lifecycle._classify_probe(()), lifecycle._REACHED)
+        self.assertEqual(lifecycle._classify_probe(prefix), lifecycle._CONTAINED)
+
     def launcher(self, exit_code: int) -> str:
         """A stand-in launcher, so the classifier is pinned on every host.
 
@@ -516,20 +592,49 @@ class NetworkIsolationTests(unittest.TestCase):
         loopback really comes up inside the new namespace, and the connection is
         *refused* because the host's listener is not in there with it. The
         launcher runs the probe it was handed against a port nothing is on,
-        which is what the child would have seen.
+        which is what the child would have seen. ``$5`` is the nonce, forwarded
+        so the child can still show it ran: a launcher that swallowed it would
+        be a launcher that did not run the probe.
         """
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         path = Path(directory.name) / "namespace-launcher"
-        path.write_text(f'#!/bin/sh\nexec "$1" "$2" "$3" {port}\n', encoding="utf-8")
+        path.write_text(f'#!/bin/sh\nexec "$1" "$2" "$3" {port} "$5"\n', encoding="utf-8")
         path.chmod(0o700)
         return str(path)
 
-    def test_a_child_that_reports_a_denial_is_accepted(self) -> None:
-        self.assertTrue(lifecycle._sandbox_denies_network((self.launcher(lifecycle._PROBE_DENIED),)))
+    def test_a_launcher_that_never_runs_the_child_is_rejected(self) -> None:
+        """An exit code is not evidence, and the denial code least of all.
+
+        A launcher that exits with the probe's own "could not connect" code
+        without executing anything confines nothing, and this is the shape a
+        broken or hostile launcher has. Nothing reaches the listener either --
+        nothing ran -- so a classifier reading the exit code alone would accept
+        it as a boundary and every build would then run its provider
+        unconfined. The child's per-run evidence is what separates the two.
+        """
+        self.assertFalse(lifecycle._sandbox_denies_network((self.launcher(lifecycle._PROBE_DENIED),)))
 
     def test_a_child_that_reached_the_network_stack_is_rejected(self) -> None:
         self.assertFalse(lifecycle._sandbox_denies_network((self.launcher(lifecycle._PROBE_REACHED),)))
+
+    def test_evidence_from_another_run_does_not_prove_this_one(self) -> None:
+        """A replayed transcript is not a child that ran.
+
+        The evidence is the digest of a nonce generated for one run, so a
+        launcher that printed a previous run's evidence -- or one that parroted
+        its own argv -- says nothing about this run.
+        """
+        stale = hashlib.sha256(b"an-earlier-nonce").hexdigest()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "replaying-launcher"
+        path.write_text(
+            f"#!/bin/sh\necho {stale}\necho \"$@\"\nexit {lifecycle._PROBE_DENIED}\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o700)
+        self.assertFalse(lifecycle._sandbox_denies_network((str(path),)))
 
     def test_a_launcher_that_cannot_start_is_rejected(self) -> None:
         self.assertFalse(lifecycle._sandbox_denies_network(("/nonexistent/launcher",)))
@@ -982,6 +1087,49 @@ time.sleep(300)
             self.assertNotEqual(worker, os.getpid())
             self.assertTrue(self.reaped(worker), "a worker outlived the run that started it")
 
+    def test_a_cancelled_run_takes_the_workers_it_started_with_it(self) -> None:
+        """Ctrl-C is not the timeout, and the provider never sees the signal.
+
+        The child leads its own session, so the terminal's SIGINT reaches this
+        process and not the provider. Cleaning up only on ``TimeoutExpired``
+        left ``KeyboardInterrupt`` to unwind past a running provider and its
+        workers, while ``build_graph`` deleted the scratch directory they were
+        writing into. Every exit from the wait stops the group now, not just
+        the one the timeout takes.
+        """
+        original = subprocess.Popen.wait
+        cancelled: list[bool] = []
+
+        def wait(child, timeout=None):
+            if cancelled:
+                return original(child, timeout=timeout)
+            cancelled.append(True)
+            # Interrupt once the provider has a worker to abandon; an interrupt
+            # delivered before that would prove nothing about descendants.
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                try:
+                    if recorded.read_text(encoding="utf-8").strip():
+                        break
+                except OSError:
+                    pass
+                time.sleep(0.05)
+            raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as directory:
+            recorded = Path(directory) / "worker.pid"
+            with mock.patch.object(subprocess.Popen, "wait", wait):
+                with self.assertRaises(KeyboardInterrupt):
+                    lifecycle._run_contained(
+                        [sys.executable, "-c", self.PROVIDER, str(recorded)],
+                        environment={"PATH": os.environ.get("PATH", "")},
+                        cwd=directory,
+                        timeout=300.0,
+                    )
+            worker = int(recorded.read_text(encoding="utf-8"))
+            self.assertNotEqual(worker, os.getpid())
+            self.assertTrue(self.reaped(worker), "a worker outlived the run that was cancelled")
+
     def test_a_run_that_finishes_in_time_reports_its_own_status(self) -> None:
         # The containment is not a behaviour change for an ordinary run: the
         # exit status still comes back, and nothing is signalled.
@@ -1140,6 +1288,32 @@ class BuildAndPublishTests(TemporaryWorkspace):
         os.symlink(elsewhere, self.root / "linked-state")
         manifest = self.build(root=self.root / "linked-state" / "graph")
         self.assertEqual(manifest.completeness, lifecycle.COMPLETE)
+
+    def test_an_ancestor_retargeted_after_the_check_does_not_move_the_state(self) -> None:
+        """Check and use travel the same path, so retargeting between them does nothing.
+
+        Checking a resolved snapshot and then writing through the original
+        spelling is two different paths: ``/outside/link`` can resolve outside
+        every repository when it is checked and point into one by the time the
+        first directory is created. The state root is canonicalized once, at
+        construction, and every later open goes through that canonical path, so
+        a link swapped afterwards is no longer on the route.
+        """
+        safe = self.root / "safe"
+        safe.mkdir()
+        outside = self.root / "outside"
+        outside.mkdir()
+        link = outside / "link"
+        os.symlink(safe, link)
+        state = lifecycle.GraphStateRoot(self.repository, root=link / "graph-state")
+        inside = self.repository / "subdir"
+        inside.mkdir()
+        link.unlink()
+        os.symlink(inside, link)
+        state.ensure()
+        self.assertTrue(state.path.is_relative_to(safe))
+        self.assertTrue((safe / "graph-state" / "graph").is_dir())
+        self.assertFalse((inside / "graph-state").exists())
 
     def test_a_manifest_no_reader_could_load_publishes_nothing(self) -> None:
         """Publication validates the whole manifest before it touches state.
