@@ -58,7 +58,7 @@ and feedback retain explicit authorization, expiry, and refresh checks.
 | Merge-eligible reviewers | Codex and Claude after repository setup and calibration |
 | Informational reviewers | Devin CLI and other optional providers until their evidence supports promotion |
 | Organizational context | Optional Coworker packets for approved Claude/Codex orchestrator, builder, and reviewer roles |
-| Repository context graph | Provider-neutral packet extension exists; Graphify is not installed or qualified |
+| Repository context graph | Provider-neutral packet extension and offline scope/freshness checks exist; Graphify is adopted as an optional bounded provider but not yet installed or shipped |
 | Work tracking | GitHub Issues by default; Jira Cloud optional, bounded, and dry-run-first for writes |
 | Team interaction | CLI, GitHub, local Board, and optional CodeMower.com metadata views; no Slack ingress yet |
 
@@ -153,7 +153,10 @@ point. Reviewer authority remains evidence-based.
 Treat Graphify as a repository-context provider beside Coworker, not as a
 participant. Start local and code-only:
 
-- finish [Graphify evaluation issue #876](https://github.com/codemower-ai/code-mower/issues/876);
+- build the optional local provider against the conditions in the
+  [evaluation record](graphify-evaluation.md), which closes
+  [issue #876](https://github.com/codemower-ai/code-mower/issues/876) with an
+  adopt decision;
 - add a provider registry and multiple context attachments per session;
 - build and refresh graphs with commit/freshness validation;
 - consume a pinned structured JSON contract;
@@ -183,8 +186,10 @@ for Devin rather than scrape terminal or Board output.
 ## Delivery Order
 
 1. Ship Devin lifecycle, host, context-recipient, and reviewer parity first.
-2. Run the bounded Graphify evaluation in parallel, then ship the local context
-   provider after the shared context registry is stable.
+2. The bounded Graphify evaluation is complete and adopted; ship the optional
+   local context provider after the shared context registry is stable, against
+   the conditions in the evaluation record. Installation stays opt-in and no
+   command requires an index to exist.
 3. Define Slack's command and identity contract in parallel, but merge its
    worker only after session lifecycle and recovery are stable.
 

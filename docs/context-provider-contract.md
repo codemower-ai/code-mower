@@ -188,6 +188,20 @@ source revision, and graph build time. A consumer can distinguish matching,
 stale, and unknown revision binding. Local repository context does not require
 an OAuth principal or workspace.
 
+Local repository evidence needs one rule the generic packet schema cannot
+express: a citation must stay inside the indexed checkout. `context_graph`
+parses repository-relative citations with optional line spans, rejects absolute
+paths, parent traversal, and the indexer's own cache directories, re-applies
+that policy to each citation's resolved target so a symlink cannot alias private
+state or another worktree under an innocent name, and scores how many line
+claims still resolve. Scope is a gate rather than a score: one out-of-scope
+citation rejects the packet. Stale or unknown revision binding fails that
+quality gate even when every citation resolves.
+
 The [Graphify candidate](https://github.com/codemower-ai/code-mower/issues/876)
-is later v1.3.x work. Synthetic graph fixtures prove only the extension point;
-they do not establish Graphify compatibility or make it a v1.3.1 dependency.
+is **adopted as an optional, bounded local provider** behind this contract; see
+the [evaluation record](graphify-evaluation.md) for the decision, the pinned
+package record, and the conditions an implementing change must meet. Nothing is
+installed or required yet. Synthetic graph fixtures prove only the extension
+point; they do not establish Graphify compatibility or make it a v1.3.1
+dependency.
