@@ -2073,6 +2073,13 @@ def subprocess_indexer(executable: str, *, repository: Path) -> Callable[[IndexR
             "local graph builds need an OS sandbox that denies the provider the network and "
             "the host filesystem; this host offers none that could be verified"
         )
+    # The checkout root, for the same reason the state identity uses it, and
+    # here it is load-bearing rather than cosmetic: both boundaries below refuse
+    # what lives *inside the checkout*, and a subdirectory would narrow that
+    # refusal to part of one. A provider at ``<checkout>/provider-venv`` must be
+    # refused for a build run from ``<checkout>/src`` exactly as it is from the
+    # root, and the exposure a run is confined to is checked the same way.
+    repository = checkout_root(repository)
     runtime = _provider_read_paths(command, repository=repository)
 
     def run(request: IndexRequest) -> IndexResult:
@@ -2219,12 +2226,49 @@ def load_manifest(payload: Mapping[str, Any]) -> BuildManifest:
     )
 
 
+def checkout_root(repository: Path) -> Path:
+    """The worktree root that owns ``repository``, or the path itself.
+
+    State identity is per checkout, not per directory. A census reads the
+    commit's whole tree -- ``ls-tree --full-tree``, never the invocation
+    directory's slice of it -- so ``status`` run in ``src/`` asks about exactly
+    the generation ``status`` run at the root published, and must resolve to
+    it. Deriving the identity from the invocation directory instead made every
+    subdirectory its own workspace: a graph built at the root reported
+    ``absent`` from ``src/``, and ``remove`` from there deleted nothing while
+    reporting success.
+
+    Git answers this per worktree, which is what keeps linked worktrees
+    separate: each reports its own root, and each may hold a different
+    revision, so they must not share a generation. A path Git cannot place --
+    not a repository, a bare one, or no Git on the host -- keeps the resolved
+    path it was given, which is what this derived before. Nothing is refused
+    here: the verbs that need Git already fail on their own terms, and a
+    lifecycle that could not even name its state would fail worse.
+    """
+    resolved = Path(repository).resolve()
+    try:
+        toplevel = _git(resolved, "rev-parse", "--show-toplevel", permit_failure=True).strip()
+    except ContextError:
+        return resolved
+    if not toplevel:
+        return resolved
+    # Resolved the same way the fallback is, so one checkout has one identity
+    # however it was spelled -- and so a root that was already canonical keeps
+    # the workspace name its existing generations are filed under.
+    return Path(os.path.realpath(toplevel))
+
+
 def workspace_id(repository: Path) -> str:
     """A stable private name for one checkout.
 
     Derived from the resolved path so two worktrees of the same repository get
     separate state and can never read each other's generations, and hashed so
     the operator's directory layout is not spelled out in a shared location.
+
+    The path must already be a checkout root. ``GraphStateRoot`` is the one
+    place identity is derived, and it normalizes through ``checkout_root``
+    first; a caller that hashes a subdirectory gets a name nothing else uses.
     """
     return hashlib.sha256(str(Path(repository).resolve()).encode()).hexdigest()[:32]
 
@@ -2307,7 +2351,12 @@ class GraphStateRoot:
     """
 
     def __init__(self, repository: Path, *, root: Path | None = None):
-        self.repository = Path(repository).resolve()
+        #: The checkout root, not the directory the command was run from. Every
+        #: verb reaches its state through this class, so normalizing here is
+        #: what makes ``build`` at the root and ``status`` in ``src/`` name one
+        #: workspace; callers read it back to run Git against the same root the
+        #: identity came from.
+        self.repository = checkout_root(repository)
         base = Path(root) if root is not None else default_context_root()
         if not base.is_absolute():
             raise ContextError("local graph state requires an absolute private directory")
@@ -2893,8 +2942,12 @@ def build_graph(
     one in place, which is why nothing here ever writes into an existing
     generation directory.
     """
-    repository = Path(repository).resolve()
     state = GraphStateRoot(repository, root=root)
+    # Read the checkout through the root its identity was derived from. The
+    # census is whole-tree either way, but binding the two together means a
+    # build from a subdirectory cannot bind one directory's name to another
+    # directory's Git answers.
+    repository = state.repository
     commit, tree = resolve_revision(repository, revision)
     census = read_tracked_census(repository, commit)
     with state.lock():
@@ -2996,6 +3049,7 @@ def graph_status(
     pointer that moved is read again.
     """
     state = GraphStateRoot(repository, root=root)
+    repository = state.repository
     for attempt in range(_STATUS_ATTEMPTS):
         status = _status_once(
             state, repository, revision=revision, require_complete=require_complete
@@ -3129,7 +3183,7 @@ def doctor_report(
         except ContextError as error:
             record("context-graph-state", "fail", str(error))
 
-    status = graph_status(repository, root=root, revision=revision)
+    status = graph_status(state.repository, root=root, revision=revision)
     if status.state == "absent":
         record("context-graph-generation", "skip", status.detail or "no local graph generation is published")
     elif status.usable:
@@ -3198,6 +3252,7 @@ __all__: Sequence[str] = (
     "TrackedCensus",
     "TrackedEntry",
     "build_graph",
+    "checkout_root",
     "containment_mechanism",
     "containment_prefix",
     "doctor_report",

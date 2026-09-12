@@ -484,9 +484,20 @@ tracked file, which is a build executing content it was only ever meant to read.
   generations/<generation>/graph.bin
 ```
 
-Directories are 0700 and files 0600. `<workspace>` is derived from the resolved
-checkout path, so two worktrees of the same repository get separate state and
-can never read each other's generations. State is refused inside any Git
+Directories are 0700 and files 0600. `<workspace>` is derived from the
+checkout's **worktree root**, asked of Git rather than taken from the directory
+the command was run in. A census reads the commit's whole tree, so `status` in
+`src/` asks about exactly the generation `build` at the root published and has
+to resolve to it; deriving the name from the invocation directory made every
+subdirectory its own workspace, and a graph built at the root then read as
+`absent` from `src/` while `remove` there deleted nothing and reported success.
+Git answers per worktree, so two worktrees of one repository still get separate
+state and can never read each other's generations — each may hold a different
+revision. A path Git cannot place — not a repository, a bare one, or no Git on
+the host — keeps its resolved path, so state stays nameable and the verbs that
+need Git fail on their own terms. The same root is what the provider exposure
+rule is drawn against, so a provider installed inside the checkout is refused
+from a subdirectory exactly as it is from the root. State is refused inside any Git
 repository, which is the enforcement half of adoption condition 2. The refusal
 is checked on the resolved path as well as the given one: `--state-dir
 /outside/link/state` names no repository in its own spelling while

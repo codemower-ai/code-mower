@@ -1463,6 +1463,35 @@ class ProviderExposureTests(ProviderExposureFixture):
         with self.assertRaises(ContextError):
             self.exposure(provider)
 
+    def test_a_provider_inside_the_checkout_is_refused_from_a_subdirectory(self) -> None:
+        """The refusal is about the checkout, not about the invocation directory.
+
+        ``subprocess_indexer`` is handed whatever ``--repo-path`` was, and the
+        default is the current directory. Drawing this boundary around
+        ``<checkout>/src`` would leave ``<checkout>/provider-venv`` outside it
+        -- the live working tree exposed to the provider for no reason other
+        than which directory the operator happened to be standing in.
+        """
+        provider = self.script(self.repository / "provider-venv" / "bin" / "graphify", venv=True)
+        outside = self.script(self.root / "elsewhere-venv" / "bin" / "graphify", venv=True)
+        with mock.patch.object(
+            lifecycle, "containment_mechanism", lambda: lifecycle.Containment("stand-in", "/sandbox")
+        ):
+            with self.assertRaises(ContextError):
+                lifecycle.subprocess_indexer(
+                    str(provider), repository=self.repository / "example_pkg"
+                )
+            # The positive control: an install outside the checkout is still
+            # accepted from the same subdirectory, so the refusal above is
+            # about where the provider lives and not about normalizing at all.
+            self.assertTrue(
+                callable(
+                    lifecycle.subprocess_indexer(
+                        str(outside), repository=self.repository / "example_pkg"
+                    )
+                )
+            )
+
     def test_an_environment_that_is_the_home_directory_is_refused(self) -> None:
         home = self.root / "home"
         provider = self.script(home / "bin" / "graphify", venv=True)
@@ -1959,11 +1988,6 @@ class BuildAndPublishTests(TemporaryWorkspace):
         generation = state.current_generation()
         self.assertEqual(stat.S_IMODE((state.generations_path / generation).stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(state.artifact_path(generation).stat().st_mode), 0o600)
-
-    def test_two_worktrees_of_one_repository_keep_separate_state(self) -> None:
-        other = self.root / "other"
-        other.mkdir()
-        self.assertNotEqual(lifecycle.workspace_id(self.repository), lifecycle.workspace_id(other))
 
     def test_refresh_publishes_a_new_immutable_generation(self) -> None:
         first = self.build(keep_previous=True)
@@ -2510,6 +2534,97 @@ class GitBoundaryTests(TemporaryWorkspace):
             lifecycle.refuse_lazy_object_fetch(self.repository)
 
 
+class CheckoutIdentityTests(TemporaryWorkspace):
+    """One checkout is one workspace, however the command was spelled."""
+
+    def workspace(self, path: Path) -> str:
+        return lifecycle.GraphStateRoot(path, root=self.state).workspace
+
+    def test_a_subdirectory_resolves_to_the_checkout_root(self) -> None:
+        subdirectory = self.repository / "example_pkg"
+        self.assertEqual(lifecycle.checkout_root(subdirectory), self.repository)
+        self.assertEqual(self.workspace(subdirectory), self.workspace(self.repository))
+
+    def test_a_symlinked_spelling_of_one_checkout_is_one_workspace(self) -> None:
+        link = self.root / "link-to-checkout"
+        link.symlink_to(self.repository)
+        self.assertEqual(self.workspace(link), self.workspace(self.repository))
+
+    def test_a_graph_built_at_the_root_is_current_from_a_subdirectory(self) -> None:
+        # The census is whole-tree, so a subdirectory asks about exactly the
+        # generation the root published. Reporting ``absent`` there would send
+        # a consumer to rebuild a graph it already has.
+        self.build()
+        status = lifecycle.graph_status(self.repository / "example_pkg", root=self.state)
+        self.assertEqual(status.state, "current")
+        self.assertTrue(status.usable)
+
+    def test_a_build_from_a_subdirectory_publishes_the_checkouts_generation(self) -> None:
+        published = lifecycle.build_graph(
+            self.repository / "example_pkg", pin=PIN, indexer=recording_indexer(),
+            root=self.state, now=NOW,
+        )
+        self.assertEqual(
+            list(lifecycle.iter_generations(self.repository, root=self.state)),
+            [published.generation],
+        )
+        # The whole tree, not the subdirectory's slice of it: the census is
+        # read from the commit with ``--full-tree``, so where the command ran
+        # cannot narrow what the graph was built over.
+        self.assertEqual(
+            published.census_digest,
+            lifecycle.read_tracked_census(self.repository, published.commit).digest,
+        )
+        root_status = lifecycle.graph_status(self.repository, root=self.state)
+        self.assertEqual((root_status.state, root_status.generation), ("current", published.generation))
+
+    def test_remove_from_a_subdirectory_deletes_the_checkouts_graph(self) -> None:
+        # The defect this covers reported success while deleting nothing: an
+        # operator clearing a graph from ``src/`` was told it was gone.
+        self.build()
+        self.assertTrue(lifecycle.remove_graph(self.repository / "example_pkg", root=self.state))
+        self.assertEqual(lifecycle.graph_status(self.repository, root=self.state).state, "absent")
+
+    def test_doctor_from_a_subdirectory_sees_the_checkouts_generation(self) -> None:
+        self.build()
+        with stand_in_containment(("/sandbox",)):
+            report = lifecycle.doctor_report(
+                self.repository / "example_pkg", pin=PIN, root=self.state
+            )
+        self.assertEqual(report["status"], "pass")
+
+    def test_linked_worktrees_of_one_repository_keep_separate_state(self) -> None:
+        # Normalizing to a worktree root must not collapse two worktrees into
+        # one workspace: each holds its own revision, so a generation built for
+        # one is not a graph of the other's content.
+        other = self.root / "side"
+        git(self.repository, "worktree", "add", "-q", "-b", "side", str(other))
+        other = other.resolve()
+        self.assertEqual(lifecycle.checkout_root(other), other)
+        self.assertNotEqual(self.workspace(other), self.workspace(self.repository))
+        self.build()
+        self.assertEqual(lifecycle.graph_status(other, root=self.state).state, "absent")
+        # ...and a subdirectory of the linked worktree resolves to that
+        # worktree, not to the repository it was created from.
+        self.assertEqual(lifecycle.checkout_root(other / "example_pkg"), other)
+
+    def test_two_unrelated_checkouts_keep_separate_state(self) -> None:
+        other = self.root / "other"
+        other.mkdir()
+        self.assertNotEqual(self.workspace(other), self.workspace(self.repository))
+
+    def test_a_path_outside_any_repository_keeps_its_resolved_path(self) -> None:
+        # Identity stays defined for a path Git cannot place. The verbs that
+        # need Git fail on their own terms; naming state must not be the step
+        # that breaks, or ``remove`` could not clean up after one.
+        outside = self.root / "not-a-repository"
+        outside.mkdir()
+        self.assertEqual(lifecycle.checkout_root(outside), outside)
+        self.assertEqual(
+            lifecycle.checkout_root(self.root / "absent"), (self.root / "absent").resolve()
+        )
+
+
 class RemoveTests(TemporaryWorkspace):
     def test_remove_takes_the_build_lock(self) -> None:
         # A removal running beside a build deletes its sources, its output and
@@ -2689,6 +2804,34 @@ class CommandTests(TemporaryWorkspace):
         code, output = self.run_command("remove", *self.base())
         self.assertEqual(code, 0, output)
         self.assertTrue(json.loads(output)["removed"])
+        code, output = self.run_command("status", *self.base())
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(output)["state"], "absent")
+
+    def test_the_verbs_address_one_checkout_from_any_directory_inside_it(self) -> None:
+        """``--repo-path`` defaults to the current directory, so this is the
+        common case rather than an exotic one: the graph is built once at the
+        root and then asked about from wherever the operator is working.
+
+        Built through the injected indexer rather than the launcher, because
+        what is under test is which state the verbs address, not containment.
+        """
+        self.build()
+        inside = ["--repo-path", str(self.repository / "example_pkg"),
+                  "--state-dir", str(self.state), "--json"]
+        code, output = self.run_command("status", *inside)
+        self.assertEqual(code, 0, output)
+        self.assertTrue(json.loads(output)["usable"])
+        code, output = self.run_command("doctor", *inside)
+        self.assertEqual(code, 0, output)
+        generation = [check for check in json.loads(output)["checks"]
+                      if check["check"] == "context-graph-generation"]
+        self.assertEqual([check["status"] for check in generation], ["pass"])
+        code, output = self.run_command("remove", *inside)
+        self.assertEqual(code, 0, output)
+        self.assertTrue(json.loads(output)["removed"])
+        # Removed the checkout's graph, not a namesake of its own: the root
+        # now reports absent too.
         code, output = self.run_command("status", *self.base())
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(output)["state"], "absent")
