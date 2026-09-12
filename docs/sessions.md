@@ -118,6 +118,41 @@ new session. Existing sessions without a selected work item report
 `not_selected`; repositories without context report `not_configured` and keep
 the ordinary workflow usable.
 
+Prepare bounded evidence and its work order from the same session:
+
+```bash
+code-mower session context prepare .code-mower/sessions/SESSION.json
+```
+
+The default private search is the selected work-item identity, so a Jira key or
+other authoritative ticket reference does not need to be copied into a request
+file. To supply more precise retrieval language without placing it in shell
+history or local state, pipe it with `--query-stdin`. An optional
+`--work-order-body-file` supplies the local objective and acceptance criteria;
+otherwise Code Mower creates a bounded generic work order for the selected
+item. The hosting agent is the builder by default. Use `--builder claude` (or
+another selected builder) when the orchestrator is handing implementation to a
+different participant; review lanes then exclude that builder. `--output`
+accepts a repository-relative path only.
+
+The command rechecks the session lease and trusted context policy, authorizes
+the calling Claude or Codex host, fetches through the existing bounded provider
+contract, drafts through the existing work-order contract, and saves only a
+request hash plus opaque packet and work-order references in private session
+state. Its output does not contain the work-item identity, query, connection,
+account, packet handle, citations, or provider diagnostics. The work order is
+local under `.code-mower/` and names only the opaque packet needed by approved
+participants.
+
+Repeating a completed prepare reauthorizes and reuses the packet without
+another organization search. A packet retrieved before a local work-order
+write was interrupted is also reused on resume. A search that failed or was
+interrupted before its packet was recorded remains reserved; verify access and
+rerun with explicit `--refresh`. Changed query text also requires `--refresh`.
+Optional context failure leaves ordinary work usable, while required context
+failure pauses dependent work. A session with no context provider reports
+`not_configured` and keeps its ordinary workflow.
+
 ## Single Orchestrator Lease
 
 `session start` takes a local lease before it saves anything, so one repository

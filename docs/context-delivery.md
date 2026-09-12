@@ -6,12 +6,46 @@ The calling host remains the orchestrator; a context provider gains no builder,
 reviewer, tracker-write, or merge authority. Ordinary sessions without context
 keep their existing behavior and do not load the optional Coworker SDK.
 
-Start with a verified [private connection and bounded fetch](context-connections.md).
-Fetch once for the work item, then reuse the returned opaque packet handle.
-Every delivery verifies authorization online; it does not repeat the search.
+Start with a verified [private connection](context-connections.md). The guided
+path below fetches once for the work item and retains the opaque packet handle;
+the lower-level workflow can still fetch it explicitly. Every delivery verifies
+authorization online; it does not repeat the search.
 Only Claude and Codex orchestrator, builder, and reviewer roles are supported
 for private delivery in this release. Each role must be explicitly approved in
 the private connection configuration.
+
+## Guided session path
+
+For the normal workflow, bind the work item when starting the session and let
+Code Mower carry the private identity into retrieval and work-order creation:
+
+```sh
+code-mower session start --repo OWNER/REPO --host codex --work-item EXAMPLE-123
+code-mower session context prepare .code-mower/sessions/SESSION.json
+```
+
+Use `--host claude` when Claude starts the session. The selected host is the
+implicit orchestrator. It is also the default builder; `prepare --builder NAME`
+selects another configured builder for a handoff. The work order names review
+lanes selected for the session while excluding the builder, so a builder's own
+review cannot satisfy the peer-review requirement. No optional reviewer is
+added unless it was selected for the session.
+
+The prepare command uses the selected work-item identity as its bounded private
+query by default. For a more specific query, use private stdin:
+
+```sh
+cat /private/path/query.txt | code-mower session context prepare \
+  .code-mower/sessions/SESSION.json --query-stdin
+```
+
+The query is hashed for retry consistency and is not saved or rendered. The
+command performs the existing online authorization and packet fetch, writes a
+local context-aware work order, and records its opaque references in protected
+session state. Repeating it reauthorizes the packet without repeating the
+search. Use `--refresh` only to retry a failed/interrupted search or intentionally
+replace changed retrieval input. The lower-level commands below remain useful
+for expert scripting and diagnostics.
 
 ## Work order and builder
 
