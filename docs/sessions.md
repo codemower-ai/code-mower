@@ -280,7 +280,7 @@ readiness, and explicit gaps. The modes describe maintained Code Mower paths:
 | Review | Local runner | Evidence only |
 | Message | Unavailable | Unavailable |
 | Cancel | Unavailable | Unavailable |
-| Authorized context delivery | Unavailable | Unavailable |
+| Authorized context delivery | Local runner (attach to the packet) | Agent handoff (authorized packet in hosted builder input) |
 | Structured results | Local runner | Release campaign only |
 
 These declarations describe the current integration; they do not launch a

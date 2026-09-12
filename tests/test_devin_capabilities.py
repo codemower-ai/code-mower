@@ -165,8 +165,10 @@ class DevinCapabilityTests(unittest.TestCase):
                 self.assertTrue(member["reviewer"]["informational"])
                 rendered = session.render_session(brief)
                 self.assertIn(expected, rendered)
-                for capability in ("message", "cancel", "context"):
+                for capability in ("message", "cancel"):
                     self.assertIn(capability + "=unavailable", rendered)
+                self.assertIn("context=" + TRANSPORTS[expected].capabilities.context, rendered)
+                self.assertNotIn("context=unavailable", rendered)
 
     def test_hosted_transport_cannot_coordinate(self):
         with self.assertRaisesRegex(config.ConfigError, "cannot coordinate"):
@@ -220,7 +222,8 @@ class DevinCapabilityTests(unittest.TestCase):
             checks = check_lane_runtime(transport.review_lane, participants.reference_review_config(transport.review_lane), probe_runtime=False, http_timeout=1, adoption_posture="orchestrator-only")
             check = next(check for check in checks if check.name == "provider.capabilities")
             self.assertEqual(check.detail, transport.brief())
-            self.assertIn("message, cancel, context", check.message)
+            self.assertIn("message, cancel", check.message)
+            self.assertNotIn("context", check.message)
             self.assertEqual(check.status, "warn")
 
     def test_shipped_schema_matches_each_complete_transport_contract(self):

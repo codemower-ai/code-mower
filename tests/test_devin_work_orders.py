@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from code_mower.context_contract import ContextError
 from code_mower.context_packets import fetch
 from code_mower.devin_sessions import DevinClient
 from code_mower.devin_work_orders import (
@@ -307,10 +308,14 @@ class ContextInjectionTests(WorkOrderCase):
         self.addCleanup(self.fixture.doCleanups)
         self.backend = self.fixture.backend
         self.backend.result["result"]["results"][0]["text"] = CONTEXT_CANARY
-        self.result = fetch(self.fixture.store, "example", self.fixture.spec, backend=self.backend, refresh=True)
-        self.context = packet_context(
-            self.fixture.store, "example", self.result["packet_handle"], self.fixture.spec["policy"],
-            repository="owner/repo", work_item="EXAMPLE-1", backend=self.backend)
+        self.policy = self.fixture.spec["policy"]
+        self.spec = {**self.fixture.spec, "work_item": str(self.order.issue)}
+        self.result = fetch(self.fixture.store, "example", self.spec, backend=self.backend, refresh=True)
+        self.context = self.bind()
+
+    def bind(self, order=None, policy=None, handle=None):
+        return packet_context(self.fixture.store, "example", handle or self.result["packet_handle"],
+                              policy or self.policy, order=order or self.order, backend=self.backend)
 
     def private_files(self):
         return [path for path in self.root.rglob("*") if path.is_file()]
@@ -322,13 +327,24 @@ class ContextInjectionTests(WorkOrderCase):
         for path in self.private_files():
             self.assertNotIn(CONTEXT_CANARY.encode(), path.read_bytes())
 
+    def test_packet_context_binds_the_work_order_identity_and_policy(self):
+        self.assertEqual((self.context.repository, self.context.issue, self.context.required),
+                         (self.order.repository, self.order.issue, True))
+        self.assertFalse(self.bind(policy={**self.policy, "required": False}).required)
+        self.assertNotIn(CONTEXT_CANARY, repr(self.context))
+        for policy in (None, {}, {**self.policy, "required": "yes"}):
+            with self.subTest(policy=policy), self.assertRaisesRegex(RemoteError, "invalid_request"):
+                packet_context(self.fixture.store, "example", self.result["packet_handle"], policy,
+                               order=self.order, backend=self.backend)
+
     def test_preview_never_retrieves_context(self):
         calls = []
         def spy():
             calls.append(1)
-            return self.context()
+            return self.context.render()
+        context = replace(self.context, render=spy)
         for command in ("dispatch", "clarify", "fix"):
-            output = self.service.run(command, self.order, context=spy, request="r", prose="p")
+            output = self.service.run(command, self.order, context=context, request="r", prose="p")
             self.assertTrue(output["apply_required"])
         self.assertEqual(calls, [])
         self.assertFalse((self.root / "builder").exists())
@@ -338,6 +354,7 @@ class ContextInjectionTests(WorkOrderCase):
         with patch.object(self.provider, "create", wraps=self.provider.create) as create, \
                 patch.object(self.provider, "message", wraps=self.provider.message) as message:
             outputs.append(self.run_order("dispatch", context=self.context))
+            self.assertEqual(outputs[-1]["context"], "delivered")
             prompt = create.call_args.args[0]
             self.assertIn(CANARY, prompt)
             self.assertIn(CONTEXT_CANARY, prompt)
@@ -351,12 +368,15 @@ class ContextInjectionTests(WorkOrderCase):
                 self.run_order("dispatch")  # Changed create input, even by omission, never redispatches.
             self.assertEqual(create.call_count, 1)
             outputs.append(self.run_order("clarify", request="c-1", prose=CANARY, context=self.context))
+            self.assertEqual(outputs[-1]["context"], "delivered")
             self.assertIn(CONTEXT_CANARY, message.call_args.args[1])
             self.assertIn(CANARY, message.call_args.args[1])
             outputs.append(self.run_order("clarify", request="c-2", prose=CANARY))
+            self.assertEqual(outputs[-1]["context"], "omitted")
             self.assertNotIn(CONTEXT_CANARY, message.call_args.args[1])
             self.complete(round=2)
             outputs.append(self.run_order("collect"))
+            self.assertIsNone(outputs[-1]["context"])
             outputs.append(self.run_order("fix", request="fix-1", prose=CANARY, reviewed_head=HEAD,
                                           context=self.context))
             self.assertIn(CONTEXT_CANARY, message.call_args.args[1])
@@ -371,17 +391,37 @@ class ContextInjectionTests(WorkOrderCase):
             with self.subTest(command=command), self.assertRaisesRegex(RemoteError, "invalid_request"):
                 self.run_order(command, request="cancel-1", context=self.context)
 
+    def test_context_must_be_bound_to_this_work_order(self):
+        other_issue = replace(self.order, issue=908)
+        other_repo = replace(self.order, repository="other/repo")
+        cases = {
+            "other_issue": self.bind(order=other_issue),
+            "other_repository": self.bind(order=other_repo),
+            "unbound_callable": self.context.render,
+            "forged_binding": replace(self.bind(order=other_issue), repository="other/repo"),
+        }
+        for name, context in cases.items():
+            with self.subTest(case=name), patch.object(self.provider, "create", wraps=self.provider.create) as create:
+                with self.assertRaisesRegex(RemoteError, "context_binding_mismatch"):
+                    self.run_order("dispatch", context=context)
+                self.assertEqual(create.call_count, 0)
+        self.run_order("dispatch", context=self.context)
+        with patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            with self.assertRaisesRegex(RemoteError, "context_binding_mismatch"):
+                self.run_order("clarify", request="c-1", prose=CANARY, context=self.bind(order=other_issue))
+            self.assertEqual(message.call_count, 0)
+        self.assertEqual(self.run_order("status")["round"], 0)
+
     def test_authorization_is_rechecked_and_fails_closed_without_a_provider_write(self):
         cases = {
             "wrong_identity": lambda: setattr(self.backend, "wrong_identity", True),
             "revoked": lambda: setattr(self.backend, "revoked", True),
-            "wrong_repository": lambda: setattr(
-                self, "context", packet_context(
-                    self.fixture.store, "example", self.result["packet_handle"], self.fixture.spec["policy"],
-                    repository="other/repo", work_item="EXAMPLE-1", backend=self.backend)),
-            "changed_evidence": lambda: fetch(self.fixture.store, "example", self.fixture.spec,
+            "packet_for_another_work_item": lambda: setattr(self, "context", self.bind(
+                handle=fetch(self.fixture.store, "example", self.fixture.spec,
+                             backend=self.backend, refresh=True)["packet_handle"])),
+            "changed_evidence": lambda: fetch(self.fixture.store, "example", self.spec,
                                               backend=self.backend, refresh=True),
-            "garbage": lambda: setattr(self, "context", lambda: CANARY),
+            "garbage": lambda: setattr(self, "context", replace(self.context, render=lambda: CANARY)),
         }
         for name, arrange in cases.items():
             with self.subTest(case=name):
@@ -396,7 +436,8 @@ class ContextInjectionTests(WorkOrderCase):
         self.run_order("dispatch", context=self.context)
         with patch.object(self.provider, "message", wraps=self.provider.message) as message:
             with self.assertRaisesRegex(RemoteError, "context_unavailable"):
-                self.run_order("clarify", request="c-1", prose=CANARY, context=lambda: CANARY)
+                self.run_order("clarify", request="c-1", prose=CANARY,
+                               context=replace(self.context, render=lambda: CANARY))
             self.assertEqual(message.call_count, 0)
         self.assertEqual(self.run_order("status")["round"], 0)  # No local round was consumed.
         self.assertEqual(self.run_order("clarify", request="c-1", prose=CANARY,
@@ -408,16 +449,54 @@ class ContextInjectionTests(WorkOrderCase):
             self.assertEqual(message.call_count, 0)
         self.assertEqual(self.run_order("status")["round"], 1)
 
-    def test_optional_context_is_omitted_only_by_explicit_choice(self):
+    def test_optional_context_degrades_explicitly_and_required_context_fails_closed(self):
+        optional = self.bind(policy={**self.policy, "required": False})
         with patch.object(self.provider, "create", wraps=self.provider.create) as create:
-            self.run_order("dispatch", context=None)
+            output = self.run_order("dispatch", context=None)
+            self.assertEqual(output["context"], "omitted")
             self.assertNotIn("Packet identity", create.call_args.args[0])
+        def fail():
+            raise ContextError("context search unavailable")
+        unavailable = {"render": fail}
+        with patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            with self.assertRaisesRegex(RemoteError, "context_unavailable"):
+                self.run_order("clarify", request="c-1", prose=CANARY, context=replace(self.context, **unavailable))
+            self.assertEqual(message.call_count, 0)
+            output = self.run_order("clarify", request="c-1", prose=CANARY, context=replace(optional, **unavailable))
+            self.assertEqual((output["context"], output["round"]), ("degraded", 1))
+            self.assertNotIn(CONTEXT_CANARY, message.call_args.args[1])
+            self.assertIn(CANARY, message.call_args.args[1])
+        with patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            with self.assertRaisesRegex(RemoteError, "request_conflict"):
+                self.run_order("clarify", request="c-1", prose=CANARY, context=optional)  # Input changed.
+            output = self.run_order("clarify", request="c-1", prose=CANARY, context=replace(optional, **unavailable))
+            self.assertEqual((output["context"], output["round"]), ("degraded", 1))
+            output = self.run_order("clarify", request="c-2", prose=CANARY, context=optional)
+            self.assertEqual((output["context"], output["round"]), ("delivered", 2))
+            self.assertIn(CONTEXT_CANARY, message.call_args.args[1])
+        self.assert_not_persisted(output)
 
     def test_combined_input_is_bounded(self):
+        oversized = replace(self.context, render=lambda: "Packet identity: x\n" + "y" * MAX_INPUT_BYTES)
         with patch.object(self.provider, "create", wraps=self.provider.create) as create:
             with self.assertRaisesRegex(RemoteError, "context_budget_exceeded"):
-                self.run_order("dispatch", context=lambda: "Packet identity: x\n" + "y" * MAX_INPUT_BYTES)
+                self.run_order("dispatch", context=oversized)
             self.assertEqual(create.call_count, 0)
+        self.run_order("dispatch", context=self.context)
+        self.complete()
+        self.run_order("collect")
+        with patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            with self.assertRaisesRegex(RemoteError, "context_budget_exceeded"):
+                self.run_order("fix", request="fix-1", prose=CANARY, reviewed_head=HEAD, context=oversized)
+            self.assertEqual(message.call_count, 0)
+        self.assertEqual(self.run_order("status")["round"], 0)  # Oversized input leaves the record unchanged.
+        with self.service.store.locked(self.key) as locked:
+            record = locked.read()
+        self.assertIsNone(record["message"])
+        self.assertIsNotNone(record["claim"])
+        self.assertEqual(record["requests"], [])
+        self.assertEqual(self.run_order("fix", request="fix-1", prose=CANARY, reviewed_head=HEAD,
+                                        context=self.context)["round"], 1)
 
 
 if __name__ == "__main__":

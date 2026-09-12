@@ -31,7 +31,7 @@
             "review": "local_runner",
             "message": "unavailable",
             "cancel": "unavailable",
-            "context": "unavailable",
+            "context": "local_runner",
             "structured_results": "local_runner"
           }
         },
@@ -41,8 +41,7 @@
         "capability_gaps": {
           "const": [
             "message",
-            "cancel",
-            "context"
+            "cancel"
           ]
         }
       }
@@ -75,7 +74,7 @@
             "review": "evidence_only",
             "message": "unavailable",
             "cancel": "unavailable",
-            "context": "unavailable",
+            "context": "agent_handoff",
             "structured_results": "campaign_only"
           }
         },
@@ -86,8 +85,7 @@
           "const": [
             "coordinate",
             "message",
-            "cancel",
-            "context"
+            "cancel"
           ]
         }
       }

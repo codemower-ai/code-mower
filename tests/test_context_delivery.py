@@ -130,6 +130,13 @@ class ContextDeliveryTests(unittest.TestCase):
                              counts=[0, 0, 0, 0], trailer='<!-- DEVIN_AUDIT_STATE: devin-audit-pass -->')
         self.assertNotIn(prose, body)
         self.assertIn('Devin Audit: PASS', body)
+        self.assertIn('## Devin audit (informational only)', body)
+        forced = public_verdict(devin, provider='Devin', head=self.head, verdict='PASS', counts=[0, 0, 0, 0],
+                                trailer='<!-- DEVIN_AUDIT_STATE: devin-audit-pass -->', merge_authority=True)
+        self.assertIn('## Devin audit (informational only)', forced)
+        self.assertIn('## Claude audit (merge-authority lane)', public_verdict(
+            delivery, provider='Claude', head=self.head, verdict='PASS', counts=[0, 0, 0, 0],
+            trailer='<!-- CLAUDE_AUDIT_STATE: claude-audit-pass -->'))
         with self.assertRaises(ContextError):
             save_feedback(self.store, devin, 'unsupported', prose)
 

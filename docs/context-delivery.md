@@ -78,22 +78,29 @@ logs, tracked files, PR descriptions, and shared artifacts.
 ### Hosted Devin builder
 
 A trusted hosted work order can carry the packet to `devin:builder` without a
-local prompt file. The embedding binds one packet with
-`devin_work_orders.packet_context(...)` and passes the resulting callable as
-`context=` to `dispatch`, `clarify`, or `fix`. Immediately before each paid
-create or message write, and never in preview, the callable performs a new
-online authorization for `devin:builder` and renders the common evidence
-payload. That text is appended only to the provider input; the local work-order
-record and remote-session record keep only their existing digests, and status,
-collect, and cancel reject a context argument.
+local prompt file. The embedding binds one packet to the exact work order with
+`devin_work_orders.packet_context(store, name, handle, policy, order=order)` and
+passes the resulting `PacketContext` as `context=` to `dispatch`, `clarify`, or
+`fix`. The packet request is derived from the order's repository and issue
+number, never from caller-supplied identity, and a context bound to another
+order (or a bare callable) is rejected as `context_binding_mismatch`.
+Immediately before each paid create or message write, and never in preview, the
+context performs a new online authorization for `devin:builder` and renders the
+common evidence payload. That text is appended only to the provider input; the
+local work-order record and remote-session record keep only their existing
+digests, and status, collect, and cancel reject a context argument. Each
+outcome reports `context` as `delivered`, `degraded`, or `omitted`.
 
-Wrong account, revoked or expired authorization, a repository or recipient
-outside the connection, a refreshed or invalidated packet, or a payload without
-the packet identity fails closed as `context_unavailable` before any local
-round or provider write. Omitting `context=` is the only way to degrade to a
-code-only work order, and the remote session's dispatch fingerprint prevents a
-later dispatch from silently replaying with different input. The combined input
-is bounded at 64 KiB (`context_budget_exceeded`).
+The trusted policy's `required` flag decides what happens when the packet cannot
+be reauthorized. Wrong account, revoked or expired authorization, a packet for
+another repository or work item, a refreshed or invalidated packet, or a payload
+without the packet identity fails a required context closed as
+`context_unavailable` before any local round or provider write; the work order
+pauses with its prior state intact. Only an explicitly optional policy degrades
+to a code-only input, and that degradation is reported. Omitting `context=`
+sends a code-only work order, and the remote session's input fingerprint
+prevents a later replay with different input. The combined input, validated
+before any local mutation, is bounded at 64 KiB (`context_budget_exceeded`).
 
 ## Attach evidence to independent review
 

@@ -257,6 +257,8 @@ def public_verdict(delivery, *, provider, head, verdict, counts, trailer,
         raise ContextError("unsupported context review metadata")
     if len(counts) != 4 or any(type(value) is not int or not 0 <= value <= 1000 for value in counts):
         raise ContextError("invalid context review counts")
+    if provider == "Devin":
+        merge_authority = False  # Devin review is informational in every lane.
     metadata = delivery.metadata if isinstance(delivery, Delivery) else delivery
     from .provider_runners.comments import format_audit_comment_header
     header = format_audit_comment_header(provider_name=provider, head_sha=head,
