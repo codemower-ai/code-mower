@@ -13,6 +13,7 @@ from code_mower import doctor as code_mower_doctor
 from code_mower.config import ConfigError, load_config
 from code_mower.devin_readiness import (
     CLI_COMMAND_ENV,
+    DEFAULT_CLI_COMMAND,
     DEVIN_API_KEY_ENV,
     DEVIN_ORG_ID_ENV,
     DEVIN_REPOSITORIES_ENV,
@@ -22,6 +23,7 @@ from code_mower.devin_readiness import (
     POSTURE_HOSTED_API,
     POSTURE_LOCAL_CLI,
     POSTURE_UNAVAILABLE,
+    STATUS_WARN,
     devin_readiness,
     readiness_command,
     selected_devin_transport,
@@ -34,6 +36,9 @@ from code_mower.doctor_checks import (
 )
 from code_mower.doctor_checks.common import OBSERVER_ADOPTION_POSTURES
 from code_mower.doctor_checks.devin import devin_effective_lane
+from code_mower.doctor_checks.provider_local_cli_commands import (
+    resolved_local_cli_command,
+)
 from code_mower.doctor_checks.providers import check_lane_runtime
 from code_mower.local_cli_commands import candidate_local_cli_commands
 from code_mower.next_steps import build_next_steps
@@ -506,6 +511,78 @@ class DevinDoctorStageTests(unittest.TestCase):
         self.assertEqual(checks["provider.devin.selection"]["status"], "skip")
         self.assertIn("provider.devin.postures", checks)
 
+    def _both_devin_config(self, directory: str) -> Path:
+        labels = (
+            "    labels:\n"
+            "      needs: needs-devin-audit\n"
+            "      done: devin-audit-done\n"
+            "      blocked: devin-audit-blocked\n"
+        )
+        lanes = (
+            "lanes:\n"
+            "  devin:\n"
+            "    type: audit\n"
+            "    driver: hosted_bridge\n"
+            "    provider: devin\n"
+            "    informational: true\n"
+            f"{labels}"
+            "  devin_cli:\n"
+            "    type: audit\n"
+            "    driver: local_cli\n"
+            "    provider: devin_cli\n"
+            "    informational: true\n"
+            f"{labels}"
+            "    provider_config:\n"
+            "      command: devin\n"
+        )
+        text = EXAMPLE_CONFIG.read_text(encoding="utf-8")
+        text = text.replace("\nlanes:\n", "\n" + lanes, 1)
+        text = text.replace(
+            "\nprofiles:\n",
+            "\nprofiles:\n"
+            "  both-devin:\n"
+            "    description: Both Devin review transports are active.\n"
+            "    lanes:\n"
+            "      - codex\n"
+            "      - devin\n"
+            "      - devin_cli\n",
+            1,
+        )
+        path = Path(directory) / "code-mower.yml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_ordinary_doctor_reports_an_ambiguous_devin_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = self._both_devin_config(directory)
+            for argv in (
+                [str(config_path), "--profile", "both-devin", "--json"],
+                [str(config_path), "--profile", "both-devin", "--devin", "--json"],
+            ):
+                with self.subTest(argv=argv):
+                    result = self._report(
+                        [*argv, "--provider-templates", str(PROVIDER_TEMPLATES)]
+                    )
+                    plan = next(
+                        check
+                        for check in result["report"]["checks"]
+                        if check["name"] == "doctor.plan"
+                    )
+                    self.assertIn(
+                        "devin-readiness",
+                        {stage["id"] for stage in plan["detail"]["stages"]},
+                    )
+                    selection = next(
+                        check
+                        for check in result["report"]["checks"]
+                        if check["name"] == "provider.devin.selection"
+                    )
+                    self.assertEqual(selection["status"], "fail")
+                    self.assertIn("--profile", selection["remediation"])
+                    self.assertIn(
+                        "session_defaults.transports.devin", selection["remediation"]
+                    )
+
     def _devin_lane(self) -> dict:
         return {
             "provider": "devin_cli",
@@ -573,6 +650,50 @@ class DevinDoctorStageTests(unittest.TestCase):
             candidate_local_cli_commands(selected, env={}), ["/opt/private/devin-lane"]
         )
         self.assertIsNone(devin_effective_lane(lanes[:1]))
+
+    def test_effective_lane_follows_the_selected_transport_not_lane_order(self) -> None:
+        hosted = {"provider": "devin", "driver": "hosted_bridge"}
+        local = {
+            "provider": "devin_cli",
+            "driver": "local_cli",
+            "provider_config": {"command": "/opt/private/devin-lane"},
+        }
+        lanes = [("devin", hosted), ("devin_cli", local)]
+        self.assertEqual(devin_effective_lane(lanes, LOCAL_TRANSPORT), local)
+        self.assertEqual(devin_effective_lane(lanes, HOSTED_TRANSPORT), hosted)
+        self.assertEqual(devin_effective_lane(lanes, "claude_cli"), hosted)
+
+    def test_a_configured_lane_command_is_the_only_readiness_candidate(self) -> None:
+        lane = {
+            "provider": "devin_cli",
+            "driver": "local_cli",
+            "provider_config": {"command": "/opt/private/devin-lane"},
+        }
+        installed = {"devin", DEFAULT_CLI_COMMAND}
+
+        def which(command: str) -> str | None:
+            return f"/usr/local/bin/{command}" if command in installed else None
+
+        with mock.patch("code_mower.devin_readiness.shutil.which", side_effect=which):
+            findings = devin_readiness(
+                _config("devin-cli"),
+                env={CLI_COMMAND_ENV: "devin-override"},
+                lane_config=lane,
+                config_dir=Path(_ISOLATED_STORE.name),
+            )
+        with mock.patch(
+            "code_mower.doctor_checks.provider_local_cli_commands.shutil.which",
+            side_effect=which,
+        ):
+            self.assertIsNone(resolved_local_cli_command(lane))
+        finding = next(
+            item for item in findings if item.name == "provider.devin.local_cli"
+        )
+        # Runtime resolves only the lane's own candidates, so an installed
+        # default or override must not make readiness disagree with it.
+        self.assertEqual(finding.status, STATUS_WARN)
+        self.assertEqual(finding.detail["command"], "devin-lane")
+        self.assertNotIn("devin-override", str(finding.detail) + finding.message)
 
 
 class DevinGuidanceTests(unittest.TestCase):

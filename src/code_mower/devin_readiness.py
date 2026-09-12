@@ -210,19 +210,21 @@ def _cli_commands(
 ) -> tuple[str, ...]:
     """Return the candidate commands, which may be absolute local paths.
 
-    The selected lane's own discovery order wins so readiness cannot contradict
-    lane runtime; the historical override and default follow it. Every lookup
-    reads the injected environment so readiness never depends on the host.
+    A configured lane's own discovery order is the whole answer, because lane
+    runtime resolves exactly those candidates: appending the historical override
+    or the default would let readiness pass on an executable the lane would
+    never run. Those two only answer for a caller with no lane configuration.
+    Every lookup reads the injected environment so readiness never depends on
+    the host.
     """
-    candidates = (
-        list(candidate_local_cli_commands(lane_config, env=env))
-        if isinstance(lane_config, Mapping)
-        else []
-    )
-    override = str(env.get(CLI_COMMAND_ENV) or "")
-    if override:
-        candidates.append(override)
-    candidates.append(DEFAULT_CLI_COMMAND)
+    if isinstance(lane_config, Mapping):
+        candidates = list(candidate_local_cli_commands(lane_config, env=env))
+    else:
+        candidates = []
+        override = str(env.get(CLI_COMMAND_ENV) or "")
+        if override:
+            candidates.append(override)
+        candidates.append(DEFAULT_CLI_COMMAND)
     ordered: list[str] = []
     for command in candidates:
         if command not in ordered:

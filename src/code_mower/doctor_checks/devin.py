@@ -17,6 +17,7 @@ __all__ = [
     "check_devin_readiness",
     "devin_effective_lane",
     "devin_readiness_selected",
+    "devin_selection_ambiguity",
 ]
 
 DEVIN_REVIEW_LANES = frozenset(
@@ -41,12 +42,44 @@ def devin_readiness_selected(
         return None
 
 
+def devin_selection_ambiguity(
+    config: Mapping[str, Any] | None,
+    *,
+    lanes: tuple[str, ...] = (),
+    profile: str | None = "recommended",
+) -> str | None:
+    """Return why the selected Devin transport is ambiguous, if it is.
+
+    An unresolvable selection is a readiness defect of a repository that did
+    select Devin, so planning needs it: dropping the stage would report a clean
+    run for a configuration whose Devin posture cannot be determined.
+    """
+    from code_mower.devin_readiness import selected_devin_transport
+
+    try:
+        selected_devin_transport(config, lanes=lanes, profile=profile)
+    except code_mower_config.ConfigError as error:
+        return str(error)
+    return None
+
+
 def devin_effective_lane(
     effective_lanes: Iterable[tuple[str, Mapping[str, Any]]],
+    transport: str | None = None,
 ) -> Mapping[str, Any] | None:
-    """Return the effective configuration of the selected Devin review lane."""
+    """Return the effective configuration of the selected Devin review lane.
+
+    Both Devin lanes can be active at once, so the selected transport names the
+    one lane whose configured command readiness must agree with: returning
+    whichever lane appears first would check the other lane's executable.
+    """
+    wanted = (
+        {TRANSPORTS[transport].review_lane}
+        if transport in TRANSPORTS and TRANSPORTS[transport].product == "devin"
+        else DEVIN_REVIEW_LANES
+    )
     for lane_id, effective in effective_lanes:
-        if lane_id in DEVIN_REVIEW_LANES:
+        if lane_id in wanted:
             return effective
     return None
 
@@ -65,21 +98,34 @@ def check_devin_readiness(
     effective_lane: Mapping[str, Any] | None = None,
     adoption_posture: str = "reviewer-gate",
 ) -> list[DoctorCheck]:
-    from code_mower.devin_readiness import devin_readiness
+    from code_mower.devin_readiness import SCHEMA, devin_readiness
 
-    findings = devin_readiness(
-        config,
-        lanes=lanes,
-        repo_slug=repo_slug,
-        transport=transport,
-        credential_file=provider_credential_file,
-        profile=provider_profile,
-        config_profile=config_profile,
-        config_dir=provider_config_dir,
-        lane_config=effective_lane,
-        adoption_posture=adoption_posture,
-        include_unselected=include_unselected,
-    )
+    try:
+        findings = devin_readiness(
+            config,
+            lanes=lanes,
+            repo_slug=repo_slug,
+            transport=transport,
+            credential_file=provider_credential_file,
+            profile=provider_profile,
+            config_profile=config_profile,
+            config_dir=provider_config_dir,
+            lane_config=effective_lane,
+            adoption_posture=adoption_posture,
+            include_unselected=include_unselected,
+        )
+    except code_mower_config.ConfigError as error:
+        # An unresolved selection is reported as a bounded failing finding: the
+        # rest of the readiness answers depend on knowing the posture.
+        return [
+            DoctorCheck(
+                name="provider.devin.selection",
+                status="fail",
+                message=f"Devin transport selection is ambiguous: {error}",
+                detail={"schema": SCHEMA, "selection": "ambiguous"},
+                remediation=str(error),
+            )
+        ]
     return [
         DoctorCheck(
             name=finding.name,

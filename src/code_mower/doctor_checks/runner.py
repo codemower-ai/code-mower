@@ -23,6 +23,7 @@ from .devin import (
     check_devin_readiness,
     devin_effective_lane,
     devin_readiness_selected,
+    devin_selection_ambiguity,
 )
 from .github import check_github_setup
 from .jira import check_jira_tracker_readiness
@@ -132,15 +133,21 @@ def run_doctor(
     config, templates, checks = load_inputs(config_path, provider_templates_path)
     # Devin is an explicit addition to the Claude + Codex default, so its stage
     # only runs for a repository that selected it or a caller that asked.
+    devin_lanes = _configured_lanes(config, profile)
     devin_transport = devin_readiness_selected(
-        config, lanes=_configured_lanes(config, profile), profile=profile
+        config, lanes=devin_lanes, profile=profile
+    )
+    # An ambiguous selection also keeps the stage, so the report says the posture
+    # cannot be determined instead of omitting Devin readiness altogether.
+    devin_ambiguous = devin_transport is None and bool(
+        devin_selection_ambiguity(config, lanes=devin_lanes, profile=profile)
     )
     plan = build_doctor_run_plan(
         github=github,
         cloud=cloud,
         runner=runner,
         adoption=adoption or bool(repo_slug),
-        devin=devin or bool(devin_transport),
+        devin=devin or bool(devin_transport) or devin_ambiguous,
         supervised_pilot=supervised_pilot,
     )
     enabled_stages = {stage.id for stage in plan}
@@ -307,12 +314,12 @@ def run_doctor(
                 lanes=lanes,
                 repo_slug=repo_slug,
                 transport=devin_transport,
-                include_unselected=devin and not devin_transport,
+                include_unselected=devin and not (devin_transport or devin_ambiguous),
                 provider_credential_file=provider_credential_file,
                 provider_profile=provider_profile,
                 provider_config_dir=provider_config_dir,
                 config_profile=profile,
-                effective_lane=devin_effective_lane(effective_lanes),
+                effective_lane=devin_effective_lane(effective_lanes, devin_transport),
                 adoption_posture=adoption_posture,
             )
         )
