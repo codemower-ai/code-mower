@@ -4,6 +4,12 @@ Coworker supplies organizational evidence; it does not become an orchestrator,
 builder, reviewer, or tracker. Ordinary Claude/Codex setup requires no connection
 and installs no MCP or credential-store dependency.
 
+After connection setup, use the guided `session context prepare`, `deliver`,
+`attach`, `feedback`, and `status` commands for ordinary work. They derive the
+connection and authorized participants from the session. The lower-level
+`context` commands below are the expert surface for scripts that deliberately
+manage private request files and identifiers.
+
 Use the [optional setup and readiness guide](context-setup.md) to select a connection
 without changing your participants. The connection lifecycle is available with the optional extra:
 

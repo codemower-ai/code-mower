@@ -31,6 +31,31 @@ Connect asks for the intended account and workspace, then opens OAuth. A browser
 already signed into another account cannot silently become the selected account:
 Code Mower verifies signed identity against your explicit selection.
 
+## Use the connection in a session
+
+The normal path does not require packet handles or private request files. Start
+the session with a work item and use the saved session file for each phase:
+
+```sh
+code-mower session start --repo OWNER/REPO --host codex --work-item EXAMPLE-123
+code-mower session context prepare .code-mower/sessions/SESSION.json
+code-mower session context deliver .code-mower/sessions/SESSION.json
+code-mower session context attach .code-mower/sessions/SESSION.json --pr 42
+code-mower session context feedback .code-mower/sessions/SESSION.json \
+  --reviewer claude
+```
+
+Use `--host claude` when Claude starts the session. The host is the implicit
+orchestrator and default builder. `prepare --builder NAME` supports a selected
+Claude/Codex handoff. Each delivery and private-feedback read reauthorizes
+online; use `prepare --refresh` only when intentionally replacing evidence or
+retrying a failed retrieval. `session context status SESSION` shows redacted
+progress and the next safe action.
+
+The explicit commands in [Context Delivery](context-delivery.md) remain the
+expert interface for automation that manages its own private request files,
+packet handles, recipients and revisions.
+
 ## Diagnose readiness
 
 `code-mower context doctor --connection example-context --json` reads private

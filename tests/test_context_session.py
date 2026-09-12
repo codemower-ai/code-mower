@@ -232,6 +232,7 @@ class ContextSessionCliTests(unittest.TestCase):
         self.assertEqual((code, error), (0, ""))
         saved = json.loads(output)
         self.assertEqual(saved["work_item"], {"selected": True})
+        self.assertEqual(saved["guided_context"]["stage"], "not_configured")
         self.assertNotIn("SECRET-123", output)
         session_file = Path(saved["session_file"])
         self.assertNotIn("SECRET-123", session_file.read_text())
@@ -282,6 +283,9 @@ class ContextSessionCliTests(unittest.TestCase):
         code, output, error = self.start("--config", str(config_path))
         self.assertEqual((code, error), (0, ""))
         saved = json.loads(output)
+        self.assertEqual(saved["guided_context"]["stage"], "selected")
+        self.assertIn("Prepare bounded context", saved["guided_context"]["next_action"])
+        self.assertNotIn("SECRET-123", json.dumps(saved["guided_context"]))
         config_path.write_text(
             config_text.replace("connection: example-context", "connection: different-context"),
             encoding="utf-8",

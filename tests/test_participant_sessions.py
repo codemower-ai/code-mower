@@ -170,7 +170,7 @@ class SessionTests(unittest.TestCase):
             self.assertTrue(plan['context']['required'])
             self.assertEqual(plan['context']['schema'], 'code_mower.contextReadiness.v1')
             self.assertNotIn('example-context', json.dumps(plan))
-            self.assertIn('context deliver', json.dumps(plan))
+            self.assertIn('session context deliver', json.dumps(plan))
         source = dict(config.load_config(STARTER))
         source['context'] = {'schema': 'code_mower.contextPolicy.v1', 'connection': 'example-context',
                              'policy_version': 'v1', 'required': True}

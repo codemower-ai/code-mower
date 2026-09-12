@@ -141,8 +141,9 @@ def build_session(
         payload["context"] = summary('unchecked', required=normalize_policy(config['context'])['required'])
         payload["instructions"].extend([
             "Use the explicitly selected context connection; never substitute a host's ambient account.",
-            "Give approved participants the same authorized packet through `code-mower context deliver`; context confers no tools or authority.",
-            "Attach the selected packet to the PR before peer review. Changed evidence requires a new context input revision and a fresh review, even on the same code head.",
+            "For a selected work item, use `session context prepare`, `deliver`, `attach`, and `feedback`; the protected session carries private identifiers between steps.",
+            "Give approved participants the same authorized packet through `session context deliver`; context confers no tools or authority.",
+            "Attach the selected packet with `session context attach` before peer review. Changed evidence requires a new context input revision and a fresh review, even on the same code head.",
             "Required context that is missing, expired or unauthorized pauses dependent work and produces UNKNOWN review input. Keep private evidence and detailed context-bound findings out of public comments and telemetry.",
         ])
     return payload
@@ -158,6 +159,10 @@ def render_session(payload: Mapping[str, Any]) -> str:
     if isinstance(context, Mapping):
         lines.append(f"Context: {context['readiness']}; dependent work: {context['dependent_work']}")
         lines.append('Next: ' + context['next_action'])
+    guided = payload.get("guided_context")
+    if isinstance(guided, Mapping):
+        lines.append(f"Selected work item context: {guided['stage']}")
+        lines.append("Next: " + str(guided["next_action"]))
     lease = payload.get("lease")
     if isinstance(lease, Mapping):
         if lease.get("mutating"):
@@ -521,6 +526,9 @@ def main(argv: list[str] | None = None) -> int:
                         store = context_session.association_store(args.context_state_dir)
                         association = context_session.create(
                             store, payload, work_item=args.work_item, policy=config.get("context"),
+                        )
+                        payload["guided_context"] = context_session.status(
+                            association, lease_live=True,
                         )
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     with destination.open("x", encoding="utf-8") as handle:

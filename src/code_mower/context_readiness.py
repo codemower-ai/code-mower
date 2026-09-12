@@ -15,13 +15,13 @@ from .context_store import ContextStore
 SCHEMA = 'code_mower.contextReadiness.v1'
 STATES = {
     'not_configured': ('Optional context is not configured.', 'Continue the ordinary Claude/Codex workflow.'),
-    'unchecked': ('Saved context has not been authorized for this operation.', 'Run code-mower context doctor --connection CONNECTION --online.'),
-    'ready': ('The selected connection passed online authorization and has verified retrieval capability.', 'Fetch or deliver the bounded work-item packet; each operation reauthorizes.'),
+    'unchecked': ('Saved context has not been authorized for this operation.', 'Run doctor with --context-online, or context doctor for the selected connection with --online.'),
+    'ready': ('The selected connection passed online authorization and has verified retrieval capability.', 'Start a session with --work-item, then run session context prepare; each operation reauthorizes.'),
     'identity_unverified': ('The selected connection has no verified saved identity.', 'Run code-mower context connect coworker --connection CONNECTION.'),
     'unauthorized': ('The selected connection or destination is not authorized.', 'Verify the selected connection and reconnect if its identity or permissions changed.'),
     'unavailable': ('The optional connection or its private storage is unavailable.', 'Check the private store and install code-mower[coworker] on a supported platform.'),
     'stale': ('Saved authorization has expired; offline status cannot renew it.', 'Run code-mower context doctor --connection CONNECTION --online.'),
-    'incomplete': ('Identity is verified, but retrieval capability has not been established.', 'Run one explicit bounded context fetch for the intended work item.'),
+    'incomplete': ('Identity is verified, but retrieval capability has not been established.', 'Start a session with --work-item and run session context prepare for one bounded fetch.'),
 }
 
 

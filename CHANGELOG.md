@@ -5,6 +5,32 @@ project used alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop were hardening; v1.0 and
 later entries are regular releases.
 
+## v1.3.1
+
+Code Mower can carry optional organizational context through the ordinary
+Claude/Codex session workflow without copied packet handles, review revisions,
+or private request files.
+
+### Added
+
+- Guided `session context prepare`, `deliver`, `attach`, `feedback`, and
+  `status` commands that derive repository, work item, connection, policy and
+  participants from protected session state.
+- Context-aware work-order creation and session-start readiness using the same
+  redacted vocabulary as context doctor.
+- A provider-free two-host release qualification covering Codex and Claude as
+  host, builder and independent reviewer across fresh process/store boundaries.
+
+### Fixed
+
+- Crash recovery preserves retrieval and attachment intent across every local
+  mutation boundary, reconciles accepted GitHub writes, and requires explicit
+  retry when an uncertain write cannot be proven current.
+- Changed heads and refreshed packets retire stale bindings before replacement;
+  peer-review selection excludes the builder's own lane.
+- Readiness and session guidance now lead operators through the guided path
+  while keeping lower-level commands available for expert automation.
+
 ## v1.3.0
 
 Code Mower can optionally give its Claude and Codex participants the same bounded,
