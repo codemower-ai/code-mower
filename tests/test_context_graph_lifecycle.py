@@ -418,14 +418,26 @@ FINISHED_REPORT = {"complete": True, "code_files": 3, "requeued": 0}
 class ProviderLaunchTests(TemporaryWorkspace):
     """What ``subprocess_indexer`` actually hands the operating system."""
 
+    def setUp(self) -> None:
+        super().setUp()
+        # Every artifact path this fixture has handed out, newest last, so a
+        # test that launches more than once can name the run it means.
+        self.artifacts: list[Path] = []
+
     def request(self, pin: lifecycle.GraphifyPin = PIN) -> lifecycle.IndexRequest:
         # A fresh directory per launch, because that is what a build hands the
         # provider: ``materialize_tracked_files`` refuses a destination that
         # already exists, and so the provider never sees state from a prior run.
         source = Path(tempfile.mkdtemp(dir=self.root))
+        # The artifact is fresh for the same reason. A build writes it into the
+        # generation it is about to publish, and the writer opens it O_EXCL --
+        # a path shared between two launches would collide on the second rather
+        # than exercise anything, so each request names its own.
+        artifact = Path(tempfile.mkdtemp(dir=self.root)) / "graph.bin"
+        self.artifacts.append(artifact)
         return lifecycle.IndexRequest(
             source_root=source,
-            output_path=self.root / "graph.bin",
+            output_path=artifact,
             environment={"PATH": os.environ.get("PATH", "")},
             pin=pin,
             commit="a" * 40,
@@ -529,7 +541,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         _, result = self.run_indexer("graphify")
         self.assertEqual(result.completeness, lifecycle.COMPLETE)
         self.assertEqual(result.indexed_files, 3)
-        names = self.archived_names((self.root / "graph.bin").read_bytes())
+        names = self.archived_names(self.artifacts[-1].read_bytes())
         self.assertIn("graph.bin", names)
 
     def archived_names(self, artifact: bytes) -> list[str]:
@@ -540,10 +552,9 @@ class ProviderLaunchTests(TemporaryWorkspace):
         # The manifest binds a digest of the artifact, so two builds of one
         # commit have to agree on the bytes down to the archive metadata.
         self.run_indexer("graphify")
-        first = (self.root / "graph.bin").read_bytes()
-        (self.root / "graph.bin").unlink()
         self.run_indexer("graphify")
-        self.assertEqual(first, (self.root / "graph.bin").read_bytes())
+        first, second = (artifact.read_bytes() for artifact in self.artifacts)
+        self.assertEqual(first, second)
 
     def test_packing_is_bounded_by_the_archive_and_not_by_the_file_sizes(self) -> None:
         """Empty files are not free: their headers are bytes this process holds.
@@ -692,7 +703,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             with self.assertRaises(ContextError):
                 indexer(request)
         self.assertEqual(launched, [])
-        self.assertFalse((self.root / "graph.bin").exists())
+        self.assertFalse(request.output_path.exists())
 
     def test_a_host_without_a_sandbox_refuses_to_launch_a_provider(self) -> None:
         with mock.patch.object(lifecycle, "network_sandbox_command", lambda: None):
