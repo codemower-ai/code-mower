@@ -178,6 +178,10 @@ duplicate after success. An uncertain remote response pauses review; use
 The retry republishes that same revision. A new code head creates a new input
 revision and needs a fresh independent review.
 
+Running `prepare` while publication is pending or uncertain preserves the saved
+intent and directs the session back to `attach`; it never drops the revision or
+repeats provider authorization while publication recovery is unresolved.
+
 After a selected Claude or Codex reviewer finishes, give its private findings
 to the selected builder without copying the revision:
 

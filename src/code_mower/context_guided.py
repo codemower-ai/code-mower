@@ -18,6 +18,7 @@ from .context_delivery import (
     read_binding,
     render_evidence,
     reserve_attachment,
+    retire_attachment,
 )
 from .context_packets import load_authorized
 from .context_store import ContextStore
@@ -159,6 +160,24 @@ def _publish(
     )
 
 
+def _discard_stale_attachment(
+    association_store: ContextStore,
+    packet_store: ContextStore,
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Clear one binding only after the live PR head has moved beyond it."""
+    retire_attachment(
+        packet_store, record["connection"], record["packet"], record["revision"],
+    )
+    return context_session.update(
+        association_store,
+        record["session_id"],
+        expected_generation=record["generation"],
+        changes={
+            "stage": "prepared", "pr": None, "head": None, "revision": None,
+            "attachment_state": "none",
+        },
+    )
 def attach_session(
     association_store: ContextStore,
     packet_store: ContextStore,
@@ -214,6 +233,7 @@ def attach_session(
                     context_session.record_failure(association_store, record, exc)
                     raise
                 return _report("attached", reused=True, reconciled=True), 0
+            record = _discard_stale_attachment(association_store, packet_store, record)
 
         if record["attachment_state"] in {"pending", "uncertain"}:
             if record["pr"] != pr:
@@ -222,32 +242,26 @@ def attach_session(
                 association_store, packet_store, record, backend=backend,
             )
             if current == metadata:
-                mark_published(packet_store, record["connection"], record["revision"])
-                record = context_session.update(
-                    association_store,
-                    record["session_id"],
-                    expected_generation=record["generation"],
-                    changes={
-                        "stage": "attached", "attachment_state": "published",
-                        "context_state": "ready",
-                    },
-                )
                 if record["head"] == head:
+                    mark_published(packet_store, record["connection"], record["revision"])
+                    record = context_session.update(
+                        association_store,
+                        record["session_id"],
+                        expected_generation=record["generation"],
+                        changes={
+                            "stage": "attached", "attachment_state": "published",
+                            "context_state": "ready",
+                        },
+                    )
                     return _report("attached", reused=True, reconciled=True), 0
+                record = _discard_stale_attachment(
+                    association_store, packet_store, record,
+                )
             elif record["attachment_state"] == "uncertain" and not retry_uncertain:
                 return _report("attachment_uncertain", reused=True), 1
             elif record["head"] != head:
-                abandon_attachment(
-                    packet_store, record["connection"], record["packet"], record["revision"],
-                )
-                record = context_session.update(
-                    association_store,
-                    record["session_id"],
-                    expected_generation=record["generation"],
-                    changes={
-                        "stage": "prepared", "pr": None, "head": None, "revision": None,
-                        "attachment_state": "none",
-                    },
+                record = _discard_stale_attachment(
+                    association_store, packet_store, record,
                 )
             elif record["attachment_state"] in {"pending", "uncertain"}:
                 return _finish_publication(

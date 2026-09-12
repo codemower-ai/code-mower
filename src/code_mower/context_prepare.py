@@ -221,6 +221,23 @@ def prepare(
             work_order=record["work_order"],
             reused=True,
         ), 0
+    if record["attachment_state"] in {"pending", "uncertain"}:
+        if refresh:
+            raise ContextError(
+                "reconcile the saved attachment before refreshing or start a new session"
+            )
+        return _report(
+            "attachment_in_progress",
+            stage=(
+                "attachment_uncertain"
+                if record["attachment_state"] == "uncertain"
+                else "attachment_pending"
+            ),
+            dependent_work="paused",
+            next_action="Rerun session context attach to reconcile the saved revision.",
+            work_order=record["work_order"],
+            reused=True,
+        ), 0
 
     explicit_query = query is not None
     effective_query = _text(

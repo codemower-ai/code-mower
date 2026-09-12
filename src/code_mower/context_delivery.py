@@ -159,8 +159,7 @@ def mark_published(store, name, revision):
         return binding["metadata"]
 
 
-def abandon_attachment(store, name, handle, revision):
-    """Remove an unpublished reservation after a known pre-publication failure."""
+def _remove_attachment(store, name, handle, revision, *, published):
     _handle(handle)
     _handle(revision)
     with store.locked(name) as locked:
@@ -174,13 +173,23 @@ def abandon_attachment(store, name, handle, revision):
                 index_file.write(index)
             return
         binding = _binding(saved)
-        if binding["published"]:
+        if binding["published"] and not published:
             raise ContextError("published context attachment cannot be abandoned")
         if entry is None or revision not in entry.setdefault("deliveries", []):
             raise ContextError("context attachment index is inconsistent")
         entry["deliveries"].remove(revision)
         index_file.write(index)
         artifact.delete()
+
+
+def abandon_attachment(store, name, handle, revision):
+    """Remove an unpublished reservation after a known pre-publication failure."""
+    _remove_attachment(store, name, handle, revision, published=False)
+
+
+def retire_attachment(store, name, handle, revision):
+    """Remove a binding after its PR head is authoritatively no longer current."""
+    _remove_attachment(store, name, handle, revision, published=True)
 
 
 def attach(store, name, handle, policy, request: ContextRequest, *, pr, head, publish, backend=None):

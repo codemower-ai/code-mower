@@ -128,7 +128,8 @@ Attachment sets `code-mower/gate` pending and publishes a small control comment
 containing only a random input revision, code head, required/available state,
 and expiry. The packet hash, handle, account, alias, query, citations, and source
 text stay local. A failed or uncertain publication leaves the local binding
-unusable. Explicit attachment always creates a new review input revision.
+unusable. The lower-level explicit attachment always creates a new review input
+revision; the guided path reconciles its saved revision instead.
 
 Run the usual independent audit on the machine that holds the private connection:
 

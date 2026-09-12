@@ -161,8 +161,17 @@ class ContextSessionContractTests(unittest.TestCase):
         )
         failed = context_session.status(record, lease_live=True)
         self.assertEqual(failed["stage"], "authorization_failed")
+        record = context_session.update(
+            self.store,
+            self.session["id"],
+            expected_generation=record["generation"],
+            changes={"context_state": "unavailable"},
+        )
+        unavailable = context_session.status(record, lease_live=True)
+        self.assertEqual(unavailable["stage"], "context_unavailable")
+        self.assertEqual(context_session.failure_state(ContextError("malformed packet")), "unavailable")
         for private in ("SECRET-123", "example-context", "owner/repo", "b" * 32):
-            self.assertNotIn(private, json.dumps((expired, failed)))
+            self.assertNotIn(private, json.dumps((expired, failed, unavailable)))
 
     def test_resolution_rejects_conflicting_trusted_values(self):
         self.assertEqual(context_session.resolve_bound("repository", None, "owner/repo"), "owner/repo")

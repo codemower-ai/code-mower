@@ -115,6 +115,40 @@ class ContextPrepareTests(unittest.TestCase):
         for private in ("SECRET-123", "one@example.invalid", "example", saved["packet"]):
             self.assertNotIn(private, rendered)
 
+    def test_prepare_preserves_a_pending_or_uncertain_attachment_for_reconciliation(self):
+        record = self.create_record()
+        _report, code = self.prepare(record)
+        self.assertEqual(code, 0)
+        prepared = context_session.read(self.associations, record["session_id"])
+        for attachment in ("pending", "uncertain"):
+            with self.subTest(attachment=attachment):
+                current = context_session.read(self.associations, record["session_id"])
+                if current["attachment_state"] == "none":
+                    current = context_session.update(
+                        self.associations,
+                        current["session_id"],
+                        expected_generation=current["generation"],
+                        changes={
+                            "pr": 42, "head": "d" * 40, "revision": "e" * 32,
+                            "attachment_state": attachment,
+                        },
+                    )
+                else:
+                    current = context_session.update(
+                        self.associations,
+                        current["session_id"],
+                        expected_generation=current["generation"],
+                        changes={"attachment_state": attachment},
+                    )
+                self.backend.revoked = True
+                report, code = self.prepare(current)
+                self.assertEqual((code, report["status"]), (0, "attachment_in_progress"))
+                saved = context_session.read(self.associations, current["session_id"])
+                self.assertEqual(saved["revision"], "e" * 32)
+                self.assertEqual(saved["attachment_state"], attachment)
+                self.backend.revoked = False
+        self.assertEqual(prepared["packet"], saved["packet"])
+
     def test_failed_or_interrupted_search_requires_explicit_refresh(self):
         record = self.create_record()
         self.backend.fail_search = True

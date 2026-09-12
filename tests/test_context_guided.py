@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from code_mower import context_guided, context_session
+from code_mower.context_contract import ContextError
 from code_mower.context_delivery import deliver, read_binding, save_feedback
 from code_mower.context_review import INPUT_HEADER
 from code_mower.context_store import ContextStore
@@ -193,6 +194,21 @@ class GuidedContextTests(unittest.TestCase):
         self.assertEqual(context_session.read(self.associations, self.session["id"])["revision"], revision)
         self.assertEqual(len(self.comments), 1)
 
+    def test_posted_pending_intent_on_an_old_head_is_retired_before_replacement(self):
+        self.fail_comment = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            self.attach()
+        old = context_session.read(self.associations, self.session["id"])
+        old_revision = old["revision"]
+        self.head = "d" * 40
+        report, code = self.attach()
+        self.assertEqual((report["status"], code), ("attached", 0))
+        saved = context_session.read(self.associations, self.session["id"])
+        self.assertNotEqual(saved["revision"], old_revision)
+        with self.assertRaises(ContextError):
+            read_binding(self.fixture.store, old_revision)
+        self.assertEqual(len(self.comments), 2)
+
     def test_process_crash_after_status_reuses_the_pending_revision(self):
         self.fail_status = KeyboardInterrupt()
         with self.assertRaises(KeyboardInterrupt):
@@ -228,6 +244,7 @@ class GuidedContextTests(unittest.TestCase):
         # accepts its comment and the binding is enabled, then the process stops
         # before the association can record completion.
         self.head = "d" * 40
+        old_revision = context_session.read(self.associations, self.session["id"])["revision"]
         original_mark = context_guided.mark_published
 
         def mark_then_crash(*args, **kwargs):
@@ -249,6 +266,8 @@ class GuidedContextTests(unittest.TestCase):
         pending = context_session.read(self.associations, self.session["id"])
         self.assertEqual(pending["attachment_state"], "pending")
         self.assertTrue(read_binding(self.fixture.store, pending["revision"])["published"])
+        with self.assertRaises(ContextError):
+            read_binding(self.fixture.store, old_revision)
         report, code = self.attach()
         self.assertEqual((report["reconciled"], code), (True, 0))
 

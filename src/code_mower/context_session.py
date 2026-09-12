@@ -19,7 +19,9 @@ ASSOCIATION_SCHEMA = "code_mower.contextSession.v1"
 STATUS_SCHEMA = "code_mower.contextSessionStatus.v1"
 STAGES = frozenset(("selected", "preparing", "prepared", "attached", "reviewed"))
 ATTACHMENT_STATES = frozenset(("none", "pending", "published", "uncertain"))
-CONTEXT_STATES = frozenset(("unchecked", "ready", "expired", "authorization_failed"))
+CONTEXT_STATES = frozenset(
+    ("unchecked", "ready", "expired", "authorization_failed", "unavailable")
+)
 QUERY_MODES = frozenset(("work_item", "stdin"))
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _HEX = re.compile(r"[a-f0-9]{32}\Z")
@@ -357,7 +359,16 @@ def update(
 
 def failure_state(error: BaseException) -> str:
     """Map private/provider failures to the closed session status vocabulary."""
-    return "expired" if "expired" in str(error).lower() else "authorization_failed"
+    message = str(error).lower()
+    if any(text in message for text in (
+        "authorization has expired", "packet is expired", "input is unavailable or expired",
+    )):
+        return "expired"
+    if any(text in message for text in (
+        "authorization", "credential", "reconnect", "revoked",
+    )):
+        return "authorization_failed"
+    return "unavailable"
 
 
 def record_failure(
@@ -405,17 +416,24 @@ def status(record: Mapping[str, Any] | None, *, lease_live: bool) -> dict[str, A
             "stage": "not_configured", "dependent_work": "usable", "owner_action": False,
             "next_action": "Continue the ordinary workflow or configure an optional context connection.",
         }
-    if record["context_state"] in {"expired", "authorization_failed"}:
+    if record["context_state"] in {"expired", "authorization_failed", "unavailable"}:
         expired = record["context_state"] == "expired"
+        authorization = record["context_state"] == "authorization_failed"
         return {
             "schema": STATUS_SCHEMA, "selected": True, "configured": True,
-            "stage": "context_expired" if expired else "authorization_failed",
+            "stage": (
+                "context_expired" if expired
+                else "authorization_failed" if authorization
+                else "context_unavailable"
+            ),
             "dependent_work": "paused" if record["policy"]["required"] else "usable",
             "owner_action": True,
             "next_action": (
                 "Start a new session and explicitly refresh the selected work item."
                 if expired
                 else "Verify or reconnect the selected context account, then rerun the guided command."
+                if authorization
+                else "Inspect the failed operation, then explicitly refresh or rerun it."
             ),
         }
     actions = {
