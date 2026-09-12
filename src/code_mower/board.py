@@ -1303,14 +1303,19 @@ def render_board_html(config: BoardConfig) -> str:
   </header>
   <main>
     <div class="summary" id="summary"></div>
-    <section><h2>Supervised Pilot</h2><div class="rows" id="supervised"></div></section>
-    <section><h2>Productivity</h2><div class="rows" id="productivity"></div></section>
+    <!-- Current work first: the short summary and the two actionable queues
+         come before aggregate productivity and release history so the first
+         desktop viewport answers "what needs doing now", not "what happened". -->
+    <section><h2>Work Now</h2><div class="rows" id="worknow"></div></section>
     <section><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
-    <section><h2>Local Orchestrator Lease</h2><div class="rows" id="lease"></div></section>
-    <section><h2>Agent Cards</h2><div class="rows" id="agents"></div></section>
-    <section><h2>Release Campaigns</h2><div class="rows" id="campaigns"></div></section>
+    <section><h2>Lane Work</h2><div class="rows" id="lanework"></div></section>
+    <section><h2>Supervised Pilot</h2><div class="rows" id="supervised"></div></section>
     <section><h2>Open PRs</h2><div class="rows" id="prs"></div></section>
     <section><h2>Gate Alerts</h2><div class="rows" id="alerts"></div></section>
+    <section><h2>Agent Cards</h2><div class="rows" id="agents"></div></section>
+    <section><h2>Local Orchestrator Lease</h2><div class="rows" id="lease"></div></section>
+    <section><h2>Release Campaigns</h2><div class="rows" id="campaigns"></div></section>
+    <section><h2>Productivity</h2><div class="rows" id="productivity"></div></section>
     <section><h2>Recent Code Mower Workflows</h2><div class="rows" id="runs"></div></section>
     <section><h2>Recent Local History</h2><div class="rows" id="history"></div></section>
     <section><h2>Reviewer Verdict Timeline</h2><div class="rows" id="verdicts"></div></section>
@@ -1353,12 +1358,260 @@ def render_board_html(config: BoardConfig) -> str:
     const esc = (value) => text(value).replace(/[&<>"']/g, c => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
     const put = (id, html) => document.getElementById(id).innerHTML = html;
     const pill = (value) => `<span class="pill">${{esc(value)}}</span>`;
+    const statePill = (value, cls) => `<span class="pill ${{esc(cls || "muted")}}">${{esc(value)}}</span>`;
     const empty = (message) => `<div class="muted">${{esc(message)}}</div>`;
     const href = (value) => /^https?:\\/\\//i.test(text(value)) ? text(value) : "#";
-    const stateClass = (value) => /fail|error|blocked/i.test(text(value)) ? "bad" : /warn|pending|waiting|queued|progress/i.test(text(value)) ? "warn" : "ok";
-    const display = (value) => value === null || value === undefined || value === "" ? "unknown" : text(value);
-    const seconds = (value) => Number.isFinite(Number(value)) ? `${{Number(value).toFixed(1)}}s` : "n/a";
-    const money = (value) => Number.isFinite(Number(value)) ? `$${{Number(value).toFixed(3)}}` : "n/a";
+    // --- presentation truth helpers (BEGIN) ---
+    // Pure, DOM-free projections of the existing /api/status payload. They add
+    // no fields; they only stop the page from asserting more than the payload
+    // records. Kept self-contained so the shipped code can be executed
+    // directly by the tests instead of restated in Python.
+    const NOT_RECORDED = "not recorded";
+    const GATE_CONTEXT = "code-mower/gate";
+    // A snapshot this much older than now is reported by age alone, whatever
+    // the payload calls its source: a wedged refresh must not keep presenting
+    // an old observation as the current state of the world.
+    const STALE_OBSERVATION_SECONDS = 600;
+    // Only a real JSON number is a recorded measurement. Number(null),
+    // Number("") and Number(false) are all a finite 0, so the usual
+    // Number.isFinite(Number(v)) test silently reports "no data" as zero.
+    const measured = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    const display = (value) => (value === null || value === undefined || value === "" ? NOT_RECORDED : String(value));
+    const seconds = (value) => {{
+      const number = measured(value);
+      return number === null ? NOT_RECORDED : `${{number.toFixed(1)}}s`;
+    }};
+    const money = (value) => {{
+      const number = measured(value);
+      return number === null ? NOT_RECORDED : `$${{number.toFixed(3)}}`;
+    }};
+    const countOf = (available, value) => (available ? String(value) : NOT_RECORDED);
+    // An absent, unknown or unavailable state is neutral, never green and
+    // never "pass". Only a state the payload actually reports as good earns
+    // the ok colour.
+    const UNKNOWN_STATE_RE = /^(unknown|unavailable|absent|none|not recorded|no data|off|n\\/a)$/i;
+    const stateClass = (value) => {{
+      const state = text(value).trim();
+      if (state === "" || UNKNOWN_STATE_RE.test(state)) return "muted";
+      if (/fail|error|blocked|expired|overdue/i.test(state)) return "bad";
+      if (/warn|pending|waiting|queued|progress|stale|unverified|last reported/i.test(state)) return "warn";
+      return "ok";
+    }};
+    const parseMs = (value) => {{
+      const parsed = Date.parse(text(value));
+      return Number.isFinite(parsed) ? parsed : null;
+    }};
+    const ageText = (secs) => {{
+      const number = measured(secs);
+      if (number === null) return NOT_RECORDED;
+      if (number >= 3600) return `${{(number / 3600).toFixed(1)}}h`;
+      if (number >= 60) return `${{(number / 60).toFixed(0)}}m`;
+      return `${{Math.max(number, 0).toFixed(0)}}s`;
+    }};
+    const ageSeconds = (value, nowMs) => {{
+      const at = parseMs(value);
+      return at === null ? null : Math.max((nowMs - at) / 1000, 0);
+    }};
+    // The `code-mower/gate` commit status is the verdict. The only thing that
+    // publishes it is the canonical gate workflow and its publishing job, so
+    // the publisher is an allowlist of those two names rather than anything
+    // gate-shaped: an unrelated `security-gate` check is an ordinary check,
+    // not a Code Mower publisher.
+    const GATE_PUBLISHER_NAMES = ["code mower gate", "publish code mower gate status"];
+    // Case- and whitespace-insensitive comparison for payload identifiers.
+    const normalized = (value) => text(value).trim().toLowerCase().replace(/\\s+/g, " ");
+    const isGateContext = (name) => normalized(name) === GATE_CONTEXT;
+    const isGatePublisher = (name) => GATE_PUBLISHER_NAMES.includes(normalized(name));
+    function gateVerdict(pr) {{
+      const list = Array.isArray(pr?.checks) ? pr.checks : [];
+      const verdict = list.find(check => isGateContext(check?.name));
+      if (!verdict) return {{state: NOT_RECORDED, recorded: false, class: "muted"}};
+      const state = text(verdict.state).trim() || "unknown";
+      return {{state, recorded: true, class: stateClass(state)}};
+    }}
+    // Reasons the Board can raise for one work item, and the role that clears
+    // each one. Rebase, CI repair, audit fixes and re-review are routine lane
+    // work owned by the builder or the orchestrator. Owner attention is
+    // reserved for reasons carrying explicit permission, budget, policy,
+    // product-decision or owner-request evidence in the payload's own labels.
+    const ATTENTION_REASONS = {{
+      "needs-owner": {{rank: 0, role: "owner"}},
+      "blocked-audit": {{rank: 1, role: "builder"}},
+      "failing-check": {{rank: 2, role: "builder"}},
+      "rebase-needed": {{rank: 3, role: "builder"}},
+      "stale-gate": {{rank: 4, role: "orchestrator"}},
+      "draft": {{rank: 5, role: "builder"}}
+    }};
+    const UNKNOWN_REASON = {{rank: 8, role: "orchestrator"}};
+    const OWNER_EVIDENCE_RE = /^(needs-owner|owner-request|owner-decision|owner-approval|needs-permission|permission-required|needs-budget|budget-approval|needs-policy|policy-decision|needs-product-decision|product-decision)$/i;
+    function ownerEvidence(...sources) {{
+      const names = [];
+      for (const source of sources) {{
+        const values = Array.isArray(source) ? source : Object.values(source || {{}}).flat();
+        for (const value of values) {{
+          const name = text(value).trim();
+          if (OWNER_EVIDENCE_RE.test(name) && !names.includes(name)) names.push(name);
+        }}
+      }}
+      return names;
+    }}
+    // One PR is one work item. The owner queue payload emits a separate entry
+    // per reason, so several reasons for the same PR are grouped here instead
+    // of rendering as unrelated rows and inflating the owner count.
+    function attentionItems(entries, prs) {{
+      const byNumber = new Map();
+      for (const pr of Array.isArray(prs) ? prs : []) byNumber.set(pr?.number, pr);
+      const items = new Map();
+      for (const entry of Array.isArray(entries) ? entries : []) {{
+        const number = entry?.pr_number;
+        const reason = ATTENTION_REASONS[entry?.kind] || UNKNOWN_REASON;
+        let item = items.get(number);
+        if (!item) {{
+          const pr = byNumber.get(number) || {{}};
+          item = {{
+            pr_number: number,
+            title: entry?.title || pr.title || "",
+            url: entry?.url || pr.url || "",
+            branch: entry?.branch || pr.branch || "",
+            author: entry?.author || pr.author || "",
+            updated_at: entry?.updated_at || pr.updated_at || "",
+            head_sha_prefix: entry?.head_sha_prefix || "",
+            gate: gateVerdict(pr),
+            evidence: ownerEvidence(pr.labels, entry?.labels),
+            reasons: [],
+            next_action: "",
+            rank: UNKNOWN_REASON.rank + 1
+          }};
+          items.set(number, item);
+        }}
+        const kind = text(entry?.kind).trim() || "attention";
+        if (!item.reasons.some(existing => existing.kind === kind)) {{
+          item.reasons.push({{kind, role: reason.role, next_action: text(entry?.next_action)}});
+        }}
+        for (const name of ownerEvidence(entry?.labels)) {{
+          if (!item.evidence.includes(name)) item.evidence.push(name);
+        }}
+        if (reason.rank < item.rank) {{
+          item.rank = reason.rank;
+          item.next_action = text(entry?.next_action);
+        }}
+      }}
+      return [...items.values()].map(item => {{
+        // A reason only a builder or the orchestrator can clear never promotes
+        // to owner attention, and a reason that claims owner attention without
+        // explicit evidence falls back to orchestrator triage.
+        const claimsOwner = item.reasons.some(reason => reason.role === "owner");
+        const role = claimsOwner && item.evidence.length
+          ? "owner"
+          : item.reasons.every(reason => reason.role === "orchestrator") || claimsOwner
+            ? "orchestrator"
+            : "builder";
+        return {{...item, role, next_action: item.next_action || item.reasons[0]?.next_action || "inspect"}};
+      }}).sort((a, b) => (a.role === b.role ? 0 : a.role === "owner" ? -1 : b.role === "owner" ? 1 : 0)
+        || a.rank - b.rank
+        || (a.pr_number ?? 0) - (b.pr_number ?? 0));
+    }}
+    // Board snapshots can be replayed from local history, served from a cache
+    // the server has not confirmed, or carry no observation time at all. Each
+    // of those may only report what was last observed; none of them may claim
+    // that anything is running right now.
+    function observation(data, nowMs) {{
+      const current = data?.productivity?.current || {{}};
+      const cache = data?.board?.cache || {{}};
+      const observedAt = text(current.observed_at) || text(data?.generated_at);
+      const observedAge = ageSeconds(observedAt, nowMs);
+      const cacheAge = measured(cache.age_seconds);
+      // Only `fresh` is a snapshot the server has confirmed as current. It
+      // answers a cold cache with metadata only and a stale one with the
+      // previous snapshot, so any other reported state -- including a future
+      // one this page does not know -- is serving unconfirmed data, however
+      // recent the embedded observation time looks.
+      const cacheState = normalized(cache.state);
+      const unconfirmed = cacheState !== "" && cacheState !== "fresh";
+      // Take the older of the two recorded ages so an unconfirmed snapshot can
+      // never understate how old what is on screen actually is.
+      const age = observedAge === null
+        ? cacheAge
+        : cacheAge === null ? observedAge : Math.max(observedAge, cacheAge);
+      // No parseable observation time anywhere is not evidence of freshness,
+      // so it may not produce a "live" claim or a synthetic last-observed age.
+      const unknownAge = age === null;
+      const historical = current.source === "historical_board_snapshot" || current.historical === true;
+      const remoteAvailable = data?.remote?.available === true;
+      const aged = age !== null && age > STALE_OBSERVATION_SECONDS;
+      const stale = historical || aged || unconfirmed || unknownAge || !remoteAvailable;
+      return {{
+        age_text: ageText(age),
+        historical,
+        aged,
+        unconfirmed,
+        live: !stale,
+        label: unknownAge
+          ? "observation time not recorded"
+          : stale ? `last observed ${{ageText(age)}} ago` : `live, observed ${{ageText(age)}} ago`,
+        class: unknownAge ? "muted" : stale ? "warn" : "ok",
+        detail: historical
+          ? "Replayed from the last recorded local Board snapshot; nothing here is evidence of work running now."
+          : unconfirmed
+            ? `The Board server is serving a ${{cacheState}} cached snapshot it has not confirmed; nothing here is evidence of work running now.`
+            : unknownAge
+              ? "No observation time is recorded, so this snapshot cannot be shown as current."
+              : remoteAvailable
+                ? ""
+                : "GitHub is unavailable, so remote counts below are last observed rather than current."
+      }};
+    }}
+    // Which local-only inputs the snapshot actually carries. Fresh GitHub data
+    // stays useful when they are missing, but the page has to say so rather
+    // than render their absence as a zero.
+    function localSources(data) {{
+      const adapters = data?.agent_adapters || {{}};
+      // No adapter directory at all is "never measured", which is a different
+      // statement from an empty directory reporting zero live agents.
+      const adaptersAvailable = adapters.available !== false && adapters.path_exists === true;
+      const missing = [];
+      if (!adaptersAvailable) missing.push("agent adapter cards");
+      if (text(data?.orchestrator_lease?.state) !== "active") missing.push("orchestrator lease");
+      if (!(data?.timelines?.verdicts?.entries || []).length) missing.push("reviewer verdict history");
+      if (!(data?.timelines?.spend?.groups || []).length) missing.push("reviewer spend rows");
+      return {{
+        adapters_available: adaptersAvailable,
+        missing,
+        message: missing.length
+          ? `Local session data unavailable: ${{missing.join(", ")}}. GitHub data above is unaffected.`
+          : "Local session data available."
+      }};
+    }}
+    const CLAIMS_RUNNING_RE = /^(running|dispatched|in_progress)$/i;
+    // A campaign file records accumulated provider work time, not liveness.
+    // The one wall-clock signal it carries is a provider response deadline:
+    // once that has passed -- or was never recorded -- nothing in the payload
+    // shows the provider still working.
+    function cardLiveness(card, nowMs) {{
+      const deadline = parseMs(card?.response_deadline_at);
+      const overdue = deadline !== null && deadline < nowMs;
+      const state = text(card?.state).trim() || "unknown";
+      const suppressed = CLAIMS_RUNNING_RE.test(state) && (overdue || deadline === null);
+      return {{
+        label: suppressed ? `last reported ${{state}}` : state,
+        overdue,
+        deadline_recorded: deadline !== null,
+        overdue_for: overdue ? ageText((nowMs - deadline) / 1000) : "",
+        class: suppressed || overdue ? "warn" : stateClass(state)
+      }};
+    }}
+    function campaignLiveness(campaign, nowMs) {{
+      const status = text(campaign?.status).trim() || "unknown";
+      const cards = (Array.isArray(campaign?.cards) ? campaign.cards : []).map(card => cardLiveness(card, nowMs));
+      const unverified = CLAIMS_RUNNING_RE.test(status) && !cards.some(card => card.deadline_recorded && !card.overdue);
+      return {{
+        cards,
+        unverified,
+        label: unverified ? `last reported ${{status}}` : status,
+        class: unverified ? "warn" : stateClass(status)
+      }};
+    }}
+    // --- presentation truth helpers (END) ---
     const localTime = (value) => {{
       const raw = text(value);
       if (!raw) return "";
@@ -1371,7 +1624,25 @@ def render_board_html(config: BoardConfig) -> str:
       return Object.values(groups || {{}}).flat().map(pill).join(" ") || '<span class="muted">none</span>';
     }}
     function checks(list) {{
-      return (list || []).map(c => `<span class="${{stateClass(c.state)}}">${{esc(c.name)}}=${{esc(c.state)}}</span>`).join(", ") || '<span class="muted">none</span>';
+      // The canonical publishing job is marked so a green publisher run is
+      // never read as a green verdict. Other checks, including unrelated ones
+      // whose name happens to contain "gate", render normally.
+      return (list || []).map(c => {{
+        const publisher = isGatePublisher(c.name);
+        const suffix = publisher ? ' <span class="muted">(publisher job, not the verdict)</span>' : "";
+        return `<span class="${{stateClass(c.state)}}">${{esc(c.name)}}=${{esc(display(c.state))}}</span>${{suffix}}`;
+      }}).join(", ") || '<span class="muted">none</span>';
+    }}
+    function attentionRow(item) {{
+      const reasons = item.reasons.map(reason => pill(`${{reason.kind}} -> ${{reason.role}}`)).join(" ");
+      const evidence = item.evidence.length ? `<div class="muted">owner evidence: ${{esc(item.evidence.join(", "))}}</div>` : "";
+      return `<div class="row">
+        <div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.title)}}</a>${{statePill(item.role, item.role === "owner" ? "warn" : "muted")}}${{statePill(`gate ${{item.gate.state}}`, item.gate.class)}}${{item.head_sha_prefix ? pill(item.head_sha_prefix) : ""}}</div>
+        <div>next: <b>${{esc(item.next_action)}}</b></div>
+        <div class="line">reasons (${{item.reasons.length}}): ${{reasons}}</div>
+        ${{evidence}}
+        <div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}}${{item.updated_at ? ` updated ${{localTime(item.updated_at)}}` : ""}}</div>
+      </div>`;
     }}
     function renderLease(lease) {{
       const messages = {{absent: "No orchestrator lease in this working copy.", expired: "Lease expired.", malformed: "Local lease is malformed.", unavailable: "Local lease is unavailable."}};
@@ -1409,22 +1680,39 @@ def render_board_html(config: BoardConfig) -> str:
       const productivityWindow = productivity.window?.local_history || {{}};
       const productivitySpend = productivity.spend || {{}};
       const productivityQuality = productivity.quality || {{}};
+      const nowMs = Date.now();
+      const remoteAvailable = data.remote?.available === true;
+      const obs = observation(data, nowMs);
+      const sources = localSources(data);
+      const attention = attentionItems(ownerQueue, prs);
+      const ownerItems = attention.filter(item => item.role === "owner");
+      const laneItems = attention.filter(item => item.role !== "owner");
+      const leadItem = attention[0];
       put("summary", [
         `<div class="metric"><span class="muted">Next action</span><b>${{esc(data.next_action || "inspect")}}</b></div>`,
         data.next_detail ? `<div class="metric"><span class="muted">Detail</span><b>${{esc(data.next_detail)}}</b></div>` : "",
-        `<div class="metric"><span class="muted">GitHub</span><b class="${{data.remote?.available ? "ok" : "warn"}}">${{data.remote?.available ? "available" : "unavailable"}}</b></div>`,
-        `<div class="metric"><span class="muted">Open PRs</span><b>${{prs.length}}</b></div>`,
-        `<div class="metric"><span class="muted">Pilot</span><b class="${{stateClass(supervised.cycle_state || "")}}">${{esc(supervised.cycle_state || "off")}}</b></div>`,
-        `<div class="metric"><span class="muted">Productivity</span><b class="${{stateClass(productivity.status || "")}}">${{esc(productivity.status || "unknown")}}</b></div>`,
-        `<div class="metric"><span class="muted">Owner queue</span><b class="${{ownerQueue.length ? "warn" : "ok"}}">${{ownerQueue.length}}</b></div>`,
-        `<div class="metric"><span class="muted">Agent cards</span><b>${{agentCards.length}}</b></div>`,
-        `<div class="metric"><span class="muted">Campaigns</span><b class="${{(data.release_campaigns?.campaigns || []).length ? "ok" : "muted"}}">${{(data.release_campaigns?.campaigns || []).length}}</b></div>`,
-        `<div class="metric"><span class="muted">Gate alerts</span><b class="${{alerts.length ? "warn" : "ok"}}">${{alerts.length}}</b></div>`
+        `<div class="metric"><span class="muted">Observation</span><b class="${{obs.class}}">${{esc(obs.label)}}</b></div>`,
+        `<div class="metric"><span class="muted">GitHub</span><b class="${{remoteAvailable ? "ok" : "warn"}}">${{remoteAvailable ? "available" : "unavailable"}}</b></div>`,
+        `<div class="metric"><span class="muted">Open PRs</span><b class="${{remoteAvailable ? "" : "muted"}}">${{esc(countOf(remoteAvailable, prs.length))}}</b></div>`,
+        `<div class="metric"><span class="muted">Owner decisions</span><b class="${{remoteAvailable ? (ownerItems.length ? "warn" : "ok") : "muted"}}">${{esc(countOf(remoteAvailable, ownerItems.length))}}</b></div>`,
+        `<div class="metric"><span class="muted">Lane work</span><b class="${{remoteAvailable ? (laneItems.length ? "warn" : "ok") : "muted"}}">${{esc(countOf(remoteAvailable, laneItems.length))}}</b></div>`,
+        `<div class="metric"><span class="muted">Gate alerts</span><b class="${{remoteAvailable ? (alerts.length ? "warn" : "ok") : "muted"}}">${{esc(countOf(remoteAvailable, alerts.length))}}</b></div>`,
+        `<div class="metric"><span class="muted">Pilot</span><b class="${{stateClass(supervised.cycle_state)}}">${{esc(display(supervised.cycle_state))}}</b></div>`,
+        `<div class="metric"><span class="muted">Productivity</span><b class="${{stateClass(productivity.status)}}">${{esc(display(productivity.status))}}</b></div>`,
+        `<div class="metric"><span class="muted">Agent cards</span><b class="${{sources.adapters_available ? "" : "muted"}}">${{esc(countOf(sources.adapters_available, agentCards.length))}}</b></div>`,
+        `<div class="metric"><span class="muted">Campaigns</span><b class="muted">${{(data.release_campaigns?.campaigns || []).length}}</b></div>`
+      ].join(""));
+      put("worknow", [
+        leadItem
+          ? `<div class="row"><div class="line">Do next: <a href="${{esc(href(leadItem.url))}}">#${{esc(leadItem.pr_number)}}</a><b>${{esc(leadItem.next_action)}}</b>${{statePill(leadItem.role, leadItem.role === "owner" ? "warn" : "muted")}}${{statePill(`gate ${{leadItem.gate.state}}`, leadItem.gate.class)}}</div><div class="muted">${{esc(leadItem.title)}}</div></div>`
+          : `<div class="row"><div class="line">Do next: <b>${{esc(data.next_action || "inspect")}}</b></div>${{data.next_detail ? `<div class="muted">${{esc(data.next_detail)}}</div>` : ""}}</div>`,
+        `<div class="row"><div class="line">${{pill(`owner decisions ${{countOf(remoteAvailable, ownerItems.length)}}`)}}${{pill(`lane work ${{countOf(remoteAvailable, laneItems.length)}}`)}}${{pill(`open PRs ${{countOf(remoteAvailable, prs.length)}}`)}}${{statePill(obs.label, obs.class)}}</div>${{obs.detail ? `<div class="muted">${{esc(obs.detail)}}</div>` : ""}}</div>`,
+        `<div class="row muted">${{esc(sources.message)}}</div>`
       ].join(""));
       const reviewerOutcomes = supervisedDecision.reviewer_outcomes || [];
       const supervisedRows = supervised.enabled ? [
         `<div class="row"><div class="line"><b class="${{stateClass(supervised.cycle_state)}}">${{esc(supervised.cycle_state || "unknown")}}</b>${{pill(supervised.controller_mode || "dry_run")}}${{supervisedDecision.decision_state ? pill(supervisedDecision.decision_state) : ""}}</div><div>next: <b>${{esc(supervisedDecision.next_action || "inspect")}}</b></div>${{supervisedDecision.next_detail ? `<div class="muted">${{esc(supervisedDecision.next_detail)}}</div>` : ""}}</div>`,
-        `<div class="row"><div class="line">${{pill(`open PRs ${{supervisedMetrics.open_pr_count ?? supervisedPRs.length}}`)}}${{pill(`ready issues ${{supervisedMetrics.ready_issue_count ?? supervisedIssues.length}}`)}}${{pill(`active lanes ${{supervisedMetrics.active_lane_count ?? 0}}`)}}${{pill(`stale ${{supervisedMetrics.stale_evidence_count ?? 0}}`)}}</div></div>`,
+        `<div class="row"><div class="line">${{pill(`open PRs ${{display(supervisedMetrics.open_pr_count ?? supervisedPRs.length)}}`)}}${{pill(`ready issues ${{display(supervisedMetrics.ready_issue_count ?? supervisedIssues.length)}}`)}}${{pill(`active lanes ${{display(supervisedMetrics.active_lane_count)}}`)}}${{pill(`stale ${{display(supervisedMetrics.stale_evidence_count)}}`)}}</div></div>`,
         supervisedDecision.pr_number ? `<div class="row"><div class="line"><a href="${{esc(href(supervisedDecision.pr_url))}}">Selected PR #${{esc(supervisedDecision.pr_number)}}</a>${{supervisedDecision.lane_id ? pill(supervisedDecision.lane_id) : ""}}${{supervisedDecision.gate_status ? pill(`gate ${{supervisedDecision.gate_status}}`) : ""}}${{supervisedDecision.author_lane_excluded ? pill("author excluded") : ""}}</div><div class="muted">${{esc(supervisedDecision.branch || "")}}${{supervisedDecision.head_sha_prefix ? ` @ ${{esc(supervisedDecision.head_sha_prefix)}}` : ""}}</div></div>` : "",
         supervisedDecision.issue_number ? `<div class="row"><div class="line"><a href="${{esc(href(supervisedDecision.issue_url))}}">Selected issue #${{esc(supervisedDecision.issue_number)}}</a>${{supervisedDecision.lane_id ? pill(supervisedDecision.lane_id) : ""}}</div></div>` : "",
         reviewerOutcomes.length ? `<div class="row"><b>Reviewer Evidence</b><div class="muted">${{reviewerOutcomes.map(outcome => `${{esc(outcome.lane_id || outcome.config_lane_id)}}=${{esc(outcome.verdict)}}`).join(", ")}}</div></div>` : "",
@@ -1435,6 +1723,9 @@ def render_board_html(config: BoardConfig) -> str:
       put("supervised", trackerRows + supervisedRows || empty(supervised.message || "No supervised pilot activity."));
       const productivityRows = [
         `<div class="row"><div>next: <b>${{esc(productivity.next_action || "inspect")}}</b></div></div>`,
+        // Aggregates are only as current as the snapshot they were computed
+        // from, so the observation comes before the numbers rather than after.
+        `<div class="row"><div class="line">${{pill(`source ${{display(productivityCurrent.source)}}`)}}${{statePill(obs.label, obs.class)}}${{obs.historical ? statePill("historical snapshot", "warn") : ""}}</div><div class="muted">observed ${{esc(display(productivityCurrent.observed_at))}}${{obs.historical ? "; these aggregates replay the last recorded snapshot and are not evidence of work running now" : ""}}</div></div>`,
         `<div class="row"><b>Current</b><div class="line">${{pill(`open PRs ${{display(productivityCurrent.open_pr_count)}}`)}}${{pill(`active lanes ${{display(productivityCurrent.active_lane_count)}}`)}}${{pill(`blocked ${{display(productivityCurrent.blocked_pr_count)}}`)}}${{pill(`owner actions ${{display(productivityCurrent.owner_action_count)}}`)}}</div></div>`,
         `<div class="row"><b>Throughput</b><div class="line">${{pill(`merged ${{display(productivityMetrics.merged_pr_count)}}`)}}${{pill(`cycle ${{seconds(productivityMetrics.cycle_time_seconds)}}`)}}${{pill(`active ${{seconds(productivityMetrics.active_time_seconds)}}`)}}${{pill(`wait ${{seconds(productivityMetrics.wait_time_seconds)}}`)}}</div><div class="muted">local window ${{display(productivityWindow.start)}} to ${{display(productivityWindow.end)}} (${{seconds(productivityWindow.duration_seconds)}})</div></div>`,
         `<div class="row"><b>Quality</b><div class="line">${{pill(`reviews ${{display(productivityMetrics.reviewer_run_count)}}`)}}${{pill(`PASS ${{display(productivityQuality.audit_pass_count)}}`)}}${{pill(`BLOCKED ${{display(productivityQuality.audit_blocked_count)}}`)}}${{pill(`catches ${{display(productivityQuality.reviewer_catch_count)}}`)}}${{pill(`fix rounds ${{display(productivityQuality.fix_round_count)}}`)}}</div></div>`,
@@ -1442,13 +1733,24 @@ def render_board_html(config: BoardConfig) -> str:
         (productivity.warnings || []).length ? `<div class="row muted">${{esc((productivity.warnings || []).slice(0, 3).join("; "))}}</div>` : ""
       ].filter(Boolean).join("");
       put("productivity", productivityRows || empty("No local productivity signals yet."));
-      put("owner", ownerQueue.length ? ownerQueue.map(item => `<div class="row"><div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.kind)}}</a>${{pill(item.next_action)}}${{pill(item.head_sha_prefix)}}</div><div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}}${{item.updated_at ? ` updated ${{localTime(item.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.owner_queue?.message || "No owner queue items."));
+      put("owner", ownerItems.length
+        ? ownerItems.map(attentionRow).join("")
+        : empty(remoteAvailable
+          ? "No PR carries explicit permission, budget, policy, product-decision or owner-request evidence."
+          : (data.owner_queue?.message || "GitHub unavailable; owner decisions not recorded.")));
+      put("lanework", laneItems.length
+        ? laneItems.map(attentionRow).join("")
+        : empty(remoteAvailable ? "No builder or orchestrator work items." : "GitHub unavailable; lane work not recorded."));
       put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${{esc(agent.provider)}}</b>${{pill(agent.role)}}${{pill(agent.status)}}${{agent.stale ? pill("stale") : ""}}${{agent.lane ? pill(agent.lane) : ""}}${{agent.pr_number ? pill(`#${{agent.pr_number}}`) : ""}}</div><div>${{esc(agent.title || agent.next_action || "local agent")}}</div><div class="muted">${{esc(agent.branch || agent.repo || "")}}${{agent.pid ? ` pid=${{esc(agent.pid)}}` : ""}}${{agent.cwd ? ` cwd=${{esc(agent.cwd)}}` : ""}}${{agent.updated_at ? ` updated ${{localTime(agent.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
       const campaignsData = data.release_campaigns || {{}};
       const campaigns = campaignsData.campaigns || [];
       const campaignRows = campaigns.flatMap(c => {{
-        const header = `<div class="row"><div class="line"><b>Release ${{esc(c.release_tag)}}</b>${{pill(c.status)}}${{c.dry_run ? pill("dry-run") : pill("applied")}}${{pill(c.qualification_context)}}<span>${{seconds(c.elapsed_seconds)}}</span></div><div>next: <b>${{esc(c.next_action)}}</b></div></div>`;
-        const cardRows = (c.cards || []).map(card => `<div class="row" style="margin-left:16px"><div class="line"><b>${{esc(card.provider)}}</b>${{pill(card.posture || "required")}}<span class="${{stateClass(card.state)}}">${{esc(card.state)}}</span>${{pill(card.environment)}}${{card.transport_verified === false ? pill("transport unverified") : ""}}<span>${{seconds(card.elapsed_seconds)}}</span></div><div>next: <b>${{esc(card.next_action)}}</b></div>${{card.next_detail ? `<div class="muted">${{esc(card.next_detail)}}</div>` : ""}}${{card.response_deadline_at ? `<div class="muted" title="${{esc(card.response_deadline_at)}}">response deadline ${{localTime(card.response_deadline_at)}}</div>` : ""}}</div>`);
+        const live = campaignLiveness(c, nowMs);
+        const header = `<div class="row"><div class="line"><b>Release ${{esc(c.release_tag)}}</b>${{statePill(live.label, live.class)}}${{c.dry_run ? pill("dry-run") : pill("applied")}}${{pill(c.qualification_context)}}<span>recorded work ${{seconds(c.elapsed_seconds)}}</span></div><div>next: <b>${{esc(c.next_action)}}</b></div>${{live.unverified ? `<div class="muted">No unexpired provider response deadline is recorded, so this campaign is shown as last reported rather than currently running.</div>` : ""}}</div>`;
+        const cardRows = (c.cards || []).map((card, index) => {{
+          const cardLive = live.cards[index] || cardLiveness(card, nowMs);
+          return `<div class="row" style="margin-left:16px"><div class="line"><b>${{esc(card.provider)}}</b>${{pill(card.posture || "required")}}<span class="${{cardLive.class}}">${{esc(cardLive.label)}}</span>${{pill(card.environment)}}${{card.transport_verified === false ? pill("transport unverified") : ""}}${{cardLive.overdue ? statePill(`deadline passed ${{cardLive.overdue_for}} ago`, "warn") : ""}}<span>recorded work ${{seconds(card.elapsed_seconds)}}</span></div><div>next: <b>${{esc(card.next_action)}}</b></div>${{card.next_detail ? `<div class="muted">${{esc(card.next_detail)}}</div>` : ""}}<div class="muted">${{card.response_deadline_at ? `response deadline ${{localTime(card.response_deadline_at)}}` : `response deadline ${{esc(NOT_RECORDED)}}`}}</div></div>`;
+        }});
         return [header, ...cardRows];
       }}).join("");
       put("campaigns", campaignRows || empty(campaignsData.message || "No release campaigns."));
@@ -1460,11 +1762,24 @@ def render_board_html(config: BoardConfig) -> str:
         <div>next: <b>${{esc(pr.next_action)}}</b></div>
         ${{pr.next_detail ? `<div class="muted">${{esc(pr.next_detail)}}</div>` : ""}}
       </div>`).join("") : empty("No open pull requests."));
-      put("alerts", alerts.length ? alerts.map(a => `<div class="row"><b class="warn">${{esc(a.kind)}}</b> ${{esc(a.message)}}</div>`).join("") : empty("No gate alerts."));
-      put("runs", runs.length ? runs.slice(0, 8).map(run => `<div class="row"><div class="line"><a href="${{esc(href(run.url))}}">${{esc(run.workflow || "workflow")}}</a>${{pill(run.conclusion || run.status || "unknown")}}</div><div class="muted">${{esc(run.branch)}}${{run.updated_at ? ` updated ${{localTime(run.updated_at)}}` : ""}}</div></div>`).join("") : empty("No recent Code Mower workflow runs."));
+      put("alerts", !remoteAvailable
+        ? empty("GitHub unavailable; gate alerts not recorded.")
+        : alerts.length
+          ? alerts.map(a => `<div class="row"><b class="warn">${{esc(a.kind)}}</b> ${{esc(a.message)}}</div>`).join("")
+          : empty("No gate alerts."));
+      put("runs", runs.length ? runs.slice(0, 8).map(run => {{
+        // A run of the workflow that publishes `code-mower/gate` succeeds when
+        // the publisher job finished, whatever verdict it published. Say so
+        // here so a green row is never read as a green gate.
+        // Matched on the workflow name only: the run title is the commit
+        // subject, and a PR that merely mentions the gate is not a publisher.
+        const publisher = isGatePublisher(run.workflow);
+        const state = run.conclusion || run.status;
+        return `<div class="row"><div class="line"><a href="${{esc(href(run.url))}}">${{esc(run.workflow || "workflow")}}</a>${{statePill(display(state), stateClass(state))}}${{publisher ? pill("gate publisher") : ""}}</div>${{publisher ? `<div class="muted">Publisher execution only; the ${{esc(GATE_CONTEXT)}} verdict is the commit status listed under each PR.</div>` : ""}}<div class="muted">${{esc(run.branch)}}${{run.updated_at ? ` updated ${{localTime(run.updated_at)}}` : ""}}</div></div>`;
+      }}).join("") : empty("No recent Code Mower workflow runs."));
       put("verdicts", verdicts.length ? verdicts.map(v => `<div class="row"><div class="line"><a href="${{esc(href(v.url))}}">#${{esc(v.pr_number)}} ${{esc(v.lane)}}</a>${{pill(v.verdict)}}${{pill(v.head_sha_prefix)}}</div><div class="muted">${{localTime(v.created_at)}}</div></div>`).join("") : empty(timelines.verdicts?.message || "No local reviewer verdict history yet."));
       const spendRows = [
-        ...spendGroups.map(g => `<div class="row"><div class="line"><b>${{esc(g.lane)}}</b>${{pill(g.verdict)}}${{pill(`${{g.runs}} runs`)}}</div><div class="muted">${{seconds(g.wall_seconds_total)}} total / ${{seconds(g.wall_seconds_avg)}} avg / ${{money(g.cost_usd_total)}} / ${{esc(g.total_tokens || 0)}} tokens</div></div>`),
+        ...spendGroups.map(g => `<div class="row"><div class="line"><b>${{esc(g.lane)}}</b>${{pill(display(g.verdict))}}${{pill(`${{display(g.runs)}} runs`)}}</div><div class="muted">${{seconds(g.wall_seconds_total)}} total / ${{seconds(g.wall_seconds_avg)}} avg / ${{money(g.cost_usd_total)}} / ${{esc(display(g.total_tokens))}} tokens</div></div>`),
         spend.skipped_rows ? `<div class="row muted">Skipped ${{esc(spend.skipped_rows)}} malformed spend row(s).</div>` : "",
         spend.filtered_rows ? `<div class="row muted">Filtered ${{esc(spend.filtered_rows)}} spend row(s) from other repos.</div>` : ""
       ].filter(Boolean);
@@ -1478,7 +1793,10 @@ def render_board_html(config: BoardConfig) -> str:
       put("history", events.length ? events.slice().reverse().map(event => {{
         const s = event.summary || {{}};
         const remote = s.remote_available ? "remote available" : "remote unavailable";
-        return `<div class="row"><div class="line"><b>${{localTime(event.created_at)}}</b>${{pill(remote)}}</div><div>next: <b>${{esc(s.next_action || "inspect")}}</b></div><div class="muted">PRs ${{esc(s.open_prs ?? 0)}} / alerts ${{esc(s.gate_alerts ?? 0)}} / local ${{esc((s.local_boards ?? 0) + (s.local_processes ?? 0))}}</div></div>`;
+        const locals = measured(s.local_boards) === null && measured(s.local_processes) === null
+          ? NOT_RECORDED
+          : String((measured(s.local_boards) ?? 0) + (measured(s.local_processes) ?? 0));
+        return `<div class="row"><div class="line"><b>${{localTime(event.created_at)}}</b>${{pill(remote)}}</div><div>next: <b>${{esc(s.next_action || "inspect")}}</b></div><div class="muted">PRs ${{esc(display(s.open_prs))}} / alerts ${{esc(display(s.gate_alerts))}} / local ${{esc(locals)}}</div></div>`;
       }}).join("") : empty(history.message || "No local board events recorded yet."));
     }}
     let pollTimer = null;

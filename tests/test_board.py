@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import TestCase, skipUnless
 from unittest.mock import patch
@@ -106,6 +106,88 @@ def _run_board_poll_script(steps: list[dict[str, object] | str | None]) -> list[
             text=True,
             check=True,
         )
+    return json.loads(completed.stdout)
+
+
+TRUTH_HELPERS_END = "// --- presentation truth helpers (END) ---"
+
+# A minimal stand-in for the pieces of the browser the shipped renderer
+# touches: one element bag keyed by id, and a pinned clock so observation and
+# campaign-liveness output is deterministic.
+BOARD_DOM_HARNESS = """
+const NODES = {};
+const document = {getElementById: (id) => (NODES[id] = NODES[id] || {innerHTML: "", textContent: ""})};
+Date.now = () => __NOW_MS__;
+__SCRIPT__
+render(JSON.parse(process.argv[1]));
+renderEvents(JSON.parse(process.argv[2]));
+console.log(JSON.stringify(Object.fromEntries(Object.entries(NODES).map(([id, node]) => [id, node.innerHTML || node.textContent]))));
+"""
+
+
+def _board_truth_helpers() -> str:
+    """Lift the shipped, DOM-free presentation helpers out of the rendered page.
+
+    The tests execute the same JavaScript the browser gets rather than a Python
+    restatement of it, so a helper that is edited without its test is caught.
+    """
+
+    html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+    start = html.find("    const text =")
+    end = html.find(TRUTH_HELPERS_END)
+    if start < 0 or end < start:  # pragma: no cover - guards the extraction
+        raise AssertionError("board HTML no longer exposes the presentation truth helpers")
+    return html[start : end + len(TRUTH_HELPERS_END)]
+
+
+def _eval_board_truth(expression: str, *args: object) -> object:
+    """Evaluate one shipped helper expression against JSON arguments."""
+
+    script = (
+        _board_truth_helpers()
+        + "\nconst ARGS = process.argv.slice(1).map(value => JSON.parse(value));\n"
+        + f"console.log(JSON.stringify({expression}));\n"
+    )
+    completed = subprocess.run(
+        [shutil.which("node") or "node", "-e", script, *(json.dumps(arg) for arg in args)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def _render_board_dom(
+    payload: object,
+    history: object | None = None,
+    *,
+    now: datetime = NOW,
+) -> dict[str, str]:
+    """Run the shipped ``render()``/``renderEvents()`` against a stubbed DOM."""
+
+    html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+    body = html[html.index("  <script>\n") + len("  <script>\n") : html.index("\n  </script>")]
+    # The page kicks itself off with load(); the harness supplies the payload
+    # directly instead of a fetch.
+    trimmed = body.rsplit("    load();", 1)
+    if len(trimmed) != 2:  # pragma: no cover - guards the extraction
+        raise AssertionError("board HTML no longer bootstraps with load()")
+    script = (
+        BOARD_DOM_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000)))
+        .replace("__SCRIPT__", "".join(trimmed))
+    )
+    completed = subprocess.run(
+        [
+            shutil.which("node") or "node",
+            "-e",
+            script,
+            json.dumps(payload),
+            json.dumps(history if history is not None else {"events": []}),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     return json.loads(completed.stdout)
 
 
@@ -1906,6 +1988,674 @@ class BoardTests(TestCase):
             return int(response.status)
         finally:
             connection.close()
+
+
+def _pr(number: int, **overrides: object) -> dict[str, object]:
+    pr: dict[str, object] = {
+        "number": number,
+        "title": f"PR {number}",
+        "url": f"https://github.com/owner/repo/pull/{number}",
+        "branch": f"claude/{number}",
+        "head_sha": "abcdef0123456789",
+        "author": "claude-bot",
+        "is_draft": False,
+        "merge_state": "CLEAN",
+        "updated_at": NOW.isoformat().replace("+00:00", "Z"),
+        "labels": {"builder": ["builder:claude"], "needs": [], "done": [], "blocked": []},
+        "checks": [],
+        "stale": False,
+        "next_action": "wait for audit",
+        "next_detail": "",
+    }
+    pr.update(overrides)
+    return pr
+
+
+def _status(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "generated_at": NOW.isoformat().replace("+00:00", "Z"),
+        "next_action": "inspect",
+        "next_detail": "",
+        "remote": {
+            "available": True,
+            "errors": [],
+            "pull_requests": [],
+            "workflow_runs": [],
+            "gate_health": {"status": "pass", "alerts": []},
+        },
+        "board": {"version": {"serving_version": "0.9.0"}},
+        "owner_queue": {"available": True, "count": 0, "entries": [], "message": ""},
+        "agent_adapters": {"available": True, "path_exists": False, "agents": [], "message": ""},
+        "orchestrator_lease": {"state": "absent"},
+        "release_campaigns": {"available": True, "campaigns": []},
+        "supervised_pilot": {"enabled": False, "cycle_state": "unavailable", "message": "off"},
+        "timelines": {"verdicts": {"entries": []}, "spend": {"groups": []}},
+        "productivity": {"status": "warn", "current": {}, "metrics": {}, "quality": {}, "spend": {}},
+        "local_boards": {"boards": []},
+        "local_processes": {"processes": []},
+    }
+    payload.update(overrides)
+    return payload
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardPresentationTruthTests(TestCase):
+    """Issue #947: the Board may not claim more than the payload records."""
+
+    def test_absent_measurements_render_as_not_recorded_not_zero(self) -> None:
+        # Number(null), Number("") and Number(false) are all a finite 0, so a
+        # naive Number.isFinite check turns "never measured" into "measured
+        # zero". A real recorded zero must still render as zero.
+        self.assertEqual(
+            _eval_board_truth(
+                "[seconds(null), seconds(undefined), seconds(''), seconds('12'), seconds(false),"
+                " money(null), money(''), display(null), display(''), display(undefined)]"
+            ),
+            ["not recorded"] * 5 + ["not recorded"] * 5,
+        )
+        self.assertEqual(
+            _eval_board_truth("[seconds(0), money(0), display(0), countOf(true, 0)]"),
+            ["0.0s", "$0.000", "0", "0"],
+        )
+        # A count that could not be observed at all is not a zero count.
+        self.assertEqual(_eval_board_truth("countOf(false, 0)"), "not recorded")
+
+    def test_unknown_state_never_renders_green_or_as_pass(self) -> None:
+        classes = _eval_board_truth(
+            "['', 'unknown', 'unavailable', 'none', 'not recorded', 'off',"
+            " 'pending', 'stale', 'unverified', 'last reported running',"
+            " 'failure', 'blocked', 'success', 'complete'].map(stateClass)"
+        )
+        self.assertEqual(
+            classes,
+            ["muted"] * 6 + ["warn"] * 4 + ["bad"] * 2 + ["ok"] * 2,
+        )
+
+    def test_gate_publisher_success_cannot_pass_the_gate_verdict(self) -> None:
+        # The gate workflow's job publishes the `code-mower/gate` commit status.
+        # Its own success only means the publisher ran.
+        pending = _eval_board_truth(
+            "gateVerdict(ARGS[0])",
+            _pr(
+                7,
+                checks=[
+                    {"name": "publish Code Mower gate status", "state": "success"},
+                    {"name": "code-mower/gate", "state": "pending"},
+                ],
+            ),
+        )
+        self.assertEqual(pending, {"state": "pending", "recorded": True, "class": "warn"})
+        # With no `code-mower/gate` status at all the verdict is unrecorded,
+        # never inherited from the publisher run beside it.
+        missing = _eval_board_truth(
+            "gateVerdict(ARGS[0])",
+            _pr(7, checks=[{"name": "publish Code Mower gate status", "state": "success"}]),
+        )
+        self.assertEqual(missing, {"state": "not recorded", "recorded": False, "class": "muted"})
+        self.assertEqual(
+            _eval_board_truth(
+                "['code-mower/gate', 'Code Mower gate', 'publish Code Mower gate status', 'package']"
+                ".map(isGatePublisher)"
+            ),
+            [False, True, True, False],
+        )
+
+    def test_only_the_canonical_publisher_names_are_treated_as_publishers(self) -> None:
+        # The publisher is the workflow that posts `code-mower/gate` and its
+        # publishing job, matched case- and whitespace-insensitively. A check
+        # that merely contains "gate" belongs to somebody else.
+        self.assertEqual(
+            _eval_board_truth(
+                "['  code mower GATE ', 'Publish  Code Mower Gate Status'].map(isGatePublisher)"
+            ),
+            [True, True],
+        )
+        unrelated = [
+            "security-gate",
+            "gatekeeper",
+            "release gate",
+            "quality-gate/sonar",
+            "code-mower/gate",
+        ]
+        self.assertEqual(
+            _eval_board_truth("ARGS[0].map(isGatePublisher)", unrelated),
+            [False] * len(unrelated),
+        )
+        # `code-mower/gate` stays the verdict, whatever spacing or case it
+        # arrives in.
+        self.assertEqual(
+            _eval_board_truth("['code-mower/gate', ' CODE-MOWER/GATE '].map(isGateContext)"),
+            [True, True],
+        )
+
+    def test_unrelated_gate_shaped_names_render_as_ordinary_checks_and_runs(self) -> None:
+        nodes = _render_board_dom(
+            _status(
+                remote={
+                    "available": True,
+                    "errors": [],
+                    "pull_requests": [_pr(7, checks=[{"name": "security-gate", "state": "success"}])],
+                    "workflow_runs": [
+                        {
+                            "workflow": "security-gate",
+                            "title": "scan",
+                            "status": "completed",
+                            "conclusion": "success",
+                            "branch": "claude/7",
+                            "url": "https://github.com/owner/repo/actions/runs/79",
+                        }
+                    ],
+                    "gate_health": {"status": "pass", "alerts": []},
+                }
+            )
+        )
+
+        self.assertIn("security-gate=success", nodes["prs"])
+        self.assertNotIn("publisher job, not the verdict", nodes["prs"])
+        self.assertNotIn("gate publisher", nodes["runs"])
+        self.assertNotIn("Publisher execution only", nodes["runs"])
+
+    def test_gate_publisher_run_is_labelled_in_the_rendered_page(self) -> None:
+        nodes = _render_board_dom(
+            _status(
+                remote={
+                    "available": True,
+                    "errors": [],
+                    "pull_requests": [
+                        _pr(
+                            7,
+                            checks=[
+                                {"name": "publish Code Mower gate status", "state": "success"},
+                                {"name": "code-mower/gate", "state": "pending"},
+                            ],
+                        )
+                    ],
+                    "workflow_runs": [
+                        {
+                            "workflow": "Code Mower gate",
+                            "title": "publish gate",
+                            "status": "completed",
+                            "conclusion": "success",
+                            "branch": "claude/7",
+                            "url": "https://github.com/owner/repo/actions/runs/77",
+                        }
+                    ],
+                    "gate_health": {"status": "pass", "alerts": []},
+                },
+                owner_queue={
+                    "available": True,
+                    "count": 1,
+                    "message": "",
+                    "entries": [
+                        {"kind": "stale-gate", "pr_number": 7, "next_action": "rerun gate or inspect stuck audit"}
+                    ],
+                },
+            )
+        )
+
+        self.assertIn("gate publisher", nodes["runs"])
+        self.assertIn("Publisher execution only", nodes["runs"])
+        self.assertIn("publisher job, not the verdict", nodes["prs"])
+        self.assertIn("code-mower/gate=pending", nodes["prs"])
+        # The verdict pill on the work item follows the commit status, not the
+        # green publisher run beside it.
+        self.assertIn('<span class="pill warn">gate pending</span>', nodes["worknow"] + nodes["lanework"])
+
+    def test_a_pr_titled_after_the_gate_is_not_a_publisher_run(self) -> None:
+        nodes = _render_board_dom(
+            _status(
+                remote={
+                    "available": True,
+                    "errors": [],
+                    "pull_requests": [],
+                    "workflow_runs": [
+                        {
+                            "workflow": "audit labeler",
+                            "title": "Harden the gate alert wording",
+                            "status": "completed",
+                            "conclusion": "success",
+                            "branch": "claude/1",
+                            "url": "https://github.com/owner/repo/actions/runs/78",
+                        }
+                    ],
+                    "gate_health": {"status": "pass", "alerts": []},
+                }
+            )
+        )
+
+        self.assertNotIn("gate publisher", nodes["runs"])
+
+    def test_one_pr_with_several_reasons_is_one_grouped_work_item(self) -> None:
+        prs = [_pr(7, merge_state="BEHIND", stale=True)]
+        entries = [
+            {"kind": "failing-check", "pr_number": 7, "next_action": "fix failing check"},
+            {"kind": "stale-gate", "pr_number": 7, "next_action": "rerun gate"},
+            {"kind": "rebase-needed", "pr_number": 7, "next_action": "rebase/behind"},
+        ]
+
+        items = _eval_board_truth("attentionItems(ARGS[0], ARGS[1])", entries, prs)
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["pr_number"], 7)
+        self.assertEqual(
+            [reason["kind"] for reason in items[0]["reasons"]],
+            ["failing-check", "stale-gate", "rebase-needed"],
+        )
+        # One primary responsible role, and the highest-precedence reason wins
+        # the single next action.
+        self.assertEqual(items[0]["role"], "builder")
+        self.assertEqual(items[0]["next_action"], "fix failing check")
+
+    def test_routine_lane_reasons_never_become_owner_attention(self) -> None:
+        # Rebase, CI repair, audit fixes and re-review are builder/orchestrator
+        # work regardless of how many of them a single PR raises.
+        entries = [
+            {"kind": kind, "pr_number": number, "next_action": kind}
+            for number, kind in enumerate(
+                ("blocked-audit", "failing-check", "rebase-needed", "stale-gate", "draft"), start=1
+            )
+        ]
+
+        items = _eval_board_truth(
+            "attentionItems(ARGS[0], ARGS[1])", entries, [_pr(n) for n in range(1, 6)]
+        )
+
+        self.assertEqual(
+            {item["reasons"][0]["kind"]: item["role"] for item in items},
+            {
+                "blocked-audit": "builder",
+                "failing-check": "builder",
+                "rebase-needed": "builder",
+                "stale-gate": "orchestrator",
+                "draft": "builder",
+            },
+        )
+        self.assertEqual([item for item in items if item["role"] == "owner"], [])
+
+    def test_owner_attention_requires_explicit_evidence(self) -> None:
+        labelled = _pr(7, labels={"needs": ["needs-owner"], "blocked": ["codex-audit-blocked"]})
+        items = _eval_board_truth(
+            "attentionItems(ARGS[0], ARGS[1])",
+            [
+                {
+                    "kind": "needs-owner",
+                    "pr_number": 7,
+                    "next_action": "owner decision",
+                    "labels": ["needs-owner"],
+                },
+                {"kind": "blocked-audit", "pr_number": 7, "next_action": "fix BLOCKED audit"},
+            ],
+            [labelled],
+        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["role"], "owner")
+        self.assertEqual(items[0]["evidence"], ["needs-owner"])
+        self.assertEqual(items[0]["next_action"], "owner decision")
+
+        # A product decision is owner evidence too.
+        product = _eval_board_truth(
+            "attentionItems(ARGS[0], ARGS[1])",
+            [{"kind": "needs-owner", "pr_number": 8, "next_action": "owner decision"}],
+            [_pr(8, labels={"needs": ["product-decision"]})],
+        )
+        self.assertEqual(product[0]["role"], "owner")
+
+        # A row that claims owner attention with no permission, budget, policy,
+        # product-decision or owner-request signal anywhere in the payload is
+        # orchestrator triage, not an owner decision.
+        unbacked = _eval_board_truth(
+            "attentionItems(ARGS[0], ARGS[1])",
+            [{"kind": "needs-owner", "pr_number": 9, "next_action": "owner decision"}],
+            [_pr(9, labels={"needs": ["needs-codex-audit"]})],
+        )
+        self.assertEqual(unbacked[0]["role"], "orchestrator")
+
+    def test_grouped_work_items_split_owner_queue_from_lane_work(self) -> None:
+        nodes = _render_board_dom(
+            _status(
+                remote={
+                    "available": True,
+                    "errors": [],
+                    "pull_requests": [
+                        _pr(7, merge_state="BEHIND", stale=True),
+                        _pr(8, labels={"needs": ["needs-owner"]}),
+                    ],
+                    "workflow_runs": [],
+                    "gate_health": {"status": "pass", "alerts": []},
+                },
+                owner_queue={
+                    "available": True,
+                    "count": 4,
+                    "message": "",
+                    "entries": [
+                        {"kind": "needs-owner", "pr_number": 8, "next_action": "owner decision", "labels": ["needs-owner"]},
+                        {"kind": "failing-check", "pr_number": 7, "next_action": "fix failing check"},
+                        {"kind": "stale-gate", "pr_number": 7, "next_action": "rerun gate"},
+                        {"kind": "rebase-needed", "pr_number": 7, "next_action": "rebase/behind"},
+                    ],
+                },
+            )
+        )
+
+        # Three reasons for PR #7 are one row in Lane Work, not three rows in
+        # the owner queue.
+        self.assertEqual(nodes["lanework"].count('class="row"'), 1)
+        self.assertIn("reasons (3):", nodes["lanework"])
+        self.assertNotIn("#8", nodes["lanework"])
+        self.assertEqual(nodes["owner"].count('class="row"'), 1)
+        self.assertIn("#8", nodes["owner"])
+        self.assertIn("owner evidence: needs-owner", nodes["owner"])
+        # The summary counts work items, so one PR cannot inflate the owner
+        # count through several reasons.
+        self.assertIn("Owner decisions</span><b class=\"warn\">1</b>", nodes["summary"])
+        self.assertIn("Lane work</span><b class=\"warn\">1</b>", nodes["summary"])
+        # The deterministic next step is the owner decision, stated first.
+        self.assertIn("Do next:", nodes["worknow"])
+        self.assertIn("owner decision", nodes["worknow"])
+
+    def test_current_work_precedes_aggregates_and_release_history(self) -> None:
+        html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+
+        order = [html.index(f">{title}<") for title in ("Work Now", "Owner Queue", "Lane Work")]
+        self.assertEqual(order, sorted(order))
+        for later in ("Release Campaigns", "Productivity", "Recent Local History", "Spend And Latency"):
+            self.assertLess(html.index(">Work Now<"), html.index(f">{later}<"))
+            self.assertLess(html.index(">Lane Work<"), html.index(f">{later}<"))
+
+    def test_stale_snapshot_reports_age_and_suppresses_running_claims(self) -> None:
+        observed = (NOW - timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+        stale = _eval_board_truth(
+            "observation(ARGS[0], ARGS[1])",
+            _status(
+                productivity={
+                    "status": "pass",
+                    "current": {"source": "historical_board_snapshot", "observed_at": observed, "historical": True},
+                }
+            ),
+            int(NOW.timestamp() * 1000),
+        )
+        self.assertTrue(stale["historical"])
+        self.assertFalse(stale["live"])
+        self.assertEqual(stale["age_text"], "3.0h")
+        self.assertEqual(stale["label"], "last observed 3.0h ago")
+        self.assertEqual(stale["class"], "warn")
+        self.assertIn("nothing here is evidence of work running now", stale["detail"])
+
+        # A live-sourced snapshot that simply stopped refreshing is stale by
+        # age alone, whatever the payload calls its source.
+        aged = _eval_board_truth(
+            "observation(ARGS[0], ARGS[1])",
+            _status(productivity={"status": "pass", "current": {"source": "live_remote", "observed_at": observed}}),
+            int(NOW.timestamp() * 1000),
+        )
+        self.assertTrue(aged["aged"])
+        self.assertFalse(aged["live"])
+        self.assertEqual(aged["label"], "last observed 3.0h ago")
+
+        fresh_at = (NOW - timedelta(seconds=9)).isoformat().replace("+00:00", "Z")
+        live = _eval_board_truth(
+            "observation(ARGS[0], ARGS[1])",
+            _status(productivity={"status": "pass", "current": {"source": "live_remote", "observed_at": fresh_at}}),
+            int(NOW.timestamp() * 1000),
+        )
+        self.assertTrue(live["live"])
+        self.assertEqual(live["label"], "live, observed 9s ago")
+
+    def test_unconfirmed_server_cache_is_never_labelled_live(self) -> None:
+        # The server answers a cold cache with metadata only and a stale one
+        # with the previous snapshot. A recent observation time embedded in
+        # that unconfirmed snapshot is not evidence that it is current.
+        fresh_at = (NOW - timedelta(seconds=9)).isoformat().replace("+00:00", "Z")
+        payload = _status(
+            generated_at=fresh_at,
+            board={
+                "version": {"serving_version": "0.9.0"},
+                "cache": {"state": "stale", "age_seconds": 42.0, "refresh_in_progress": True},
+            },
+            productivity={"status": "pass", "current": {"source": "live_remote", "observed_at": fresh_at}},
+        )
+
+        stale_cache = _eval_board_truth("observation(ARGS[0], ARGS[1])", payload, int(NOW.timestamp() * 1000))
+
+        self.assertTrue(stale_cache["unconfirmed"])
+        self.assertFalse(stale_cache["live"])
+        self.assertFalse(stale_cache["historical"])
+        self.assertFalse(stale_cache["aged"])
+        # The older of the two recorded ages is shown, so the cache age is not
+        # understated by the fresher embedded observation time.
+        self.assertEqual(stale_cache["age_text"], "42s")
+        self.assertEqual(stale_cache["label"], "last observed 42s ago")
+        self.assertEqual(stale_cache["class"], "warn")
+        self.assertIn("nothing here is evidence of work running now", stale_cache["detail"])
+
+        cold_cache = _eval_board_truth(
+            "observation(ARGS[0], ARGS[1])",
+            _status(
+                generated_at=fresh_at,
+                board={"version": {}, "cache": {"state": "cold", "age_seconds": None}},
+                productivity={"status": "pass", "current": {"source": "live_remote", "observed_at": fresh_at}},
+            ),
+            int(NOW.timestamp() * 1000),
+        )
+        self.assertTrue(cold_cache["unconfirmed"])
+        self.assertFalse(cold_cache["live"])
+
+        # Only `fresh` confirms the snapshot the server is serving.
+        confirmed = _eval_board_truth(
+            "observation(ARGS[0], ARGS[1])",
+            _status(
+                generated_at=fresh_at,
+                board={"version": {}, "cache": {"state": "fresh", "age_seconds": 9.0}},
+                productivity={"status": "pass", "current": {"source": "live_remote", "observed_at": fresh_at}},
+            ),
+            int(NOW.timestamp() * 1000),
+        )
+        self.assertTrue(confirmed["live"])
+        self.assertEqual(confirmed["label"], "live, observed 9s ago")
+
+        nodes = _render_board_dom(payload)
+        self.assertIn("last observed 42s ago", nodes["summary"])
+        self.assertNotIn("live, observed", nodes["summary"])
+        self.assertNotIn("live, observed", nodes["worknow"])
+        self.assertIn("nothing here is evidence of work running now", nodes["worknow"])
+
+    def test_missing_observation_time_is_neutral_and_never_live(self) -> None:
+        # With no parseable observation time anywhere there is nothing to date
+        # the snapshot by, so the page may claim neither freshness nor an age.
+        payload = _status(generated_at="", productivity={"status": "pass", "current": {"source": "live_remote"}})
+
+        unknown = _eval_board_truth("observation(ARGS[0], ARGS[1])", payload, int(NOW.timestamp() * 1000))
+
+        self.assertFalse(unknown["live"])
+        self.assertFalse(unknown["aged"])
+        self.assertFalse(unknown["unconfirmed"])
+        self.assertEqual(unknown["label"], "observation time not recorded")
+        self.assertEqual(unknown["age_text"], "not recorded")
+        self.assertEqual(unknown["class"], "muted")
+        self.assertNotIn("live", unknown["label"])
+        self.assertNotIn("ago", unknown["label"])
+        self.assertIn("cannot be shown as current", unknown["detail"])
+
+        # An unparseable timestamp is the same case as an absent one.
+        garbled = _eval_board_truth(
+            "observation(ARGS[0], ARGS[1])",
+            _status(generated_at="not-a-timestamp", productivity={"current": {"observed_at": "soon"}}),
+            int(NOW.timestamp() * 1000),
+        )
+        self.assertEqual(garbled["label"], "observation time not recorded")
+        self.assertFalse(garbled["live"])
+
+        nodes = _render_board_dom(payload)
+        self.assertIn('<b class="muted">observation time not recorded</b>', nodes["summary"])
+        self.assertNotIn("live, observed", nodes["summary"])
+        self.assertNotIn("last observed not recorded", nodes["summary"] + nodes["worknow"])
+        self.assertIn("cannot be shown as current", nodes["worknow"])
+
+    def test_github_unavailable_renders_counts_as_not_recorded(self) -> None:
+        nodes = _render_board_dom(
+            _status(
+                remote={
+                    "available": False,
+                    "errors": ["pull_requests: gh unavailable"],
+                    "pull_requests": [],
+                    "workflow_runs": [],
+                    "gate_health": {"status": "pass", "alerts": []},
+                }
+            )
+        )
+
+        # No observation means no count, and an unobserved gate is not a clean
+        # gate.
+        self.assertIn("Open PRs</span><b class=\"muted\">not recorded</b>", nodes["summary"])
+        self.assertIn("Gate alerts</span><b class=\"muted\">not recorded</b>", nodes["summary"])
+        self.assertIn("gate alerts not recorded", nodes["alerts"])
+        self.assertIn("last observed", nodes["summary"])
+
+    def test_fresh_github_keeps_working_when_local_data_is_absent(self) -> None:
+        sources = _eval_board_truth("localSources(ARGS[0])", _status())
+
+        self.assertFalse(sources["adapters_available"])
+        self.assertEqual(
+            sources["missing"],
+            ["agent adapter cards", "orchestrator lease", "reviewer verdict history", "reviewer spend rows"],
+        )
+        self.assertIn("Local session data unavailable", sources["message"])
+        self.assertIn("GitHub data above is unaffected", sources["message"])
+
+        nodes = _render_board_dom(
+            _status(
+                remote={
+                    "available": True,
+                    "errors": [],
+                    "pull_requests": [_pr(7)],
+                    "workflow_runs": [],
+                    "gate_health": {"status": "pass", "alerts": []},
+                }
+            )
+        )
+        self.assertIn("Open PRs</span><b class=\"\">1</b>", nodes["summary"])
+        self.assertIn("Agent cards</span><b class=\"muted\">not recorded</b>", nodes["summary"])
+        self.assertIn("Local session data unavailable", nodes["worknow"])
+        self.assertIn("#7", nodes["prs"])
+
+    def test_old_running_campaign_is_reported_as_last_reported(self) -> None:
+        past = (NOW - timedelta(hours=6)).isoformat().replace("+00:00", "Z")
+        future = (NOW + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        now_ms = int(NOW.timestamp() * 1000)
+
+        overdue = _eval_board_truth(
+            "campaignLiveness(ARGS[0], ARGS[1])",
+            {
+                "status": "running",
+                "elapsed_seconds": 12.0,
+                "cards": [{"provider": "devin", "state": "running", "response_deadline_at": past}],
+            },
+            now_ms,
+        )
+        self.assertTrue(overdue["unverified"])
+        self.assertEqual(overdue["label"], "last reported running")
+        self.assertEqual(overdue["class"], "warn")
+        self.assertEqual(overdue["cards"][0]["label"], "last reported running")
+        self.assertEqual(overdue["cards"][0]["overdue_for"], "6.0h")
+
+        # An unexpired response deadline is live evidence, so the present-tense
+        # claim stands.
+        current = _eval_board_truth(
+            "campaignLiveness(ARGS[0], ARGS[1])",
+            {
+                "status": "running",
+                "elapsed_seconds": 12.0,
+                "cards": [{"provider": "devin", "state": "running", "response_deadline_at": future}],
+            },
+            now_ms,
+        )
+        self.assertFalse(current["unverified"])
+        self.assertEqual(current["label"], "running")
+
+        # No deadline at all is no liveness evidence either.
+        silent = _eval_board_truth(
+            "campaignLiveness(ARGS[0], ARGS[1])",
+            {"status": "running", "elapsed_seconds": 0.0, "cards": [{"provider": "devin", "state": "running"}]},
+            now_ms,
+        )
+        self.assertTrue(silent["unverified"])
+        self.assertEqual(silent["label"], "last reported running")
+        # A terminal campaign is never rewritten.
+        complete = _eval_board_truth(
+            "campaignLiveness(ARGS[0], ARGS[1])",
+            {"status": "complete", "elapsed_seconds": 90.0, "cards": []},
+            now_ms,
+        )
+        self.assertFalse(complete["unverified"])
+        self.assertEqual(complete["label"], "complete")
+
+    def test_campaign_section_labels_elapsed_time_as_recorded_work(self) -> None:
+        past = (NOW - timedelta(hours=6)).isoformat().replace("+00:00", "Z")
+        nodes = _render_board_dom(
+            _status(
+                release_campaigns={
+                    "available": True,
+                    "campaigns": [
+                        {
+                            "release_tag": "v0.9.0",
+                            "status": "running",
+                            "dry_run": False,
+                            "qualification_context": "release",
+                            "elapsed_seconds": 12.0,
+                            "next_action": "poll running providers",
+                            "cards": [
+                                {
+                                    "provider": "devin",
+                                    "posture": "required",
+                                    "state": "running",
+                                    "environment": "hosted",
+                                    "elapsed_seconds": 12.0,
+                                    "response_deadline_at": past,
+                                    "next_action": "poll devin",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+        )
+
+        self.assertIn("last reported running", nodes["campaigns"])
+        self.assertIn("recorded work 12.0s", nodes["campaigns"])
+        self.assertIn("deadline passed 6.0h ago", nodes["campaigns"])
+        self.assertIn("shown as last reported rather than currently running", nodes["campaigns"])
+
+    def test_unmeasured_productivity_and_spend_render_as_not_recorded(self) -> None:
+        nodes = _render_board_dom(
+            _status(
+                productivity={
+                    "status": None,
+                    "next_action": "record more board snapshots",
+                    "current": {"source": "live_remote", "observed_at": NOW.isoformat().replace("+00:00", "Z")},
+                    "metrics": {"cycle_time_seconds": None, "merged_pr_count": None},
+                    "quality": {"audit_pass_count": None},
+                    "spend": {"wall_seconds": None, "cost_usd": None, "total_tokens": None},
+                },
+                timelines={
+                    "verdicts": {"entries": []},
+                    "spend": {
+                        "groups": [
+                            {"lane": "codex", "verdict": None, "runs": 2, "wall_seconds_total": None,
+                             "wall_seconds_avg": None, "cost_usd_total": None, "total_tokens": None}
+                        ]
+                    },
+                },
+            ),
+            {"events": [{"created_at": NOW.isoformat().replace("+00:00", "Z"), "summary": {"next_action": "inspect"}}]},
+        )
+
+        self.assertIn("cycle not recorded", nodes["productivity"])
+        self.assertIn("merged not recorded", nodes["productivity"])
+        self.assertIn("not recorded tokens", nodes["productivity"])
+        self.assertIn("Productivity</span><b class=\"muted\">not recorded</b>", nodes["summary"])
+        self.assertIn("not recorded tokens", nodes["spend"])
+        self.assertIn("PRs not recorded / alerts not recorded / local not recorded", nodes["history"])
+        self.assertNotIn("$0.000", nodes["productivity"])
 
 
 class StatusCacheTests(TestCase):
