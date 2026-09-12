@@ -2506,6 +2506,7 @@ def render_init_plan(
         config = code_mower_participants.config_with_participants(
             config, participants, profile=profile_id,
         )
+        participants = code_mower_participants.configured_participants(config)
     if tracker == "jira_cloud":
         config = config_with_jira_tracker(config)
     elif tracker == "github":
@@ -2514,6 +2515,8 @@ def render_init_plan(
     if issues:
         raise ConfigError(f"invalid Code Mower config:\n{_format_issues(issues)}")
 
+    from .provider_capabilities import normalize_config
+    config = normalize_config(config)
     profile = _profile(config, profile_id)
     lanes: Mapping[str, Mapping[str, Any]] = config["lanes"]
     selected_lanes = {lane_id: lanes[lane_id] for lane_id in profile.lanes}
@@ -3344,11 +3347,19 @@ def main(argv: list[str] | None = None) -> int:
             code_mower_participants.parse_participants(args.participants)
             if args.participants is not None else None
         )
+        participant_transports = (
+            code_mower_participants.selected_transports(tuple(args.participants.split(",")))
+            if args.participants is not None else {}
+        )
         if args.interactive:
             selected_participants = code_mower_participants.pick_participants(
                 selected_participants or code_mower_participants.picker_initial_participants(
                     config, profile=args.profile,
                 ),
+            )
+        if selected_participants is not None:
+            selected_participants = tuple(
+                participant_transports.get(name, name) for name in selected_participants
             )
         tracker_choice = "jira_cloud" if args.jira else args.tracker
         plan = render_init_plan(

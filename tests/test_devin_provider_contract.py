@@ -117,7 +117,10 @@ class TestDevinRegistryContract(unittest.TestCase):
         lane = REFERENCE_PROVIDERS["devin"]
         self.assertEqual(lane.driver, "hosted_bridge")
         self.assertEqual(lane.provider, "devin")
-        self.assertTrue(lane.merge_authority)
+        self.assertFalse(lane.merge_authority)
+        self.assertTrue(lane.informational)
+        self.assertEqual(lane.product, "devin")
+        self.assertEqual(lane.transport, "devin_api_v3")
         self.assertEqual(lane.token_env, ("DEVIN_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"))
         self.assertEqual(lane.labels.needs, "needs-devin-audit")
         self.assertEqual(lane.provider_config["campaign_transport"], "devin_api_v3")

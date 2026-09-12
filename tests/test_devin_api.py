@@ -363,7 +363,7 @@ class DevinCampaignApiTests(unittest.TestCase):
                 api_runner=api,
             )
             self.assertEqual(self._entry(resumed)["state"], "running")
-            self.assertEqual(api.calls, [])
+            self.assertEqual([call[0] for call in api.calls], ["GET"])
 
     def test_resume_performs_one_get_and_binds_structured_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -401,6 +401,33 @@ class DevinCampaignApiTests(unittest.TestCase):
             self.assertEqual(entry["state"], "complete")
             self.assertEqual(entry["adoption_result"]["provider"], "devin")
             self.assertEqual([call[0] for call in api.calls], ["GET"])
+
+    def test_uncertain_create_reconciles_without_paid_retry(self):
+        for count in (0, 1, 2):
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp) / "campaigns"
+                updated = release_campaigns.dispatch_or_advance_campaign(
+                    self._campaign(), apply=True, repo_path=Path(tmp), campaigns_dir=directory,
+                    env=self._env(), api_runner=_FakeApiRunner([TimeoutError()]),
+                )
+                ref = self._entry(updated)["dispatch_ref"]
+                self.assertTrue(ref["reconciliation_tag"].startswith("cm-"))
+                items = [dict(session_id=f"devin-{i}", status="running",
+                              tags=[ref["reconciliation_tag"]]) for i in range(count)]
+                api = _FakeApiRunner([
+                    dict(items=items, has_next_page=False, end_cursor=None),
+                    dict(status="running", status_detail="working"),
+                ])
+                resumed = release_campaigns.dispatch_or_advance_campaign(
+                    updated, apply=True, repo_path=Path(tmp), campaigns_dir=directory,
+                    env=self._env(), api_runner=api,
+                )
+                entry = self._entry(resumed)
+                self.assertEqual(entry["dispatch_ref"]["session_id"], "devin-0" if count == 1 else "")
+                self.assertTrue(all(call[0] == "GET" for call in api.calls))
+                saved = release_campaigns.load_campaign_by_id("campaign-v1.0.0", directory)
+                self.assertEqual(self._entry(saved)["dispatch_ref"], entry["dispatch_ref"])
+                self.assertNotIn("api-key", json.dumps(saved))
 
     def test_explicit_retry_does_not_duplicate_an_active_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

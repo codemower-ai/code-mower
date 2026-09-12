@@ -497,6 +497,18 @@ def _validate_tracker(tracker: Any, issues: list[ConfigIssue]) -> None:
 
 def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
     issues: list[ConfigIssue] = []
+    from .participants import configured_participants, configured_transports
+    from .provider_capabilities import lane_transport
+    try:
+        configured_participants(config)
+    except ConfigError as exc:
+        issues.append(ConfigIssue("session_defaults", str(exc)))
+    try:
+        configured_transports(config, profile=None)
+        transports_valid = True
+    except ConfigError as exc:
+        issues.append(ConfigIssue("session_defaults", str(exc)))
+        transports_valid = False
     if config.get("version") not in {1, "1"}:
         issues.append(ConfigIssue("version", "must be 1"))
 
@@ -711,6 +723,10 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
         if driver not in ALLOWED_DRIVERS:
             issues.append(ConfigIssue(f"{path}.driver", f"must be one of {sorted(ALLOWED_DRIVERS)}"))
         _require_string(lane_map.get("provider"), f"{path}.provider", issues)
+        try:
+            lane_transport(lane_id, lane_map)
+        except ConfigError as exc:
+            issues.append(ConfigIssue(path, str(exc)))
         if lane_map.get("trailer_lane") is not None:
             _require_identifier(lane_map.get("trailer_lane"), f"{path}.trailer_lane", issues)
         if lane_map.get("lane_config") is not None:
@@ -804,6 +820,11 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
     profiles = _as_mapping(config.get("profiles", {}), "profiles", issues)
     for profile_id, profile in profiles.items():
         path = f"profiles.{profile_id}"
+        if transports_valid:
+            try:
+                configured_transports(config, profile=profile_id)
+            except ConfigError as exc:
+                issues.append(ConfigIssue(path, str(exc)))
         profile_map = _as_mapping(profile, path, issues)
         _require_string(profile_map.get("description"), f"{path}.description", issues)
         for index, lane_id in enumerate(
@@ -845,6 +866,8 @@ def render_dry_run(config: Mapping[str, Any]) -> RenderedPlan:
         issue_text = "; ".join(f"{issue.path}: {issue.message}" for issue in issues)
         raise ConfigError(f"invalid Code Mower config: {issue_text}")
 
+    from .provider_capabilities import normalize_config
+    config = normalize_config(config)
     project = config["project"]
     repositories = config["repositories"]
     lanes: Mapping[str, Mapping[str, Any]] = config["lanes"]
@@ -870,6 +893,7 @@ def render_dry_run(config: Mapping[str, Any]) -> RenderedPlan:
                 "provider": lane["provider"],
                 "labels": _labels_for(lane),
                 "flags": _lane_flags(lane),
+                **{key: lane[key] for key in ("product", "transport", "capabilities") if key in lane},
             }
             for lane_id, lane in lanes.items()
         },

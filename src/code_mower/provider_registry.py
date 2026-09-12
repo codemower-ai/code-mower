@@ -39,6 +39,8 @@ class ProviderLane:
     trigger_policy: str = "label"
     spend_policy: str = "none"
     provider_config: Mapping[str, Any] = field(default_factory=dict)
+    product: str | None = None
+    transport: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provider_config", _freeze_mapping(self.provider_config))
@@ -214,6 +216,8 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         lane_type="audit",
         driver="hosted_bridge",
         provider="devin",
+        product="devin",
+        transport="devin_api_v3",
         labels=LaneLabels(
             needs="needs-devin-audit",
             done="devin-audit-done",
@@ -221,7 +225,7 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         ),
         token_env=("DEVIN_AUDIT_LABEL_TOKEN", "GITHUB_TOKEN"),
         result_sources=("trailer_comment",),
-        merge_authority=True,
+        informational=True,
         enabled_by_default=False,
         trigger_policy="manual",
         spend_policy="paid",
@@ -231,8 +235,8 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
             "campaign_repository_scope_env": "CODE_MOWER_DEVIN_REPOSITORIES",
             "campaign_response_timeout_seconds": 3600,
             "status": (
-                "hosted Devin v3 Sessions API transport; "
-                "issue marker is optional audit evidence"
+                "informational hosted Devin v3 Sessions API transport; "
+                "not merge authority until independently calibrated; issue marker is optional audit evidence"
             ),
         },
     ),
@@ -675,6 +679,8 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
         lane_type="audit",
         driver="local_cli",
         provider="devin_cli",
+        product="devin",
+        transport="devin_cli",
         labels=LaneLabels(
             needs="needs-devin-cli-audit",
             done="devin-cli-audit-done",

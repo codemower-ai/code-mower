@@ -252,8 +252,56 @@ policy, or the generated workflows.
 | Reviewer | An independent current-head verdict through a supported review lane. |
 | Merge authority | Repository policy; selecting or coordinating a tool does not grant it. |
 
-Devin selects the local `devin_cli` reviewer and remains informational under
-the starter policy. Devin Cloud needs its own execution setup. Cursor's agent
+Devin defaults to the local `devin_cli` transport and remains informational under
+the starter policy. Select hosted Devin explicitly with `--with devin_api_v3`
+(legacy `devin_cloud` is also accepted), or save the choice in the configuration:
+
+```yaml
+session_defaults:
+  participants: [claude, codex, devin]
+  transports:
+    devin: devin_api_v3
+```
+
+Both transports have product identity `devin`. Local review uses lane `devin_cli`;
+hosted review retains lane `devin` and its existing labels. Aliases that name a
+transport preserve it through setup and session creation. Selecting both
+transports in one product session fails with a bounded selection message. An
+existing recommended profile containing only the hosted lane retains that choice.
+If both lanes are active, set `session_defaults.transports.devin` explicitly.
+
+Briefs expose an `execution` block with versioned capability metadata, unchecked
+readiness, and explicit gaps. The modes describe maintained Code Mower paths:
+
+| Capability | `devin_cli` | `devin_api_v3` |
+| --- | --- | --- |
+| Coordinate | Agent handoff | Unavailable |
+| Build | Local runner | External agent handoff |
+| Review | Local runner | Evidence only |
+| Message | Unavailable | Unavailable |
+| Cancel | Unavailable | Unavailable |
+| Authorized context delivery | Unavailable | Unavailable |
+| Structured results | Local runner | Release campaign only |
+
+These declarations describe the current integration; they do not launch a
+process, verify credentials, enable a session lifecycle, or confer merge
+authority. Hosted Devin cannot be a coordinating host; use an available agent
+host such as `devin_cli`, Claude, or Codex. Required work that depends on an
+unavailable capability pauses. The same contract is reported by doctor and
+specified in the packaged
+[`provider_capabilities.schema.json`](../src/code_mower/provider_capabilities.schema.json).
+
+Legacy lane configurations infer product and transport in memory without
+rewriting files. A legacy Devin lane with `merge_authority: true` and no explicit
+product/transport declaration fails with instructions to set
+`merge_authority: false` and `informational: true`. Retaining an independently
+calibrated repository promotion requires explicit product and transport fields;
+selection never performs that promotion. Contradictory driver/transport pairs or
+capability overrides fail validation; remove `capabilities` to use maintained
+defaults. Keep `provider: devin_cli` for local execution and `provider: devin`
+for hosted compatibility, with `product: devin` in both cases.
+
+Devin Cloud needs its own execution setup. Cursor's agent
 and Cursor Bugbot are separate selections. Grok Bot retains its own identity;
 it is not silently translated into Cursor or Grok Build. Where there is no
 dedicated transport, the brief calls for an agent handoff and makes no automatic
