@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from . import session_lease
@@ -70,7 +70,8 @@ def _path_reference(value: Any) -> str | None:
     if value is None:
         return None
     value = _text(value, maximum=1000)
-    if "\x00" in value:
+    path = PurePosixPath(value)
+    if "\x00" in value or "\\" in value or path.is_absolute() or ".." in path.parts:
         raise ContextError("private session context state is invalid")
     return value
 

@@ -129,6 +129,13 @@ class ContextSessionContractTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ContextError):
                 context_session.validate({**copy.deepcopy(record), **mutation})
 
+        for work_order in ("/tmp/work-order.md", "../work-order.md", "safe/../../work-order.md", "C:\\work-order.md"):
+            with self.subTest(work_order=work_order), self.assertRaises(ContextError):
+                context_session.validate({
+                    **copy.deepcopy(record), "stage": "prepared",
+                    "packet": "b" * 32, "work_order": work_order,
+                })
+
 
 @unittest.skipUnless(os.name == "posix", "private storage needs POSIX")
 class ContextSessionCliTests(unittest.TestCase):
@@ -222,6 +229,24 @@ class ContextSessionCliTests(unittest.TestCase):
         ])
         self.assertEqual((code, output), (1, ""))
         self.assertIn("policy changed after session start", error)
+
+    def test_private_record_cannot_be_reused_with_a_different_saved_repository(self):
+        code, output, error = self.start()
+        self.assertEqual((code, error), (0, ""))
+        saved = json.loads(output)
+        private_file = self.private / ("session-" + saved["id"] + ".json")
+        record = json.loads(private_file.read_text(encoding="utf-8"))
+        private_file.write_text(
+            json.dumps({**record, "repo": "owner/other"}), encoding="utf-8",
+        )
+
+        code, output, error = self.run_cli([
+            "session", "context", "status", saved["session_file"],
+            "--repo-path", str(self.repo), "--context-state-dir", str(self.private),
+            "--json",
+        ])
+        self.assertEqual((code, output), (1, ""))
+        self.assertIn("repository conflicts with the saved session", error)
 
 
 if __name__ == "__main__":
