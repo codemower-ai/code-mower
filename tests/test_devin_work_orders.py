@@ -334,7 +334,9 @@ class DeliveryTests(WorkOrderCase):
         self.assertEqual(result["verified_pr"]["pr_number"], 42)
         self.run_order("fix", request="fix-1", prose=CANARY, reviewed_head=HEAD)
         self.github.pr = replace(self.github.pr, head_sha="b" * 40)
-        status.update(status="exit", status_detail="finished",
+        # A valid result can also arrive while the raw resumable session remains
+        # running without an owner-action detail, as observed during #940.
+        status.update(status="running", status_detail=None,
                       structured_output=self.claim(round=1, head_sha="b" * 40))
         self.assertEqual(self.run_order("collect")["verified_pr"]["head_sha"], "b" * 40)
         self.assertEqual(self.run_order("cancel", request="c1")["session"]["state"], "terminated")

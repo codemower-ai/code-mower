@@ -94,7 +94,9 @@ def hosted(tmp_path, review, current, output):
 
     def runner(method, url, body, headers):
         calls.append((method, body))
-        return dict(session_id="review-1", **state, structured_output=output)
+        response = dict(session_id="review-1", structured_output=output)
+        response.update(state)
+        return response
 
     service = HostedReview.devin(
         tmp_path / "state",
@@ -225,8 +227,33 @@ class DevinReviewTests(unittest.TestCase):
                 with self.assertRaisesRegex(RemoteError, "invalid_review_output"):
                     normalize(output, {"handler.py"})
 
-    def test_completed_evidence_is_invalidated_by_remote_state(self):
-        for status in ["running", "error", "suspended", "exit"]:
+    def test_completed_evidence_is_invalidated_by_failure_or_missing_result(self):
+        cases = (
+            ("running", None),
+            ("error", CONTROLS[0][2]),
+            ("suspended", CONTROLS[0][2]),
+            ("exit", None),
+        )
+        for status, result in cases:
+            with self.subTest(status=status, result_present=result is not None):
+                with TemporaryDirectory() as directory:
+                    tmp_path = Path(directory).resolve()
+                    review = make_review()
+                    remote, state, _ = hosted(
+                        tmp_path, review, lambda review=review: review, CONTROLS[0][2]
+                    )
+                    remote.dispatch("approved", apply=True)
+                    state.update(status="exit", status_detail="finished")
+                    remote.collect(apply=True)
+                    evidence = remote.accept()
+                    state.clear()
+                    state.update(status=status, structured_output=result)
+                    with self.assertRaises(RemoteError):
+                        evidence.accept(lambda review=review: review)
+                    self.assertIs(remote.remote.private_result(remote.session), None)
+
+    def test_result_present_running_and_terminated_stay_complete(self):
+        for status in ["running", "exit"]:
             with self.subTest(status=status):
                 with TemporaryDirectory() as directory:
                     tmp_path = Path(directory).resolve()
@@ -240,9 +267,12 @@ class DevinReviewTests(unittest.TestCase):
                     evidence = remote.accept()
                     state.clear()
                     state.update(status=status)
-                    with self.assertRaises(RemoteError):
-                        evidence.accept(lambda review=review: review)
-                    self.assertIs(remote.remote.private_result(remote.session), None)
+                    self.assertEqual(
+                        evidence.accept(lambda review=review: review).verdict, "PASS"
+                    )
+                    self.assertEqual(
+                        remote.remote.private_result(remote.session), CONTROLS[0][2]
+                    )
 
     def test_pending_delivery_never_exposes_collected_result(self):
         with TemporaryDirectory() as directory:
@@ -354,9 +384,10 @@ class DevinReviewTests(unittest.TestCase):
             state.update(status="exit", status_detail="finished")
             remote.collect(apply=True)
             state.clear()
-            state.update(status="running")
+            state.update(status="running", structured_output=None)
             with self.assertRaises(RemoteError):
                 remote.accept()
+            state.pop("structured_output")
             state.update(status="exit", status_detail="finished")
             with self.assertRaises(RemoteError):
                 remote.accept()

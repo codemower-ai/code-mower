@@ -415,6 +415,14 @@ create/reconcile/get/message/cancel adapter seam; `RemoteSessions.run` is the
 common lifecycle for both adapters. `RemoteSessions.private_result(alias)` is
 an explicitly private local consumer API, never a telemetry source.
 
+Devin can return a schema-bound private result while its resumable raw session
+still reports `running` or `waiting_for_user`. The remote lifecycle treats that
+result as complete. Explicit failure, suspension, and `waiting_for_approval`
+remain authoritative even when an intermediate result exists. A result also
+wins over `terminated` or `archived`, matching release-campaign collection. With
+no result, provider-neutral status preserves those terminal states so operators
+can distinguish them; collection returns no private result.
+
 Storage defaults to `~/.local/share/code-mower/remote-sessions`. An explicit
 `--remote-state-dir` must be an absolute, owner-protected directory outside
 Git repositories, without symlinks. Directories are mode 0700 and files 0600;

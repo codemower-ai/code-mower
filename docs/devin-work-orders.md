@@ -57,9 +57,10 @@ Completion has exactly `schema`, `round`, `repository`, `issue`, `pr_number`, an
 `head_sha`. It is collected in the remote session's private artifact. Provider PR URLs,
 messages, prose, extra fields, and provider assertions of verification are not evidence.
 A missing result remains unavailable; malformed or stale results fail closed. Devin may
-leave a resumable session at `waiting_for_user` after accepting this structured result.
-The lifecycle treats that result as complete, while `waiting_for_approval` still blocks
-collection even when an intermediate structured result exists.
+leave a resumable session at `running` or `waiting_for_user` after accepting this
+structured result. The lifecycle treats that result as complete. Explicit failure,
+suspension, and `waiting_for_approval` still block collection even when an intermediate
+structured result exists.
 
 The GitHub adapter makes one query for at most two PRs on the exact head branch,
 including closed/merged PRs, then two fresh reads of the claimed PR. Each call has a
