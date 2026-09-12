@@ -75,7 +75,7 @@
             "review": "evidence_only",
             "message": "unavailable",
             "cancel": "unavailable",
-            "context": "unavailable",
+            "context": "agent_handoff",
             "structured_results": "campaign_only"
           }
         },
@@ -86,8 +86,7 @@
           "const": [
             "coordinate",
             "message",
-            "cancel",
-            "context"
+            "cancel"
           ]
         }
       }

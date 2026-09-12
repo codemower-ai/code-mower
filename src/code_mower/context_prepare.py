@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from . import context_packets, context_session, work_orders
 from .context_contract import ContextError, ContextRequest, _text
+from .context_delivery import SUPPORTED_HOSTS
 from .context_store import ContextStore
 from .participants import PARTICIPANTS, participant_id
 
@@ -202,8 +203,8 @@ def prepare(
             dependent_work="usable",
             next_action="Continue the ordinary workflow or configure an optional context connection.",
         ), 0
-    if record["host"] not in {"claude", "codex"}:
-        raise ContextError("guided private context currently supports Claude and Codex hosts")
+    if record["host"] not in SUPPORTED_HOSTS:
+        raise ContextError("guided private context currently supports Claude, Codex, and Devin hosts")
     selected_builder = participant_id(builder or record["builder"] or record["host"])
     if (
         selected_builder not in record["participants"]

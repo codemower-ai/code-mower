@@ -1,7 +1,7 @@
-# Share optional evidence with Claude and Codex
+# Share optional evidence with Claude, Codex, and Devin
 
 An approved context packet can now accompany a work order and its independent
-review. Both hosts use the same evidence renderer and authorization checks.
+review. Every host uses the same evidence renderer and authorization checks.
 The calling host remains the orchestrator; a context provider gains no builder,
 reviewer, tracker-write, or merge authority. Ordinary sessions without context
 keep their existing behavior and do not load the optional Coworker SDK.
@@ -10,9 +10,10 @@ Start with a verified [private connection](context-connections.md). The guided
 path below fetches once for the work item and retains the opaque packet handle;
 the lower-level workflow can still fetch it explicitly. Every delivery verifies
 authorization online; it does not repeat the search.
-Only Claude and Codex orchestrator, builder, and reviewer roles are supported
-for private delivery in this release. Each role must be explicitly approved in
-the private connection configuration.
+Only Claude, Codex, and Devin orchestrator, builder, and reviewer roles are
+supported for private delivery in this release. Each role must be explicitly
+approved in the private connection configuration as `<host>:<role>`; a
+connection without `devin:*` recipients never delivers to Devin.
 
 ## Guided session path
 
@@ -53,8 +54,8 @@ and diagnostics.
 `session context deliver` derives the repository, work item, connection, policy,
 packet, and selected builder from protected state. It writes the private
 evidence to stdout for the builder's prompt; keep that output out of tracked
-files and public logs. The selected builder must be Claude or Codex in this
-release.
+files and public logs. The selected builder must be Claude, Codex, or Devin in
+this release.
 
 ## Work order and builder
 
@@ -73,6 +74,71 @@ The private JSON request has exactly `repository`, `work_item`, and `policy`.
 Use the same scope and policy as the original fetch. Evidence is written to
 stdout for the approved participant's prompt. Keep it out of public terminal
 logs, tracked files, PR descriptions, and shared artifacts.
+
+### Hosted Devin builder
+
+A trusted hosted work order can carry the packet to `devin:builder` without a
+local prompt file. The trusted context decision is part of the work order:
+`WorkOrder.context_policy` is `none`, `optional`, or `required`, comes from
+dispatcher policy, and is included in the durable binding. A context-bearing
+order also carries the trusted `WorkOrder.context_work_item`: the tracker-neutral
+identity from the session or manifest context binding (a Jira key, for example),
+which may differ from the integer GitHub delivery issue `WorkOrder.issue`. Only
+the integer issue closes and verifies the pull request; only the work item binds
+the packet. When a key is supplied the prepared source may omit `issue_number`,
+though a present one must still match. Context-free orders carry no key, and
+their serialized binding is unchanged.
+
+The embedding binds one packet with `devin_work_orders.packet_context(store,
+name, handle, policy, order=order)`, which validates the handle and the trusted
+policy (its `required` flag must agree with the order) and returns a
+`PacketContext` holding only the protected store, connection name, packet
+handle, normalized policy, and backend. It carries no packet, evidence, callable,
+or identity of its own: the request is derived from the order it is used with.
+That value is passed as `context=` to `dispatch`, `clarify`, or `fix`.
+
+Immediately before each paid create or message write, and never in preview, the
+work-order boundary itself calls `load_authorized()` with the order's repository,
+work item, and `devin:builder`: a new online authorization under the store lock
+for the selected account, current authorization, revocation and expiry, then the
+packet's own binding, freshness, and recipients. The evidence is rendered inside
+that boundary from the exact packet the authorized load returned, under the
+exact authorized packet handle as its `Packet identity`, the same identity the
+Claude and Codex peer paths render; no separately supplied packet or evidence is
+ever accepted, and a synthetic local packet with matching binding fields never
+reaches the store lookup. A handle for another ticket, a packet without the
+recipient, or a store without an authorizable connection is `unavailable`; a
+bare handle, packet, string, look-alike object, store subclass, or any context
+on a `none` order fails as `context_binding_mismatch`. Rendering and the 64 KiB
+combined-size check (`context_budget_exceeded`) happen before the work-order
+record, branch reservation, or a new round is written, so a rejected input
+leaves no undispatched reservation and consumes no round. Evidence text is
+appended only to the provider input; records keep only digests plus the safe
+state enum, and status, collect, and cancel reject a context argument.
+
+A `required` order fails closed when no packet is supplied or it cannot be
+reauthorized (wrong account, revoked or expired authorization, refreshed or
+invalidated packet). `run` then returns, rather than raises, the issue's closed
+outcome: `{"outcome": "UNKNOWN", "state": "paused", "reason":
+"context_unavailable", "context": {"policy": "required", "dispatch" | "message":
+"unavailable"}, "merge_authority": false}`; nothing was reserved, persisted, or
+sent, and an already dispatched order keeps its prior round and state. Only an
+`optional` order degrades to a code-only input (`degraded`) or runs without a
+packet (`omitted`).
+
+The complete intended input, including the evidence and its safe state, is
+digested before the local dispatch or message intent becomes durable, and the
+remote session's input fingerprint covers the same text. A retry after a stop
+between the two writes must regenerate the identical input; changed, refreshed,
+or dropped evidence fails as `request_conflict` and the saved state keeps
+reporting what was actually intended. The state chosen for the create input and
+for each message intent is persisted and reported by every command as
+`context: {policy, dispatch, message}`; replay, acknowledgement, status, and
+collect return the saved state rather than recomputing it. Durable records
+written before the context field existed keep their original binding and
+dispatch input: a `none` order serializes without `context_policy` or
+`context_work_item`, and records without context or input digests are read as
+context-free.
 
 ## Attach evidence to independent review
 

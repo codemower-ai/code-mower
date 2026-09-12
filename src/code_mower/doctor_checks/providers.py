@@ -203,7 +203,7 @@ def check_lane_runtime(
             name="provider.capabilities", status=STATUS_WARN, lane=lane_id,
             message=f"{transport.product} via {transport.transport}: unavailable capabilities: " + ", ".join(transport.brief()["capability_gaps"]),
             detail=transport.brief(),
-            remediation="Use only declared capability modes; session messaging, cancellation, and authorized context delivery are unavailable. Selection does not grant merge authority.",
+            remediation="Use only declared capability modes; session messaging and cancellation are unavailable, and authorized context reaches only the hosted builder input (never the local CLI reviewer). Selection does not grant merge authority.",
         ))
     driver = str(lane.get("driver", ""))
     skip_local_cli_runtime = (

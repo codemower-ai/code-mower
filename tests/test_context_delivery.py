@@ -1,4 +1,4 @@
-"""One approved evidence payload for both hosts and independent recipients."""
+"""One approved evidence payload for every host and independent recipient."""
 
 import json
 import hashlib
@@ -9,7 +9,8 @@ from pathlib import Path
 
 from code_mower.context_connections import connect, disconnect
 from code_mower.context_contract import ContextError, ContextRequest, load_packet
-from code_mower.context_delivery import attach, deliver, public_verdict, read_binding, render_evidence, save_feedback
+from code_mower.context_delivery import (SUPPORTED_HOSTS, SUPPORTED_RECIPIENTS, attach, deliver, public_verdict,
+                                         read_binding, render_evidence, save_feedback)
 from code_mower.context_packets import fetch
 from code_mower.context_store import ContextStore
 from test_context_connections import MemoryVault
@@ -25,7 +26,8 @@ class ContextDeliveryTests(unittest.TestCase):
         self.store = ContextStore(Path(tmp.name).resolve() / 'private', vault=MemoryVault())
         self.backend = RetrievalBackend()
         self.head = 'a' * 40
-        self.recipients = [f'{host}:{role}' for host in ('claude', 'codex') for role in ('orchestrator', 'builder', 'reviewer')]
+        self.recipients = [f'{host}:{role}' for host in ('claude', 'codex', 'devin')
+                           for role in ('orchestrator', 'builder', 'reviewer')]
         connect(self.store, 'example', {'principal': 'one@example.invalid', 'workspace': 'example',
                 'repositories': ['owner/repo'], 'recipients': self.recipients}, backend=self.backend)
         self.spec = {'repository': 'owner/repo', 'work_item': 'EXAMPLE-1', 'recipient': 'codex:orchestrator',
@@ -42,8 +44,12 @@ class ContextDeliveryTests(unittest.TestCase):
         return deliver(self.store, current['revision'], repository='owner/repo', pr=42, head=self.head,
                        recipient=recipient, current=current, backend=self.backend, **kwargs)
 
-    def test_either_host_delivers_identical_evidence_to_builder_and_reviewer(self):
-        for host in ('claude', 'codex'):
+    def test_devin_roles_are_supported_recipients(self):
+        self.assertEqual(SUPPORTED_HOSTS, ('claude', 'codex', 'devin'))
+        self.assertEqual(SUPPORTED_RECIPIENTS, frozenset(self.recipients))
+
+    def test_every_host_delivers_identical_evidence_to_builder_and_reviewer(self):
+        for host in SUPPORTED_HOSTS:
             current = self.attach(host)
             received = [self.delivery(current, recipient) for recipient in self.recipients]
             self.assertEqual(len({item.text for item in received}), 1)
@@ -71,6 +77,10 @@ class ContextDeliveryTests(unittest.TestCase):
                 self.delivery(invalid)
         with self.assertRaises(ContextError):
             self.delivery(current, 'unsupported:reviewer')
+        self.backend.wrong_identity = True
+        with self.assertRaises(ContextError):
+            self.delivery(current, 'devin:reviewer')
+        self.backend.wrong_identity = False
         self.backend.revoked = True
         with self.assertRaises(ContextError):
             self.delivery(current)
@@ -78,6 +88,20 @@ class ContextDeliveryTests(unittest.TestCase):
         self.assertEqual(list(self.store.root.glob('.d-*.json')), [])
         with self.assertRaises(ContextError):
             self.delivery(current)
+
+    def test_connection_without_devin_recipients_never_delivers_to_devin(self):
+        disconnect(self.store, 'example', backend=self.backend)
+        narrowed = [recipient for recipient in self.recipients if not recipient.startswith('devin:')]
+        connect(self.store, 'example', {'principal': 'one@example.invalid', 'workspace': 'example',
+                'repositories': ['owner/repo'], 'recipients': narrowed}, backend=self.backend)
+        self.result = fetch(self.store, 'example', self.spec, backend=self.backend)
+        with self.assertRaises(ContextError):
+            self.attach('devin')
+        current = self.attach()
+        for role in ('orchestrator', 'builder', 'reviewer'):
+            with self.assertRaises(ContextError):
+                self.delivery(current, f'devin:{role}')
+        self.assertTrue(self.delivery(current, 'codex:builder').text)
 
     def test_retrieval_refresh_deletes_old_binding_and_feedback(self):
         current = self.attach()
@@ -100,6 +124,21 @@ class ContextDeliveryTests(unittest.TestCase):
         self.assertNotIn('one@example.invalid', body)
         self.assertIn(current['revision'], body)
         self.assertIn('Claude Audit: BLOCKED', body)
+        devin = self.delivery(current, 'devin:reviewer')
+        save_feedback(self.store, devin, 'devin', prose)
+        body = public_verdict(devin, provider='Devin', head=self.head, verdict='PASS',
+                             counts=[0, 0, 0, 0], trailer='<!-- DEVIN_AUDIT_STATE: devin-audit-pass -->')
+        self.assertNotIn(prose, body)
+        self.assertIn('Devin Audit: PASS', body)
+        self.assertIn('## Devin audit (informational only)', body)
+        forced = public_verdict(devin, provider='Devin', head=self.head, verdict='PASS', counts=[0, 0, 0, 0],
+                                trailer='<!-- DEVIN_AUDIT_STATE: devin-audit-pass -->', merge_authority=True)
+        self.assertIn('## Devin audit (informational only)', forced)
+        self.assertIn('## Claude audit (merge-authority lane)', public_verdict(
+            delivery, provider='Claude', head=self.head, verdict='PASS', counts=[0, 0, 0, 0],
+            trailer='<!-- CLAUDE_AUDIT_STATE: claude-audit-pass -->'))
+        with self.assertRaises(ContextError):
+            save_feedback(self.store, devin, 'unsupported', prose)
 
     def test_local_repository_graph_uses_common_renderer_without_oauth_identity(self):
         from test_context_contract import NOW, connection, packet, policy
