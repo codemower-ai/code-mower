@@ -4566,6 +4566,9 @@ fi
                     "type": "audit",
                     "driver": "hosted_bridge",
                     "provider": "devin",
+                    # Explicit repository promotion; the starter stays informational.
+                    "product": "devin",
+                    "transport": "devin_api_v3",
                     "merge_authority": True,
                     "trigger_policy": "manual",
                     "labels": {
@@ -4733,6 +4736,9 @@ fi
                         "type": "audit",
                         "driver": "hosted_bridge",
                         "provider": "devin",
+                        # Explicit repository promotion exercises stale-label hygiene.
+                        "product": "devin",
+                        "transport": "devin_api_v3",
                         "merge_authority": True,
                         "trigger_policy": "manual",
                         "labels": {
@@ -4815,7 +4821,10 @@ fi
                 **devin_config,
                 "lanes": {
                     "manual_review": {
-                        **devin_config["lanes"]["devin"],
+                        **{
+                            key: value for key, value in devin_config["lanes"]["devin"].items()
+                            if key not in {"product", "transport", "capabilities"}
+                        },
                         "driver": "manual",
                         "provider": "manual-reviewer",
                         "merge_authority": False,

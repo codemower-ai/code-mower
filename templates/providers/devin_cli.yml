@@ -1,5 +1,15 @@
 devin_cli:
   provider: "devin_cli"
+  product: "devin"
+  transport: "devin_cli"
+  capabilities:
+    coordinate: "agent_handoff"
+    build: "local_runner"
+    review: "local_runner"
+    message: "unavailable"
+    cancel: "unavailable"
+    context: "unavailable"
+    structured_results: "local_runner"
   driver: "local_cli"
   type: "audit"
   adapter: null

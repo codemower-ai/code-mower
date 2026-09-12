@@ -292,6 +292,8 @@ PACKAGE_FILES = (
     ("tools/code_mower_next_steps.py", "src/code_mower/next_steps.py", "core"),
     ("src/code_mower/lane_delivery.py", "src/code_mower/lane_delivery.py", "core"),
     ("src/code_mower/participants.py", "src/code_mower/participants.py", "core"),
+    ("src/code_mower/provider_capabilities.py", "src/code_mower/provider_capabilities.py", "core"),
+    ("src/code_mower/provider_capabilities.schema.json", "src/code_mower/provider_capabilities.schema.json", "schema"),
     ("src/code_mower/session.py", "src/code_mower/session.py", "core"),
     ("src/code_mower/session_lease.py", "src/code_mower/session_lease.py", "core"),
     ("src/code_mower/lane_status.py", "src/code_mower/lane_status.py", "core"),

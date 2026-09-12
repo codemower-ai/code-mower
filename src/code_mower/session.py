@@ -19,10 +19,14 @@ from .context_store import ContextStore
 from .participants import (
     PARTICIPANTS,
     configured_participants,
+    configured_transports,
     parse_participants,
     participant_id,
     reference_review_config,
+    review_lane_for,
+    selected_transports,
 )
+from .provider_capabilities import TRANSPORTS, normalize_lane
 
 
 DEFAULT_STATE_DIR = ".code-mower/sessions"
@@ -86,10 +90,19 @@ def build_session(
 ) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ConfigError("--repo must be a GitHub OWNER/REPO slug")
+    transports = {**configured_transports(config), **selected_transports(selected)}
+    raw_host, raw_coordinator = host, orchestrator or host
     host = participant_id(host)
-    coordinator = participant_id(orchestrator) if orchestrator else host
+    coordinator = participant_id(raw_coordinator)
     if not PARTICIPANTS[host].orchestrator or not PARTICIPANTS[coordinator].orchestrator:
         raise ConfigError("the host and orchestrator must be agent tools, not reviewer-only services")
+    role_transports = {}
+    for role, raw, name in (("host", raw_host, host), ("orchestrator", raw_coordinator, coordinator)):
+        if name == "devin":
+            transport_id = selected_transports((raw,)).get("devin", transports["devin"])
+            if TRANSPORTS[transport_id].capabilities.coordinate == "unavailable":
+                raise ConfigError("devin_api_v3 cannot coordinate sessions; use an available agent host such as devin_cli, codex, or claude")
+            role_transports[f"{role}_transport"] = transport_id
     selected = parse_participants(",".join(selected))
     lanes = config.get("lanes", {})
     if not isinstance(lanes, Mapping):
@@ -98,15 +111,17 @@ def build_session(
     for name in selected:
         item = PARTICIPANTS[name]
         review = None
-        if item.review_lane:
-            lane = lanes.get(item.review_lane, reference_review_config(item.review_lane))
+        review_lane = review_lane_for(name, transports)
+        if review_lane:
+            lane = lanes.get(review_lane, reference_review_config(review_lane))
             if not isinstance(lane, Mapping):
-                raise ConfigError(f"lane {item.review_lane!r} must be a mapping")
+                raise ConfigError(f"lane {review_lane!r} must be a mapping")
+            lane = normalize_lane(review_lane, lane)
             review = {
-                "lane": item.review_lane,
+                "lane": review_lane,
                 "merge_authority": bool(lane.get("merge_authority")),
                 "informational": bool(lane.get("informational")),
-                "policy_source": "repository" if item.review_lane in lanes else "starter",
+                "policy_source": "repository" if review_lane in lanes else "starter",
                 "readiness": "unchecked",
             }
         members.append({
@@ -116,15 +131,25 @@ def build_session(
                         if item.builder else None),
             "reviewer": review, "note": item.note,
         })
+        if name in transports:
+            execution = TRANSPORTS[transports[name]]
+            members[-1]["execution"] = execution.brief()
+            members[-1]["can_coordinate"] = execution.capabilities.coordinate != "unavailable"
+            if members[-1]["builder"]:
+                members[-1]["builder"].update(
+                    transport=execution.transport, execution_mode=execution.capabilities.build,
+                )
     payload: dict[str, Any] = {
         "schema": "code_mower.session.v1",
         "repo": repo, "host": host, "orchestrator": coordinator,
+        **role_transports,
         "participants": members,
         "mode": "agent_coordinated",
         "status": "prepared" if host == coordinator else "handoff_required",
         "instructions": [
             "The selected orchestrator coordinates this session; this command does not launch provider processes.",
             "Check participant authentication, permissions, and transport readiness before assigning work.",
+            "Capability modes describe the current Code Mower integration. Unavailable capabilities pause dependent work; campaign-only results and evidence-only reviews do not imply a general session lifecycle.",
             "Assign builds and reviews only to selected participants; report unavailable capabilities instead of substituting another product.",
             "Assign one builder per branch and hand off bounded work through an available tool or existing Code Mower dispatcher.",
             "Request independent reviews against the current PR head; a builder's own review cannot satisfy its peer-review requirement.",
@@ -178,12 +203,18 @@ def render_session(payload: Mapping[str, Any]) -> str:
     for member in payload["participants"]:
         roles = []
         if member["builder"]:
-            roles.append("builder via agent handoff")
+            mode = member["builder"].get("execution_mode", "agent_handoff")
+            roles.append("builder via " + mode.replace("_", " "))
         if member["reviewer"]:
             review = member["reviewer"]
             policy = "merge-authority lane" if review["merge_authority"] else "informational lane"
             roles.append(f"reviewer: {review['lane']} ({policy})")
         lines.append(f"- {member['name']}: {', '.join(roles)}")
+        execution = member.get("execution")
+        if isinstance(execution, Mapping):
+            lines.append(f"  Product: {execution['product']}; transport: {execution['transport']}; readiness: {execution['readiness']}")
+            lines.append("  Capabilities: " + ", ".join(f"{key}={value}" for key, value in execution['capabilities'].items()))
+            lines.append("  Unavailable: " + ", ".join(execution['capability_gaps']))
         if member["note"]:
             lines.append(f"  {member['note']}")
     lines.extend(["", *payload["instructions"]])
@@ -504,6 +535,9 @@ def main(argv: list[str] | None = None) -> int:
                 parse_participants(args.participants) if args.participants is not None
                 else configured_participants(config)
             )
+            if args.participants is not None:
+                transports = selected_transports(tuple(args.participants.split(",")))
+                selected = tuple(transports.get(name, name) for name in selected)
             payload = build_session(
                 repo=args.repo, host=host, selected=selected,
                 config=config, orchestrator=args.orchestrator,

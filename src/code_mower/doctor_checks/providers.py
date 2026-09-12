@@ -28,6 +28,7 @@ from .provider_probe import (
     local_cli_probe_remediation,
 )
 from .provider_review_hygiene import check_review_hygiene
+from ..provider_capabilities import lane_transport
 
 __all__ = [
     "check_lane_runtime",
@@ -188,6 +189,22 @@ def check_lane_runtime(
             missing_workflow_is_warning=missing_workflow_is_warning,
         )
     ]
+    try:
+        transport = lane_transport(lane_id, hygiene_source)
+    except code_mower_config.ConfigError as exc:
+        checks.append(DoctorCheck(
+            name="provider.capabilities", status=STATUS_FAIL, lane=lane_id,
+            message=str(exc),
+            remediation="Correct the Devin product/transport declaration and informational review policy, then rerun doctor.",
+        ))
+        return checks
+    if transport:
+        checks.append(DoctorCheck(
+            name="provider.capabilities", status=STATUS_WARN, lane=lane_id,
+            message=f"{transport.product} via {transport.transport}: unavailable capabilities: " + ", ".join(transport.brief()["capability_gaps"]),
+            detail=transport.brief(),
+            remediation="Use only declared capability modes; session messaging, cancellation, and authorized context delivery are unavailable. Selection does not grant merge authority.",
+        ))
     driver = str(lane.get("driver", ""))
     skip_local_cli_runtime = (
         driver == "local_cli" and adoption_posture in LOCAL_CLI_SKIP_POSTURES
