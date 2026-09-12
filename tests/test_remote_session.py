@@ -111,6 +111,7 @@ class RemoteSessionTests(unittest.TestCase):
         binding = self.record()["binding"]
         result = {"schema": "code_mower.builderCompletion.v1", "round": 10}
         cases = (
+            ("pending", "", "complete"),
             ("running", "", "complete"),
             ("owner_action", "waiting_for_owner", "complete"),
             ("failed", "", "failed"),
