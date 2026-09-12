@@ -1521,6 +1521,26 @@
       "kind": "manifest",
       "source": "generated",
       "target": "code-mower-package-manifest.json"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/slack_ingress.py",
+      "target": "src/code_mower/slack_ingress.py"
+    },
+    {
+      "kind": "template",
+      "source": "templates/slack/app-manifest.json",
+      "target": "templates/slack/app-manifest.json"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/templates/slack/app-manifest.json",
+      "target": "src/code_mower/templates/slack/app-manifest.json"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/slack-ingress.md",
+      "target": "docs/slack-ingress.md"
     }
   ],
   "mode": "materialize",
