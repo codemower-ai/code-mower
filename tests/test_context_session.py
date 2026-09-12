@@ -136,6 +136,43 @@ class ContextSessionContractTests(unittest.TestCase):
         self.assertTrue(inactive["owner_action"])
         self.assertEqual(context_session.status(None, lease_live=True)["stage"], "not_selected")
 
+    def test_expired_and_authorization_failures_have_closed_redacted_status(self):
+        record = context_session.create(
+            self.store, self.session, work_item="SECRET-123", policy=POLICY,
+        )
+        record = context_session.update(
+            self.store,
+            self.session["id"],
+            expected_generation=record["generation"],
+            changes={
+                "stage": "prepared", "builder": "codex", "query_mode": "work_item",
+                "request_hash": "c" * 64, "packet": "b" * 32,
+                "work_order": "work-order.md", "context_state": "expired",
+            },
+        )
+        expired = context_session.status(record, lease_live=True)
+        self.assertEqual(expired["stage"], "context_expired")
+        self.assertTrue(expired["owner_action"])
+        record = context_session.update(
+            self.store,
+            self.session["id"],
+            expected_generation=record["generation"],
+            changes={"context_state": "authorization_failed"},
+        )
+        failed = context_session.status(record, lease_live=True)
+        self.assertEqual(failed["stage"], "authorization_failed")
+        record = context_session.update(
+            self.store,
+            self.session["id"],
+            expected_generation=record["generation"],
+            changes={"context_state": "unavailable"},
+        )
+        unavailable = context_session.status(record, lease_live=True)
+        self.assertEqual(unavailable["stage"], "context_unavailable")
+        self.assertEqual(context_session.failure_state(ContextError("malformed packet")), "unavailable")
+        for private in ("SECRET-123", "example-context", "owner/repo", "b" * 32):
+            self.assertNotIn(private, json.dumps((expired, failed, unavailable)))
+
     def test_resolution_rejects_conflicting_trusted_values(self):
         self.assertEqual(context_session.resolve_bound("repository", None, "owner/repo"), "owner/repo")
         with self.assertRaisesRegex(ContextError, "conflicts with the saved session"):

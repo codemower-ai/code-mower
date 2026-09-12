@@ -12,9 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import context_prepare, context_session, session_lease
+from . import context_guided, context_prepare, context_session, session_lease
 from .config import ConfigError, _format_issues, load_config, validate_config
 from .context_contract import ContextError, normalize_policy
+from .context_store import ContextStore
 from .participants import (
     PARTICIPANTS,
     configured_participants,
@@ -213,6 +214,11 @@ def render_context_prepare(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_context_private(payload: Mapping[str, Any]) -> str:
+    text = str(payload["private_text"])
+    return text if text.endswith("\n") else text + "\n"
+
+
 def _mark_read_only(payload: dict[str, Any]) -> None:
     """Record that this brief carries no mutating orchestration authority."""
     payload["lease"] = {"state": session_lease.STATE_ABSENT, "mutating": False}
@@ -290,6 +296,36 @@ def _run_context_command(args: argparse.Namespace) -> tuple[dict[str, Any], int]
         raise ContextError(
             "this session no longer holds the mutating lease; start or resume an authorized session"
         )
+    if args.context_command in {"attach", "deliver", "feedback"}:
+        packet_store = ContextStore(args.context_state_dir)
+        if args.context_command == "attach":
+            return context_guided.attach_session(
+                store,
+                packet_store,
+                record,
+                repo_path=args.repo_path,
+                pr=args.pr,
+                base_ref=args.base_ref,
+                retry_uncertain=args.retry_uncertain,
+            )
+        if args.context_command == "deliver":
+            text = context_guided.deliver_session(
+                store,
+                packet_store,
+                record,
+                repo_path=args.repo_path,
+                base_ref=args.base_ref,
+            )
+        else:
+            text = context_guided.feedback_session(
+                store,
+                packet_store,
+                record,
+                repo_path=args.repo_path,
+                reviewer=args.reviewer,
+                base_ref=args.base_ref,
+            )
+        return {"private_text": text}, 0
     tracker = source.get("tracker")
     retrieval_source = (
         "jira" if isinstance(tracker, Mapping) and tracker.get("kind") == "jira_cloud" else None
@@ -386,6 +422,40 @@ def main(argv: list[str] | None = None) -> int:
         help="explicitly replace or retry a prior retrieval",
     )
     context_prepare_parser.add_argument("--json", action="store_true")
+    context_attach_parser = context_sub.add_parser(
+        "attach", help="attach the prepared packet to a pull request and reconcile retries"
+    )
+    context_attach_parser.add_argument("session_file", type=Path)
+    context_attach_parser.add_argument("--pr", type=int, required=True)
+    context_attach_parser.add_argument("--repo-path", type=Path, default=Path.cwd())
+    context_attach_parser.add_argument("--config")
+    context_attach_parser.add_argument("--context-state-dir", type=Path)
+    context_attach_parser.add_argument("--base-ref", default="origin/main")
+    context_attach_parser.add_argument(
+        "--retry-uncertain",
+        action="store_true",
+        help="republish the same saved revision after an explicit remote-state check",
+    )
+    context_attach_parser.add_argument("--json", action="store_true")
+    context_deliver_parser = context_sub.add_parser(
+        "deliver", help="output the authorized packet for the session's selected builder"
+    )
+    context_deliver_parser.add_argument("session_file", type=Path)
+    context_deliver_parser.add_argument("--repo-path", type=Path, default=Path.cwd())
+    context_deliver_parser.add_argument("--config")
+    context_deliver_parser.add_argument("--context-state-dir", type=Path)
+    context_deliver_parser.add_argument("--base-ref", default="origin/main")
+    context_deliver_parser.set_defaults(json=False)
+    context_feedback_parser = context_sub.add_parser(
+        "feedback", help="output one selected reviewer's authorized private findings"
+    )
+    context_feedback_parser.add_argument("session_file", type=Path)
+    context_feedback_parser.add_argument("--reviewer", required=True)
+    context_feedback_parser.add_argument("--repo-path", type=Path, default=Path.cwd())
+    context_feedback_parser.add_argument("--config")
+    context_feedback_parser.add_argument("--context-state-dir", type=Path)
+    context_feedback_parser.add_argument("--base-ref", default="origin/main")
+    context_feedback_parser.set_defaults(json=False)
     args = parser.parse_args(argv)
     render = render_session
     exit_code = 0
@@ -407,11 +477,12 @@ def main(argv: list[str] | None = None) -> int:
             render = session_lease.render_lease
         elif args.command == "context":
             payload, exit_code = _run_context_command(args)
-            render = (
-                render_context_status
-                if args.context_command == "status"
-                else render_context_prepare
-            )
+            if args.context_command == "status":
+                render = render_context_status
+            elif args.context_command in {"deliver", "feedback"}:
+                render = render_context_private
+            else:
+                render = render_context_prepare
         else:
             if args.work_item and not args.lease:
                 raise ConfigError("--work-item requires a mutating session lease; omit --no-lease")

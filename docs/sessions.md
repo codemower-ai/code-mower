@@ -157,6 +157,43 @@ Optional context failure leaves ordinary work usable, while required context
 failure pauses dependent work. A session with no context provider reports
 `not_configured` and keeps its ordinary workflow.
 
+Deliver the prepared packet to the selected builder without copying its handle
+or constructing a private request file:
+
+```bash
+code-mower session context deliver .code-mower/sessions/SESSION.json
+```
+
+When a pull request exists, bind that same protected session input to its
+current head:
+
+```bash
+code-mower session context attach .code-mower/sessions/SESSION.json --pr 42
+```
+
+The attachment revision is reserved locally before GitHub is changed. A normal
+retry reconciles the saved revision from trusted comments and never creates a
+duplicate after success. An uncertain remote response pauses review; use
+`--retry-uncertain` only after checking that the saved revision is not current.
+The retry republishes that same revision. A new code head creates a new input
+revision and needs a fresh independent review.
+
+Running `prepare` while publication is pending or uncertain preserves the saved
+intent and directs the session back to `attach`; it never drops the revision or
+repeats provider authorization while publication recovery is unresolved.
+
+After a selected Claude or Codex reviewer finishes, give its private findings
+to the selected builder without copying the revision:
+
+```bash
+code-mower session context feedback .code-mower/sessions/SESSION.json \
+  --reviewer claude
+```
+
+Both delivery commands write private content to stdout. Session status remains
+redacted and has closed states for pending or uncertain publication, expired
+evidence, failed authorization, attached input, and retrieved feedback.
+
 ## Single Orchestrator Lease
 
 `session start` takes a local lease before it saves anything, so one repository

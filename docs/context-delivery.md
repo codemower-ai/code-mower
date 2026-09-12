@@ -22,6 +22,7 @@ Code Mower carry the private identity into retrieval and work-order creation:
 ```sh
 code-mower session start --repo OWNER/REPO --host codex --work-item EXAMPLE-123
 code-mower session context prepare .code-mower/sessions/SESSION.json
+code-mower session context deliver .code-mower/sessions/SESSION.json
 ```
 
 Use `--host claude` when Claude starts the session. The selected host is the
@@ -49,6 +50,12 @@ generated work-order path so local edits to the previous work order are not
 overwritten. The lower-level commands below remain useful for expert scripting
 and diagnostics.
 
+`session context deliver` derives the repository, work item, connection, policy,
+packet, and selected builder from protected state. It writes the private
+evidence to stdout for the builder's prompt; keep that output out of tracked
+files and public logs. The selected builder must be Claude or Codex in this
+release.
+
 ## Work order and builder
 
 `work-order draft --context-packet HANDLE` adds the opaque identity and a delivery
@@ -69,7 +76,29 @@ logs, tracked files, PR descriptions, and shared artifacts.
 
 ## Attach evidence to independent review
 
-After creating the PR, attach the packet to its current code head:
+After creating the PR, attach the packet to its current code head without a
+request file or copied packet handle:
+
+```sh
+code-mower session context attach .code-mower/sessions/SESSION.json --pr 42
+```
+
+The guided command derives every private input from the session. It verifies the
+live session lease, trusted-base control authority, current PR head, packet, and
+online authorization before publishing. Repeating it on the same current head
+and input succeeds without another comment or revision. A changed code head gets
+a new saved intent and requires a new review.
+
+The session saves its random revision before the first GitHub write. If a
+process stops after GitHub accepted the comment, rerunning `attach` reconciles
+that exact revision from the trusted current comment. If a write returns an
+uncertain result and the revision is not current, status pauses the workflow;
+after independently checking the PR, `attach --retry-uncertain` republishes the
+same revision rather than creating another one. No uncertain or unpublished
+binding can deliver evidence.
+
+The lower-level expert form remains available for scripts that intentionally
+manage request files and revisions:
 
 ```sh
 code-mower context attach --connection example-context --host codex \
@@ -99,7 +128,8 @@ Attachment sets `code-mower/gate` pending and publishes a small control comment
 containing only a random input revision, code head, required/available state,
 and expiry. The packet hash, handle, account, alias, query, citations, and source
 text stay local. A failed or uncertain publication leaves the local binding
-unusable. Explicit attachment always creates a new review input revision.
+unusable. The lower-level explicit attachment always creates a new review input
+revision; the guided path reconciles its saved revision instead.
 
 Run the usual independent audit on the machine that holds the private connection:
 
@@ -134,16 +164,20 @@ When private evidence was supplied, public review comments and saved verdict
 artifacts contain only review status, severity counts, input metadata, and the
 standard audit provenance. Model-authored findings stay in the protected local
 binding because they may quote private sources. Raw CLI sidecars are disabled
-for this path. Retrieve detailed findings for an approved participant with:
+for this path. Retrieve detailed findings for the session's selected builder
+without copying the review revision:
 
 ```sh
-code-mower context feedback --revision REVISION --reviewer claude \
-  --recipient codex:builder --repo-path /path/to/repository
+code-mower session context feedback .code-mower/sessions/SESSION.json \
+  --reviewer claude
 ```
 
-This command checks the current PR input and authorization before printing
-private findings. The analogous `context deliver --revision REVISION` prints
-the evidence itself. Both have private stdout.
+This command derives the current revision and builder recipient, then checks the
+current PR head, trusted input, and online authorization before printing private
+findings. It records the session as reviewed after the first successful read.
+The lower-level `context feedback --revision REVISION ...` and analogous
+`context deliver --revision REVISION` commands remain available. All three have
+private stdout.
 
 Changed material context requires an explicit fetch with `--refresh`, followed
 by attachment and a new audit, even when code is unchanged. A changed code head
