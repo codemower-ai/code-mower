@@ -431,8 +431,13 @@ add no fields to any schema; they only bound what the page is allowed to assert.
   When neither records a parseable time the page reports `observation time not
   recorded` neutrally, with no `live` claim and no synthetic age.
 - **Campaign liveness.** A campaign's `elapsed_seconds` is recorded provider
-  work time, not age, and is labelled that way. A `running` campaign with no
-  unexpired provider `response_deadline_at` is shown as `last reported running`.
+  work time, not age, and is labelled that way. A response deadline is read
+  only while a provider card is still awaiting a response (`queued` or
+  `running`): a terminal `complete` or `blocked` card and a never-dispatched
+  `unavailable` card can retain the deadline they were given, and that stale
+  timestamp neither marks them overdue nor changes their state styling. A
+  `running` campaign is shown as `last reported running` unless some card that
+  is awaiting a response has an unexpired `response_deadline_at`.
 - **Local data.** When GitHub data is fresh but local session inputs (agent
   adapter cards, orchestrator lease, reviewer verdict history, reviewer spend
   rows) are absent, GitHub information stays useful and the page names the
