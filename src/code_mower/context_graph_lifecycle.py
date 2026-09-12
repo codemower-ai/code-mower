@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from .context_contract import ContextError, _identifier, _text, _timestamp
+from .context_graph import _EXCLUDED_ROOTS
 from .context_store import _private, default_context_root
 from .file_locks import FileLockError, exclusive_handle_lock
 
@@ -107,6 +108,18 @@ _SKIPPED_MODES = {"120000": "symlink", "160000": "submodule"}
 #: Matched at any depth and case-folded, for the same reasons ``.git`` is.
 _PROVIDER_STATE_DIRECTORIES = (".graphify", ".graph")
 _PROVIDER_STATE_ROOTS = frozenset(name.casefold() for name in _PROVIDER_STATE_DIRECTORIES)
+
+#: The evidence contract's excluded roots, bound rather than copied. One module
+#: decides a citation into private state is out of scope, this one decides
+#: those bytes never reach the indexer at all; they are the same policy read
+#: from two ends, and a name added to one must not have to be remembered in the
+#: other. The set is a superset of the provider roots above: it also carries
+#: ``.git``, whose contents are the history rather than the revision, and
+#: ``.code-mower``, this tool's own state. A repository is free to track
+#: either, and a build over a tracked ``.code-mower/`` would hand the provider
+#: exactly the packets and evidence that ``context_graph`` then refuses to let
+#: a packet cite.
+_PRIVATE_STATE_ROOTS = _EXCLUDED_ROOTS
 
 _OBJECT_NAME = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 _GENERATION = re.compile(r"[0-9a-f]{32}\Z")
@@ -689,9 +702,22 @@ def resolve_revision(repository: Path, revision: str = "HEAD") -> tuple[str, str
     return commit, tree
 
 
-def _is_provider_state(path: str) -> bool:
-    """Is this tracked path part of a committed provider index state?"""
-    return any(segment.casefold() in _PROVIDER_STATE_ROOTS for segment in path.split("/"))
+def _private_state_reason(path: str) -> str | None:
+    """Why this tracked path may not enter the graph, or ``None`` if it may.
+
+    Provider state keeps its own reason because the consequence is specific --
+    the provider resuming from a cache of content this build never saw -- while
+    ``.git`` and ``.code-mower`` are private state of a different kind: version
+    control's own storage, and this tool's packets, evidence and lane records.
+    Every segment is tested, case-folded, so ``vendor/.git`` and a nested
+    ``docs/.CODE-MOWER`` are as excluded as the top-level ones.
+    """
+    segments = [segment.casefold() for segment in path.split("/")]
+    if any(segment in _PROVIDER_STATE_ROOTS for segment in segments):
+        return "provider state"
+    if any(segment in _PRIVATE_STATE_ROOTS for segment in segments):
+        return "private state"
+    return None
 
 
 def read_tracked_census(repository: Path, commit: str) -> TrackedCensus:
@@ -701,7 +727,8 @@ def read_tracked_census(repository: Path, commit: str) -> TrackedCensus:
     uncommitted edit, an untracked scratch file, and an ignored secret are all
     invisible here by construction rather than by filtering.
 
-    Committed provider state is recorded as skipped rather than carried: it is
+    Committed private state -- the provider's own index, ``.git``, and this
+    tool's ``.code-mower`` -- is recorded as skipped rather than carried: it is
     excluded from the census, so it is excluded from the census digest too, and
     a build over a repository that tracks a ``.graphify`` directory binds a
     census that says so instead of quietly indexing somebody else's graph.
@@ -741,8 +768,9 @@ def read_tracked_census(repository: Path, commit: str) -> TrackedCensus:
             if mode in _SKIPPED_MODES:
                 skip(path, _SKIPPED_MODES[mode])
                 continue
-            if _is_provider_state(path):
-                skip(path, "provider state")
+            excluded = _private_state_reason(path)
+            if excluded is not None:
+                skip(path, excluded)
                 continue
             if mode not in _REGULAR_MODES or kind != "blob":
                 skip(path, "unsupported")
@@ -776,14 +804,14 @@ def _safe_relative(path: str) -> Path:
         or path.startswith("/")
         or "\\" in path
         or any(segment in {"", ".", ".."} for segment in path.split("/"))
-        # Every segment, not just the first: a vendored submodule's ``vendor/.git``
-        # is as private as the top-level one. Case-folded because APFS and NTFS
-        # name the same directory ``.GIT``.
-        or any(segment.casefold() == ".git" for segment in path.split("/"))
-        # Provider state is skipped by the census, so a census that still
+        # Private state is skipped by the census, so a census that still
         # carries it was not built by ``read_tracked_census``. Refuse rather
-        # than seed the directory the provider is about to write into.
-        or _is_provider_state(path)
+        # than write ``.git`` or ``.code-mower`` into the tree the provider is
+        # about to read, or seed the directory it is about to write into.
+        # Every segment, not just the first: a vendored submodule's
+        # ``vendor/.git`` is as private as the top-level one. Case-folded
+        # because APFS and NTFS name the same directory ``.GIT``.
+        or _private_state_reason(path) is not None
     ):
         raise ContextError("tracked path must stay inside the materialized checkout")
     return Path(*path.split("/"))

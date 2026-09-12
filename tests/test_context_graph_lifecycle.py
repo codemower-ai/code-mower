@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+from code_mower import context_graph
 from code_mower import context_graph_command as command
 from code_mower import context_graph_lifecycle as lifecycle
 from code_mower.context_contract import ContextError
@@ -314,6 +315,46 @@ class CensusAndMaterializationTests(TemporaryWorkspace):
         self.assertFalse((destination / ".graphify").exists())
         self.assertFalse((destination / "vendor").exists())
 
+    def test_committed_code_mower_state_is_skipped_rather_than_indexed(self) -> None:
+        """A tracked ``.code-mower`` is this tool's own state, not content.
+
+        ``context_graph`` refuses a packet that cites into ``.code-mower``
+        because a graph that reached in there escaped the checkout it was asked
+        to index. The lifecycle has to agree at the other end: if those bytes
+        are handed to the indexer in the first place, the evidence contract is
+        refusing a citation to content the provider has already read.
+        """
+        for name in (".code-mower", "vendor/.CODE-MOWER"):
+            directory = self.repository / name
+            directory.mkdir(parents=True)
+            (directory / "packet.json").write_text('{"secret": "packet"}\n', encoding="utf-8")
+        git(self.repository, "add", ".code-mower", "vendor")
+        git(self.repository, "commit", "-q", "-m", "committed code mower state")
+        commit, _ = lifecycle.resolve_revision(self.repository)
+        census = lifecycle.read_tracked_census(self.repository, commit)
+        self.assertEqual(
+            [entry.path for entry in census.entries],
+            [".gitignore", "README.md", "example_pkg/config.py"],
+        )
+        self.assertIn((".code-mower/packet.json", "private state"), census.skipped)
+        self.assertIn(("vendor/.CODE-MOWER/packet.json", "private state"), census.skipped)
+        destination = self.root / "materialized-with-code-mower"
+        lifecycle.materialize_tracked_files(self.repository, census, destination)
+        self.assertFalse((destination / ".code-mower").exists())
+        self.assertFalse((destination / "vendor").exists())
+
+    def test_the_census_excludes_exactly_the_evidence_contract_roots(self) -> None:
+        """The two ends of the policy share one set rather than two copies.
+
+        A name added to ``context_graph._EXCLUDED_ROOTS`` must not have to be
+        remembered here as well, so this asserts identity of the object and not
+        merely equality of its contents.
+        """
+        self.assertIs(lifecycle._PRIVATE_STATE_ROOTS, context_graph._EXCLUDED_ROOTS)
+        for root in context_graph._EXCLUDED_ROOTS:
+            with self.subTest(root=root):
+                self.assertIsNotNone(lifecycle._private_state_reason(f"vendor/{root}/file.json"))
+
     def test_committing_provider_state_does_not_move_the_census_digest(self) -> None:
         # The manifest binds the digest of what was indexed. Committed provider
         # state is not indexed, so it does not enter that digest; it is
@@ -392,7 +433,8 @@ class CensusAndMaterializationTests(TemporaryWorkspace):
     def test_escaping_census_paths_are_rejected(self) -> None:
         escaping = ("/etc/passwd", "../outside.py", "a/../../b.py", ".git/config",
                     "vendor/.git/config", "a\\b.py", ".graphify/cache.json",
-                    "vendor/.GRAPH/cache.json")
+                    "vendor/.GRAPH/cache.json", ".code-mower/packets/one.json",
+                    "docs/.CODE-MOWER/evidence.json")
         for index, path in enumerate(escaping):
             with self.subTest(path=path):
                 census = lifecycle.TrackedCensus(

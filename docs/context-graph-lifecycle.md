@@ -41,16 +41,22 @@ provenance at all. If Code Mower does not bind the revision, nothing does.
    working tree and not the index. Symlinks (`120000`) and submodules
    (`160000`) are skipped and recorded as skipped, because a symlink can name a
    target the build was never shown and a gitlink names a commit in a
-   repository it was never authorized to read. Committed provider state — a
-   tracked `.graphify/` or `.graph/`, at any depth, case-folded — is skipped for
-   a third reason: it is somebody's old index, and materializing it would let
-   the provider resume from a cache built over content this build never saw,
-   and let the adapter collect tracked repository bytes as if the provider had
-   just produced them. The census digest covers mode, blob name, size and path
+   repository it was never authorized to read. Committed private state is
+   skipped for a third reason, at any depth and case-folded: the roots are
+   `context_graph`'s excluded roots themselves — `.git`, `.graph`, `.graphify`,
+   `.code-mower` — bound rather than copied, so the set that refuses a citation
+   into private state is the same set that keeps those bytes away from the
+   indexer. A tracked `.graphify/` or `.graph/` is somebody's old index, and
+   materializing it would let the provider resume from a cache built over
+   content this build never saw, and let the adapter collect tracked repository
+   bytes as if the provider had just produced them. A tracked `.code-mower/`
+   is this tool's own packets and evidence, which the evidence contract refuses
+   to let a packet cite and which therefore may not be indexed either. The
+   census digest covers mode, blob name, size and path
    for every entry in sorted order. Both halves of the census are bounded as
    they are collected: the file-count budget covers what is materialized, and a
    matching budget covers what is skipped, because a repository of symlinks,
-   submodules, or committed provider state grows the skipped list without adding
+   submodules, or committed private state grows the skipped list without adding
    a single entry to the other one.
 3. **Materialize into private state.** Each blob is written into a fresh 0700
    directory as a 0600 file. Untracked and ignored files have no path into the
