@@ -417,9 +417,13 @@ class ProviderLaunchTests(TemporaryWorkspace):
         """
         request = self.request()
         recorded: list[list[str]] = []
+        # What the adapter asked the operating system for, kept beside the argv
+        # because the stream arrangement is as much of the contract as it is.
+        self.launch_options: list[dict[str, object]] = []
 
         def fake_run(argv, **kwargs):
             recorded.append(list(argv))
+            self.launch_options.append(dict(kwargs))
             if state_directory:
                 written = request.source_root / state_directory
                 written.mkdir(exist_ok=True)
@@ -442,6 +446,23 @@ class ProviderLaunchTests(TemporaryWorkspace):
     def test_the_provider_is_launched_inside_the_sandbox(self) -> None:
         argv = self.launched_argv("graphify")
         self.assertEqual(argv[:3], ["/sandbox", "--deny", "graphify"])
+
+    def test_the_provider_is_given_no_stream_this_process_has_to_hold(self) -> None:
+        """A talkative indexer must not be able to fill this process's memory.
+
+        Nothing reads the provider's stdout or stderr -- completeness comes
+        from the report it writes, not from what it printed -- so buffering
+        them would only accumulate whatever it chose to log, for up to the
+        timeout, under neither the tracked-content budget nor the artifact
+        one. Inheriting them instead is not the alternative: diagnostics can
+        echo indexed source, and this process may be writing JSON to stdout.
+        """
+        self.launched_argv("graphify")
+        options = self.launch_options[0]
+        self.assertNotIn("capture_output", options)
+        self.assertEqual(options["stdout"], subprocess.DEVNULL)
+        self.assertEqual(options["stderr"], subprocess.DEVNULL)
+        self.assertEqual(options["stdin"], subprocess.DEVNULL)
 
     def test_the_provider_is_invoked_through_its_documented_extract_interface(self) -> None:
         # The interface the adopt decision evaluated, recorded in

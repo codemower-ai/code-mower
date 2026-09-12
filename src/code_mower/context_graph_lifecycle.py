@@ -871,8 +871,17 @@ def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]
             completed = subprocess.run(
                 [*sandbox, command, _PROVIDER_EXTRACT, *request.pin.options],
                 check=False,
-                capture_output=True,
-                text=False,
+                # Neither stream is read, and neither may be buffered: a
+                # provider that logs its progress would otherwise accumulate
+                # unbounded output in this process for up to the timeout,
+                # outside both the tracked-content and artifact budgets. The
+                # streams are discarded at the kernel rather than inherited,
+                # because provider diagnostics can echo indexed source and this
+                # process may be writing a machine-readable report. ``stdin``
+                # goes the same way: the child has no operator to prompt.
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 env=dict(request.environment),
                 cwd=str(request.source_root),
                 timeout=900,
@@ -880,7 +889,6 @@ def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]
         except (OSError, subprocess.SubprocessError):
             raise ContextError("local graph provider could not be run from its pinned install") from None
         if completed.returncode != 0:
-            # Provider stderr can echo indexed source; it is never surfaced.
             raise ContextError("local graph provider failed; no generation was published")
         state_directory = _provider_state_directory(request.source_root)
         result = _read_completeness(_provider_report(state_directory))

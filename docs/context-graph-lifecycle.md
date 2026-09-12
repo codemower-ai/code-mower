@@ -197,6 +197,15 @@ The report is provider output of unknown size, so it is read to one byte past
 the manifest bound and refused if it is longer, rather than loaded whole and
 measured afterwards. A bound checked on bytes already in memory bounds nothing.
 
+The provider's own stdout and stderr are the other unbounded output, and they
+are discarded at the kernel: `stdin`, `stdout` and `stderr` are all
+`DEVNULL`. Nothing reads them — completeness comes from the report, not from
+what the run printed — so buffering them would only accumulate whatever a
+talkative indexer chose to log, for up to the timeout, under neither the
+tracked-content budget nor the artifact one. Inheriting them is not the
+alternative: diagnostics can echo indexed source, and the process that launched
+the build may be writing a machine-readable report to its own stdout.
+
 The subcommand, the state-directory names, and the report counters are constants
 in one place in `context_graph_lifecycle.py`. They encode the interface as the
 evaluation recorded it; the first installation against a real pinned release
