@@ -92,8 +92,7 @@ def load_config(path: Path) -> Mapping[str, Any]:
     parsed = _YamlSubsetParser(text).parse()
     if not isinstance(parsed, Mapping):
         raise ConfigError("top-level config must be a mapping")
-    from .provider_capabilities import normalize_config
-    return normalize_config(parsed)
+    return parsed
 
 
 def _as_mapping(value: Any, path: str, issues: list[ConfigIssue]) -> Mapping[str, Any]:
@@ -502,9 +501,14 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
     from .provider_capabilities import lane_transport
     try:
         configured_participants(config)
-        configured_transports(config)
     except ConfigError as exc:
         issues.append(ConfigIssue("session_defaults", str(exc)))
+    try:
+        configured_transports(config, profile=None)
+        transports_valid = True
+    except ConfigError as exc:
+        issues.append(ConfigIssue("session_defaults", str(exc)))
+        transports_valid = False
     if config.get("version") not in {1, "1"}:
         issues.append(ConfigIssue("version", "must be 1"))
 
@@ -816,6 +820,11 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
     profiles = _as_mapping(config.get("profiles", {}), "profiles", issues)
     for profile_id, profile in profiles.items():
         path = f"profiles.{profile_id}"
+        if transports_valid:
+            try:
+                configured_transports(config, profile=profile_id)
+            except ConfigError as exc:
+                issues.append(ConfigIssue(path, str(exc)))
         profile_map = _as_mapping(profile, path, issues)
         _require_string(profile_map.get("description"), f"{path}.description", issues)
         for index, lane_id in enumerate(

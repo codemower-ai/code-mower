@@ -13,7 +13,7 @@ from pathlib import Path
 from code_mower import config, init, participants, session
 from code_mower.doctor_checks.providers import check_lane_runtime
 from code_mower.provider_capabilities import (
-    TRANSPORTS, lane_transport, normalize_lane, resolve_transport,
+    TRANSPORTS, lane_transport, normalize_config, normalize_lane, resolve_transport,
 )
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 from code_mower.package_rendering import _render_yaml
@@ -61,10 +61,67 @@ class DevinCapabilityTests(unittest.TestCase):
             loaded = config.load_config(path)
             self.assertEqual(path.read_bytes(), before)
         self.assertEqual(config.validate_config(loaded), [])
-        lane = loaded["lanes"]["devin"]
+        self.assertNotIn("transport", loaded["lanes"]["devin"])
+        self.assertNotIn("informational", loaded["lanes"]["devin"])
+        lane = normalize_config(loaded)["lanes"]["devin"]
         self.assertEqual(lane["transport"], "devin_api_v3")
         self.assertFalse(lane["merge_authority"])
         self.assertTrue(lane["informational"])
+        rendered = config.render_dry_run(loaded).data["lanes"]["devin"]
+        self.assertEqual(rendered["transport"], "devin_api_v3")
+        self.assertIn("informational", rendered["flags"])
+        self.assertNotIn("merge-authority", rendered["flags"])
+
+    def test_shipped_root_config_loads_without_semantic_normalization(self):
+        loaded = config.load_config(ROOT / "code-mower.yml")
+        self.assertIn(loaded["version"], (1, "1"))
+        self.assertTrue(loaded["lanes"])
+        self.assertEqual(config.validate_config(loaded), [])
+
+    def test_loading_defers_multiple_semantic_defects_to_validation(self):
+        source = config.load_config(STARTER)
+        source["version"] = 2
+        source["project"]["name"] = ""
+        source["lanes"]["devin"] = participants.reference_review_config("devin")
+        source["lanes"]["devin"].update(merge_authority=True, informational=False)
+        source["lanes"]["devin"].pop("transport")
+        source["lanes"]["devin_cli"] = participants.reference_review_config("devin_cli")
+        source["lanes"]["devin_cli"]["transport"] = "devin_api_v3"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "code-mower.yml"
+            path.write_text("\n".join(_render_yaml(source)) + "\n")
+            loaded = config.load_config(path)
+        self.assertNotIn("transport", loaded["lanes"]["devin"])
+        self.assertTrue(loaded["lanes"]["devin"]["merge_authority"])
+        issues = config.validate_config(loaded)
+        self.assertTrue({"version", "project.name", "lanes.devin", "lanes.devin_cli"}
+                        <= {issue.path for issue in issues})
+        self.assertTrue(any("Legacy Devin" in issue.message for issue in issues))
+        self.assertTrue(any("provider and transport disagree" in issue.message for issue in issues))
+        with self.assertRaises(config.ConfigError) as caught:
+            config.render_dry_run(loaded)
+        for path in ("version", "project.name", "lanes.devin", "lanes.devin_cli"):
+            self.assertIn(path + ":", str(caught.exception))
+
+    def test_every_profile_is_checked_for_devin_transport_ambiguity(self):
+        source = config.load_config(STARTER)
+        for name in ("devin", "devin_cli"):
+            source["lanes"][name] = participants.reference_review_config(name)
+        for name in ("custom", "another"):
+            source["profiles"][name] = {
+                "description": "Both Devin reviewers", "lanes": ["devin", "devin_cli"],
+            }
+        issues = config.validate_config(source)
+        self.assertEqual({issue.path for issue in issues}, {"profiles.custom", "profiles.another"})
+        self.assertTrue(all("Both Devin" in issue.message for issue in issues))
+        for defaults in (
+            {"transports": {"devin": "devin_api_v3"}},
+            {"participants": ["devin_cli"]},
+            {"participants": ["devin_cloud"]},
+        ):
+            with self.subTest(defaults=defaults):
+                source["session_defaults"] = defaults
+                self.assertEqual(config.validate_config(source), [])
 
     def test_legacy_authority_requires_explicit_migration(self):
         lane = participants.reference_review_config("devin")

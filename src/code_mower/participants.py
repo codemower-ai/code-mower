@@ -90,7 +90,8 @@ def selected_transports(selected: tuple[str, ...]) -> dict[str, str]:
     return result
 
 
-def configured_transports(config: Mapping[str, Any], *, profile: str = "recommended") -> dict[str, str]:
+def configured_transports(config: Mapping[str, Any], *, profile: str | None = "recommended") -> dict[str, str]:
+    """Resolve session transports; None validates defaults without profile inference."""
     defaults = config.get("session_defaults", {})
     if not isinstance(defaults, Mapping):
         raise ConfigError("session_defaults must be a mapping")
@@ -105,7 +106,7 @@ def configured_transports(config: Mapping[str, Any], *, profile: str = "recommen
     if "devin" in aliases and "devin" in explicit and aliases["devin"] != explicit["devin"]:
         raise ConfigError("Devin participant alias conflicts with session_defaults.transports.devin; select one transport")
     inferred = "devin_cli"
-    if not aliases and not explicit:
+    if profile is not None and not aliases and not explicit:
         profiles = config.get("profiles", {})
         active_profile = profiles.get(profile, {}) if isinstance(profiles, Mapping) else {}
         active = active_profile.get("lanes", []) if isinstance(active_profile, Mapping) else []
