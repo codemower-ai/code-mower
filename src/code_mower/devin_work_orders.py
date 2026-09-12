@@ -344,7 +344,7 @@ class DevinWorkOrders:
                     or pr.author_login != order.author_login
                     or pr.head_repository != order.repository or pr.head_branch != order.branch
                     or pr.head_sha != claim["head_sha"] or pr.base_branch != order.base
-                    or pr.state != "open"):
+                    or pr.state not in {"open", "merged"}):
                 raise RemoteError("pull_request_binding_mismatch")
         return {"repository": order.repository, "issue": order.issue,
                 "pr_number": claim["pr_number"], "head_sha": claim["head_sha"],

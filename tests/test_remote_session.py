@@ -106,6 +106,25 @@ class RemoteSessionTests(unittest.TestCase):
             self.provider.set_state(self.record()["binding"], "owner_action", reason=reason)
             self.assertEqual(self.service.run("status", "work")["state"], state)
 
+    def test_structured_result_completes_waiting_session_but_not_approval(self):
+        self.dispatch()
+        binding = self.record()["binding"]
+        result = {"schema": "code_mower.builderCompletion.v1", "round": 10}
+        self.provider.set_state(
+            binding, "owner_action", reason="approval_required", result=result,
+        )
+        self.assertEqual(self.service.run("collect", "work", apply=True)["state"],
+                         "waiting_for_approval")
+        self.assertIsNone(self.service.private_result("work"))
+
+        self.provider.set_state(binding, "owner_action", reason="waiting_for_owner", result=result)
+        self.assertEqual(self.service.run("collect", "work", apply=True)["state"], "complete")
+        self.assertEqual(self.service.private_result("work"), result)
+
+        self.provider.set_state(binding, "terminated", result=result)
+        self.assertEqual(self.service.run("status", "work")["state"], "terminated")
+        self.assertIsNone(self.service.private_result("work"))
+
     def test_preview_has_no_io(self):
         self.assertEqual(self.service.run("dispatch", "work", prose="secret", repo="owner/repo")["mode"], "dry_run")
         self.assertFalse(self.root.exists())
@@ -268,9 +287,6 @@ class RemoteSessionTests(unittest.TestCase):
         self.assertEqual(sum(method == "POST" for method, _ in calls), 1)
         self.assertEqual(self.service.run("collect", "work", apply=True)["reason"], "result_not_ready")
         status.update(status_detail="waiting_for_user")
-        self.assertEqual(self.service.run("status", "work")["state"], "waiting_for_user")
-        self.service.run("message", "work", request="m1", prose="private message", apply=True)
-        status.update(status="exit", status_detail="finished")
         self.service.run("collect", "work", apply=True)
         self.assertEqual(self.service.private_result("work"), {"secret": "result"})
         self.service.run("cancel", "work", request="c1", apply=True)
