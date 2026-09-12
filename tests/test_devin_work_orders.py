@@ -187,6 +187,27 @@ class DeliveryTests(WorkOrderCase):
         with self.assertRaisesRegex(RemoteError, "pull_request_binding"):
             self.run_order("collect")
 
+    def test_exact_author_id_accepts_only_the_terminal_bot_login_alias(self):
+        self.run_order("dispatch")
+        self.complete()
+        original = self.github.pr
+
+        self.github.pr = replace(original, author_login="builder")
+        self.assertEqual(self.run_order("collect")["verified_pr"]["author_id"], 123)
+
+        rejected = (
+            {"author_id": 456, "author_login": "builder"},
+            {"author_login": "imposter"},
+            {"author_login": "builder[bot]-other"},
+            {"author_login": "builder[bot][bot]"},
+            {"author_login": None},
+        )
+        for mutation in rejected:
+            with self.subTest(mutation=mutation):
+                self.github.pr = replace(original, **mutation)
+                with self.assertRaisesRegex(RemoteError, "pull_request_binding"):
+                    self.run_order("collect")
+
     def test_completion_validation_and_private_adapter_failures(self):
         self.run_order("dispatch")
         self.complete()
@@ -313,7 +334,9 @@ class DeliveryTests(WorkOrderCase):
         self.assertEqual(result["verified_pr"]["pr_number"], 42)
         self.run_order("fix", request="fix-1", prose=CANARY, reviewed_head=HEAD)
         self.github.pr = replace(self.github.pr, head_sha="b" * 40)
-        status.update(status="exit", status_detail="finished",
+        # A valid result can also arrive while the raw resumable session remains
+        # running without an owner-action detail, as observed during #940.
+        status.update(status="running", status_detail=None,
                       structured_output=self.claim(round=1, head_sha="b" * 40))
         self.assertEqual(self.run_order("collect")["verified_pr"]["head_sha"], "b" * 40)
         self.assertEqual(self.run_order("cancel", request="c1")["session"]["state"], "terminated")

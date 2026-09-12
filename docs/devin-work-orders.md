@@ -57,9 +57,10 @@ Completion has exactly `schema`, `round`, `repository`, `issue`, `pr_number`, an
 `head_sha`. It is collected in the remote session's private artifact. Provider PR URLs,
 messages, prose, extra fields, and provider assertions of verification are not evidence.
 A missing result remains unavailable; malformed or stale results fail closed. Devin may
-leave a resumable session at `waiting_for_user` after accepting this structured result.
-The lifecycle treats that result as complete, while `waiting_for_approval` still blocks
-collection even when an intermediate structured result exists.
+leave a resumable session at `running` or `waiting_for_user` after accepting this
+structured result. The lifecycle treats that result as complete. Explicit failure,
+suspension, and `waiting_for_approval` still block collection even when an intermediate
+structured result exists.
 
 The GitHub adapter makes one query for at most two PRs on the exact head branch,
 including closed/merged PRs, then two fresh reads of the claimed PR. Each call has a
@@ -69,7 +70,9 @@ multiple candidates, extra issue links, wrong repository, forks, wrong author nu
 ID/login, wrong base/head branch, closed-unmerged PRs, and any disagreement about the
 exact 40-character head SHA fail closed. An exact-bound merged PR is accepted for
 retrospective crash recovery; it must pass the same three fresh observations as an open
-PR. Later rounds must retain the original PR number.
+PR. The author ID always matches exactly; login comparison allows only GitHub's terminal
+`[bot]` suffix alias between actor and GraphQL spellings for that same numeric account.
+Later rounds must retain the original PR number.
 `GitHub` can instead be implemented by an embedding client under the documented bounded
 protocol; it must query GitHub independently, never normalize provider assertions into
 observations. The built-in adapter's `runner(query, variables, headers)` and the Devin

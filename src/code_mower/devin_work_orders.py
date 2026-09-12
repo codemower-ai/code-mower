@@ -68,6 +68,16 @@ def _positive(value) -> bool:
     return type(value) is int and 0 < value <= 2**53 - 1
 
 
+def _same_author_login(expected, observed) -> bool:
+    """Compare one GitHub account across actor and GraphQL bot spellings."""
+    if not isinstance(expected, str) or not isinstance(observed, str):
+        return False
+    suffix = "[bot]"
+    expected_base = expected[:-len(suffix)] if expected.endswith(suffix) else expected
+    observed_base = observed[:-len(suffix)] if observed.endswith(suffix) else observed
+    return expected_base == observed_base
+
+
 @dataclass(frozen=True, repr=False)
 class WorkOrder:
     """Construct only after the caller's trusted-author/work-order policy succeeds.
@@ -341,7 +351,7 @@ class DevinWorkOrders:
                     or pr.linked_issues != ((order.repository, order.issue),)
                     or type(pr.linked_issues[0][1]) is not int
                     or type(pr.author_id) is not int or pr.author_id != order.author_id
-                    or pr.author_login != order.author_login
+                    or not _same_author_login(order.author_login, pr.author_login)
                     or pr.head_repository != order.repository or pr.head_branch != order.branch
                     or pr.head_sha != claim["head_sha"] or pr.base_branch != order.base
                     or pr.state not in {"open", "merged"}):
