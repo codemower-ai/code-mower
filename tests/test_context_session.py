@@ -91,7 +91,10 @@ class ContextSessionContractTests(unittest.TestCase):
         context_session.create(self.store, self.session, work_item="ITEM-1", policy=POLICY)
         changed = context_session.update(
             self.store, self.session["id"], expected_generation=0,
-            changes={"stage": "prepared", "packet": "b" * 32, "work_order": "work-order.md"},
+            changes={
+                "stage": "prepared", "builder": "codex", "request_hash": "c" * 64,
+                "packet": "b" * 32, "work_order": "work-order.md",
+            },
         )
         self.assertEqual(changed["generation"], 1)
         with self.assertRaisesRegex(ContextError, "changed concurrently"):
@@ -132,7 +135,8 @@ class ContextSessionContractTests(unittest.TestCase):
         for work_order in ("/tmp/work-order.md", "../work-order.md", "safe/../../work-order.md", "C:\\work-order.md"):
             with self.subTest(work_order=work_order), self.assertRaises(ContextError):
                 context_session.validate({
-                    **copy.deepcopy(record), "stage": "prepared",
+                    **copy.deepcopy(record), "stage": "prepared", "builder": "codex",
+                    "request_hash": "c" * 64,
                     "packet": "b" * 32, "work_order": work_order,
                 })
 
@@ -197,7 +201,7 @@ class ContextSessionCliTests(unittest.TestCase):
         self.assertEqual((code, output), (1, ""))
         self.assertIn("no write", error)
         self.assertIsNone(session_lease.read_lease(self.repo / ".code-mower" / session_lease.LEASE_FILE_NAME))
-        self.assertEqual(list(self.private.glob("*.json")), [])
+        self.assertEqual(list(self.private.rglob("*.json")), [])
 
     def test_dry_run_marks_selection_without_private_state(self):
         code, output, error = self.start("--dry-run")
@@ -234,7 +238,7 @@ class ContextSessionCliTests(unittest.TestCase):
         code, output, error = self.start()
         self.assertEqual((code, error), (0, ""))
         saved = json.loads(output)
-        private_file = self.private / ("session-" + saved["id"] + ".json")
+        private_file = self.private / "sessions" / ("session-" + saved["id"] + ".json")
         record = json.loads(private_file.read_text(encoding="utf-8"))
         private_file.write_text(
             json.dumps({**record, "repo": "owner/other"}), encoding="utf-8",

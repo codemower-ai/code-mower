@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import context_session, session_lease
+from . import context_prepare, context_session, session_lease
 from .config import ConfigError, _format_issues, load_config, validate_config
 from .context_contract import ContextError, normalize_policy
 from .participants import (
@@ -201,6 +201,18 @@ def render_context_status(payload: Mapping[str, Any]) -> str:
     )
 
 
+def render_context_prepare(payload: Mapping[str, Any]) -> str:
+    lines = [
+        f"Session context: {payload['stage']}",
+        f"Status: {payload['status']}",
+        f"Dependent work: {payload['dependent_work']}",
+    ]
+    if payload.get("work_order"):
+        lines.append(f"Work order: {payload['work_order']}")
+    lines.append(f"Next: {payload['next_action']}")
+    return "\n".join(lines) + "\n"
+
+
 def _mark_read_only(payload: dict[str, Any]) -> None:
     """Record that this brief carries no mutating orchestration authority."""
     payload["lease"] = {"state": session_lease.STATE_ABSENT, "mutating": False}
@@ -240,7 +252,19 @@ def _run_lease_command(args: argparse.Namespace) -> dict[str, Any]:
     return session_lease.release_lease(session_id=args.session_id, force=args.force)
 
 
-def _run_context_command(args: argparse.Namespace) -> dict[str, Any]:
+def _private_query(selected: bool) -> str | None:
+    if not selected:
+        return None
+    value = sys.stdin.read(2001)
+    if len(value) > 2000:
+        raise ContextError("private context query exceeds its size bound")
+    value = value.strip()
+    if not value:
+        raise ContextError("--query-stdin requires a private query")
+    return value
+
+
+def _run_context_command(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     saved = context_session.load_session(args.session_file)
     store = context_session.association_store(args.context_state_dir)
     record = context_session.read(store, saved["id"])
@@ -257,7 +281,32 @@ def _run_context_command(args: argparse.Namespace) -> dict[str, Any]:
         repo=saved["repo"], session_id=saved["id"], orchestrator=saved["orchestrator"],
         root=args.repo_path,
     )
-    return context_session.status(record, lease_live=bool(live.get("mutating")))
+    lease_live = bool(live.get("mutating"))
+    if args.context_command == "status":
+        return context_session.status(record, lease_live=lease_live), 0
+    if record is None:
+        raise ContextError("this session has no selected work item")
+    if not lease_live:
+        raise ContextError(
+            "this session no longer holds the mutating lease; start or resume an authorized session"
+        )
+    tracker = source.get("tracker")
+    retrieval_source = (
+        "jira" if isinstance(tracker, Mapping) and tracker.get("kind") == "jira_cloud" else None
+    )
+    return context_prepare.prepare(
+        store,
+        record,
+        repo_root=args.repo_path,
+        context_root=args.context_state_dir,
+        query=_private_query(args.query_stdin),
+        source=retrieval_source,
+        title=args.title,
+        builder=args.builder,
+        body_file=args.work_order_body_file,
+        output=args.output,
+        refresh=args.refresh,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -313,8 +362,33 @@ def main(argv: list[str] | None = None) -> int:
     context_status.add_argument("--config")
     context_status.add_argument("--context-state-dir", type=Path)
     context_status.add_argument("--json", action="store_true")
+    context_prepare_parser = context_sub.add_parser(
+        "prepare", help="retrieve bounded evidence and create the session work order"
+    )
+    context_prepare_parser.add_argument("session_file", type=Path)
+    context_prepare_parser.add_argument("--repo-path", type=Path, default=Path.cwd())
+    context_prepare_parser.add_argument("--config")
+    context_prepare_parser.add_argument("--context-state-dir", type=Path)
+    context_prepare_parser.add_argument(
+        "--query-stdin", action="store_true",
+        help="read a private query override from stdin; the selected work item is the default",
+    )
+    context_prepare_parser.add_argument("--work-order-body-file", type=Path)
+    context_prepare_parser.add_argument("--title")
+    context_prepare_parser.add_argument(
+        "--builder", help="selected builder participant; defaults to the hosting agent"
+    )
+    context_prepare_parser.add_argument(
+        "--output", type=Path, help="repository-relative local work-order path"
+    )
+    context_prepare_parser.add_argument(
+        "--refresh", action="store_true",
+        help="explicitly replace or retry a prior retrieval",
+    )
+    context_prepare_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     render = render_session
+    exit_code = 0
     try:
         if args.command == "show":
             payload = json.loads(args.session_file.read_text(encoding="utf-8"))
@@ -332,8 +406,12 @@ def main(argv: list[str] | None = None) -> int:
             payload = _run_lease_command(args)
             render = session_lease.render_lease
         elif args.command == "context":
-            payload = _run_context_command(args)
-            render = render_context_status
+            payload, exit_code = _run_context_command(args)
+            render = (
+                render_context_status
+                if args.context_command == "status"
+                else render_context_prepare
+            )
         else:
             if args.work_item and not args.lease:
                 raise ConfigError("--work-item requires a mutating session lease; omit --no-lease")
@@ -397,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
                             pass
                     raise
         print(json.dumps(payload, indent=2, sort_keys=True) if args.json else render(payload), end="\n" if args.json else "")
-        return 0
+        return exit_code
     except (ConfigError, ContextError, OSError, ValueError, KeyError, TypeError,
             session_lease.SessionLeaseError) as exc:
         print(f"error: {exc}", file=sys.stderr)

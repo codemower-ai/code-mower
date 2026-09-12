@@ -1038,6 +1038,9 @@ def _work_order_source_rows(source: Mapping[str, Any] | None) -> list[str]:
     repo = str(source.get("repo") or "").strip()
     if repo:
         rows.append(f"- Repository: `{repo}`")
+    builder = str(source.get("builder") or "").strip()
+    if builder:
+        rows.append(f"- Builder: `{builder}`")
     issue_url = str(source.get("issue_url") or "").strip()
     issue_number = str(source.get("issue_number") or "").strip()
     if issue_url:

@@ -16,11 +16,12 @@ from .participants import PARTICIPANTS, participant_id
 
 ASSOCIATION_SCHEMA = "code_mower.contextSession.v1"
 STATUS_SCHEMA = "code_mower.contextSessionStatus.v1"
-STAGES = frozenset(("selected", "prepared", "attached", "reviewed"))
+STAGES = frozenset(("selected", "preparing", "prepared", "attached", "reviewed"))
 ATTACHMENT_STATES = frozenset(("none", "pending", "published", "uncertain"))
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _HEX = re.compile(r"[a-f0-9]{32}\Z")
 _SHA = re.compile(r"(?:[a-f0-9]{40}|[a-f0-9]{64})\Z")
+_HASH = re.compile(r"[a-f0-9]{64}\Z")
 
 
 def default_association_root() -> Path:
@@ -28,8 +29,9 @@ def default_association_root() -> Path:
     return default_context_root() / "sessions"
 
 
-def association_store(root: Path | None = None) -> ContextStore:
-    return ContextStore(Path(root) if root is not None else default_association_root())
+def association_store(context_root: Path | None = None) -> ContextStore:
+    root = Path(context_root) if context_root is not None else default_context_root()
+    return ContextStore(root / "sessions")
 
 
 def _now() -> str:
@@ -76,12 +78,19 @@ def _path_reference(value: Any) -> str | None:
     return value
 
 
+def work_order_reference(value: Any) -> str:
+    reference = _path_reference(value)
+    if reference is None:
+        raise ContextError("private session context state is invalid")
+    return reference
+
+
 def validate(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the complete private association; callers never render it."""
     fields = {
         "schema", "session_id", "repo", "work_item", "connection", "policy",
-        "host", "orchestrator", "participants", "generation", "stage",
-        "packet", "work_order", "pr", "head", "revision", "attachment_state",
+        "host", "orchestrator", "participants", "builder", "generation", "stage",
+        "request_hash", "packet", "work_order", "pr", "head", "revision", "attachment_state",
         "created_at", "updated_at",
     }
     value = _object(value, fields)
@@ -110,11 +119,21 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
     normalized_participants = [participant_id(item) for item in participants]
     if len(set(normalized_participants)) != len(normalized_participants):
         raise ContextError("private session context has duplicate participants")
+    builder = value["builder"]
+    if builder is not None:
+        builder = participant_id(builder)
+        if builder not in normalized_participants or not PARTICIPANTS[builder].builder:
+            raise ContextError("private session context builder is not an approved participant")
     generation = value["generation"]
     if type(generation) is not int or not 0 <= generation <= 1_000_000:
         raise ContextError("private session context generation is invalid")
     if value["stage"] not in STAGES or value["attachment_state"] not in ATTACHMENT_STATES:
         raise ContextError("private session context lifecycle state is invalid")
+    request_hash = value["request_hash"]
+    if request_hash is not None and (
+        not isinstance(request_hash, str) or not _HASH.fullmatch(request_hash)
+    ):
+        raise ContextError("private session context state is invalid")
     packet = _optional_handle(value["packet"])
     work_order = _path_reference(value["work_order"])
     pr = value["pr"]
@@ -129,15 +148,27 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ContextError("private session context timestamp is invalid") from None
         if parsed.tzinfo is None:
             raise ContextError("private session context timestamp is invalid")
-    if value["stage"] == "selected" and any(item is not None for item in (packet, work_order, pr, head, revision)):
+    if value["stage"] == "selected" and any(
+        item is not None for item in (builder, request_hash, packet, work_order, pr, head, revision)
+    ):
         raise ContextError("private session context selected state has unexpected progress")
+    if value["stage"] == "preparing" and (
+        builder is None or request_hash is None or work_order is not None or any(
+            item is not None for item in (pr, head, revision)
+        )
+    ):
+        raise ContextError("private session context preparing state is invalid")
+    if value["stage"] in {"prepared", "attached", "reviewed"} and any(
+        item is None for item in (builder, request_hash, packet, work_order)
+    ):
+        raise ContextError("private session context prepared state is incomplete")
     if value["attachment_state"] == "none" and revision is not None:
         raise ContextError("private session context revision has no attachment")
     return {
         **dict(value), "session_id": session_id, "repo": repo, "work_item": work_item,
         "connection": connection, "policy": policy, "host": host,
-        "orchestrator": orchestrator, "participants": normalized_participants,
-        "packet": packet, "work_order": work_order, "pr": pr, "head": head,
+        "orchestrator": orchestrator, "participants": normalized_participants, "builder": builder,
+        "request_hash": request_hash, "packet": packet, "work_order": work_order, "pr": pr, "head": head,
         "revision": revision,
     }
 
@@ -187,8 +218,8 @@ def create(
         "schema": ASSOCIATION_SCHEMA, "session_id": session_id, "repo": session["repo"],
         "work_item": work_item, "connection": connection, "policy": normalized_policy,
         "host": session["host"], "orchestrator": session["orchestrator"],
-        "participants": participants, "generation": 0, "stage": "selected",
-        "packet": None, "work_order": None, "pr": None, "head": None,
+        "participants": participants, "builder": None, "generation": 0, "stage": "selected",
+        "request_hash": None, "packet": None, "work_order": None, "pr": None, "head": None,
         "revision": None, "attachment_state": "none", "created_at": now,
         "updated_at": now,
     })
@@ -283,6 +314,21 @@ def status(record: Mapping[str, Any] | None, *, lease_live: bool) -> dict[str, A
         "attached": "Run the current-head independent review.",
         "reviewed": "Read authorized private feedback or complete the work item.",
     }
+    if record["stage"] == "preparing":
+        resumable = record["packet"] is not None
+        return {
+            "schema": STATUS_SCHEMA,
+            "selected": True,
+            "configured": True,
+            "stage": "preparing",
+            "dependent_work": "paused" if record["policy"]["required"] else "usable",
+            "owner_action": not resumable,
+            "next_action": (
+                "Resume context preparation; the completed retrieval will be reused."
+                if resumable
+                else "Verify the selected connection, then rerun prepare with --refresh."
+            ),
+        }
     return {
         "schema": STATUS_SCHEMA, "selected": True, "configured": True,
         "stage": record["stage"], "dependent_work": "usable", "owner_action": False,
