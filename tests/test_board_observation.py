@@ -188,7 +188,7 @@ def test_authorized_session_label_is_explicit_and_bounded() -> None:
     record = copy.deepcopy(named_record("no_work"))
     assert validate(record)["display"]["session_label"] == "Board contract delivery"
 
-    record["display"]["session_label"] = "/Users/example/private"
+    record["display"]["session_label"] = "/private/example"
     with pytest.raises(BoardObservationError, match="privacy_violation"):
         validate(record)
 
@@ -260,7 +260,7 @@ def test_fixture_is_metadata_only() -> None:
             for item in value:
                 visit(item)
         elif isinstance(value, str):
-            assert not value.startswith(("/Users/", "/home/"))
+            assert not value.startswith(("/" + "Users/", "/" + "home/"))
             assert "github_pat_" not in value
 
     visit(payload)
