@@ -42,7 +42,7 @@ guidance; use [Install And Bootstrap](install.md) instead.
 - [v1.0.0 release notes](v10-release-notes.md)
 - [v1.0.1 effectiveness assessment](v101-effectiveness-assessment.md)
 - [v1.0 acceptance checklist](oss-v1-checklist.md)
-- [v1.0.3 installation documentation audit](v104-installation-documentation-audit.md)
+- [v1.0.3 installation documentation audit](v103-installation-documentation-audit.md)
 
 ## Prerelease Records
 
