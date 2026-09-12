@@ -7,6 +7,7 @@ import os
 import re
 import stat
 import sys
+import time
 import uuid
 from contextlib import contextmanager
 from functools import cached_property
@@ -175,6 +176,21 @@ class LockedConnection:
             os.close(fd)
 
 
+def _open_lock(name: str, directory_fd: int) -> int:
+    # Concurrent first opens can transiently report ENOENT. Retry only opening
+    # the lock, before acquiring it or yielding to any state/provider mutation.
+    # Keep the same directory descriptor and no-follow protections throughout.
+    for attempt in range(3):
+        try:
+            return os.open(name + ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                           0o600, dir_fd=directory_fd)
+        except FileNotFoundError:
+            if attempt == 2:
+                raise
+            time.sleep(0.01)
+    raise AssertionError("unreachable")
+
+
 class ContextStore:
     def __init__(self, root: Path | None = None, *, vault: CredentialVault | None = None):
         self.root = Path(root) if root is not None else default_context_root()
@@ -197,8 +213,7 @@ class ContextStore:
             fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
                 _private(fd, directory=True)
-                lock_fd = os.open(name + ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
-                                  0o600, dir_fd=fd)
+                lock_fd = _open_lock(name, fd)
                 with os.fdopen(lock_fd, "a+", encoding="utf-8") as handle:
                     _private(handle.fileno())
                     with exclusive_handle_lock(handle, timeout_seconds=timeout_seconds):

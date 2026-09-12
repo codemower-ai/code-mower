@@ -433,7 +433,7 @@ CommandHandler = Callable[[list[str]], int]
 
 
 COMMAND_DESCRIPTIONS: dict[str, str] = {
-    "session": "Prepare a session for the current agent and selected participants.",
+    "session": "Prepare session briefs and manage private remote work.",
     "antigravity-cli": "Run an Antigravity/Gemini CLI structured audit lane.",
     "blind-review": "Coordinate hidden/blind review artifacts.",
     "board": "Serve or record local lane visibility board data.",
