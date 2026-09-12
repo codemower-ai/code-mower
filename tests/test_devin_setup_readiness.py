@@ -408,6 +408,43 @@ class DevinGuidanceTests(unittest.TestCase):
         )
         self.assertEqual(step["lanes"], ["devin_cli"])
 
+    def test_next_steps_devin_check_preserves_the_selected_config_and_profile(self) -> None:
+        templates = json.loads(json.dumps(load_provider_templates(PROVIDER_TEMPLATES)))
+        templates["profiles"]["custom-devin"] = {
+            "lanes": [*templates["profiles"]["recommended"]["lanes"], "devin"]
+        }
+        steps = build_next_steps(
+            templates,
+            profile="custom-devin",
+            repo="codemower-ai/code-mower",
+            config_path="custom.yml",
+        )
+        step = next(item for item in steps["steps"] if item["id"] == "devin-readiness")
+        self.assertEqual(
+            step["command"],
+            "code-mower doctor custom.yml --profile custom-devin --devin "
+            "--repo codemower-ai/code-mower --json",
+        )
+        doctor = next(item for item in steps["steps"] if item["id"] == "doctor-easy")
+        self.assertIn("custom.yml", doctor["command"])
+        self.assertIn("--profile custom-devin", doctor["command"])
+
+    def test_next_steps_devin_check_quotes_unsafe_config_paths(self) -> None:
+        templates = json.loads(json.dumps(load_provider_templates(PROVIDER_TEMPLATES)))
+        templates["profiles"]["recommended"]["lanes"].append("devin_cli")
+        steps = build_next_steps(
+            templates,
+            repo="codemower-ai/code-mower",
+            config_path="dir with spaces/code mower.yml",
+        )
+        step = next(item for item in steps["steps"] if item["id"] == "devin-readiness")
+        self.assertEqual(
+            step["command"],
+            "code-mower doctor 'dir with spaces/code mower.yml' --devin "
+            "--repo codemower-ai/code-mower --json",
+        )
+        self.assertNotIn("--profile", step["command"])
+
 
 class DevinDocumentationTests(unittest.TestCase):
     def test_docs_distinguish_local_and_hosted_setup_paths(self) -> None:

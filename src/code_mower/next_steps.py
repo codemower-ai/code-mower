@@ -252,11 +252,17 @@ def build_next_steps(
 
     devin_lanes = [lane for lane in lanes if lane in {"devin", "devin_cli"}]
     if devin_lanes:
+        devin_command = "code-mower doctor"
+        if config_path:
+            devin_command += f" {shlex.quote(config_path)}"
+        if profile != DEFAULT_PROFILE:
+            devin_command += f" --profile {quoted_profile}"
+        devin_command += f" --devin --repo {quoted_repo} --json"
         steps.append(
             {
                 "id": "devin-readiness",
                 "title": "Check the optional Devin posture before assigning work",
-                "command": f"code-mower doctor --devin --repo {repo} --json",
+                "command": devin_command,
                 "why": (
                     "Reports which Devin transport is selected, whether that posture uses "
                     "the local Devin CLI login or hosted service-user credentials with an "
