@@ -8,7 +8,7 @@ devin_cli:
     review: "local_runner"
     message: "unavailable"
     cancel: "unavailable"
-    context: "local_runner"
+    context: "unavailable"
     structured_results: "local_runner"
   driver: "local_cli"
   type: "audit"

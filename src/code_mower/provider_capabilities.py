@@ -59,7 +59,7 @@ TRANSPORTS = MappingProxyType({
         "devin", "devin_cli", "local_cli", "devin_cli",
         Capabilities(
             coordinate="agent_handoff", build="local_runner", review="local_runner",
-            message="unavailable", cancel="unavailable", context="local_runner",
+            message="unavailable", cancel="unavailable", context="unavailable",
             structured_results="local_runner",
         ),
     ),

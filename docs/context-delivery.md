@@ -78,29 +78,36 @@ logs, tracked files, PR descriptions, and shared artifacts.
 ### Hosted Devin builder
 
 A trusted hosted work order can carry the packet to `devin:builder` without a
-local prompt file. The embedding binds one packet to the exact work order with
-`devin_work_orders.packet_context(store, name, handle, policy, order=order)` and
-passes the resulting `PacketContext` as `context=` to `dispatch`, `clarify`, or
-`fix`. The packet request is derived from the order's repository and issue
-number, never from caller-supplied identity, and a context bound to another
-order (or a bare callable) is rejected as `context_binding_mismatch`.
-Immediately before each paid create or message write, and never in preview, the
-context performs a new online authorization for `devin:builder` and renders the
-common evidence payload. That text is appended only to the provider input; the
-local work-order record and remote-session record keep only their existing
-digests, and status, collect, and cancel reject a context argument. Each
-outcome reports `context` as `delivered`, `degraded`, or `omitted`.
+local prompt file. The trusted context decision is part of the work order:
+`WorkOrder.context_policy` is `none`, `optional`, or `required`, comes from
+dispatcher policy, and is included in the durable binding. The embedding binds
+one packet with `devin_work_orders.packet_context(store, name, handle, policy,
+order=order)`, which derives the packet request from the order's repository and
+issue number, requires the trusted policy's `required` flag to agree with the
+order, and returns a `PacketContext` holding only a render closure. That value
+is passed as `context=` to `dispatch`, `clarify`, or `fix`.
 
-The trusted policy's `required` flag decides what happens when the packet cannot
-be reauthorized. Wrong account, revoked or expired authorization, a packet for
-another repository or work item, a refreshed or invalidated packet, or a payload
-without the packet identity fails a required context closed as
-`context_unavailable` before any local round or provider write; the work order
-pauses with its prior state intact. Only an explicitly optional policy degrades
-to a code-only input, and that degradation is reported. Omitting `context=`
-sends a code-only work order, and the remote session's input fingerprint
-prevents a later replay with different input. The combined input, validated
-before any local mutation, is bounded at 64 KiB (`context_budget_exceeded`).
+Immediately before each paid create or message write, and never in preview, the
+context performs a new online authorization for `devin:builder`, and the loaded
+packet's own repository and work-item binding is compared with the order; a
+packet for another ticket, a relabelled wrapper, a bare callable, or any context
+on a `none` order fails as `context_binding_mismatch`. Rendering and the 64 KiB
+combined-size check (`context_budget_exceeded`) happen before the work-order
+record, branch reservation, or a new round is written, so a rejected input
+leaves no undispatched reservation and consumes no round. Evidence text is
+appended only to the provider input; records keep only digests plus the safe
+state enum, and status, collect, and cancel reject a context argument.
+
+A `required` order fails closed as `context_unavailable` when no packet is
+supplied or it cannot be reauthorized (wrong account, revoked or expired
+authorization, refreshed or invalidated packet, payload without the packet
+identity); the work order pauses with its prior state intact. Only an `optional`
+order degrades to a code-only input (`degraded`) or runs without a packet
+(`omitted`), and the remote session's input fingerprint prevents a later replay
+with different input. The state chosen for the create input and for each
+message intent is persisted and reported by every command as
+`context: {policy, dispatch, message}`; replay, acknowledgement, status, and
+collect return the saved state rather than recomputing it.
 
 ## Attach evidence to independent review
 
