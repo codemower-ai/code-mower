@@ -1,0 +1,168 @@
+# Local repository graph: revision-bound lifecycle
+
+Implements [issue #913](https://github.com/codemower-ai/code-mower/issues/913)
+under [epic #902](https://github.com/codemower-ai/code-mower/issues/902), on top
+of the adopt decision recorded in [Graphify evaluation](graphify-evaluation.md).
+
+This is the safe lifecycle around an optional local code graph: how one gets
+built, what it is allowed to see, where it is kept, and when a consumer must
+refuse it. It adds no dependency, no background service, no hook, no watcher,
+and no default indexing step. Nothing on a default install path builds, reads,
+or requires a graph.
+
+Two modules divide the work:
+
+- `context_graph.py` (from #876) decides whether a delivered packet's
+  **citations** are in scope and fresh enough to use.
+- `context_graph_lifecycle.py` (this document) decides whether the graph
+  **should have existed** — which revision it binds, which bytes produced it,
+  where its state lives, and when it fails closed.
+
+## The problem
+
+A graph indexer pointed at a working checkout is unsafe in two directions. It
+reads files nobody agreed to index — untracked scratch files, ignored
+`.env` files, another worktree reached through a symlink — and it produces an
+artifact with no way to tell which revision it describes, so a graph built three
+commits ago answers today's question with yesterday's code and looks identical
+to a fresh one.
+
+Constraint 1 in the evaluation is the sharp edge: the provider owns no
+provenance at all. If Code Mower does not bind the revision, nothing does.
+
+## What a build does
+
+`build_graph()` is the only way a generation is created. In order:
+
+1. **Resolve the revision.** The full commit and tree object names, never an
+   abbreviation and never a branch name. The tree is resolved separately
+   because it is what a consumer actually compares.
+2. **Take the tracked census.** `git ls-tree -r` against the *commit*, not the
+   working tree and not the index. Symlinks (`120000`) and submodules
+   (`160000`) are skipped and recorded as skipped, because a symlink can name a
+   target the build was never shown and a gitlink names a commit in a
+   repository it was never authorized to read. The census digest covers mode,
+   blob name, size and path for every entry in sorted order.
+3. **Materialize into private state.** Each blob is written into a fresh 0700
+   directory as a 0600 file. Untracked and ignored files have no path into the
+   graph because they are never written, rather than because something filtered
+   them out afterwards.
+4. **Run the indexer with a scrubbed environment.** The provider process
+   inherits an allowlist — `PATH`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ` — and
+   nothing else. Every proxy variable is set empty, `no_proxy` is `*`, and
+   `HOME` and the XDG directories point into the build's own scratch area. A
+   newly invented secret variable is excluded by default because the list names
+   what is kept, not what is dropped.
+5. **Publish atomically.** The generation is assembled under a staging name,
+   fsynced, renamed into `generations/<id>`, and only then does the `current`
+   pointer start naming it. A reader sees the whole previous generation or the
+   whole new one.
+
+Git itself runs with `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`, and
+`GIT_CONFIG_SYSTEM=/dev/null`: an untrusted checkout's local, global, or system
+configuration can otherwise install clean/smudge filters and hook paths that run
+code during what looks like a read.
+
+## What a manifest binds
+
+Every published generation carries, in `manifest.json`:
+
+| Field | Why it is there |
+| --- | --- |
+| `commit`, `tree` | Full object names. Staleness is decided against these, not against a branch. |
+| `provider` | Distribution, exact version, wheel SHA-256, and the extraction options used. |
+| `built_at` | ISO 8601 UTC. The provider records no build time of its own. |
+| `tracked_files`, `tracked_bytes`, `census_digest` | Exactly which bytes the indexer was shown, re-derivable from the repository. |
+| `skipped_paths` | How many tracked entries were deliberately not materialized. |
+| `graph_digest`, `graph_bytes` | Detects a truncated or tampered artifact on every read. |
+| `completeness` | `complete` or `partial`, from the provider's own admission. |
+| `indexed_files` | What the provider claims it processed, bounded by the census. |
+
+`shareable_summary()` is the metadata-only view: revisions, digests, counts and
+states. It carries no indexed content, no provider output, and no local path.
+
+## Refresh is explicit
+
+`build` is the first-time verb and refuses when a usable generation already
+binds the revision. `refresh` is the rebuild verb, and it publishes a *new*
+immutable generation rather than mutating one in place. Nothing refreshes on a
+timer, a hook, or a file-system event, and nothing rebuilds implicitly because a
+consumer found the graph stale — a stale graph is reported as stale.
+
+## Failing closed
+
+`graph_status()` resolves to exactly one state, and only `current` is usable.
+Nothing falls back to an older generation: a consumer that cannot have the
+revision it asked for is told so rather than handed a stale answer that looks
+fresh.
+
+| State | Cause |
+| --- | --- |
+| `absent` | Nothing built for this checkout. |
+| `stale` | The manifest's commit/tree does not match the revision being asked about. |
+| `corrupt` | The artifact's size or SHA-256 does not match the manifest. |
+| `oversized` | The artifact exceeds its budget. |
+| `partial` | The provider declared an incomplete build. Usable only with an explicit opt-in. |
+| `invalid` | The manifest is unreadable, mislabelled, or the state is not private and operator-owned. |
+
+The privacy check runs on every read, not only at creation: state loosened after
+the fact — by a umask change, a restore, or a careless recursive `chmod` —
+fails closed rather than being trusted because it was private when it was
+written.
+
+`partial` exists because of the requeue defect recorded in the evaluation: a
+fast incremental repeat is not proof that the graph is complete.
+
+## Commands
+
+```
+code-mower context-graph build   --pin-file PIN --indexer PATH [--revision REV]
+code-mower context-graph refresh --pin-file PIN --indexer PATH [--revision REV]
+code-mower context-graph status  [--allow-partial] [--json]
+code-mower context-graph remove  [--show-local-paths]
+code-mower context-graph doctor  [--pin-file PIN]
+```
+
+`status` exits non-zero when the graph is not usable, so a script can branch on
+it. `doctor` reports `skip` rather than `fail` when nothing is pinned or built:
+the lifecycle is optional, and an operator who never opted in has nothing wrong
+with their installation.
+
+The pin file names one exact release and is rejected if it names a range, a
+marker, or a distribution without an artifact digest:
+
+```json
+{
+  "distribution": "graphifyy",
+  "version": "0.9.58",
+  "wheel_sha256": "e239803288e91c723d6e30540860bd6d5a1dc3f0914b9fc1104b0233e98aaeb8",
+  "options": ["--code-only", "--no-cluster"]
+}
+```
+
+`--indexer` is the path to a provider CLI the operator has **already**
+installed. This repository does not download, install, or resolve one, which is
+why the executable is named rather than discovered.
+
+## State layout
+
+```
+~/.local/share/code-mower/context/graph/<workspace>/
+  current                            the published generation's name
+  build.lock                         serializes builds for one checkout
+  generations/<generation>/manifest.json
+  generations/<generation>/graph.bin
+```
+
+Directories are 0700 and files 0600. `<workspace>` is derived from the resolved
+checkout path, so two worktrees of the same repository get separate state and
+can never read each other's generations. State is refused inside any Git
+repository, which is the enforcement half of adoption condition 2.
+
+## What this does not do
+
+No hooks, no watcher, no hosted service, no MCP HTTP service, no semantic or
+model-based extraction, no provider API key, no clustering, and no default
+dependency. Each remains a separate explicit decision. The provider seam is an
+injected callable, so the entire lifecycle — including the whole test suite —
+runs offline with no graph package installed.

@@ -56,6 +56,7 @@ from . import codex_audit_schema_smoke
 from . import controller as code_mower_controller
 from . import code_mower_calibration
 from . import code_mower_context_packs
+from . import context_graph_command
 from . import code_mower_merge
 from . import code_mower_telemetry
 from . import config as code_mower_config
@@ -447,6 +448,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "cloud": "Export or upload sanitized benchmark metadata.",
     "config": "Validate or inspect a Code Mower config.",
     "context": "Record local external planning context manifests.",
+    "context-graph": "Build, refresh, inspect, or remove a local repository graph.",
     "context-packs": "Build selective surrounding-file context packs.",
     "controller": "Compute supervised-pilot dispatch and merge-policy decisions.",
     "coderabbit-cli": "Run a CodeRabbit CLI informational lane.",
@@ -595,6 +597,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "cloud": code_mower_cloud.main,
     "config": _config_main,
     "context": code_mower_work_orders.context_main,
+    "context-graph": context_graph_command.main,
     "context-packs": code_mower_context_packs.main,
     "controller": code_mower_controller.main,
     "coderabbit-cli": coderabbit_cli_audit_pr.main,

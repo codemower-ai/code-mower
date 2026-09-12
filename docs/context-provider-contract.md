@@ -205,3 +205,10 @@ package record, and the conditions an implementing change must meet. Nothing is
 installed or required yet. Synthetic graph fixtures prove only the extension
 point; they do not establish Graphify compatibility or make it a v1.3.1
 dependency.
+
+The lifecycle around such a provider — exact pin, immutable tracked-file
+materialization, scrubbed environment, private 0700 state, atomic generations,
+and `code-mower context-graph build/refresh/status/remove/doctor` — is
+described in [Local repository graph](context-graph-lifecycle.md). It builds the
+evidence side; `context_graph` still decides whether a delivered packet's
+citations may be used.

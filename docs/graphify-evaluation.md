@@ -167,6 +167,16 @@ are engineering conditions on the adapter, not requests for a decision.
    accounted for: an incremental run's completion is not treated as proof the
    graph is complete.
 
+Conditions 1, 2, 3, 5 and 7 are implemented by the build/refresh/status/remove
+lifecycle in
+[Local repository graph: revision-bound lifecycle](context-graph-lifecycle.md)
+(issue #913): an exact pin with a verified artifact digest, private 0700 state
+outside every checkout, a manifest that binds full commit and tree with build
+time, opt-in acquisition with no default dependency, and a `partial`
+completeness state that refuses to read a fast incremental repeat as a complete
+graph. Conditions 4 and 6 belong to the retrieval adapter, which does not exist
+yet.
+
 ## Boundary
 
 Graphify stays out of v1.3.1 and does not block Coworker's 1.3.0 or 1.3.1
