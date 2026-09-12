@@ -187,6 +187,9 @@ class RemoteSessions:
             record = locked.read()
             if not record or record.get("provider") != self.provider.name or record.get("account") != self.provider.account:
                 raise RemoteError("binding_mismatch")
+            if (record["state"] != "complete" or record.get("reason") != "none"
+                    or any(op["state"] == "pending" for op in record["operations"].values())):
+                return None
             return locked.artifact(key).read() if record["counts"]["collect"] else None
 
     def run(self, command: str, session: str, *, request: str = "", prose: str = "",
@@ -271,10 +274,9 @@ class RemoteSessions:
                         if len(record["operations"]) >= 128:
                             raise RemoteError("request_limit_reached")
                         record["operations"][opkey] = {"state": "pending", "fingerprint": fingerprint}
-                        if command == "message":
-                            # A resumed writer invalidates all previously collected completion data.
-                            record["counts"]["collect"] = 0
-                            locked.artifact(key).delete()
+                        # Resume/cancel intent invalidates completion before any remote write.
+                        record["counts"]["collect"] = 0
+                        locked.artifact(key).delete()
                         locked.write(record)
                         if command == "message":
                             _call(self.provider.message, record["binding"], prose)
@@ -283,14 +285,25 @@ class RemoteSessions:
                         record["operations"][opkey]["state"] = "done"
                         record["counts"][command] += 1
                         locked.write(record)
-                snapshot = _call(self.provider.get, record["binding"])
-                _observe(record, snapshot)
+                try:
+                    snapshot = _call(self.provider.get, record["binding"])
+                    _observe(record, snapshot)
+                except RemoteError:
+                    record.update(state="uncertain", reason="provider_unavailable", next_action="status")
+                    record["counts"]["collect"] = 0
+                    locked.artifact(key).delete()
+                    locked.write(record)
+                    raise
+                if record["state"] != "complete":
+                    record["counts"]["collect"] = 0
+                    locked.artifact(key).delete()
                 if command == "collect":
                     if record["state"] != "complete":
                         record["reason"] = "result_not_ready"
                     elif snapshot.structured_output is None:
                         record["reason"] = "result_unavailable"
-                    elif not record["counts"]["collect"]:
+                    elif (not record["counts"]["collect"] and not any(
+                            op["state"] == "pending" for op in record["operations"].values())):
                         # Result is only accessible through this protected store, never stdout.
                         locked.artifact(key).write(snapshot.structured_output)
                         record["counts"]["collect"] = 1
