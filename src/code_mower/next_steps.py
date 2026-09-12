@@ -17,6 +17,7 @@ if __package__ in {None, ""}:
 if __package__ in {None, "", "tools"}:
     from code_mower import __version__ as CODE_MOWER_VERSION
     from code_mower.calibration.arms import DEFAULT_CLI_LANES
+    from code_mower.provider_capabilities import devin_lane_transport_name
     from tools import code_mower_package
     from tools.code_mower_config import ConfigError, load_config
     try:
@@ -26,6 +27,7 @@ if __package__ in {None, "", "tools"}:
 else:  # pragma: no cover - exercised after package extraction.
     from . import __version__ as CODE_MOWER_VERSION
     from .calibration.arms import DEFAULT_CLI_LANES
+    from .provider_capabilities import devin_lane_transport_name
     from . import package as code_mower_package
     from .config import ConfigError, load_config
     from . import versioning as code_mower_versioning
@@ -249,6 +251,36 @@ def build_next_steps(
             "command": "code-mower providers list",
             "why": "This selection has no configured reviewer lanes. Select reviewers or establish a manual independent review process before merging.",
         }
+
+    # A lane is Devin because of what it declares, so a valid custom-named lane
+    # receives the same readiness step as the canonical ones.
+    devin_lanes = [
+        lane
+        for lane in lanes
+        if devin_lane_transport_name(lane, catalog.get(lane, {})) is not None
+    ]
+    if devin_lanes:
+        devin_command = "code-mower doctor"
+        if config_path:
+            devin_command += f" {shlex.quote(config_path)}"
+        devin_command += (
+            f" --profile {quoted_profile} --devin --repo {quoted_repo} --json"
+        )
+        steps.append(
+            {
+                "id": "devin-readiness",
+                "title": "Check the optional Devin posture before assigning work",
+                "command": devin_command,
+                "why": (
+                    "Reports which Devin transport is selected, whether that posture uses "
+                    "the local Devin CLI login or hosted service-user credentials with an "
+                    "exact repository acknowledgement, which create/view/manage "
+                    "permissions the owner must grant, and which capabilities are "
+                    "unavailable. Identities and credential values are never reported."
+                ),
+                "lanes": devin_lanes,
+            }
+        )
 
     if advanced:
         steps.extend(

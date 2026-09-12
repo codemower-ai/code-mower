@@ -190,6 +190,69 @@ appear in `CODE_MOWER_DEVIN_REPOSITORIES`; a same-name personal fork therefore
 cannot satisfy the intended organization target. The opaque `org-*`
 `DEVIN_ORG_ID` is not compared with the GitHub owner name.
 
+### Check One Devin Posture Before Assigning Work
+
+Devin stays optional: Claude + Codex remain the default pair, and a repository
+that never selected Devin sees no Devin checks. After selecting it, run one
+command for the whole optional setup:
+
+```bash
+code-mower doctor --profile recommended --devin --repo OWNER/REPO --json
+```
+
+Pin the profile you selected in place of `recommended`, so a configuration with
+more than one Devin lane is reported for that profile only. The `--devin` flag
+also works before selection and prints the local CLI, hosted
+API, and unavailable postures with the next action for each. Doctor reports the
+selected transport, which authentication belongs to it, the create/view/manage
+permissions the account owner must grant, the capabilities the transport does
+not support, and the lifecycle recovery commands. It never reports credential
+values, the service-user identity, the organization identifier, the configured
+repository inventory, a local path, or raw provider output.
+
+Pick exactly one posture; the two authentications are not interchangeable.
+
+| Posture | Selection | Authentication | Next action when not ready |
+|---|---|---|---|
+| Local CLI | `code-mower init code-mower.yml --profile recommended --set-transport devin=devin_cli --dry-run`, then the same command with `--apply --output-dir .code-mower.generated` (replace the path and profile with the ones you inspect) | the ambient Devin Desktop/CLI login on this machine | install `devin` on PATH (or set `CODE_MOWER_DEVIN_CLI_COMMAND`), then run `devin auth login` in a trusted environment |
+| Hosted API | `code-mower init code-mower.yml --profile recommended --set-transport devin=devin_api_v3 --dry-run`, then the same command with `--apply --output-dir .code-mower.generated` (replace the path and profile with the ones you inspect) | dedicated service-user credentials plus exact repository scope | set `DEVIN_API_KEY` and `org-*` `DEVIN_ORG_ID`, and add the exact `OWNER/REPO` to `CODE_MOWER_DEVIN_REPOSITORIES` |
+| Unavailable | keep the default pair | none | report the unavailable capability and hand the work to a selected participant instead of substituting another product |
+
+`--set-transport` replaces only Devin's transport, its own profile lanes, and its
+own participant alias: every other participant and profile lane stays exactly as
+configured. The saved selection in `session_defaults` is repository-wide, so the
+switch retargets the Devin lane of every profile that selects Devin rather than
+leaving another profile whose declared lane the saved selection contradicts;
+profiles that do not select Devin are untouched. `--dry-run` previews it and `--apply` stages a generated tree under
+`--output-dir`; neither rewrites the configuration you passed. Review the
+generated configuration and support files, install them through your normal setup
+PR, and only then rerun `code-mower doctor <config> --profile <name> --devin` —
+until the generated configuration is installed, the active posture is still the
+old one.
+
+A profile whose Devin lanes are custom-named is retargeted by editing those lanes
+yourself: set `product: devin`, `provider: devin_cli` (hosted: `provider: devin`),
+`transport: devin_cli` or `devin_api_v3`, and the matching `driver: local_cli` or
+`hosted_bridge` on each named lane. Drop each lane's `capabilities` block to use the
+maintained defaults for the new transport (or restate them for it) and retarget any
+`provider_config.campaign_transport`, otherwise validation rejects declarations that
+disagree with the transport. The saved selection is repository-wide, so inspect
+every profile that selects Devin and retarget its named lanes the same way before
+setting `session_defaults.transports.devin` and replacing any Devin participant
+alias (`devin-cli` local, `devin-api-v3` hosted); a stale selection keeps choosing
+the old transport, and a selection aligned for one profile alone contradicts
+another profile's named lane. If your profiles intentionally keep different Devin
+transports, save no `session_defaults.transports.devin` and no transport-specific
+alias — name the product as `devin` and let each profile's lane declaration select
+its own transport. Leave every other lane field, participant, and profile lane as
+configured, review the diff, then rerun the pinned doctor command.
+No generated command can retarget a lane your repository named, and the participant
+picker would rebuild the profile around the lanes it knows.
+
+Hosted credentials do not enable local execution, and a local login does not
+authorize hosted sessions. Hosted Devin also cannot coordinate a session: use
+`devin_cli`, Codex, or Claude as the host.
+
 ## Local Devin Builder Lane
 
 Separately from the `devin_cli` reviewer contract above, `devin` can now also
