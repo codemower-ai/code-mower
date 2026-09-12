@@ -19,6 +19,7 @@ ASSOCIATION_SCHEMA = "code_mower.contextSession.v1"
 STATUS_SCHEMA = "code_mower.contextSessionStatus.v1"
 STAGES = frozenset(("selected", "preparing", "prepared", "attached", "reviewed"))
 ATTACHMENT_STATES = frozenset(("none", "pending", "published", "uncertain"))
+CONTEXT_STATES = frozenset(("unchecked", "ready", "expired", "authorization_failed"))
 QUERY_MODES = frozenset(("work_item", "stdin"))
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _HEX = re.compile(r"[a-f0-9]{32}\Z")
@@ -32,13 +33,12 @@ def default_association_root() -> Path:
 
 
 def _upgrade_g1_record(value: Any) -> Any:
-    new_fields = ("builder", "query_mode", "retrieval_source", "request_hash")
-    if (
-        isinstance(value, Mapping)
-        and value.get("schema") == ASSOCIATION_SCHEMA
-        and all(field not in value for field in new_fields)
-    ):
-        return {**dict(value), **{field: None for field in new_fields}}
+    if isinstance(value, Mapping) and value.get("schema") == ASSOCIATION_SCHEMA:
+        result = dict(value)
+        for field in ("builder", "query_mode", "retrieval_source", "request_hash"):
+            result.setdefault(field, None)
+        result.setdefault("context_state", "ready" if result.get("packet") else "unchecked")
+        return result
     return value
 
 
@@ -48,10 +48,11 @@ class AssociationStore(ContextStore):
     def __init__(self, root: Path, *, legacy_root: Path | None = None):
         super().__init__(root)
         self.legacy_root = legacy_root
+        self._legacy_checked: set[str] = set()
 
     @contextmanager
     def locked(self, connection: str, *, timeout_seconds: float = 35) -> Iterator[Any]:
-        if self.legacy_root is None:
+        if self.legacy_root is None or connection in self._legacy_checked:
             with super().locked(connection, timeout_seconds=timeout_seconds) as locked:
                 yield locked
             return
@@ -68,6 +69,7 @@ class AssociationStore(ContextStore):
                     if current_value is None:
                         current.write(legacy_value)
                     legacy.delete()
+                self._legacy_checked.add(connection)
                 yield current
 
 
@@ -134,7 +136,7 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
     fields = {
         "schema", "session_id", "repo", "work_item", "connection", "policy",
         "host", "orchestrator", "participants", "builder", "generation", "stage",
-        "query_mode", "retrieval_source", "request_hash", "packet", "work_order",
+        "query_mode", "retrieval_source", "request_hash", "context_state", "packet", "work_order",
         "pr", "head", "revision", "attachment_state",
         "created_at", "updated_at",
     }
@@ -172,7 +174,11 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
     generation = value["generation"]
     if type(generation) is not int or not 0 <= generation <= 1_000_000:
         raise ContextError("private session context generation is invalid")
-    if value["stage"] not in STAGES or value["attachment_state"] not in ATTACHMENT_STATES:
+    if (
+        value["stage"] not in STAGES
+        or value["attachment_state"] not in ATTACHMENT_STATES
+        or value["context_state"] not in CONTEXT_STATES
+    ):
         raise ContextError("private session context lifecycle state is invalid")
     query_mode = value["query_mode"]
     if query_mode is not None and query_mode not in QUERY_MODES:
@@ -207,6 +213,8 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
         )
     ):
         raise ContextError("private session context selected state has unexpected progress")
+    if value["stage"] == "selected" and value["context_state"] != "unchecked":
+        raise ContextError("private session context selected state has unexpected readiness")
     if value["stage"] == "preparing" and (
         builder is None or query_mode is None or request_hash is None or any(
             item is not None for item in (pr, head, revision)
@@ -217,14 +225,26 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
         item is None for item in (builder, query_mode, request_hash, packet, work_order)
     ):
         raise ContextError("private session context prepared state is incomplete")
-    if value["attachment_state"] == "none" and revision is not None:
+    attachment = value["attachment_state"]
+    attachment_fields = (pr, head, revision)
+    if attachment == "none" and any(item is not None for item in attachment_fields):
         raise ContextError("private session context revision has no attachment")
+    if attachment in {"pending", "uncertain"} and (
+        value["stage"] != "prepared" or any(item is None for item in attachment_fields)
+    ):
+        raise ContextError("private session context attachment intent is incomplete")
+    if attachment == "published" and (
+        value["stage"] not in {"attached", "reviewed"}
+        or any(item is None for item in attachment_fields)
+    ):
+        raise ContextError("private session context published attachment is incomplete")
     return {
         **dict(value), "session_id": session_id, "repo": repo, "work_item": work_item,
         "connection": connection, "policy": policy, "host": host,
         "orchestrator": orchestrator, "participants": normalized_participants, "builder": builder,
         "query_mode": query_mode, "retrieval_source": retrieval_source,
-        "request_hash": request_hash, "packet": packet, "work_order": work_order,
+        "request_hash": request_hash, "context_state": value["context_state"],
+        "packet": packet, "work_order": work_order,
         "pr": pr, "head": head,
         "revision": revision,
     }
@@ -277,6 +297,7 @@ def create(
         "host": session["host"], "orchestrator": session["orchestrator"],
         "participants": participants, "builder": None, "generation": 0, "stage": "selected",
         "query_mode": None, "retrieval_source": None, "request_hash": None,
+        "context_state": "unchecked",
         "packet": None, "work_order": None, "pr": None, "head": None,
         "revision": None, "attachment_state": "none", "created_at": now,
         "updated_at": now,
@@ -334,6 +355,24 @@ def update(
     return proposed
 
 
+def failure_state(error: BaseException) -> str:
+    """Map private/provider failures to the closed session status vocabulary."""
+    return "expired" if "expired" in str(error).lower() else "authorization_failed"
+
+
+def record_failure(
+    store: ContextStore,
+    record: Mapping[str, Any],
+    error: BaseException,
+) -> dict[str, Any]:
+    return update(
+        store,
+        record["session_id"],
+        expected_generation=record["generation"],
+        changes={"context_state": failure_state(error)},
+    )
+
+
 def resolve_bound(name: str, *values: str | None) -> str | None:
     """Resolve one identity only when all available trusted sources agree."""
     present = [value for value in values if value not in (None, "")]
@@ -366,6 +405,19 @@ def status(record: Mapping[str, Any] | None, *, lease_live: bool) -> dict[str, A
             "stage": "not_configured", "dependent_work": "usable", "owner_action": False,
             "next_action": "Continue the ordinary workflow or configure an optional context connection.",
         }
+    if record["context_state"] in {"expired", "authorization_failed"}:
+        expired = record["context_state"] == "expired"
+        return {
+            "schema": STATUS_SCHEMA, "selected": True, "configured": True,
+            "stage": "context_expired" if expired else "authorization_failed",
+            "dependent_work": "paused" if record["policy"]["required"] else "usable",
+            "owner_action": True,
+            "next_action": (
+                "Start a new session and explicitly refresh the selected work item."
+                if expired
+                else "Verify or reconnect the selected context account, then rerun the guided command."
+            ),
+        }
     actions = {
         "selected": "Prepare bounded context for this work item.",
         "prepared": "Continue the build and attach context when a pull request exists.",
@@ -385,6 +437,23 @@ def status(record: Mapping[str, Any] | None, *, lease_live: bool) -> dict[str, A
                 "Resume context preparation; the completed retrieval will be reused."
                 if resumable
                 else "Verify the selected connection, then rerun prepare with --refresh."
+            ),
+        }
+    if record["attachment_state"] == "pending":
+        return {
+            "schema": STATUS_SCHEMA, "selected": True, "configured": True,
+            "stage": "attachment_pending", "dependent_work": "paused",
+            "owner_action": False,
+            "next_action": "Rerun attach to reconcile or finish the saved publication intent.",
+        }
+    if record["attachment_state"] == "uncertain":
+        return {
+            "schema": STATUS_SCHEMA, "selected": True, "configured": True,
+            "stage": "attachment_uncertain", "dependent_work": "paused",
+            "owner_action": True,
+            "next_action": (
+                "Rerun attach to reconcile the saved revision; use --retry-uncertain only "
+                "after confirming it is not current."
             ),
         }
     return {

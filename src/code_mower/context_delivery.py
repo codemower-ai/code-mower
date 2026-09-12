@@ -83,18 +83,31 @@ def _packet_for_binding(store, binding, recipient, *, backend=None):
     return packet
 
 
-def attach(store, name, handle, policy, request: ContextRequest, *, pr, head, publish, backend=None):
-    """Publish a new input revision before any participant can use that binding.
+def reserve_attachment(
+    store,
+    name,
+    handle,
+    policy,
+    request: ContextRequest,
+    *,
+    pr,
+    head,
+    revision=None,
+    backend=None,
+):
+    """Reserve one unpublished binding before any remote publication.
 
-    ``publish`` is a trusted runtime callback for the selected repository/PR,
-    never provider code. A failed publication leaves the local binding unusable.
+    A caller-supplied revision lets a guided session persist its intent before
+    touching GitHub and resume that exact intent after a crash. Repeating the
+    same reservation is idempotent; a conflicting reuse fails closed.
     """
     if request.recipient not in SUPPORTED_RECIPIENTS or not request.recipient.endswith(":orchestrator"):
         raise ContextError("an approved orchestrator must attach context")
     policy = normalize_policy(policy)
     packet = load_authorized(store, name, handle, policy, request, backend=backend)
     payload = packet.private_payload()
-    revision = uuid.uuid4().hex
+    revision = revision or uuid.uuid4().hex
+    _handle(revision)
     metadata = context_review.validate({"revision": revision, "head": head, "required": policy["required"],
         "state": "available", "expires_at": payload["binding"]["expires_at"]})
     render_evidence(packet, handle)
@@ -107,28 +120,88 @@ def attach(store, name, handle, policy, request: ContextRequest, *, pr, head, pu
         if entry is None or entry["reference"] is None or entry["reference"]["sha256"] != packet.sha256:
             raise ContextError("context packet was replaced before attachment")
         deliveries = entry.setdefault("deliveries", [])
-        if len(deliveries) >= 8:
-            raise ContextError("context packet delivery limit reached; refresh the work item")
         binding = _binding({"schema": SCHEMA, "revision": revision, "connection": name,
             "repository": request.repository, "work_item": request.work_item, "pr": pr, "handle": handle,
             "policy": policy, "packet_sha256": packet.sha256, "metadata": metadata,
             "published": False, "feedback": {}})
         artifact = locked.artifact("d-" + revision)
-        deliveries.append(revision)
-        index_file.write(index)
-        artifact.write(binding)
-        try:
-            publish(metadata)
-        except Exception:
-            # Even an uncertain remote post must not enable delivery. Reclaim
-            # the unpublished local slot so a transient outage cannot exhaust
-            # the packet's bounded handoff capacity.
-            deliveries.remove(revision)
+        existing = artifact.read()
+        if existing is not None:
+            saved = _binding(existing)
+            comparable = {**saved, "published": False, "feedback": {}}
+            if comparable != binding:
+                raise ContextError("context attachment revision is already bound to different input")
+            if revision not in deliveries:
+                if len(deliveries) >= 8:
+                    raise ContextError("context packet delivery limit reached; refresh the work item")
+                deliveries.append(revision)
+                index_file.write(index)
+            return saved["metadata"]
+        if revision not in deliveries:
+            if len(deliveries) >= 8:
+                raise ContextError("context packet delivery limit reached; refresh the work item")
+            deliveries.append(revision)
             index_file.write(index)
-            artifact.delete()
-            raise
-        artifact.write({**binding, "published": True})
+        artifact.write(binding)
         return metadata
+
+
+def mark_published(store, name, revision):
+    """Enable a reserved binding only after its exact metadata is public."""
+    _handle(revision)
+    with store.locked(name) as locked:
+        artifact = locked.artifact("d-" + revision)
+        binding = _binding(artifact.read())
+        if binding["connection"] != name:
+            raise ContextError("context attachment connection does not match its binding")
+        if not binding["published"]:
+            artifact.write({**binding, "published": True})
+        return binding["metadata"]
+
+
+def abandon_attachment(store, name, handle, revision):
+    """Remove an unpublished reservation after a known pre-publication failure."""
+    _handle(handle)
+    _handle(revision)
+    with store.locked(name) as locked:
+        index_file, index = _index(locked)
+        entry = next((item for item in index["entries"] if item["handle"] == handle), None)
+        artifact = locked.artifact("d-" + revision)
+        saved = artifact.read()
+        if saved is None:
+            if entry is not None and revision in entry.setdefault("deliveries", []):
+                entry["deliveries"].remove(revision)
+                index_file.write(index)
+            return
+        binding = _binding(saved)
+        if binding["published"]:
+            raise ContextError("published context attachment cannot be abandoned")
+        if entry is None or revision not in entry.setdefault("deliveries", []):
+            raise ContextError("context attachment index is inconsistent")
+        entry["deliveries"].remove(revision)
+        index_file.write(index)
+        artifact.delete()
+
+
+def attach(store, name, handle, policy, request: ContextRequest, *, pr, head, publish, backend=None):
+    """Publish a new input revision before any participant can use that binding.
+
+    ``publish`` is a trusted runtime callback for the selected repository/PR,
+    never provider code. A failed publication leaves the local binding unusable.
+    """
+    metadata = reserve_attachment(
+        store, name, handle, policy, request, pr=pr, head=head, backend=backend,
+    )
+    revision = metadata["revision"]
+    try:
+        publish(metadata)
+    except Exception:
+        # Even an uncertain remote post must not enable delivery. Preserve the
+        # expert command's historical retry behavior; guided sessions use the
+        # lower-level primitives and retain their fixed intent for reconciliation.
+        abandon_attachment(store, name, handle, revision)
+        raise
+    return mark_published(store, name, revision)
 
 
 @dataclass(frozen=True)
@@ -140,6 +213,10 @@ class Delivery:
 
 def deliver(store, revision, *, repository, pr, head, recipient, current, backend=None):
     binding = read_binding(store, revision)
+    try:
+        current = context_review.validate(dict(current))
+    except (TypeError, ValueError):
+        raise ContextError("no trusted current context input is declared") from None
     if (not binding["published"] or binding["repository"] != repository or binding["pr"] != pr
             or binding["metadata"] != current or current["head"] != head):
         raise ContextError("context input is missing, unpublished, or no longer current")

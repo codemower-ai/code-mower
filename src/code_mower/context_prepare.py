@@ -272,14 +272,24 @@ def prepare(
                 ContextRequest(record["repo"], record["work_item"], recipient),
                 backend=backend,
             )
-        except ContextError:
+        except ContextError as exc:
             context_session.update(
                 association_store,
                 record["session_id"],
                 expected_generation=record["generation"],
-                changes={"stage": "preparing", "packet": None, "work_order": None},
+                changes={
+                    "stage": "preparing", "packet": None, "work_order": None,
+                    "context_state": context_session.failure_state(exc),
+                },
             )
             return _unavailable(record["policy"]["required"])
+        if record["context_state"] != "ready":
+            record = context_session.update(
+                association_store,
+                record["session_id"],
+                expected_generation=record["generation"],
+                changes={"context_state": "ready"},
+            )
         return _report(
             "prepared",
             stage="prepared",
@@ -332,6 +342,7 @@ def prepare(
                 "query_mode": "stdin" if explicit_query else "work_item",
                 "retrieval_source": effective_source,
                 "request_hash": fingerprint,
+                "context_state": "unchecked",
                 "packet": None,
                 "work_order": work_order_ref,
                 "pr": None,
@@ -353,8 +364,16 @@ def prepare(
                 ContextRequest(record["repo"], record["work_item"], recipient),
                 backend=backend,
             )
-        except ContextError:
+        except ContextError as exc:
+            context_session.record_failure(association_store, record, exc)
             return _unavailable(record["policy"]["required"])
+        if record["context_state"] != "ready":
+            record = context_session.update(
+                association_store,
+                record["session_id"],
+                expected_generation=record["generation"],
+                changes={"context_state": "ready"},
+            )
     else:
         try:
             result = context_packets.fetch(
@@ -371,7 +390,8 @@ def prepare(
                 backend=backend,
                 refresh=refresh,
             )
-        except ContextError:
+        except ContextError as exc:
+            context_session.record_failure(association_store, record, exc)
             return _unavailable(record["policy"]["required"])
         packet_handle = result["packet_handle"]
         reused = bool(result["reused"])
@@ -379,7 +399,7 @@ def prepare(
             association_store,
             record["session_id"],
             expected_generation=record["generation"],
-            changes={"packet": packet_handle},
+            changes={"packet": packet_handle, "context_state": "ready"},
         )
 
     if not _reuse_existing_work_order(
