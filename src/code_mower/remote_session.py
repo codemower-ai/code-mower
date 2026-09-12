@@ -204,6 +204,33 @@ class RemoteSessions:
                 return None
             return locked.artifact(key).read() if record["counts"]["collect"] else None
 
+    def discard_private_result(self, session: str, expected: dict | None) -> bool:
+        """Release one rejected local result so a later provider result can be collected.
+
+        This compare-bound recovery performs no provider call and changes only the
+        local collect count and private artifact. A concurrent replacement is
+        preserved rather than discarded.
+        """
+        key = _key(session)
+        with self.store.locked(key) as locked:
+            record = locked.read()
+            if (not record or record.get("provider") != self.provider.name
+                    or record.get("account") != self.provider.account
+                    or not record.get("binding")):
+                raise RemoteError("binding_mismatch")
+            if record.get("counts", {}).get("collect") != 1:
+                return False
+            artifact = locked.artifact(key)
+            if artifact.read() != expected:
+                return False
+            # Persist the zero count first. If the process stops before deletion,
+            # private_result hides the rejected artifact and the next collect
+            # atomically replaces it.
+            record["counts"]["collect"] = 0
+            locked.write(record)
+            artifact.delete()
+            return True
+
     def run(self, command: str, session: str, *, request: str = "", prose: str = "",
             repo: str = "", limit: int = 10, apply: bool = False, dry_run: bool = False,
             acknowledge_delivered: bool = False) -> dict:

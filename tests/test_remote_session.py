@@ -99,6 +99,34 @@ class RemoteSessionTests(unittest.TestCase):
         self.assertIsNone(self.service.private_result("other"))
         self.assertEqual(self.service.private_result("work"), {"one": 1})
 
+    def test_rejected_private_result_is_compare_bound_and_local_only(self):
+        self.dispatch()
+        binding = self.record()["binding"]
+        rejected = {"private": "source and diff"}
+        self.provider.set_state(binding, "complete", result=rejected)
+        self.service.run("collect", "work", apply=True)
+        before = self.record()
+
+        self.assertFalse(self.service.discard_private_result("work", {"different": True}))
+        self.assertEqual(self.service.private_result("work"), rejected)
+        with (patch.object(self.provider, "create") as create,
+              patch.object(self.provider, "message") as message,
+              patch.object(self.provider, "cancel") as cancel,
+              patch.object(self.provider, "get") as get):
+            self.assertTrue(self.service.discard_private_result("work", rejected))
+        for mutation in (create, message, cancel, get):
+            mutation.assert_not_called()
+        after = self.record()
+        self.assertEqual(after["counts"]["collect"], 0)
+        self.assertIsNone(self.service.private_result("work"))
+        before["counts"]["collect"] = 0
+        self.assertEqual(after, before)
+
+        replacement = {"private": "new exact result"}
+        self.provider.set_state(binding, "complete", result=replacement)
+        self.service.run("collect", "work", apply=True)
+        self.assertEqual(self.service.private_result("work"), replacement)
+
     def test_waiting_states(self):
         self.dispatch()
         for reason, state in (("approval_required", "waiting_for_approval"),
