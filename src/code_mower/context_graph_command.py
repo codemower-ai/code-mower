@@ -30,7 +30,10 @@ def _load_pin(path: Path | None) -> lifecycle.GraphifyPin | None:
     if path is None:
         return None
     try:
-        raw = path.read_bytes()
+        # Bounded at the stream, not after the fact: a bound checked on bytes
+        # already in memory is not a bound on what the file can cost to read.
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_PIN_BYTES + 1)
     except OSError:
         raise ContextError("local graph provider pin file is unreadable") from None
     if len(raw) > MAX_PIN_BYTES:

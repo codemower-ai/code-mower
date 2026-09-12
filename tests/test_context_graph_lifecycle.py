@@ -172,6 +172,48 @@ class CensusAndMaterializationTests(TemporaryWorkspace):
         self.assertNotIn("linked.py", [entry.path for entry in census.entries])
         self.assertIn(("linked.py", "symlink"), census.skipped)
 
+    def test_committed_provider_state_is_skipped_rather_than_indexed(self) -> None:
+        """A tracked ``.graphify`` is an old cache, not content to index.
+
+        Materializing it would let the provider resume from a cache built over
+        content this build never saw, and the adapter would then collect
+        tracked repository bytes as if the provider had just produced them.
+        """
+        for name in (".graphify", "vendor/.GRAPH"):
+            directory = self.repository / name
+            directory.mkdir(parents=True)
+            (directory / "cache.json").write_text('{"stale": true}\n', encoding="utf-8")
+        git(self.repository, "add", ".graphify", "vendor")
+        git(self.repository, "commit", "-q", "-m", "committed provider state")
+        commit, _ = lifecycle.resolve_revision(self.repository)
+        census = lifecycle.read_tracked_census(self.repository, commit)
+        self.assertEqual(
+            [entry.path for entry in census.entries],
+            [".gitignore", "README.md", "example_pkg/config.py"],
+        )
+        self.assertIn((".graphify/cache.json", "provider state"), census.skipped)
+        self.assertIn(("vendor/.GRAPH/cache.json", "provider state"), census.skipped)
+        destination = self.root / "materialized-with-state"
+        lifecycle.materialize_tracked_files(self.repository, census, destination)
+        self.assertFalse((destination / ".graphify").exists())
+        self.assertFalse((destination / "vendor").exists())
+
+    def test_committing_provider_state_does_not_move_the_census_digest(self) -> None:
+        # The manifest binds the digest of what was indexed. Committed provider
+        # state is not indexed, so it does not enter that digest; it is
+        # accounted for in ``skipped`` instead.
+        commit, _ = lifecycle.resolve_revision(self.repository)
+        before = lifecycle.read_tracked_census(self.repository, commit)
+        state = self.repository / ".graph"
+        state.mkdir()
+        (state / "cache.json").write_text('{"stale": true}\n', encoding="utf-8")
+        git(self.repository, "add", ".graph")
+        git(self.repository, "commit", "-q", "-m", "state")
+        after_commit, _ = lifecycle.resolve_revision(self.repository)
+        after = lifecycle.read_tracked_census(self.repository, after_commit)
+        self.assertEqual(before.digest, after.digest)
+        self.assertNotEqual(before.skipped, after.skipped)
+
     def test_materialization_writes_only_tracked_files(self) -> None:
         commit, _ = lifecycle.resolve_revision(self.repository)
         census = lifecycle.read_tracked_census(self.repository, commit)
@@ -208,7 +250,8 @@ class CensusAndMaterializationTests(TemporaryWorkspace):
 
     def test_escaping_census_paths_are_rejected(self) -> None:
         escaping = ("/etc/passwd", "../outside.py", "a/../../b.py", ".git/config",
-                    "vendor/.git/config", "a\\b.py")
+                    "vendor/.git/config", "a\\b.py", ".graphify/cache.json",
+                    "vendor/.GRAPH/cache.json")
         for index, path in enumerate(escaping):
             with self.subTest(path=path):
                 census = lifecycle.TrackedCensus(
@@ -345,8 +388,10 @@ class ProviderLaunchTests(TemporaryWorkspace):
     """What ``subprocess_indexer`` actually hands the operating system."""
 
     def request(self) -> lifecycle.IndexRequest:
-        source = self.root / "source"
-        source.mkdir(exist_ok=True)
+        # A fresh directory per launch, because that is what a build hands the
+        # provider: ``materialize_tracked_files`` refuses a destination that
+        # already exists, and so the provider never sees state from a prior run.
+        source = Path(tempfile.mkdtemp(dir=self.root))
         return lifecycle.IndexRequest(
             source_root=source,
             output_path=self.root / "graph.bin",
@@ -463,6 +508,91 @@ class ProviderLaunchTests(TemporaryWorkspace):
         with mock.patch.object(subprocess, "run", fake_run):
             result = indexer(request)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
+
+    def test_a_report_without_affirmative_completion_evidence_is_partial(self) -> None:
+        """A document that parses is not a document that claims completion.
+
+        ``{}`` and a report in some schema this adapter does not understand
+        both say nothing about whether the extraction finished, and nothing is
+        not a claim. Treating them as complete would hand ``graph_status`` a
+        usable generation built from an unknown run.
+        """
+        silent = (
+            {},
+            {"schema": "unexpected"},
+            {"code_files": 3},
+            {"complete": True},
+            {"status": "running", "code_files": 3},
+            {"status": "partial", "complete": True, "code_files": 3},
+        )
+        for report in silent:
+            with self.subTest(report=report):
+                _, result = self.run_indexer("graphify", report=report)
+                self.assertEqual(result.completeness, lifecycle.PARTIAL)
+                self.assertTrue(result.notes)
+
+    def test_a_report_that_claims_completion_and_counts_its_work_is_complete(self) -> None:
+        claimed = (
+            {"complete": True, "code_files": 3},
+            {"status": "success", "indexed_files": 3},
+            {"completed": True, "entries": 0, "requeued": 0},
+        )
+        for report in claimed:
+            with self.subTest(report=report):
+                _, result = self.run_indexer("graphify", report=report)
+                self.assertEqual(result.completeness, lifecycle.COMPLETE)
+
+    def test_an_oversized_report_is_refused_without_being_read_whole(self) -> None:
+        """Provider output is unbounded input; the read is bounded at the stream.
+
+        Slicing after ``read_bytes()`` would have allocated the whole document
+        first, so the assertion is not only that the build stays ``partial``:
+        nothing in the collection path may read a provider file whole.
+        """
+        request = self.request()
+        oversized = b'{"complete": true, "code_files": 3, "pad": "' + b"x" * lifecycle.MAX_MANIFEST_BYTES + b'"}'
+
+        def fake_run(argv, **kwargs):
+            written = request.source_root / ".graphify"
+            written.mkdir(exist_ok=True)
+            (written / "graph.bin").write_bytes(b"graph-bytes")
+            (written / "manifest.json").write_bytes(oversized)
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        def refuse_whole_file_read(self: Path) -> bytes:
+            raise AssertionError(f"{self} was read whole")
+
+        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify")
+        with mock.patch.object(subprocess, "run", fake_run):
+            with mock.patch.object(Path, "read_bytes", refuse_whole_file_read):
+                result = indexer(request)
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+
+    def test_extraction_refuses_to_run_over_pre_existing_provider_state(self) -> None:
+        """State that predates the run is a cache, and would be collected as output.
+
+        The census already keeps committed provider state out of the copy, so
+        this is the second check rather than the only one -- the source root is
+        an argument, and everything after the run treats what it finds there as
+        freshly produced.
+        """
+        request = self.request()
+        (request.source_root / ".graphify").mkdir()
+        (request.source_root / ".graphify" / "cache.json").write_text("{}", encoding="utf-8")
+        launched: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            launched.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        with mock.patch.object(lifecycle, "network_sandbox_command", lambda: ("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify")
+        with mock.patch.object(subprocess, "run", fake_run):
+            with self.assertRaises(ContextError):
+                indexer(request)
+        self.assertEqual(launched, [])
+        self.assertFalse((self.root / "graph.bin").exists())
 
     def test_a_host_without_a_sandbox_refuses_to_launch_a_provider(self) -> None:
         with mock.patch.object(lifecycle, "network_sandbox_command", lambda: None):

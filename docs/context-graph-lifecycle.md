@@ -41,8 +41,13 @@ provenance at all. If Code Mower does not bind the revision, nothing does.
    working tree and not the index. Symlinks (`120000`) and submodules
    (`160000`) are skipped and recorded as skipped, because a symlink can name a
    target the build was never shown and a gitlink names a commit in a
-   repository it was never authorized to read. The census digest covers mode,
-   blob name, size and path for every entry in sorted order.
+   repository it was never authorized to read. Committed provider state — a
+   tracked `.graphify/` or `.graph/`, at any depth, case-folded — is skipped for
+   a third reason: it is somebody's old index, and materializing it would let
+   the provider resume from a cache built over content this build never saw,
+   and let the adapter collect tracked repository bytes as if the provider had
+   just produced them. The census digest covers mode, blob name, size and path
+   for every entry in sorted order.
 3. **Materialize into private state.** Each blob is written into a fresh 0700
    directory as a 0600 file. Untracked and ignored files have no path into the
    graph because they are never written, rather than because something filtered
@@ -169,15 +174,28 @@ builds of one commit have to produce identical bytes, because the manifest binds
 a digest of them. That state lands inside the throwaway materialized copy, never
 inside the indexed checkout, and the copy is deleted when the build ends.
 
-**Completeness is read from the provider's report, never from its exit status.**
-The adapter parses the report the provider leaves in that state directory and
-marks the build `partial` if it admits requeued, pending, or failed entries, or
-denies completion outright. A run that left no readable report is `partial` too:
-absent evidence is not evidence of a complete build, and `partial` is the state
-`graph_status` refuses by default, so the failure is one an operator can see and
-act on. This is the direct consequence of the requeue defect the evaluation
-recorded — a repeat that exits zero in 1.63 seconds having requeued 54 entries
-has not built a complete graph.
+Extraction refuses to run at all over a state directory that already exists.
+The census keeps committed provider state out of the materialized copy, so in a
+build from this module there is none; the refusal is the second check, because
+everything after the run treats whatever is in that directory as output this
+run produced.
+
+**Completeness is read from the provider's report, never from its exit status,
+and only an affirmative claim counts.** `complete` requires a report shaped the
+way the adapter understands one: a claim that the run finished (`complete`,
+`completed`, `finished`, or a recognized `status`), a count of what was
+indexed, and no counter admitting requeued, pending, or failed work. Everything
+else is `partial` — a report that denies completion, one in an unrecognized
+schema, an empty object, an unreadable one, one larger than a manifest, and no
+report at all. Absent evidence is not evidence of a complete build, and
+`partial` is the state `graph_status` refuses by default, so the failure is one
+an operator can see and act on. This is the direct consequence of the requeue
+defect the evaluation recorded — a repeat that exits zero in 1.63 seconds
+having requeued 54 entries has not built a complete graph.
+
+The report is provider output of unknown size, so it is read to one byte past
+the manifest bound and refused if it is longer, rather than loaded whole and
+measured afterwards. A bound checked on bytes already in memory bounds nothing.
 
 The subcommand, the state-directory names, and the report counters are constants
 in one place in `context_graph_lifecycle.py`. They encode the interface as the

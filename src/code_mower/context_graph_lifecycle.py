@@ -76,6 +76,17 @@ MAX_BLOB_BYTES = 32 * 1024 * 1024
 _REGULAR_MODES = frozenset({"100644", "100755"})
 _SKIPPED_MODES = {"120000": "symlink", "160000": "submodule"}
 
+#: Where the provider keeps its own index state. Both names are on the
+#: excluded-roots list in ``context_graph``, and a repository is free to track
+#: either of them -- a committed ``.graph/`` is somebody else's graph, or an
+#: earlier incremental cache of this one. Neither may be materialized: the
+#: provider would then resume from a cache built over content this build never
+#: saw, and the adapter would collect tracked repository bytes as if the
+#: provider had just produced them, binding stale contents to a fresh commit.
+#: Matched at any depth and case-folded, for the same reasons ``.git`` is.
+_PROVIDER_STATE_DIRECTORIES = (".graphify", ".graph")
+_PROVIDER_STATE_ROOTS = frozenset(name.casefold() for name in _PROVIDER_STATE_DIRECTORIES)
+
 _OBJECT_NAME = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 _GENERATION = re.compile(r"[0-9a-f]{32}\Z")
 _VERSION = re.compile(r"[0-9][0-9A-Za-z.+!-]{0,63}\Z")
@@ -428,12 +439,22 @@ def resolve_revision(repository: Path, revision: str = "HEAD") -> tuple[str, str
     return commit, tree
 
 
+def _is_provider_state(path: str) -> bool:
+    """Is this tracked path part of a committed provider index state?"""
+    return any(segment.casefold() in _PROVIDER_STATE_ROOTS for segment in path.split("/"))
+
+
 def read_tracked_census(repository: Path, commit: str) -> TrackedCensus:
     """List the tracked regular files of one commit, with their blob sizes.
 
     Reads the commit's tree, never the working tree or the index, so an
     uncommitted edit, an untracked scratch file, and an ignored secret are all
     invisible here by construction rather than by filtering.
+
+    Committed provider state is recorded as skipped rather than carried: it is
+    excluded from the census, so it is excluded from the census digest too, and
+    a build over a repository that tracks a ``.graphify`` directory binds a
+    census that says so instead of quietly indexing somebody else's graph.
     """
     refuse_lazy_object_fetch(repository)
     listing = _git(
@@ -457,6 +478,9 @@ def read_tracked_census(repository: Path, commit: str) -> TrackedCensus:
         mode, kind, blob, raw_size = fields
         if mode in _SKIPPED_MODES:
             skipped.append((path, _SKIPPED_MODES[mode]))
+            continue
+        if _is_provider_state(path):
+            skipped.append((path, "provider state"))
             continue
         if mode not in _REGULAR_MODES or kind != "blob":
             skipped.append((path, "unsupported"))
@@ -493,6 +517,10 @@ def _safe_relative(path: str) -> Path:
         # is as private as the top-level one. Case-folded because APFS and NTFS
         # name the same directory ``.GIT``.
         or any(segment.casefold() == ".git" for segment in path.split("/"))
+        # Provider state is skipped by the census, so a census that still
+        # carries it was not built by ``read_tracked_census``. Refuse rather
+        # than seed the directory the provider is about to write into.
+        or _is_provider_state(path)
     ):
         raise ContextError("tracked path must stay inside the materialized checkout")
     return Path(*path.split("/"))
@@ -631,11 +659,6 @@ def _resolved_executable(executable: str) -> str:
 #: collects an artifact afterwards rather than naming one up front.
 _PROVIDER_EXTRACT = "extract"
 
-#: Where that state lands. Both names appear in the evaluation's excluded-roots
-#: list; the adapter accepts whichever the installed release writes and refuses
-#: a build that produced neither.
-_PROVIDER_STATE_DIRECTORIES = (".graphify", ".graph")
-
 #: The provider's own record of what it processed. Completeness is read from
 #: here, never inferred from an exit status: the clean-room run recorded 54
 #: manifest entries requeued by a repeat that exited zero in 1.63 s.
@@ -649,8 +672,45 @@ _INCOMPLETE_COUNTERS = ("requeued", "pending", "failed", "errors", "incomplete")
 #: Where the provider reports how many files it actually indexed.
 _INDEXED_COUNTERS = ("indexed_files", "code_files", "files", "entries")
 
+#: An affirmative claim that the run finished, in either shape a report can
+#: carry one. Nothing else counts: an empty object, or one whose schema this
+#: adapter does not recognize, says nothing about completion and is therefore
+#: not evidence of it.
+_COMPLETION_FLAGS = ("complete", "completed", "finished")
+#: Narrow on purpose: a field that names the run's state, not one that might
+#: carry a path or a message, so an unrecognized value here is a real
+#: non-completion rather than an adapter that read the wrong field.
+_COMPLETION_STATUS_FIELDS = ("status", "state")
+_COMPLETION_STATUS_VALUES = frozenset(
+    {"complete", "completed", "success", "succeeded", "ok", "finished", "done"}
+)
+
+
+def _refuse_pre_existing_provider_state(source_root: Path) -> None:
+    """Refuse to extract on top of index state this build did not produce.
+
+    The census excludes committed provider state, so in a build from this
+    module nothing is here. This is the second check rather than the only one:
+    the source root is an argument, and the whole point of resolving the state
+    directory afterwards is to treat what is found as freshly produced output.
+    A directory that predates the run would let the provider resume from a
+    cache of content it was never shown, and would be collected as if it were
+    this commit's graph.
+    """
+    for name in _PROVIDER_STATE_DIRECTORIES:
+        if (source_root / name).exists() or (source_root / name).is_symlink():
+            raise ContextError(
+                "local graph build refuses to extract over pre-existing provider state; "
+                "no generation was published"
+            )
+
 
 def _provider_state_directory(source_root: Path) -> Path:
+    """The state directory the provider wrote during this run.
+
+    Only reachable after ``_refuse_pre_existing_provider_state``, so whichever
+    of the two names is present was created by the run that just finished.
+    """
     for name in _PROVIDER_STATE_DIRECTORIES:
         candidate = source_root / name
         if candidate.is_dir() and not candidate.is_symlink():
@@ -659,28 +719,76 @@ def _provider_state_directory(source_root: Path) -> Path:
 
 
 def _provider_report(state_directory: Path) -> Mapping[str, Any] | None:
-    """The provider's completion evidence, or ``None`` if it left none."""
+    """The provider's completion evidence, or ``None`` if it left none.
+
+    Bounded at the stream, not after the fact: the report is provider output of
+    unknown size, and reading it whole to slice it afterwards would let it
+    exhaust this process before any budget was consulted. Anything longer than
+    a manifest is rejected outright rather than parsed from a prefix, which
+    would be a different document than the one the provider wrote.
+    """
     for name in _PROVIDER_REPORT_NAMES:
         path = state_directory / name
         if not path.is_file() or path.is_symlink():
             continue
         try:
-            payload = json.loads(path.read_bytes()[: MAX_MANIFEST_BYTES + 1])
-        except (OSError, ValueError):
+            with path.open("rb") as stream:
+                raw = stream.read(MAX_MANIFEST_BYTES + 1)
+        except OSError:
+            return None
+        if len(raw) > MAX_MANIFEST_BYTES:
+            return None
+        try:
+            payload = json.loads(raw)
+        except ValueError:
             return None
         return payload if isinstance(payload, Mapping) else None
+    return None
+
+
+def _completion_claim(report: Mapping[str, Any]) -> bool | None:
+    """``True`` finished, ``False`` denied it, ``None`` said nothing either way."""
+    claim: bool | None = None
+    for name in _COMPLETION_FLAGS:
+        value = report.get(name)
+        if value is True:
+            claim = True
+        elif value is False:
+            return False
+    for field in _COMPLETION_STATUS_FIELDS:
+        value = report.get(field)
+        if not isinstance(value, str):
+            continue
+        if value.strip().casefold() in _COMPLETION_STATUS_VALUES:
+            claim = True
+        else:
+            # A status the adapter does not recognize is not a completion.
+            return False
+    return claim
+
+
+def _indexed_count(report: Mapping[str, Any]) -> int | None:
+    """How many files the provider says it indexed, if it says at all."""
+    for counter in _INDEXED_COUNTERS:
+        value = report.get(counter)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
     return None
 
 
 def _read_completeness(report: Mapping[str, Any] | None) -> IndexResult:
     """Classify a provider run from its own report, defaulting to partial.
 
-    Absent or unreadable evidence is *not* evidence of a complete build. The
-    provider owns no provenance (the evaluation records this as the first
-    product constraint), so a build that cannot read a completion claim
-    publishes a generation marked ``partial``, which ``graph_status`` refuses
-    by default. That is the failure an operator can act on; silently calling
-    it complete is the one they cannot.
+    Absent or unreadable evidence is *not* evidence of a complete build, and
+    neither is a readable report that says nothing. ``complete`` is reached
+    only by a report shaped the way this adapter understands one: an
+    affirmative completion claim, a count of what was indexed, and no counter
+    admitting work left over. An empty object, an unrecognized schema, and a
+    document that happens to parse all stay ``partial``, which
+    ``graph_status`` refuses by default. The provider owns no provenance (the
+    evaluation records this as the first product constraint), so that refusal
+    is the failure an operator can act on; silently calling it complete is the
+    one they cannot.
     """
     if report is None:
         return IndexResult(completeness=PARTIAL, notes=("provider left no readable completion report",))
@@ -691,16 +799,16 @@ def _read_completeness(report: Mapping[str, Any] | None) -> IndexResult:
             notes.append(f"provider reported {counter}")
         elif isinstance(value, int) and not isinstance(value, bool) and value > 0:
             notes.append(f"provider reported {value} {counter}")
-    if report.get("complete") is False:
-        notes.append("provider reported the extraction as incomplete")
-    indexed = 0
-    for counter in _INDEXED_COUNTERS:
-        value = report.get(counter)
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            indexed = value
-            break
+    claim = _completion_claim(report)
+    if claim is False:
+        notes.append("provider did not report the extraction as complete")
+    elif claim is None:
+        notes.append("provider report carried no completion claim")
+    indexed = _indexed_count(report)
+    if indexed is None:
+        notes.append("provider report did not say how many files it indexed")
     if notes:
-        return IndexResult(completeness=PARTIAL, indexed_files=indexed, notes=tuple(notes))
+        return IndexResult(completeness=PARTIAL, indexed_files=indexed or 0, notes=tuple(notes))
     return IndexResult(completeness=COMPLETE, indexed_files=indexed)
 
 
@@ -758,6 +866,7 @@ def subprocess_indexer(executable: str) -> Callable[[IndexRequest], IndexResult]
         )
 
     def run(request: IndexRequest) -> IndexResult:
+        _refuse_pre_existing_provider_state(request.source_root)
         try:
             completed = subprocess.run(
                 [*sandbox, command, _PROVIDER_EXTRACT, *request.pin.options],
@@ -1270,10 +1379,13 @@ def build_graph(
                 raise ContextError("local graph provider returned an unsupported result")
             if not output_path.is_file():
                 raise ContextError("local graph provider produced no artifact")
-            size = output_path.stat().st_size
-            if size > MAX_ARTIFACT_BYTES:
+            # Read to the budget and one byte past it, rather than trusting a
+            # size taken before the read: the artifact is provider output, and
+            # the budget has to bound what this process allocates for it.
+            with output_path.open("rb") as stream:
+                artifact = stream.read(MAX_ARTIFACT_BYTES + 1)
+            if len(artifact) > MAX_ARTIFACT_BYTES:
                 raise ContextError("local graph artifact exceeds its budget; no generation was published")
-            artifact = output_path.read_bytes()
             manifest = BuildManifest(
                 generation=uuid.uuid4().hex,
                 schema=MANIFEST_SCHEMA,
