@@ -252,6 +252,7 @@ shipped in v1.3.1. The current priorities and boundaries are recorded in
 - [Orchestrator Prompt Pack](docs/orchestrator-prompt-pack.md)
 - [Provider Matrix](docs/provider-matrix.md)
 - [Provider Calibration Scorecard](docs/provider-calibration-scorecard.md)
+- [Devin Peer-Support Qualification](docs/devin-peer-support-qualification.md)
 - [Lane Standing Instructions](docs/lanes/README.md)
 - [Codex Lane](docs/lanes/codex.md)
 - [Claude Lane](docs/lanes/claude.md)
