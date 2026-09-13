@@ -525,7 +525,7 @@ def _pip_download_candidate_command(
     dest_dir: Path,
     pip_no_cache: bool = False,
 ) -> list[str]:
-    """Download the exact candidate artifact with ``index_url`` as the *only* index.
+    """Download the exact candidate wheel with ``index_url`` as the *only* index.
 
     No ``--extra-index-url`` or ``--find-links`` flag is ever added here, empty
     or otherwise: pip does not prioritize ``--index-url`` over
@@ -534,8 +534,23 @@ def _pip_download_candidate_command(
     index -- and ``--no-deps``, since dependencies are not part of this release
     candidate -- is what makes the proof possible: nothing but ``index_url`` can
     satisfy this command.
+
+    The download is wheel-only (``--only-binary :all:``): an sdist would make
+    pip prepare PEP 517 metadata and fetch the declared build backend from the
+    same single index, which TestPyPI does not carry, so a candidate index
+    without a wheel fails clearly instead of failing on a missing build
+    requirement. The sdist is verified separately by the release runbook.
     """
-    command = [str(venv_python), "-m", "pip", "--isolated", "download", "--no-deps"]
+    command = [
+        str(venv_python),
+        "-m",
+        "pip",
+        "--isolated",
+        "download",
+        "--no-deps",
+        "--only-binary",
+        ":all:",
+    ]
     if pip_no_cache:
         command.append("--no-cache-dir")
     command.extend(["--index-url", index_url, "--dest", str(dest_dir)])

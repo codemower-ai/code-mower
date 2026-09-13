@@ -605,9 +605,13 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("- package_source: testpypi", prompt)
         self.assertIn("https://test.pypi.org/simple/", prompt)
         self.assertIn("https://pypi.org/simple/", prompt)
-        self.assertIn("download --no-deps --no-cache-dir", prompt)
-        self.assertIn("exactly one wheel or source archive", prompt)
-        self.assertIn("candidate/<verified-artifact>", prompt)
+        self.assertIn("download --no-deps --only-binary :all: --no-cache-dir", prompt)
+        self.assertIn("Runtime qualification is wheel-only", prompt)
+        self.assertIn("never drop `--only-binary :all:`", prompt)
+        self.assertIn("exactly one wheel (`.whl`)", prompt)
+        self.assertNotIn("or source archive", prompt)
+        self.assertIn("candidate/<verified-wheel>", prompt)
+        self.assertNotIn("candidate/<verified-artifact>", prompt)
         self.assertNotIn("--extra-index-url \"https://pypi.org/simple/\"", prompt)
 
     def test_prompt_names_canonical_testpypi_index_for_upgrade_context(self) -> None:
@@ -2056,7 +2060,10 @@ class ClaudeMacosCertificatePathTests(unittest.TestCase):
         self.assertNotIn(".venv/bin/python -m pip install", upgrade)
 
         testpypi = self._prompt("claude", "Darwin", package_source="testpypi")
-        self.assertIn(f"--isolated {legacy} download --no-deps --no-cache-dir", testpypi)
+        self.assertIn(
+            f"--isolated {legacy} download --no-deps --only-binary :all: --no-cache-dir",
+            testpypi,
+        )
         self.assertIn(f"--isolated {legacy} install", testpypi)
         # The TestPyPI index contract is unchanged by the certificate path.
         self.assertIn("https://test.pypi.org/simple/", testpypi)

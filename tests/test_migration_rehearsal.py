@@ -5,9 +5,9 @@ Pip does not prioritize --index-url over --extra-index-url, so a single
 combined install command cannot prove a candidate came exclusively from one
 index -- an identical version on the other configured index could silently
 satisfy it. These tests cover the command sequence that instead (1)
-downloads the candidate with a single index and --no-deps, verifies exactly
-one matching artifact came back, then (2) installs that local artifact with
-dependencies resolved from a separate index.
+downloads the candidate wheel with a single index, --no-deps, and
+--only-binary :all:, verifies exactly one matching wheel came back, then (2)
+installs that local wheel with dependencies resolved from a separate index.
 """
 
 from __future__ import annotations
@@ -45,6 +45,8 @@ class CandidateCommandBuilderTests(unittest.TestCase):
                 "--isolated",
                 "download",
                 "--no-deps",
+                "--only-binary",
+                ":all:",
                 "--index-url",
                 "https://test.pypi.org/simple/",
                 "--dest",
@@ -54,6 +56,23 @@ class CandidateCommandBuilderTests(unittest.TestCase):
         )
         self.assertNotIn("--extra-index-url", command)
         self.assertNotIn("--find-links", command)
+
+    def test_download_command_is_wheel_only(self) -> None:
+        command = migration_install._pip_download_candidate_command(
+            Path("/venv/bin/python"),
+            "code-mower==1.0.0",
+            index_url="https://test.pypi.org/simple/",
+            dest_dir=Path("/tmp/candidate"),
+            pip_no_cache=True,
+        )
+        only_binary = command.index("--only-binary")
+        self.assertEqual(command[only_binary + 1], ":all:")
+        self.assertNotIn("--no-binary", command)
+        self.assertNotIn("--no-build-isolation", command)
+        self.assertNotIn("--check-build-dependencies", command)
+        self.assertLess(command.index("--no-deps"), only_binary)
+        self.assertLess(only_binary, command.index("--no-cache-dir"))
+        self.assertLess(only_binary, command.index("--index-url"))
 
     def test_candidate_environment_ignores_ambient_pip_indexes(self) -> None:
         with mock.patch.dict(
@@ -315,6 +334,8 @@ class TwoStageCandidateInstallTests(unittest.TestCase):
         self.assertIn("https://test.pypi.org/simple/", download_command)
         self.assertNotIn("--extra-index-url", download_command)
         self.assertIn("--no-deps", download_command)
+        only_binary = download_command.index("--only-binary")
+        self.assertEqual(download_command[only_binary + 1], ":all:")
 
         self.assertIn("install", install_command)
         self.assertIn("--index-url", install_command)
@@ -339,6 +360,32 @@ class TwoStageCandidateInstallTests(unittest.TestCase):
                     work_dir=Path(tmp),
                 )
         self.assertIn("exactly one candidate artifact", str(ctx.exception))
+
+    def test_fails_closed_on_sdist_artifact(self) -> None:
+        steps: list[dict] = []
+        fake = _fake_run_rehearsal_step_factory(artifacts=["code_mower-1.0.0.tar.gz"])
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(
+                migration_install, "_run_rehearsal_step", side_effect=fake
+            ):
+                with self.assertRaises(migration_rehearsal.RehearsalError) as ctx:
+                    migration_rehearsal._run_two_stage_candidate_install(
+                        venv_python=Path("/venv/bin/python"),
+                        package_spec="code-mower==1.0.0",
+                        candidate_index_url="https://test.pypi.org/simple/",
+                        dependency_index_url="https://pypi.org/simple/",
+                        candidate_dir=Path(tmp) / "testpypi-candidate",
+                        work_dir=Path(tmp),
+                        steps=steps,
+                        timeout=60,
+                        attempts=1,
+                        retry_delay_seconds=0,
+                        pip_no_cache=False,
+                    )
+        self.assertIn("is not a wheel", str(ctx.exception))
+        self.assertIn("--only-binary :all:", str(ctx.exception))
+        self.assertEqual(len(steps), 1)
+        self.assertIn("download", steps[0]["command"])
 
     def test_fails_closed_on_malformed_artifact_filename(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -50,14 +50,22 @@ It never accepts an arbitrary index URL. Pip does not prioritize
 the canonical TestPyPI simple index and production PyPI cannot prove which
 one actually supplied the candidate, since an identical version already on
 production PyPI could silently satisfy it instead. `testpypi` therefore runs
-a closed two-stage install: it first downloads the exact candidate artifact
+a closed two-stage install: it first downloads the exact candidate wheel
 with the canonical TestPyPI simple index (`https://test.pypi.org/simple/`)
-as the *only* configured index and `--no-deps`, verifies exactly one
-artifact came back and that its filename names the requested package
-identity and version -- failing closed on zero, multiple, malformed, or
-mismatched artifacts -- and only then installs that verified local artifact
-file, resolving its dependencies (which are not part of this release
-candidate) from production PyPI (`https://pypi.org/simple/`). Both steps run
+as the *only* configured index, `--no-deps`, and `--only-binary :all:`,
+verifies exactly one wheel came back and that its filename names the
+requested package identity and version -- failing closed on zero, multiple,
+malformed, non-wheel, or mismatched artifacts -- and only then installs that
+verified local wheel file, resolving its dependencies (which are not part of
+this release candidate) from production PyPI (`https://pypi.org/simple/`).
+Runtime qualification is wheel-only because even a `--no-deps` sdist download
+makes pip prepare PEP 517 metadata and fetch the declared `setuptools>=77`
+build backend from the only configured index, which TestPyPI does not carry;
+the sdist is verified separately by the release runbook
+([docs/pypi-release.md](pypi-release.md)), which installs the build backend
+from canonical PyPI first and then downloads the sdist from TestPyPI alone
+with `--no-binary :all:`, `--no-build-isolation`, and
+`--check-build-dependencies`. Both steps run
 pip in isolated mode with ambient pip index variables and configuration
 disabled, so a workstation's extra indexes cannot widen either source. Omit the flag,
 or pass `--package-source pypi` explicitly, for the production-PyPI default,
@@ -227,14 +235,17 @@ arbitrary index URL or credential. It is bound into the campaign the same way
   source;
 - local adapters receive it (as `{package_source}`) and construct the same
   source-exclusive two-stage install the qualification command runs: download
-  the exact candidate artifact from the canonical TestPyPI simple index
+  the exact candidate wheel from the canonical TestPyPI simple index
   (`https://test.pypi.org/simple/`) as the only configured index with
-  `--no-deps`, verify its package identity and version, then install that
-  verified local artifact file while resolving its dependencies from
+  `--no-deps --only-binary :all:` (never a source archive), verify that
+  exactly one wheel with the requested package identity and version came
+  back, then install that verified local wheel file while resolving its
+  dependencies from
   production PyPI (`https://pypi.org/simple/`); the indexes are never
   combined in one command;
 - a hosted dispatch comment states the source (and, for `testpypi`, the
-  candidate index, the dependency index, and that two-stage requirement) in
+  candidate index, the dependency index, and that wheel-only two-stage
+  requirement) in
   its machine-readable marker and human-facing instructions, so a remote
   provider never has to guess where to install from; a reply's own declared
   source must match, or it is ignored like any other unbound comment;
