@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import tempfile
 from pathlib import Path
@@ -125,6 +126,17 @@ def _materialized_package_versions(repo_path: Path) -> dict[str, Any]:
         }
 
 
+def _committed_manifest_version(repo_path: Path) -> str:
+    text = _read_text_if_exists(repo_path / "code-mower-package-manifest.json")
+    try:
+        manifest = json.loads(text) if text.strip() else {}
+    except json.JSONDecodeError:
+        return ""
+    package = manifest.get("package") if isinstance(manifest, dict) else None
+    version = package.get("version") if isinstance(package, dict) else None
+    return version if isinstance(version, str) else ""
+
+
 def _release_tag_for_version(version: str) -> str:
     return code_mower_versioning.release_tag_for_version(version)
 
@@ -215,6 +227,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     }
     init_version = _python_package_version(repo_path)
     pyproject_version = _pyproject_version(repo_path)
+    manifest_version = _committed_manifest_version(repo_path)
     version = init_version or pyproject_version
     materialized_versions = _materialized_package_versions(repo_path)
     release_tag = _release_tag_for_version(version) if version else ""
@@ -314,6 +327,29 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                     "pyproject_version"
                 ],
                 "error": materialized_versions["error"],
+            },
+        ),
+        _release_check(
+            check_id="committed-package-manifest-version",
+            title="Committed package manifest version agrees with source",
+            status=(
+                "pass"
+                if (
+                    manifest_version
+                    and manifest_version == init_version
+                    and manifest_version == pyproject_version
+                )
+                else "fail"
+            ),
+            evidence=(
+                f"code-mower-package-manifest.json={manifest_version or 'missing'}, "
+                f"src/code_mower/__init__.py={init_version or 'missing'}, "
+                f"pyproject.toml={pyproject_version or 'missing'}"
+            ),
+            detail={
+                "manifest_version": manifest_version,
+                "init_version": init_version,
+                "pyproject_version": pyproject_version,
             },
         ),
         _release_check(

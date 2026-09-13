@@ -346,6 +346,58 @@ class DeliveryTests(WorkOrderCase):
         self.assertEqual(result["verified_pr"]["head_sha"], HEAD)
         self.assertNotIn("completion", result)
 
+    def assert_rejected_projection(self, response, reason):
+        self.assertEqual(response["session"]["state"], "running")
+        self.assertEqual(response["session"]["reason"], "result_not_ready")
+        self.assertEqual(response["session"]["next_action"], "status")
+        self.assertEqual(response["completion"], {
+            "state": "rejected", "reason": reason,
+            "next_action": "collect_after_provider_update",
+        })
+        with self.remote.store.locked(_key(self.key)) as locked:
+            self.assertEqual(locked.read()["state"], "complete")
+
+    def test_rejected_completion_is_projected_as_running_work(self):
+        self.run_order("dispatch")
+        self.run_order("clarify", request="clarification", prose=CANARY)
+        self.complete(round=0)
+        with self.assertRaisesRegex(RemoteError, "^stale_completion"):
+            self.run_order("collect")
+        self.assert_rejected_projection(self.run_order("status"), "stale_completion")
+        with self.assertRaisesRegex(RemoteError, "^stale_completion"):
+            self.run_order("collect")
+        self.assert_rejected_projection(self.run_order("status"), "stale_completion")
+
+        replacement_head = "b" * 40
+        self.github.pr = replace(self.github.pr, head_sha=replacement_head)
+        self.complete(round=1, head_sha=replacement_head)
+        verified = self.run_order("collect")
+        self.assertEqual(verified["verified_pr"]["head_sha"], replacement_head)
+        self.assertNotIn("completion", verified)
+        self.assertEqual(verified["session"]["state"], "complete")
+        self.assertEqual(self.run_order("status")["session"]["state"], "complete")
+
+    def test_malformed_and_pr_binding_rejections_are_projected_as_running_work(self):
+        self.run_order("dispatch")
+        self.provider.set_state(self.binding(), "complete", result={"raw": CANARY})
+        with self.assertRaisesRegex(RemoteError, "^invalid_completion$"):
+            self.run_order("collect")
+        self.assert_rejected_projection(self.run_order("status"), "invalid_completion")
+        self.assertNotIn(CANARY, json.dumps(self.run_order("status")))
+
+        self.complete()
+        original = self.github.pr
+        self.github.pr = replace(original, head_sha="b" * 40)
+        with self.assertRaisesRegex(RemoteError, "pull_request_binding"):
+            self.run_order("collect")
+        self.assert_rejected_projection(self.run_order("status"), "invalid_completion")
+
+        self.github.pr = original
+        verified = self.run_order("collect")
+        self.assertEqual(verified["verified_pr"]["head_sha"], HEAD)
+        self.assertEqual(verified["session"]["state"], "complete")
+        self.assertNotIn("completion", verified)
+
     def test_transient_github_failures_preserve_the_collected_result(self):
         self.run_order("dispatch")
         self.complete()

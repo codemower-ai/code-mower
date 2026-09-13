@@ -19,7 +19,7 @@ from .context_packets import _handle, load_authorized
 from .context_store import ContextStore
 from .devin_sessions import REPO, DevinClient
 from .provider_capabilities import resolve_transport
-from .remote_session import DevinProvider, RemoteError, RemoteSessions
+from .remote_session import DevinProvider, RemoteError, RemoteSessions, public_projection
 from .work_orders import WORK_ORDER_SCHEMA
 
 COMPLETION_SCHEMA = "code_mower.builderCompletion.v1"
@@ -367,6 +367,22 @@ class DevinWorkOrders:
                 "pr_number": claim["pr_number"], "head_sha": claim["head_sha"],
                 "author_id": order.author_id}
 
+    @staticmethod
+    def _session(result, record):
+        """Project a rejected completion as unfinished work, never as a finished session.
+
+        The durable remote record and its result precedence are unchanged: a
+        current-round structured result may still arrive while the raw provider
+        reports running. Only the returned logical projection is copied, so a
+        persisted completion rejection cannot present a ``complete`` session
+        that stops an orchestrator from polling an active round. The
+        authoritative rejection block stays the exact-round verdict.
+        """
+        if record.get("completion_rejection") is None or result.get("state") != "complete":
+            return result
+        return public_projection({**result, "state": "running",
+                                  "reason": "result_not_ready", "next_action": "status"})
+
     def run(self, command: str, order: WorkOrder, *, apply: bool = False,
             request: str = "", prose: str = "", reviewed_head: str = "",
             acknowledge_delivered: bool = False,
@@ -523,7 +539,7 @@ class DevinWorkOrders:
             # Evidence is returned only on freshly verified collect, never status/dispatch.
             response = {"schema": EVIDENCE_SCHEMA, "builder": self.transport.product,
                         "transport": "fake" if self.remote.provider.name == "fake" else self.transport.transport,
-                        "session": result, "round": record["round"],
+                        "session": self._session(result, record), "round": record["round"],
                         "acu_limit": order.acu_limit, "observed_acu": record["observed_acu"],
                         "verified_pr": record["evidence"] if command == "collect" else None,
                         "context": {"policy": order.context_policy,

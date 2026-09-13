@@ -111,7 +111,7 @@ can have one writer. These are different controls: the session lease prevents
 two orchestrators from coordinating the same working copy, while the branch
 rule prevents a reviewer or second builder from changing the owner's branch.
 
-Codex, Claude Code, and Cursor are qualified session hosts in v1.3.1. Other host
+Codex, Claude Code, and Cursor are qualified session hosts in v1.4.0. Other host
 identities can receive the same brief and telemetry shape, but Code Mower does
 not claim execution parity until the relevant transport and recovery behavior
 are qualified. See [Participants And Sessions](sessions.md).

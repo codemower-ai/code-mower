@@ -134,7 +134,7 @@ rules; a synthetic fixture or structurally valid JSON is not authorization.
 
 ## Implemented commands
 
-The qualified connection and delivery path is available in v1.3.1. See the
+The qualified connection and delivery path is available in v1.4.0. See the
 [setup guide](context-setup.md) for installation and explicit account selection:
 
 ```text
@@ -203,7 +203,7 @@ is **adopted as an optional, bounded local provider** behind this contract; see
 the [evaluation record](graphify-evaluation.md) for the decision, the pinned
 package record, and the conditions an implementing change must meet. Nothing is
 installed or required yet. Synthetic graph fixtures prove only the extension
-point; they do not establish Graphify compatibility or make it a v1.3.1
+point; they do not establish Graphify compatibility or make it a v1.4.0
 dependency.
 
 The lifecycle around such a provider — exact pin, immutable tracked-file

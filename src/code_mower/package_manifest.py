@@ -590,6 +590,7 @@ PACKAGE_FILES = (
         "docs/v131-guided-context-qualification.md",
         "doc",
     ),
+    ("docs/v140-release-notes.md", "docs/v140-release-notes.md", "doc"),
     ("docs/context-packet-schema.md", "docs/context-packet-schema.md", "doc"),
     ("docs/context-delivery.md", "docs/context-delivery.md", "doc"),
     ("tools/CODE_MOWER_CLOUD_BENCHMARKING.md", "docs/cloud-benchmarking.md", "doc"),
