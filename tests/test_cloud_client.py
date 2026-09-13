@@ -4,11 +4,10 @@ import hashlib
 import json
 import subprocess
 import tempfile
+import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-
-import pytest
 
 import code_mower.cloud_client.operations as cloud_operations
 from code_mower.cloud_client import (
@@ -41,6 +40,10 @@ from code_mower.cloud_client import (
     validate_cloud_event,
 )
 from code_mower import cloud as cloud_cli
+
+# The package lane loads this module with plain unittest, which has no pytest
+# available, so exception expectations come from unittest itself.
+assert_raises = unittest.TestCase().assertRaises
 
 
 def _board_snapshot_fixture() -> dict[str, object]:
@@ -756,13 +759,13 @@ def test_manifest_identity_rejects_malformed_and_repeated_event_rows() -> None:
     base = {"schema": "code_mower.cloudBundle.v1", "events": []}
     row = {"event_id": "evt-1", "event_type": "board_snapshot"}
 
-    with pytest.raises(CloudBundleError):
+    with assert_raises(CloudBundleError):
         bundle_manifest_identity({**base, "events": {}}, b"{}")
-    with pytest.raises(CloudBundleError):
+    with assert_raises(CloudBundleError):
         bundle_manifest_identity({**base, "events": [row, "board_snapshot"]}, b"{}")
-    with pytest.raises(CloudBundleError):
+    with assert_raises(CloudBundleError):
         bundle_manifest_identity({**base, "events": [row, dict(row)]}, b"{}")
-    with pytest.raises(CloudBundleError):
+    with assert_raises(CloudBundleError):
         bundle_manifest_identity(
             {**base, "events": [{"event_id": "", "event_type": "board_snapshot"}]},
             b"{}",
@@ -797,7 +800,7 @@ def test_board_snapshot_records_and_enforces_source_git_provenance(monkeypatch, 
         "dirty_entry_count": 0,
     }
 
-    with pytest.raises(CloudBundleError):
+    with assert_raises(CloudBundleError):
         _board_snapshot_dry_run(
             monkeypatch,
             repo_path,
@@ -807,7 +810,7 @@ def test_board_snapshot_records_and_enforces_source_git_provenance(monkeypatch, 
         )
 
     (repo_path / "tracked.txt").write_text("two\n", encoding="utf-8")
-    with pytest.raises(CloudBundleError):
+    with assert_raises(CloudBundleError):
         _board_snapshot_dry_run(
             monkeypatch,
             repo_path,
@@ -818,7 +821,7 @@ def test_board_snapshot_records_and_enforces_source_git_provenance(monkeypatch, 
     subprocess.run(["git", "checkout", "--", "tracked.txt"], cwd=repo_path, check=True)
 
     (repo_path / "untracked.txt").write_text("new\n", encoding="utf-8")
-    with pytest.raises(CloudBundleError):
+    with assert_raises(CloudBundleError):
         _board_snapshot_dry_run(
             monkeypatch,
             repo_path,
@@ -839,7 +842,7 @@ def test_board_snapshot_rejects_a_checkout_that_moves_during_collection(monkeypa
         subprocess.run(["git", "commit", "--quiet", "-m", "second"], cwd=repo_path, check=True)
         return _board_snapshot_fixture()
 
-    with pytest.raises(CloudBundleError):
+    with assert_raises(CloudBundleError):
         _board_snapshot_dry_run(
             monkeypatch,
             repo_path,
