@@ -2274,9 +2274,10 @@ def _dispatch_github_comment(
     package_source_line = (
         f"- **Package Source:** `{package_source}` (candidate index: `{TESTPYPI_INDEX_URL}`, "
         f"dependency index: `{PRODUCTION_PYPI_INDEX_URL}`). Download the candidate with "
-        f"`--no-deps` from TestPyPI, verify its exact package identity and version, then install "
-        f"the verified local artifact with dependencies from production PyPI. Never combine "
-        f"the indexes with `--extra-index-url`.\n"
+        f"`--no-deps --only-binary :all:` from TestPyPI (runtime qualification is wheel-only; "
+        f"never build from a source archive), verify its exact package identity and version, "
+        f"then install the verified local wheel with dependencies from production PyPI. Never "
+        f"combine the indexes with `--extra-index-url`.\n"
         if package_source == "testpypi"
         else f"- **Package Source:** `{package_source}`\n"
     )

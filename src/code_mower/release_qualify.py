@@ -274,9 +274,10 @@ def _package_source_candidate_index_args(package_source: str) -> tuple[str, str]
     supplied the candidate, since an identical version on either index could
     silently satisfy it. The closed two-stage install in
     ``run_package_install_rehearsal`` instead uses ``candidate_index_url`` as
-    the *only* index for a ``--no-deps`` download, verifies the downloaded
-    artifact's identity and version, then installs that verified local
-    artifact with dependencies resolved from ``dependency_index_url``.
+    the *only* index for a wheel-only (``--only-binary :all:``) ``--no-deps``
+    download, verifies the downloaded wheel's identity and version, then
+    installs that verified local wheel with dependencies resolved from
+    ``dependency_index_url``.
     ``pypi`` (the default) returns two empty strings: the ordinary
     single-stage install applies unchanged, with no index override at all.
     """
@@ -1030,8 +1031,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_PACKAGE_SOURCE,
         help=(
             "Closed package-index source: pypi (default) or testpypi. testpypi "
-            "installs from the canonical TestPyPI simple index, with production "
-            "PyPI as a dependency-only extra index."
+            "downloads the candidate wheel only (--only-binary :all:, --no-deps) "
+            "from the canonical TestPyPI simple index as the sole index, then "
+            "installs that verified local wheel with dependencies from production "
+            "PyPI; the indexes are never combined."
         ),
     )
     qualify.add_argument("--json", action="store_true")

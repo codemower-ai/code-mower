@@ -447,9 +447,11 @@ def build_qualification_prompt(
     tokens, or local checkout paths: the agent works in a fresh disposable
     directory it creates itself. ``package_source`` is the closed vocabulary
     (``pypi``/``testpypi``); when it is ``testpypi`` the prompt keeps candidate
-    retrieval exclusive to TestPyPI and dependency resolution exclusive to
-    production PyPI. ``platform_system`` defaults to the running host and
-    exists so the macOS-only Claude certificate path is testable off macOS.
+    retrieval exclusive to TestPyPI, wheel-only (``--only-binary :all:``, so no
+    sdist build backend is ever resolved from the candidate index), and
+    dependency resolution exclusive to production PyPI. ``platform_system``
+    defaults to the running host and exists so the macOS-only Claude
+    certificate path is testable off macOS.
     """
     python_cmd = shlex.quote(python_bin or "python3")
     legacy_certs = claude_macos_certificate_path_required(
@@ -477,15 +479,16 @@ def build_qualification_prompt(
         steps.extend(
             [
                 f"{step_number}. Create an empty `candidate` directory, then download the "
-                f"candidate only with `{pip} download --no-deps --no-cache-dir "
-                f'--index-url "{TESTPYPI_INDEX_URL}" --dest candidate '
-                f'"{package_spec}"`.',
+                f"candidate only with `{pip} download --no-deps --only-binary :all: "
+                f'--no-cache-dir --index-url "{TESTPYPI_INDEX_URL}" --dest candidate '
+                f'"{package_spec}"`. Runtime qualification is wheel-only: never drop '
+                "`--only-binary :all:` or build from a source archive.",
                 f"{step_number + 1}. Before installing, fail closed unless `candidate` contains "
-                "exactly one wheel or source archive and its normalized distribution name and "
+                "exactly one wheel (`.whl`) and its normalized distribution name and "
                 f"version are exactly `{package_identity}` and `{normalized_version}`.",
                 f"{step_number + 2}. Install that verified local artifact path with `{pip} install "
                 f'--index-url "{PRODUCTION_PYPI_INDEX_URL}" '
-                f"candidate/<verified-artifact>`. "
+                f"candidate/<verified-wheel>`. "
                 "Do not provide a non-empty `--extra-index-url` or install the release spec "
                 "from a combined index.",
             ]

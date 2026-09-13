@@ -310,9 +310,10 @@ def _run_two_stage_candidate_install(
     single install command that names both cannot prove which configured
     index actually supplied the candidate, since either index may hold a
     matching version. This closed two-stage flow instead (1) downloads the
-    exact candidate artifact with ``candidate_index_url`` as the *only*
-    configured index and ``--no-deps`` -- nothing but that index can satisfy
-    this command -- verifies exactly one artifact was downloaded and that its
+    exact candidate wheel with ``candidate_index_url`` as the *only*
+    configured index, ``--no-deps``, and ``--only-binary :all:`` -- nothing
+    but that index can satisfy this command, and no sdist build backend is
+    ever resolved -- verifies exactly one wheel was downloaded and that its
     filename names the requested package identity and version, then (2)
     installs that verified local artifact file directly (not by name/version,
     so its identity is no longer subject to any index resolution), letting
@@ -356,6 +357,12 @@ def _run_two_stage_candidate_install(
         artifact_identity, artifact_version = _parse_downloaded_artifact_identity(artifact.name)
     except ValueError as exc:
         raise RehearsalError(str(exc), steps) from exc
+    if artifact.suffix != ".whl":
+        raise RehearsalError(
+            f"candidate artifact {artifact.name!r} from {candidate_index_url} is not a "
+            "wheel; runtime qualification is wheel-only (--only-binary :all:)",
+            steps,
+        )
     if artifact_identity != expected_identity or not _release_versions_agree(
         artifact_version, expected_version
     ):
