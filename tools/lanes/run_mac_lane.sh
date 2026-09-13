@@ -520,7 +520,15 @@ if [ "$kind" = "pr" ]; then
         --target-branch "$target_pr_branch" \
         "${handoff_source_prefix_args[@]}" \
         --output "$handoff_file" >/dev/null; then
-        echo "${LANE}: refusing ${mode} PR #${num}; explicit handoff did not validate" >&2
+        # A policy-named branch carries no source-lane prefix, so the prefix
+        # ownership proof cannot validate it. Provenance-aware handoff for
+        # such branches is owned by issue #962; until then it stays refused.
+        if [ -n "$repo_branch_pattern" ] && jq -n --arg branch "$target_pr_branch" --arg pattern "$repo_branch_pattern" \
+            '$branch | test("^(?:" + $pattern + ")$")' | grep -qx true; then
+          echo "${LANE}: refusing ${mode} PR #${num}; explicit handoff did not validate for policy-named branch ${target_pr_branch}; recovery handoffs for repository-policy branches are not supported yet (see codemower-ai/code-mower#962)" >&2
+        else
+          echo "${LANE}: refusing ${mode} PR #${num}; explicit handoff did not validate" >&2
+        fi
         exit 1
       fi
       handoff_json="$(cat "$handoff_file")"
@@ -577,7 +585,15 @@ is_valid_ref() {
 }
 resolved_branch=""
 if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
-  issue_title="$(gh issue view "$num" -R "$REPO" --json title -q .title 2>/dev/null || true)"
+  # The slug is part of the branch identity. A failed or empty title lookup
+  # must not degrade into an empty slug: that resolves a different branch than
+  # the one an earlier run opened, misses that PR in snapshot discovery, and
+  # delivers the same issue twice. Abort before the guard or any provider.
+  if ! issue_title="$(gh issue view "$num" -R "$REPO" --json title -q .title 2>/dev/null)" \
+      || [ -z "$issue_title" ]; then
+    echo "${LANE}: refusing issue #${num}; could not read the issue title needed to resolve the ${REPO} policy branch from template ${repo_branch_template}" >&2
+    exit 1
+  fi
   issue_slug="$(printf '%s' "$issue_title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-48 | sed -E 's/-+$//')"
   resolved_branch="$(
     printf '%s\n' "$repo_branch_template" \

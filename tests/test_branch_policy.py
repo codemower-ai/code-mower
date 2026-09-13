@@ -301,11 +301,14 @@ class GeneratedRunnerTests(unittest.TestCase):
         self.assertEqual(embedded, {"owner/repo": expected})
 
     def _run_codex_lane(self, delivered_listing: str, *, template: str = JIRA_TEMPLATE,
-                        repo: str = "owner/repo") -> tuple[subprocess.CompletedProcess, str, dict]:
+                        repo: str = "owner/repo",
+                        title_lookup: str = "printf 'NV: Accessible label\\n'",
+                        ) -> tuple[subprocess.CompletedProcess, str, dict]:
         """Run the generated codex runner against a fake provider that opens a PR.
 
         ``delivered_listing`` is the ``gh pr list`` JSON returned once the provider
         has "delivered"; it is the delivery-snapshot discovery input under test.
+        ``title_lookup`` is the fake ``gh issue view --json title -q .title`` body.
         """
         runner, _text = self._generate(_config_with_policy(template, slug=repo))
         repo_dir = repo.replace("/", "__")
@@ -337,7 +340,7 @@ elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
 elif [ "$cmd" = "repo view" ]; then
   printf 'main\\n'
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json title -q"* ]]; then
-  printf 'NV: Accessible label\\n'
+  __TITLE_LOOKUP__
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json title,body,labels,url,author"* ]]; then
   printf '%s\\n' '{"title":"NV: Accessible label","body":"Body","labels":[{"name":"tier:R"}],"url":"https://github.com/owner/repo/issues/12","author":{"login":"owner"}}'
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json comments"* ]]; then
@@ -348,7 +351,7 @@ else
   printf 'unexpected gh invocation: %s\\n' "$*" >&2
   exit 2
 fi
-""".replace("owner/repo", repo),
+""".replace("owner/repo", repo).replace("__TITLE_LOOKUP__", title_lookup),
                 encoding="utf-8",
             )
             fake_gh.chmod(0o755)
@@ -445,6 +448,26 @@ printf 'fake codex completed\\n'
         self.assertNotIn("fake codex completed", completed.stdout)
         self.assertEqual(prompt, "")
         self.assertEqual(guard, {})
+
+    def test_runner_refuses_to_resolve_a_policy_branch_without_the_issue_title(self) -> None:
+        # The slug is part of the branch identity. A transient title failure
+        # that degraded into an empty slug would resolve fix/12 instead of
+        # fix/12-nv-accessible-label, miss the PR an earlier run opened on the
+        # real name, and deliver the issue twice. Both a failed and an empty
+        # lookup must abort before the guard is installed or a provider starts.
+        for name, lookup in (
+            ("failed", "printf 'gh: HTTP 502\\n' >&2; exit 1"),
+            ("empty", "printf '\\n'"),
+        ):
+            with self.subTest(lookup=name):
+                completed, prompt, guard = self._run_codex_lane("[]", title_lookup=lookup)
+                self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+                self.assertIn("refusing issue #12; could not read the issue title needed to "
+                              "resolve the owner/repo policy branch", completed.stderr)
+                self.assertNotIn("fix/12", completed.stderr)
+                self.assertNotIn("fake codex completed", completed.stdout)
+                self.assertEqual(prompt, "")
+                self.assertEqual(guard, {})
 
     def test_runner_ref_validation_matches_the_python_resolver(self) -> None:
         _runner, text = self._generate(_config_with_policy())
