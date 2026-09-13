@@ -8597,6 +8597,28 @@ def main():
         self.assertIn('if run.get("headSha") != head_sha:', required)
         self.assertIn("--set-transport devin=devin_api_v3", required)
 
+    def test_runbook_fetches_the_release_tag_into_the_release_checkout(self) -> None:
+        doc = (ROOT / "docs" / "pypi-release.md").read_text(encoding="utf-8")
+        fetch = (
+            'git -C "$RELEASE_CHECKOUT" fetch --no-tags origin '
+            '"+refs/tags/v1.4.0:refs/tags/v1.4.0"'
+        )
+        assertion = 'test "$(git -C "$RELEASE_CHECKOUT" rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"'
+
+        self.assertIn(fetch, doc)
+        self.assertLess(doc.index(fetch), doc.index(assertion))
+
+    def test_release_readiness_rejects_a_missing_release_tag_fetch(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                'git -C "$RELEASE_CHECKOUT" fetch --no-tags origin '
+                '"+refs/tags/v1.4.0:refs/tags/v1.4.0"\n',
+                "",
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+
     def test_release_readiness_rejects_mutable_main_release_binding(self) -> None:
         check = self._asserted_runbook_check(
             lambda doc: doc.replace(

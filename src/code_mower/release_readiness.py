@@ -485,6 +485,10 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         "--pip-args='--isolated --no-cache-dir'",
         # Boards stop, are waited for, and only then restart from the release.
         'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
+        # The release checkout is cloned before the tag exists, so the tag is
+        # fetched into it before its target is compared with the release commit.
+        'git -C "$RELEASE_CHECKOUT" fetch --no-tags origin "+refs/tags/v1.4.0:refs/tags/v1.4.0"',
+        'test "$(git -C "$RELEASE_CHECKOUT" rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"',
         'board_wait.py" gone "$BOARD_PORT"',
         # Serving is only satisfied by the expected repository on each port.
         'and row.get("repo") == expected_repo',

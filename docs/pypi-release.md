@@ -1069,6 +1069,9 @@ BOARD_5342_REPO_PATH="REUSE_PRIVATE_INVENTORIED_PATH"
 BOARD_5344_REPO="REUSE_PRIVATE_INVENTORIED_SLUG"
 BOARD_5344_REPO_PATH="REUSE_PRIVATE_INVENTORIED_PATH"
 test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"
+# The fresh clone predates the tag, so the published tag is fetched into it
+# before its target is asserted against the release commit.
+git -C "$RELEASE_CHECKOUT" fetch --no-tags origin "+refs/tags/v1.4.0:refs/tags/v1.4.0"
 test "$(git -C "$RELEASE_CHECKOUT" rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"
 
 cat >"$RELEASE_ENV/assert_board_repo_paths.py" <<'PY'
