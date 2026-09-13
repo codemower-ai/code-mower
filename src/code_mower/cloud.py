@@ -31,6 +31,7 @@ if __package__ in {None, ""}:
         catch_up_upload as _catch_up_upload,
         default_setup_path as _default_setup_path,
         build_upload_payload,
+        build_upload_payload_with_identity as _build_upload_payload_with_identity,
         default_dogfood_reports as _default_dogfood_reports,
         detect_repo_slug as _detect_repo_slug,
         dogfood_upload as _dogfood_upload,
@@ -87,6 +88,7 @@ else:  # pragma: no cover - exercised after package extraction.
         catch_up_upload as _catch_up_upload,
         default_setup_path as _default_setup_path,
         build_upload_payload,
+        build_upload_payload_with_identity as _build_upload_payload_with_identity,
         default_dogfood_reports as _default_dogfood_reports,
         detect_repo_slug as _detect_repo_slug,
         dogfood_upload as _dogfood_upload,
@@ -164,6 +166,7 @@ __all__ = [
     "write_setup_env_file",
     "main",
     "_board_snapshot_upload",
+    "_build_upload_payload_with_identity",
     "_catch_up_upload",
     "_default_dogfood_reports",
     "_default_setup_path",
@@ -570,6 +573,19 @@ def main(argv: list[str] | None = None) -> int:
         help="directory with Code Mower Cloud token profiles",
     )
     board_snapshot.add_argument(
+        "--require-head-sha",
+        default="",
+        help=(
+            "fail unless the snapshot source checkout is exactly this "
+            "40-character commit, rechecked around collection"
+        ),
+    )
+    board_snapshot.add_argument(
+        "--require-clean",
+        action="store_true",
+        help="fail unless the snapshot source checkout has no local changes",
+    )
+    board_snapshot.add_argument(
         "--yes",
         action="store_true",
         help="perform the network upload; without this, board-snapshot is a dry run",
@@ -786,7 +802,9 @@ def main(argv: list[str] | None = None) -> int:
                 print("Upload: local export only")
             return 0
         if args.command == "upload":
-            payload = build_upload_payload(
+            # Payload and manifest identity come from one read, so the digest
+            # and event identity name exactly the bytes being sent.
+            payload, manifest_identity = _build_upload_payload_with_identity(
                 bundle_dir=args.bundle_dir,
                 include_reports=args.include_reports,
             )
@@ -809,6 +827,7 @@ def main(argv: list[str] | None = None) -> int:
                     "event_count": len(payload["events"]),
                     "privacy_mode": payload["privacy_mode"],
                     "excluded_content": payload["excluded_content"],
+                    "manifest": manifest_identity,
                 }
                 if args.json:
                     print(json.dumps(preview, indent=2, sort_keys=True))
@@ -831,6 +850,7 @@ def main(argv: list[str] | None = None) -> int:
                 token=token,
                 timeout=args.timeout,
             )
+            result["manifest"] = manifest_identity
             if args.json:
                 print(json.dumps(result, indent=2, sort_keys=True))
             else:
@@ -954,6 +974,8 @@ def main(argv: list[str] | None = None) -> int:
                 workflow_limit=args.workflow_limit,
                 stale_minutes=args.stale_minutes,
                 event_limit=args.event_limit,
+                require_head_sha=args.require_head_sha,
+                require_clean=args.require_clean,
                 yes=args.yes,
                 timeout=args.timeout,
             )
@@ -965,6 +987,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Repository: {result['repo_slug']}")
                 print(f"Events: {result['event_count']}")
                 print(f"Bundle: {result['export']['output_dir']}")
+                print(f"Source commit: {result['git']['head_sha']}")
+                print(f"Source clean: {result['git']['clean']}")
                 if result["status"] == "uploaded":
                     print(f"Upload status: {result['upload']['status']}")
                 elif result["status"] == "dry_run":

@@ -225,15 +225,19 @@ arbitrary index URL or credential. It is bound into the campaign the same way
 - it is part of every provider's idempotency key, so a dispatch/result pair
   for one source can never satisfy a same-tag campaign from a different
   source;
-- local adapters receive it (as `{package_source}`) and construct their
-  install commands against the canonical TestPyPI simple index
-  (`https://test.pypi.org/simple/`) with production PyPI
-  (`https://pypi.org/simple/`) as a dependency-only extra index;
-- a hosted dispatch comment states the source (and, for `testpypi`, both
-  canonical index URLs) in its machine-readable marker and human-facing
-  instructions, so a remote provider never has to guess which index to
-  install from; a reply's own declared source must match, or it is ignored
-  like any other unbound comment;
+- local adapters receive it (as `{package_source}`) and construct the same
+  source-exclusive two-stage install the qualification command runs: download
+  the exact candidate artifact from the canonical TestPyPI simple index
+  (`https://test.pypi.org/simple/`) as the only configured index with
+  `--no-deps`, verify its package identity and version, then install that
+  verified local artifact file while resolving its dependencies from
+  production PyPI (`https://pypi.org/simple/`); the indexes are never
+  combined in one command;
+- a hosted dispatch comment states the source (and, for `testpypi`, the
+  candidate index, the dependency index, and that two-stage requirement) in
+  its machine-readable marker and human-facing instructions, so a remote
+  provider never has to guess where to install from; a reply's own declared
+  source must match, or it is ignored like any other unbound comment;
 - resuming or dispatching an existing campaign with a different
   `--package-source` is rejected as an identity conflict, exactly like a
   conflicting `--qualification-context`.

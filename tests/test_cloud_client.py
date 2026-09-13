@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import tempfile
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+
+import pytest
 
 import code_mower.cloud_client.operations as cloud_operations
 from code_mower.cloud_client import (
@@ -14,16 +17,19 @@ from code_mower.cloud_client import (
     CloudBundleError,
     DEFAULT_SETUP_INSTALL_ID,
     EVENT_SCHEMA,
+    UPLOAD_IDENTITY_SCHEMA,
     build_board_snapshot_event,
     build_provenance_summary,
     build_provider_catalog_snapshot_events,
     build_cloud_bundle,
     build_upload_payload,
+    bundle_manifest_identity,
     default_setup_path,
     dogfood_upload,
     normalize_event,
     parse_event_args,
     parse_repo_sync_spec,
+    read_bundle_manifest,
     repo_slug_from_remote,
     repo_sync_output_name,
     render_cloud_doctor_text,
@@ -343,6 +349,55 @@ def test_cloud_token_resolver_uses_install_id_after_restart(monkeypatch, tmp_pat
     assert resolution.install_id == "codex-code-mower"
 
 
+def test_conflicting_ambient_cloud_variables_cannot_satisfy_an_install_gate(
+    monkeypatch, tmp_path
+) -> None:
+    token_env = "CODE_MOWER_TEST_AMBIENT_TOKEN"
+    token_dir = tmp_path / "tokens"
+    token_dir.mkdir()
+    (token_dir / "codex-code-mower.env").write_text(
+        "\n".join(
+            [
+                f"export {token_env}='cmw_live_install_secret'",
+                "export CODE_MOWER_CLOUD_TEAM_ID='stored-team'",
+                "export CODE_MOWER_INSTALL_ID='codex-code-mower'",
+                "export CODE_MOWER_CLOUD_ENDPOINT='https://codemower.com/api/ingest'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(token_env, "cmw_live_ambient_secret")
+    monkeypatch.setenv("CODE_MOWER_CLOUD_TEAM_ID", "stored-team")
+    monkeypatch.setenv("CODE_MOWER_INSTALL_ID", "codex-code-mower")
+    monkeypatch.setenv("CODE_MOWER_CLOUD_ENDPOINT", "https://attacker.example/api")
+
+    ambient = resolve_cloud_token(
+        token_env=token_env,
+        token_dir=token_dir,
+        install_id="codex-code-mower",
+    )
+
+    # The ambient values mirror the asserted identities, so only the source
+    # discriminates a reflected environment from the stored install profile.
+    assert ambient.source == "env"
+    assert ambient.team_id == "stored-team"
+    assert ambient.install_id == "codex-code-mower"
+    assert ambient.endpoint == "https://attacker.example/api"
+
+    monkeypatch.delenv(token_env)
+    monkeypatch.delenv("CODE_MOWER_CLOUD_ENDPOINT")
+    selected = resolve_cloud_token(
+        token_env=token_env,
+        token_dir=token_dir,
+        install_id="codex-code-mower",
+    )
+
+    assert selected.source == "install_id"
+    assert selected.token == "cmw_live_install_secret"
+    assert selected.endpoint == "https://codemower.com/api/ingest"
+
+
 def test_cloud_token_resolver_refuses_ambiguous_profiles(monkeypatch, tmp_path) -> None:
     token_env = "CODE_MOWER_TEST_AMBIGUOUS_TOKEN"
     token_dir = tmp_path / "tokens"
@@ -622,6 +677,177 @@ def test_board_snapshot_upload_posts_with_explicit_yes(monkeypatch, tmp_path) ->
     assert captured["token"] == "cmw_live_board_secret"
     assert captured["payload"]["events"][0]["event_type"] == "board_snapshot"
     assert "cmw_live_board_secret" not in serialized
+
+
+def _init_git_checkout(path: Path) -> str:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "--quiet"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "dev@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Dev"], cwd=path, check=True)
+    (path / "tracked.txt").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "first"], cwd=path, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _board_snapshot_dry_run(monkeypatch, repo_path: Path, output_dir: Path, **kwargs):
+    monkeypatch.setattr(
+        cloud_operations.board,
+        "status_payload",
+        kwargs.pop("status_payload", lambda _config: _board_snapshot_fixture()),
+    )
+    monkeypatch.setattr(cloud_operations.board, "timelines_payload", lambda _config: {})
+    return cloud_operations.board_snapshot_upload(
+        repo_path=repo_path,
+        output_dir=output_dir,
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        source="unit-test",
+        endpoint="http://localhost:3000/api/ingest",
+        token_env="CODE_MOWER_TEST_BOARD_TOKEN",
+        yes=False,
+        timeout=0.1,
+        **kwargs,
+    )
+
+
+def test_board_snapshot_reports_producer_owned_manifest_identity(monkeypatch, tmp_path) -> None:
+    output_dir = tmp_path / "board-snapshot"
+    result = _board_snapshot_dry_run(monkeypatch, tmp_path, output_dir)
+
+    manifest_bytes = (output_dir / BUNDLE_MANIFEST_FILENAME).read_bytes()
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+    identity = result["manifest"]
+    assert identity["schema"] == UPLOAD_IDENTITY_SCHEMA
+    assert identity["manifest_sha256"] == hashlib.sha256(manifest_bytes).hexdigest()
+    assert identity["event_count"] == 1
+    assert identity["event_type_counts"] == {"board_snapshot": 1}
+    assert identity["event_ids"] == [manifest["events"][0]["event_id"]]
+    assert result["upload"]["event_types"] == {"board_snapshot": 1}
+
+
+def test_manifest_identity_detects_a_same_shape_substitution(monkeypatch, tmp_path) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first = _board_snapshot_dry_run(monkeypatch, tmp_path, first_dir)
+    second = _board_snapshot_dry_run(monkeypatch, tmp_path, second_dir)
+
+    assert first["manifest"]["event_type_counts"] == second["manifest"]["event_type_counts"]
+    assert first["manifest"]["event_count"] == second["manifest"]["event_count"]
+    # A different bundle of the very same shape is still a different manifest:
+    # a validator comparing producer-owned identity rejects the substitution.
+    assert first["manifest"]["event_ids"] != second["manifest"]["event_ids"]
+    assert first["manifest"]["manifest_sha256"] != second["manifest"]["manifest_sha256"]
+
+    swapped = read_bundle_manifest(second_dir)
+    identity = bundle_manifest_identity(*swapped)
+    assert identity == second["manifest"]
+    assert identity != first["manifest"]
+
+
+def test_manifest_identity_rejects_malformed_and_repeated_event_rows() -> None:
+    base = {"schema": "code_mower.cloudBundle.v1", "events": []}
+    row = {"event_id": "evt-1", "event_type": "board_snapshot"}
+
+    with pytest.raises(CloudBundleError):
+        bundle_manifest_identity({**base, "events": {}}, b"{}")
+    with pytest.raises(CloudBundleError):
+        bundle_manifest_identity({**base, "events": [row, "board_snapshot"]}, b"{}")
+    with pytest.raises(CloudBundleError):
+        bundle_manifest_identity({**base, "events": [row, dict(row)]}, b"{}")
+    with pytest.raises(CloudBundleError):
+        bundle_manifest_identity(
+            {**base, "events": [{"event_id": "", "event_type": "board_snapshot"}]},
+            b"{}",
+        )
+
+
+def test_board_snapshot_records_and_enforces_source_git_provenance(monkeypatch, tmp_path) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path)
+
+    result = _board_snapshot_dry_run(
+        monkeypatch,
+        repo_path,
+        tmp_path / "clean",
+        require_head_sha=head_sha,
+        require_clean=True,
+    )
+    assert result["git"] == {
+        "available": True,
+        "head_sha": head_sha,
+        "clean": True,
+        "dirty_entry_count": 0,
+    }
+    manifest = json.loads(
+        (tmp_path / "clean" / BUNDLE_MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    event = manifest["events"][0]
+    assert event["dimensions"]["source_git"] == {
+        "available": True,
+        "head_sha": head_sha,
+        "clean": True,
+        "dirty_entry_count": 0,
+    }
+
+    with pytest.raises(CloudBundleError):
+        _board_snapshot_dry_run(
+            monkeypatch,
+            repo_path,
+            tmp_path / "wrong-head",
+            require_head_sha="0" * 40,
+            require_clean=True,
+        )
+
+    (repo_path / "tracked.txt").write_text("two\n", encoding="utf-8")
+    with pytest.raises(CloudBundleError):
+        _board_snapshot_dry_run(
+            monkeypatch,
+            repo_path,
+            tmp_path / "dirty",
+            require_head_sha=head_sha,
+            require_clean=True,
+        )
+    subprocess.run(["git", "checkout", "--", "tracked.txt"], cwd=repo_path, check=True)
+
+    (repo_path / "untracked.txt").write_text("new\n", encoding="utf-8")
+    with pytest.raises(CloudBundleError):
+        _board_snapshot_dry_run(
+            monkeypatch,
+            repo_path,
+            tmp_path / "untracked",
+            require_head_sha=head_sha,
+            require_clean=True,
+        )
+    (repo_path / "untracked.txt").unlink()
+
+
+def test_board_snapshot_rejects_a_checkout_that_moves_during_collection(monkeypatch, tmp_path) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path)
+
+    def moving_status(_config):
+        (repo_path / "tracked.txt").write_text("changed\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=repo_path, check=True)
+        subprocess.run(["git", "commit", "--quiet", "-m", "second"], cwd=repo_path, check=True)
+        return _board_snapshot_fixture()
+
+    with pytest.raises(CloudBundleError):
+        _board_snapshot_dry_run(
+            monkeypatch,
+            repo_path,
+            tmp_path / "moved",
+            status_payload=moving_status,
+            require_head_sha=head_sha,
+            require_clean=True,
+        )
 
 
 def test_cloud_repo_slug_from_remote_supports_common_github_forms() -> None:
@@ -1288,6 +1514,98 @@ def test_cloud_upload_current_profile_not_bundle_install_id(
     assert status == 0
     assert captured["token"] == token
     assert token not in out.getvalue()
+
+
+def test_cloud_upload_reports_the_identity_of_the_bytes_it_sends(
+    monkeypatch, tmp_path
+) -> None:
+    token_env = "CODE_MOWER_TEST_UPLOAD_IDENTITY_TOKEN"
+    monkeypatch.setenv(token_env, "cmw_live_identity_secret")
+    bundle_dir = tmp_path / "bundle"
+    build_cloud_bundle(
+        reports=[],
+        events=[
+            build_board_snapshot_event(
+                repo_slug="owner/repo",
+                team_id="team",
+                install_id="install",
+                source="unit-test",
+                snapshot=_board_snapshot_fixture(),
+            )
+        ],
+        output_dir=bundle_dir,
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        anonymous=False,
+    )
+    manifest, manifest_bytes = read_bundle_manifest(bundle_dir)
+    expected = bundle_manifest_identity(manifest, manifest_bytes)
+
+    def run(*extra: str) -> dict:
+        out = StringIO()
+        with redirect_stdout(out):
+            status = cloud_cli.main(
+                [
+                    "upload",
+                    str(bundle_dir),
+                    "--endpoint",
+                    "https://codemower.com/api/ingest",
+                    "--token-env",
+                    token_env,
+                    "--json",
+                    *extra,
+                ]
+            )
+        assert status == 0
+        return json.loads(out.getvalue())
+
+    monkeypatch.setattr(
+        cloud_cli,
+        "post_upload_payload",
+        lambda **kwargs: {
+            "mode": "cloud-upload",
+            "endpoint": kwargs["endpoint"],
+            "status": 200,
+            "response": {"ok": True},
+        },
+    )
+    preview = run("--dry-run")
+    applied = run("--yes")
+
+    assert preview["manifest"] == expected
+    assert applied["manifest"] == expected
+    assert expected["schema"] == UPLOAD_IDENTITY_SCHEMA
+    assert expected["event_type_counts"] == {"board_snapshot": 1}
+
+    # A same-shape manifest swapped in afterwards reports a different identity.
+    substitute = tmp_path / "substitute"
+    build_cloud_bundle(
+        reports=[],
+        events=[
+            build_board_snapshot_event(
+                repo_slug="owner/repo",
+                team_id="team",
+                install_id="install",
+                source="unit-test",
+                snapshot=_board_snapshot_fixture(),
+            )
+        ],
+        output_dir=substitute,
+        repo_slug="owner/repo",
+        team_id="team",
+        install_id="install",
+        anonymous=False,
+    )
+    (bundle_dir / "code-mower-cloud-bundle.json").write_bytes(
+        (substitute / "code-mower-cloud-bundle.json").read_bytes()
+    )
+    swapped = run("--dry-run")
+
+    assert swapped["manifest"]["event_count"] == expected["event_count"]
+    assert swapped["manifest"]["event_type_counts"] == expected["event_type_counts"]
+    assert swapped["manifest"]["manifest_sha256"] != expected["manifest_sha256"]
+    assert swapped["manifest"]["event_ids"] != expected["event_ids"]
 
 
 def test_cloud_doctor_warns_when_model_provenance_is_missing() -> None:

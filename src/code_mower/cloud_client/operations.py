@@ -39,7 +39,11 @@ from .pr_outcomes import (
 )
 from .export import build_cloud_bundle
 from .events import safe_event_type
-from .git_metadata import detect_repo_slug
+from .git_metadata import (
+    checkout_provenance,
+    detect_repo_slug,
+    require_checkout_provenance,
+)
 from .productivity_windows import load_productivity_window_events
 from .tokens import (
     CloudTokenResolution,
@@ -48,7 +52,11 @@ from .tokens import (
     resolve_cloud_identity,
     resolve_cloud_token,
 )
-from .upload import build_upload_payload, post_upload_payload
+from .upload import (
+    build_upload_payload,
+    build_upload_payload_with_identity,
+    post_upload_payload,
+)
 
 
 CATCH_UP_TRUST_GUIDANCE = {
@@ -307,6 +315,8 @@ def board_snapshot_upload(
     workflow_limit: int = 20,
     stale_minutes: int = 30,
     event_limit: int = 20,
+    require_head_sha: str = "",
+    require_clean: bool = False,
     yes: bool,
     timeout: float,
 ) -> dict[str, Any]:
@@ -339,14 +349,35 @@ def board_snapshot_upload(
         stale_minutes=stale_minutes,
         event_limit=event_limit,
     )
+    # The checkout is read before and after collection and both readings must
+    # agree, so a checkout that moves or is modified while the snapshot is
+    # gathered cannot produce evidence attributed to the expected commit.
+    provenance_required = bool(require_head_sha.strip() or require_clean)
+    provenance = checkout_provenance(repo_path, required=provenance_required)
+    require_checkout_provenance(
+        provenance,
+        expected_head_sha=require_head_sha,
+        require_clean=require_clean,
+    )
     snapshot = board.status_payload(config)
     snapshot["timelines"] = board.timelines_payload(config)
+    collected_provenance = checkout_provenance(repo_path, required=provenance_required)
+    if collected_provenance != provenance:
+        raise CloudBundleError(
+            "source checkout changed while the Board snapshot was collected"
+        )
+    require_checkout_provenance(
+        collected_provenance,
+        expected_head_sha=require_head_sha,
+        require_clean=require_clean,
+    )
     event = build_board_snapshot_event(
         repo_slug=detected_repo_slug,
         team_id=resolved_team_id,
         install_id=resolved_install_id,
         source=source,
         snapshot=snapshot,
+        git_provenance=provenance,
     )
     export_result = build_cloud_bundle(
         reports=[],
@@ -373,9 +404,15 @@ def board_snapshot_upload(
             "repo_slug": detected_repo_slug,
             "event_count": 1,
             "export": export_result,
+            "git": provenance,
             "doctor": doctor_result,
         }
-    payload = build_upload_payload(bundle_dir=output_dir, include_reports=False)
+    # The manifest identity is derived from the same bytes the payload was
+    # built from, so the snapshot names the exact manifest it just wrote.
+    payload, manifest_identity = build_upload_payload_with_identity(
+        bundle_dir=output_dir,
+        include_reports=False,
+    )
     if not yes:
         return {
             "mode": "cloud-board-snapshot",
@@ -383,6 +420,8 @@ def board_snapshot_upload(
             "repo_slug": detected_repo_slug,
             "event_count": 1,
             "export": export_result,
+            "git": provenance,
+            "manifest": manifest_identity,
             "doctor": doctor_result,
             "upload": build_dogfood_dry_run_preview(
                 endpoint=resolved_endpoint,
@@ -400,6 +439,8 @@ def board_snapshot_upload(
         "repo_slug": detected_repo_slug,
         "event_count": 1,
         "export": export_result,
+        "git": provenance,
+        "manifest": manifest_identity,
         "doctor": doctor_result,
         "upload": post_upload_payload(
             payload=payload,

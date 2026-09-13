@@ -66,6 +66,35 @@ from code_mower.provider_registry import REFERENCE_PROVIDERS
 from scripts import guard_package_workflows, privacy_scan
 
 CLOUD_ENDPOINT = "https://cloud.example.invalid"
+BOARD_GATE_PROVENANCE = {
+    "available": True,
+    "head_sha": "b" * 40,
+    "clean": True,
+    "dirty_entry_count": 0,
+}
+
+
+def _reported_manifest_identity(manifest_bytes: bytes) -> dict:
+    """Mirror the producer-owned manifest identity for runbook gate fixtures."""
+
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+    rows = manifest.get("events")
+    rows = rows if isinstance(rows, list) else []
+    event_ids: list[str] = []
+    event_type_counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        event_ids.append(str(row.get("event_id") or ""))
+        event_type = str(row.get("event_type") or "")
+        event_type_counts[event_type] = event_type_counts.get(event_type, 0) + 1
+    return {
+        "schema": "code_mower.cloudUploadIdentity.v1",
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "event_count": len(event_ids),
+        "event_ids": event_ids,
+        "event_type_counts": dict(sorted(event_type_counts.items())),
+    }
 
 
 class ReleaseHygieneTests(unittest.TestCase):
@@ -122,7 +151,9 @@ class ReleaseHygieneTests(unittest.TestCase):
         )
         self.assertIn("          python -m twine check dist/*\n", workflow)
         publish_job = workflow.split("  publish-pypi:\n", 1)[1]
-        self.assertIn("    needs: verify-distributions\n", publish_job)
+        self.assertIn(
+            "    needs: [release-identity, verify-distributions]\n", publish_job
+        )
 
     def test_test_extra_matches_contributor_setup_docs(self) -> None:
         pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -246,6 +277,97 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("E501", lint["ignore"])
         self.assertIn("B019", lint["ignore"])
 
+    def _dispatch_sha_gate_check(self, mutate: Callable[[str], str]) -> dict:
+        workflow_path = ROOT / ".github" / "workflows" / "release.yml"
+        original = release_readiness._read_text_if_exists
+
+        def read(path: Path) -> str:
+            text = original(path)
+            return mutate(text) if path == workflow_path else text
+
+        with mock.patch.object(release_readiness, "_read_text_if_exists", read):
+            payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        return checks["release-dispatch-sha-gate"]
+
+    def test_release_workflow_binds_every_dispatch_to_the_expected_commit(
+        self,
+    ) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        parsed = yaml.safe_load(workflow)
+        triggers = parsed.get("on", parsed.get(True))
+        inputs = triggers["workflow_dispatch"]["inputs"]
+        jobs = parsed["jobs"]
+
+        self.assertTrue(inputs["expected_sha"]["required"])
+        self.assertEqual(inputs["expected_sha"]["type"], "string")
+        self.assertEqual(next(iter(jobs)), "release-identity")
+        self.assertEqual(jobs["build-distributions"]["needs"], "release-identity")
+        for job_name in ("publish-testpypi", "publish-pypi"):
+            self.assertIn("release-identity", jobs[job_name]["needs"])
+        self.assertEqual(self._dispatch_sha_gate_check(lambda text: text)["status"], "pass")
+
+    def test_release_readiness_fails_when_the_dispatch_sha_gate_regresses(self) -> None:
+        for old, new in (
+            ("        required: true\n        type: string\n", "        type: string\n"),
+            ("  release-identity:\n", "  release-identity-disabled:\n"),
+            ("    needs: release-identity\n", "    needs: verify-distributions\n"),
+            ("[release-identity, verify-distributions]", "[verify-distributions]"),
+            ("grep -Eq '^[0-9a-f]{40}$'", "true"),
+            ('test "$ACTUAL_SHA" = "$EXPECTED_SHA"', "true"),
+            ('test "$ACTUAL_REF" = "refs/tags/v1.4.0"', "true"),
+        ):
+            with self.subTest(old=old):
+                check = self._dispatch_sha_gate_check(
+                    lambda text, old=old, new=new: text.replace(old, new)
+                )
+
+                self.assertEqual(check["status"], "fail")
+
+    def test_release_identity_guard_rejects_wrong_expected_commits(self) -> None:
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        )
+        step = workflow["jobs"]["release-identity"]["steps"][0]
+        release_sha = "a" * 40
+        cases = (
+            ("", "refs/tags/v1.4.0", release_sha),
+            ("not-a-sha", "refs/tags/v1.4.0", release_sha),
+            ("b" * 40, "refs/tags/v1.4.0", release_sha),
+            (release_sha, "refs/heads/main", release_sha),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "identity.sh"
+            script.write_text(step["run"], encoding="utf-8")
+            for expected, ref, actual in cases:
+                with self.subTest(expected=expected, ref=ref):
+                    result = subprocess.run(
+                        ["bash", str(script)],
+                        capture_output=True,
+                        text=True,
+                        env={
+                            **os.environ,
+                            "EXPECTED_SHA": expected,
+                            "ACTUAL_REF": ref,
+                            "ACTUAL_SHA": actual,
+                        },
+                    )
+
+                    self.assertNotEqual(result.returncode, 0)
+            ok = subprocess.run(
+                ["bash", str(script)],
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "EXPECTED_SHA": release_sha,
+                    "ACTUAL_REF": "refs/tags/v1.4.0",
+                    "ACTUAL_SHA": release_sha,
+                },
+            )
+
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+
     def test_release_workflow_has_separate_testpypi_publish_gate(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("      publish_testpypi:\n", workflow)
@@ -254,7 +376,9 @@ class ReleaseHygieneTests(unittest.TestCase):
             "  publish-pypi:\n",
             1,
         )[0]
-        self.assertIn("    needs: verify-distributions\n", testpypi_job)
+        self.assertIn(
+            "    needs: [release-identity, verify-distributions]\n", testpypi_job
+        )
         self.assertIn("inputs.publish_testpypi", testpypi_job)
         self.assertIn("inputs.publish_testpypi == true", testpypi_job)
         self.assertIn("github.event_name == 'workflow_dispatch'", testpypi_job)
@@ -8024,6 +8148,39 @@ def main():
 
         self.assertEqual(check["status"], "fail")
 
+    def test_release_qualification_doc_documents_the_source_exclusive_flow(
+        self,
+    ) -> None:
+        doc = (ROOT / "docs" / "release-qualification.md").read_text(encoding="utf-8")
+
+        self.assertIn("docs/release-qualification.md", release_readiness.RELEASE_DOC_PATHS)
+        self.assertIn(
+            "docs/release-qualification.md",
+            release_readiness.CURRENT_PACKAGE_INDEX_GUIDANCE_DOC_PATHS,
+        )
+        for marker in release_readiness.UNSAFE_MULTI_INDEX_MARKERS:
+            self.assertNotIn(marker, doc)
+        self.assertIn("--no-deps", doc)
+        self.assertIn("the only configured index", doc)
+        self.assertIn("never\n  combined in one command", doc)
+
+    def test_package_index_rehearsal_docs_reject_qualification_doc_regression(
+        self,
+    ) -> None:
+        for marker in release_readiness.UNSAFE_MULTI_INDEX_MARKERS:
+            with self.subTest(marker=marker):
+
+                def add_marker(docs: dict[str, str], marker: str = marker) -> None:
+                    docs["docs/release-qualification.md"] += f"\n{marker}\n"
+
+                check = self._package_index_docs_check(add_marker)
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(
+                    "docs/release-qualification.md",
+                    check["detail"]["unsafe_multi_index_docs"],
+                )
+
     def test_public_first_user_docs_omit_unsafe_testpypi_candidate_command(
         self,
     ) -> None:
@@ -8487,14 +8644,16 @@ def main():
     def test_release_readiness_fails_when_release_asset_gate_is_deleted(self) -> None:
         check = self._asserted_runbook_check(
             lambda doc: doc.replace(
-                'problems.append("release asset SHA-256 values differ from PROD_DIST_DIR")',
+                'problems.append("release asset SHA-256 values differ from the '
+                'PyPI-verified map")',
                 "pass",
             )
         )
 
         self.assertEqual(check["status"], "fail")
         self.assertIn(
-            'problems.append("release asset SHA-256 values differ from PROD_DIST_DIR")',
+            'problems.append("release asset SHA-256 values differ from the '
+            'PyPI-verified map")',
             check["detail"]["missing_assertions"],
         )
 
@@ -8516,7 +8675,8 @@ def main():
         self,
     ) -> None:
         for assertion in (
-            'BUILD_JOBS = ("build-distributions", "verify-distributions")',
+            'BUILD_JOBS = ("release-identity", "build-distributions", '
+            '"verify-distributions")',
             'if str(run.get("databaseId")) != run_id:',
             'if run.get("workflowName") != EXPECTED_WORKFLOW:',
             'if run.get("event") != event:',
@@ -8860,7 +9020,7 @@ def main():
         boards = runbook.partition("### 15. Restart the three Boards")[2]
 
         self.assertIn(
-            'test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)"'
+            'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)"'
             ' = "$RELEASE_SHA"',
             boards,
         )
@@ -9049,7 +9209,7 @@ def main():
     ) -> None:
         for old, new in (
             (
-                '--notes-file "$CODE_MOWER_RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+                '--notes-file "$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
                 "--notes-file docs/v140-release-notes.md",
             ),
             (
@@ -9088,6 +9248,110 @@ def main():
 
                 self.assertEqual(check["status"], "fail")
                 self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_runbook_defines_every_variable_before_it_is_used(self) -> None:
+        runbook = self._runbook_section()
+
+        self.assertEqual(
+            release_readiness._post_merge_variable_flow_problems(runbook), []
+        )
+        self.assertNotIn("CODE_MOWER_RELEASE_CHECKOUT", runbook)
+
+    def test_release_readiness_fails_on_a_variable_used_before_assignment(
+        self,
+    ) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                '"$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+                '"$CODE_MOWER_RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertTrue(
+            any(
+                "CODE_MOWER_RELEASE_CHECKOUT is used before" in problem
+                for problem in check["detail"]["gate_order_problems"]
+            ),
+            check["detail"]["gate_order_problems"],
+        )
+
+    def test_release_readiness_fails_when_the_verified_artifact_map_is_bypassed(
+        self,
+    ) -> None:
+        for assertion in (
+            'PYPI_VERIFIED_MAP="$RELEASE_ENV/pypi-verified-artifacts.json"',
+            'test ! -e "$PYPI_VERIFIED_MAP"',
+            'problems.append("local artifacts differ from the PyPI-verified map")',
+            'problems.append("release asset SHA-256 values differ from the PyPI-verified map")',
+            "if remote_peeled_tag_sha(repo) != release_sha:",
+            'problems.append("remote v1.4.0 tag does not peel to the exact release commit")',
+            'assert_release_assets.py" pre-create',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_producer_owned_board_evidence_is_deleted(
+        self,
+    ) -> None:
+        for assertion in (
+            'problems.append("board snapshot does not report the inspected manifest identity")',
+            'problems.append("board upload preview does not report the inspected manifest identity")',
+            'problems.append("board applied upload does not report the previewed manifest identity")',
+            '--require-head-sha "$RELEASE_SHA" --require-clean',
+            'problems.append("board snapshot was not collected from the exact clean release checkout")',
+            'problems.append("board event does not carry the release checkout provenance")',
+            'raise SystemExit("a Board repository path does not match its paired slug")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_ambient_cloud_overrides_are_kept(
+        self,
+    ) -> None:
+        for assertion in (
+            "env -u CODE_MOWER_CLOUD_TOKEN -u CODE_MOWER_CLOUD_ENDPOINT",
+            'if resolution.source != "install_id":',
+            'grep -q \'"source": "install_id"\' "$CLOUD_DIR/identity.json"',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_runbook_dispatches_name_the_expected_release_commit(self) -> None:
+        runbook = self._runbook_section()
+
+        self.assertEqual(
+            runbook.count('\n  -f expected_sha="$RELEASE_SHA"\n'),
+            3,
+            "every workflow_dispatch must name the exact release commit",
+        )
+
+    def test_release_readiness_fails_when_a_dispatch_drops_the_expected_sha(
+        self,
+    ) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace('-f expected_sha="$RELEASE_SHA"', "")
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            '-f expected_sha="$RELEASE_SHA"', check["detail"]["missing_assertions"]
+        )
 
     def _run_release_run_gate(self, run: dict, head_branch: str) -> subprocess.CompletedProcess:
         snippet = self._runbook_python_snippet("BUILD_JOBS")
@@ -9131,6 +9395,7 @@ def main():
             "conclusion": "success",
             "url": "https://example.invalid/run/4242",
             "jobs": [
+                {"name": "release-identity", "conclusion": "success"},
                 {"name": "build-distributions", "conclusion": "success"},
                 {"name": "verify-distributions", "conclusion": "success"},
                 {"name": "publish-testpypi", "conclusion": "success"},
@@ -9528,6 +9793,7 @@ def main():
             "repo_slug": "codemower-ai/code-mower",
             "event_count": 1,
             "export": {"event_types": {"board_snapshot": 1}, "included_reports": 0},
+            "git": dict(BOARD_GATE_PROVENANCE),
             "upload": {"endpoint": CLOUD_ENDPOINT},
             "doctor": {
                 "mode": "cloud-doctor",
@@ -9554,7 +9820,8 @@ def main():
                     "event_type": "board_snapshot",
                     "repo_slug": "codemower-ai/code-mower",
                     "dimensions": {
-                        "snapshot_schema": "code_mower.cloudBoardSnapshot.v1"
+                        "snapshot_schema": "code_mower.cloudBoardSnapshot.v1",
+                        "source_git": dict(BOARD_GATE_PROVENANCE),
                     },
                 }
             ],
@@ -9583,6 +9850,8 @@ def main():
         applied: dict,
         *,
         phase: str = "preflight",
+        snapshot_identity: dict | None = None,
+        preview_identity: dict | None = None,
         preview_swap: dict | None = None,
         pre_apply_swap: dict | None = None,
         during_apply_swap: dict | None = None,
@@ -9620,14 +9889,31 @@ def main():
                 return digest
 
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            reported = _reported_manifest_identity(manifest_path.read_bytes())
+            snapshot = {**snapshot, "manifest": snapshot_identity or reported}
+            preview = {**preview, "manifest": preview_identity or reported}
+            (cloud_dir / "board-snapshot.json").write_text(
+                json.dumps(snapshot), encoding="utf-8"
+            )
+            (cloud_dir / "board-preview.json").write_text(
+                json.dumps(preview), encoding="utf-8"
+            )
             write_digest("board-bundle-before-preview.sha256")
             if preview_swap is not None:
                 manifest_path.write_text(json.dumps(preview_swap), encoding="utf-8")
             previewed = write_digest("board-bundle-after-preview.sha256")
             (cloud_dir / "board-preflight.json").write_text(
                 json.dumps(
-                    {"board_preview": "accepted", "previewed_digest": previewed}
+                    {
+                        "board_preview": "accepted",
+                        "previewed_digest": previewed,
+                        "previewed_identity": preview_identity or reported,
+                    }
                 ),
+                encoding="utf-8",
+            )
+            (cloud_dir / "board-applied.json").write_text(
+                json.dumps({**applied, "manifest": preview_identity or reported}),
                 encoding="utf-8",
             )
             if pre_apply_swap is not None:
@@ -9643,6 +9929,7 @@ def main():
                 {
                     "CLOUD_DIR": str(cloud_dir),
                     "BOARD_SNAPSHOT_DIR": str(bundle_dir),
+                    "RELEASE_SHA": BOARD_GATE_PROVENANCE["head_sha"],
                 },
             )
 
@@ -9656,6 +9943,56 @@ def main():
         self.assertEqual(json.loads(preflight.stdout)["board_preview"], "accepted")
         self.assertEqual(applied.returncode, 0, applied.stderr)
         self.assertEqual(json.loads(applied.stdout)["board_upload"], "accepted")
+
+    def test_runbook_board_snapshot_gate_rejects_foreign_checkout_provenance(
+        self,
+    ) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        wrong_head = copy.deepcopy(snapshot)
+        wrong_head["git"]["head_sha"] = "c" * 40
+        dirty = copy.deepcopy(snapshot)
+        dirty["git"].update({"clean": False, "dirty_entry_count": 2})
+
+        for mutated in (wrong_head, dirty):
+            with self.subTest(head=mutated["git"]["head_sha"]):
+                result = self._run_board_snapshot_gate(
+                    mutated, manifest, preview, applied
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(
+                    "board snapshot was not collected from the exact clean "
+                    "release checkout",
+                    result.stderr,
+                )
+
+    def test_runbook_board_snapshot_gate_rejects_producer_identity_disagreement(
+        self,
+    ) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        other = copy.deepcopy(manifest)
+        other["events"][0]["event_id"] = "evt-board-2"
+        substituted = _reported_manifest_identity(
+            json.dumps(other).encode("utf-8")
+        )
+
+        snapshot_mismatch = self._run_board_snapshot_gate(
+            snapshot, manifest, preview, applied, snapshot_identity=substituted
+        )
+        preview_mismatch = self._run_board_snapshot_gate(
+            snapshot, manifest, preview, applied, preview_identity=substituted
+        )
+
+        self.assertEqual(snapshot_mismatch.returncode, 1)
+        self.assertIn(
+            "board snapshot does not report the inspected manifest identity",
+            snapshot_mismatch.stderr,
+        )
+        self.assertEqual(preview_mismatch.returncode, 1)
+        self.assertIn(
+            "board upload preview does not report the inspected manifest identity",
+            preview_mismatch.stderr,
+        )
 
     def test_runbook_board_snapshot_gate_rejects_a_swapped_bundle(self) -> None:
         snapshot, manifest, preview, applied = self._board_snapshot_fixtures()

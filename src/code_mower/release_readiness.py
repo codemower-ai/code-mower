@@ -21,6 +21,7 @@ RELEASE_DOC_PATHS = (
     "docs/first-user-install-rehearsal.md",
     "docs/pypi-release.md",
     "docs/public-release-checklist.md",
+    "docs/release-qualification.md",
 )
 REQUIRED_PUBLIC_PACKAGE_SPEC_DOC_PATHS = (
     "README.md",
@@ -38,8 +39,16 @@ CURRENT_PACKAGE_INDEX_GUIDANCE_DOC_PATHS = (
     "docs/first-user-install-rehearsal.md",
     "docs/pypi-release.md",
     "docs/public-release-checklist.md",
+    "docs/release-qualification.md",
 )
 UNSAFE_MULTI_INDEX_MARKER = "--pip-extra-index-url https://pypi.org/simple/"
+# Combined-index guidance regresses as a command flag or as prose promising
+# production PyPI as an extra index alongside the TestPyPI candidate index.
+UNSAFE_MULTI_INDEX_MARKERS = (
+    UNSAFE_MULTI_INDEX_MARKER,
+    "--extra-index-url https://pypi.org/simple/",
+    "dependency-only extra index",
+)
 PUBLIC_HYGIENE_DOC_PATHS = (
     "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
@@ -384,8 +393,11 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         f'test "$(git rev-list -n 1 {release_tag})" = "$RELEASE_SHA"',
         f"test \"$(git ls-remote origin 'refs/tags/{release_tag}^{{}}' | awk '{{print $1}}')\""
         ' = "$RELEASE_SHA"',
+        # Every dispatch names the exact commit it may build, and the
+        # workflow's own identity job fails fast unless it matches.
+        '-f expected_sha="$RELEASE_SHA"',
         # Every workflow run is asserted, including both publish-job postures.
-        'BUILD_JOBS = ("build-distributions", "verify-distributions")',
+        'BUILD_JOBS = ("release-identity", "build-distributions", "verify-distributions")',
         'if str(run.get("databaseId")) != run_id:',
         'if run.get("workflowName") != EXPECTED_WORKFLOW:',
         'if run.get("event") != event:',
@@ -414,17 +426,30 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         '["gh", "api", f"repos/{repo}/actions/variables/{name}"]',
         'if value is None or value.strip().lower() != "false"',
         '"repository-scope publish variables must exist and equal false: "',
+        # The production artifact map proven against canonical PyPI is saved
+        # once and then treated as immutable release evidence, so a local file
+        # replaced afterwards cannot become a Release asset.
+        'PYPI_VERIFIED_MAP="$RELEASE_ENV/pypi-verified-artifacts.json"',
+        'test ! -e "$PYPI_VERIFIED_MAP"',
+        'Path(os.environ["PYPI_VERIFIED_MAP"]).write_text(',
+        'test -s "$PYPI_VERIFIED_MAP"',
+        'problems.append("local artifacts differ from the PyPI-verified map")',
+        'problems.append("release asset SHA-256 values differ from the PyPI-verified map")',
+        # The remote peeled tag is re-resolved on every invocation, including
+        # the one immediately before the irreversible release creation.
+        'if remote_peeled_tag_sha(repo) != release_sha:',
+        'problems.append("remote v1.4.0 tag does not peel to the exact release commit")',
+        'assert_release_assets.py" pre-create',
         # The Release's own assets are downloaded and compared digest by digest.
         'raise SystemExit(f"{mode} release assets are not acceptable: {problems}")',
-        'problems.append("release asset SHA-256 values differ from PROD_DIST_DIR")',
         'assert_release_assets.py" existing',
         # The post-create verification is unconditional: it runs for a release
         # this runbook created as well as one it found already present.
         'assert_release_assets.py" created',
         # Notes come from the clean checkout of the exact release commit, and
         # the published body and title are compared with that file.
-        '--notes-file "$CODE_MOWER_RELEASE_CHECKOUT/docs/v140-release-notes.md"',
-        'notes_path = Path(os.environ["CODE_MOWER_RELEASE_CHECKOUT"]) / RELEASE_NOTES_RELPATH',
+        '--notes-file "$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+        'notes_path = Path(os.environ["RELEASE_CHECKOUT"]) / RELEASE_NOTES_RELPATH',
         'problems.append("release notes in the exact checkout are empty")',
         'problems.append("release body does not match the exact checkout release notes")',
         'problems.append("release title is not the expected v1.4.0 title")',
@@ -452,7 +477,7 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         "-u PIP_NO_INDEX",
         "--pip-args='--isolated --no-cache-dir'",
         # Boards stop, are waited for, and only then restart from the release.
-        'test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
+        'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
         'board_wait.py" gone "$BOARD_PORT"',
         # Serving is only satisfied by the expected repository on each port.
         'and row.get("repo") == expected_repo',
@@ -520,6 +545,13 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'case "$CODE_MOWER_CLOUD_TEAM_ID" in REPLACE_WITH_*) exit 1 ;; esac',
         'case "$CODE_MOWER_INSTALL_ID" in REPLACE_WITH_*) exit 1 ;; esac',
         'resolution = resolve_cloud_token(token_env=DEFAULT_TOKEN_ENV, install_id=install_id)',
+        # The ambient cloud token and endpoint are excluded, so the gate and
+        # every later command resolve the selected stored install profile
+        # instead of reflecting the values being asserted.
+        "env -u CODE_MOWER_CLOUD_TOKEN -u CODE_MOWER_CLOUD_ENDPOINT",
+        'if resolution.source != "install_id":',
+        'problems.append("the cloud token was not resolved from the selected install profile")',
+        'grep -q \'"source": "install_id"\' "$CLOUD_DIR/identity.json"',
         'problems.append("the selected install profile stores a different install identity")',
         'problems.append("the selected install profile stores a different team identity")',
         'raise SystemExit(f"cloud identity is not bound to the selected profile: {problems}")',
@@ -609,7 +641,7 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'if not 200 <= int(applied.get("status") or 0) < 300:',
         # The Board snapshot reads a checkout, and its event carries no commit
         # or dirty-state field, so the checkout is re-bound immediately before.
-        'test -z "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+        'test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
         # The Board snapshot's own nested cloud doctor must be healthy on its
         # raw rows; only the producer's skipped service probe is tolerated.
         'snapshot_doctor = snapshot.get("doctor")',
@@ -643,7 +675,26 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'problems.append("the previewed board bundle identity was not retained")',
         "or current_digest != previewed_digest",
         'problems.append("board bundle changed between the preview and the applied upload")',
+        # External hashes cannot see an A-B-A substitution inside a producer, so
+        # the snapshot and both upload phases report the exact manifest bytes
+        # and events they acted on, and those reports must be identical.
+        'UPLOAD_IDENTITY_SCHEMA = "code_mower.cloudUploadIdentity.v1"',
+        '"manifest_sha256": previewed_digest,',
+        '"event_ids": [str(event.get("event_id") or "")],',
+        'problems.append("board snapshot does not report the inspected manifest identity")',
+        'problems.append("board upload preview does not report the inspected manifest identity")',
+        'problems.append("board applied upload does not report the previewed manifest identity")',
+        '"previewed_identity": expected_identity,',
+        # The snapshot producer is required to collect from the exact clean
+        # release checkout and to report the commit it read.
+        '--require-head-sha "$RELEASE_SHA" --require-clean',
+        'problems.append("board snapshot was not collected from the exact clean release checkout")',
+        'problems.append("board event does not carry the release checkout provenance")',
         'raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")',
+        # Every Board repository path is the checkout of its paired slug, so a
+        # path cannot serve another repository's history under the wrong name.
+        'raise SystemExit("a Board repository path does not match its paired slug")',
+        'assert_board_repo_paths.py" \\',
     )
 
 
@@ -671,7 +722,7 @@ def _post_merge_runbook_gate_orders() -> tuple[tuple[str, tuple[str, ...]], ...]
         (
             "board-preflight-before-apply",
             (
-                'test -z "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+                'test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
                 "code-mower cloud board-snapshot",
                 '>"$CLOUD_DIR/board-bundle-before-preview.sha256"',
                 '--dry-run --json \\\n  >"$CLOUD_DIR/board-preview.json"',
@@ -689,8 +740,13 @@ def _post_merge_runbook_gate_orders() -> tuple[tuple[str, tuple[str, ...]], ...]
 
 BOARD_SNAPSHOT_COMMAND = "code-mower cloud board-snapshot"
 BOARD_SNAPSHOT_BINDING_ASSERTIONS = (
-    'test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
-    'test -z "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+    'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
+    'test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+)
+# The snapshot command is invoked with the ambient cloud token and endpoint
+# excluded; that prefix is part of the same command, not an intervening step.
+CLOUD_ENV_ISOLATION_PREFIX = (
+    "env -u CODE_MOWER_CLOUD_TOKEN -u CODE_MOWER_CLOUD_ENDPOINT \\"
 )
 
 
@@ -708,7 +764,9 @@ def _board_snapshot_binding_problems(runbook_doc: str) -> list[str]:
     preceding = [
         line.strip()
         for line in runbook_doc[:start].splitlines()
-        if line.strip() and not line.strip().startswith("#")
+        if line.strip()
+        and not line.strip().startswith("#")
+        and line.strip() != CLOUD_ENV_ISOLATION_PREFIX
     ]
     if preceding[-2:] != list(BOARD_SNAPSHOT_BINDING_ASSERTIONS):
         return [
@@ -897,6 +955,63 @@ def _post_merge_pip_isolation_problems(runbook_doc: str) -> list[str]:
     return problems
 
 
+# Variables the operator or the shell supplies, which the ordered runbook is
+# not expected to assign. The private cloud identifiers are deliberately never
+# written into the document; every other name must be established by an earlier
+# runbook command before it is dereferenced.
+RUNBOOK_EXTERNAL_VARIABLES = frozenset(
+    {
+        "CODE_MOWER_CLOUD_TEAM_ID",
+        "CODE_MOWER_INSTALL_ID",
+        "CODE_MOWER_CLOUD_TOKEN",
+        "CODE_MOWER_CLOUD_ENDPOINT",
+        "HOME",
+        "PATH",
+        "PWD",
+        "TMPDIR",
+        "VIRTUAL_ENV",
+    }
+)
+_VARIABLE_ASSIGNMENT = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=")
+_VARIABLE_USE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+_LOOP_VARIABLE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s")
+
+
+def _post_merge_variable_flow_problems(runbook_doc: str) -> list[str]:
+    """Report ordered runbook variables dereferenced before they are assigned.
+
+    Every ordered block runs under ``set -u``, so a name that no earlier block
+    assigned either aborts the step or -- worse, when an unrelated ambient value
+    happens to exist -- silently binds the release to something the runbook
+    never established.
+    """
+
+    problems: list[str] = []
+    assigned: set[str] = set(RUNBOOK_EXTERNAL_VARIABLES)
+    reported: set[str] = set()
+    for command in _shell_commands(runbook_doc):
+        loop = _LOOP_VARIABLE.match(command.strip())
+        if loop:
+            assigned.add(loop.group(1))
+        for name in _VARIABLE_USE.findall(command):
+            if name in assigned or name in reported:
+                continue
+            reported.add(name)
+            problems.append(
+                f"${name} is used before the ordered runbook assigns it: "
+                f"{command[:72]}"
+            )
+        for line in command.split(";"):
+            match = _VARIABLE_ASSIGNMENT.match(line.strip())
+            if match:
+                assigned.add(match.group(1))
+        for marker in (": \"${", "read -r "):
+            if marker in command:
+                for name in _VARIABLE_USE.findall(command):
+                    assigned.add(name)
+    return problems
+
+
 FAIL_FAST_CONTRACT = "set -euo pipefail"
 
 
@@ -978,6 +1093,56 @@ def _workflow_jobs(workflow: str) -> dict[str, Any]:
         return {}
     jobs = parsed.get("jobs")
     return jobs if isinstance(jobs, dict) else {}
+
+
+def _workflow_dispatch_inputs(workflow: str) -> dict[str, Any]:
+    try:
+        parsed = yaml.safe_load(workflow) if workflow.strip() else {}
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    # ``on`` is parsed as the boolean ``True`` by YAML 1.1 loaders.
+    triggers = parsed.get("on", parsed.get(True))
+    if not isinstance(triggers, dict):
+        return {}
+    dispatch = triggers.get("workflow_dispatch")
+    if not isinstance(dispatch, dict):
+        return {}
+    inputs = dispatch.get("inputs")
+    return inputs if isinstance(inputs, dict) else {}
+
+
+def _dispatch_sha_gate_holds(workflow: str, workflow_jobs: dict[str, Any]) -> bool:
+    """Require every dispatched build and publish to name the exact commit.
+
+    A dispatch that only names a ref can build whatever that ref points at when
+    the job starts, so the expected commit is a required input and the first
+    job refuses to let anything else run.
+    """
+
+    expected = _workflow_dispatch_inputs(workflow).get("expected_sha")
+    if not isinstance(expected, dict):
+        return False
+    if expected.get("required") is not True or expected.get("type") != "string":
+        return False
+    # ``safe_dump`` doubles the single quotes inside the step's shell script.
+    identity_text = _job_text(workflow_jobs.get("release-identity")).replace("''", "'")
+    if not identity_text:
+        return False
+    required_identity_fragments = (
+        "inputs.expected_sha",
+        "github.sha",
+        "grep -Eq '^[0-9a-f]{40}$'",
+        'test "$ACTUAL_REF" = "refs/tags/v1.4.0"',
+        'test "$ACTUAL_SHA" = "$EXPECTED_SHA"',
+    )
+    if any(fragment not in identity_text for fragment in required_identity_fragments):
+        return False
+    return all(
+        _needs_job(workflow_jobs.get(job_name), "release-identity")
+        for job_name in ("build-distributions", "publish-testpypi", "publish-pypi")
+    )
 
 
 def _needs_job(job: Any, required: str) -> bool:
@@ -1093,6 +1258,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         _post_merge_gate_order_problems(runbook_doc)
         + _board_snapshot_binding_problems(runbook_doc)
         + _post_merge_fail_fast_problems(runbook_doc)
+        + _post_merge_variable_flow_problems(runbook_doc)
         if runbook_doc
         else ["unknown release version"]
     )
@@ -1126,7 +1292,10 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     unsafe_package_index_docs = [
         relative_path
         for relative_path in CURRENT_PACKAGE_INDEX_GUIDANCE_DOC_PATHS
-        if UNSAFE_MULTI_INDEX_MARKER in docs.get(relative_path, "")
+        if any(
+            marker in docs.get(relative_path, "")
+            for marker in UNSAFE_MULTI_INDEX_MARKERS
+        )
     ]
     missing_public_hygiene_docs = [
         relative_path
@@ -1251,6 +1420,16 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                     and "python -m build" in workflow
                     and "python -m twine check dist/*" in workflow
                 )
+                else "fail"
+            ),
+            evidence=str(workflow_path),
+        ),
+        _release_check(
+            check_id="release-dispatch-sha-gate",
+            title="Dispatched release builds are bound to the expected commit",
+            status=(
+                "pass"
+                if _dispatch_sha_gate_holds(workflow, workflow_jobs)
                 else "fail"
             ),
             evidence=str(workflow_path),

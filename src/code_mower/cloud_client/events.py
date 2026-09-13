@@ -697,6 +697,7 @@ def build_board_snapshot_event(
     install_id: str,
     source: str,
     snapshot: Mapping[str, Any],
+    git_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     remote = _as_mapping(snapshot.get("remote"))
     board_meta = _as_mapping(snapshot.get("board"))
@@ -772,6 +773,16 @@ def build_board_snapshot_event(
             "privacy_excluded_content": list(EXCLUDED_CONTENT),
         },
     }
+    provenance = _as_mapping(git_provenance)
+    if provenance:
+        # The commit and cleanliness of the checkout the snapshot was read
+        # from, so the evidence itself names the source it describes.
+        event["dimensions"]["source_git"] = {
+            "available": bool(provenance.get("available")),
+            "head_sha": _safe_dimension_text(provenance.get("head_sha"), max_length=40),
+            "clean": bool(provenance.get("clean")),
+            "dirty_entry_count": _int(provenance.get("dirty_entry_count")) or 0,
+        }
     return validate_cloud_event(event)
 
 
