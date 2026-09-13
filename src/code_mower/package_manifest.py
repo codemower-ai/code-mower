@@ -580,6 +580,7 @@ PACKAGE_FILES = (
     ("docs/slack-ingress.md", "docs/slack-ingress.md", "doc"),
     ("docs/slack-contract.md", "docs/slack-contract.md", "doc"),
     ("docs/graphify-evaluation.md", "docs/graphify-evaluation.md", "doc"),
+    ("docs/context-graph-lifecycle.md", "docs/context-graph-lifecycle.md", "doc"),
     ("docs/context-connections.md", "docs/context-connections.md", "doc"),
     ("docs/context-setup.md", "docs/context-setup.md", "doc"),
     ("docs/v130-release-notes.md", "docs/v130-release-notes.md", "doc"),

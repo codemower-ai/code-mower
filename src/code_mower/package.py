@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -609,6 +610,63 @@ def materialize_package_plan(
         lines.append("- none")
 
     return RenderedPlan(text="\n".join(lines) + "\n", data=manifest)
+
+
+COMMITTED_PACKAGE_MANIFEST = "code-mower-package-manifest.json"
+GENERATED_OUTPUT_DIR = "<generated-output-dir>"
+
+
+def normalized_package_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize a materialization manifest so committed copies compare exactly.
+
+    The local output directory is replaced by a placeholder and the written-file
+    inventory is ordered, so the committed artifact records the package surface
+    and its source mappings rather than one machine's materialization run.
+    """
+
+    files = [
+        {
+            "target": str(entry.get("target", "")),
+            "source": str(entry.get("source", "")),
+            "kind": str(entry.get("kind", "")),
+        }
+        for entry in manifest.get("files_written", [])
+        if isinstance(entry, Mapping)
+    ]
+    deferred = [
+        dict(entry)
+        for entry in manifest.get("deferred_package_files", [])
+        if isinstance(entry, Mapping)
+    ]
+    return {
+        "mode": str(manifest.get("mode", "")),
+        "package": dict(manifest.get("package", {})),
+        "output_dir": GENERATED_OUTPUT_DIR,
+        "files_written": sorted(
+            files, key=lambda entry: (entry["target"], entry["source"], entry["kind"])
+        ),
+        "deferred_package_files": deferred,
+    }
+
+
+def generate_committed_package_manifest(repo_root: Path) -> dict[str, Any]:
+    """Materialize the package into a scratch tree and normalize its manifest."""
+
+    repo_root = Path(repo_root).expanduser().resolve()
+    templates = repo_root / "src" / "code_mower" / "templates"
+    plan = render_package_plan(
+        load_config(templates / "code-mower.example.yml"),
+        load_provider_templates(templates / "providers.yml"),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        materialized = materialize_package_plan(
+            plan, output_dir=Path(tmp), repo_root=repo_root, force=True
+        )
+    return normalized_package_manifest(materialized.data)
+
+
+def committed_package_manifest_text(manifest: Mapping[str, Any]) -> str:
+    return json.dumps(manifest, indent=2, sort_keys=True) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:

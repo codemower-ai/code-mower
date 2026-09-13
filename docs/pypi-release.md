@@ -128,6 +128,234 @@ publish inputs set to `false` and confirm `build-distributions` and
   trusted-publishing setup or risky packaging changes; routine publishing
   can go from the green no-publish verification run to production PyPI.
 
+## v1.4.0 Post-Merge Release Runbook
+
+Run these steps in this order after the release pull request merges. Every
+irreversible step binds its inputs first: the exact merge head, the tag target,
+the workflow run ID, and the artifact filenames and digests. Replace each
+`REPLACE_WITH_...` value with the exact observed value, and keep tokens, profile
+paths, private repository paths, and provider prose out of recorded output.
+
+### 1. Bind the immutable merge head
+
+```bash
+REPO="codemower-ai/code-mower"
+git fetch origin main --tags
+RELEASE_SHA="$(git rev-parse origin/main)"
+git checkout "$RELEASE_SHA"
+test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+code-mower migration release-readiness --json
+```
+
+### 2. Create and verify the annotated `v1.4.0` tag
+
+```bash
+git tag -a v1.4.0 "$RELEASE_SHA" -m "Code Mower v1.4.0"
+git push origin refs/tags/v1.4.0
+test "$(git rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"
+test "$(git ls-remote origin 'refs/tags/v1.4.0^{}' | awk '{print $1}')" = "$RELEASE_SHA"
+```
+
+### 3. Run `release.yml` with no publishing first
+
+```bash
+gh workflow run release.yml --repo "$REPO" --ref v1.4.0 \
+  -f publish_testpypi=false -f publish_pypi=false
+NO_PUBLISH_RUN_ID="REPLACE_WITH_EXACT_RUN_ID"
+gh run watch "$NO_PUBLISH_RUN_ID" --repo "$REPO" --exit-status
+gh run view "$NO_PUBLISH_RUN_ID" --repo "$REPO" \
+  --json databaseId,headSha,event,status,conclusion,url
+```
+
+### 4. Publish TestPyPI only, then rehearse it
+
+```bash
+gh workflow run release.yml --repo "$REPO" --ref v1.4.0 \
+  -f publish_testpypi=true -f publish_pypi=false
+TESTPYPI_RUN_ID="REPLACE_WITH_EXACT_RUN_ID"
+gh run watch "$TESTPYPI_RUN_ID" --repo "$REPO" --exit-status
+TESTPYPI_WORK_DIR="$(mktemp -d /tmp/code-mower-v140-testpypi-rehearsal.XXXXXX)"
+code-mower migration package-install-rehearsal \
+  --package-spec code-mower==1.4.0 \
+  --python "$(command -v python3.12)" \
+  --work-dir "$TESTPYPI_WORK_DIR" \
+  --pip-index-url https://test.pypi.org/simple/ \
+  --pip-extra-index-url https://pypi.org/simple/ \
+  --allow-package-index --upgrade-pip --json
+```
+
+### 5. Publish production PyPI only, then rehearse it
+
+```bash
+gh workflow run release.yml --repo "$REPO" --ref v1.4.0 \
+  -f publish_testpypi=false -f publish_pypi=true
+PYPI_RUN_ID="REPLACE_WITH_EXACT_RUN_ID"
+gh run watch "$PYPI_RUN_ID" --repo "$REPO" --exit-status
+PYPI_WORK_DIR="$(mktemp -d /tmp/code-mower-v140-pypi-rehearsal.XXXXXX)"
+code-mower migration package-install-rehearsal \
+  --package-spec code-mower==1.4.0 \
+  --python "$(command -v python3.12)" \
+  --work-dir "$PYPI_WORK_DIR" \
+  --allow-package-index --upgrade-pip --json
+```
+
+### 6. Download the exact workflow artifact
+
+```bash
+PROD_DIST_DIR="$(mktemp -d /tmp/code-mower-v140-prod-dist.XXXXXX)"
+gh run download "$PYPI_RUN_ID" --repo "$REPO" \
+  --name code-mower-dist --dir "$PROD_DIST_DIR"
+ls -1 "$PROD_DIST_DIR"
+sha256sum "$PROD_DIST_DIR"/*
+```
+
+### 7. Compare SHA-256 digests with the files downloaded from PyPI
+
+```bash
+PYPI_DOWNLOAD_DIR="$(mktemp -d /tmp/code-mower-v140-pypi-download.XXXXXX)"
+python3.12 -m pip download code-mower==1.4.0 --no-deps --no-binary :all: \
+  --dest "$PYPI_DOWNLOAD_DIR"
+python3.12 -m pip download code-mower==1.4.0 --no-deps --only-binary :all: \
+  --dest "$PYPI_DOWNLOAD_DIR"
+sha256sum "$PYPI_DOWNLOAD_DIR"/*
+PROD_DIST_DIR="$PROD_DIST_DIR" PYPI_DOWNLOAD_DIR="$PYPI_DOWNLOAD_DIR" python3.12 - <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+
+
+def digests(directory):
+    return {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(Path(directory).iterdir())
+        if path.is_file()
+    }
+
+
+workflow = digests(os.environ["PROD_DIST_DIR"])
+published = digests(os.environ["PYPI_DOWNLOAD_DIR"])
+if len(workflow) != 2 or set(workflow) != set(published):
+    raise SystemExit("workflow and PyPI artifact sets differ")
+if any(workflow[name] != published[name] for name in workflow):
+    raise SystemExit("workflow and PyPI SHA-256 values differ")
+print(json.dumps({"artifact_count": len(workflow), "sha256_match": True}))
+PY
+```
+
+Only continue when the artifact set and every digest match. A mismatch is a
+release blocker: do not attach unverified files.
+
+### 8. Create the GitHub Release with those exact assets
+
+```bash
+gh release create v1.4.0 "$PROD_DIST_DIR"/* --repo "$REPO" \
+  --verify-tag --title "Code Mower v1.4.0" \
+  --notes-file docs/v140-release-notes.md --latest --fail-on-no-commits
+gh release view v1.4.0 --repo "$REPO" \
+  --json tagName,targetCommitish,isDraft,isPrerelease,publishedAt,url,assets
+RELEASE_EVENT_RUN_ID="REPLACE_WITH_EXACT_RELEASE_EVENT_RUN_ID"
+gh run watch "$RELEASE_EVENT_RUN_ID" --repo "$REPO" --exit-status
+gh run view "$RELEASE_EVENT_RUN_ID" --repo "$REPO" \
+  --json databaseId,headSha,event,status,conclusion,url
+```
+
+Use `gh release upload v1.4.0 "$PROD_DIST_DIR"/* --repo "$REPO" --clobber` when
+the release already exists. The publish jobs of the `release`-event run must stay
+skipped; it must not publish again.
+
+### 9. Install locally and verify Devin readiness
+
+```bash
+CODE_MOWER_PYTHON="$(command -v python3.12)"
+test -n "$CODE_MOWER_PYTHON"
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
+  'code-mower[coworker]==1.4.0'
+code-mower --version
+DEVIN_PROVIDER_PROFILE="REPLACE_WITH_PROTECTED_PROFILE_SELECTOR"
+code-mower doctor --easy --devin \
+  --provider-profile "$DEVIN_PROVIDER_PROFILE" --json
+```
+
+### 10. Run the required Claude + Codex + Devin campaign
+
+```bash
+RELEASE_PR="REPLACE_WITH_RELEASE_PR_NUMBER"
+code-mower release campaign create \
+  --release-tag v1.4.0 \
+  --package-spec code-mower==1.4.0 \
+  --providers claude,codex,devin \
+  --required-providers claude,codex,devin \
+  --qualification-context cold_install \
+  --package-source pypi \
+  --repo-slug codemower-ai/code-mower \
+  --issue 912 --release-pr "$RELEASE_PR" \
+  --provider-profile "$DEVIN_PROVIDER_PROFILE" \
+  --apply --json
+code-mower release campaign watch --release-tag v1.4.0 \
+  --interval 10 --timeout 3600 --json
+code-mower release campaign status --release-tag v1.4.0 --json
+```
+
+All three provider results must pass, and Devin's result must identify the
+hosted transport before peer support is claimed.
+
+### 11. Restart the three Boards from the release
+
+```bash
+CODE_MOWER_RELEASE_CHECKOUT="REPLACE_WITH_EXACT_V140_CHECKOUT"
+BOARD_5342_REPO="REUSE_PRIVATE_INVENTORIED_SLUG"
+BOARD_5342_REPO_PATH="REUSE_PRIVATE_INVENTORIED_PATH"
+BOARD_5344_REPO="REUSE_PRIVATE_INVENTORIED_SLUG"
+BOARD_5344_REPO_PATH="REUSE_PRIVATE_INVENTORIED_PATH"
+code-mower board list --json
+code-mower board stop --port 5332 --yes --json
+code-mower board stop --port 5342 --yes --json
+code-mower board stop --port 5344 --yes --json
+nohup code-mower board serve --repo codemower-ai/code-mower \
+  --repo-path "$CODE_MOWER_RELEASE_CHECKOUT" --host 127.0.0.1 \
+  --port 5332 --record-events >/tmp/code-mower-board-5332.log 2>&1 &
+nohup code-mower board serve --repo "$BOARD_5342_REPO" \
+  --repo-path "$BOARD_5342_REPO_PATH" --host 127.0.0.1 \
+  --port 5342 --record-events >/tmp/code-mower-board-5342.log 2>&1 &
+nohup code-mower board serve --repo "$BOARD_5344_REPO" \
+  --repo-path "$BOARD_5344_REPO_PATH" --host 127.0.0.1 \
+  --port 5344 --record-events >/tmp/code-mower-board-5344.log 2>&1 &
+code-mower board list --json
+code-mower board doctor --repo codemower-ai/code-mower \
+  --repo-path "$CODE_MOWER_RELEASE_CHECKOUT" --json
+```
+
+Each inventory row must report serving and installed version `1.4.0`. The port
+5332 Board must be restarted from the exact v1.4.0 release checkout because its
+pre-release repository path is stale. Run `code-mower board doctor` for the other
+two Boards with their privately inventoried slugs and paths. Do not use raw
+process kills or Board reset, and do not copy private repository slugs or paths
+into public evidence.
+
+### 12. Dry-run, inspect, then upload metadata-only cloud evidence
+
+```bash
+code-mower cloud doctor --install-id codex-code-mower --probe-service --json
+code-mower release campaign upload --release-tag v1.4.0 \
+  --install-id codex-code-mower --team-id jeff-internal --json
+code-mower release campaign upload --release-tag v1.4.0 \
+  --install-id codex-code-mower --team-id jeff-internal --yes --json
+BOARD_SNAPSHOT_DIR="$(mktemp -d /tmp/code-mower-v140-board-snapshot.XXXXXX)"
+code-mower cloud board-snapshot \
+  --repo-path "$CODE_MOWER_RELEASE_CHECKOUT" \
+  --repo-slug codemower-ai/code-mower \
+  --output-dir "$BOARD_SNAPSHOT_DIR" \
+  --install-id codex-code-mower --team-id jeff-internal --json
+code-mower cloud upload "$BOARD_SNAPSHOT_DIR" \
+  --install-id codex-code-mower --dry-run --json
+code-mower cloud upload "$BOARD_SNAPSHOT_DIR" \
+  --install-id codex-code-mower --yes --json
+```
+
+Record accepted event identifiers and counts only, never report prose, profile
+paths, tokens, or local configuration.
+
 ## Cache Bypass And Propagation Triage
 
 Use cache-bypassing exact-version installs when validating a just-published

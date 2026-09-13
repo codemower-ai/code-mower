@@ -126,15 +126,140 @@ def _materialized_package_versions(repo_path: Path) -> dict[str, Any]:
         }
 
 
-def _committed_manifest_version(repo_path: Path) -> str:
-    text = _read_text_if_exists(repo_path / "code-mower-package-manifest.json")
+def _committed_manifest(repo_path: Path) -> dict[str, Any] | None:
+    text = _read_text_if_exists(
+        repo_path / package_module.COMMITTED_PACKAGE_MANIFEST
+    )
     try:
-        manifest = json.loads(text) if text.strip() else {}
+        manifest = json.loads(text) if text.strip() else None
     except json.JSONDecodeError:
-        return ""
-    package = manifest.get("package") if isinstance(manifest, dict) else None
+        return None
+    return manifest if isinstance(manifest, dict) else None
+
+
+def _committed_manifest_version(repo_path: Path) -> str:
+    manifest = _committed_manifest(repo_path) or {}
+    package = manifest.get("package")
     version = package.get("version") if isinstance(package, dict) else None
     return version if isinstance(version, str) else ""
+
+
+def _manifest_inventory(manifest: dict[str, Any]) -> dict[str, dict[str, str]]:
+    inventory: dict[str, dict[str, str]] = {}
+    for entry in manifest.get("files_written", []):
+        if isinstance(entry, dict):
+            inventory[str(entry.get("target", ""))] = {
+                "source": str(entry.get("source", "")),
+                "kind": str(entry.get("kind", "")),
+            }
+    return inventory
+
+
+def _committed_manifest_drift(repo_path: Path) -> dict[str, Any]:
+    """Compare the whole normalized committed manifest with a fresh generation.
+
+    A stale committed artifact is a release defect: it is the published record of
+    the standalone package surface, so missing targets, unexpected targets, and
+    changed source mappings all fail readiness, not only a drifted version.
+    """
+
+    committed = _committed_manifest(repo_path)
+    if committed is None:
+        return {
+            "error": "committed package manifest is missing or not valid JSON",
+            "missing_targets": [],
+            "unexpected_targets": [],
+            "changed_targets": [],
+            "committed_file_count": 0,
+            "generated_file_count": 0,
+            "metadata_matches": False,
+        }
+    try:
+        generated = package_module.generate_committed_package_manifest(repo_path)
+    except Exception as exc:  # pragma: no cover - exercised through status output.
+        return {
+            "error": str(exc),
+            "missing_targets": [],
+            "unexpected_targets": [],
+            "changed_targets": [],
+            "committed_file_count": len(_manifest_inventory(committed)),
+            "generated_file_count": 0,
+            "metadata_matches": False,
+        }
+    normalized = package_module.normalized_package_manifest(committed)
+    committed_files = _manifest_inventory(normalized)
+    generated_files = _manifest_inventory(generated)
+    changed = sorted(
+        target
+        for target, entry in generated_files.items()
+        if target in committed_files and committed_files[target] != entry
+    )
+    return {
+        "error": "",
+        "missing_targets": sorted(set(generated_files) - set(committed_files))[:20],
+        "unexpected_targets": sorted(set(committed_files) - set(generated_files))[:20],
+        "changed_targets": changed[:20],
+        "committed_file_count": len(committed_files),
+        "generated_file_count": len(generated_files),
+        "metadata_matches": all(
+            normalized.get(key) == generated.get(key)
+            for key in ("mode", "package", "output_dir", "deferred_package_files")
+        ),
+    }
+
+
+def _manifest_matches_generated(drift: dict[str, Any]) -> bool:
+    return bool(
+        not drift["error"]
+        and drift["metadata_matches"]
+        and not drift["missing_targets"]
+        and not drift["unexpected_targets"]
+        and not drift["changed_targets"]
+        and drift["committed_file_count"] == drift["generated_file_count"]
+    )
+
+
+def _post_merge_runbook_markers(release_tag: str, package_index_spec: str) -> tuple[str, ...]:
+    """Ordered, exact commands the post-merge runbook must publish in sequence."""
+
+    return (
+        'RELEASE_SHA="$(git rev-parse origin/main)"',
+        f'git tag -a {release_tag} "$RELEASE_SHA"',
+        f"git push origin refs/tags/{release_tag}",
+        "-f publish_testpypi=false -f publish_pypi=false",
+        "-f publish_testpypi=true -f publish_pypi=false",
+        f"--package-spec {package_index_spec}",
+        "--pip-index-url https://test.pypi.org/simple/",
+        "-f publish_testpypi=false -f publish_pypi=true",
+        "gh run download",
+        "--name code-mower-dist",
+        "python3.12 -m pip download",
+        "sha256",
+        f"gh release create {release_tag}",
+        "--verify-tag",
+        "code-mower doctor --easy --devin",
+        "code-mower release campaign create",
+        "--required-providers claude,codex,devin",
+        "--port 5332",
+        "--port 5342",
+        "--port 5344",
+        "code-mower cloud upload",
+        "--dry-run --json",
+    )
+
+
+def _unordered_markers(text: str, markers: tuple[str, ...]) -> list[str]:
+    """Report markers that are missing or appear before their predecessor."""
+
+    problems: list[str] = []
+    position = -1
+    for marker in markers:
+        found = text.find(marker, position + 1)
+        if found < 0:
+            problems.append(marker)
+            continue
+        position = found
+    return problems
 
 
 def _release_tag_for_version(version: str) -> str:
@@ -228,11 +353,23 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     init_version = _python_package_version(repo_path)
     pyproject_version = _pyproject_version(repo_path)
     manifest_version = _committed_manifest_version(repo_path)
+    manifest_drift = _committed_manifest_drift(repo_path)
     version = init_version or pyproject_version
     materialized_versions = _materialized_package_versions(repo_path)
     release_tag = _release_tag_for_version(version) if version else ""
     package_index_spec = f"code-mower=={version}" if version else ""
     doc_blob = "\n".join(docs.values())
+    runbook_doc = docs.get("docs/pypi-release.md", "")
+    runbook_markers = (
+        _post_merge_runbook_markers(release_tag, package_index_spec)
+        if release_tag and package_index_spec
+        else ()
+    )
+    missing_runbook_markers = (
+        _unordered_markers(runbook_doc, runbook_markers)
+        if runbook_markers
+        else ["unknown release version"]
+    )
     public_hygiene_blobs = {
         relative_path: text.lower()
         for relative_path, text in public_hygiene_docs.items()
@@ -351,6 +488,17 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 "init_version": init_version,
                 "pyproject_version": pyproject_version,
             },
+        ),
+        _release_check(
+            check_id="committed-package-manifest-matches-generated",
+            title="Committed package manifest matches the current package inventory",
+            status="pass" if _manifest_matches_generated(manifest_drift) else "fail",
+            evidence=(
+                f"{package_module.COMMITTED_PACKAGE_MANIFEST}="
+                f"{manifest_drift['committed_file_count']} file(s), "
+                f"generated={manifest_drift['generated_file_count']} file(s)"
+            ),
+            detail=manifest_drift,
         ),
         _release_check(
             check_id="release-workflow-present",
@@ -490,6 +638,17 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             evidence="docs/pypi-release.md",
         ),
         _release_check(
+            check_id="post-merge-release-runbook-ordered",
+            title="Post-merge runbook publishes the full ordered release sequence",
+            status="pass" if not missing_runbook_markers else "fail",
+            evidence="docs/pypi-release.md",
+            detail={
+                "release_tag": release_tag,
+                "required_commands": list(runbook_markers),
+                "missing_or_out_of_order": missing_runbook_markers,
+            },
+        ),
+        _release_check(
             check_id="public-maintainer-docs",
             title="Public maintainer and community files are present",
             status="pass" if not missing_public_hygiene_docs else "fail",
@@ -557,6 +716,48 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 "--json"
             ),
             "url": PACKAGE_INDEX_SETUP_URLS["testpypi_project"],
+        },
+        {
+            "id": "publish-pypi-release",
+            "title": "Publish the verified distribution to production PyPI",
+            "command": (
+                "gh workflow run release.yml --repo codemower-ai/code-mower "
+                f"--ref {release_workflow_ref} "
+                "-f publish_testpypi=false -f publish_pypi=true"
+            ),
+            "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
+        },
+        {
+            "id": "pypi-install-rehearsal",
+            "title": "Install the published package from production PyPI",
+            "command": (
+                "code-mower migration package-install-rehearsal "
+                f"--package-spec {package_index_spec} "
+                "--allow-package-index "
+                "--upgrade-pip "
+                "--json"
+            ),
+            "url": PACKAGE_INDEX_SETUP_URLS["pypi_project"],
+        },
+        {
+            "id": "compare-artifact-digests",
+            "title": "Compare the workflow artifact digests with PyPI before release assets",
+            "command": (
+                "gh run download \"$PYPI_RUN_ID\" --repo codemower-ai/code-mower "
+                "--name code-mower-dist --dir \"$PROD_DIST_DIR\" "
+                "&& sha256sum \"$PROD_DIST_DIR\"/*"
+            ),
+            "url": PACKAGE_INDEX_SETUP_URLS["pypi_project"],
+        },
+        {
+            "id": "create-github-release",
+            "title": "Attach the exact verified artifacts to the GitHub Release",
+            "command": (
+                f"gh release create {release_tag or 'RELEASE_TAG'} "
+                "\"$PROD_DIST_DIR\"/* --repo codemower-ai/code-mower --verify-tag "
+                "--latest --fail-on-no-commits"
+            ),
+            "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },
     ]
     return {

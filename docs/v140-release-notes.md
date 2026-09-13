@@ -89,6 +89,8 @@ packet fingerprints, provider prose, or Slack message content.
 
 ## Post-merge release steps
 
+The ordered, executable commands live in the
+[v1.4.0 post-merge release runbook](pypi-release.md#v140-post-merge-release-runbook).
 The orchestrator owns every step after this pull request merges: binding the
 annotated `v1.4.0` tag to the exact release merge commit, the no-publish
 `release.yml` rehearsal at `--ref v1.4.0`, TestPyPI publication and rehearsal,

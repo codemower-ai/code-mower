@@ -9,8 +9,23 @@
   "files_written": [
     {
       "kind": "package",
+      "source": "generated",
+      "target": ".github/workflows/ci.yml"
+    },
+    {
+      "kind": "package",
+      "source": "generated",
+      "target": ".gitignore"
+    },
+    {
+      "kind": "package",
       "source": "LICENSE",
       "target": "LICENSE"
+    },
+    {
+      "kind": "package",
+      "source": "generated",
+      "target": "MANIFEST.in"
     },
     {
       "kind": "package",
@@ -18,9 +33,319 @@
       "target": "NOTICE"
     },
     {
+      "kind": "package",
+      "source": "generated",
+      "target": "README.md"
+    },
+    {
+      "kind": "manifest",
+      "source": "generated",
+      "target": "code-mower-package-manifest.json"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/acp-bridge-spike.md",
+      "target": "docs/acp-bridge-spike.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/authoring-intelligence.md",
+      "target": "docs/authoring-intelligence.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/build-loop.md",
+      "target": "docs/build-loop.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/builder-experiments.md",
+      "target": "docs/builder-experiments.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/builders-grok-cursor.md",
+      "target": "docs/builders-grok-cursor.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/calibration-notes.md",
+      "target": "docs/calibration-notes.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/calibration-pilot.md",
+      "target": "docs/calibration-pilot.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/cloud-benchmarking.md",
+      "target": "docs/cloud-benchmarking.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/commercial-boundary.md",
+      "target": "docs/commercial-boundary.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/context-connections.md",
+      "target": "docs/context-connections.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/context-delivery.md",
+      "target": "docs/context-delivery.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/context-graph-lifecycle.md",
+      "target": "docs/context-graph-lifecycle.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/context-packet-schema.md",
+      "target": "docs/context-packet-schema.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/context-provider-contract.md",
+      "target": "docs/context-provider-contract.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/context-setup.md",
+      "target": "docs/context-setup.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/devin-peer-support-qualification.md",
+      "target": "docs/devin-peer-support-qualification.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/devin-review-parity.md",
+      "target": "docs/devin-review-parity.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/devin-work-orders.md",
+      "target": "docs/devin-work-orders.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/github-setup.md",
+      "target": "docs/github-setup.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/graphify-evaluation.md",
+      "target": "docs/graphify-evaluation.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/lane-promotion-policy.md",
+      "target": "docs/lane-promotion-policy.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/lens-calibration-report.md",
+      "target": "docs/lens-calibration-report.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/local-audit-runner.md",
+      "target": "docs/local-audit-runner.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/mirror-removal-runbook.md",
+      "target": "docs/mirror-removal-runbook.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/oss-v1-checklist.md",
+      "target": "docs/oss-v1-checklist.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/package-customization.md",
+      "target": "docs/package-customization.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/planning-work-orders.md",
+      "target": "docs/planning-work-orders.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/provider-matrix.md",
+      "target": "docs/provider-matrix.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/public-release-checklist.md",
+      "target": "docs/public-release-checklist.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/release-qualification.md",
+      "target": "docs/release-qualification.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/repo-strategy.md",
+      "target": "docs/repo-strategy.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/reviewer-value-report.md",
+      "target": "docs/reviewer-value-report.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/slack-contract.md",
+      "target": "docs/slack-contract.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/slack-ingress.md",
+      "target": "docs/slack-ingress.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/troubleshooting.md",
+      "target": "docs/troubleshooting.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/v130-context-qualification.md",
+      "target": "docs/v130-context-qualification.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/v130-release-notes.md",
+      "target": "docs/v130-release-notes.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/v131-guided-context-qualification.md",
+      "target": "docs/v131-guided-context-qualification.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/v131-release-notes.md",
+      "target": "docs/v131-release-notes.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/v140-release-notes.md",
+      "target": "docs/v140-release-notes.md"
+    },
+    {
+      "kind": "package",
+      "source": "generated",
+      "target": "pyproject.toml"
+    },
+    {
+      "kind": "tooling",
+      "source": "requirements/requirements.txt",
+      "target": "requirements/requirements.txt"
+    },
+    {
+      "kind": "package",
+      "source": "generated",
+      "target": "scripts/fresh_clone_rehearsal.py"
+    },
+    {
+      "kind": "package",
+      "source": "generated",
+      "target": "scripts/smoke_easy_mode.py"
+    },
+    {
+      "kind": "package",
+      "source": "generated",
+      "target": "src/code_mower/__init__.py"
+    },
+    {
+      "kind": "adapter",
+      "source": "src/code_mower/adapters/__init__.py",
+      "target": "src/code_mower/adapters/__init__.py"
+    },
+    {
+      "kind": "adapter",
+      "source": "src/code_mower/adapters/_base.py",
+      "target": "src/code_mower/adapters/_base.py"
+    },
+    {
+      "kind": "adapter",
+      "source": "src/code_mower/adapters/cursor_bugbot.py",
+      "target": "src/code_mower/adapters/cursor_bugbot.py"
+    },
+    {
+      "kind": "adapter",
+      "source": "src/code_mower/adapters/gitar.py",
+      "target": "src/code_mower/adapters/gitar.py"
+    },
+    {
+      "kind": "adapter",
+      "source": "src/code_mower/adapters/greptile.py",
+      "target": "src/code_mower/adapters/greptile.py"
+    },
+    {
+      "kind": "adapter",
+      "source": "src/code_mower/adapters/qodo.py",
+      "target": "src/code_mower/adapters/qodo.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/antigravity_cli_audit_pr.py",
+      "target": "src/code_mower/antigravity_cli_audit_pr.py"
+    },
+    {
       "kind": "core",
-      "source": "src/code_mower/cli.py",
-      "target": "src/code_mower/cli.py"
+      "source": "src/code_mower/antigravity_sdk_probe.py",
+      "target": "src/code_mower/antigravity_sdk_probe.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/audit_handoff_log.py",
+      "target": "src/code_mower/audit_handoff_log.py"
+    },
+    {
+      "kind": "core",
+      "source": "tools/audit_labeler_lib.py",
+      "target": "src/code_mower/audit_labeler_lib.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/audit_limits.py",
+      "target": "src/code_mower/audit_limits.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/audit_progress.py",
+      "target": "src/code_mower/audit_progress.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/blind_review_artifacts.py",
+      "target": "src/code_mower/blind_review_artifacts.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/blind_review_coordinator.py",
+      "target": "src/code_mower/blind_review_coordinator.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/board.py",
+      "target": "src/code_mower/board.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/board_store.py",
+      "target": "src/code_mower/board_store.py"
     },
     {
       "kind": "core",
@@ -29,43 +354,13 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/builder_runs.py",
-      "target": "src/code_mower/builder_runs.py"
-    },
-    {
-      "kind": "core",
       "source": "src/code_mower/builder_experiment.py",
       "target": "src/code_mower/builder_experiment.py"
     },
     {
       "kind": "core",
-      "source": "src/code_mower/work_orders.py",
-      "target": "src/code_mower/work_orders.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/plan_context.py",
-      "target": "src/code_mower/plan_context.py"
-    },
-    {
-      "kind": "tooling",
-      "source": "requirements/requirements.txt",
-      "target": "requirements/requirements.txt"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/code_mower_calibration.py",
-      "target": "src/code_mower/code_mower_calibration.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/checks.py",
-      "target": "src/code_mower/checks.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/gate_health.py",
-      "target": "src/code_mower/gate_health.py"
+      "source": "src/code_mower/builder_runs.py",
+      "target": "src/code_mower/builder_runs.py"
     },
     {
       "kind": "core",
@@ -74,13 +369,13 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/calibration/auto_discovery.py",
-      "target": "src/code_mower/calibration/auto_discovery.py"
+      "source": "src/code_mower/calibration/arms.py",
+      "target": "src/code_mower/calibration/arms.py"
     },
     {
       "kind": "core",
-      "source": "src/code_mower/calibration/arms.py",
-      "target": "src/code_mower/calibration/arms.py"
+      "source": "src/code_mower/calibration/auto_discovery.py",
+      "target": "src/code_mower/calibration/auto_discovery.py"
     },
     {
       "kind": "core",
@@ -99,6 +394,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/calibration/effect_report.py",
+      "target": "src/code_mower/calibration/effect_report.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/calibration/evidence.py",
       "target": "src/code_mower/calibration/evidence.py"
     },
@@ -106,11 +406,6 @@
       "kind": "core",
       "source": "src/code_mower/calibration/evidence_report.py",
       "target": "src/code_mower/calibration/evidence_report.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/calibration/effect_report.py",
-      "target": "src/code_mower/calibration/effect_report.py"
     },
     {
       "kind": "core",
@@ -129,13 +424,13 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/calibration/policy.py",
-      "target": "src/code_mower/calibration/policy.py"
+      "source": "src/code_mower/calibration/planning.py",
+      "target": "src/code_mower/calibration/planning.py"
     },
     {
       "kind": "core",
-      "source": "src/code_mower/calibration/planning.py",
-      "target": "src/code_mower/calibration/planning.py"
+      "source": "src/code_mower/calibration/policy.py",
+      "target": "src/code_mower/calibration/policy.py"
     },
     {
       "kind": "core",
@@ -149,13 +444,13 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/calibration/runner.py",
-      "target": "src/code_mower/calibration/runner.py"
+      "source": "src/code_mower/calibration/run_status.py",
+      "target": "src/code_mower/calibration/run_status.py"
     },
     {
       "kind": "core",
-      "source": "src/code_mower/calibration/run_status.py",
-      "target": "src/code_mower/calibration/run_status.py"
+      "source": "src/code_mower/calibration/runner.py",
+      "target": "src/code_mower/calibration/runner.py"
     },
     {
       "kind": "core",
@@ -169,6 +464,46 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/campaign_adapters.py",
+      "target": "src/code_mower/campaign_adapters.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/campaign_discovery.py",
+      "target": "src/code_mower/campaign_discovery.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/checks.py",
+      "target": "src/code_mower/checks.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/claude_audit_pr.py",
+      "target": "src/code_mower/claude_audit_pr.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/claude_cli_bounce.py",
+      "target": "src/code_mower/claude_cli_bounce.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/claude_cli_environment.py",
+      "target": "src/code_mower/claude_cli_environment.py"
+    },
+    {
+      "kind": "labeler",
+      "source": "src/code_mower/clear_stale.py",
+      "target": "src/code_mower/clear_stale.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/cli.py",
+      "target": "src/code_mower/cli.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/cloud.py",
       "target": "src/code_mower/cloud.py"
     },
@@ -179,18 +514,23 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/cloud_client/adoption_runs.py",
+      "target": "src/code_mower/cloud_client/adoption_runs.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/cloud_client/bundle.py",
       "target": "src/code_mower/cloud_client/bundle.py"
     },
     {
       "kind": "core",
-      "source": "src/code_mower/cloud_client/dogfood.py",
-      "target": "src/code_mower/cloud_client/dogfood.py"
+      "source": "src/code_mower/cloud_client/doctor.py",
+      "target": "src/code_mower/cloud_client/doctor.py"
     },
     {
       "kind": "core",
-      "source": "src/code_mower/cloud_client/doctor.py",
-      "target": "src/code_mower/cloud_client/doctor.py"
+      "source": "src/code_mower/cloud_client/dogfood.py",
+      "target": "src/code_mower/cloud_client/dogfood.py"
     },
     {
       "kind": "core",
@@ -214,6 +554,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/cloud_client/finding_outcomes.py",
+      "target": "src/code_mower/cloud_client/finding_outcomes.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/cloud_client/git_metadata.py",
       "target": "src/code_mower/cloud_client/git_metadata.py"
     },
@@ -229,8 +574,18 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/cloud_client/pr_outcomes.py",
+      "target": "src/code_mower/cloud_client/pr_outcomes.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/cloud_client/productivity.py",
       "target": "src/code_mower/cloud_client/productivity.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/cloud_client/productivity_windows.py",
+      "target": "src/code_mower/cloud_client/productivity_windows.py"
     },
     {
       "kind": "core",
@@ -254,13 +609,183 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/config.py",
-      "target": "src/code_mower/config.py"
+      "source": "src/code_mower/cloud_client/work_types.py",
+      "target": "src/code_mower/cloud_client/work_types.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/code_mower_calibration.py",
+      "target": "src/code_mower/code_mower_calibration.py"
     },
     {
       "kind": "core",
       "source": "src/code_mower/code_mower_context_packs.py",
       "target": "src/code_mower/code_mower_context_packs.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/code_mower_merge.py",
+      "target": "src/code_mower/code_mower_merge.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/code_mower_telemetry.py",
+      "target": "src/code_mower/code_mower_telemetry.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/coderabbit_cli_audit_pr.py",
+      "target": "src/code_mower/coderabbit_cli_audit_pr.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/codex_audit_env_preflight.py",
+      "target": "src/code_mower/codex_audit_env_preflight.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/codex_audit_pr.py",
+      "target": "src/code_mower/codex_audit_pr.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/codex_audit_schema_smoke.py",
+      "target": "src/code_mower/codex_audit_schema_smoke.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/codex_audit_verdict.schema.json",
+      "target": "src/code_mower/codex_audit_verdict.schema.json"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/config.py",
+      "target": "src/code_mower/config.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_audit.py",
+      "target": "src/code_mower/context_audit.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_command.py",
+      "target": "src/code_mower/context_command.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_connections.py",
+      "target": "src/code_mower/context_connections.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_contract.py",
+      "target": "src/code_mower/context_contract.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_delivery.py",
+      "target": "src/code_mower/context_delivery.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_graph.py",
+      "target": "src/code_mower/context_graph.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_graph_command.py",
+      "target": "src/code_mower/context_graph_command.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_graph_lifecycle.py",
+      "target": "src/code_mower/context_graph_lifecycle.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_guided.py",
+      "target": "src/code_mower/context_guided.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_packets.py",
+      "target": "src/code_mower/context_packets.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_prepare.py",
+      "target": "src/code_mower/context_prepare.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_readiness.py",
+      "target": "src/code_mower/context_readiness.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_review.py",
+      "target": "src/code_mower/context_review.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_session.py",
+      "target": "src/code_mower/context_session.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_store.py",
+      "target": "src/code_mower/context_store.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/controller.py",
+      "target": "src/code_mower/controller.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/coworker_mcp.py",
+      "target": "src/code_mower/coworker_mcp.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/coworker_retrieval.py",
+      "target": "src/code_mower/coworker_retrieval.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/decisions.py",
+      "target": "src/code_mower/decisions.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/devin_api.py",
+      "target": "src/code_mower/devin_api.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/devin_cli_audit_pr.py",
+      "target": "src/code_mower/devin_cli_audit_pr.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/devin_readiness.py",
+      "target": "src/code_mower/devin_readiness.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/devin_review.py",
+      "target": "src/code_mower/devin_review.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/devin_sessions.py",
+      "target": "src/code_mower/devin_sessions.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/devin_work_orders.py",
+      "target": "src/code_mower/devin_work_orders.py"
     },
     {
       "kind": "core",
@@ -274,8 +799,18 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/adoption.py",
+      "target": "src/code_mower/doctor_checks/adoption.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/audit_limits.py",
       "target": "src/code_mower/doctor_checks/audit_limits.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/campaign_auth.py",
+      "target": "src/code_mower/doctor_checks/campaign_auth.py"
     },
     {
       "kind": "core",
@@ -289,13 +824,18 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/doctor_checks/github_actions.py",
-      "target": "src/code_mower/doctor_checks/github_actions.py"
+      "source": "src/code_mower/doctor_checks/devin.py",
+      "target": "src/code_mower/doctor_checks/devin.py"
     },
     {
       "kind": "core",
-      "source": "src/code_mower/doctor_checks/github_actions_permissions.py",
-      "target": "src/code_mower/doctor_checks/github_actions_permissions.py"
+      "source": "src/code_mower/doctor_checks/github.py",
+      "target": "src/code_mower/doctor_checks/github.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_actions.py",
+      "target": "src/code_mower/doctor_checks/github_actions.py"
     },
     {
       "kind": "core",
@@ -306,11 +846,6 @@
       "kind": "core",
       "source": "src/code_mower/doctor_checks/github_actions_cost_summary.py",
       "target": "src/code_mower/doctor_checks/github_actions_cost_summary.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/doctor_checks/github_actions_failures.py",
-      "target": "src/code_mower/doctor_checks/github_actions_failures.py"
     },
     {
       "kind": "core",
@@ -334,6 +869,16 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_actions_failures.py",
+      "target": "src/code_mower/doctor_checks/github_actions_failures.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_actions_permissions.py",
+      "target": "src/code_mower/doctor_checks/github_actions_permissions.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/github_api.py",
       "target": "src/code_mower/doctor_checks/github_api.py"
     },
@@ -354,11 +899,6 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/doctor_checks/github.py",
-      "target": "src/code_mower/doctor_checks/github.py"
-    },
-    {
-      "kind": "core",
       "source": "src/code_mower/doctor_checks/github_provider.py",
       "target": "src/code_mower/doctor_checks/github_provider.py"
     },
@@ -369,8 +909,18 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/github_trusted_authors.py",
+      "target": "src/code_mower/doctor_checks/github_trusted_authors.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/groups.py",
       "target": "src/code_mower/doctor_checks/groups.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/jira.py",
+      "target": "src/code_mower/doctor_checks/jira.py"
     },
     {
       "kind": "core",
@@ -386,6 +936,11 @@
       "kind": "core",
       "source": "src/code_mower/doctor_checks/presets.py",
       "target": "src/code_mower/doctor_checks/presets.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/doctor_checks/privacy.py",
+      "target": "src/code_mower/doctor_checks/privacy.py"
     },
     {
       "kind": "core",
@@ -419,6 +974,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/provider_local_audit_setup.py",
+      "target": "src/code_mower/doctor_checks/provider_local_audit_setup.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/provider_local_cli.py",
       "target": "src/code_mower/doctor_checks/provider_local_cli.py"
     },
@@ -429,18 +989,8 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/doctor_checks/campaign_auth.py",
-      "target": "src/code_mower/doctor_checks/campaign_auth.py"
-    },
-    {
-      "kind": "core",
       "source": "src/code_mower/doctor_checks/provider_local_cli_probe_config.py",
       "target": "src/code_mower/doctor_checks/provider_local_cli_probe_config.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/doctor_checks/provider_local_audit_setup.py",
-      "target": "src/code_mower/doctor_checks/provider_local_audit_setup.py"
     },
     {
       "kind": "core",
@@ -474,28 +1024,8 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/doctor_checks/privacy.py",
-      "target": "src/code_mower/doctor_checks/privacy.py"
-    },
-    {
-      "kind": "core",
       "source": "src/code_mower/doctor_checks/providers.py",
       "target": "src/code_mower/doctor_checks/providers.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/providers/__init__.py",
-      "target": "src/code_mower/providers/__init__.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/providers/local_cli.py",
-      "target": "src/code_mower/providers/local_cli.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/providers/provenance.py",
-      "target": "src/code_mower/providers/provenance.py"
     },
     {
       "kind": "core",
@@ -514,13 +1044,53 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/runtime_github_auth.py",
+      "target": "src/code_mower/doctor_checks/runtime_github_auth.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/self_hosted_runner.py",
       "target": "src/code_mower/doctor_checks/self_hosted_runner.py"
     },
     {
       "kind": "core",
-      "source": "src/code_mower/doctor_checks/runtime_github_auth.py",
-      "target": "src/code_mower/doctor_checks/runtime_github_auth.py"
+      "source": "src/code_mower/doctor_checks/supervised_pilot.py",
+      "target": "src/code_mower/doctor_checks/supervised_pilot.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/file_locks.py",
+      "target": "src/code_mower/file_locks.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/gate_health.py",
+      "target": "src/code_mower/gate_health.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/gemini_cli_audit_pr.py",
+      "target": "src/code_mower/gemini_cli_audit_pr.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/git_identity.py",
+      "target": "src/code_mower/git_identity.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/github_builder_evidence.py",
+      "target": "src/code_mower/github_builder_evidence.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/grok_build_audit_pr.py",
+      "target": "src/code_mower/grok_build_audit_pr.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/hermes_cli_audit_pr.py",
+      "target": "src/code_mower/hermes_cli_audit_pr.py"
     },
     {
       "kind": "core",
@@ -529,8 +1099,113 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/code_mower_merge.py",
-      "target": "src/code_mower/code_mower_merge.py"
+      "source": "src/code_mower/jira_cloud.py",
+      "target": "src/code_mower/jira_cloud.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/jira_mutations.py",
+      "target": "src/code_mower/jira_mutations.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/jira_pr_sync.py",
+      "target": "src/code_mower/jira_pr_sync.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/__init__.py",
+      "target": "src/code_mower/lane_configs/__init__.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/aider.py",
+      "target": "src/code_mower/lane_configs/aider.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/antigravity_cli.py",
+      "target": "src/code_mower/lane_configs/antigravity_cli.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/claude.py",
+      "target": "src/code_mower/lane_configs/claude.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/codex.py",
+      "target": "src/code_mower/lane_configs/codex.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/devin.py",
+      "target": "src/code_mower/lane_configs/devin.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/devin_cli.py",
+      "target": "src/code_mower/lane_configs/devin_cli.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/gemini_cli.py",
+      "target": "src/code_mower/lane_configs/gemini_cli.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/grok_build.py",
+      "target": "src/code_mower/lane_configs/grok_build.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/hermes_cli.py",
+      "target": "src/code_mower/lane_configs/hermes_cli.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/local_llm.py",
+      "target": "src/code_mower/lane_configs/local_llm.py"
+    },
+    {
+      "kind": "lane-config",
+      "source": "src/code_mower/lane_configs/muse_cli.py",
+      "target": "src/code_mower/lane_configs/muse_cli.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/lane_delivery.py",
+      "target": "src/code_mower/lane_delivery.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/lane_status.py",
+      "target": "src/code_mower/lane_status.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/local_cli_commands.py",
+      "target": "src/code_mower/local_cli_commands.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/local_llm_audit_pr.py",
+      "target": "src/code_mower/local_llm_audit_pr.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/local_llm_bakeoff.py",
+      "target": "src/code_mower/local_llm_bakeoff.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/local_llm_calibration.py",
+      "target": "src/code_mower/local_llm_calibration.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/local_llm_profiles.py",
+      "target": "src/code_mower/local_llm_profiles.py"
     },
     {
       "kind": "core",
@@ -556,6 +1231,11 @@
       "kind": "core",
       "source": "src/code_mower/migration_rehearsal.py",
       "target": "src/code_mower/migration_rehearsal.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/muse_cli_audit_pr.py",
+      "target": "src/code_mower/muse_cli_audit_pr.py"
     },
     {
       "kind": "core",
@@ -594,13 +1274,18 @@
     },
     {
       "kind": "core",
-      "source": "tools/code_mower_versioning.py",
-      "target": "src/code_mower/versioning.py"
+      "source": "src/code_mower/participants.py",
+      "target": "src/code_mower/participants.py"
     },
     {
       "kind": "core",
-      "source": "tools/workflow_actionlint.py",
-      "target": "src/code_mower/workflow_actionlint.py"
+      "source": "src/code_mower/plan_context.py",
+      "target": "src/code_mower/plan_context.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/productivity_report.py",
+      "target": "src/code_mower/productivity_report.py"
     },
     {
       "kind": "core",
@@ -609,63 +1294,23 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/release_readiness.py",
-      "target": "src/code_mower/release_readiness.py"
+      "source": "src/code_mower/provider_capabilities.py",
+      "target": "src/code_mower/provider_capabilities.py"
+    },
+    {
+      "kind": "schema",
+      "source": "src/code_mower/provider_capabilities.schema.json",
+      "target": "src/code_mower/provider_capabilities.schema.json"
     },
     {
       "kind": "core",
-      "source": "src/code_mower/secrets.py",
-      "target": "src/code_mower/secrets.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/code_mower_telemetry.py",
-      "target": "src/code_mower/code_mower_telemetry.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/reviewer_metrics.py",
-      "target": "src/code_mower/reviewer_metrics.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/reviewer_spend.py",
-      "target": "src/code_mower/reviewer_spend.py"
+      "source": "src/code_mower/provider_credentials.py",
+      "target": "src/code_mower/provider_credentials.py"
     },
     {
       "kind": "core",
       "source": "src/code_mower/provider_registry.py",
       "target": "src/code_mower/provider_registry.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/blind_review_coordinator.py",
-      "target": "src/code_mower/blind_review_coordinator.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/blind_review_artifacts.py",
-      "target": "src/code_mower/blind_review_artifacts.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/audit_handoff_log.py",
-      "target": "src/code_mower/audit_handoff_log.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/audit_labeler_lib.py",
-      "target": "src/code_mower/audit_labeler_lib.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/audit_limits.py",
-      "target": "src/code_mower/audit_limits.py"
-    },
-    {
-      "kind": "core",
-      "source": "src/code_mower/audit_progress.py",
-      "target": "src/code_mower/audit_progress.py"
     },
     {
       "kind": "reviewer",
@@ -676,6 +1321,11 @@
       "kind": "reviewer",
       "source": "src/code_mower/provider_runners/comments.py",
       "target": "src/code_mower/provider_runners/comments.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/provider_runners/exit_codes.py",
+      "target": "src/code_mower/provider_runners/exit_codes.py"
     },
     {
       "kind": "reviewer",
@@ -694,13 +1344,13 @@
     },
     {
       "kind": "reviewer",
-      "source": "src/code_mower/provider_runners/process.py",
-      "target": "src/code_mower/provider_runners/process.py"
+      "source": "src/code_mower/provider_runners/pr_worktree.py",
+      "target": "src/code_mower/provider_runners/pr_worktree.py"
     },
     {
       "kind": "reviewer",
-      "source": "src/code_mower/provider_runners/pr_worktree.py",
-      "target": "src/code_mower/provider_runners/pr_worktree.py"
+      "source": "src/code_mower/provider_runners/process.py",
+      "target": "src/code_mower/provider_runners/process.py"
     },
     {
       "kind": "reviewer",
@@ -723,49 +1373,59 @@
       "target": "src/code_mower/provider_runners/workspace.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/codex_audit_pr.py",
-      "target": "src/code_mower/codex_audit_pr.py"
+      "kind": "core",
+      "source": "src/code_mower/providers/__init__.py",
+      "target": "src/code_mower/providers/__init__.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/codex_audit_env_preflight.py",
-      "target": "src/code_mower/codex_audit_env_preflight.py"
+      "kind": "core",
+      "source": "src/code_mower/providers/local_cli.py",
+      "target": "src/code_mower/providers/local_cli.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/codex_audit_schema_smoke.py",
-      "target": "src/code_mower/codex_audit_schema_smoke.py"
+      "kind": "core",
+      "source": "src/code_mower/providers/provenance.py",
+      "target": "src/code_mower/providers/provenance.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/codex_audit_verdict.schema.json",
-      "target": "src/code_mower/codex_audit_verdict.schema.json"
+      "kind": "core",
+      "source": "src/code_mower/release_campaigns.py",
+      "target": "src/code_mower/release_campaigns.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/claude_audit_pr.py",
-      "target": "src/code_mower/claude_audit_pr.py"
+      "kind": "core",
+      "source": "src/code_mower/release_qualify.py",
+      "target": "src/code_mower/release_qualify.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/claude_cli_bounce.py",
-      "target": "src/code_mower/claude_cli_bounce.py"
+      "kind": "core",
+      "source": "src/code_mower/release_readiness.py",
+      "target": "src/code_mower/release_readiness.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/claude_cli_environment.py",
-      "target": "src/code_mower/claude_cli_environment.py"
+      "kind": "core",
+      "source": "src/code_mower/remote_session.py",
+      "target": "src/code_mower/remote_session.py"
     },
     {
-      "kind": "labeler",
-      "source": "src/code_mower/clear_stale.py",
-      "target": "src/code_mower/clear_stale.py"
+      "kind": "schema",
+      "source": "src/code_mower/remote_session.schema.json",
+      "target": "src/code_mower/remote_session.schema.json"
     },
     {
-      "kind": "labeler",
-      "source": "src/code_mower/trailer_comment_labeler.py",
-      "target": "src/code_mower/trailer_comment_labeler.py"
+      "kind": "core",
+      "source": "src/code_mower/remote_session_cli.py",
+      "target": "src/code_mower/remote_session_cli.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/reviewer_metrics.py",
+      "target": "src/code_mower/reviewer_metrics.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/reviewer_spend.py",
+      "target": "src/code_mower/reviewer_spend.py"
     },
     {
       "kind": "labeler",
@@ -773,99 +1433,59 @@
       "target": "src/code_mower/saas_reviewer_labeler.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/local_llm_audit_pr.py",
-      "target": "src/code_mower/local_llm_audit_pr.py"
+      "kind": "core",
+      "source": "src/code_mower/secrets.py",
+      "target": "src/code_mower/secrets.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/local_llm_bakeoff.py",
-      "target": "src/code_mower/local_llm_bakeoff.py"
+      "kind": "core",
+      "source": "src/code_mower/session.py",
+      "target": "src/code_mower/session.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/local_llm_calibration.py",
-      "target": "src/code_mower/local_llm_calibration.py"
+      "kind": "core",
+      "source": "src/code_mower/session_lease.py",
+      "target": "src/code_mower/session_lease.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/local_llm_profiles.py",
-      "target": "src/code_mower/local_llm_profiles.py"
+      "kind": "core",
+      "source": "src/code_mower/slack_contract.py",
+      "target": "src/code_mower/slack_contract.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/gemini_cli_audit_pr.py",
-      "target": "src/code_mower/gemini_cli_audit_pr.py"
+      "kind": "schema",
+      "source": "src/code_mower/slack_contract.schema.json",
+      "target": "src/code_mower/slack_contract.schema.json"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/antigravity_cli_audit_pr.py",
-      "target": "src/code_mower/antigravity_cli_audit_pr.py"
+      "kind": "core",
+      "source": "src/code_mower/slack_ingress.py",
+      "target": "src/code_mower/slack_ingress.py"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/hermes_cli_audit_pr.py",
-      "target": "src/code_mower/hermes_cli_audit_pr.py"
+      "kind": "config",
+      "source": "src/code_mower/templates/builder-experiment.example.json",
+      "target": "src/code_mower/templates/builder-experiment.example.json"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/coderabbit_cli_audit_pr.py",
-      "target": "src/code_mower/coderabbit_cli_audit_pr.py"
+      "kind": "config",
+      "source": "src/code_mower/templates/calibration-corpus.example.json",
+      "target": "src/code_mower/templates/calibration-corpus.example.json"
     },
     {
-      "kind": "reviewer",
-      "source": "src/code_mower/grok_build_audit_pr.py",
-      "target": "src/code_mower/grok_build_audit_pr.py"
+      "kind": "config",
+      "source": "src/code_mower/templates/calibration-corpus.json",
+      "target": "src/code_mower/templates/calibration-corpus.json"
     },
     {
-      "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/__init__.py",
-      "target": "src/code_mower/lane_configs/__init__.py"
+      "kind": "config",
+      "source": "src/code_mower/templates/code-mower.example.yml",
+      "target": "src/code_mower/templates/code-mower.example.yml"
     },
     {
-      "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/claude.py",
-      "target": "src/code_mower/lane_configs/claude.py"
-    },
-    {
-      "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/codex.py",
-      "target": "src/code_mower/lane_configs/codex.py"
-    },
-    {
-      "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/devin.py",
-      "target": "src/code_mower/lane_configs/devin.py"
-    },
-    {
-      "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/local_llm.py",
-      "target": "src/code_mower/lane_configs/local_llm.py"
-    },
-    {
-      "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/aider.py",
-      "target": "src/code_mower/lane_configs/aider.py"
-    },
-    {
-      "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/gemini_cli.py",
-      "target": "src/code_mower/lane_configs/gemini_cli.py"
-    },
-    {
-      "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/antigravity_cli.py",
-      "target": "src/code_mower/lane_configs/antigravity_cli.py"
-    },
-    {
-      "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/hermes_cli.py",
-      "target": "src/code_mower/lane_configs/hermes_cli.py"
-    },
-    {
-      "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/grok_build.py",
-      "target": "src/code_mower/lane_configs/grok_build.py"
+      "kind": "config",
+      "source": "src/code_mower/templates/context-packs.example.json",
+      "target": "src/code_mower/templates/context-packs.example.json"
     },
     {
       "kind": "prompt",
@@ -913,74 +1533,39 @@
       "target": "src/code_mower/templates/lane_prompts/security-threat-model.md"
     },
     {
-      "kind": "config",
-      "source": "src/code_mower/templates/code-mower.example.yml",
-      "target": "src/code_mower/templates/code-mower.example.yml"
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/README.md"
     },
     {
-      "kind": "config",
-      "source": "templates/calibration-corpus.json",
-      "target": "templates/calibration-corpus.json"
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/claude.md"
     },
     {
-      "kind": "config",
-      "source": "templates/calibration-corpus.example.json",
-      "target": "templates/calibration-corpus.example.json"
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/codex.md"
     },
     {
-      "kind": "config",
-      "source": "templates/builder-experiment.example.json",
-      "target": "templates/builder-experiment.example.json"
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/cursor.md"
     },
     {
-      "kind": "config",
-      "source": "templates/context-packs.example.json",
-      "target": "templates/context-packs.example.json"
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/devin.md"
     },
     {
-      "kind": "config",
-      "source": "templates/reviewer-spend.example.json",
-      "target": "templates/reviewer-spend.example.json"
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/generic.md"
     },
     {
-      "kind": "config",
-      "source": "tools/reviewer_value_report.example.md",
-      "target": "templates/reviewer-value-report.example.md"
-    },
-    {
-      "kind": "config",
-      "source": "templates/cursor/BUGBOT.md",
-      "target": "templates/cursor/BUGBOT.md"
-    },
-    {
-      "kind": "config",
-      "source": "src/code_mower/templates/calibration-corpus.json",
-      "target": "src/code_mower/templates/calibration-corpus.json"
-    },
-    {
-      "kind": "config",
-      "source": "src/code_mower/templates/calibration-corpus.example.json",
-      "target": "src/code_mower/templates/calibration-corpus.example.json"
-    },
-    {
-      "kind": "config",
-      "source": "src/code_mower/templates/builder-experiment.example.json",
-      "target": "src/code_mower/templates/builder-experiment.example.json"
-    },
-    {
-      "kind": "config",
-      "source": "src/code_mower/templates/context-packs.example.json",
-      "target": "src/code_mower/templates/context-packs.example.json"
-    },
-    {
-      "kind": "config",
-      "source": "src/code_mower/templates/reviewer-spend.example.json",
-      "target": "src/code_mower/templates/reviewer-spend.example.json"
-    },
-    {
-      "kind": "config",
-      "source": "tools/reviewer_value_report.example.md",
-      "target": "src/code_mower/templates/reviewer-value-report.example.md"
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "src/code_mower/templates/lanes/run_mac_lane.sh"
     },
     {
       "kind": "template",
@@ -1009,6 +1594,11 @@
     },
     {
       "kind": "template",
+      "source": "src/code_mower/templates/product-support/run_devin_cli_audit_pr.sh",
+      "target": "src/code_mower/templates/product-support/run_devin_cli_audit_pr.sh"
+    },
+    {
+      "kind": "template",
       "source": "src/code_mower/templates/product-support/safe_gh_comment.py",
       "target": "src/code_mower/templates/product-support/safe_gh_comment.py"
     },
@@ -1018,304 +1608,34 @@
       "target": "src/code_mower/templates/product-support/status_report.py"
     },
     {
-      "kind": "doc",
-      "source": "docs/acp-bridge-spike.md",
-      "target": "docs/acp-bridge-spike.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/calibration-pilot.md",
-      "target": "docs/calibration-pilot.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/calibration-notes.md",
-      "target": "docs/calibration-notes.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/lens-calibration-report.md",
-      "target": "docs/lens-calibration-report.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/reviewer-value-report.md",
-      "target": "docs/reviewer-value-report.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/lane-promotion-policy.md",
-      "target": "docs/lane-promotion-policy.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/package-customization.md",
-      "target": "docs/package-customization.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/authoring-intelligence.md",
-      "target": "docs/authoring-intelligence.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/builder-experiments.md",
-      "target": "docs/builder-experiments.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/builders-grok-cursor.md",
-      "target": "docs/builders-grok-cursor.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/build-loop.md",
-      "target": "docs/build-loop.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/planning-work-orders.md",
-      "target": "docs/planning-work-orders.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/cloud-benchmarking.md",
-      "target": "docs/cloud-benchmarking.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/repo-strategy.md",
-      "target": "docs/repo-strategy.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/commercial-boundary.md",
-      "target": "docs/commercial-boundary.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/public-release-checklist.md",
-      "target": "docs/public-release-checklist.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/github-setup.md",
-      "target": "docs/github-setup.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/local-audit-runner.md",
-      "target": "docs/local-audit-runner.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/troubleshooting.md",
-      "target": "docs/troubleshooting.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/mirror-removal-runbook.md",
-      "target": "docs/mirror-removal-runbook.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/provider-matrix.md",
-      "target": "docs/provider-matrix.md"
-    },
-    {
-      "kind": "doc",
-      "source": "docs/oss-v1-checklist.md",
-      "target": "docs/oss-v1-checklist.md"
-    },
-    {
-      "kind": "adapter",
-      "source": "src/code_mower/adapters/__init__.py",
-      "target": "src/code_mower/adapters/__init__.py"
-    },
-    {
-      "kind": "adapter",
-      "source": "src/code_mower/adapters/_base.py",
-      "target": "src/code_mower/adapters/_base.py"
-    },
-    {
-      "kind": "adapter",
-      "source": "src/code_mower/adapters/cursor_bugbot.py",
-      "target": "src/code_mower/adapters/cursor_bugbot.py"
-    },
-    {
-      "kind": "adapter",
-      "source": "src/code_mower/adapters/gitar.py",
-      "target": "src/code_mower/adapters/gitar.py"
-    },
-    {
-      "kind": "adapter",
-      "source": "src/code_mower/adapters/greptile.py",
-      "target": "src/code_mower/adapters/greptile.py"
-    },
-    {
-      "kind": "adapter",
-      "source": "src/code_mower/adapters/qodo.py",
-      "target": "src/code_mower/adapters/qodo.py"
-    },
-    {
-      "kind": "package",
-      "source": "generated",
-      "target": "src/code_mower/__init__.py"
-    },
-    {
-      "kind": "package",
-      "source": "generated",
-      "target": "README.md"
-    },
-    {
-      "kind": "package",
-      "source": "generated",
-      "target": "MANIFEST.in"
-    },
-    {
-      "kind": "package",
-      "source": "generated",
-      "target": ".gitignore"
-    },
-    {
-      "kind": "package",
-      "source": "generated",
-      "target": ".github/workflows/ci.yml"
-    },
-    {
-      "kind": "package",
-      "source": "generated",
-      "target": "scripts/smoke_easy_mode.py"
-    },
-    {
-      "kind": "package",
-      "source": "generated",
-      "target": "scripts/fresh_clone_rehearsal.py"
-    },
-    {
-      "kind": "package",
-      "source": "generated",
-      "target": "pyproject.toml"
-    },
-    {
       "kind": "provider-catalog",
       "source": "generated",
       "target": "src/code_mower/templates/providers.yml"
     },
     {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/trailer-comment-labeler.yml.j2"
+      "kind": "config",
+      "source": "src/code_mower/templates/reviewer-spend.example.json",
+      "target": "src/code_mower/templates/reviewer-spend.example.json"
+    },
+    {
+      "kind": "config",
+      "source": "tools/reviewer_value_report.example.md",
+      "target": "src/code_mower/templates/reviewer-value-report.example.md"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/templates/slack/app-manifest.json",
+      "target": "src/code_mower/templates/slack/app-manifest.json"
     },
     {
       "kind": "workflow",
       "source": "generated",
-      "target": "templates/workflows/saas-reviewer-labeler.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/local-cli-audit.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/self-hosted-local-audit.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/blind-review-artifacts-dry-run.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/hosted-bridge.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/builder-provenance.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/dispatch-lanes.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/lane-mac-runner.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/code-mower-agent-pr-labeler.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/code-mower-fix-round-dispatch.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/code-mower-gate-health.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/code-mower-gate.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/audit-label-cleanup.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/review-clear-stale.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "src/code_mower/templates/workflows/trailer-comment-labeler.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "src/code_mower/templates/workflows/saas-reviewer-labeler.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "src/code_mower/templates/workflows/local-cli-audit.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "src/code_mower/templates/workflows/self-hosted-local-audit.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "src/code_mower/templates/workflows/hosted-bridge.yml.j2"
+      "target": "src/code_mower/templates/workflows/audit-label-cleanup.yml.j2"
     },
     {
       "kind": "workflow",
       "source": "generated",
       "target": "src/code_mower/templates/workflows/builder-provenance.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "src/code_mower/templates/workflows/dispatch-lanes.yml.j2"
-    },
-    {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "src/code_mower/templates/workflows/lane-mac-runner.yml.j2"
     },
     {
       "kind": "workflow",
@@ -1340,12 +1660,22 @@
     {
       "kind": "workflow",
       "source": "generated",
-      "target": "src/code_mower/templates/workflows/audit-label-cleanup.yml.j2"
+      "target": "src/code_mower/templates/workflows/dispatch-lanes.yml.j2"
     },
     {
       "kind": "workflow",
       "source": "generated",
-      "target": "src/code_mower/templates/workflows/review-clear-stale.yml.j2"
+      "target": "src/code_mower/templates/workflows/hosted-bridge.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/lane-mac-runner.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/local-cli-audit.yml.j2"
     },
     {
       "kind": "workflow",
@@ -1355,17 +1685,97 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "src/code_mower/templates/workflows/private-standalone-shadow.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/review-clear-stale.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/saas-reviewer-labeler.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/self-hosted-local-audit.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "src/code_mower/templates/workflows/trailer-comment-labeler.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "src/code_mower/templates/workflows/weekly-status.yml.j2"
     },
     {
-      "kind": "workflow",
-      "source": "generated",
-      "target": "templates/workflows/private-standalone-shadow.yml.j2"
+      "kind": "core",
+      "source": "src/code_mower/tracker_contract.py",
+      "target": "src/code_mower/tracker_contract.py"
     },
     {
-      "kind": "workflow",
+      "kind": "core",
+      "source": "src/code_mower/tracker_queue.py",
+      "target": "src/code_mower/tracker_queue.py"
+    },
+    {
+      "kind": "labeler",
+      "source": "src/code_mower/trailer_comment_labeler.py",
+      "target": "src/code_mower/trailer_comment_labeler.py"
+    },
+    {
+      "kind": "core",
+      "source": "tools/code_mower_versioning.py",
+      "target": "src/code_mower/versioning.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/work_orders.py",
+      "target": "src/code_mower/work_orders.py"
+    },
+    {
+      "kind": "core",
+      "source": "tools/workflow_actionlint.py",
+      "target": "src/code_mower/workflow_actionlint.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/yaml_subset.py",
+      "target": "src/code_mower/yaml_subset.py"
+    },
+    {
+      "kind": "config",
+      "source": "templates/builder-experiment.example.json",
+      "target": "templates/builder-experiment.example.json"
+    },
+    {
+      "kind": "config",
+      "source": "templates/calibration-corpus.example.json",
+      "target": "templates/calibration-corpus.example.json"
+    },
+    {
+      "kind": "config",
+      "source": "templates/calibration-corpus.json",
+      "target": "templates/calibration-corpus.json"
+    },
+    {
+      "kind": "config",
       "source": "generated",
-      "target": "src/code_mower/templates/workflows/private-standalone-shadow.yml.j2"
+      "target": "templates/code-mower.yml.j2"
+    },
+    {
+      "kind": "config",
+      "source": "templates/context-packs.example.json",
+      "target": "templates/context-packs.example.json"
+    },
+    {
+      "kind": "config",
+      "source": "templates/cursor/BUGBOT.md",
+      "target": "templates/cursor/BUGBOT.md"
     },
     {
       "kind": "lane-template",
@@ -1385,52 +1795,22 @@
     {
       "kind": "lane-template",
       "source": "generated",
-      "target": "templates/lanes/generic.md"
-    },
-    {
-      "kind": "lane-template",
-      "source": "generated",
       "target": "templates/lanes/cursor.md"
     },
     {
       "kind": "lane-template",
       "source": "generated",
+      "target": "templates/lanes/devin.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
+      "target": "templates/lanes/generic.md"
+    },
+    {
+      "kind": "lane-template",
+      "source": "generated",
       "target": "templates/lanes/run_mac_lane.sh"
-    },
-    {
-      "kind": "lane-template",
-      "source": "generated",
-      "target": "src/code_mower/templates/lanes/README.md"
-    },
-    {
-      "kind": "lane-template",
-      "source": "generated",
-      "target": "src/code_mower/templates/lanes/claude.md"
-    },
-    {
-      "kind": "lane-template",
-      "source": "generated",
-      "target": "src/code_mower/templates/lanes/codex.md"
-    },
-    {
-      "kind": "lane-template",
-      "source": "generated",
-      "target": "src/code_mower/templates/lanes/generic.md"
-    },
-    {
-      "kind": "lane-template",
-      "source": "generated",
-      "target": "src/code_mower/templates/lanes/cursor.md"
-    },
-    {
-      "kind": "lane-template",
-      "source": "generated",
-      "target": "src/code_mower/templates/lanes/run_mac_lane.sh"
-    },
-    {
-      "kind": "config",
-      "source": "generated",
-      "target": "templates/code-mower.yml.j2"
     },
     {
       "kind": "provider-config",
@@ -1480,7 +1860,17 @@
     {
       "kind": "provider-template",
       "source": "generated",
+      "target": "templates/providers/cursor_cloud_agent.yml"
+    },
+    {
+      "kind": "provider-template",
+      "source": "generated",
       "target": "templates/providers/devin.yml"
+    },
+    {
+      "kind": "provider-template",
+      "source": "generated",
+      "target": "templates/providers/devin_cli.yml"
     },
     {
       "kind": "provider-template",
@@ -1515,17 +1905,22 @@
     {
       "kind": "provider-template",
       "source": "generated",
+      "target": "templates/providers/muse_cli.yml"
+    },
+    {
+      "kind": "provider-template",
+      "source": "generated",
       "target": "templates/providers/qodo.yml"
     },
     {
-      "kind": "manifest",
-      "source": "generated",
-      "target": "code-mower-package-manifest.json"
+      "kind": "config",
+      "source": "templates/reviewer-spend.example.json",
+      "target": "templates/reviewer-spend.example.json"
     },
     {
-      "kind": "core",
-      "source": "src/code_mower/slack_ingress.py",
-      "target": "src/code_mower/slack_ingress.py"
+      "kind": "config",
+      "source": "tools/reviewer_value_report.example.md",
+      "target": "templates/reviewer-value-report.example.md"
     },
     {
       "kind": "template",
@@ -1533,14 +1928,84 @@
       "target": "templates/slack/app-manifest.json"
     },
     {
-      "kind": "template",
-      "source": "src/code_mower/templates/slack/app-manifest.json",
-      "target": "src/code_mower/templates/slack/app-manifest.json"
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/audit-label-cleanup.yml.j2"
     },
     {
-      "kind": "doc",
-      "source": "docs/slack-ingress.md",
-      "target": "docs/slack-ingress.md"
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/blind-review-artifacts-dry-run.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/builder-provenance.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/code-mower-agent-pr-labeler.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/code-mower-fix-round-dispatch.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/code-mower-gate-health.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/code-mower-gate.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/dispatch-lanes.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/hosted-bridge.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/lane-mac-runner.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/local-cli-audit.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/private-standalone-shadow.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/review-clear-stale.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/saas-reviewer-labeler.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/self-hosted-local-audit.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/trailer-comment-labeler.yml.j2"
     }
   ],
   "mode": "materialize",

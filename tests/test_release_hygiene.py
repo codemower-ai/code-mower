@@ -15,6 +15,7 @@ import tomllib
 import unittest
 import urllib.error
 from argparse import Namespace
+from collections.abc import Callable
 from contextlib import ExitStack, nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -7851,6 +7852,137 @@ def main():
         self.assertEqual(check["status"], "fail")
         self.assertEqual(check["detail"]["manifest_version"], "0.5.0b53")
         self.assertEqual(check["detail"]["init_version"], "1.4.0")
+
+    def _manifest_drift_check(self, mutate: Callable[[dict], None]) -> dict:
+        committed = json.loads(
+            (ROOT / "code-mower-package-manifest.json").read_text(encoding="utf-8")
+        )
+        generated = code_mower_package.normalized_package_manifest(committed)
+        mutate(committed)
+        with mock.patch.object(
+            release_readiness, "_committed_manifest", return_value=committed
+        ), mock.patch.object(
+            release_readiness.package_module,
+            "generate_committed_package_manifest",
+            return_value=generated,
+        ):
+            payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        return checks["committed-package-manifest-matches-generated"]
+
+    def test_committed_package_manifest_matches_freshly_generated_inventory(self) -> None:
+        committed_text = (ROOT / "code-mower-package-manifest.json").read_text(
+            encoding="utf-8"
+        )
+        generated = code_mower_package.generate_committed_package_manifest(ROOT)
+
+        self.assertEqual(
+            committed_text,
+            code_mower_package.committed_package_manifest_text(generated),
+        )
+        self.assertEqual(generated["output_dir"], "<generated-output-dir>")
+        self.assertEqual(generated["package"]["version"], __version__)
+        targets = {entry["target"] for entry in generated["files_written"]}
+        self.assertIn("docs/context-graph-lifecycle.md", targets)
+        self.assertIn("docs/graphify-evaluation.md", targets)
+
+    def test_release_readiness_accepts_the_exact_regenerated_manifest(self) -> None:
+        check = self._manifest_drift_check(lambda manifest: None)
+
+        self.assertEqual(check["status"], "pass")
+        self.assertEqual(check["detail"]["missing_targets"], [])
+        self.assertEqual(check["detail"]["unexpected_targets"], [])
+        self.assertEqual(check["detail"]["changed_targets"], [])
+        self.assertEqual(
+            check["detail"]["committed_file_count"],
+            check["detail"]["generated_file_count"],
+        )
+
+    def test_release_readiness_fails_on_stale_committed_manifest(self) -> None:
+        def truncate(manifest: dict) -> None:
+            manifest["files_written"] = manifest["files_written"][:307]
+
+        check = self._manifest_drift_check(truncate)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(check["detail"]["committed_file_count"], 307)
+        self.assertGreater(
+            check["detail"]["generated_file_count"],
+            check["detail"]["committed_file_count"],
+        )
+        self.assertTrue(check["detail"]["missing_targets"])
+
+    def test_release_readiness_fails_on_missing_manifest_entry(self) -> None:
+        def drop_lifecycle_doc(manifest: dict) -> None:
+            manifest["files_written"] = [
+                entry
+                for entry in manifest["files_written"]
+                if entry["target"] != "docs/context-graph-lifecycle.md"
+            ]
+
+        check = self._manifest_drift_check(drop_lifecycle_doc)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(
+            check["detail"]["missing_targets"], ["docs/context-graph-lifecycle.md"]
+        )
+
+    def test_release_readiness_fails_on_changed_manifest_source_mapping(self) -> None:
+        def rewrite_source(manifest: dict) -> None:
+            for entry in manifest["files_written"]:
+                if entry["target"] == "docs/context-graph-lifecycle.md":
+                    entry["source"] = "docs/graphify-evaluation.md"
+
+        check = self._manifest_drift_check(rewrite_source)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(
+            check["detail"]["changed_targets"], ["docs/context-graph-lifecycle.md"]
+        )
+
+    def test_packaged_graph_docs_link_target_is_packaged(self) -> None:
+        packaged = {target for _source, target, _kind in code_mower_package.PACKAGE_FILES}
+
+        self.assertIn("docs/context-graph-lifecycle.md", packaged)
+        self.assertTrue((ROOT / "docs" / "context-graph-lifecycle.md").is_file())
+        for doc in ("docs/graphify-evaluation.md", "docs/context-provider-contract.md"):
+            text = (ROOT / doc).read_text(encoding="utf-8")
+            if "context-graph-lifecycle.md" in text:
+                self.assertIn(doc, packaged)
+
+    def test_release_readiness_requires_the_ordered_post_merge_runbook(self) -> None:
+        payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        runbook = checks["post-merge-release-runbook-ordered"]
+
+        self.assertEqual(runbook["status"], "pass")
+        self.assertEqual(runbook["detail"]["missing_or_out_of_order"], [])
+        self.assertIn(
+            "-f publish_testpypi=false -f publish_pypi=true",
+            runbook["detail"]["required_commands"],
+        )
+        self.assertIn("gh release create v1.4.0", runbook["detail"]["required_commands"])
+        commands = {action["id"]: action["command"] for action in payload["next_actions"]}
+        self.assertIn("publish_pypi=true", commands["publish-pypi-release"])
+        self.assertIn("--name code-mower-dist", commands["compare-artifact-digests"])
+        self.assertIn("--verify-tag", commands["create-github-release"])
+
+    def test_release_readiness_fails_when_the_runbook_stops_at_testpypi(self) -> None:
+        docs = release_readiness._release_docs(ROOT)
+        docs["docs/pypi-release.md"] = docs["docs/pypi-release.md"].partition(
+            "### 5. Publish production PyPI only"
+        )[0]
+
+        with mock.patch.object(release_readiness, "_release_docs", return_value=docs):
+            payload = release_readiness.render_release_readiness(ROOT)
+
+        checks = {check["id"]: check for check in payload["checks"]}
+        runbook = checks["post-merge-release-runbook-ordered"]
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(runbook["status"], "fail")
+        self.assertIn(
+            "gh release create v1.4.0", runbook["detail"]["missing_or_out_of_order"]
+        )
 
     def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
