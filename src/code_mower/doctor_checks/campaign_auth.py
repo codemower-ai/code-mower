@@ -23,12 +23,24 @@ performed transiently on a bounded prefix of that output. Only the bounded
 state word, a registered error code, and non-content output shape reach doctor
 JSON, so account names, tokens, credential contents, and local paths cannot
 leak.
+
+Release-campaign authentication is only part of adoption doctor when the run
+carries *campaign intent*: the operator asked for it explicitly
+(``doctor --campaign``), the repository configures a campaign adapter for at
+least one lane in ``code-mower.yml``, or campaign storage holds a campaign
+that is not complete. Ordinary reviewer/orchestrator adoption of a repository
+with none of those never turns an unused release capability into an owner
+action: every local provider's authentication check is reported as a
+non-blocking, provider-neutral ``not_requested`` skip and no login probe runs.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
+from pathlib import Path
 import subprocess
+import sys
 from typing import Any, Callable, Mapping, Sequence
 
 from .models import STATUS_PASS, STATUS_SKIP, STATUS_WARN, DoctorCheck
@@ -56,6 +68,167 @@ AUTH_STATE_AUTHENTICATED = "authenticated"
 AUTH_STATE_UNAUTHENTICATED = "unauthenticated"
 AUTH_STATE_UNKNOWN = "unknown"
 AUTH_STATE_SKIPPED = "skipped"
+AUTH_STATE_NOT_REQUESTED = "not_requested"
+
+#: Why release-campaign readiness is (or is not) part of one doctor run.
+CAMPAIGN_INTENT_EXPLICIT = "explicit_request"
+CAMPAIGN_INTENT_CONFIGURED = "configured_campaign"
+CAMPAIGN_INTENT_ACTIVE = "active_campaign"
+CAMPAIGN_INTENT_NONE = "none"
+
+#: ``provider_config`` keys under a lane that declare a repository campaign.
+CAMPAIGN_CONFIG_KEYS = (
+    "campaign_adapter_argv",
+    "campaign_adapter_timeout_seconds",
+    "campaign_adapter_enabled",
+)
+
+#: ``provider_config`` flag: the isolated campaign home stores its login in
+#: the OS keyring, so a host without a desktop session keyring cannot hold it.
+CAMPAIGN_AUTH_KEYRING_REQUIRED_KEY = "campaign_auth_keyring_required"
+
+#: Environment variables whose presence marks a Linux desktop session.
+DESKTOP_SESSION_ENV_VARS = ("DISPLAY", "WAYLAND_DISPLAY")
+
+
+@dataclass(frozen=True)
+class CampaignIntent:
+    """Bounded, non-secret record of why campaign readiness is in scope."""
+
+    requested: bool
+    reason: str
+    configured_providers: tuple[str, ...] = ()
+    active_campaigns: int = 0
+
+    def as_detail(self) -> dict[str, Any]:
+        return {
+            "campaign_intent": self.reason,
+            "campaign_requested": self.requested,
+            "configured_campaign_providers": list(self.configured_providers),
+            "active_campaigns": self.active_campaigns,
+        }
+
+
+def _configured_campaign_providers(
+    config: Mapping[str, Any] | None,
+    repo_root: Path | None,
+) -> tuple[str, ...]:
+    """Return canonical providers whose lane declares a campaign adapter.
+
+    Only registry-known provider names are returned, so adopter config text
+    never reaches doctor output. A lane key that declares campaign keys but
+    does not resolve is still counted under the bounded ``unknown`` name.
+    """
+    from code_mower.release_campaigns import (
+        _load_campaign_adapter_overrides,
+        resolve_provider_lane,
+    )
+
+    providers: set[str] = set()
+    lanes_cfg = config.get("lanes") if isinstance(config, Mapping) else None
+    if isinstance(lanes_cfg, Mapping):
+        for lane_key, lane_entry in lanes_cfg.items():
+            if not isinstance(lane_entry, Mapping):
+                continue
+            provider_cfg = lane_entry.get("provider_config")
+            if not isinstance(provider_cfg, Mapping):
+                continue
+            if not any(key in provider_cfg for key in CAMPAIGN_CONFIG_KEYS):
+                continue
+            try:
+                canonical, _lane = resolve_provider_lane(str(lane_key))
+            except ValueError:
+                canonical = "unknown"
+            providers.add(canonical)
+        return tuple(sorted(providers))
+
+    if repo_root is None:
+        return ()
+    from code_mower.provider_registry import REFERENCE_PROVIDERS
+
+    for lane in REFERENCE_PROVIDERS.values():
+        try:
+            overrides, error, _detail = _load_campaign_adapter_overrides(lane, repo_root)
+        except (OSError, ValueError):
+            continue
+        if error or not overrides:
+            continue
+        try:
+            canonical, _lane = resolve_provider_lane(lane.lane_id)
+        except ValueError:
+            continue
+        providers.add(canonical)
+    return tuple(sorted(providers))
+
+
+def _active_campaign_count(repo_root: Path | None) -> int:
+    """Return how many stored campaigns under ``repo_root`` are not complete."""
+    if repo_root is None:
+        return 0
+    from code_mower.release_campaigns import default_campaigns_dir, list_campaigns
+
+    try:
+        campaigns = list_campaigns(default_campaigns_dir(repo_root))
+    except (OSError, ValueError):
+        return 0
+    return sum(1 for campaign in campaigns if campaign.get("status") != "complete")
+
+
+def resolve_campaign_intent(
+    *,
+    config: Mapping[str, Any] | None,
+    repo_root: Path | None,
+    explicit: bool = False,
+) -> CampaignIntent:
+    """Apply the one rule deciding whether campaign auth is part of this run.
+
+    In priority order: an explicit request, a repository lane that configures
+    a campaign adapter, or a stored campaign that is not complete. Maintained
+    built-in adapters in the provider registry are a capability, not intent,
+    so a repository that never mentions campaigns gets none.
+    """
+    configured = _configured_campaign_providers(config, repo_root)
+    active = _active_campaign_count(repo_root)
+    if explicit:
+        reason = CAMPAIGN_INTENT_EXPLICIT
+    elif configured:
+        reason = CAMPAIGN_INTENT_CONFIGURED
+    elif active:
+        reason = CAMPAIGN_INTENT_ACTIVE
+    else:
+        reason = CAMPAIGN_INTENT_NONE
+    return CampaignIntent(
+        requested=reason != CAMPAIGN_INTENT_NONE,
+        reason=reason,
+        configured_providers=configured,
+        active_campaigns=active,
+    )
+
+
+def campaign_auth_keyring_required(lane: Any) -> bool:
+    """Return whether one lane's isolated campaign home needs an OS keyring."""
+    provider_config = getattr(lane, "provider_config", None)
+    if not isinstance(provider_config, Mapping):
+        return False
+    return bool(provider_config.get(CAMPAIGN_AUTH_KEYRING_REQUIRED_KEY))
+
+
+def headless_linux_host(
+    env: Mapping[str, str] | None = None,
+    *,
+    platform: str | None = None,
+) -> bool:
+    """Return whether this is a Linux host with no desktop session.
+
+    A desktop session is the only place doctor can truthfully expect a Secret
+    Service keyring; its absence is reported, never a guess about whether some
+    headless keyring daemon happens to run.
+    """
+    current_platform = sys.platform if platform is None else platform
+    if not current_platform.startswith("linux"):
+        return False
+    current_env = os.environ if env is None else env
+    return not any(str(current_env.get(name, "")).strip() for name in DESKTOP_SESSION_ENV_VARS)
 
 #: Bounded, non-secret probe error codes. A probe result may only ever carry
 #: one of these in ``error`` -- never provider output or an exception message.
@@ -205,8 +378,24 @@ def _campaign_auth_location_phrase(lane: Any, canonical: str) -> str:
     return label or f"isolated {canonical} campaign home"
 
 
-def _remediation(canonical: str, state: str, lane: Any) -> str:
+def _remediation(
+    canonical: str,
+    state: str,
+    lane: Any,
+    *,
+    keyring_unavailable: bool = False,
+) -> str:
     auth_phrase = _campaign_auth_location_phrase(lane, canonical)
+    if state == AUTH_STATE_UNAUTHENTICATED and keyring_unavailable:
+        return (
+            f"The {auth_phrase} stores its login in the OS keyring, and this "
+            "Linux host has no desktop session to provide one. Dispatch "
+            f"{canonical} release campaigns from a host with a desktop session "
+            "keyring (login steps in docs/release-qualification.md, Provider "
+            "Adapter Setup), run doctor here with --hosted-builders or "
+            "--orchestrator-only, or set "
+            f"{CAMPAIGN_AUTH_PROBE_ENV}=0 to leave this lane capability-only."
+        )
     if state == AUTH_STATE_UNAUTHENTICATED:
         return (
             f"Authenticate the {auth_phrase} once using the "
@@ -250,16 +439,45 @@ def check_campaign_auth_readiness(
     command: str,
     env: Mapping[str, str] | None = None,
     probe_runner: CampaignAuthProbeRunner | None = None,
+    campaign_intent: CampaignIntent | None = None,
 ) -> DoctorCheck | None:
     """Probe one ready local adapter's isolated login state.
 
     Returns ``None`` when the provider exposes no safe status command, which
     keeps that lane capability-only instead of guessing it is authenticated.
+    A run without campaign intent returns the same non-blocking
+    ``not_requested`` skip for every provider and never runs a probe.
     """
     if not command:
         return None
 
     current_env = os.environ if env is None else env
+    if campaign_intent is not None and not campaign_intent.requested:
+        detail = _detail(
+            canonical=canonical,
+            lane=lane,
+            state=AUTH_STATE_NOT_REQUESTED,
+            enabled=enabled,
+            timeout_seconds=campaign_auth_probe_timeout(lane),
+        )
+        detail.update(campaign_intent.as_detail())
+        detail["actionable"] = False
+        detail["optional"] = True
+        return DoctorCheck(
+            name=CAMPAIGN_AUTH_CHECK_NAME,
+            status=STATUS_SKIP,
+            lane=canonical,
+            message=(
+                f"skipped {canonical} campaign authentication: no release "
+                "campaign is configured, active, or requested"
+            ),
+            detail=detail,
+            remediation=(
+                "Run `code-mower doctor --adoption --campaign` to verify "
+                "release-campaign authentication before dispatching one."
+            ),
+        )
+
     if not campaign_auth_probe_requested(current_env):
         if canonical in {"antigravity", "muse"} or campaign_auth_probe_args(lane):
             timeout_seconds = campaign_auth_probe_timeout(lane)
@@ -382,6 +600,9 @@ def check_campaign_auth_readiness(
 
     timeout_seconds = campaign_auth_probe_timeout(lane)
     location_label = campaign_auth_location_label(lane)
+    keyring_unavailable = campaign_auth_keyring_required(lane) and headless_linux_host(
+        current_env
+    )
 
     provider = str(getattr(lane, "provider", "") or canonical)
     child_env, env_error = campaign_auth_probe_env(provider)
@@ -463,13 +684,26 @@ def check_campaign_auth_readiness(
     detail["optional"] = not enabled
     if enabled:
         detail["owner_action"] = True
+    if campaign_auth_keyring_required(lane):
+        detail["keyring_required"] = True
+        detail["host_keyring_available"] = not keyring_unavailable
     return DoctorCheck(
         name=CAMPAIGN_AUTH_CHECK_NAME,
         status=STATUS_WARN,
         lane=canonical,
-        message=f"{canonical} {location_label} is not authenticated",
+        message=(
+            f"{canonical} {location_label} is not authenticated and this headless "
+            "Linux host has no desktop session keyring for it"
+            if keyring_unavailable
+            else f"{canonical} {location_label} is not authenticated"
+        ),
         detail=detail,
-        remediation=_remediation(canonical, AUTH_STATE_UNAUTHENTICATED, lane),
+        remediation=_remediation(
+            canonical,
+            AUTH_STATE_UNAUTHENTICATED,
+            lane,
+            keyring_unavailable=keyring_unavailable,
+        ),
     )
 
 
@@ -478,10 +712,12 @@ __all__ = (
     "AUTH_ERROR_PROBE_UNAVAILABLE",
     "AUTH_ERROR_UNAUTHENTICATED",
     "AUTH_STATE_AUTHENTICATED",
+    "AUTH_STATE_NOT_REQUESTED",
     "AUTH_STATE_SKIPPED",
     "AUTH_STATE_UNAUTHENTICATED",
     "AUTH_STATE_UNKNOWN",
     "CAMPAIGN_AUTH_CHECK_NAME",
+    "CAMPAIGN_AUTH_KEYRING_REQUIRED_KEY",
     "CAMPAIGN_AUTH_LOCATION_LABEL_KEY",
     "CAMPAIGN_AUTH_LOGGED_OUT_EXIT_CODES_KEY",
     "CAMPAIGN_AUTH_LOGGED_OUT_MARKERS_KEY",
@@ -489,8 +725,16 @@ __all__ = (
     "CAMPAIGN_AUTH_PROBE_ARGS_KEY",
     "CAMPAIGN_AUTH_PROBE_ENV",
     "CAMPAIGN_AUTH_PROBE_TIMEOUT_KEY",
+    "CAMPAIGN_CONFIG_KEYS",
+    "CAMPAIGN_INTENT_ACTIVE",
+    "CAMPAIGN_INTENT_CONFIGURED",
+    "CAMPAIGN_INTENT_EXPLICIT",
+    "CAMPAIGN_INTENT_NONE",
+    "CampaignIntent",
     "DEFAULT_CAMPAIGN_AUTH_PROBE_TIMEOUT_SECONDS",
+    "DESKTOP_SESSION_ENV_VARS",
     "campaign_auth_confirmed_logged_out",
+    "campaign_auth_keyring_required",
     "campaign_auth_location_label",
     "campaign_auth_logged_out_exit_codes",
     "campaign_auth_logged_out_markers",
@@ -499,5 +743,7 @@ __all__ = (
     "campaign_auth_probe_requested",
     "campaign_auth_probe_timeout",
     "check_campaign_auth_readiness",
+    "headless_linux_host",
+    "resolve_campaign_intent",
     "run_campaign_auth_probe",
 )

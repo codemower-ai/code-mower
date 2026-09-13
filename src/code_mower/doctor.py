@@ -169,6 +169,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "explicit or inferred GitHub repository and surface setup gaps"
         ),
     )
+    parser.add_argument(
+        "--campaign",
+        action="store_true",
+        help=(
+            "include release-campaign provider authentication in adoption "
+            "readiness even when this repository configures no campaign; "
+            "implies --adoption"
+        ),
+    )
     pilot_group = parser.add_mutually_exclusive_group()
     pilot_group.add_argument(
         "--supervised-pilot",
@@ -295,6 +304,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.adoption = True
         args.preflight = True
     pilot_mode = "promoted" if args.promoted_pilot else "manual"
+    if args.campaign:
+        args.adoption = True
     if args.adoption:
         args.preflight = True
     _apply_first_run_defaults(args)
@@ -325,6 +336,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             adoption=args.adoption,
             adoption_posture=args.adoption_posture,
+            campaign=args.campaign,
             devin=args.devin,
             supervised_pilot=bool(
                 args.supervised_pilot or args.manual_pilot or args.promoted_pilot

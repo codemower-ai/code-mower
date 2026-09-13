@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 
-from .campaign_auth import CAMPAIGN_AUTH_CHECK_NAME, check_campaign_auth_readiness
+from .campaign_auth import (
+    CAMPAIGN_AUTH_CHECK_NAME,
+    CAMPAIGN_INTENT_NONE,
+    CampaignIntent,
+    check_campaign_auth_readiness,
+    resolve_campaign_intent,
+)
 from .cloud import DEFAULT_CLOUD_TOKEN_DIR, DEFAULT_CLOUD_TOKEN_ENV
 from .models import STATUS_PASS, STATUS_SKIP, STATUS_WARN, DoctorCheck
 
@@ -589,6 +595,30 @@ def _is_maintained_antigravity_adapter(
     return any("code_mower.campaign_adapters" in str(token) for token in argv_template)
 
 
+def _campaign_intent_check(intent: CampaignIntent) -> DoctorCheck:
+    """Report the one rule that decides whether campaign auth is in scope."""
+    if intent.reason == CAMPAIGN_INTENT_NONE:
+        message = (
+            "release campaign authentication is out of scope: no campaign is "
+            "configured, active, or requested"
+        )
+        remediation = (
+            "Configure a campaign adapter lane in code-mower.yml or run "
+            "`code-mower doctor --adoption --campaign` to include "
+            "release-campaign authentication in readiness."
+        )
+    else:
+        message = f"release campaign authentication is in scope ({intent.reason})"
+        remediation = ""
+    return DoctorCheck(
+        name="doctor.campaign.intent",
+        status=STATUS_PASS,
+        message=message,
+        detail={**intent.as_detail(), "optional": True, "actionable": False},
+        remediation=remediation,
+    )
+
+
 def check_adoption_campaign_readiness(
     *,
     config: Mapping[str, Any] | None,
@@ -606,6 +636,7 @@ def check_adoption_campaign_readiness(
     provider_credential_file: Path | None = None,
     provider_profile: str = "",
     provider_config_dir: Path | None = None,
+    campaign_requested: bool = False,
 ) -> tuple[DoctorCheck, ...]:
     """Validate release campaign readiness across configured providers and storage.
 
@@ -614,6 +645,11 @@ def check_adoption_campaign_readiness(
     GitHub-comment hosted lane with no token variable exported is credentialed
     when `gh` is already authenticated, so this report and an actual dispatch
     reach the same verdict; omitted, the verdict is environment-only.
+
+    ``campaign_requested`` is the operator's explicit ask (``doctor
+    --campaign``). Local provider authentication is only checked when that, a
+    configured campaign lane, or an active stored campaign gives the run
+    campaign intent; otherwise every auth check is a non-blocking skip.
     """
     from code_mower import lane_status
     from code_mower.campaign_adapters import (
@@ -638,6 +674,12 @@ def check_adoption_campaign_readiness(
     current_env = os.environ if env is None else env
     runner = lane_status._run_command if command_runner is None else command_runner
     checks: list[DoctorCheck] = []
+    campaign_intent = resolve_campaign_intent(
+        config=config,
+        repo_root=root,
+        explicit=campaign_requested,
+    )
+    checks.append(_campaign_intent_check(campaign_intent))
     provider_readiness: dict[str, dict[str, Any]] = {}
     runtime_resolution_checked = False
     supported_runtime: tuple[str, str] | None = None
@@ -905,6 +947,7 @@ def check_adoption_campaign_readiness(
                     command=cmd,
                     env=current_env,
                     probe_runner=auth_probe_runner,
+                    campaign_intent=campaign_intent,
                 )
                 auth_state = "unprobed"
                 if auth_check is not None:
