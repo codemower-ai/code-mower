@@ -158,7 +158,10 @@ participant. Start local and code-only:
   [issue #876](https://github.com/codemower-ai/code-mower/issues/876) with an
   adopt decision;
 - add a provider registry and multiple context attachments per session;
-- build and refresh graphs with commit/freshness validation;
+- build and refresh graphs with commit/freshness validation — delivered by
+  `code-mower context-graph`, described in the
+  [lifecycle record](context-graph-lifecycle.md), which closes
+  [issue #913](https://github.com/codemower-ai/code-mower/issues/913);
 - consume a pinned structured JSON contract;
 - generate bounded impact, dependency, symbol, and related-test packets; and
 - deliver the same packet shape to Claude, Codex, and Devin.
