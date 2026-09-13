@@ -130,3 +130,8 @@ builders. It promotes no provider to reviewer merge authority: builder
 success never promotes reviewer merge authority. Any reviewer promotion
 still requires the clean/blocked calibration evidence in the
 [lane promotion policy](lane-promotion-policy.md).
+
+The five Devin rows above are the fixed local builder baseline reused by the
+[Devin peer-support qualification](devin-peer-support-qualification.md), which
+records hosted delivery/recovery, reviewer contract controls, and context
+canary evidence separately.

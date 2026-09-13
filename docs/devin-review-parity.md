@@ -59,7 +59,9 @@ omission, and blocked P2 null dereference (including a false PASS declaration).
 It also checks stale inputs before and after completion, later consumption,
 missing/ambiguous/malformed results, uncertain delivery, state invalidation,
 privacy, and preview semantics. These offline controls establish contract parity,
-not model accuracy and not evidence for promotion.
+not model accuracy and not evidence for promotion. Their adjudication on a
+qualified head is recorded in the
+[Devin peer-support qualification](devin-peer-support-qualification.md).
 
 Devin CLI was found installed during implementation; authentication was not
 inspected and no live provider was invoked. The orchestrator can first confirm

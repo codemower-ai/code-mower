@@ -571,6 +571,11 @@ PACKAGE_FILES = (
     ("docs/planning-work-orders.md", "docs/planning-work-orders.md", "doc"),
     ("docs/devin-work-orders.md", "docs/devin-work-orders.md", "doc"),
     ("docs/devin-review-parity.md", "docs/devin-review-parity.md", "doc"),
+    (
+        "docs/devin-peer-support-qualification.md",
+        "docs/devin-peer-support-qualification.md",
+        "doc",
+    ),
     ("docs/context-provider-contract.md", "docs/context-provider-contract.md", "doc"),
     ("docs/slack-ingress.md", "docs/slack-ingress.md", "doc"),
     ("docs/slack-contract.md", "docs/slack-contract.md", "doc"),
