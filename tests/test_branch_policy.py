@@ -170,6 +170,25 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(paths, ["repositories[0].delivery_policy.branch_prefix",
                                  "repositories[0].delivery_policy.branch_template"])
 
+    def test_repository_slugs_are_deduplicated_case_insensitively(self) -> None:
+        # Policy lookup is case-insensitive, so `Owner/Repo` would silently
+        # shadow (or be shadowed by) `owner/repo`; that is a configuration error.
+        cfg = _config_with_policy()
+        shadow = copy.deepcopy(cfg["repositories"][0])
+        shadow["slug"] = "Owner/Repo"
+        shadow["delivery_policy"] = {"branch_template": "{lane}/{issue_number}"}
+        cfg["repositories"].append(shadow)
+        issues = code_mower_config.validate_config(cfg)
+        self.assertEqual([(i.path, i.message) for i in issues],
+                         [("repositories[1].slug", "duplicate repository Owner/Repo")])
+        with self.assertRaises(branch_policy.BranchPolicyError):
+            branch_policy.configured_policies(cfg)
+        with self.assertRaises(RemoteError) as raised:
+            WorkOrder.repository_policy(cfg, "owner/repo")
+        self.assertIn("branch_policy_config", str(raised.exception))
+        self.assertEqual(WorkOrder.repository_policy(_config_with_policy(), "OWNER/Repo").template,
+                         JIRA_TEMPLATE)
+
 
 class HostedWorkOrderTests(unittest.TestCase):
     def _order(self, branch: str, policy=None) -> WorkOrder:
@@ -202,7 +221,7 @@ class HostedWorkOrderTests(unittest.TestCase):
                       branch_pattern=policy.pattern, branch_example=policy.example)
 
     def test_unconfigured_repositories_keep_provider_prefixed_orders_unchanged(self) -> None:
-        order = self._order("devin/907")
+        order = self._order("devin/907", branch_policy.default_policy())
         self.assertEqual((order.branch_pattern, order.branch_example), ("", ""))
         fields = DevinWorkOrders._fields(order)
         self.assertNotIn("branch_pattern", fields)
@@ -210,6 +229,51 @@ class HostedWorkOrderTests(unittest.TestCase):
         self.assertNotIn("branch-name policy", DevinWorkOrders._prompt(order))
         default = branch_policy.policy_for_repository(_config_with_policy(None), "owner/repo")
         self.assertEqual(self._order("devin/907", default).branch_pattern, "")
+        by_config = WorkOrder.from_manifest(MANIFEST, "body", branch="devin/907",
+                                            config=_config_with_policy(None), **ORDER_ARGS)
+        self.assertEqual(by_config.branch_pattern, "")
+
+    def test_dispatcher_cannot_omit_a_configured_repository_policy(self) -> None:
+        # Neither omission nor an ambiguous double supply is an accepted way to
+        # construct an order: the configured policy is applied from config itself.
+        with self.assertRaises(RemoteError) as raised:
+            WorkOrder.from_manifest(MANIFEST, "body", branch="devin/907", **ORDER_ARGS)
+        self.assertIn("branch_policy_required", str(raised.exception))
+        with self.assertRaises(RemoteError):
+            WorkOrder.from_manifest(MANIFEST, "body", branch="devin/907", config=_config_with_policy(),
+                                    branch_policy=branch_policy.default_policy(), **ORDER_ARGS)
+        cfg = _config_with_policy()
+        with self.assertRaises(RemoteError) as raised:
+            WorkOrder.from_manifest(MANIFEST, "body", branch="devin/907", config=cfg, **ORDER_ARGS)
+        self.assertIn("branch_policy_mismatch", str(raised.exception))
+        order = WorkOrder.from_manifest(MANIFEST, "body", branch="fix/907-accessible-label",
+                                        config=cfg, **ORDER_ARGS)
+        self.assertEqual(order.branch_pattern, branch_policy.compile_template(JIRA_TEMPLATE).pattern)
+        cfg["repositories"][0]["slug"] = "Owner/Repo"
+        with self.assertRaises(RemoteError):
+            WorkOrder.from_manifest(MANIFEST, "body", branch="devin/907", config=cfg, **ORDER_ARGS)
+
+    def test_jira_keyed_order_resolves_a_conforming_branch_on_the_first_attempt(self) -> None:
+        """The maintained dispatcher path: tracker key -> {issue_key} -> validated order."""
+        cfg = _config_with_policy()
+        policy = WorkOrder.repository_policy(cfg, "owner/repo")
+        branch = WorkOrder.resolve_branch(policy, lane="devin", issue=907, work_item="MB-9506",
+                                          slug="NV: accessible label!")
+        self.assertEqual(branch, "fix/MB-9506-nv-accessible-label")
+        manifest = {**MANIFEST, "source": {"repo": "owner/repo"}}
+        order = WorkOrder.from_manifest(manifest, "body", branch=branch, config=cfg,
+                                        context_policy="required", context_work_item="MB-9506",
+                                        **ORDER_ARGS)
+        self.assertEqual((order.branch, order.work_item, order.issue), (branch, "MB-9506", 907))
+        fields = json.loads(DevinWorkOrders._prompt(order).split("\n")[1])["policy"]
+        self.assertEqual(fields["branch"], branch)
+        # Without a tracker key the GitHub issue number is the key; a template
+        # that cannot be satisfied fails before any provider action.
+        self.assertEqual(WorkOrder.resolve_branch(policy, lane="devin", issue=907, slug="x"),
+                         "fix/907-x")
+        with self.assertRaises(RemoteError) as raised:
+            WorkOrder.resolve_branch(policy, lane="devin", issue=907, work_item="bad key")
+        self.assertIn("branch_policy_mismatch", str(raised.exception))
 
 
 class GeneratedRunnerTests(unittest.TestCase):
@@ -236,8 +300,22 @@ class GeneratedRunnerTests(unittest.TestCase):
         expected = branch_policy.compile_template(JIRA_TEMPLATE).describe()
         self.assertEqual(embedded, {"owner/repo": expected})
 
-    def test_runner_resolves_the_policy_branch_before_the_provider_runs(self) -> None:
+    def _run_codex_lane(self, delivered_listing: str) -> tuple[subprocess.CompletedProcess, str, dict]:
+        """Run the generated codex runner against a fake provider that opens a PR.
+
+        ``delivered_listing`` is the ``gh pr list`` JSON returned once the provider
+        has "delivered"; it is the delivery-snapshot discovery input under test.
+        """
         runner, _text = self._generate(_config_with_policy())
+        header = _FAKE_GH_DELIVERY_HEADER.replace(
+            "[{\"number\":77,\"headRefName\":\"codex/issue-12\","
+            "\"headRepository\":{\"nameWithOwner\":\"owner/repo\"},"
+            "\"labels\":[{\"name\":\"builder:codex\"}],"
+            "\"author\":{\"login\":\"chatgpt-codex-connector[bot]\"},"
+            "\"closingIssuesReferences\":[{\"number\":12}]}]",
+            delivered_listing,
+        )
+        self.assertNotEqual(header, _FAKE_GH_DELIVERY_HEADER)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bin_dir = root / "bin"
@@ -247,7 +325,7 @@ class GeneratedRunnerTests(unittest.TestCase):
             prompt_log = root / "prompt.md"
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
-                _FAKE_GH_DELIVERY_HEADER
+                header
                 + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
@@ -294,14 +372,12 @@ exit 0
                 """#!/usr/bin/env bash
 set -euo pipefail
 cat > "$PROMPT_LOG"
-cp "$(git rev-parse --git-path code-mower-lane-guard.json)" "$GUARD_LOG" 2>/dev/null || true
 : > "$HOME/lane-delivered"
 printf 'fake codex completed\\n'
 """,
                 encoding="utf-8",
             )
             fake_codex.chmod(0o755)
-            guard_log = root / "guard.json"
             completed = subprocess.run(
                 [str(runner), "--lane", "codex", "--repo", "owner/repo", "--max-minutes", "1"],
                 cwd=ROOT,
@@ -311,27 +387,75 @@ printf 'fake codex completed\\n'
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                     "PROMPT_LOG": str(prompt_log),
-                    "GUARD_LOG": str(guard_log),
                     **_LANE_DELIVERY_ENV,
                 },
                 text=True,
                 capture_output=True,
                 check=False,
             )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            prompt = prompt_log.read_text(encoding="utf-8")
-            guard = json.loads(
-                (work_root / "codex" / "owner__repo" / ".git" / "code-mower-lane-guard.json")
-                .read_text(encoding="utf-8"))
+            prompt = prompt_log.read_text(encoding="utf-8") if prompt_log.exists() else ""
+            guard_path = work_root / "codex" / "owner__repo" / ".git" / "code-mower-lane-guard.json"
+            guard = json.loads(guard_path.read_text(encoding="utf-8")) if guard_path.exists() else {}
+        return completed, prompt, guard
 
+    @staticmethod
+    def _pr(number: int, branch: str, *, labels=(), author: str = "owner",
+            repo: str = "owner/repo") -> dict:
+        return {"number": number, "headRefName": branch,
+                "headRepository": {"nameWithOwner": repo},
+                "labels": [{"name": name} for name in labels],
+                "author": {"login": author},
+                "closingIssuesReferences": [{"number": 12}]}
+
+    def test_runner_resolves_the_policy_branch_before_the_provider_runs(self) -> None:
+        own = self._pr(77, "fix/12-nv-accessible-label", labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, prompt, guard = self._run_codex_lane(json.dumps([own]))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
         policy = branch_policy.compile_template(JIRA_TEMPLATE)
         self.assertIn("fake codex completed", completed.stdout)
         self.assertIn("Branch policy: owner/repo accepts builder branches matching the template "
                       f"{JIRA_TEMPLATE} (pattern {policy.pattern}, for example {policy.example})",
                       prompt)
         self.assertIn("push exactly the branch fix/12-nv-accessible-label", prompt)
-        self.assertEqual(guard["allowed_pattern"], policy.pattern)
+        # Write authority is the exact resolved branch, never the policy regex.
+        self.assertEqual(guard["allowed_branch"], "fix/12-nv-accessible-label")
+        self.assertNotIn("allowed_pattern", guard)
         self.assertEqual(guard["allowed_prefixes"], ["codex/"])
+
+    def test_label_alone_or_author_alone_is_sufficient_lane_provenance(self) -> None:
+        for own in (
+            self._pr(77, "fix/12-nv-accessible-label", labels=("builder:codex",)),
+            self._pr(77, "fix/12-nv-accessible-label", author="ChatGPT-Codex-Connector[bot]"),
+        ):
+            with self.subTest(pr=own):
+                completed, _prompt, _guard = self._run_codex_lane(json.dumps([own]))
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_delivery_snapshot_ignores_pull_requests_without_this_lanes_provenance(self) -> None:
+        branch = "fix/12-nv-accessible-label"
+        cases = {
+            "cross_builder_label": self._pr(77, branch, labels=("builder:claude",)),
+            "cross_builder_author": self._pr(77, branch, author="claude[bot]"),
+            "human": self._pr(77, branch),
+            "conflicting_signals": self._pr(77, branch, labels=("builder:codex",), author="claude[bot]"),
+            "fork_head": self._pr(77, branch, labels=("builder:codex",), repo="fork/repo"),
+            "other_policy_branch": self._pr(77, "fix/12-something-else", labels=("builder:codex",)),
+            "lane_prefix_not_policy_branch": self._pr(77, "codex/issue-12", labels=("builder:codex",)),
+        }
+        for name, foreign in cases.items():
+            with self.subTest(case=name):
+                completed, _prompt, _guard = self._run_codex_lane(json.dumps([foreign]))
+                self.assertEqual(completed.returncode, 3, completed.stderr)
+                self.assertIn("no validated delivery for issue #12", completed.stderr)
+
+    def test_delivery_snapshot_fails_closed_on_multiple_lane_candidates(self) -> None:
+        branch = "fix/12-nv-accessible-label"
+        listing = [self._pr(77, branch, labels=("builder:codex",)),
+                   self._pr(78, branch, labels=("builder:codex",))]
+        completed, _prompt, _guard = self._run_codex_lane(json.dumps(listing))
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("multiple pull requests carry the lane provenance", completed.stderr)
 
 
 if __name__ == "__main__":

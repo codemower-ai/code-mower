@@ -62,7 +62,7 @@ cmd="${1:-} ${2:-}"
 args=" $* "
 if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
   if [ -f "$HOME/lane-delivered" ]; then
-    printf '%s\\n' '[{"number":77,"headRefName":"codex/issue-12","closingIssuesReferences":[{"number":12}]}]'
+    printf '%s\\n' '[{"number":77,"headRefName":"codex/issue-12","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:codex"}],"author":{"login":"chatgpt-codex-connector[bot]"},"closingIssuesReferences":[{"number":12}]}]'
   else
     printf '%s\\n' '[]'
   fi
@@ -278,7 +278,7 @@ class InitBuildLoopTests(unittest.TestCase):
             # headRefOid joins the target-PR read: an explicit recovery handoff
             # is validated against the head it was authorized for.
             self.assertIn(
-                "--json headRefName,headRefOid,headRepository,labels", runner_text
+                "--json headRefName,headRefOid,headRepository,labels,author", runner_text
             )
             self.assertNotIn("def has_builder_label", runner_text)
             self.assertIn("def has_lane_prefix", runner_text)
@@ -951,7 +951,7 @@ set -euo pipefail
 cmd="${{1:-}} ${{2:-}}"
 args=" $* "
 if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
-  printf '%s\n' '[{{"number":77,"headRefName":"codex/issue-12","closingIssuesReferences":{refs}}}]'
+  printf '%s\n' '[{{"number":77,"headRefName":"codex/issue-12","headRepository":{{"nameWithOwner":"owner/repo"}},"labels":[{{"name":"builder:codex"}}],"closingIssuesReferences":{refs}}}]'
   exit 0
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
   printf '%s\n' '["tier:R","builder:codex","dispatched:codex"]'
@@ -1165,7 +1165,7 @@ cmd="${{1:-}} ${{2:-}}"
 args=" $* "
 if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
   if [ -f "$HOME/lane-delivered" ]; then
-    printf '%s\\n' '[{{"number":77,"headRefName":"{lane}/issue-12","closingIssuesReferences":[{{"number":12}}]}}]'
+    printf '%s\\n' '[{{"number":77,"headRefName":"{lane}/issue-12","headRepository":{{"nameWithOwner":"owner/repo"}},"labels":[{{"name":"builder:{lane}"}}],"closingIssuesReferences":[{{"number":12}}]}}]'
   else
     printf '%s\\n' '[]'
   fi

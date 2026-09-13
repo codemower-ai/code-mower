@@ -2001,21 +2001,39 @@ class PrePushGuardTests(unittest.TestCase):
         pushed = self._push(repo, branch="codex/other", local=SHA_B, remote=SHA_A)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
 
-    def test_a_repository_policy_branch_is_writable_without_a_lane_prefix(self) -> None:
-        # The target repository accepts fix/<key>-<slug> only. The lane keeps
-        # its provenance label; the branch name carries the repository's policy.
+    def test_only_the_exact_resolved_policy_branch_is_writable_without_a_lane_prefix(self) -> None:
+        # The target repository accepts fix/<key>-<slug>. Write authority is the
+        # one branch this unit resolved for its issue, not every name the policy
+        # accepts: another builder's (or a human's) policy branch stays foreign.
+        repo = self._repo(
+            self._config(handoff=None, allowed_branch="fix/MB-9506-nv-accessible-label")
+        )
+        pushed = self._push(
+            repo, branch="fix/MB-9506-nv-accessible-label", local=SHA_B, remote=SHA_A
+        )
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        # Lane prefixes still work alongside the policy branch, and other names
+        # do not -- including other branches that match the same policy.
+        pushed = self._push(repo, branch="claude/751-work", local=SHA_B, remote=SHA_A)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        for foreign in ("fix/MB-9506-nv-accessible-labels", "fix/MB-9507-nv-accessible-label",
+                        "fix/MB-9506", "muse/MB-9506-x"):
+            with self.subTest(branch=foreign):
+                pushed = self._push(repo, branch=foreign, local=SHA_B, remote=SHA_A)
+                self.assertEqual(pushed.returncode, 1)
+                self.assertIn(f"refusing claude push to branch {foreign}", pushed.stderr)
+                self.assertIn("policy_branch=fix/MB-9506-nv-accessible-label", pushed.stderr)
+
+    def test_a_policy_pattern_in_the_guard_config_grants_nothing(self) -> None:
+        # A general regex is a description of acceptable names, never authority.
         pattern = r"fix/[A-Za-z0-9][A-Za-z0-9_-]*(?:-[a-z0-9][a-z0-9-]*)?"
         repo = self._repo(self._config(handoff=None, allowed_pattern=pattern))
         pushed = self._push(
             repo, branch="fix/MB-9506-nv-accessible-label", local=SHA_B, remote=SHA_A
         )
-        self.assertEqual(pushed.returncode, 0, pushed.stderr)
-        # Lane prefixes still work alongside the policy, and other names do not.
-        pushed = self._push(repo, branch="claude/751-work", local=SHA_B, remote=SHA_A)
-        self.assertEqual(pushed.returncode, 0, pushed.stderr)
-        pushed = self._push(repo, branch="muse/MB-9506-x", local=SHA_B, remote=SHA_A)
         self.assertEqual(pushed.returncode, 1)
-        self.assertIn("refusing claude push to branch muse/MB-9506-x", pushed.stderr)
+        self.assertNotIn("allowed_pattern", self.hook)
+        self.assertNotIn('test("^(?:" + $pattern', self.hook)
 
     def test_without_a_policy_only_lane_prefixes_authorize(self) -> None:
         repo = self._repo(self._config(handoff=None))

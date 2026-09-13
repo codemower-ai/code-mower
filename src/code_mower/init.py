@@ -1143,6 +1143,11 @@ def _lane_mac_runner_script_entry(
     for prefix, lane in sorted(configured_prefixes.items()):
         if lane in branch_prefixes and prefix not in branch_prefixes[lane]:
             branch_prefixes[lane].append(prefix)
+    builder_authors = {
+        login: lane
+        for login, lane in sorted(_identity_section(identity, "authors").items())
+        if lane in mac_lanes
+    }
     return {
         "path": LANE_MAC_RUNNER_SCRIPT_PATH,
         "source": "lane-mac-runner-script-template",
@@ -1158,6 +1163,11 @@ def _lane_mac_runner_script_entry(
         ),
         "lane_mac_runner_branch_prefixes_json": json.dumps(
             branch_prefixes,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "lane_mac_runner_builder_authors_json": json.dumps(
+            builder_authors,
             separators=(",", ":"),
             sort_keys=True,
         ),
@@ -1951,6 +1961,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         ),
         "__LANE_MAC_RUNNER_BRANCH_PREFIXES_JSON__": str(
             _shell_literal(entry.get("lane_mac_runner_branch_prefixes_json") or "{}")
+        ),
+        "__LANE_MAC_RUNNER_BUILDER_AUTHORS_JSON__": str(
+            _shell_literal(entry.get("lane_mac_runner_builder_authors_json") or "{}")
         ),
         "__LANE_MAC_RUNNER_BRANCH_POLICY_JSON__": str(
             _shell_literal(entry.get("lane_mac_runner_branch_policy_json") or "{}")

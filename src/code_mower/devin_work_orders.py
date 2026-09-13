@@ -11,9 +11,17 @@ import math
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Mapping, Protocol
 
-from .branch_policy import BranchPolicy, BranchPolicyError, is_valid_ref, validate_branch
+from .branch_policy import (
+    BranchPolicy,
+    BranchPolicyError,
+    default_policy,
+    is_valid_ref,
+    policies_by_repository,
+    resolve_branch,
+    validate_branch,
+)
 from .context_contract import ContextError, ContextRequest, ValidatedPacket, _text, normalize_policy
 from .context_delivery import render_evidence
 from .context_packets import _handle, load_authorized
@@ -96,12 +104,49 @@ class WorkOrder:
     branch_pattern: str = ""  # Repository delivery policy the branch was validated against.
     branch_example: str = ""
 
+    @staticmethod
+    def repository_policy(config: Mapping, repository: str) -> BranchPolicy:
+        """The configured delivery policy for ``repository`` (default when unconfigured).
+
+        Slugs compare case-insensitively; a configuration whose repository entries
+        collide under that comparison is rejected rather than resolved by order.
+        """
+        if not isinstance(repository, str):
+            raise RemoteError("invalid_work_order")
+        try:
+            policies = policies_by_repository(config)
+        except BranchPolicyError as exc:
+            raise RemoteError(f"branch_policy_config: {exc}") from None
+        return policies.get(repository.lower(), default_policy())
+
+    @staticmethod
+    def resolve_branch(policy: BranchPolicy, *, lane: str, issue: int, work_item: str = "",
+                       slug: str = "", work_type: str = "fix", repository: str = "") -> str:
+        """The branch a dispatcher should create for one work item under ``policy``.
+
+        ``work_item`` is the bound tracker key (for example a Jira issue key) and
+        becomes ``{issue_key}``; the GitHub issue number is always ``{issue_number}``.
+        """
+        try:
+            return resolve_branch(policy, lane=lane, issue_number=issue, issue_key=work_item,
+                                  slug=slug, work_type=work_type, repository=repository)
+        except BranchPolicyError as exc:
+            raise RemoteError(f"branch_policy_mismatch: {exc}") from None
+
     @classmethod
     def from_manifest(cls, manifest: dict, body: str, *, repository: str, issue: int,
                       branch: str, base: str, author_id: int, author_login: str,
                       acu_limit: int = 10, context_policy: str = "none",
                       context_work_item: str = "",
+                      config: Mapping | None = None,
                       branch_policy: BranchPolicy | None = None) -> WorkOrder:
+        """Bind an authenticated order. Exactly one of ``config`` or ``branch_policy``
+        is required so a configured repository policy can never be skipped by omission.
+        """
+        if (config is None) == (branch_policy is None):
+            raise RemoteError("branch_policy_required: pass config or branch_policy")
+        if config is not None:
+            branch_policy = cls.repository_policy(config, repository)
         source = manifest.get("source", {})
         # A tracker-keyed (context-bearing) source may omit the GitHub delivery issue key,
         # which then comes from dispatcher policy alone; any present value must match exactly.
@@ -114,7 +159,7 @@ class WorkOrder:
                                     and str(source["issue_number"]) == str(issue)))):
             raise RemoteError("work_order_binding_mismatch")
         pattern = example = ""
-        if branch_policy is not None and branch_policy.configured:
+        if branch_policy.configured:
             # A repository delivery policy rejects a nonconforming branch before any
             # provider create, push, or PR open; the provider-prefix default is unchanged.
             try:

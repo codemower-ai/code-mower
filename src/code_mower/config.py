@@ -538,10 +538,11 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
         repo_map = _as_mapping(repo, path, issues)
         slug = _require_string(repo_map.get("slug"), f"{path}.slug", issues)
         _require_string(repo_map.get("default_branch"), f"{path}.default_branch", issues)
-        if slug and slug in seen_repos:
+        # Policy lookup compares slugs case-insensitively, so duplicates must too.
+        if slug and slug.lower() in seen_repos:
             issues.append(ConfigIssue(f"{path}.slug", f"duplicate repository {slug}"))
         if slug:
-            seen_repos.add(slug)
+            seen_repos.add(slug.lower())
         if repo_map.get("delivery_policy") is not None:
             _validate_delivery_policy(
                 repo_map.get("delivery_policy"), f"{path}.delivery_policy", issues

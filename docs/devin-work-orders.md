@@ -19,11 +19,16 @@ from code_mower.devin_work_orders import DevinWorkOrders, WorkOrder
 from code_mower.github_builder_evidence import GitHubBuilderEvidence
 
 # Inputs below come from the authenticated dispatcher, not a provider response.
+# The loaded Code Mower config (or an explicit BranchPolicy) is required so a
+# configured repositories[].delivery_policy cannot be skipped by omission.
+policy = WorkOrder.repository_policy(config, "owner/repo")
+branch = WorkOrder.resolve_branch(policy, lane="devin", issue=907,
+                                  work_item=tracker_key_or_empty, slug=issue_title)
 order = WorkOrder.from_manifest(
     approved_manifest, approved_markdown,
-    repository="owner/repo", issue=907, branch="devin/907", base="main",
+    repository="owner/repo", issue=907, branch=branch, base="main",
     author_id=expected_github_user_id, author_login=expected_github_login,
-    acu_limit=5,
+    acu_limit=5, config=config,
 )
 builder = DevinWorkOrders.hosted(
     private_state_root,

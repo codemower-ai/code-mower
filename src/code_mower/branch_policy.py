@@ -149,16 +149,31 @@ def policy_for_repository(config: Mapping[str, Any], repository: str) -> BranchP
     return default_policy()
 
 
-def configured_policies(config: Mapping[str, Any]) -> dict[str, dict[str, str]]:
-    """Lower-cased repository slug to pattern/example for configured policies only."""
-    policies: dict[str, dict[str, str]] = {}
+def policies_by_repository(config: Mapping[str, Any]) -> dict[str, BranchPolicy]:
+    """Lower-cased repository slug to its configured policy.
+
+    Lookup is case-insensitive, so two repository entries that differ only by
+    case would otherwise let one policy silently shadow the other; that is an
+    error here rather than a lookup-order accident.
+    """
+    policies: dict[str, BranchPolicy] = {}
+    seen: set[str] = set()
     for repo in config.get("repositories") or ():
         if not isinstance(repo, Mapping) or not isinstance(repo.get("slug"), str):
             continue
+        slug = repo["slug"].lower()
+        if slug in seen:
+            raise BranchPolicyError(f"duplicate repository {repo['slug']!r} (slugs compare case-insensitively)")
+        seen.add(slug)
         delivery = repo.get("delivery_policy")
         if isinstance(delivery, Mapping) and delivery.get("branch_template") is not None:
-            policies[repo["slug"].lower()] = compile_template(delivery["branch_template"]).describe()
+            policies[slug] = compile_template(delivery["branch_template"])
     return policies
+
+
+def configured_policies(config: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    """Lower-cased repository slug to pattern/example for configured policies only."""
+    return {slug: policy.describe() for slug, policy in policies_by_repository(config).items()}
 
 
 def resolve_branch(policy: BranchPolicy, *, lane: str, issue_number: Any = None,
