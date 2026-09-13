@@ -350,8 +350,20 @@ TestPyPI must publish while production PyPI skips. pip does not prefer
 `--index-url` over `--extra-index-url`, so the candidate artifacts are fetched
 from TestPyPI alone, with no cache, no dependency resolution, and no ambient pip
 configuration; their exact filenames and digests are bound before the rehearsal,
-which then installs those local files. Dependencies resolve separately from
+which then installs the local wheel. Dependencies resolve separately from
 canonical PyPI.
+
+The runtime candidate download is wheel-only (`--only-binary :all:`), so it
+fails clearly when the universal wheel is missing and never builds from source.
+The sdist is verified separately: even with `--no-deps`, pip prepares PEP 517
+metadata for a source archive and would try to fetch the declared
+`setuptools>=77` build requirement from the only configured index, which
+TestPyPI does not carry. The build requirement is therefore installed first into
+the disposable release environment from canonical PyPI, and the sdist download
+then runs with that environment, `--no-binary :all:`, `--no-build-isolation`,
+and `--check-build-dependencies`, so TestPyPI still supplies only `code-mower`
+and a missing or wrong build backend fails closed instead of widening the
+candidate source. Production PyPI is never added as an extra index.
 
 ```bash
 set -euo pipefail
@@ -369,8 +381,12 @@ env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   --no-cache-dir --no-deps --only-binary :all: \
   --index-url https://test.pypi.org/simple/ --dest "$TESTPYPI_DIST_DIR"
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
-  PIP_CONFIG_FILE=/dev/null python3.12 -m pip --isolated download code-mower==1.4.0 \
+  PIP_CONFIG_FILE=/dev/null "$RELEASE_PYTHON" -m pip --isolated install \
+  --no-cache-dir --index-url https://pypi.org/simple/ "setuptools>=77"
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null "$RELEASE_PYTHON" -m pip --isolated download code-mower==1.4.0 \
   --no-cache-dir --no-deps --no-binary :all: \
+  --no-build-isolation --check-build-dependencies \
   --index-url https://test.pypi.org/simple/ --dest "$TESTPYPI_DIST_DIR"
 TESTPYPI_DIST_DIR="$TESTPYPI_DIST_DIR" "$RELEASE_PYTHON" - <<'PY'
 import hashlib
@@ -401,7 +417,7 @@ env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   --pip-no-cache --upgrade-pip --json
 ```
 
-The rehearsal installs the exact TestPyPI file, so production PyPI cannot satisfy
+The rehearsal installs the exact TestPyPI wheel, so production PyPI cannot satisfy
 this step; only its dependencies come from canonical PyPI. The outer
 environment cleanup covers the rehearsal's own `--upgrade-pip` subprocess as
 well as its install, so neither can inherit an ambient index, find-links

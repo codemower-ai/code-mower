@@ -412,8 +412,16 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         f'"$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" {release_tag} success skipped',
         f'"$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" {release_tag} skipped success',
         f'"$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" {release_tag} skipped skipped',
-        # TestPyPI is the exclusive source of the candidate artifacts.
+        # TestPyPI is the exclusive source of the candidate artifacts. The
+        # runtime candidate is wheel-only; the sdist is verified separately
+        # with its declared build backend installed from canonical PyPI, so
+        # pip's PEP 517 metadata preparation never resolves against TestPyPI.
         f"python3.12 -m pip --isolated download code-mower=={version}",
+        "--no-cache-dir --no-deps --only-binary :all:",
+        '--no-cache-dir --index-url https://pypi.org/simple/ "setuptools>=77"',
+        f'"$RELEASE_PYTHON" -m pip --isolated download code-mower=={version}',
+        "--no-cache-dir --no-deps --no-binary :all:",
+        "--no-build-isolation --check-build-dependencies",
         "--index-url https://test.pypi.org/simple/ --dest \"$TESTPYPI_DIST_DIR\"",
         '--package-spec "$TESTPYPI_WHEEL"',
         # Production commands reach canonical PyPI explicitly, without caches.
@@ -720,6 +728,14 @@ def _post_merge_runbook_gate_orders() -> tuple[tuple[str, tuple[str, ...]], ...]
 
     return (
         (
+            "testpypi-sdist-build-backend-before-download",
+            (
+                '--no-cache-dir --index-url https://pypi.org/simple/ "setuptools>=77"',
+                "--no-build-isolation --check-build-dependencies",
+                '--package-spec "$TESTPYPI_WHEEL"',
+            ),
+        ),
+        (
             "campaign-preflight-before-apply",
             (
                 'grep -q \'"cloud_identity": "bound"\' "$CLOUD_DIR/identity.json"',
@@ -904,7 +920,7 @@ def _uv_isolation_problems(release_doc: str) -> list[str]:
     return problems
 
 
-PIP_ISOLATION_SITE_COUNT = 8
+PIP_ISOLATION_SITE_COUNT = 9
 PIP_ISOLATION_ENVIRONMENT = (
     "-u PIP_INDEX_URL",
     "-u PIP_EXTRA_INDEX_URL",
@@ -953,6 +969,35 @@ def _pip_command_kind(command: str) -> str:
     return ""
 
 
+TESTPYPI_INDEX_ARGUMENT = "--index-url https://test.pypi.org/simple/"
+SDIST_BUILD_BOUNDARY_ARGUMENTS = ("--no-build-isolation", "--check-build-dependencies")
+
+
+def _testpypi_download_boundary_problems(command: str) -> list[str]:
+    """Report a TestPyPI download that could resolve a build backend from TestPyPI.
+
+    A wheel-only download never prepares PEP 517 metadata. An sdist download
+    does, even with `--no-deps`, and would fetch the declared build backend
+    from the only configured index -- which TestPyPI does not carry -- unless
+    the backend is already installed and pip is told to use it and to fail
+    when it is missing.
+    """
+
+    if " download" not in command or TESTPYPI_INDEX_ARGUMENT not in command:
+        return []
+    if "--no-deps" not in command:
+        return ["resolves dependencies from TestPyPI"]
+    if "--no-binary :all:" in command:
+        return [
+            f"downloads the TestPyPI sdist without {argument}"
+            for argument in SDIST_BUILD_BOUNDARY_ARGUMENTS
+            if argument not in command
+        ]
+    if "--only-binary :all:" not in command:
+        return ["does not download the TestPyPI candidate wheel-only"]
+    return []
+
+
 def _post_merge_pip_isolation_problems(runbook_doc: str) -> list[str]:
     """Report post-merge pip-backed commands that could resolve another source.
 
@@ -984,6 +1029,10 @@ def _post_merge_pip_isolation_problems(runbook_doc: str) -> list[str]:
                 problems.append(f"{label} does not run an isolated pip")
             if "--no-cache-dir" not in command:
                 problems.append(f"{label} does not bypass the pip cache")
+            problems.extend(
+                f"{label} {problem}"
+                for problem in _testpypi_download_boundary_problems(command)
+            )
         if kind == "rehearsal":
             if "--pip-index-url https://pypi.org/simple/" not in command:
                 problems.append(f"{label} does not name the canonical index")

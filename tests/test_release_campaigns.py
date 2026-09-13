@@ -6461,8 +6461,12 @@ class HostedDispatchPackageSourceTests(unittest.TestCase):
             self.assertIn("`testpypi`", dispatch_body)
             self.assertIn("https://test.pypi.org/simple/", dispatch_body)
             self.assertIn("https://pypi.org/simple/", dispatch_body)
-            self.assertIn("Download the candidate with `--no-deps`", dispatch_body)
-            self.assertIn("verified local artifact", dispatch_body)
+            self.assertIn(
+                "Download the candidate with `--no-deps --only-binary :all:`", dispatch_body
+            )
+            self.assertIn("runtime qualification is wheel-only", dispatch_body)
+            self.assertIn("never build from a source archive", dispatch_body)
+            self.assertIn("verified local wheel", dispatch_body)
             self.assertIn("Never combine the indexes", dispatch_body)
             self.assertIn(
                 "campaign_id, provider, release_tag, package_source, and idempotency_key",

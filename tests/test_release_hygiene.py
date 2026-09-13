@@ -9177,6 +9177,124 @@ def main():
         self.assertIn('--package-spec "$TESTPYPI_WHEEL"', runbook)
         self.assertNotIn("--pip-extra-index-url https://pypi.org/simple/", runbook)
 
+    def test_runbook_testpypi_runtime_download_is_wheel_only(self) -> None:
+        runbook = self._runbook_section()
+        testpypi = runbook.partition("### 7. Publish production PyPI only")[0]
+        downloads = [
+            command
+            for command in release_readiness._shell_commands(testpypi)
+            if " download" in command
+            and "--index-url https://test.pypi.org/simple/" in command
+        ]
+
+        self.assertEqual(len(downloads), 2, downloads)
+        wheel_downloads = [c for c in downloads if "--only-binary :all:" in c]
+        sdist_downloads = [c for c in downloads if "--no-binary :all:" in c]
+        self.assertEqual(len(wheel_downloads), 1, downloads)
+        self.assertEqual(len(sdist_downloads), 1, downloads)
+        self.assertIn("--no-deps", wheel_downloads[0])
+        self.assertNotIn("--no-build-isolation", wheel_downloads[0])
+        for argument in (
+            "--no-deps",
+            "--no-cache-dir",
+            "--no-build-isolation",
+            "--check-build-dependencies",
+        ):
+            self.assertIn(argument, sdist_downloads[0])
+        self.assertNotIn("--extra-index-url", sdist_downloads[0])
+
+    def test_runbook_installs_the_sdist_build_backend_from_canonical_pypi_first(
+        self,
+    ) -> None:
+        runbook = self._runbook_section()
+        backend = '--no-cache-dir --index-url https://pypi.org/simple/ "setuptools>=77"'
+        sdist = "--no-build-isolation --check-build-dependencies"
+
+        self.assertIn(backend, runbook)
+        self.assertLess(runbook.index(backend), runbook.index(sdist))
+        self.assertLess(runbook.index(sdist), runbook.index('--package-spec "$TESTPYPI_WHEEL"'))
+        self.assertNotIn('--index-url https://test.pypi.org/simple/ "setuptools', runbook)
+        with open(ROOT / "pyproject.toml", encoding="utf-8") as handle:
+            self.assertIn('requires = ["setuptools>=77"]', handle.read())
+
+    def test_release_readiness_requires_each_testpypi_sdist_safety_marker(self) -> None:
+        runbook = self._runbook_section()
+        for assertion in (
+            "--no-cache-dir --no-deps --only-binary :all:",
+            '--no-cache-dir --index-url https://pypi.org/simple/ "setuptools>=77"',
+            '"$RELEASE_PYTHON" -m pip --isolated download code-mower==1.4.0',
+            "--no-cache-dir --no-deps --no-binary :all:",
+            "--no-build-isolation --check-build-dependencies",
+        ):
+            with self.subTest(assertion=assertion):
+                self.assertIn(assertion, runbook)
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_a_testpypi_download_loses_its_boundary(
+        self,
+    ) -> None:
+        mutations = (
+            (
+                "--no-cache-dir --no-deps --only-binary :all:",
+                "--no-cache-dir --no-deps",
+                "does not download the TestPyPI candidate wheel-only",
+            ),
+            (
+                "--no-build-isolation --check-build-dependencies",
+                "--check-build-dependencies",
+                "downloads the TestPyPI sdist without --no-build-isolation",
+            ),
+            (
+                "--no-build-isolation --check-build-dependencies",
+                "--no-build-isolation",
+                "downloads the TestPyPI sdist without --check-build-dependencies",
+            ),
+            (
+                "--no-cache-dir --no-deps --no-binary :all:",
+                "--no-cache-dir --no-binary :all:",
+                "resolves dependencies from TestPyPI",
+            ),
+        )
+        for old, new, expected in mutations:
+            with self.subTest(expected=expected):
+                check = self._asserted_runbook_check(
+                    lambda doc, old=old, new=new: doc.replace(old, new)
+                )
+                problems = check["detail"]["pip_isolation_problems"]
+
+                self.assertEqual(check["status"], "fail")
+                self.assertTrue(
+                    any(problem.endswith(expected) for problem in problems), problems
+                )
+
+    def test_release_readiness_fails_when_the_build_backend_install_moves_after_the_sdist(
+        self,
+    ) -> None:
+        backend = (
+            "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \\\n"
+            '  PIP_CONFIG_FILE=/dev/null "$RELEASE_PYTHON" -m pip --isolated install \\\n'
+            '  --no-cache-dir --index-url https://pypi.org/simple/ "setuptools>=77"\n'
+        )
+        anchor = 'TESTPYPI_WHEEL="$TESTPYPI_DIST_DIR/'
+        self.assertIn(backend, self._runbook_section())
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(backend, "").replace(anchor, backend + anchor)
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertTrue(
+            any(
+                "testpypi-sdist-build-backend-before-download" in problem
+                for problem in check["detail"]["gate_order_problems"]
+            ),
+            check["detail"]["gate_order_problems"],
+        )
+
     def test_runbook_production_steps_use_canonical_pypi_only(self) -> None:
         runbook = self._runbook_section()
         production = runbook.partition("### 7. Publish production PyPI only")[2]
@@ -9350,7 +9468,7 @@ def main():
             len(sites), release_readiness.PIP_ISOLATION_SITE_COUNT, sites
         )
         self.assertEqual(
-            kinds, ["pip"] * 5 + ["pipx"] + ["rehearsal"] * 2
+            kinds, ["pip"] * 6 + ["pipx"] + ["rehearsal"] * 2
         )
         self.assertEqual(
             release_readiness._post_merge_pip_isolation_problems(runbook), []
@@ -9386,7 +9504,7 @@ def main():
 
         self.assertEqual(check["status"], "fail")
         self.assertIn(
-            "expected 8 pip-backed commands, found 7",
+            "expected 9 pip-backed commands, found 8",
             check["detail"]["pip_isolation_problems"],
         )
 
