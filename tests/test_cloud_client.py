@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -10,6 +11,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
+import code_mower.cloud_client.git_metadata as git_metadata
 import code_mower.cloud_client.operations as cloud_operations
 from code_mower.cloud_client import (
     BUNDLE_MANIFEST_FILENAME,
@@ -1068,6 +1070,107 @@ def test_strict_board_snapshot_preserves_tracked_executable_modes(
     assert collected["result"]["git"]["head_sha"] == head_sha
     assert collected["result"]["git"]["clean"] is True
     assert not Path(collected["source"]).exists()
+
+
+def _materialization_roots() -> list[Path]:
+    return sorted(Path(tempfile.gettempdir()).glob("code-mower-exact-commit-*"))
+
+
+def _force_cleanup(roots: list[Path]) -> None:
+    for root in roots:
+        git_metadata._set_tree_permissions(root, writable=True)
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_strict_board_snapshot_fails_closed_when_cleanup_leaves_the_private_tree(
+    monkeypatch, tmp_path
+) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path, executable=True)
+    before = _materialization_roots()
+    monkeypatch.setattr(cloud_operations, "post_upload_payload", _refusing_post)
+    monkeypatch.setattr(git_metadata.shutil, "rmtree", lambda *_a, **_k: None)
+
+    # Collection itself succeeds, but a private materialization left on disk
+    # must not be reported as success or uploaded.
+    with assert_raises(CloudBundleError) as caught:
+        _board_snapshot_dry_run(
+            monkeypatch,
+            repo_path,
+            tmp_path / "leaked-out",
+            require_head_sha=head_sha,
+            require_clean=True,
+            yes=True,
+        )
+    message = str(caught.exception)
+    assert "unable to remove the private exact-commit source" == message
+    leaked = [root for root in _materialization_roots() if root not in before]
+    assert leaked
+    _force_cleanup(leaked)
+
+
+def test_materialization_cleanup_fails_closed_when_write_access_cannot_be_restored(
+    monkeypatch, tmp_path
+) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path, executable=True)
+    before = _materialization_roots()
+    real_chmod = git_metadata.os.chmod
+    hardened: list[bool] = []
+
+    def failing_restore(path, mode, *args, **kwargs):
+        # Hardening is allowed; restoring write access is not, so the
+        # non-writable directories cannot be removed.
+        if mode & 0o200 and hardened:
+            raise OSError("chmod refused")
+        if not mode & 0o200:
+            hardened.append(True)
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(git_metadata.os, "chmod", failing_restore)
+
+    with assert_raises(CloudBundleError) as caught:
+        with git_metadata.materialized_commit_source(repo_path, head_sha) as source:
+            assert (source / "tracked.txt").read_text(encoding="utf-8") == "one\n"
+    assert str(caught.exception) == "unable to remove the private exact-commit source"
+
+    monkeypatch.undo()
+    leaked = [root for root in _materialization_roots() if root not in before]
+    assert leaked
+    _force_cleanup(leaked)
+    assert not [root for root in _materialization_roots() if root not in before]
+
+
+def test_materialization_cleanup_failure_chains_a_collection_failure(
+    monkeypatch, tmp_path
+) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path)
+    before = _materialization_roots()
+    monkeypatch.setattr(git_metadata.shutil, "rmtree", lambda *_a, **_k: None)
+    primary = CloudBundleError("collection failed")
+
+    with assert_raises(CloudBundleError) as caught:
+        with git_metadata.materialized_commit_source(repo_path, head_sha):
+            raise primary
+    # The cleanup failure is surfaced and the primary failure is preserved.
+    assert str(caught.exception) == "unable to remove the private exact-commit source"
+    assert caught.exception.__cause__ is primary
+
+    monkeypatch.undo()
+    _force_cleanup([root for root in _materialization_roots() if root not in before])
+
+
+def test_materialization_cleanup_succeeds_on_the_normal_path(tmp_path) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path, executable=True)
+    before = _materialization_roots()
+
+    with git_metadata.materialized_commit_source(repo_path, head_sha) as source:
+        assert (source / "tracked.txt").read_text(encoding="utf-8") == "one\n"
+
+    assert not source.exists()
+    assert not [root for root in _materialization_roots() if root not in before]
 
 
 def test_strict_board_snapshot_cleans_up_a_materialization_with_executables(

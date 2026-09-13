@@ -7631,6 +7631,50 @@ def main():
         )
         self.assertTrue(problems(version="", distribution_version=""))
 
+    def test_installed_version_binding_accepts_pep440_equivalent_spellings(self) -> None:
+        problems = code_mower_migration_readiness.installed_version_problems
+
+        # pip installs normalized metadata, so an equivalent requested spelling
+        # of the same release is the requested candidate.
+        for requested in ("1.4.0", "v1.4.0", "1.4.0.0", "1.4", " 1.4.0 "):
+            with self.subTest(requested=requested):
+                self.assertEqual(
+                    problems(
+                        version="code-mower 1.4.0",
+                        distribution_version="1.4.0",
+                        requested_version=requested,
+                    ),
+                    [],
+                )
+
+        for requested in ("1.4.1", "1.4.0rc1", "1.4.0.post1", "2!1.4.0", "1.4.0+local", "not-a-version"):
+            with self.subTest(requested=requested):
+                self.assertEqual(
+                    problems(
+                        version="code-mower 1.4.0",
+                        distribution_version="1.4.0",
+                        requested_version=requested,
+                    ),
+                    ["installed distribution version does not match the requested candidate"],
+                )
+
+    def test_normalized_release_version_equivalence(self) -> None:
+        agree = code_mower_migration_readiness.release_versions_agree
+        normalized = code_mower_migration_readiness.normalized_release_version
+
+        self.assertTrue(agree("v1.4.0", "1.4.0"))
+        self.assertTrue(agree("1.4.0.0", "1.4.0"))
+        self.assertTrue(agree("1.4.0-rc.1", "1.4.0rc1"))
+        self.assertTrue(agree("1.4.0.post0", "1.4.0-0"))
+        self.assertFalse(agree("1.4.0", "1.4.0rc1"))
+        self.assertFalse(agree("1.4.0", "1.4.0.post1"))
+        self.assertFalse(agree("1.4.0", "1.5.0"))
+        self.assertIsNone(normalized("nonsense"))
+        # Unparseable values fall back to exact text, so nothing is accepted
+        # on the strength of a failed parse.
+        self.assertTrue(agree("nonsense", "nonsense"))
+        self.assertFalse(agree("nonsense", "1.4.0"))
+
     def test_requested_candidate_version_binds_specs_and_wheels(self) -> None:
         requested = code_mower_migration_install.requested_candidate_version
 

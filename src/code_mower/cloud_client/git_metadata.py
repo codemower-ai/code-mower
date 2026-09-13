@@ -160,6 +160,22 @@ def _set_tree_permissions(root: Path, *, writable: bool) -> None:
                 ) from None
 
 
+def _private_tree_is_removed(root: Path) -> bool:
+    """Restore write access, remove the private tree, and confirm it is gone.
+
+    Removal is best effort, but the outcome is not assumed: the caller learns
+    whether the whole temporary root is actually absent so a leftover private
+    checkout cannot be reported as a clean run.
+    """
+
+    try:
+        _set_tree_permissions(root, writable=True)
+    except OSError:
+        pass
+    shutil.rmtree(root, ignore_errors=True)
+    return not root.exists()
+
+
 @contextmanager
 def materialized_commit_source(repo_path: Path, commit_sha: str) -> Iterator[Path]:
     """Yield a private read-only checkout materialized from an exact commit.
@@ -177,6 +193,7 @@ def materialized_commit_source(repo_path: Path, commit_sha: str) -> Iterator[Pat
         raise CloudBundleError("expected head sha must be an exact 40-character commit")
     temp_root = Path(tempfile.mkdtemp(prefix="code-mower-exact-commit-"))
     source = temp_root / "source"
+    collection_error: BaseException | None = None
     try:
         # A clone source must name the repository itself, so the enclosing root
         # is resolved before materializing.
@@ -210,9 +227,19 @@ def materialized_commit_source(repo_path: Path, commit_sha: str) -> Iterator[Pat
                 "the private exact-commit source changed while it was made read-only"
             )
         yield source
+    except BaseException as error:
+        collection_error = error
+        raise
     finally:
-        _set_tree_permissions(temp_root, writable=True)
-        shutil.rmtree(temp_root, ignore_errors=True)
+        if not _private_tree_is_removed(temp_root):
+            # A private materialization left on disk is never reported as
+            # success, and the bounded message names no path or content.
+            cleanup_error = CloudBundleError(
+                "unable to remove the private exact-commit source"
+            )
+            if collection_error is None:
+                raise cleanup_error
+            raise cleanup_error from collection_error
 
 
 def require_checkout_provenance(

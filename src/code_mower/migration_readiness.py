@@ -3,8 +3,24 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Sequence
+
+_PEP440_PATTERN = re.compile(
+    r"""
+    ^\s*v?
+    (?:(?P<epoch>\d+)!)?
+    (?P<release>\d+(?:\.\d+)*)
+    (?P<pre>[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview)[-_.]?\d*)?
+    (?P<post>-\d+|[-_.]?(?:post|rev|r)[-_.]?\d*)?
+    (?P<dev>[-_.]?dev[-_.]?\d*)?
+    (?:\+(?P<local>[a-z0-9]+(?:[-_.][a-z0-9]+)*))?
+    \s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_PRE_LETTERS = {"alpha": "a", "a": "a", "beta": "b", "b": "b", "c": "rc", "pre": "rc", "preview": "rc", "rc": "rc"}
 
 FIRST_USER_ARTIFACTS = (
     ("calibration_plan", ".code-mower/calibration-plan.json"),
@@ -28,6 +44,57 @@ PRIVACY_EXCLUDED_CONTENT = frozenset(
         "secrets",
     }
 )
+
+
+def normalized_release_version(value: str) -> tuple[object, ...] | None:
+    """Return a comparable PEP 440 identity, or ``None`` when unparseable.
+
+    Equivalent spellings such as ``v1.4.0``, ``1.4.0`` and ``1.4.0.0`` describe
+    one distribution version, so version agreement is decided on the normalized
+    identity rather than the raw text.
+    """
+
+    match = _PEP440_PATTERN.match(value)
+    if not match:
+        return None
+
+    def numeric_segment(raw: str | None, *, names: tuple[str, ...]) -> int | None:
+        if raw is None:
+            return None
+        digits = re.sub(r"[^0-9]", "", raw)
+        if not digits and not any(name in raw.lower() for name in names):
+            return None
+        return int(digits) if digits else 0
+
+    release = [int(part) for part in match.group("release").split(".")]
+    while len(release) > 1 and release[-1] == 0:
+        release.pop()
+
+    pre: tuple[str, int] | None = None
+    raw_pre = match.group("pre")
+    if raw_pre:
+        letters = re.sub(r"[^a-zA-Z]", "", raw_pre).lower()
+        pre = (_PRE_LETTERS.get(letters, letters), int(re.sub(r"[^0-9]", "", raw_pre) or 0))
+
+    local = match.group("local")
+    return (
+        int(match.group("epoch") or 0),
+        tuple(release),
+        pre,
+        numeric_segment(match.group("post"), names=("post", "rev", "r")),
+        numeric_segment(match.group("dev"), names=("dev",)),
+        tuple(re.split(r"[-_.]", local.lower())) if local else None,
+    )
+
+
+def release_versions_agree(left: str, right: str) -> bool:
+    """Report whether two version spellings describe the same release."""
+
+    normalized_left = normalized_release_version(left)
+    normalized_right = normalized_release_version(right)
+    if normalized_left is None or normalized_right is None:
+        return left.strip() == right.strip()
+    return normalized_left == normalized_right
 
 
 def installed_version_problems(
@@ -54,7 +121,11 @@ def installed_version_problems(
         problems.append(
             "CLI version output does not match the installed distribution version"
         )
-    if requested_version and installed and requested_version != installed:
+    if (
+        requested_version
+        and installed
+        and not release_versions_agree(requested_version, installed)
+    ):
         problems.append(
             "installed distribution version does not match the requested candidate"
         )
