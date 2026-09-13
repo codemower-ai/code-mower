@@ -23,10 +23,12 @@ if __package__ in {None, "", "tools"}:
         import audit_limits  # type: ignore
     import tracker_contract  # type: ignore
     import context_contract  # type: ignore
+    import branch_policy  # type: ignore
 else:  # pragma: no cover - exercised after package extraction.
     from . import audit_limits
     from . import tracker_contract
     from . import context_contract
+    from . import branch_policy
 
 
 ALLOWED_LANE_TYPES = {"audit", "review"}
@@ -495,6 +497,20 @@ def _validate_tracker(tracker: Any, issues: list[ConfigIssue]) -> None:
         )
 
 
+def _validate_delivery_policy(value: Any, path: str, issues: list[ConfigIssue]) -> None:
+    policy_map = _as_mapping(value, path, issues)
+    for key in policy_map:
+        if key != "branch_template":
+            issues.append(ConfigIssue(f"{path}.{key}", "must be branch_template"))
+    if "branch_template" not in policy_map:
+        issues.append(ConfigIssue(f"{path}.branch_template", "is required"))
+        return
+    try:
+        branch_policy.compile_template(policy_map.get("branch_template"))
+    except branch_policy.BranchPolicyError as exc:
+        issues.append(ConfigIssue(f"{path}.branch_template", str(exc)))
+
+
 def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
     issues: list[ConfigIssue] = []
     from .participants import configured_participants, configured_transports
@@ -522,10 +538,15 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
         repo_map = _as_mapping(repo, path, issues)
         slug = _require_string(repo_map.get("slug"), f"{path}.slug", issues)
         _require_string(repo_map.get("default_branch"), f"{path}.default_branch", issues)
-        if slug and slug in seen_repos:
+        # Policy lookup compares slugs case-insensitively, so duplicates must too.
+        if slug and slug.lower() in seen_repos:
             issues.append(ConfigIssue(f"{path}.slug", f"duplicate repository {slug}"))
         if slug:
-            seen_repos.add(slug)
+            seen_repos.add(slug.lower())
+        if repo_map.get("delivery_policy") is not None:
+            _validate_delivery_policy(
+                repo_map.get("delivery_policy"), f"{path}.delivery_policy", issues
+            )
 
     lanes = _as_mapping(config.get("lanes"), "lanes", issues)
     if (

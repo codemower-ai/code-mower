@@ -98,7 +98,7 @@ cmd="${{1:-}} ${{2:-}}"
 args=" $* "
 if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
   if [ -f "$HOME/{_DELIVERY_MARKER_NAME}" ]; then
-    printf '%s\\n' '[{{"number":77,"headRefName":"devin/issue-12","closingIssuesReferences":[{{"number":12}}]}}]'
+    printf '%s\\n' '[{{"number":77,"headRefName":"devin/issue-12","headRepository":{{"nameWithOwner":"owner/repo"}},"labels":[{{"name":"builder:devin"}}],"author":{{"login":"devin-ai-integration[bot]"}},"closingIssuesReferences":[{{"number":12}}]}}]'
   else
     printf '%s\\n' '[]'
   fi
@@ -841,6 +841,180 @@ fi
         self.assertIn("devin: nothing to do", completed.stdout)
         self.assertNotIn("selected fix pr #21", completed.stdout)
 
+    @staticmethod
+    def _policy_config() -> dict:
+        cfg = code_mower_config.load_config(CONFIG_PATH)
+        cfg["repositories"][0]["slug"] = "owner/repo"
+        cfg["repositories"][0]["delivery_policy"] = {"branch_template": "fix/{issue_key}-{slug}"}
+        return cfg
+
+    def _explicit_target(self, root: Path, pr_json: str, *, handoff: bool = False,
+                         ) -> subprocess.CompletedProcess:
+        output_dir = root / "generated"
+        _generate(output_dir, self._policy_config())
+        runner = output_dir / "tools/lanes/run_mac_lane.sh"
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        fake_gh = bin_dir / "gh"
+        fake_gh.write_text(
+            f"""#!/usr/bin/env bash
+set -euo pipefail
+cmd="${{1:-}} ${{2:-}}"
+args=" $* "
+if [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefName,headRefOid,headRepository,labels,author"* ]]; then
+  printf '%s\\n' '{pr_json}'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+            encoding="utf-8",
+        )
+        fake_gh.chmod(0o755)
+        argv = [str(runner), "--lane", "devin", "--repo", "owner/repo", "--max-minutes", "1",
+                "--target", "pr:21"]
+        if handoff:
+            argv.extend(["--handoff-source-lane", "codex", "--handoff-expected-head", "a" * 40])
+        return subprocess.run(
+            argv,
+            cwd=output_dir,
+            env={**os.environ, "HOME": str(root),
+                 "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                 **_lane_delivery_env()},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_devin_lane_rejects_explicit_policy_branch_targets_without_its_provenance(
+        self,
+    ) -> None:
+        # fix/12-accessible-label satisfies the repository's delivery policy for
+        # every builder and for humans, so the branch name says nothing about
+        # ownership. Only this lane's builder label or authenticated author,
+        # with no signal mapping to another lane, makes the PR this lane's.
+        head = '"headRefName":"fix/12-accessible-label","headRefOid":"' + "a" * 40 + '"'
+        cases = {
+            "cross_builder_label": (
+                '{' + head + ',"headRepository":{"nameWithOwner":"owner/repo"},'
+                '"labels":[{"name":"builder:codex"}],"author":{"login":"chatgpt-codex-connector[bot]"}}'
+            ),
+            "human": (
+                '{' + head + ',"headRepository":{"nameWithOwner":"owner/repo"},'
+                '"labels":[{"name":"tier:R"}],"author":{"login":"owner"}}'
+            ),
+            "conflicting_label_and_author": (
+                '{' + head + ',"headRepository":{"nameWithOwner":"owner/repo"},'
+                '"labels":[{"name":"builder:devin"}],"author":{"login":"claude[bot]"}}'
+            ),
+            "conflicting_labels": (
+                '{' + head + ',"headRepository":{"nameWithOwner":"owner/repo"},'
+                '"labels":[{"name":"builder:devin"},{"name":"builder:codex"}],'
+                '"author":{"login":"devin-ai-integration[bot]"}}'
+            ),
+        }
+        for name, pr_json in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                completed = self._explicit_target(Path(tmp), pr_json)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn(
+                    "refusing target PR #21; head branch fix/12-accessible-label is not owned by this lane",
+                    completed.stderr,
+                )
+                self.assertIn("expected branch prefix devin/", completed.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            fork = ('{' + head + ',"headRepository":{"nameWithOwner":"fork/repo"},'
+                    '"labels":[{"name":"builder:devin"}],"author":{"login":"devin-ai-integration[bot]"}}')
+            completed = self._explicit_target(Path(tmp), fork)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("head repository fork/repo does not match owner/repo", completed.stderr)
+
+    def test_devin_lane_accepts_an_explicit_policy_branch_target_it_provably_owns(self) -> None:
+        # Ownership established, the run proceeds past the ownership gate (and
+        # fails later only because this fixture answers nothing else).
+        head = '"headRefName":"fix/12-accessible-label","headRefOid":"' + "a" * 40 + '"'
+        own = ('{' + head + ',"headRepository":{"nameWithOwner":"owner/repo"},'
+               '"labels":[{"name":"builder:devin"}],"author":{"login":"devin-ai-integration[bot]"}}')
+        with tempfile.TemporaryDirectory() as tmp:
+            completed = self._explicit_target(Path(tmp), own)
+        self.assertNotIn("is not owned by this lane", completed.stderr)
+        self.assertNotIn("does not match owner/repo", completed.stderr)
+
+    def test_devin_lane_rejects_off_policy_target_before_explicit_handoff(self) -> None:
+        # A recovery handoff transfers ownership only. It cannot waive the
+        # repository's configured branch-name policy, even when its source
+        # lane and pinned head otherwise describe the target PR.
+        pr_json = (
+            '{"headRefName":"codex/12-accessible-label","headRefOid":"' + "a" * 40
+            + '","headRepository":{"nameWithOwner":"owner/repo"},'
+              '"labels":[{"name":"builder:codex"}],'
+              '"author":{"login":"chatgpt-codex-connector[bot]"}}'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            completed = self._explicit_target(Path(tmp), pr_json, handoff=True)
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("head branch codex/12-accessible-label does not match the owner/repo "
+                      "branch policy", completed.stderr)
+        self.assertNotIn("accepted explicit handoff", completed.stdout)
+
+    def test_devin_lane_auto_select_skips_policy_branch_prs_without_its_provenance(self) -> None:
+        # The lane-label listing already carries builder:devin; a conflicting
+        # author, a foreign head repository, or a branch neither lane-prefixed
+        # nor policy-conforming still keeps the PR out of automatic selection.
+        common = ('"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}],'
+                  '"updatedAt":"2026-01-01T00:00:00Z"')
+        cases = {
+            "conflicting_author": (
+                '[{"number":21,' + common + ',"headRepository":{"nameWithOwner":"owner/repo"},'
+                '"headRefName":"fix/12-accessible-label","author":{"login":"claude[bot]"}}]'
+            ),
+            "fork_head": (
+                '[{"number":21,' + common + ',"headRepository":{"nameWithOwner":"fork/repo"},'
+                '"headRefName":"fix/12-accessible-label","author":{"login":"devin-ai-integration[bot]"}}]'
+            ),
+            "off_policy_branch": (
+                '[{"number":21,' + common + ',"headRepository":{"nameWithOwner":"owner/repo"},'
+                '"headRefName":"hotfix/12","author":{"login":"devin-ai-integration[bot]"}}]'
+            ),
+        }
+        for name, listing in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output_dir = root / "generated"
+                _generate(output_dir, self._policy_config())
+                runner = output_dir / "tools/lanes/run_mac_lane.sh"
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                fake_gh = bin_dir / "gh"
+                fake_gh.write_text(
+                    f"""#!/usr/bin/env bash
+set -euo pipefail
+cmd="${{1:-}} ${{2:-}}"
+args=" $* "
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+  printf '%s\\n' '{listing}'
+elif [ "$cmd" = "issue list" ]; then
+  printf '%s\\n' '[]'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                    encoding="utf-8",
+                )
+                fake_gh.chmod(0o755)
+                completed = subprocess.run(
+                    [str(runner), "--lane", "devin", "--repo", "owner/repo", "--max-minutes", "1"],
+                    cwd=output_dir,
+                    env={**os.environ, "HOME": str(root),
+                         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("devin: nothing to do", completed.stdout)
+                self.assertNotIn("selected fix pr #21", completed.stdout)
+
     def test_devin_lane_auto_selects_and_targets_correctly_prefixed_local_branch(
         self,
     ) -> None:
@@ -863,7 +1037,7 @@ fi
                 _FAKE_GH_DELIVERY_HEADER
                 + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
   printf '%s\\n' '[{"number":21,"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}],"updatedAt":"2026-01-01T00:00:00Z","headRepository":{"nameWithOwner":"owner/repo"},"headRefName":"devin/fix-1"}]'
-elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefName,headRefOid,headRepository,labels"* ]]; then
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefName,headRefOid,headRepository,labels,author"* ]]; then
   printf '%s\\n' '{"headRefName":"devin/fix-1","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}]}'
 elif [ "$cmd" = "repo view" ]; then
   printf 'main\\n'

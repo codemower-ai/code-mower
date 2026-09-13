@@ -2001,6 +2001,86 @@ class PrePushGuardTests(unittest.TestCase):
         pushed = self._push(repo, branch="codex/other", local=SHA_B, remote=SHA_A)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
 
+    def test_only_the_exact_resolved_policy_branch_is_writable_without_a_lane_prefix(self) -> None:
+        # The target repository accepts fix/<key>-<slug>. Write authority is the
+        # one branch this unit resolved for its issue, not every name the policy
+        # accepts: another builder's (or a human's) policy branch stays foreign.
+        repo = self._repo(
+            self._config(handoff=None, allowed_branch="fix/MB-9506-nv-accessible-label",
+                         allowed_branch_expected_head=PINNED_HEAD)
+        )
+        pushed = self._push(
+            repo, branch="fix/MB-9506-nv-accessible-label", local=SHA_B, remote=SHA_A
+        )
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        # The resolved branch is the whole allowance: the lane's own prefixes
+        # grant nothing while a policy branch is set (even if a stale config
+        # still lists them), and neither do other branches matching the policy.
+        for foreign in ("claude/751-work", "fix/MB-9506-nv-accessible-labels",
+                        "fix/MB-9507-nv-accessible-label", "fix/MB-9506", "muse/MB-9506-x"):
+            with self.subTest(branch=foreign):
+                pushed = self._push(repo, branch=foreign, local=SHA_B, remote=SHA_A)
+                self.assertEqual(pushed.returncode, 1)
+                self.assertIn(f"refusing claude push to branch {foreign}", pushed.stderr)
+                self.assertIn("policy_branch=fix/MB-9506-nv-accessible-label", pushed.stderr)
+
+    def test_an_existing_policy_branch_is_pinned_to_the_inspected_remote_head(self) -> None:
+        branch = "fix/MB-9506-nv-accessible-label"
+        repo = self._repo(
+            self._config(handoff=None, allowed_branch=branch,
+                         allowed_branch_expected_head=PINNED_HEAD)
+        )
+        exact = self._push(repo, branch=branch, local=SHA_B, remote=PINNED_HEAD)
+        self.assertEqual(exact.returncode, 0, exact.stderr)
+        own_followup = self._push(repo, branch=branch, local="c" * 40, remote=SHA_B)
+        self.assertEqual(own_followup.returncode, 0, own_followup.stderr)
+
+        advanced = self._push(repo, branch=branch, local="d" * 40, remote="e" * 40)
+        self.assertEqual(advanced.returncode, 1)
+        self.assertIn("does not match the inspected head", advanced.stderr)
+
+    def test_an_absent_policy_branch_is_pinned_against_concurrent_recreation(self) -> None:
+        branch = "fix/MB-9506-nv-accessible-label"
+        repo = self._repo(
+            self._config(handoff=None, allowed_branch=branch,
+                         allowed_branch_expected_head="absent")
+        )
+        created = self._push(repo, branch=branch, local=SHA_B, remote="0" * 40)
+        self.assertEqual(created.returncode, 0, created.stderr)
+        own_followup = self._push(repo, branch=branch, local="c" * 40, remote=SHA_B)
+        self.assertEqual(own_followup.returncode, 0, own_followup.stderr)
+
+        raced = self._repo(
+            self._config(handoff=None, allowed_branch=branch,
+                         allowed_branch_expected_head="absent")
+        )
+        recreated = self._push(raced, branch=branch, local=SHA_B, remote=PINNED_HEAD)
+        self.assertEqual(recreated.returncode, 1)
+        self.assertIn("inspected head absent", recreated.stderr)
+
+    def test_a_policy_branch_without_an_observed_head_pin_is_refused(self) -> None:
+        branch = "fix/MB-9506-nv-accessible-label"
+        repo = self._repo(self._config(handoff=None, allowed_branch=branch))
+        pushed = self._push(repo, branch=branch, local=SHA_B, remote=PINNED_HEAD)
+        self.assertEqual(pushed.returncode, 1)
+        self.assertIn("records no observed remote head", pushed.stderr)
+
+    def test_a_policy_pattern_in_the_guard_config_grants_nothing(self) -> None:
+        # A general regex is a description of acceptable names, never authority.
+        pattern = r"fix/[A-Za-z0-9][A-Za-z0-9_-]*(?:-[a-z0-9][a-z0-9-]*)?"
+        repo = self._repo(self._config(handoff=None, allowed_pattern=pattern))
+        pushed = self._push(
+            repo, branch="fix/MB-9506-nv-accessible-label", local=SHA_B, remote=SHA_A
+        )
+        self.assertEqual(pushed.returncode, 1)
+        self.assertNotIn("allowed_pattern", self.hook)
+        self.assertNotIn('test("^(?:" + $pattern', self.hook)
+
+    def test_without_a_policy_only_lane_prefixes_authorize(self) -> None:
+        repo = self._repo(self._config(handoff=None))
+        pushed = self._push(repo, branch="fix/MB-9506-x", local=SHA_B, remote=SHA_A)
+        self.assertEqual(pushed.returncode, 1)
+
     def test_a_non_branch_ref_is_refused(self) -> None:
         repo = self._repo(self._config())
         pushed = self._push(

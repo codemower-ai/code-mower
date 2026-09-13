@@ -8,6 +8,12 @@ repositories:
   - slug: owner/example
     default_branch: main
     local_path_env: EXAMPLE_REPO_PATH
+    # Optional. Branch names the repository accepts for builder delivery, separate
+    # from builder_identity.branch_prefixes (provenance). Variables: {lane},
+    # {issue_key}, {issue_number}, {slug}, {work_type}, {repo_name}. Omit to keep
+    # provider-prefixed branches such as codex/907-short-description.
+    # delivery_policy:
+    #   branch_template: "fix/{issue_key}-{slug}"
 
 # Optional work-tracker configuration. GitHub Issues is the default when omitted.
 # To adopt Jira Cloud, set kind: jira_cloud and configure your tenant and project.

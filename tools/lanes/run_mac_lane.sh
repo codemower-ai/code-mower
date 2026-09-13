@@ -118,6 +118,10 @@ lane_branch_prefixes_json="$(
 lane_branch_prefixes_display="$(
   printf '%s\n' "$lane_branch_prefixes_json" | jq -r 'join(", ")'
 )"
+# Optional per-repository branch-name policy (repositories[].delivery_policy),
+# keyed by lower-cased slug. It says which branch names the target repository
+# accepts; provenance still comes from the builder label and PR author.
+branch_policy_json='{}'
 dispatch_label="dispatched:${LANE}"
 lane_doc="${repo_root}/docs/lanes/${LANE}.md"
 [ -f "$lane_doc" ] || { echo "missing ${lane_doc}" >&2; exit 1; }
@@ -132,6 +136,53 @@ case "$repo_owner" in *[!A-Za-z0-9_.-]*) echo "--repo owner contains unsupported
 case "$repo_name" in *[!A-Za-z0-9_.-]*) echo "--repo name contains unsupported characters" >&2; exit 2 ;; esac
 repo_key="${repo_owner}__${repo_name}"
 expected_repo_slug="$(printf '%s\n' "$REPO" | tr '[:upper:]' '[:lower:]')"
+repo_branch_policy_json="$(
+  printf '%s\n' "$branch_policy_json" | jq -c --arg repo "$expected_repo_slug" '.[$repo] // {}'
+)"
+repo_branch_pattern="$(printf '%s\n' "$repo_branch_policy_json" | jq -r '.pattern // empty')"
+repo_branch_example="$(printf '%s\n' "$repo_branch_policy_json" | jq -r '.example // empty')"
+repo_branch_template="$(printf '%s\n' "$repo_branch_policy_json" | jq -r '.template // empty')"
+if [ -n "$repo_branch_pattern" ]; then
+  # Fail closed on a malformed pattern before it can reach the pre-push guard.
+  jq -n --arg pattern "$repo_branch_pattern" --arg example "$repo_branch_example" \
+    '$example | test("^(?:" + $pattern + ")$")' >/dev/null 2>&1 \
+    || { echo "${LANE}: refusing to run; branch policy for ${REPO} is not a usable pattern" >&2; exit 2; }
+fi
+
+# Builder provenance for PR ownership. provenance_labels_json maps every
+# configured builder label to its lane and builder_authors_json maps the
+# authenticated PR authors builder_identity knows to lanes. Both cover all
+# configured builder lanes, not only the ones this runner may execute, so a
+# PR another builder also claims is a conflict rather than unowned. A PR is
+# this lane's only when at least one of those signals maps to this lane and
+# none maps to another lane; a branch name, including one that merely matches
+# the repository policy, never grants ownership or write authority by itself.
+provenance_labels_json='{"builder:claude":"claude","builder:codex":"codex"}'
+builder_authors_json='{"chatgpt-codex-connector[bot]":"codex","claude[bot]":"claude"}'
+# shellcheck disable=SC2016  # jq variables are intentionally single-quoted.
+lane_provenance_jq='
+  def mapped_lanes:
+    ([ (.labels // [])[] | (.name // "") as $name
+       | $provenance_labels | to_entries[] | select(.key == $name) | .value ]
+     + [ ((.author.login // "") | ascii_downcase) as $login
+         | select($login != "")
+         | $builder_authors | to_entries[] | select((.key | ascii_downcase) == $login) | .value ])
+    | unique;
+  def lane_provenance:
+    mapped_lanes as $lanes | any($lanes[]; . == $lane) and all($lanes[]; . == $lane);
+  def same_head_repo: ((.headRepository.nameWithOwner // "") | ascii_downcase) == $repo;
+  def has_lane_prefix:
+    (.headRefName // "") as $branch | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
+  def matches_repo_policy:
+    $pattern != "" and ((.headRefName // "") | test("^(?:" + $pattern + ")$"));
+  def acceptable_branch_name:
+    if $pattern != "" then matches_repo_policy else has_lane_prefix end;
+'
+lane_provenance_args=(
+  --arg lane "$LANE" --arg repo "$expected_repo_slug" --arg pattern "$repo_branch_pattern"
+  --argjson provenance_labels "$provenance_labels_json" --argjson builder_authors "$builder_authors_json"
+  --argjson prefixes "$lane_branch_prefixes_json"
+)
 work_root="${LANE_WORK_ROOT:-${HOME}/actions-runner/_work/lanes}"
 work="${work_root}/${LANE}/${repo_key}"
 log_dir="${HOME}/.cache/code-mower-lanes/${LANE}/${repo_key}"
@@ -198,11 +249,10 @@ fi
 if [ -z "$kind" ]; then
   num="$(
     gh pr list -R "$REPO" --state open --label "$builder_label" --limit 100 \
-      --json number,labels,updatedAt,headRepository,headRefName \
-      | jq -r --arg repo "$expected_repo_slug" --argjson prefixes "$lane_branch_prefixes_json" '
-        def same_head_repo: ((.headRepository.nameWithOwner // "") | ascii_downcase) == $repo;
-        def has_lane_prefix: (.headRefName // "") as $branch | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
-        [.[] | select(same_head_repo) | select(has_lane_prefix) | select(any(.labels[]; '"${audit_block_filter}"'))]
+      --json number,labels,updatedAt,headRepository,headRefName,author \
+      | jq -r "${lane_provenance_args[@]}" "${lane_provenance_jq}"'
+        [.[] | select(same_head_repo) | select(acceptable_branch_name) | select(lane_provenance)
+          | select(any(.labels[]; '"${audit_block_filter}"'))]
         | sort_by(.updatedAt) | .[0].number // empty'
   )"
   [ -n "$num" ] && kind="pr" && mode="fix"
@@ -313,16 +363,23 @@ install_pre_push_guard() {
   local hook="${work}/.git/hooks/pre-push"
   mkdir -p "$(dirname "$hook")"
   # Normal single-writer enforcement is unchanged: allowed_prefixes carries the
-  # lane's own branch prefixes. handoff is populated only by a validated
-  # explicit recovery handoff, and it authorizes exactly one foreign branch.
+  # lane's own branch prefixes. allowed_branch is the one branch this unit
+  # resolved from the repository policy for its issue; when it is set it is
+  # the whole allowance and the lane prefixes are withheld, since the target
+  # repository accepts no other name from this unit. The policy pattern itself
+  # never authorizes a push. handoff is populated only by a validated explicit
+  # recovery handoff, and it authorizes exactly one foreign branch.
   printf '%s\n' "$branch_prefixes_json" \
     | jq -c --arg lane "$LANE" --arg target "$target_branch" --arg mode "$guard_mode" \
+        --arg policy_branch "$resolved_branch" --arg policy_expected_head "$policy_branch_expected_head" \
         --argjson handoff "${handoff_json:-null}" '
       {
         lane: $lane,
         mode: $mode,
         target_pr_branch: (if $mode == "audit" then "" else $target end),
-        allowed_prefixes: (if $mode == "audit" then [] else (.[$lane] // []) end),
+        allowed_prefixes: (if $mode == "audit" or $policy_branch != "" then [] else (.[$lane] // []) end),
+        allowed_branch: (if $mode == "audit" then "" else $policy_branch end),
+        allowed_branch_expected_head: (if $mode == "audit" or $policy_branch == "" then "" else $policy_expected_head end),
         handoff: $handoff
       }' > "$guard_config"
   cat > "$hook" <<'HOOK'
@@ -337,16 +394,18 @@ config="$(git rev-parse --git-path code-mower-lane-guard.json)"
 lane="$(jq -r '.lane' "$config")"
 summary="$(jq -r '
   "prefixes=" + ((.allowed_prefixes // []) | join(",")) +
+  (if (.allowed_branch // "") != "" then "; policy_branch=" + .allowed_branch else "" end) +
+  (if (.allowed_branch_expected_head // "") != "" then "; policy_expected_head=" + .allowed_branch_expected_head else "" end) +
   (if (.target_pr_branch // "") != "" then "; target=" + .target_pr_branch else "" end) +
   (if (.handoff // null) != null
    then "; handoff=" + ((.handoff.source_lane // "?") + "->" + (.handoff.destination_lane // "?"))
    else "" end)
 ' "$config")"
 
-# The heads this guard already authorized for a handed-over branch during
-# this run. A recovery that pushes more than once has to be able to build on
-# its own writes, and without this the second push would read the remote it
-# just advanced as somebody else's.
+# The heads this guard already authorized for a pinned branch during this run.
+# A builder that pushes more than once has to be able to build on its own
+# writes, and without this the second push would read the remote it just
+# advanced as somebody else's.
 ledger="$(git rev-parse --git-path code-mower-lane-guard-pushed)"
 
 while read -r _local_ref local_sha remote_ref remote_sha; do
@@ -363,8 +422,12 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   # never separately writable by name -- the branch a handoff covers must go
   # through the handoff's own checks below.
   authority="$(jq -r --arg branch "$branch" '
-    def allowed_prefix: any((.allowed_prefixes // [])[]; . as $prefix | ($branch | startswith($prefix)));
-    if allowed_prefix then "lane_prefix"
+    def allowed_branch: (.allowed_branch // "") != "" and $branch == .allowed_branch;
+    def allowed_prefix:
+      (.allowed_branch // "") == ""
+      and any((.allowed_prefixes // [])[]; . as $prefix | ($branch | startswith($prefix)));
+    if allowed_branch then "repo_policy_branch"
+    elif allowed_prefix then "lane_prefix"
     elif (.handoff // null) != null then
       (if (.handoff.target_branch // "") == $branch then "explicit_handoff" else "none" end)
     elif (.target_pr_branch // "") != "" and $branch == .target_pr_branch then "target_pr"
@@ -375,7 +438,30 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
     echo "code-mower lane guard: refusing ${lane} push to branch ${branch}; allowed ${summary}" >&2
     exit 1
   fi
-  if [ "$authority" = "explicit_handoff" ]; then
+  if [ "$authority" = "repo_policy_branch" ]; then
+    # A policy branch is shared naming space: its name proves neither ownership
+    # nor that it stayed at the head inspected before provider start. Pin the
+    # observed head (or absence) and reject a concurrent create/advance. Heads
+    # this run already wrote are recorded so its own later pushes can proceed.
+    expected_head="$(jq -r '(.allowed_branch_expected_head // "") | ascii_downcase' "$config")"
+    observed_head="$(printf '%s' "$remote_sha" | tr '[:upper:]' '[:lower:]')"
+    if [ -z "$expected_head" ]; then
+      echo "code-mower lane guard: refusing ${lane} push to policy branch ${branch}; the guard records no observed remote head" >&2
+      exit 1
+    fi
+    policy_head_matches="false"
+    if [ "$expected_head" = "absent" ]; then
+      case "$observed_head" in ''|*[!0]*) ;; *) policy_head_matches="true" ;; esac
+    elif [ "$observed_head" = "$expected_head" ]; then
+      policy_head_matches="true"
+    fi
+    if [ "$policy_head_matches" != "true" ] \
+      && ! grep -qxF "${branch} ${observed_head}" "$ledger" 2>/dev/null; then
+      echo "code-mower lane guard: refusing ${lane} push to policy branch ${branch}; remote head ${observed_head} does not match the inspected head ${expected_head}" >&2
+      exit 1
+    fi
+    printf '%s %s\n' "$branch" "$(printf '%s' "$local_sha" | tr '[:upper:]' '[:lower:]')" >> "$ledger"
+  elif [ "$authority" = "explicit_handoff" ]; then
     # A handoff authorizes one branch at one head. The orchestrator pinned the
     # head it inspected; a remote that has moved since means the source lane is
     # still writing, the handoff is stale, and a push from here -- including
@@ -403,10 +489,11 @@ HOOK
 
 target_pr_branch=""
 target_pr_head=""
+policy_branch_expected_head=""
 handoff_json=""
 handoff_file=""
 if [ "$kind" = "pr" ]; then
-  target_pr_json="$(gh pr view "$num" -R "$REPO" --json headRefName,headRefOid,headRepository,labels 2>/dev/null || true)"
+  target_pr_json="$(gh pr view "$num" -R "$REPO" --json headRefName,headRefOid,headRepository,labels,author 2>/dev/null || true)"
   target_pr_repo=""
   if [ -n "$target_pr_json" ]; then
     target_pr_branch="$(printf '%s\n' "$target_pr_json" | jq -r '.headRefName // empty')"
@@ -419,13 +506,18 @@ if [ "$kind" = "pr" ]; then
       echo "${LANE}: refusing ${mode} PR #${num}; head repository ${target_pr_repo:-missing} does not match ${REPO}" >&2
       exit 1
     fi
+    if [ -n "$repo_branch_pattern" ] && ! printf '%s\n' "$target_pr_json" \
+        | jq -e "${lane_provenance_args[@]}" "${lane_provenance_jq}"' matches_repo_policy' >/dev/null; then
+      # Repository policy is a prerequisite for every write, including a
+      # recovery handoff. A handoff may transfer ownership of a conforming
+      # branch; it may never override the target repository's naming policy.
+      echo "${LANE}: refusing ${mode} PR #${num}; head branch ${target_pr_branch:-missing} does not match the ${REPO} branch policy ${repo_branch_pattern} (for example ${repo_branch_example})" >&2
+      exit 1
+    fi
     target_pr_owned_by_lane="$(
       printf '%s\n' "$target_pr_json" \
-        | jq -r --argjson prefixes "$lane_branch_prefixes_json" '
-          def has_lane_prefix:
-            (.headRefName // "") as $branch
-            | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
-          if has_lane_prefix then "true" else "false" end
+        | jq -r "${lane_provenance_args[@]}" "${lane_provenance_jq}"'
+          if acceptable_branch_name and lane_provenance then "true" else "false" end
         '
     )"
     if [ "$target_pr_owned_by_lane" != "true" ]; then
@@ -433,7 +525,7 @@ if [ "$kind" = "pr" ]; then
       # orchestrator recovery handoff. Implicit cross-lane takeover stays a
       # hard refusal.
       if [ -z "$HANDOFF_SOURCE_LANE" ]; then
-        echo "${LANE}: refusing ${mode} PR #${num}; head branch ${target_pr_branch:-missing} is not owned by this lane (expected branch prefix ${lane_branch_prefixes_display})" >&2
+        echo "${LANE}: refusing ${mode} PR #${num}; head branch ${target_pr_branch:-missing} is not owned by this lane (expected branch prefix ${lane_branch_prefixes_display}, or a repository-policy branch whose builder label or authenticated author maps to ${LANE} with no signal mapping elsewhere)" >&2
         exit 1
       fi
       # A handoff hands over a branch, so the source lane has to own it. The
@@ -466,7 +558,15 @@ if [ "$kind" = "pr" ]; then
         --target-branch "$target_pr_branch" \
         "${handoff_source_prefix_args[@]}" \
         --output "$handoff_file" >/dev/null; then
-        echo "${LANE}: refusing ${mode} PR #${num}; explicit handoff did not validate" >&2
+        # A policy-named branch carries no source-lane prefix, so the prefix
+        # ownership proof cannot validate it. Provenance-aware handoff for
+        # such branches is owned by issue #962; until then it stays refused.
+        if [ -n "$repo_branch_pattern" ] && jq -n --arg branch "$target_pr_branch" --arg pattern "$repo_branch_pattern" \
+            '$branch | test("^(?:" + $pattern + ")$")' | grep -qx true; then
+          echo "${LANE}: refusing ${mode} PR #${num}; explicit handoff did not validate for policy-named branch ${target_pr_branch}; recovery handoffs for repository-policy branches are not supported yet (see codemower-ai/code-mower#962)" >&2
+        else
+          echo "${LANE}: refusing ${mode} PR #${num}; explicit handoff did not validate" >&2
+        fi
         exit 1
       fi
       handoff_json="$(cat "$handoff_file")"
@@ -504,6 +604,133 @@ git -C "$work" clean -fdxq -e .build -e node_modules -e .venv
 git -C "$work" checkout --quiet --force --detach "origin/${default_branch}"
 git -C "$work" reset --quiet --hard "origin/${default_branch}"
 git -C "$work" clean -fdxq -e .build -e node_modules -e .venv
+# Resolve the branch this unit must open from the repository policy before any
+# provider run, so a nonconforming name is refused here rather than at push and
+# the pre-push guard can authorize exactly that branch.
+lane_branch_prefixes_json_first="$(printf '%s\n' "$lane_branch_prefixes_json" | jq -r '.[0] // empty')"
+# Mirrors code_mower.branch_policy.is_valid_ref: the same conservative subset
+# of git-check-ref-format the Python resolver enforces, so a rendered name
+# such as .github/12 is refused here, before the guard or any provider.
+is_valid_ref() {
+  local branch="$1" part
+  [ -n "$branch" ] && [ "${#branch}" -le 200 ] || return 1
+  printf '%s' "$branch" | LC_ALL=C grep -Eqx '[A-Za-z0-9][A-Za-z0-9/_.-]*' || return 1
+  case "$branch" in *..*|*//*|*@\{*|*/) return 1 ;; esac
+  while IFS= read -r -d / part || [ -n "$part" ]; do
+    case "$part" in .*|*.|*.lock) return 1 ;; esac
+  done < <(printf '%s' "$branch")
+  git check-ref-format --branch "$branch" >/dev/null 2>&1
+}
+resolved_branch=""
+if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
+  # The slug is part of the branch identity. A failed or empty title lookup
+  # must not degrade into an empty slug: that resolves a different branch than
+  # the one an earlier run opened, misses that PR in snapshot discovery, and
+  # delivers the same issue twice. Abort before the guard or any provider.
+  if ! issue_title="$(gh issue view "$num" -R "$REPO" --json title -q .title 2>/dev/null)" \
+      || [ -z "$issue_title" ]; then
+    echo "${LANE}: refusing issue #${num}; could not read the issue title needed to resolve the ${REPO} policy branch from template ${repo_branch_template}" >&2
+    exit 1
+  fi
+  issue_slug="$(printf '%s' "$issue_title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-48 | sed -E 's/-+$//')"
+  resolved_branch="$(
+    printf '%s\n' "$repo_branch_template" \
+      | jq -Rr --arg lane "$LANE" --arg issue "$num" --arg slug "$issue_slug" --arg repo "$repo_name" '
+        (if $slug == "" then gsub("[-_/.]\\{slug\\}"; "") else . end)
+        | gsub("\\{lane\\}"; $lane) | gsub("\\{issue_key\\}"; $issue) | gsub("\\{issue_number\\}"; $issue)
+        | gsub("\\{slug\\}"; $slug) | gsub("\\{work_type\\}"; "fix") | gsub("\\{repo_name\\}"; $repo)'
+  )"
+  if ! is_valid_ref "$resolved_branch"; then
+    echo "${LANE}: refusing issue #${num}; resolved branch ${resolved_branch} is not a valid git branch name (template ${repo_branch_template} for ${REPO})" >&2
+    exit 1
+  fi
+  if ! jq -n --arg branch "$resolved_branch" --arg pattern "$repo_branch_pattern" \
+      '$branch | test("^(?:" + $pattern + ")$")' | grep -qx true; then
+    echo "${LANE}: refusing issue #${num}; resolved branch ${resolved_branch} does not match the ${REPO} branch policy ${repo_branch_pattern} (for example ${repo_branch_example})" >&2
+    exit 1
+  fi
+  # The policy names one branch per issue for every builder and for humans, so
+  # the name alone cannot say who owns an existing copy of it. Before this run
+  # is granted write authority over that name, an existing remote branch must
+  # be attributable to this lane through a pull request carrying its
+  # provenance; a foreign builder's or a human's branch, a branch with no
+  # attributable pull request, or a failed lookup all refuse before the guard
+  # is installed or a provider starts. Recovery of a foreign policy-named
+  # branch is an explicit handoff concern (codemower-ai/code-mower#962).
+  policy_branch_expected_head="absent"
+  if ! existing_branch_ref="$(git -C "$work" ls-remote --heads origin "refs/heads/${resolved_branch}" 2>/dev/null)"; then
+    echo "${LANE}: refusing issue #${num}; could not check whether policy branch ${resolved_branch} already exists on ${REPO}" >&2
+    exit 1
+  fi
+  if [ -n "$existing_branch_ref" ]; then
+    existing_branch_ref_count="$(printf '%s\n' "$existing_branch_ref" | sed '/^$/d' | wc -l | tr -d ' ')"
+    existing_branch_remote_head="$(printf '%s\n' "$existing_branch_ref" | awk 'NR == 1 { print tolower($1) }')"
+    existing_branch_remote_ref="$(printf '%s\n' "$existing_branch_ref" | awk 'NR == 1 { print $2 }')"
+    if [ "$existing_branch_ref_count" != "1" ] \
+      || [ "$existing_branch_remote_ref" != "refs/heads/${resolved_branch}" ] \
+      || ! printf '%s\n' "$existing_branch_remote_head" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
+      echo "${LANE}: refusing issue #${num}; policy branch ${resolved_branch} returned an ambiguous or invalid remote head" >&2
+      exit 1
+    fi
+    if ! existing_branch_prs="$(gh pr list -R "$REPO" --state all --head "$resolved_branch" --limit 50 \
+        --json number,headRefName,headRefOid,headRepository,labels,author 2>/dev/null)"; then
+      echo "${LANE}: refusing issue #${num}; policy branch ${resolved_branch} already exists on ${REPO} and its pull requests could not be read" >&2
+      exit 1
+    fi
+    existing_branch_owner="$(
+      printf '%s\n' "$existing_branch_prs" \
+        | jq -r "${lane_provenance_args[@]}" --arg resolved "$resolved_branch" \
+            --arg remote_head "$existing_branch_remote_head" "${lane_provenance_jq}"'
+          [.[] | select(same_head_repo) | select((.headRefName // "") == $resolved)]
+          | if length == 0 then "unattributed"
+            elif length > 1 then "multiple:" + ([.[].number] | map(tostring) | join(", "))
+            elif (.[0] | lane_provenance | not) then "foreign:" + ((.[0].number // "unknown") | tostring)
+            elif ((.[0].headRefOid // "") | ascii_downcase) != $remote_head
+              then "head_mismatch:" + ((.[0].number // "unknown") | tostring)
+            else "lane" end'
+    )"
+    case "$existing_branch_owner" in
+      lane)
+        policy_branch_expected_head="$existing_branch_remote_head"
+        echo "${LANE}: policy branch ${resolved_branch} already exists on ${REPO} at ${existing_branch_remote_head} with this lane's exact-head provenance; continuing"
+        ;;
+      unattributed)
+        echo "${LANE}: refusing issue #${num}; policy branch ${resolved_branch} already exists on ${REPO} with no pull request carrying this lane's provenance" >&2
+        exit 1
+        ;;
+      multiple:*)
+        echo "${LANE}: refusing issue #${num}; policy branch ${resolved_branch} already exists on ${REPO} with multiple pull requests (${existing_branch_owner#multiple:}); ownership is ambiguous" >&2
+        exit 1
+        ;;
+      head_mismatch:*)
+        echo "${LANE}: refusing issue #${num}; pull request #${existing_branch_owner#head_mismatch:} for policy branch ${resolved_branch} does not point at current remote head ${existing_branch_remote_head}" >&2
+        exit 1
+        ;;
+      foreign:*)
+        echo "${LANE}: refusing issue #${num}; policy branch ${resolved_branch} already exists on ${REPO} and pull request #${existing_branch_owner#foreign:} on it is owned by another builder or a human, not by ${LANE}" >&2
+        exit 1
+        ;;
+      *)
+        echo "${LANE}: refusing issue #${num}; policy branch ${resolved_branch} ownership could not be established" >&2
+        exit 1
+        ;;
+    esac
+  fi
+elif [ "$kind" = "pr" ] && [ "$mode" != "audit" ] && [ -n "$repo_branch_pattern" ] && [ -z "$HANDOFF_SOURCE_LANE" ]; then
+  # A policy-bound fix round writes exactly the validated target branch: the
+  # ownership gate above already required it to match the policy, and the
+  # guard withholds the lane prefixes so no other name is writable.
+  if ! is_valid_ref "$target_pr_branch"; then
+    echo "${LANE}: refusing ${mode} PR #${num}; head branch ${target_pr_branch:-missing} is not a valid git branch name" >&2
+    exit 1
+  fi
+  resolved_branch="$target_pr_branch"
+  policy_branch_expected_head="$(printf '%s' "$target_pr_head" | tr '[:upper:]' '[:lower:]')"
+  if ! printf '%s\n' "$policy_branch_expected_head" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
+    echo "${LANE}: refusing ${mode} PR #${num}; head commit ${target_pr_head:-missing} is not a valid git object id" >&2
+    exit 1
+  fi
+fi
 install_pre_push_guard "$target_pr_branch" "$mode"
 
 # A failed lookup is not an empty result. `gh pr list` piping into jq hides a
@@ -514,12 +741,22 @@ lane_pr_for_issue() {
   local issue="$1"
   local listing=""
   listing="$(gh pr list -R "$REPO" --state open --search "\"#${issue}\" in:body" --limit 30 \
-    --json number,closingIssuesReferences,headRefName 2>/dev/null)" || return 1
-  printf '%s\n' "$listing" \
-    | jq -r --arg issue "$issue" --argjson prefixes "$lane_branch_prefixes_json" '
-      def has_lane_prefix: (.headRefName // "") as $branch | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
-      [.[] | select(has_lane_prefix) | select(any((.closingIssuesReferences // [])[]; ((.number // "") | tostring) == $issue))]
-      | sort_by(.number) | last | .number // empty'
+    --json number,closingIssuesReferences,headRefName,headRepository,labels,author 2>/dev/null)" || return 1
+  # Only a same-repository PR carrying this lane's builder provenance on the
+  # exact branch this unit resolved (or, without a policy, a lane-prefixed
+  # branch) can be attributed to this run. More than one such PR is not a
+  # guess this runner may make, so it is reported as a failed lookup.
+  local selected=""
+  selected="$(
+    printf '%s\n' "$listing" \
+      | jq -r "${lane_provenance_args[@]}" --arg issue "$issue" --arg resolved "$resolved_branch" "${lane_provenance_jq}"'
+        [.[] | select(same_head_repo) | select(lane_provenance)
+          | select(if $resolved != "" then (.headRefName // "") == $resolved else has_lane_prefix end)
+          | select(any((.closingIssuesReferences // [])[]; ((.number // "") | tostring) == $issue))]
+        | if length > 1 then error("multiple pull requests carry the lane provenance for the issue")
+          else (.[0].number // empty) end'
+  )" || return 1
+  printf '%s' "$selected"
 }
 
 # Retry a snapshot lookup a couple of times so an ordinary transient GitHub
@@ -617,6 +854,11 @@ trap 'rm -f "$prompt_file"' EXIT
   echo "- Open exactly one PR per issue. Label it ${builder_label} plus the audit labels named in the standing file."
   echo "- Single-writer rule: only the owning builder pushes to its PR branch. Other lanes comment or audit."
   echo "- A pre-push hook enforces the single-writer rule by rejecting pushes outside this lane's allowed branch prefixes or the exact targeted PR branch."
+  if [ -n "$resolved_branch" ]; then
+    echo "- Branch policy: ${REPO} accepts builder branches matching the template ${repo_branch_template} (pattern ${repo_branch_pattern}, for example ${repo_branch_example}). Create and push exactly the branch ${resolved_branch}; the pre-push hook rejects every other branch name, including other names that match the pattern."
+  elif [ "$kind" = "issue" ]; then
+    echo "- Branch naming: start your branch with one of this lane's prefixes (${lane_branch_prefixes_display}), for example ${lane_branch_prefixes_json_first}${num}-short-description."
+  fi
   echo "- Fix rounds: address every P0/P1/P2 in the latest audit verdicts, push to the same branch, and reply on the PR with the new head SHA. Do not force-push unless the branch owner must repair history, and then use --force-with-lease."
   echo "- Audit duty: if this target is an audit, run the lane audit wrapper for the PR and do not edit product code."
   echo "- Anything requiring the owner, credentials, UI clicks, or a product decision gets label ${owner_label} with an exact numbered action list, then stop this unit."
