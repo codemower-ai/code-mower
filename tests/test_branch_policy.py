@@ -303,6 +303,7 @@ class GeneratedRunnerTests(unittest.TestCase):
     def _run_codex_lane(self, delivered_listing: str, *, template: str = JIRA_TEMPLATE,
                         repo: str = "owner/repo",
                         title_lookup: str = "printf 'NV: Accessible label\\n'",
+                        existing_issue_prs: str = "[]",
                         existing_branch: str | None = None,
                         existing_branch_head: str = "c" * 40,
                         existing_branch_prs: str = "[]",
@@ -347,6 +348,8 @@ class GeneratedRunnerTests(unittest.TestCase):
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"NV: Accessible label","labels":[{"name":"tier:R"},{"name":"builder:codex"},{"name":"dispatched:codex"}],"assignees":[],"author":{"login":"owner"}}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]] && [[ "$args" == *"--limit 50"* ]]; then
+  printf '%s\\n' '__EXISTING_ISSUE_PRS__'
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--state all --head "* ]]; then
@@ -366,6 +369,7 @@ else
   exit 2
 fi
 """.replace("owner/repo", repo).replace("__TITLE_LOOKUP__", title_lookup)
+                .replace("__EXISTING_ISSUE_PRS__", existing_issue_prs)
                 .replace("__EXISTING_BRANCH_PRS__", existing_branch_prs),
                 encoding="utf-8",
             )
@@ -514,6 +518,61 @@ printf 'fake codex completed\\n'
         self.assertEqual(guard["allowed_branch"], branch)
         self.assertEqual(guard["allowed_branch_expected_head"], "c" * 40)
         self.assertEqual(guard["allowed_prefixes"], [])
+
+    def test_runner_reuses_the_existing_issue_pr_branch_after_the_title_changes(self) -> None:
+        old_branch = "fix/12-original-title"
+        own = self._pr(77, old_branch, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, prompt, guard = self._run_codex_lane(
+            json.dumps([own]),
+            title_lookup="printf 'title lookup must not run\\n' >&2; exit 99",
+            existing_issue_prs=json.dumps([own]),
+            existing_branch=old_branch,
+            existing_branch_prs=json.dumps([own]),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn(f"reusing policy branch {old_branch} from existing pull request #77",
+                      completed.stdout)
+        self.assertNotIn("title lookup must not run", completed.stderr)
+        self.assertIn(f"push exactly the branch {old_branch}", prompt)
+        self.assertEqual(guard["allowed_branch"], old_branch)
+        self.assertEqual(guard["allowed_branch_expected_head"], "c" * 40)
+
+    def test_runner_refuses_ambiguous_existing_pull_requests_for_the_issue(self) -> None:
+        prs = [
+            self._pr(77, "fix/12-original-title", labels=("builder:codex",)),
+            self._pr(78, "fix/12-renamed-title", labels=("builder:codex",)),
+        ]
+        completed, prompt, guard = self._run_codex_lane(
+            "[]", existing_issue_prs=json.dumps(prs))
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("multiple pull requests (77, 78) close it", completed.stderr)
+        self.assertEqual(prompt, "")
+        self.assertEqual(guard, {})
+
+    def test_runner_refuses_an_existing_issue_pr_with_an_off_policy_branch(self) -> None:
+        own = self._pr(77, "codex/12-original-title", labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, prompt, guard = self._run_codex_lane(
+            "[]", existing_issue_prs=json.dumps([own]))
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("existing pull request #77 branch codex/12-original-title does not match",
+                      completed.stderr)
+        self.assertEqual(prompt, "")
+        self.assertEqual(guard, {})
+
+    def test_runner_refuses_a_foreign_existing_pull_request_for_the_issue(self) -> None:
+        foreign = self._pr(77, "fix/12-original-title", labels=("builder:claude",),
+                           author="claude[bot]")
+        completed, prompt, guard = self._run_codex_lane(
+            "[]", existing_issue_prs=json.dumps([foreign]),
+            title_lookup="printf 'title lookup must not run\\n' >&2; exit 99")
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("pull request #77 already closes it but is owned by another builder",
+                      completed.stderr)
+        self.assertNotIn("title lookup must not run", completed.stderr)
+        self.assertEqual(prompt, "")
+        self.assertEqual(guard, {})
 
     def test_runner_refuses_a_stale_same_lane_pr_for_an_existing_policy_branch(self) -> None:
         branch = "fix/12-nv-accessible-label"

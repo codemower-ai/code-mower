@@ -704,6 +704,10 @@ that observed head, or pins the branch as absent for a first delivery, in the
 pre-push guard. A concurrent create or advance then fails before it can be
 overwritten. Recovery handoff may transfer ownership of a policy-conforming
 target, but it never overrides the repository's branch-name policy.
+For issue delivery, an existing PR's exact closing-issue relationship is the
+stable lookup key: if the issue title changes, the runner reuses that PR's
+policy-conforming branch instead of deriving a second slug. Multiple matches,
+foreign ownership, or a nonconforming existing branch fail closed.
 
 Branch protection should require the `code-mower/gate` commit status from **Any
 source**, alongside normal CI, before autonomous merge is trusted. Do not select

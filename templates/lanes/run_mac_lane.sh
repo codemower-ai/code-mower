@@ -631,30 +631,85 @@ is_valid_ref() {
 }
 resolved_branch=""
 if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
-  # The slug is part of the branch identity. A failed or empty title lookup
-  # must not degrade into an empty slug: that resolves a different branch than
-  # the one an earlier run opened, misses that PR in snapshot discovery, and
-  # delivers the same issue twice. Abort before the guard or any provider.
-  if ! issue_title="$(gh issue view "$num" -R "$REPO" --json title -q .title 2>/dev/null)" \
-      || [ -z "$issue_title" ]; then
-    echo "${LANE}: refusing issue #${num}; could not read the issue title needed to resolve the ${REPO} policy branch from template ${repo_branch_template}" >&2
+  # Slugs come from mutable issue titles. Before resolving a fresh name, find
+  # an existing open PR by its exact closing-issue relationship. One current
+  # same-repository PR with this lane's provenance retains its conforming
+  # branch even when the title changed; foreign or multiple candidates are not
+  # a branch choice this runner may make. This lookup happens before the title
+  # is required so a known delivery cannot be hidden by mutable display text.
+  if ! issue_prs="$(gh pr list -R "$REPO" --state open --search "\"#${num}\" in:body" --limit 50 \
+      --json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author 2>/dev/null)"; then
+    echo "${LANE}: refusing issue #${num}; could not discover existing pull requests by closing issue" >&2
     exit 1
   fi
-  issue_slug="$(printf '%s' "$issue_title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-48 | sed -E 's/-+$//')"
-  resolved_branch="$(
-    printf '%s\n' "$repo_branch_template" \
-      | jq -Rr --arg lane "$LANE" --arg issue "$num" --arg slug "$issue_slug" --arg repo "$repo_name" '
-        (if $slug == "" then gsub("[-_/.]\\{slug\\}"; "") else . end)
-        | gsub("\\{lane\\}"; $lane) | gsub("\\{issue_key\\}"; $issue) | gsub("\\{issue_number\\}"; $issue)
-        | gsub("\\{slug\\}"; $slug) | gsub("\\{work_type\\}"; "fix") | gsub("\\{repo_name\\}"; $repo)'
-  )"
+  if ! issue_pr_selection="$(
+    printf '%s\n' "$issue_prs" \
+      | jq -c "${lane_provenance_args[@]}" --arg issue "$num" "${lane_provenance_jq}"'
+        [.[]
+          | select(any((.closingIssuesReferences // [])[]; ((.number // "") | tostring) == $issue))]
+        | if length == 0 then {status:"none"}
+          elif length > 1 then {status:"ambiguous", numbers:[.[].number]}
+          elif (.[0] | same_head_repo | not) or (.[0] | lane_provenance | not)
+            then {status:"foreign", number:.[0].number, branch:(.[0].headRefName // "")}
+          else {status:"lane", number:.[0].number, branch:(.[0].headRefName // "")} end'
+  )"; then
+    echo "${LANE}: refusing issue #${num}; existing pull-request ownership could not be evaluated" >&2
+    exit 1
+  fi
+  issue_pr_status="$(printf '%s\n' "$issue_pr_selection" | jq -r '.status')"
+  issue_pr_number="$(printf '%s\n' "$issue_pr_selection" | jq -r '.number // empty')"
+  case "$issue_pr_status" in
+    lane)
+      resolved_branch="$(printf '%s\n' "$issue_pr_selection" | jq -r '.branch // empty')"
+      echo "${LANE}: reusing policy branch ${resolved_branch:-missing} from existing pull request #${issue_pr_number} that closes issue #${num}"
+      ;;
+    none)
+      # With no existing delivery, the slug is part of the new branch identity.
+      # A failed or empty title lookup must not degrade into an empty slug and
+      # silently resolve a different branch.
+      if ! issue_title="$(gh issue view "$num" -R "$REPO" --json title -q .title 2>/dev/null)" \
+          || [ -z "$issue_title" ]; then
+        echo "${LANE}: refusing issue #${num}; could not read the issue title needed to resolve the ${REPO} policy branch from template ${repo_branch_template}" >&2
+        exit 1
+      fi
+      issue_slug="$(printf '%s' "$issue_title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-48 | sed -E 's/-+$//')"
+      resolved_branch="$(
+        printf '%s\n' "$repo_branch_template" \
+          | jq -Rr --arg lane "$LANE" --arg issue "$num" --arg slug "$issue_slug" --arg repo "$repo_name" '
+            (if $slug == "" then gsub("[-_/.]\\{slug\\}"; "") else . end)
+            | gsub("\\{lane\\}"; $lane) | gsub("\\{issue_key\\}"; $issue) | gsub("\\{issue_number\\}"; $issue)
+            | gsub("\\{slug\\}"; $slug) | gsub("\\{work_type\\}"; "fix") | gsub("\\{repo_name\\}"; $repo)'
+      )"
+      ;;
+    ambiguous)
+      issue_pr_numbers="$(printf '%s\n' "$issue_pr_selection" | jq -r '.numbers | map(tostring) | join(", ")')"
+      echo "${LANE}: refusing issue #${num}; multiple pull requests (${issue_pr_numbers}) close it, so its policy branch is ambiguous" >&2
+      exit 1
+      ;;
+    foreign)
+      echo "${LANE}: refusing issue #${num}; pull request #${issue_pr_number} already closes it but is owned by another builder or a human" >&2
+      exit 1
+      ;;
+    *)
+      echo "${LANE}: refusing issue #${num}; existing pull-request ownership returned an invalid state" >&2
+      exit 1
+      ;;
+  esac
   if ! is_valid_ref "$resolved_branch"; then
-    echo "${LANE}: refusing issue #${num}; resolved branch ${resolved_branch} is not a valid git branch name (template ${repo_branch_template} for ${REPO})" >&2
+    if [ "$issue_pr_status" = "lane" ]; then
+      echo "${LANE}: refusing issue #${num}; existing pull request #${issue_pr_number} branch ${resolved_branch:-missing} is not a valid git branch name" >&2
+    else
+      echo "${LANE}: refusing issue #${num}; resolved branch ${resolved_branch} is not a valid git branch name (template ${repo_branch_template} for ${REPO})" >&2
+    fi
     exit 1
   fi
   if ! jq -n --arg branch "$resolved_branch" --arg pattern "$repo_branch_pattern" \
       '$branch | test("^(?:" + $pattern + ")$")' | grep -qx true; then
-    echo "${LANE}: refusing issue #${num}; resolved branch ${resolved_branch} does not match the ${REPO} branch policy ${repo_branch_pattern} (for example ${repo_branch_example})" >&2
+    if [ "$issue_pr_status" = "lane" ]; then
+      echo "${LANE}: refusing issue #${num}; existing pull request #${issue_pr_number} branch ${resolved_branch:-missing} does not match the ${REPO} branch policy ${repo_branch_pattern} (for example ${repo_branch_example})" >&2
+    else
+      echo "${LANE}: refusing issue #${num}; resolved branch ${resolved_branch} does not match the ${REPO} branch policy ${repo_branch_pattern} (for example ${repo_branch_example})" >&2
+    fi
     exit 1
   fi
   # The policy names one branch per issue for every builder and for humans, so
