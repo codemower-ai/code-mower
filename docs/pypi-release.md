@@ -173,13 +173,20 @@ The ambient `code-mower` executable is still the previous release, so readiness
 runs from a clean virtual environment built out of the clean `RELEASE_CHECKOUT`
 clone of `RELEASE_SHA`.
 
+Every pip-backed command in this runbook uses the same package-source
+isolation: the outer environment drops `PIP_INDEX_URL`,
+`PIP_EXTRA_INDEX_URL`, `PIP_FIND_LINKS`, and `PIP_NO_INDEX`, reads no pip
+configuration file, names its index explicitly, and bypasses caches. Direct
+pip commands add `--isolated` so no ambient environment or configuration can
+reintroduce another package source.
+
 ```bash
 RELEASE_ENV="$(mktemp -d /tmp/code-mower-v140-release-env.XXXXXX)"
 python3.12 -m venv "$RELEASE_ENV/venv"
 RELEASE_PYTHON="$RELEASE_ENV/venv/bin/python"
-env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
-  PIP_CONFIG_FILE=/dev/null "$RELEASE_PYTHON" -m pip install --no-cache-dir \
-  --index-url https://pypi.org/simple/ "$RELEASE_CHECKOUT"
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null "$RELEASE_PYTHON" -m pip --isolated install \
+  --no-cache-dir --index-url https://pypi.org/simple/ "$RELEASE_CHECKOUT"
 RELEASE_CLI="$RELEASE_ENV/venv/bin/code-mower"
 test "$("$RELEASE_CLI" --version)" = "code-mower 1.4.0"
 (cd "$RELEASE_CHECKOUT" && "$RELEASE_CLI" migration release-readiness --json) \
@@ -333,12 +340,12 @@ gh run watch "$TESTPYPI_RUN_ID" --repo "$REPO" --exit-status
   "$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" success skipped
 
 TESTPYPI_DIST_DIR="$(mktemp -d /tmp/code-mower-v140-testpypi-dist.XXXXXX)"
-env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
-  PIP_CONFIG_FILE=/dev/null python3.12 -m pip download code-mower==1.4.0 \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null python3.12 -m pip --isolated download code-mower==1.4.0 \
   --no-cache-dir --no-deps --only-binary :all: \
   --index-url https://test.pypi.org/simple/ --dest "$TESTPYPI_DIST_DIR"
-env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
-  PIP_CONFIG_FILE=/dev/null python3.12 -m pip download code-mower==1.4.0 \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null python3.12 -m pip --isolated download code-mower==1.4.0 \
   --no-cache-dir --no-deps --no-binary :all: \
   --index-url https://test.pypi.org/simple/ --dest "$TESTPYPI_DIST_DIR"
 TESTPYPI_DIST_DIR="$TESTPYPI_DIST_DIR" "$RELEASE_PYTHON" - <<'PY'
@@ -360,7 +367,8 @@ PY
 TESTPYPI_WHEEL="$TESTPYPI_DIST_DIR/code_mower-1.4.0-py3-none-any.whl"
 test -f "$TESTPYPI_WHEEL"
 TESTPYPI_WORK_DIR="$(mktemp -d /tmp/code-mower-v140-testpypi-rehearsal.XXXXXX)"
-env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null \
   "$RELEASE_CLI" migration package-install-rehearsal \
   --package-spec "$TESTPYPI_WHEEL" \
   --python "$(command -v python3.12)" \
@@ -370,7 +378,10 @@ env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null \
 ```
 
 The rehearsal installs the exact TestPyPI file, so production PyPI cannot satisfy
-this step; only its dependencies come from canonical PyPI.
+this step; only its dependencies come from canonical PyPI. The outer
+environment cleanup covers the rehearsal's own `--upgrade-pip` subprocess as
+well as its install, so neither can inherit an ambient index, find-links
+directory, offline flag, or pip configuration file.
 
 ### 7. Publish production PyPI only, then rehearse the published package
 
@@ -387,7 +398,7 @@ gh run watch "$PYPI_RUN_ID" --repo "$REPO" --exit-status
   "$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped success
 
 PYPI_WORK_DIR="$(mktemp -d /tmp/code-mower-v140-pypi-rehearsal.XXXXXX)"
-env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   PIP_CONFIG_FILE=/dev/null "$RELEASE_CLI" migration package-install-rehearsal \
   --package-spec code-mower==1.4.0 \
   --python "$(command -v python3.12)" \
@@ -409,12 +420,12 @@ sha256sum "$PROD_DIST_DIR"/*
 
 ```bash
 PYPI_DOWNLOAD_DIR="$(mktemp -d /tmp/code-mower-v140-pypi-download.XXXXXX)"
-env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
-  PIP_CONFIG_FILE=/dev/null python3.12 -m pip download code-mower==1.4.0 \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null python3.12 -m pip --isolated download code-mower==1.4.0 \
   --no-cache-dir --no-deps --no-binary :all: \
   --index-url https://pypi.org/simple/ --dest "$PYPI_DOWNLOAD_DIR"
-env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
-  PIP_CONFIG_FILE=/dev/null python3.12 -m pip download code-mower==1.4.0 \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null python3.12 -m pip --isolated download code-mower==1.4.0 \
   --no-cache-dir --no-deps --only-binary :all: \
   --index-url https://pypi.org/simple/ --dest "$PYPI_DOWNLOAD_DIR"
 PROD_DIST_DIR="$PROD_DIST_DIR" PYPI_DOWNLOAD_DIR="$PYPI_DOWNLOAD_DIR" \
@@ -623,8 +634,10 @@ unset variable, or any other check status fails closed.
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
 test -n "$CODE_MOWER_PYTHON"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
-  'code-mower[coworker]==1.4.0'
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null pipx install --force --backend pip \
+  --python "$CODE_MOWER_PYTHON" --index-url https://pypi.org/simple/ \
+  --pip-args='--isolated --no-cache-dir' 'code-mower[coworker]==1.4.0'
 test "$(code-mower --version)" = "code-mower 1.4.0"
 
 DEVIN_PROVIDER_PROFILE="REPLACE_WITH_PROTECTED_PROFILE_SELECTOR"
@@ -682,8 +695,10 @@ identifier, and repository inventory out of recorded evidence.
 
 The campaign is a gate, so its watch and status output is saved and asserted:
 the campaign must finish `complete`, the selected and required provider sets
-must be exactly Claude, Codex, and Devin, every required lane must hold a
-passing adoption result, and the Devin lane must report the verified hosted
+must be exactly Claude, Codex, and Devin -- one raw row each, so a duplicate
+row cannot hide a failing lane behind a passing one -- every required lane must
+hold a passing adoption result bound to its own provider and the `cold_install`
+qualification context, and the Devin lane must report the verified hosted
 bridge transport (`devin_api_v3`, the only hosted Code Mower Devin transport,
 already selected explicitly in step 13). The protected profile is named on
 watch and status too, so a protected or ambiguous profile stays selected.
@@ -727,6 +742,37 @@ def load(name: str) -> dict:
     return json.loads((campaign_dir / name).read_text(encoding="utf-8"))
 
 
+def exact_provider_rows(rows: object, label: str) -> tuple[dict | None, list[str]]:
+    """Index provider rows only after the raw list holds each provider exactly once.
+
+    Building a provider-keyed dictionary first would silently discard a
+    duplicate row: a failing Devin lane followed by a passing Devin lane would
+    read as one passing lane. The raw list is validated instead, so duplicate,
+    unknown, missing, or malformed rows fail before any indexing happens.
+    """
+
+    if not isinstance(rows, list):
+        return None, [f"{label} provider list is {type(rows).__name__}, not a list"]
+    problems: list[str] = []
+    indexed: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            problems.append(f"{label} provider row is malformed")
+            continue
+        name = row.get("provider")
+        if not isinstance(name, str) or name not in REQUIRED_PROVIDERS:
+            problems.append(f"{label} provider row identity is {name!r}")
+            continue
+        if name in indexed:
+            problems.append(f"{label} provider {name!r} appears more than once")
+            continue
+        indexed[name] = row
+    missing = sorted(REQUIRED_PROVIDERS - set(indexed))
+    if missing:
+        problems.append(f"{label} provider rows are missing {missing}")
+    return (None if problems else indexed), problems
+
+
 watch = load("watch.json")
 status = load("status.json")
 problems = []
@@ -745,14 +791,11 @@ if watch.get("status") != "complete" or watch.get("stop_reason") != "complete":
     problems.append(
         f"watch stopped as {watch.get('stop_reason')!r} with status {watch.get('status')!r}"
     )
-watch_lanes = {
-    str(row.get("provider") or ""): row
-    for row in watch.get("providers") or []
-    if isinstance(row, dict)
-}
-if set(watch_lanes) != REQUIRED_PROVIDERS:
+watch_lanes, watch_row_problems = exact_provider_rows(watch.get("providers"), "watch")
+problems.extend(watch_row_problems)
+if watch_lanes is not None and set(watch_lanes) != REQUIRED_PROVIDERS:
     problems.append(f"watch provider set is {sorted(watch_lanes)}")
-for name in sorted(REQUIRED_PROVIDERS & set(watch_lanes)):
+for name in sorted(watch_lanes or {}):
     row = watch_lanes[name]
     if row.get("posture") != "required" or row.get("state") != "complete" or row.get("error"):
         problems.append(
@@ -779,17 +822,15 @@ if status.get("dry_run") is not False:
     problems.append(f"campaign dry_run is {status.get('dry_run')!r}, expected False")
 if status.get("provider_posture_configured") is not True:
     problems.append("campaign provider posture was not explicitly configured")
-lanes = {
-    str(row.get("provider") or ""): row
-    for row in status.get("providers") or []
-    if isinstance(row, dict)
-}
+lanes, lane_row_problems = exact_provider_rows(status.get("providers"), "campaign")
+problems.extend(lane_row_problems)
+lanes = lanes or {}
 if set(lanes) != REQUIRED_PROVIDERS:
     problems.append(f"campaign provider set is {sorted(lanes)}")
 required = {name for name, row in lanes.items() if row.get("posture") == "required"}
 if required != REQUIRED_PROVIDERS:
     problems.append(f"required provider set is {sorted(required)}")
-for name in sorted(REQUIRED_PROVIDERS & set(lanes)):
+for name in sorted(lanes):
     lane = lanes[name]
     if lane.get("state") != "complete":
         problems.append(f"{name} lane state is {lane.get('state')!r}")
@@ -805,6 +846,12 @@ for name in sorted(REQUIRED_PROVIDERS & set(lanes)):
         or result.get("normalized_version") != VERSION
     ):
         problems.append(f"{name} lane result is not bound to {RELEASE_TAG}")
+    if result.get("provider") != name:
+        problems.append(f"{name} lane result provider is {result.get('provider')!r}")
+    if result.get("qualification_context") != "cold_install":
+        problems.append(
+            f"{name} lane result context is {result.get('qualification_context')!r}"
+        )
     outcome = result.get("outcome")
     if outcome not in PASSING_OUTCOMES:
         problems.append(f"{name} lane result outcome is {outcome!r}")
@@ -955,15 +1002,53 @@ import os
 from pathlib import Path
 
 BOARD_DOCTOR_SCHEMA = "code_mower.boardDoctor.v1"
-EXPECTED_CHECK_IDS = {
+REQUIRED_PASS_CHECK_IDS = (
     "repo.path",
     "github.remote",
     "gate.health",
     "store.events",
-    "owner.queue",
     "agent.adapters",
     "spend.timeline",
-}
+)
+OWNER_QUEUE_CHECK_ID = "owner.queue"
+EXPECTED_CHECK_IDS = {*REQUIRED_PASS_CHECK_IDS, OWNER_QUEUE_CHECK_ID}
+OWNER_QUEUE_STATUSES = {"pass", "warn"}
+
+
+def exact_doctor_checks(rows: object, port: str) -> tuple[dict | None, list[str]]:
+    """Index doctor checks only after the raw list holds each check exactly once.
+
+    Indexing first would keep the last row for a repeated check id, so a failing
+    check followed by a passing duplicate would read as healthy. Duplicate,
+    unknown, missing, or malformed check rows fail before indexing.
+    """
+
+    if not isinstance(rows, list):
+        return None, [f"board {port} doctor check list is not a list"]
+    problems: list[str] = []
+    indexed: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            problems.append(f"board {port} doctor check row is malformed")
+            continue
+        check_id = row.get("id")
+        status = row.get("status")
+        if not isinstance(check_id, str) or check_id not in EXPECTED_CHECK_IDS:
+            problems.append(f"board {port} doctor check id is {check_id!r}")
+            continue
+        if not isinstance(status, str):
+            problems.append(f"board {port} doctor check {check_id!r} status is malformed")
+            continue
+        if check_id in indexed:
+            problems.append(f"board {port} doctor check {check_id!r} appears more than once")
+            continue
+        indexed[check_id] = status
+    missing = sorted(EXPECTED_CHECK_IDS - set(indexed))
+    if missing:
+        problems.append(f"board {port} doctor is missing {missing}")
+    return (None if problems else indexed), problems
+
+
 doctor_dir = Path(os.environ["BOARD_DOCTOR_DIR"])
 problems = []
 for port in ("5332", "5342", "5344"):
@@ -973,30 +1058,38 @@ for port in ("5332", "5342", "5344"):
         problems.append(f"board {port} doctor schema is {report.get('schema')!r}")
     if report.get("repo") != expected_repo:
         problems.append(f"board {port} doctor reports another repository")
-    if report.get("status") != "pass":
-        problems.append(f"board {port} doctor status is {report.get('status')!r}")
-    checks = {
-        str(row.get("id") or ""): str(row.get("status") or "")
-        for row in report.get("checks") or []
-        if isinstance(row, dict)
-    }
-    if not EXPECTED_CHECK_IDS or not EXPECTED_CHECK_IDS <= set(checks):
-        problems.append(
-            f"board {port} doctor is missing {sorted(EXPECTED_CHECK_IDS - set(checks))}"
-        )
-    failing = sorted(name for name, value in checks.items() if value != "pass")
+    checks, check_problems = exact_doctor_checks(report.get("checks"), port)
+    problems.extend(check_problems)
+    if checks is None:
+        continue
+    failing = sorted(name for name in REQUIRED_PASS_CHECK_IDS if checks[name] != "pass")
     if failing:
         problems.append(f"board {port} doctor checks are not pass: {failing}")
+    owner_queue = checks[OWNER_QUEUE_CHECK_ID]
+    if owner_queue not in OWNER_QUEUE_STATUSES:
+        problems.append(f"board {port} owner queue check is {owner_queue!r}")
+        continue
+    if report.get("status") != owner_queue:
+        problems.append(
+            f"board {port} doctor status is {report.get('status')!r},"
+            f" expected {owner_queue!r}"
+        )
 if problems:
-    raise SystemExit(f"restarted Board doctors are not all pass: {problems}")
-print(json.dumps({"board_doctors_pass": ["5332", "5342", "5344"]}))
+    raise SystemExit(f"restarted Board doctors are not release-ready: {problems}")
+print(json.dumps({"board_doctors_release_ready": ["5332", "5342", "5344"]}))
 PY
 ```
 
 `code-mower board doctor` exits zero for `warn`, so each report is parsed and
 required to carry the `code_mower.boardDoctor.v1` schema, the expected
-repository, a top-level `pass`, the full expected check inventory, and a `pass`
-on every individual check; printing the JSON is not the gate.
+repository, and exactly one row for each expected check id; printing the JSON is
+not the gate. `repo.path`, `github.remote`, `gate.health`, `store.events`,
+`agent.adapters`, and `spend.timeline` must pass. Only `owner.queue` may be
+`warn`, because a nonempty owner queue reports ordinary queued drafts, rebases,
+stale pull requests, and owner work rather than a degraded Board; the top-level
+status must then be exactly that `warn`, and exactly `pass` when the queue is
+empty. Every other warning, failure, unknown status, or unexpected top-level
+verdict blocks the release.
 Do not use raw process kills or Board reset, and never copy private repository
 slugs or paths into public evidence.
 
@@ -1008,15 +1101,67 @@ application, and report the event identifiers and counts it would send; the
 applied upload must be accepted by the service and carry exactly the previewed
 identifiers and counts.
 
+The cloud identifiers are account-specific, so they are supplied privately and
+only ever passed as variables; their values are never printed or recorded. The
+service itself is probed and asserted before either upload, and the probe
+report is saved privately because it names the endpoint and describes the token
+resolution.
+
 ```bash
 CLOUD_DIR="$(mktemp -d /tmp/code-mower-v140-cloud.XXXXXX)"
-code-mower cloud doctor --install-id codex-code-mower --probe-service --json \
-  >"$CLOUD_DIR/doctor.json"
+CODE_MOWER_CLOUD_TEAM_ID="REPLACE_WITH_PRIVATE_CLOUD_TEAM_ID"
+CODE_MOWER_INSTALL_ID="REPLACE_WITH_PRIVATE_CLOUD_INSTALL_ID"
+test -n "$CODE_MOWER_CLOUD_TEAM_ID"
+test -n "$CODE_MOWER_INSTALL_ID"
+code-mower cloud doctor --install-id "$CODE_MOWER_INSTALL_ID" \
+  --probe-service --json >"$CLOUD_DIR/doctor.json"
+CLOUD_DIR="$CLOUD_DIR" "$RELEASE_PYTHON" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+REQUIRED_CLOUD_CHECKS = ("endpoint", "service", "token")
+report = json.loads(
+    (Path(os.environ["CLOUD_DIR"]) / "doctor.json").read_text(encoding="utf-8")
+)
+problems = []
+if report.get("mode") != "cloud-doctor":
+    problems.append(f"cloud doctor mode is {report.get('mode')!r}")
+if report.get("status") != "pass":
+    problems.append(f"cloud doctor status is {report.get('status')!r}")
+if report.get("failures") != 0:
+    problems.append(f"cloud doctor reports {report.get('failures')!r} failures")
+rows = report.get("checks")
+statuses = {}
+if not isinstance(rows, list):
+    problems.append("cloud doctor check list is not a list")
+    rows = []
+for row in rows:
+    if not isinstance(row, dict):
+        problems.append("cloud doctor check row is malformed")
+        continue
+    name = row.get("name")
+    status = row.get("status")
+    if not isinstance(name, str) or not isinstance(status, str):
+        problems.append("cloud doctor check identity is malformed")
+        continue
+    if name in statuses:
+        problems.append(f"cloud doctor check {name!r} appears more than once")
+        continue
+    statuses[name] = status
+for name in REQUIRED_CLOUD_CHECKS:
+    if statuses.get(name) != "pass":
+        problems.append(f"cloud doctor {name} check is {statuses.get(name)!r}")
+if problems:
+    raise SystemExit(f"cloud service readiness is not a pass: {problems}")
+print(json.dumps({"cloud_doctor": "pass", "checks": sorted(REQUIRED_CLOUD_CHECKS)}))
+PY
+
 code-mower release campaign upload --release-tag v1.4.0 \
-  --install-id codex-code-mower --team-id jeff-internal --json \
+  --install-id "$CODE_MOWER_INSTALL_ID" --team-id "$CODE_MOWER_CLOUD_TEAM_ID" --json \
   >"$CLOUD_DIR/campaign-preview.json"
 code-mower release campaign upload --release-tag v1.4.0 \
-  --install-id codex-code-mower --team-id jeff-internal --yes --json \
+  --install-id "$CODE_MOWER_INSTALL_ID" --team-id "$CODE_MOWER_CLOUD_TEAM_ID" --yes --json \
   >"$CLOUD_DIR/campaign-applied.json"
 CLOUD_DIR="$CLOUD_DIR" "$RELEASE_PYTHON" - <<'PY'
 import json
@@ -1114,13 +1259,13 @@ code-mower cloud board-snapshot \
   --repo-path "$CODE_MOWER_RELEASE_CHECKOUT" \
   --repo-slug codemower-ai/code-mower \
   --output-dir "$BOARD_SNAPSHOT_DIR" \
-  --install-id codex-code-mower --team-id jeff-internal --json \
+  --install-id "$CODE_MOWER_INSTALL_ID" --team-id "$CODE_MOWER_CLOUD_TEAM_ID" --json \
   >"$CLOUD_DIR/board-snapshot.json"
 code-mower cloud upload "$BOARD_SNAPSHOT_DIR" \
-  --install-id codex-code-mower --dry-run --json \
+  --install-id "$CODE_MOWER_INSTALL_ID" --dry-run --json \
   >"$CLOUD_DIR/board-preview.json"
 code-mower cloud upload "$BOARD_SNAPSHOT_DIR" \
-  --install-id codex-code-mower --yes --json \
+  --install-id "$CODE_MOWER_INSTALL_ID" --yes --json \
   >"$CLOUD_DIR/board-applied.json"
 CLOUD_DIR="$CLOUD_DIR" BOARD_SNAPSHOT_DIR="$BOARD_SNAPSHOT_DIR" "$RELEASE_PYTHON" - <<'PY'
 import json
@@ -1138,6 +1283,8 @@ def load(path: Path) -> dict:
 BUNDLE_SCHEMA = "code_mower.cloudBenchmarkBundle.v1"
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 SNAPSHOT_SCHEMA = "code_mower.cloudBoardSnapshot.v1"
+EXPECTED_REPO_SLUG = "codemower-ai/code-mower"
+EXPECTED_EVENT_TYPES = {"board_snapshot": 1}
 snapshot = load(cloud_dir / "board-snapshot.json")
 preview = load(cloud_dir / "board-preview.json")
 applied = load(cloud_dir / "board-applied.json")
@@ -1150,14 +1297,16 @@ if snapshot.get("mode") != "cloud-board-snapshot" or snapshot.get("status") != "
     problems.append(
         f"board snapshot is {snapshot.get('mode')!r}/{snapshot.get('status')!r}"
     )
-if snapshot.get("repo_slug") != "codemower-ai/code-mower":
+if snapshot.get("repo_slug") != EXPECTED_REPO_SLUG:
     problems.append("board snapshot is not bound to the release repository")
 if snapshot.get("event_count") != 1:
     problems.append(f"board snapshot carries {snapshot.get('event_count')!r} events")
-if export.get("event_types") != {"board_snapshot": 1} or export.get("included_reports"):
+if export.get("event_types") != EXPECTED_EVENT_TYPES or export.get("included_reports"):
     problems.append(f"board export carries {export.get('event_types')!r}")
 if manifest.get("schema") != BUNDLE_SCHEMA:
     problems.append(f"board bundle schema is {manifest.get('schema')!r}")
+if manifest.get("repo_slug") != EXPECTED_REPO_SLUG:
+    problems.append("board bundle is not bound to the release repository")
 if event_types != ["board_snapshot"] or len(events) != 1:
     problems.append(f"board bundle carries {event_types} events")
 if manifest.get("included_reports"):
@@ -1167,6 +1316,8 @@ dimensions = event.get("dimensions")
 dimensions = dimensions if isinstance(dimensions, dict) else {}
 if event.get("schema") != EVENT_SCHEMA or not str(event.get("event_id") or ""):
     problems.append(f"board event schema/id is {event.get('schema')!r}")
+if event.get("repo_slug") != EXPECTED_REPO_SLUG:
+    problems.append("board event is not bound to the release repository")
 if dimensions.get("snapshot_schema") != SNAPSHOT_SCHEMA:
     problems.append(f"board event snapshot schema is {dimensions.get('snapshot_schema')!r}")
 if preview.get("mode") != "cloud-upload-dry-run" or preview.get("would_upload") is not False:
@@ -1177,8 +1328,10 @@ if preview.get("upload_mode") != "metadata_only":
     problems.append(f"board preview upload mode is {preview.get('upload_mode')!r}")
 if preview.get("report_count") != 0:
     problems.append(f"board preview carries {preview.get('report_count')!r} reports")
-if preview.get("event_count") != len(events):
-    problems.append("board preview event count differs from the bundle")
+if preview.get("event_count") != len(events) or preview.get("event_count") != 1:
+    problems.append("board preview event count is not the single bundled event")
+if preview.get("event_types") != EXPECTED_EVENT_TYPES:
+    problems.append(f"board preview event types are {preview.get('event_types')!r}")
 if applied.get("mode") != "cloud-upload":
     problems.append(f"board applied mode is {applied.get('mode')!r}")
 if not 200 <= int(applied.get("status") or 0) < 300:
@@ -1194,7 +1347,13 @@ PY
 ```
 
 Record accepted event identifiers and counts only, never report prose, profile
-paths, tokens, or local configuration.
+paths, tokens, cloud team or install identifiers, endpoints, or local
+configuration. The bundle manifest and its single event must name the release
+repository, not only the top-level summary, so a truthful summary cannot cover
+evidence gathered from another repository. `cloud doctor` may still warn that no
+bundle exists: the release-specific Board bundle is created after the probe, so
+that warning is informational and the gate is the `endpoint`, `service`, and
+`token` checks plus zero failures.
 
 ## Cache Bypass And Propagation Triage
 
@@ -1207,9 +1366,16 @@ For pipx:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.4.0
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null pipx install --force --backend pip \
+  --python "$CODE_MOWER_PYTHON" --index-url https://pypi.org/simple/ \
+  --pip-args='--isolated --no-cache-dir' code-mower==1.4.0
 code-mower --version
 ```
+
+The environment cleanup matters as much as the cache flag: an ambient
+`PIP_INDEX_URL`, `PIP_FIND_LINKS`, or `pip.conf` can otherwise supply the
+"canonical" artifact from somewhere else entirely.
 
 For uv:
 
@@ -1225,8 +1391,12 @@ from the release checkout:
 ```bash
 scripts/dev-python -m build
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" dist/code_mower-*.whl
-uv tool install --python 3.12 --reinstall dist/code_mower-*.whl
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null pipx install --force --backend pip \
+  --python "$CODE_MOWER_PYTHON" --index-url https://pypi.org/simple/ \
+  --pip-args='--isolated --no-cache-dir' dist/code_mower-*.whl
+uv tool install --python 3.12 --reinstall --index-url https://pypi.org/simple/ \
+  dist/code_mower-*.whl
 ```
 
 If an exact-version install fails within a few minutes of publication, retry
@@ -1243,17 +1413,23 @@ For production PyPI verification:
 
 ```bash
 python3.12 -m venv /tmp/code-mower-pypi-smoke
-/tmp/code-mower-pypi-smoke/bin/python -m pip install --upgrade pip
-/tmp/code-mower-pypi-smoke/bin/python -m pip install code-mower==1.4.0
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null /tmp/code-mower-pypi-smoke/bin/python -m pip --isolated \
+  install --no-cache-dir --index-url https://pypi.org/simple/ --upgrade pip
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null /tmp/code-mower-pypi-smoke/bin/python -m pip --isolated \
+  install --no-cache-dir --index-url https://pypi.org/simple/ code-mower==1.4.0
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
 Then run the release-gate first-user rehearsal against the same package:
 
 ```bash
-code-mower migration package-install-rehearsal \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null code-mower migration package-install-rehearsal \
   --package-spec code-mower==1.4.0 \
   --allow-package-index \
+  --pip-index-url https://pypi.org/simple/ \
   --upgrade-pip \
   --python "$(command -v python3.12)" \
   --json

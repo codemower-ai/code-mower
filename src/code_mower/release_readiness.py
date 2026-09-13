@@ -330,7 +330,7 @@ def _post_merge_runbook_markers(release_tag: str, package_index_spec: str) -> tu
         f"--package-spec {package_index_spec}",
         "gh run download",
         "--name code-mower-dist",
-        "python3.12 -m pip download",
+        "python3.12 -m pip --isolated download",
         "sha256",
         "CODE_MOWER_PYPI_PUBLISH",
         f"gh release create {release_tag}",
@@ -387,7 +387,7 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         '"$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped success',
         '"$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" skipped skipped',
         # TestPyPI is the exclusive source of the candidate artifacts.
-        f"PIP_CONFIG_FILE=/dev/null python3.12 -m pip download code-mower=={version}",
+        f"python3.12 -m pip --isolated download code-mower=={version}",
         "--index-url https://test.pypi.org/simple/ --dest \"$TESTPYPI_DIST_DIR\"",
         '--package-spec "$TESTPYPI_WHEEL"',
         # Production commands reach canonical PyPI explicitly, without caches.
@@ -416,6 +416,8 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'if permissions not in {"pass", "skip"}:',
         # The exact-release source rehearsal cannot reach ambient packages.
         "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS",
+        "-u PIP_NO_INDEX",
+        "--pip-args='--isolated --no-cache-dir'",
         # Boards stop, are waited for, and only then restart from the release.
         'test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
         'board_wait.py" gone "$BOARD_PORT"',
@@ -432,30 +434,65 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'BOARD_DOCTOR_SCHEMA = "code_mower.boardDoctor.v1"',
         'if report.get("schema") != BOARD_DOCTOR_SCHEMA:',
         'if report.get("repo") != expected_repo:',
-        'if report.get("status") != "pass":',
-        "if not EXPECTED_CHECK_IDS or not EXPECTED_CHECK_IDS <= set(checks):",
-        'failing = sorted(name for name, value in checks.items() if value != "pass")',
-        'raise SystemExit(f"restarted Board doctors are not all pass: {problems}")',
+        # Doctor rows are validated before they are indexed, so a repeated
+        # check id cannot replace a failing row with a passing one.
+        'if check_id in indexed:',
+        "missing = sorted(EXPECTED_CHECK_IDS - set(indexed))",
+        'failing = sorted(name for name in REQUIRED_PASS_CHECK_IDS if checks[name] != "pass")',
+        # Only a queued owner surface may warn, and the top-level verdict must
+        # be exactly that check's status.
+        "owner_queue = checks[OWNER_QUEUE_CHECK_ID]",
+        "if owner_queue not in OWNER_QUEUE_STATUSES:",
+        'if report.get("status") != owner_queue:',
+        'raise SystemExit(f"restarted Board doctors are not release-ready: {problems}")',
         # The required campaign is a parsed gate, not printed output.
         '>"$CAMPAIGN_DIR/watch.json"',
         '>"$CAMPAIGN_DIR/status.json"',
         'WATCH_SCHEMA = "code_mower.releaseCampaignWatch.v1"',
         'if watch.get("schema") != WATCH_SCHEMA or watch.get("mode") != "release-campaign-watch":',
         'if watch.get("status") != "complete" or watch.get("stop_reason") != "complete":',
-        'if set(watch_lanes) != REQUIRED_PROVIDERS:',
+        'problems.append(f"watch {key} is {watch.get(key)!r}, expected {expected!r}")',
+        # Provider rows are validated before they are indexed, so a duplicate
+        # row cannot hide a failing lane behind a later passing lane.
+        'if name in indexed:',
+        "missing = sorted(REQUIRED_PROVIDERS - set(indexed))",
+        'watch_lanes, watch_row_problems = exact_provider_rows(watch.get("providers"), "watch")',
+        'if watch_lanes is not None and set(watch_lanes) != REQUIRED_PROVIDERS:',
         'CAMPAIGN_SCHEMA = "code_mower.releaseCampaign.v1"',
         'if status.get("schema") != CAMPAIGN_SCHEMA:',
+        'if status.get("status") != "complete":',
         'if status.get("dry_run") is not False:',
+        'lanes, lane_row_problems = exact_provider_rows(status.get("providers"), "campaign")',
         'if set(lanes) != REQUIRED_PROVIDERS:',
         'if required != REQUIRED_PROVIDERS:',
+        'if lane.get("state") != "complete":',
         'ADOPTION_RESULT_SCHEMA = "code_mower.adoptionResult.v1"',
         'if result.get("schema") != ADOPTION_RESULT_SCHEMA:',
+        'problems.append(f"{name} lane result is not bound to {RELEASE_TAG}")',
+        # Each adoption result belongs to its own lane and cold-install context.
+        'if result.get("provider") != name:',
+        'if result.get("qualification_context") != "cold_install":',
         'if outcome not in PASSING_OUTCOMES:',
         'if devin.get("driver") != "hosted_bridge" or devin.get("transport_verified") is not True:',
         'if devin_ref.get("transport_kind") != "devin_api_v3":',
         'raise SystemExit(f"release qualification campaign is not a pass: {problems}")',
+        # Account-specific cloud identifiers stay private: they are supplied as
+        # variables, required to be nonempty, and never printed.
+        'test -n "$CODE_MOWER_CLOUD_TEAM_ID"',
+        'test -n "$CODE_MOWER_INSTALL_ID"',
+        '--install-id "$CODE_MOWER_INSTALL_ID"',
+        '--team-id "$CODE_MOWER_CLOUD_TEAM_ID"',
+        # The cloud service itself is probed and parsed before either upload.
+        'code-mower cloud doctor --install-id "$CODE_MOWER_INSTALL_ID"',
+        '--probe-service --json >"$CLOUD_DIR/doctor.json"',
+        'REQUIRED_CLOUD_CHECKS = ("endpoint", "service", "token")',
+        'if report.get("mode") != "cloud-doctor":',
+        'if report.get("failures") != 0:',
+        'if name in statuses:',
+        'problems.append(f"cloud doctor {name} check is {statuses.get(name)!r}")',
+        'raise SystemExit(f"cloud service readiness is not a pass: {problems}")',
         # Both metadata-only uploads are previewed, applied, and correlated.
-        '--team-id jeff-internal --yes --json',
+        '--team-id "$CODE_MOWER_CLOUD_TEAM_ID" --yes --json',
         'CAMPAIGN_UPLOAD_SCHEMA = "code_mower.releaseCampaignUpload.v1"',
         'if payload.get("schema") != CAMPAIGN_UPLOAD_SCHEMA:',
         'if payload.get("mode") != "release-campaign-upload":',
@@ -465,23 +502,31 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         "if len(ids) != 3 or len(set(ids)) != 3 or not all(ids):",
         'if preview_upload.get("event_types") != {"adoption_run": 3}:',
         'if preview.get("status") != "dry_run" or preview.get("would_upload") is not False:',
+        'if preview.get("requires_yes") is not True:',
         'if preview_upload.get("report_count") != 0:',
         'if applied.get("requires_yes") is not False:',
         'if not 200 <= int(applied_upload.get("status") or 0) < 300:',
         'if [str(value) for value in applied.get("event_ids") or []] != preview_events:',
         'if applied.get("counts") != preview.get("counts"):',
         'raise SystemExit(f"campaign metadata upload is not a verified gate: {problems}")',
-        '--install-id codex-code-mower --yes --json',
+        '--install-id "$CODE_MOWER_INSTALL_ID" --yes --json',
         'BUNDLE_SCHEMA = "code_mower.cloudBenchmarkBundle.v1"',
+        'EXPECTED_REPO_SLUG = "codemower-ai/code-mower"',
         'if snapshot.get("mode") != "cloud-board-snapshot" or snapshot.get("status") != "dry_run":',
-        'if snapshot.get("repo_slug") != "codemower-ai/code-mower":',
+        'if snapshot.get("repo_slug") != EXPECTED_REPO_SLUG:',
         'if snapshot.get("event_count") != 1:',
-        'if export.get("event_types") != {"board_snapshot": 1} or export.get("included_reports"):',
+        'if export.get("event_types") != EXPECTED_EVENT_TYPES or export.get("included_reports"):',
         'if manifest.get("schema") != BUNDLE_SCHEMA:',
+        # The bundle and its single event name the release repository too, so a
+        # truthful summary cannot cover evidence from another repository.
+        'if manifest.get("repo_slug") != EXPECTED_REPO_SLUG:',
+        'if event.get("repo_slug") != EXPECTED_REPO_SLUG:',
         'if event_types != ["board_snapshot"] or len(events) != 1:',
         'if manifest.get("included_reports"):',
         'if event.get("schema") != EVENT_SCHEMA or not str(event.get("event_id") or ""):',
         'if dimensions.get("snapshot_schema") != SNAPSHOT_SCHEMA:',
+        'if preview.get("event_count") != len(events) or preview.get("event_count") != 1:',
+        'if preview.get("event_types") != EXPECTED_EVENT_TYPES:',
         'if not 200 <= int(applied.get("status") or 0) < 300:',
         'raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")',
     )
@@ -494,7 +539,107 @@ def _forbidden_runbook_markers() -> tuple[str, ...]:
         'RELEASE_SHA="$(git rev-parse origin/main)"',
         "gh release upload",
         "--pip-extra-index-url https://pypi.org/simple/",
+        # Account-specific cloud identifiers belong in private variables.
+        "jeff-internal",
+        "--install-id codex-code-mower",
+        'echo "$CODE_MOWER_CLOUD_TEAM_ID"',
+        'echo "$CODE_MOWER_INSTALL_ID"',
     )
+
+
+PIP_ISOLATION_SITE_COUNT = 8
+PIP_ISOLATION_ENVIRONMENT = (
+    "-u PIP_INDEX_URL",
+    "-u PIP_EXTRA_INDEX_URL",
+    "-u PIP_FIND_LINKS",
+    "-u PIP_NO_INDEX",
+    "PIP_CONFIG_FILE=/dev/null",
+)
+
+
+def _shell_commands(text: str) -> list[str]:
+    """Return one string per shell command in fenced bash blocks.
+
+    Continuation lines are joined so a command's options can be inspected
+    together with the environment its outer `env` invocation established.
+    """
+
+    commands: list[str] = []
+    pending: list[str] = []
+    in_shell_block = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_shell_block = stripped == "```bash"
+            pending = []
+            continue
+        if not in_shell_block:
+            continue
+        if stripped.endswith("\\"):
+            pending.append(stripped[:-1].strip())
+            continue
+        pending.append(stripped)
+        commands.append(" ".join(part for part in pending if part))
+        pending = []
+    return commands
+
+
+def _pip_command_kind(command: str) -> str:
+    """Classify a runbook command by which package-source contract it must meet."""
+
+    if " -m pip " in command and (" install" in command or " download" in command):
+        return "pip"
+    if "package-install-rehearsal" in command:
+        return "rehearsal"
+    if "pipx install" in command:
+        return "pipx"
+    return ""
+
+
+def _post_merge_pip_isolation_problems(runbook_doc: str) -> list[str]:
+    """Report post-merge pip-backed commands that could resolve another source.
+
+    An explicit index proves nothing while an ambient `PIP_INDEX_URL`,
+    find-links directory, offline flag, or `pip.conf` is still readable, so
+    every site is required to establish the same isolated environment.
+    """
+
+    sites = [
+        (kind, command)
+        for command in _shell_commands(runbook_doc)
+        if (kind := _pip_command_kind(command))
+    ]
+    problems: list[str] = []
+    if len(sites) != PIP_ISOLATION_SITE_COUNT:
+        problems.append(
+            f"expected {PIP_ISOLATION_SITE_COUNT} pip-backed commands,"
+            f" found {len(sites)}"
+        )
+    for kind, command in sites:
+        label = command.split("PIP_CONFIG_FILE=/dev/null", 1)[-1].strip()[:72]
+        problems.extend(
+            f"{label} does not set {fragment}"
+            for fragment in PIP_ISOLATION_ENVIRONMENT
+            if fragment not in command
+        )
+        if kind == "pip":
+            if "-m pip --isolated" not in command:
+                problems.append(f"{label} does not run an isolated pip")
+            if "--no-cache-dir" not in command:
+                problems.append(f"{label} does not bypass the pip cache")
+        if kind == "rehearsal":
+            if "--pip-index-url https://pypi.org/simple/" not in command:
+                problems.append(f"{label} does not name the canonical index")
+            if "--pip-no-cache" not in command:
+                problems.append(f"{label} does not bypass the pip cache")
+        if kind == "pipx":
+            if "--backend pip" not in command:
+                problems.append(f"{label} does not use the pip backend")
+            if "--pip-args='--isolated --no-cache-dir'" not in command:
+                problems.append(f"{label} does not isolate its pip arguments")
+        if kind != "rehearsal" and "--index-url http" not in command:
+            problems.append(f"{label} does not name an explicit index")
+    return problems
 
 
 def _document_section(text: str, heading: str) -> str:
@@ -643,6 +788,9 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     forbidden_runbook_markers = [
         marker for marker in _forbidden_runbook_markers() if marker in runbook_doc
     ]
+    pip_isolation_problems = (
+        _post_merge_pip_isolation_problems(runbook_doc) if runbook_doc else []
+    )
     public_hygiene_blobs = {
         relative_path: text.lower()
         for relative_path, text in public_hygiene_docs.items()
@@ -926,7 +1074,11 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             title="Post-merge runbook asserts every irreversible release gate",
             status=(
                 "pass"
-                if not missing_runbook_assertions and not forbidden_runbook_markers
+                if (
+                    not missing_runbook_assertions
+                    and not forbidden_runbook_markers
+                    and not pip_isolation_problems
+                )
                 else "fail"
             ),
             evidence="docs/pypi-release.md",
@@ -935,6 +1087,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 "required_assertions": list(runbook_assertions),
                 "missing_assertions": missing_runbook_assertions,
                 "forbidden_commands": forbidden_runbook_markers,
+                "pip_isolation_problems": pip_isolation_problems[:20],
             },
         ),
         _release_check(

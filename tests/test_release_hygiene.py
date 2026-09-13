@@ -8334,8 +8334,9 @@ def main():
             '--json >"$BOARD_DOCTOR_DIR/5332.json"',
             '--json >"$BOARD_DOCTOR_DIR/5342.json"',
             '--json >"$BOARD_DOCTOR_DIR/5344.json"',
-            'if report.get("status") != "pass":',
-            'raise SystemExit(f"restarted Board doctors are not all pass: {problems}")',
+            'if report.get("status") != owner_queue:',
+            'raise SystemExit(f"restarted Board doctors are not release-ready:'
+            ' {problems}")',
         ):
             with self.subTest(assertion=assertion):
                 check = self._asserted_runbook_check(
@@ -8365,12 +8366,12 @@ def main():
 
     def test_release_readiness_fails_when_a_metadata_upload_gate_is_deleted(self) -> None:
         for assertion in (
-            "--team-id jeff-internal --yes --json",
+            '--team-id "$CODE_MOWER_CLOUD_TEAM_ID" --yes --json',
             'if preview.get("status") != "dry_run" or preview.get("would_upload") is not False:',
             'if preview_upload.get("report_count") != 0:',
             'if applied.get("counts") != preview.get("counts"):',
             'raise SystemExit(f"campaign metadata upload is not a verified gate: {problems}")',
-            "--install-id codex-code-mower --yes --json",
+            '--install-id "$CODE_MOWER_INSTALL_ID" --yes --json',
             'if event_types != ["board_snapshot"] or len(events) != 1:',
             'if manifest.get("included_reports"):',
             'raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")',
@@ -8407,11 +8408,18 @@ def main():
                 self.assertIn(assertion, check["detail"]["missing_assertions"])
 
     def test_release_readiness_requires_an_isolated_fresh_source_install(self) -> None:
-        isolation = "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS"
-        check = self._asserted_runbook_check(lambda doc: doc.replace(isolation, "env"))
+        for assertion in (
+            "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS",
+            "-u PIP_NO_INDEX",
+            "--pip-args='--isolated --no-cache-dir'",
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
 
-        self.assertEqual(check["status"], "fail")
-        self.assertIn(isolation, check["detail"]["missing_assertions"])
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
 
     def test_release_readiness_requires_board_port_repository_binding(self) -> None:
         for assertion in (
@@ -8433,8 +8441,11 @@ def main():
             'BOARD_DOCTOR_SCHEMA = "code_mower.boardDoctor.v1"',
             'if report.get("schema") != BOARD_DOCTOR_SCHEMA:',
             'if report.get("repo") != expected_repo:',
-            "if not EXPECTED_CHECK_IDS or not EXPECTED_CHECK_IDS <= set(checks):",
-            'failing = sorted(name for name, value in checks.items() if value != "pass")',
+            "missing = sorted(EXPECTED_CHECK_IDS - set(indexed))",
+            'failing = sorted(name for name in REQUIRED_PASS_CHECK_IDS'
+            ' if checks[name] != "pass")',
+            "owner_queue = checks[OWNER_QUEUE_CHECK_ID]",
+            "if owner_queue not in OWNER_QUEUE_STATUSES:",
         ):
             with self.subTest(assertion=assertion):
                 check = self._asserted_runbook_check(
@@ -8451,12 +8462,23 @@ def main():
             ' or watch.get("mode") != "release-campaign-watch":',
             'if watch.get("status") != "complete"'
             ' or watch.get("stop_reason") != "complete":',
-            "if set(watch_lanes) != REQUIRED_PROVIDERS:",
+            'problems.append(f"watch {key} is {watch.get(key)!r},'
+            ' expected {expected!r}")',
+            'watch_lanes, watch_row_problems = exact_provider_rows('
+            'watch.get("providers"), "watch")',
+            'if watch_lanes is not None and set(watch_lanes) != REQUIRED_PROVIDERS:',
             'CAMPAIGN_SCHEMA = "code_mower.releaseCampaign.v1"',
             'if status.get("schema") != CAMPAIGN_SCHEMA:',
+            'if status.get("status") != "complete":',
             'if status.get("dry_run") is not False:',
+            'lanes, lane_row_problems = exact_provider_rows('
+            'status.get("providers"), "campaign")',
+            'if lane.get("state") != "complete":',
             'ADOPTION_RESULT_SCHEMA = "code_mower.adoptionResult.v1"',
             'if result.get("schema") != ADOPTION_RESULT_SCHEMA:',
+            'problems.append(f"{name} lane result is not bound to {RELEASE_TAG}")',
+            'if result.get("provider") != name:',
+            'if result.get("qualification_context") != "cold_install":',
             'if devin_ref.get("transport_kind") != "devin_api_v3":',
         ):
             with self.subTest(assertion=assertion):
@@ -8495,11 +8517,17 @@ def main():
             'BUNDLE_SCHEMA = "code_mower.cloudBenchmarkBundle.v1"',
             'if snapshot.get("mode") != "cloud-board-snapshot"'
             ' or snapshot.get("status") != "dry_run":',
-            'if snapshot.get("repo_slug") != "codemower-ai/code-mower":',
+            'EXPECTED_REPO_SLUG = "codemower-ai/code-mower"',
+            'if snapshot.get("repo_slug") != EXPECTED_REPO_SLUG:',
             'if snapshot.get("event_count") != 1:',
-            'if export.get("event_types") != {"board_snapshot": 1}'
+            'if export.get("event_types") != EXPECTED_EVENT_TYPES'
             ' or export.get("included_reports"):',
             'if manifest.get("schema") != BUNDLE_SCHEMA:',
+            'if manifest.get("repo_slug") != EXPECTED_REPO_SLUG:',
+            'if event.get("repo_slug") != EXPECTED_REPO_SLUG:',
+            'if preview.get("event_count") != len(events)'
+            ' or preview.get("event_count") != 1:',
+            'if preview.get("event_types") != EXPECTED_EVENT_TYPES:',
             'if event.get("schema") != EVENT_SCHEMA'
             ' or not str(event.get("event_id") or ""):',
             'if dimensions.get("snapshot_schema") != SNAPSHOT_SCHEMA:',
@@ -8568,6 +8596,8 @@ def main():
             flag
             for flag in flags
             if flag.startswith(("--package-spec", "--pip-", "--work-dir", "--python"))
+            # `--pip-args` belongs to pipx, not the rehearsal CLI.
+            and not flag.startswith("--pip-args")
         }
         self.assertIn("--package-spec", rehearsal_flags)
         for flag in sorted(rehearsal_flags):
@@ -8626,6 +8656,602 @@ def main():
         for port in ("5332", "5342", "5344"):
             with self.subTest(port=port):
                 self.assertIn(port, boards)
+
+    def test_release_readiness_requires_duplicate_identity_rejection(self) -> None:
+        for assertion in (
+            'if name in indexed:',
+            'if check_id in indexed:',
+            'if name in statuses:',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "if False:")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_the_cloud_doctor_probe(self) -> None:
+        for assertion in (
+            'code-mower cloud doctor --install-id "$CODE_MOWER_INSTALL_ID"',
+            '--probe-service --json >"$CLOUD_DIR/doctor.json"',
+            'REQUIRED_CLOUD_CHECKS = ("endpoint", "service", "token")',
+            'if report.get("mode") != "cloud-doctor":',
+            'if report.get("failures") != 0:',
+            'problems.append(f"cloud doctor {name} check is {statuses.get(name)!r}")',
+            'raise SystemExit(f"cloud service readiness is not a pass: {problems}")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_private_cloud_identifiers(self) -> None:
+        runbook = self._runbook_section()
+
+        self.assertNotIn("jeff-internal", runbook)
+        self.assertNotIn("--install-id codex-code-mower", runbook)
+        for assertion in (
+            'test -n "$CODE_MOWER_CLOUD_TEAM_ID"',
+            'test -n "$CODE_MOWER_INSTALL_ID"',
+            '--install-id "$CODE_MOWER_INSTALL_ID"',
+            '--team-id "$CODE_MOWER_CLOUD_TEAM_ID"',
+        ):
+            with self.subTest(assertion=assertion):
+                self.assertIn(assertion, runbook)
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_rejects_printed_cloud_identifiers(self) -> None:
+        for printed in (
+            'echo "$CODE_MOWER_CLOUD_TEAM_ID"',
+            'echo "$CODE_MOWER_INSTALL_ID"',
+        ):
+            with self.subTest(printed=printed):
+                check = self._asserted_runbook_check(
+                    lambda doc, printed=printed: doc.replace(
+                        'test -n "$CODE_MOWER_INSTALL_ID"',
+                        f'test -n "$CODE_MOWER_INSTALL_ID"\n{printed}',
+                    )
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(printed, check["detail"]["forbidden_commands"])
+
+    def test_release_readiness_requires_isolation_at_every_pip_site(self) -> None:
+        runbook = self._runbook_section()
+        sites = [
+            (release_readiness._pip_command_kind(command), command)
+            for command in release_readiness._shell_commands(runbook)
+            if release_readiness._pip_command_kind(command)
+        ]
+        kinds = sorted(kind for kind, _ in sites)
+
+        self.assertEqual(
+            len(sites), release_readiness.PIP_ISOLATION_SITE_COUNT, sites
+        )
+        self.assertEqual(
+            kinds, ["pip"] * 5 + ["pipx"] + ["rehearsal"] * 2
+        )
+        self.assertEqual(
+            release_readiness._post_merge_pip_isolation_problems(runbook), []
+        )
+
+    def test_release_readiness_fails_when_a_pip_site_loses_isolation(self) -> None:
+        mutations = (
+            ("-u PIP_NO_INDEX", "", "does not set -u PIP_NO_INDEX"),
+            ("PIP_CONFIG_FILE=/dev/null", "", "does not set PIP_CONFIG_FILE=/dev/null"),
+            ("-m pip --isolated", "-m pip", "does not run an isolated pip"),
+            ("--backend pip", "", "does not use the pip backend"),
+            ("--pip-no-cache", "", "does not bypass the pip cache"),
+        )
+        for old, new, expected in mutations:
+            with self.subTest(expected=expected):
+                check = self._asserted_runbook_check(
+                    lambda doc, old=old, new=new: doc.replace(old, new)
+                )
+                problems = check["detail"]["pip_isolation_problems"]
+
+                self.assertEqual(check["status"], "fail")
+                self.assertTrue(
+                    any(problem.endswith(expected) for problem in problems), problems
+                )
+
+    def test_release_readiness_fails_when_a_pip_site_disappears(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                "PIP_CONFIG_FILE=/dev/null pipx install --force --backend pip",
+                "PIP_CONFIG_FILE=/dev/null true",
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            "expected 8 pip-backed commands, found 7",
+            check["detail"]["pip_isolation_problems"],
+        )
+
+    def _runbook_python_snippet(self, marker: str) -> str:
+        snippets = [
+            snippet
+            for snippet in re.findall(
+                r"<<'PY'\n(.*?)\nPY\n", self._runbook_section(), flags=re.DOTALL
+            )
+            if marker in snippet
+        ]
+        self.assertEqual(len(snippets), 1, f"expected one snippet with {marker!r}")
+        return snippets[0]
+
+    def _run_runbook_snippet(
+        self, snippet: str, env: dict[str, str]
+    ) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-c", snippet],
+            capture_output=True,
+            text=True,
+            env={**os.environ, **env},
+        )
+
+    def _campaign_watch_payload(self) -> dict:
+        return {
+            "schema": "code_mower.releaseCampaignWatch.v1",
+            "mode": "release-campaign-watch",
+            "campaign_id": "campaign-v1.4.0",
+            "release_tag": "v1.4.0",
+            "package_identity": "code-mower",
+            "qualification_context": "cold_install",
+            "status": "complete",
+            "stop_reason": "complete",
+            "providers": [
+                {
+                    "provider": name,
+                    "posture": "required",
+                    "state": "complete",
+                    "error": None,
+                }
+                for name in ("claude", "codex", "devin")
+            ],
+        }
+
+    def _campaign_lane_payload(self, provider: str) -> dict:
+        lane = {
+            "provider": provider,
+            "posture": "required",
+            "state": "complete",
+            "dispatch_mode": "applied",
+            "error": None,
+            "adoption_result": {
+                "schema": "code_mower.adoptionResult.v1",
+                "provider": provider,
+                "release_tag": "v1.4.0",
+                "package_identity": "code-mower",
+                "normalized_version": "1.4.0",
+                "qualification_context": "cold_install",
+                "outcome": "pass",
+            },
+        }
+        if provider == "devin":
+            lane["driver"] = "hosted_bridge"
+            lane["transport_verified"] = True
+            lane["dispatch_ref"] = {"transport_kind": "devin_api_v3"}
+        return lane
+
+    def _campaign_status_payload(self) -> dict:
+        return {
+            "schema": "code_mower.releaseCampaign.v1",
+            "campaign_id": "campaign-v1.4.0",
+            "release_tag": "v1.4.0",
+            "package_identity": "code-mower",
+            "package_spec": "code-mower==1.4.0",
+            "normalized_version": "1.4.0",
+            "qualification_context": "cold_install",
+            "package_source": "pypi",
+            "repo_slug": "codemower-ai/code-mower",
+            "status": "complete",
+            "dry_run": False,
+            "provider_posture_configured": True,
+            "providers": [
+                self._campaign_lane_payload(name)
+                for name in ("claude", "codex", "devin")
+            ],
+        }
+
+    def _run_campaign_gate(
+        self, watch: dict, status: dict
+    ) -> subprocess.CompletedProcess:
+        snippet = self._runbook_python_snippet("exact_provider_rows")
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign_dir = Path(tmp)
+            (campaign_dir / "watch.json").write_text(
+                json.dumps(watch), encoding="utf-8"
+            )
+            (campaign_dir / "status.json").write_text(
+                json.dumps(status), encoding="utf-8"
+            )
+            return self._run_runbook_snippet(
+                snippet, {"CAMPAIGN_DIR": str(campaign_dir)}
+            )
+
+    def test_runbook_campaign_gate_accepts_the_required_campaign(self) -> None:
+        result = self._run_campaign_gate(
+            self._campaign_watch_payload(), self._campaign_status_payload()
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["campaign"], "complete")
+
+    def test_runbook_campaign_gate_rejects_a_passing_duplicate_lane(self) -> None:
+        for surface in ("watch", "status"):
+            with self.subTest(surface=surface):
+                watch = self._campaign_watch_payload()
+                status = self._campaign_status_payload()
+                if surface == "watch":
+                    failing = dict(watch["providers"][2], state="error", error="boom")
+                    watch["providers"] = [
+                        watch["providers"][0],
+                        watch["providers"][1],
+                        failing,
+                        watch["providers"][2],
+                    ]
+                else:
+                    failing = dict(status["providers"][2], state="error", error="boom")
+                    status["providers"] = [
+                        status["providers"][0],
+                        status["providers"][1],
+                        failing,
+                        status["providers"][2],
+                    ]
+
+                result = self._run_campaign_gate(watch, status)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("appears more than once", result.stderr)
+
+    def test_runbook_campaign_gate_rejects_malformed_or_unknown_rows(self) -> None:
+        cases = {
+            "malformed": ["claude", {"provider": "codex"}, {"provider": "devin"}],
+            "unknown": [
+                {"provider": "gemini"},
+                {"provider": "codex"},
+                {"provider": "devin"},
+            ],
+            "missing": [{"provider": "codex"}, {"provider": "devin"}],
+        }
+        for label, rows in cases.items():
+            with self.subTest(rows=label):
+                status = self._campaign_status_payload()
+                status["providers"] = rows
+
+                result = self._run_campaign_gate(
+                    self._campaign_watch_payload(), status
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("campaign provider", result.stderr)
+
+    def test_runbook_campaign_gate_rejects_an_unbound_adoption_result(self) -> None:
+        for field, value in (
+            ("provider", "claude"),
+            ("qualification_context", "warm_install"),
+        ):
+            with self.subTest(field=field):
+                status = self._campaign_status_payload()
+                status["providers"][2]["adoption_result"][field] = value
+
+                result = self._run_campaign_gate(
+                    self._campaign_watch_payload(), status
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("devin lane result", result.stderr)
+
+    def _board_doctor_report(
+        self, repo: str, *, owner_queue: str = "pass", status: str | None = None
+    ) -> dict:
+        checks = [
+            {"id": check_id, "status": "pass"}
+            for check_id in (
+                "repo.path",
+                "github.remote",
+                "gate.health",
+                "store.events",
+                "agent.adapters",
+                "spend.timeline",
+            )
+        ]
+        checks.append({"id": "owner.queue", "status": owner_queue})
+        return {
+            "schema": "code_mower.boardDoctor.v1",
+            "repo": repo,
+            "status": status or owner_queue,
+            "checks": checks,
+        }
+
+    def _run_board_doctor_gate(
+        self, reports: dict[str, dict]
+    ) -> subprocess.CompletedProcess:
+        snippet = self._runbook_python_snippet("exact_doctor_checks")
+        with tempfile.TemporaryDirectory() as tmp:
+            doctor_dir = Path(tmp)
+            for port, report in reports.items():
+                (doctor_dir / f"{port}.json").write_text(
+                    json.dumps(report), encoding="utf-8"
+                )
+            return self._run_runbook_snippet(
+                snippet,
+                {
+                    "BOARD_DOCTOR_DIR": str(doctor_dir),
+                    "BOARD_5332_REPO": "codemower-ai/code-mower",
+                    "BOARD_5342_REPO": "private-owner/second",
+                    "BOARD_5344_REPO": "private-owner/third",
+                },
+            )
+
+    def _board_doctor_reports(self, **overrides: dict) -> dict[str, dict]:
+        reports = {
+            "5332": self._board_doctor_report("codemower-ai/code-mower"),
+            "5342": self._board_doctor_report("private-owner/second"),
+            "5344": self._board_doctor_report("private-owner/third"),
+        }
+        reports.update(overrides)
+        return reports
+
+    def test_runbook_board_doctor_gate_allows_only_a_queued_owner_warning(self) -> None:
+        passing = self._run_board_doctor_gate(self._board_doctor_reports())
+        warned = self._run_board_doctor_gate(
+            self._board_doctor_reports(
+                **{
+                    "5342": self._board_doctor_report(
+                        "private-owner/second", owner_queue="warn"
+                    )
+                }
+            )
+        )
+
+        self.assertEqual(passing.returncode, 0, passing.stderr)
+        self.assertEqual(warned.returncode, 0, warned.stderr)
+        self.assertEqual(
+            json.loads(warned.stdout)["board_doctors_release_ready"],
+            ["5332", "5342", "5344"],
+        )
+
+    def test_runbook_board_doctor_gate_rejects_unrelated_degradation(self) -> None:
+        degraded = self._board_doctor_report("private-owner/second")
+        degraded["checks"][2]["status"] = "warn"
+        degraded["status"] = "warn"
+
+        result = self._run_board_doctor_gate(
+            self._board_doctor_reports(**{"5342": degraded})
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("gate.health", result.stderr)
+
+    def test_runbook_board_doctor_gate_requires_the_owner_queue_verdict(self) -> None:
+        mismatched = self._board_doctor_report(
+            "private-owner/second", owner_queue="warn", status="pass"
+        )
+
+        result = self._run_board_doctor_gate(
+            self._board_doctor_reports(**{"5342": mismatched})
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("expected 'warn'", result.stderr)
+
+    def test_runbook_board_doctor_gate_rejects_a_passing_duplicate_check(self) -> None:
+        duplicated = self._board_doctor_report("private-owner/second")
+        duplicated["checks"].insert(0, {"id": "gate.health", "status": "fail"})
+
+        result = self._run_board_doctor_gate(
+            self._board_doctor_reports(**{"5342": duplicated})
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("appears more than once", result.stderr)
+
+    def test_runbook_board_doctor_gate_rejects_an_incomplete_inventory(self) -> None:
+        cases = {}
+        missing = self._board_doctor_report("private-owner/second")
+        missing["checks"] = missing["checks"][1:]
+        cases["missing"] = missing
+        unknown = self._board_doctor_report("private-owner/second")
+        unknown["checks"].append({"id": "owner.mood", "status": "pass"})
+        cases["unknown"] = unknown
+        malformed = self._board_doctor_report("private-owner/second")
+        malformed["checks"].append("gate.health=pass")
+        cases["malformed"] = malformed
+
+        for label, report in cases.items():
+            with self.subTest(report=label):
+                result = self._run_board_doctor_gate(
+                    self._board_doctor_reports(**{"5342": report})
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("5342 doctor", result.stderr)
+
+    def _cloud_doctor_report(self, checks: list[dict] | None = None, **overrides) -> dict:
+        report = {
+            "mode": "cloud-doctor",
+            "status": "pass",
+            "failures": 0,
+            "warnings": 1,
+            "checks": checks
+            if checks is not None
+            else [
+                {"name": "endpoint", "status": "pass"},
+                {"name": "service", "status": "pass"},
+                {"name": "token", "status": "pass"},
+                {"name": "bundle", "status": "warn"},
+            ],
+        }
+        report.update(overrides)
+        return report
+
+    def _run_cloud_doctor_gate(self, report: dict) -> subprocess.CompletedProcess:
+        snippet = self._runbook_python_snippet("REQUIRED_CLOUD_CHECKS")
+        with tempfile.TemporaryDirectory() as tmp:
+            cloud_dir = Path(tmp)
+            (cloud_dir / "doctor.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+            return self._run_runbook_snippet(snippet, {"CLOUD_DIR": str(cloud_dir)})
+
+    def test_runbook_cloud_doctor_gate_tolerates_the_missing_bundle_warning(self) -> None:
+        result = self._run_cloud_doctor_gate(self._cloud_doctor_report())
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["cloud_doctor"], "pass")
+
+    def test_runbook_cloud_doctor_gate_rejects_a_degraded_service(self) -> None:
+        cases = {
+            "mode": self._cloud_doctor_report(mode="cloud-dogfood"),
+            "status": self._cloud_doctor_report(status="fail"),
+            "failures": self._cloud_doctor_report(failures=1),
+            "service": self._cloud_doctor_report(
+                [
+                    {"name": "endpoint", "status": "pass"},
+                    {"name": "service", "status": "fail"},
+                    {"name": "token", "status": "pass"},
+                ]
+            ),
+            "missing": self._cloud_doctor_report(
+                [
+                    {"name": "endpoint", "status": "pass"},
+                    {"name": "token", "status": "pass"},
+                ]
+            ),
+            "duplicate": self._cloud_doctor_report(
+                [
+                    {"name": "endpoint", "status": "pass"},
+                    {"name": "service", "status": "fail"},
+                    {"name": "service", "status": "pass"},
+                    {"name": "token", "status": "pass"},
+                ]
+            ),
+        }
+        for label, report in cases.items():
+            with self.subTest(report=label):
+                result = self._run_cloud_doctor_gate(report)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("cloud", result.stderr)
+
+    def _board_snapshot_fixtures(self) -> tuple[dict, dict, dict, dict]:
+        snapshot = {
+            "mode": "cloud-board-snapshot",
+            "status": "dry_run",
+            "repo_slug": "codemower-ai/code-mower",
+            "event_count": 1,
+            "export": {"event_types": {"board_snapshot": 1}, "included_reports": 0},
+        }
+        manifest = {
+            "schema": "code_mower.cloudBenchmarkBundle.v1",
+            "repo_slug": "codemower-ai/code-mower",
+            "included_reports": 0,
+            "events": [
+                {
+                    "schema": "code_mower.benchmarkEvent.v1",
+                    "event_id": "evt-board-1",
+                    "event_type": "board_snapshot",
+                    "repo_slug": "codemower-ai/code-mower",
+                    "dimensions": {
+                        "snapshot_schema": "code_mower.cloudBoardSnapshot.v1"
+                    },
+                }
+            ],
+        }
+        preview = {
+            "mode": "cloud-upload-dry-run",
+            "would_upload": False,
+            "requires_yes": True,
+            "upload_mode": "metadata_only",
+            "report_count": 0,
+            "event_count": 1,
+            "event_types": {"board_snapshot": 1},
+        }
+        applied = {"mode": "cloud-upload", "status": 200}
+        return snapshot, manifest, preview, applied
+
+    def _run_board_snapshot_gate(
+        self, snapshot: dict, manifest: dict, preview: dict, applied: dict
+    ) -> subprocess.CompletedProcess:
+        snippet = self._runbook_python_snippet("board snapshot upload is not a verified")
+        with tempfile.TemporaryDirectory() as tmp:
+            cloud_dir = Path(tmp) / "cloud"
+            bundle_dir = Path(tmp) / "bundle"
+            cloud_dir.mkdir()
+            bundle_dir.mkdir()
+            (cloud_dir / "board-snapshot.json").write_text(
+                json.dumps(snapshot), encoding="utf-8"
+            )
+            (cloud_dir / "board-preview.json").write_text(
+                json.dumps(preview), encoding="utf-8"
+            )
+            (cloud_dir / "board-applied.json").write_text(
+                json.dumps(applied), encoding="utf-8"
+            )
+            (bundle_dir / "code-mower-cloud-bundle.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            return self._run_runbook_snippet(
+                snippet,
+                {
+                    "CLOUD_DIR": str(cloud_dir),
+                    "BOARD_SNAPSHOT_DIR": str(bundle_dir),
+                },
+            )
+
+    def test_runbook_board_snapshot_gate_accepts_the_release_bundle(self) -> None:
+        result = self._run_board_snapshot_gate(*self._board_snapshot_fixtures())
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["board_upload"], "accepted")
+
+    def test_runbook_board_snapshot_gate_rejects_another_repository(self) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        foreign_manifest = copy.deepcopy(manifest)
+        foreign_manifest["repo_slug"] = "private-owner/second"
+        foreign_event = copy.deepcopy(manifest)
+        foreign_event["events"][0]["repo_slug"] = "private-owner/second"
+
+        for label, candidate in (
+            ("bundle", foreign_manifest),
+            ("event", foreign_event),
+        ):
+            with self.subTest(surface=label):
+                result = self._run_board_snapshot_gate(
+                    snapshot, candidate, preview, applied
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(
+                    f"board {label} is not bound to the release repository",
+                    result.stderr,
+                )
+
+    def test_runbook_board_snapshot_gate_rejects_uncorrelated_previews(self) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        cases = {
+            "event_types": dict(preview, event_types={"adoption_run": 1}),
+            "event_count": dict(preview, event_count=2),
+        }
+        for label, candidate in cases.items():
+            with self.subTest(preview=label):
+                result = self._run_board_snapshot_gate(
+                    snapshot, manifest, candidate, applied
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("board preview event", result.stderr)
 
     def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
@@ -8893,8 +9519,12 @@ def main():
         self.assertIn("## Stable Package-Index Release Procedure", first_user)
         self.assertIn("## Cache-Bypass And Local Wheel Checks", first_user)
         self.assertIn("## Cache Bypass And Propagation Triage", pypi_release)
+        self.assertIn("PIP_NO_CACHE_DIR=1 pipx install --force", first_user)
+        self.assertIn(
+            "PIP_CONFIG_FILE=/dev/null pipx install --force --backend pip",
+            pypi_release,
+        )
         for text in (first_user, pypi_release):
-            self.assertIn("PIP_NO_CACHE_DIR=1 pipx install --force", text)
             self.assertIn("--reinstall --refresh-package code-mower", text)
             self.assertIn("dist/code_mower-*.whl", text)
             self.assertIn("no matching distribution", text)
