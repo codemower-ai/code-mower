@@ -1501,11 +1501,16 @@ code-mower cloud board-snapshot \
   --output-dir "$BOARD_SNAPSHOT_DIR" \
   --install-id "$CODE_MOWER_INSTALL_ID" --team-id "$CODE_MOWER_CLOUD_TEAM_ID" --json \
   >"$CLOUD_DIR/board-snapshot.json"
+sha256sum "$BOARD_SNAPSHOT_DIR/code-mower-cloud-bundle.json" \
+  >"$CLOUD_DIR/board-bundle-before-preview.sha256"
 code-mower cloud upload "$BOARD_SNAPSHOT_DIR" \
   --install-id "$CODE_MOWER_INSTALL_ID" --dry-run --json \
   >"$CLOUD_DIR/board-preview.json"
+sha256sum "$BOARD_SNAPSHOT_DIR/code-mower-cloud-bundle.json" \
+  >"$CLOUD_DIR/board-bundle-after-preview.sha256"
 CLOUD_DIR="$CLOUD_DIR" BOARD_SNAPSHOT_DIR="$BOARD_SNAPSHOT_DIR" "$RELEASE_PYTHON" - \
   >"$CLOUD_DIR/board-preflight.json" <<'PY'
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -1518,7 +1523,15 @@ def load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def digest_of(path: Path) -> str:
+    return path.read_text(encoding="utf-8").split()[0]
+
+
 BUNDLE_SCHEMA = "code_mower.cloudBenchmarkBundle.v1"
+# The nested snapshot doctor runs without --probe-service, so its inventory is
+# exactly these rows with that one expected skip.
+SNAPSHOT_DOCTOR_PASSING = ("endpoint", "token", "bundle", "model-provenance")
+SNAPSHOT_DOCTOR_CHECKS = frozenset(SNAPSHOT_DOCTOR_PASSING) | {"service"}
 EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
 SNAPSHOT_SCHEMA = "code_mower.cloudBoardSnapshot.v1"
 EXPECTED_REPO_SLUG = "codemower-ai/code-mower"
@@ -1588,12 +1601,12 @@ if snapshot_doctor.get("failures") != 0:
     problems.append(
         f"board snapshot doctor reports {snapshot_doctor.get('failures')!r} failures"
     )
+if snapshot_doctor.get("endpoint") != probed_endpoint:
+    problems.append("board snapshot doctor does not target the probed service")
 doctor_rows = snapshot_doctor.get("checks")
 if not isinstance(doctor_rows, list) or not doctor_rows:
     problems.append("board snapshot doctor check list is not a nonempty list")
     doctor_rows = []
-# The nested report is produced without --probe-service, so the skipped service
-# probe stays acceptable while any failing or unrecognized status does not.
 doctor_statuses = {}
 doctor_failures = 0
 for row in doctor_rows:
@@ -1605,17 +1618,28 @@ for row in doctor_rows:
     if not isinstance(name, str) or not isinstance(status, str):
         problems.append("board snapshot doctor check identity is malformed")
         continue
-    if status not in {"pass", "warn", "skip"}:
+    if status == "fail":
         doctor_failures += 1
-        problems.append(f"board snapshot doctor check {name!r} is {status!r}")
     if name in doctor_statuses:
         problems.append(f"board snapshot doctor check {name!r} appears more than once")
         continue
     doctor_statuses[name] = status
-missing_doctor = sorted({"endpoint", "service", "token", "bundle"} - set(doctor_statuses))
+unexpected_doctor = sorted(set(doctor_statuses) - SNAPSHOT_DOCTOR_CHECKS)
+missing_doctor = sorted(SNAPSHOT_DOCTOR_CHECKS - set(doctor_statuses))
+if unexpected_doctor:
+    problems.append(f"board snapshot doctor reported unexpected checks {unexpected_doctor}")
 if missing_doctor:
     problems.append(f"board snapshot doctor is missing checks {missing_doctor}")
-if doctor_failures != snapshot_doctor.get("failures"):
+for name in SNAPSHOT_DOCTOR_PASSING:
+    if doctor_statuses.get(name) != "pass":
+        problems.append(
+            f"board snapshot doctor {name} check is {doctor_statuses.get(name)!r}"
+        )
+if doctor_statuses.get("service") != "skip":
+    problems.append(
+        f"board snapshot doctor service check is {doctor_statuses.get('service')!r}"
+    )
+if doctor_failures or doctor_failures != snapshot_doctor.get("failures"):
     problems.append(f"board snapshot doctor rows report {doctor_failures} failures")
 if preview.get("mode") != "cloud-upload-dry-run" or preview.get("would_upload") is not False:
     problems.append(f"board preview mode is {preview.get('mode')!r}")
@@ -1638,11 +1662,19 @@ if snapshot_preview.get("endpoint") != probed_endpoint:
     problems.append("board snapshot preview does not target the probed service")
 if preview.get("endpoint") != probed_endpoint:
     problems.append("board upload preview does not target the probed service")
+# The manifest is hashed on both sides of the preview command, so a bundle that
+# is replaced while the preview runs cannot become the previewed identity.
+before_preview = digest_of(cloud_dir / "board-bundle-before-preview.sha256")
+after_preview = digest_of(cloud_dir / "board-bundle-after-preview.sha256")
+previewed_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+if before_preview != after_preview or previewed_digest != before_preview:
+    problems.append("board bundle changed while the preview was generated")
 if problems:
     raise SystemExit(f"board snapshot preview is not an acceptable payload: {problems}")
 print(json.dumps({
     "board_preview": "accepted",
     "event_types": event_types,
+    "previewed_digest": previewed_digest,
     "reports": 0,
 }))
 PY
@@ -1699,10 +1731,17 @@ if not probed_endpoint or applied.get("endpoint") != probed_endpoint:
 # Generic cloud upload returns no event identifiers, so the applied upload is
 # bound to the inspected bundle by digest instead: the manifest may not change
 # between the accepted preview and the applied upload.
+previewed_digest = str(load(cloud_dir / "board-preflight.json").get("previewed_digest") or "")
 before_digest = digest_of(cloud_dir / "board-bundle-before-apply.sha256")
 after_digest = digest_of(cloud_dir / "board-bundle-after-apply.sha256")
 current_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-if before_digest != after_digest or current_digest != before_digest:
+if not previewed_digest:
+    problems.append("the previewed board bundle identity was not retained")
+if (
+    before_digest != after_digest
+    or current_digest != before_digest
+    or current_digest != previewed_digest
+):
     problems.append("board bundle changed between the preview and the applied upload")
 if problems:
     raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")
@@ -1721,11 +1760,15 @@ repository, not only the top-level summary, so a truthful summary cannot cover
 evidence gathered from another repository. The health of both `cloud doctor`
 reports -- the standalone probe and the one nested in the Board snapshot -- is
 derived from their raw check rows, so a falsified `status` or `failures` cannot
-hide a degraded check; the nested report is produced without `--probe-service`,
-so its skipped service probe stays acceptable. Generic `cloud upload` returns
-no event identifiers, so the applied upload is bound to the previewed bundle by
-the SHA-256 digest taken immediately after the preview and recomputed
-immediately after the upload.
+hide a degraded check. The nested report's inventory is exact: `endpoint`,
+`token`, `bundle`, and `model-provenance` must pass, `service` must be the skip
+this producer causes by not requesting `--probe-service`, and its endpoint must
+equal the privately probed one. Generic `cloud upload` returns no event
+identifiers, so the applied upload is bound to the previewed bundle by SHA-256:
+the manifest is hashed immediately before and immediately after the dry-run
+preview, those two values must match before the preview can be accepted, that
+matching value is the previewed identity, and the digest recomputed after the
+upload must equal it.
 
 ## Cache Bypass And Propagation Triage
 

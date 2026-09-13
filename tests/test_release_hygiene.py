@@ -8679,7 +8679,11 @@ def main():
             # exact event types come from the digest-bound manifest.
             "if event_type_counts != EXPECTED_EVENT_TYPES:",
             "current_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()",
-            "if before_digest != after_digest or current_digest != before_digest:",
+            "or current_digest != previewed_digest",
+            'before_preview = digest_of(cloud_dir / "board-bundle-before-preview.sha256")',
+            "if before_preview != after_preview or previewed_digest != before_preview:",
+            'SNAPSHOT_DOCTOR_PASSING = ("endpoint", "token", "bundle", "model-provenance")',
+            'if doctor_statuses.get("service") != "skip":',
             'if event.get("schema") != EVENT_SCHEMA'
             ' or not str(event.get("event_id") or ""):',
             'if dimensions.get("snapshot_schema") != SNAPSHOT_SCHEMA:',
@@ -9459,11 +9463,13 @@ def main():
                 "mode": "cloud-doctor",
                 "status": "pass",
                 "failures": 0,
+                "endpoint": CLOUD_ENDPOINT,
                 "checks": [
                     {"name": "endpoint", "status": "pass"},
                     {"name": "service", "status": "skip"},
                     {"name": "token", "status": "pass"},
                     {"name": "bundle", "status": "pass"},
+                    {"name": "model-provenance", "status": "pass"},
                 ],
             },
         }
@@ -9507,7 +9513,9 @@ def main():
         applied: dict,
         *,
         phase: str = "preflight",
-        applied_manifest: dict | None = None,
+        preview_swap: dict | None = None,
+        pre_apply_swap: dict | None = None,
+        during_apply_swap: dict | None = None,
     ) -> subprocess.CompletedProcess:
         marker = (
             "board snapshot preview is not an acceptable payload"
@@ -9533,19 +9541,33 @@ def main():
                 json.dumps(applied), encoding="utf-8"
             )
             manifest_path = bundle_dir / "code-mower-cloud-bundle.json"
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-            (cloud_dir / "board-bundle-before-apply.sha256").write_text(
-                f"{digest}  {manifest_path}\n", encoding="utf-8"
-            )
-            if applied_manifest is not None:
-                manifest_path.write_text(
-                    json.dumps(applied_manifest), encoding="utf-8"
+
+            def write_digest(name: str) -> str:
+                digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+                (cloud_dir / name).write_text(
+                    f"{digest}  {manifest_path}\n", encoding="utf-8"
                 )
-            after = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-            (cloud_dir / "board-bundle-after-apply.sha256").write_text(
-                f"{after}  {manifest_path}\n", encoding="utf-8"
+                return digest
+
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            write_digest("board-bundle-before-preview.sha256")
+            if preview_swap is not None:
+                manifest_path.write_text(json.dumps(preview_swap), encoding="utf-8")
+            previewed = write_digest("board-bundle-after-preview.sha256")
+            (cloud_dir / "board-preflight.json").write_text(
+                json.dumps(
+                    {"board_preview": "accepted", "previewed_digest": previewed}
+                ),
+                encoding="utf-8",
             )
+            if pre_apply_swap is not None:
+                manifest_path.write_text(json.dumps(pre_apply_swap), encoding="utf-8")
+            write_digest("board-bundle-before-apply.sha256")
+            if during_apply_swap is not None:
+                manifest_path.write_text(
+                    json.dumps(during_apply_swap), encoding="utf-8"
+                )
+            write_digest("board-bundle-after-apply.sha256")
             return self._run_runbook_snippet(
                 snippet,
                 {
@@ -9570,23 +9592,72 @@ def main():
         swapped = copy.deepcopy(manifest)
         swapped["events"][0]["event_id"] = "evt-board-2"
 
-        result = self._run_board_snapshot_gate(
-            snapshot, manifest, preview, applied, phase="applied",
-            applied_manifest=swapped,
+        during_preview = self._run_board_snapshot_gate(
+            snapshot, manifest, preview, applied, preview_swap=swapped
+        )
+        before_apply = self._run_board_snapshot_gate(
+            snapshot,
+            manifest,
+            preview,
+            applied,
+            phase="applied",
+            pre_apply_swap=swapped,
+        )
+        during_apply = self._run_board_snapshot_gate(
+            snapshot,
+            manifest,
+            preview,
+            applied,
+            phase="applied",
+            during_apply_swap=swapped,
         )
 
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("board bundle changed", result.stderr)
+        self.assertEqual(during_preview.returncode, 1)
+        self.assertIn(
+            "board bundle changed while the preview was generated",
+            during_preview.stderr,
+        )
+        for result in (before_apply, during_apply):
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "board bundle changed between the preview and the applied upload",
+                result.stderr,
+            )
 
     def test_runbook_board_snapshot_gate_rejects_a_nested_doctor_failure(self) -> None:
         snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
-        degraded = copy.deepcopy(snapshot)
-        degraded["doctor"]["checks"][1]["status"] = "fail"
+        cases = {}
+        for label, status in (("failed", "fail"), ("warned", "warn")):
+            degraded = copy.deepcopy(snapshot)
+            degraded["doctor"]["checks"][4]["status"] = status
+            cases[label] = degraded
+        probing = copy.deepcopy(snapshot)
+        probing["doctor"]["checks"][1]["status"] = "pass"
+        cases["service_not_skipped"] = probing
+        missing = copy.deepcopy(snapshot)
+        missing["doctor"]["checks"] = missing["doctor"]["checks"][:4]
+        cases["missing"] = missing
+        unknown = copy.deepcopy(snapshot)
+        unknown["doctor"]["checks"].append({"name": "owner.mood", "status": "pass"})
+        cases["unknown"] = unknown
+        duplicate = copy.deepcopy(snapshot)
+        duplicate["doctor"]["checks"].insert(0, {"name": "token", "status": "fail"})
+        cases["duplicate"] = duplicate
+        malformed = copy.deepcopy(snapshot)
+        malformed["doctor"]["checks"].append("token=pass")
+        cases["malformed"] = malformed
+        elsewhere = copy.deepcopy(snapshot)
+        elsewhere["doctor"]["endpoint"] = "https://other.example.invalid"
+        cases["endpoint"] = elsewhere
 
-        result = self._run_board_snapshot_gate(degraded, manifest, preview, applied)
+        for label, candidate in cases.items():
+            with self.subTest(doctor=label):
+                result = self._run_board_snapshot_gate(
+                    candidate, manifest, preview, applied
+                )
 
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("board snapshot doctor check", result.stderr)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("board snapshot doctor", result.stderr)
 
     def test_runbook_board_snapshot_gate_rejects_an_extra_event(self) -> None:
         snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
