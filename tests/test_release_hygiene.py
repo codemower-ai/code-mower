@@ -9419,6 +9419,223 @@ def main():
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("head branch is v1.4.0rc1, not v1.4.0", completed.stderr)
 
+    def test_release_readiness_next_actions_supply_the_required_dispatch_sha(
+        self,
+    ) -> None:
+        payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        commands = {
+            action["id"]: action["command"] for action in payload["next_actions"]
+        }
+        dispatches = [
+            action
+            for action in payload["next_actions"]
+            if "gh workflow run release.yml" in action["command"]
+        ]
+
+        self.assertEqual(
+            checks["release-workflow-next-actions-dispatchable"]["status"], "pass"
+        )
+        self.assertEqual(len(dispatches), 3)
+        for action_id in (
+            "dry-run-release-workflow",
+            "publish-testpypi-candidate",
+            "publish-pypi-release",
+        ):
+            with self.subTest(action=action_id):
+                self.assertIn('-f expected_sha="$RELEASE_SHA"', commands[action_id])
+
+    def test_release_readiness_rejects_a_dispatch_action_without_the_expected_sha(
+        self,
+    ) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        payload = release_readiness.render_release_readiness(ROOT)
+
+        for action in payload["next_actions"]:
+            if "gh workflow run release.yml" not in action["command"]:
+                continue
+            with self.subTest(action=action["id"]):
+                stripped = [
+                    {
+                        **action,
+                        "command": action["command"].replace(
+                            ' -f expected_sha="$RELEASE_SHA"', ""
+                        ),
+                    }
+                ]
+
+                self.assertEqual(
+                    release_readiness._incomplete_dispatch_actions(workflow, stripped),
+                    [f"{action['id']} omits -f expected_sha="],
+                )
+
+    def _run_release_assets_gate(
+        self, mutate: Callable[[Path], None] | None = None
+    ) -> subprocess.CompletedProcess:
+        snippet = self._runbook_python_snippet('EXPECTED_TITLE = "Code Mower v1.4.0"')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkout = root / "checkout"
+            (checkout / "docs").mkdir(parents=True)
+            (checkout / "docs" / "v140-release-notes.md").write_text(
+                "Code Mower v1.4.0 release notes\n", encoding="utf-8"
+            )
+
+            def git(*args: str) -> str:
+                return subprocess.run(
+                    ["git", "-C", str(checkout), *args],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+
+            git("init")
+            git("config", "user.email", "release@example.invalid")
+            git("config", "user.name", "Release Bot")
+            git("add", "docs/v140-release-notes.md")
+            git("commit", "-m", "notes")
+            git("tag", "v1.4.0")
+            release_sha = git("rev-parse", "HEAD")
+            dist = root / "dist"
+            dist.mkdir()
+            verified_map = {}
+            for name in (
+                "code_mower-1.4.0-py3-none-any.whl",
+                "code_mower-1.4.0.tar.gz",
+            ):
+                artifact = dist / name
+                artifact.write_bytes(name.encode("utf-8"))
+                verified_map[name] = hashlib.sha256(
+                    artifact.read_bytes()
+                ).hexdigest()
+            verified_path = root / "pypi-verified-artifacts.json"
+            verified_path.write_text(json.dumps(verified_map), encoding="utf-8")
+            stub_dir = root / "bin"
+            stub_dir.mkdir()
+            stub = stub_dir / "gh"
+            stub.write_text(
+                "#!/usr/bin/env bash\n"
+                f'printf \'{{"object": {{"type": "commit", "sha": "{release_sha}"}}}}\'\n',
+                encoding="utf-8",
+            )
+            stub.chmod(0o755)
+            if mutate is not None:
+                mutate(checkout)
+            script = root / "assert_release_assets.py"
+            script.write_text(snippet, encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(script), "pre-create"],
+                cwd=checkout,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
+                    "REPO": "codemower-ai/code-mower",
+                    "RELEASE_SHA": release_sha,
+                    "PYPI_VERIFIED_MAP": str(verified_path),
+                    "PROD_DIST_DIR": str(dist),
+                    "RELEASE_CHECKOUT": str(checkout),
+                },
+            )
+
+    def test_pre_create_gate_accepts_the_exact_clean_release_checkout(self) -> None:
+        completed = self._run_release_assets_gate()
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertTrue(payload["checkout_match"])
+        self.assertTrue(payload["notes_present"])
+
+    def test_pre_create_gate_rejects_a_late_release_checkout_mutation(self) -> None:
+        cases = {
+            "modified notes": (
+                lambda checkout: (checkout / "docs" / "v140-release-notes.md").write_text(
+                    "rewritten notes\n", encoding="utf-8"
+                ),
+                "release checkout has uncommitted or untracked changes",
+            ),
+            "untracked file": (
+                lambda checkout: (checkout / "docs" / "extra.md").write_text(
+                    "untracked\n", encoding="utf-8"
+                ),
+                "release checkout has uncommitted or untracked changes",
+            ),
+            "moved head": (
+                lambda checkout: self._advance_checkout_head(checkout),
+                "release checkout is not the exact release commit",
+            ),
+        }
+        for label, (mutate, expected) in cases.items():
+            with self.subTest(case=label):
+                completed = self._run_release_assets_gate(mutate)
+
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn(expected, completed.stderr)
+                self.assertNotIn("sha256_match", completed.stdout)
+
+    def _advance_checkout_head(self, checkout: Path) -> None:
+        (checkout / "docs" / "later.md").write_text("later\n", encoding="utf-8")
+        for args in (
+            ("add", "docs/later.md"),
+            ("commit", "-m", "later"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(checkout), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+    def test_release_readiness_fails_when_the_late_release_checkout_gate_is_deleted(
+        self,
+    ) -> None:
+        for assertion in (
+            'test -s "$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+            'problems.append("release checkout is not the exact release commit")',
+            'problems.append("release checkout has uncommitted or untracked changes")',
+            'problems.append("release notes in the exact checkout are empty")',
+            "notes_path = checkout / RELEASE_NOTES_RELPATH",
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_the_late_gate_moves_behind_the_release(
+        self,
+    ) -> None:
+        runbook = self._runbook_section()
+        self.assertEqual(
+            release_readiness._release_create_binding_problems(runbook), []
+        )
+
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                'test -s "$RELEASE_CHECKOUT/docs/v140-release-notes.md"\n'
+                'test -s "$PYPI_VERIFIED_MAP"\n'
+                'if gh release view v1.4.0 --repo "$REPO" >/dev/null 2>&1; then',
+                'test -s "$RELEASE_CHECKOUT/docs/v140-release-notes.md"\n'
+                'test -s "$PYPI_VERIFIED_MAP"\n'
+                'echo "about to release"\n'
+                'if gh release view v1.4.0 --repo "$REPO" >/dev/null 2>&1; then',
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertTrue(
+            any(
+                "not re-bound immediately" in problem
+                for problem in check["detail"]["gate_order_problems"]
+            ),
+            check["detail"]["gate_order_problems"],
+        )
+
     def _runbook_python_snippet(self, marker: str) -> str:
         snippets = [
             snippet

@@ -382,9 +382,28 @@ def resolve_cloud_identity(
     install_id: str,
     resolution: CloudTokenResolution,
 ) -> tuple[str, str]:
+    """Return the team and install identity every producer must report.
+
+    A requested identity never silently overrides the resolved install profile:
+    a profile that carries a different nonempty identity means the caller is
+    describing one install while the token and endpoint come from another.
+    """
+
+    requested_team = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
+    requested_install = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
+    for label, requested, stored in (
+        ("team", requested_team, resolution.team_id),
+        ("install", requested_install, resolution.install_id),
+    ):
+        if requested and stored and requested != stored:
+            raise CloudBundleError(
+                f"the resolved cloud install profile reports a different {label} "
+                "identity than the one requested; re-select the profile or drop "
+                "the explicit value"
+            )
     return (
-        team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "") or resolution.team_id,
-        install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "") or resolution.install_id,
+        requested_team or resolution.team_id,
+        requested_install or resolution.install_id,
     )
 
 

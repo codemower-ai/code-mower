@@ -14,6 +14,7 @@ from code_mower.cloud_client import (
     BUNDLE_MANIFEST_FILENAME,
     CURRENT_PROFILE_FILENAME,
     CloudBundleError,
+    CloudTokenResolution,
     DEFAULT_SETUP_INSTALL_ID,
     EVENT_SCHEMA,
     UPLOAD_IDENTITY_SCHEMA,
@@ -32,6 +33,7 @@ from code_mower.cloud_client import (
     repo_slug_from_remote,
     repo_sync_output_name,
     render_cloud_doctor_text,
+    resolve_cloud_identity,
     resolve_cloud_token,
     run_cloud_doctor,
     run_cloud_setup,
@@ -835,11 +837,17 @@ def test_board_snapshot_records_and_enforces_source_git_provenance(monkeypatch, 
 def test_board_snapshot_rejects_a_checkout_that_moves_during_collection(monkeypatch, tmp_path) -> None:
     repo_path = tmp_path / "checkout"
     head_sha = _init_git_checkout(repo_path)
+    index_mutations: list[int] = []
 
     def moving_status(_config):
         (repo_path / "tracked.txt").write_text("changed\n", encoding="utf-8")
-        subprocess.run(["git", "add", "tracked.txt"], cwd=repo_path, check=True)
-        subprocess.run(["git", "commit", "--quiet", "-m", "second"], cwd=repo_path, check=True)
+        index_mutations.append(
+            subprocess.run(
+                ["git", "add", "tracked.txt"],
+                cwd=repo_path,
+                capture_output=True,
+            ).returncode
+        )
         return _board_snapshot_fixture()
 
     with assert_raises(CloudBundleError):
@@ -851,6 +859,170 @@ def test_board_snapshot_rejects_a_checkout_that_moves_during_collection(monkeypa
             require_head_sha=head_sha,
             require_clean=True,
         )
+    assert index_mutations and all(code != 0 for code in index_mutations)
+
+
+def test_board_snapshot_blocks_an_a_b_a_checkout_during_collection(monkeypatch, tmp_path) -> None:
+    repo_path = tmp_path / "checkout"
+    first_sha = _init_git_checkout(repo_path)
+    (repo_path / "tracked.txt").write_text("two\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo_path, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "second"], cwd=repo_path, check=True)
+    second_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "checkout", "--quiet", first_sha], cwd=repo_path, check=True)
+
+    switches: list[int] = []
+
+    def switching_status(_config):
+        for target in (second_sha, first_sha):
+            switches.append(
+                subprocess.run(
+                    ["git", "checkout", "--quiet", target],
+                    cwd=repo_path,
+                    capture_output=True,
+                ).returncode
+            )
+        return _board_snapshot_fixture()
+
+    result = _board_snapshot_dry_run(
+        monkeypatch,
+        repo_path,
+        tmp_path / "aba",
+        status_payload=switching_status,
+        require_head_sha=first_sha,
+        require_clean=True,
+    )
+    # Neither switch can run while the snapshot is read, so the accepted
+    # evidence cannot describe data collected from the second commit.
+    assert switches and all(code != 0 for code in switches)
+    assert result["git"]["head_sha"] == first_sha
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == first_sha
+    )
+
+
+def test_board_snapshot_rejects_a_manifest_replaced_after_export(monkeypatch, tmp_path) -> None:
+    substitute_dir = tmp_path / "substitute"
+    substitute = _board_snapshot_dry_run(monkeypatch, tmp_path, substitute_dir)
+    replacement = (substitute_dir / BUNDLE_MANIFEST_FILENAME).read_bytes()
+
+    output_dir = tmp_path / "board-snapshot"
+    real_doctor = cloud_operations.run_cloud_doctor
+
+    def replacing_doctor(**kwargs):
+        (output_dir / BUNDLE_MANIFEST_FILENAME).write_bytes(replacement)
+        return real_doctor(**kwargs)
+
+    monkeypatch.setattr(cloud_operations, "run_cloud_doctor", replacing_doctor)
+    with assert_raises(CloudBundleError):
+        _board_snapshot_dry_run(monkeypatch, tmp_path, output_dir)
+    assert substitute["manifest"]["manifest_sha256"] == hashlib.sha256(replacement).hexdigest()
+
+
+def test_cloud_export_owns_the_identity_of_the_manifest_bytes_it_writes(tmp_path) -> None:
+    output_dir = tmp_path / "bundle"
+    export = build_cloud_bundle(
+        reports=[],
+        events=[
+            {
+                "event_type": "dogfood_upload",
+                "repo_slug": "owner/repo",
+                "dimensions": {"lane": "unit-test"},
+            }
+        ],
+        output_dir=output_dir,
+        repo_slug="owner/repo",
+    )
+    manifest_bytes = (output_dir / BUNDLE_MANIFEST_FILENAME).read_bytes()
+    assert export["manifest_identity"] == bundle_manifest_identity(
+        json.loads(manifest_bytes.decode("utf-8")),
+        manifest_bytes,
+    )
+
+
+def test_resolve_cloud_identity_rejects_a_profile_that_disagrees_with_explicit_values(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CODE_MOWER_CLOUD_TEAM_ID", raising=False)
+    monkeypatch.delenv("CODE_MOWER_INSTALL_ID", raising=False)
+    resolution = CloudTokenResolution(
+        status="ok",
+        token_env="CODE_MOWER_CLOUD_TOKEN",
+        source="install_id",
+        token="cmw_live_secret",
+        team_id="stored-team",
+        install_id="stored-install",
+    )
+
+    assert resolve_cloud_identity(
+        team_id="stored-team",
+        install_id="stored-install",
+        resolution=resolution,
+    ) == ("stored-team", "stored-install")
+
+    with assert_raises(CloudBundleError):
+        resolve_cloud_identity(
+            team_id="other-team",
+            install_id="stored-install",
+            resolution=resolution,
+        )
+    with assert_raises(CloudBundleError):
+        resolve_cloud_identity(
+            team_id="stored-team",
+            install_id="other-install",
+            resolution=resolution,
+        )
+
+    # A profile that omits an identity leaves the explicit value in force.
+    partial = CloudTokenResolution(
+        status="ok",
+        token_env="CODE_MOWER_CLOUD_TOKEN",
+        source="install_id",
+        token="cmw_live_secret",
+        install_id="stored-install",
+    )
+    assert resolve_cloud_identity(
+        team_id="explicit-team",
+        install_id="stored-install",
+        resolution=partial,
+    ) == ("explicit-team", "stored-install")
+
+
+def test_board_snapshot_refuses_to_preview_a_conflicting_profile_identity(
+    monkeypatch, tmp_path
+) -> None:
+    conflicting = CloudTokenResolution(
+        status="ok",
+        token_env="CODE_MOWER_TEST_BOARD_TOKEN",
+        source="install_id",
+        token="cmw_live_board_secret",
+        endpoint="http://localhost:3000/api/ingest",
+        team_id="stored-team",
+        install_id="stored-install",
+    )
+    monkeypatch.setattr(
+        cloud_operations,
+        "_resolve_upload_profile",
+        lambda **_kwargs: (conflicting, "http://localhost:3000/api/ingest"),
+    )
+    output_dir = tmp_path / "conflicting"
+
+    with assert_raises(CloudBundleError):
+        _board_snapshot_dry_run(monkeypatch, tmp_path, output_dir)
+    assert not output_dir.exists()
 
 
 def test_cloud_repo_slug_from_remote_supports_common_github_forms() -> None:

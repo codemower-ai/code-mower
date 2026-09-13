@@ -42,6 +42,7 @@ from .events import safe_event_type
 from .git_metadata import (
     checkout_provenance,
     detect_repo_slug,
+    index_mutation_guard,
     require_checkout_provenance,
 )
 from .productivity_windows import load_productivity_window_events
@@ -359,8 +360,15 @@ def board_snapshot_upload(
         expected_head_sha=require_head_sha,
         require_clean=require_clean,
     )
-    snapshot = board.status_payload(config)
-    snapshot["timelines"] = board.timelines_payload(config)
+    if provenance_required:
+        # The index lock is held across both Board reads so a checkout cannot
+        # move to another commit and back between the two provenance samples.
+        with index_mutation_guard(repo_path):
+            snapshot = board.status_payload(config)
+            snapshot["timelines"] = board.timelines_payload(config)
+    else:
+        snapshot = board.status_payload(config)
+        snapshot["timelines"] = board.timelines_payload(config)
     collected_provenance = checkout_provenance(repo_path, required=provenance_required)
     if collected_provenance != provenance:
         raise CloudBundleError(
@@ -413,6 +421,10 @@ def board_snapshot_upload(
         bundle_dir=output_dir,
         include_reports=False,
     )
+    if manifest_identity != export_result["manifest_identity"]:
+        raise CloudBundleError(
+            "the exported Board snapshot manifest was replaced before upload"
+        )
     if not yes:
         return {
             "mode": "cloud-board-snapshot",

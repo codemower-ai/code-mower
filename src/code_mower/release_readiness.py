@@ -449,8 +449,15 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         # Notes come from the clean checkout of the exact release commit, and
         # the published body and title are compared with that file.
         '--notes-file "$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
-        'notes_path = Path(os.environ["RELEASE_CHECKOUT"]) / RELEASE_NOTES_RELPATH',
+        "notes_path = checkout / RELEASE_NOTES_RELPATH",
         'problems.append("release notes in the exact checkout are empty")',
+        # The late gate binds the accepted or created release to the exact
+        # clean checkout immediately before the existing/pre-create branch.
+        'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
+        'test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+        'test -s "$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+        'problems.append("release checkout is not the exact release commit")',
+        'problems.append("release checkout has uncommitted or untracked changes")',
         'problems.append("release body does not match the exact checkout release notes")',
         'problems.append("release title is not the expected v1.4.0 title")',
         # Hosted Devin readiness is required, not reported.
@@ -772,6 +779,39 @@ def _board_snapshot_binding_problems(runbook_doc: str) -> list[str]:
         return [
             "the release checkout is not re-bound immediately before "
             f"{BOARD_SNAPSHOT_COMMAND}"
+        ]
+    return []
+
+
+RELEASE_CREATE_BRANCH = 'if gh release view v1.4.0 --repo "$REPO" >/dev/null 2>&1; then'
+RELEASE_CREATE_BINDING_ASSERTIONS = (
+    'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
+    'test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+    'test -s "$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+    'test -s "$PYPI_VERIFIED_MAP"',
+)
+
+
+def _release_create_binding_problems(runbook_doc: str) -> list[str]:
+    """Require the exact clean checkout immediately before the Release branch.
+
+    Accepting an existing release or creating one publishes notes read from the
+    checkout, so a checkout that moved or became dirty after the earlier
+    assertions must stop the runbook before either branch runs.
+    """
+
+    start = runbook_doc.find(RELEASE_CREATE_BRANCH)
+    if start < 0:
+        return ["the GitHub Release creation branch is missing"]
+    preceding = [
+        line.strip()
+        for line in runbook_doc[:start].splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if preceding[-4:] != list(RELEASE_CREATE_BINDING_ASSERTIONS):
+        return [
+            "the exact clean release checkout is not re-bound immediately "
+            "before the GitHub Release branch"
         ]
     return []
 
@@ -1145,6 +1185,37 @@ def _dispatch_sha_gate_holds(workflow: str, workflow_jobs: dict[str, Any]) -> bo
     )
 
 
+RELEASE_WORKFLOW_DISPATCH_COMMAND = "gh workflow run release.yml"
+
+
+def _incomplete_dispatch_actions(
+    workflow: str, next_actions: list[dict[str, Any]]
+) -> list[str]:
+    """Report advertised workflow dispatches missing a required input.
+
+    A readiness report that passes while every advertised dispatch is rejected
+    at submission is worse than no next action at all, so each generated
+    command must supply every input the workflow marks required.
+    """
+
+    required_inputs = sorted(
+        name
+        for name, spec in _workflow_dispatch_inputs(workflow).items()
+        if isinstance(spec, dict) and spec.get("required") is True
+    )
+    problems: list[str] = []
+    for action in next_actions:
+        command = str(action.get("command") or "")
+        if RELEASE_WORKFLOW_DISPATCH_COMMAND not in command:
+            continue
+        problems.extend(
+            f"{action.get('id')} omits -f {name}="
+            for name in required_inputs
+            if f"-f {name}=" not in command
+        )
+    return problems
+
+
 def _needs_job(job: Any, required: str) -> bool:
     if not isinstance(job, dict):
         return False
@@ -1257,6 +1328,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     gate_order_problems = (
         _post_merge_gate_order_problems(runbook_doc)
         + _board_snapshot_binding_problems(runbook_doc)
+        + _release_create_binding_problems(runbook_doc)
         + _post_merge_fail_fast_problems(runbook_doc)
         + _post_merge_variable_flow_problems(runbook_doc)
         if runbook_doc
@@ -1617,10 +1689,6 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             detail={"missing_terms_by_doc": missing_redaction_terms},
         ),
     ]
-    failed = sum(1 for check in checks if check["status"] == "fail")
-    warnings = sum(1 for check in checks if check["status"] == "warn")
-    passed = sum(1 for check in checks if check["status"] == "pass")
-    status = "pass" if failed == 0 else "fail"
     release_workflow_ref = release_tag or "main"
     next_actions = [
         {
@@ -1629,7 +1697,8 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             "command": (
                 "gh workflow run release.yml --repo codemower-ai/code-mower "
                 f"--ref {release_workflow_ref} "
-                "-f publish_testpypi=false -f publish_pypi=false"
+                "-f publish_testpypi=false -f publish_pypi=false "
+                '-f expected_sha="$RELEASE_SHA"'
             ),
             "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },
@@ -1639,7 +1708,8 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             "command": (
                 "gh workflow run release.yml --repo codemower-ai/code-mower "
                 f"--ref {release_workflow_ref} "
-                "-f publish_testpypi=true -f publish_pypi=false"
+                "-f publish_testpypi=true -f publish_pypi=false "
+                '-f expected_sha="$RELEASE_SHA"'
             ),
             "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },
@@ -1662,7 +1732,8 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             "command": (
                 "gh workflow run release.yml --repo codemower-ai/code-mower "
                 f"--ref {release_workflow_ref} "
-                "-f publish_testpypi=false -f publish_pypi=true"
+                "-f publish_testpypi=false -f publish_pypi=true "
+                '-f expected_sha="$RELEASE_SHA"'
             ),
             "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },
@@ -1699,6 +1770,20 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },
     ]
+    incomplete_dispatch_actions = _incomplete_dispatch_actions(workflow, next_actions)
+    checks.append(
+        _release_check(
+            check_id="release-workflow-next-actions-dispatchable",
+            title="Advertised release workflow dispatches supply every required input",
+            status="pass" if not incomplete_dispatch_actions else "fail",
+            evidence="release-readiness next actions, .github/workflows/release.yml",
+            detail={"incomplete_dispatch_actions": incomplete_dispatch_actions},
+        )
+    )
+    failed = sum(1 for check in checks if check["status"] == "fail")
+    warnings = sum(1 for check in checks if check["status"] == "warn")
+    passed = sum(1 for check in checks if check["status"] == "pass")
+    status = "pass" if failed == 0 else "fail"
     return {
         "mode": "code-mower-release-readiness",
         "status": status,

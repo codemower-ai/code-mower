@@ -636,6 +636,28 @@ def main() -> None:
     ).stdout.strip()
     if tag_target != release_sha:
         problems.append("release tag does not target the exact release commit")
+    # The notes are read from the clean checkout of the exact release commit on
+    # every invocation, so neither an ambient working copy nor notes edited
+    # after the earlier checks can describe the published release.
+    checkout = Path(os.environ["RELEASE_CHECKOUT"])
+    checkout_head = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    if checkout_head != release_sha:
+        problems.append("release checkout is not the exact release commit")
+    checkout_status = subprocess.run(
+        ["git", "-C", str(checkout), "status", "--porcelain", "--untracked-files=all"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    if checkout_status:
+        problems.append("release checkout has uncommitted or untracked changes")
+    notes_path = checkout / RELEASE_NOTES_RELPATH
+    expected_notes = (
+        notes_path.read_text(encoding="utf-8").strip() if notes_path.is_file() else ""
+    )
+    if not expected_notes:
+        problems.append("release notes in the exact checkout are empty")
     if mode == "pre-create":
         if problems:
             raise SystemExit(f"{mode} release assets are not acceptable: {problems}")
@@ -644,20 +666,16 @@ def main() -> None:
             "assets": sorted(verified),
             "sha256_match": True,
             "remote_tag_match": True,
+            "checkout_match": True,
+            "notes_present": True,
         }, sort_keys=True))
         return
-    # The notes are read from the clean checkout of the exact release commit, so
-    # an ambient working copy cannot describe the published release.
-    notes_path = Path(os.environ["RELEASE_CHECKOUT"]) / RELEASE_NOTES_RELPATH
-    expected_notes = notes_path.read_text(encoding="utf-8").strip()
     view = gh_json([
         "release", "view", "v1.4.0", "--repo", repo, "--json",
         "tagName,isDraft,isPrerelease,assets,body,name",
     ])
     if view.get("tagName") != "v1.4.0":
         problems.append("release tag is not v1.4.0")
-    if not expected_notes:
-        problems.append("release notes in the exact checkout are empty")
     if str(view.get("body") or "").replace("\r\n", "\n").strip() != expected_notes:
         problems.append("release body does not match the exact checkout release notes")
     if view.get("name") != EXPECTED_TITLE:
@@ -699,7 +717,9 @@ runbook for inspection.
 
 ```bash
 set -euo pipefail
-test -f "$RELEASE_CHECKOUT/docs/v140-release-notes.md"
+test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"
+test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"
+test -s "$RELEASE_CHECKOUT/docs/v140-release-notes.md"
 test -s "$PYPI_VERIFIED_MAP"
 if gh release view v1.4.0 --repo "$REPO" >/dev/null 2>&1; then
   REPO="$REPO" PROD_DIST_DIR="$PROD_DIST_DIR" RELEASE_SHA="$RELEASE_SHA" \

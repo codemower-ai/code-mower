@@ -19,6 +19,7 @@ from .bundle import (
 from .adoption_runs import ADOPTION_RUN_EVENT_TYPE
 from .errors import CloudBundleError
 from .events import normalize_event, safe_kind, validate_cloud_event
+from .manifest import bundle_manifest_identity
 
 
 INVENTORY_ONLY_PROVENANCE_EVENT_TYPES = {"provider_catalog_snapshot"}
@@ -239,11 +240,13 @@ def build_cloud_bundle(
     readme = output_dir / "README.md"
     manifest_tmp = output_dir / f".{BUNDLE_MANIFEST_FILENAME}.tmp"
     readme_tmp = output_dir / ".README.md.tmp"
+    # The identity comes from the exact bytes written here, so a later reader
+    # that sees a replaced manifest of the same shape cannot claim this export
+    # produced it.
+    manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    manifest_identity = bundle_manifest_identity(manifest, manifest_bytes)
     try:
-        manifest_tmp.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        manifest_tmp.write_bytes(manifest_bytes)
     except OSError as exc:
         shutil.rmtree(stage_dir, ignore_errors=True)
         raise CloudBundleError(f"unable to write bundle manifest {manifest_tmp}: {exc}") from exc
@@ -265,6 +268,7 @@ def build_cloud_bundle(
         "manifest": str(manifest_path),
         "readme": str(readme),
         "included_reports": included_reports,
+        "manifest_identity": manifest_identity,
         "event_count": len(manifest["events"]),
         "event_types": event_type_counts(manifest["events"]),
         "productivity_window_event_count": productivity_window_event_count,

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +108,37 @@ def checkout_provenance(repo_path: Path, *, required: bool = False) -> dict[str,
         "clean": not dirty_entries,
         "dirty_entry_count": len(dirty_entries),
     }
+
+
+@contextmanager
+def index_mutation_guard(repo_path: Path) -> Iterator[Path]:
+    """Hold the worktree's Git index lock for the duration of the block.
+
+    Sampling the checkout before and after a read cannot detect a checkout that
+    moves away and back again in between. Holding the lock Git itself takes for
+    any index mutation makes checkouts, merges, and resets fail while the
+    measured data is read, so accepted evidence is attributable to one commit.
+    """
+
+    lock_path = Path(_required_git_output(repo_path, ["rev-parse", "--git-path", "index.lock"]).strip())
+    if not lock_path.is_absolute():
+        lock_path = repo_path / lock_path
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except OSError as exc:
+        raise CloudBundleError(
+            f"unable to hold the git index lock for {repo_path}: {exc}"
+        ) from exc
+    try:
+        os.close(descriptor)
+        yield lock_path
+    finally:
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise CloudBundleError(
+                f"unable to release the git index lock for {repo_path}: {exc}"
+            ) from exc
 
 
 def require_checkout_provenance(
