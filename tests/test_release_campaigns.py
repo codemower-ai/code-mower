@@ -10855,6 +10855,95 @@ class CampaignUploadTests(unittest.TestCase):
 
         self.assertEqual(before, self._stored_bytes())
 
+    def _write_install_profile(
+        self, *, team_id: str, install_id: str, stem: str = "install-a"
+    ) -> Path:
+        """Write one stored install profile the resolver can select by install id."""
+        cloud = release_campaigns._load_cloud_client()
+        lines = [f"{cloud.DEFAULT_TOKEN_ENV}={self.FAKE_CREDENTIAL}"]
+        if team_id:
+            lines.append(f"CODE_MOWER_CLOUD_TEAM_ID={team_id}")
+        if install_id:
+            lines.append(f"CODE_MOWER_INSTALL_ID={install_id}")
+        path = self.token_dir / f"{stem}.env"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_matching_stored_profile_previews_and_uploads(self) -> None:
+        """The selected profile's own identities authorize the identified payload."""
+        self._seed(complete=("claude",))
+        self._write_install_profile(team_id="team-a", install_id="install-a")
+        post = self._capturing_post()
+        with self._cloud_env(), mock.patch.object(
+            release_campaigns._load_cloud_client(), "post_upload_payload", post
+        ):
+            code, preview, _, error = self._upload(install_id="install-a", team_id="team-a")
+            self.assertEqual(code, 0, error)
+            applied_code, applied, _, applied_error = self._upload(
+                install_id="install-a", team_id="team-a", yes=True
+            )
+
+        assert preview is not None and applied is not None
+        self.assertEqual(preview["status"], "dry_run")
+        self.assertEqual(applied_code, 0, applied_error)
+        self.assertEqual(applied["status"], "uploaded")
+        self.assertEqual(len(post.posted), 1)
+        self.assertEqual(post.posted[0]["team_id"], "team-a")
+        self.assertEqual(post.posted[0]["install_id"], "install-a")
+
+    def test_profile_replaced_after_preflight_cannot_preview_or_upload(self) -> None:
+        """A profile swapped while the upload is prepared authorizes nothing.
+
+        The producer resolves the selected profile again once the payload
+        exists, so a replacement carrying different identities -- or no
+        identities at all -- fails closed before any preview or network post.
+        """
+        cloud = release_campaigns._load_cloud_client()
+        replacements = (
+            {"team_id": "other-team", "install_id": "other-install"},
+            {"team_id": "", "install_id": "install-a"},
+            {"team_id": "", "install_id": ""},
+        )
+        for replacement in replacements:
+            for applied in (False, True):
+                with self.subTest(replacement=replacement, applied=applied):
+                    self._seed(complete=("claude",))
+                    self._write_install_profile(team_id="team-a", install_id="install-a")
+                    real_payload = cloud.build_event_upload_payload
+
+                    def _replacing_payload(
+                        *,
+                        _build: Any = real_payload,
+                        _replacement: dict[str, str] = replacement,
+                        **kwargs: Any,
+                    ) -> dict[str, Any]:
+                        built = _build(**kwargs)
+                        self._write_install_profile(**_replacement)
+                        return built
+
+                    post = self._capturing_post()
+                    with self._cloud_env(), mock.patch.object(
+                        cloud, "build_event_upload_payload", _replacing_payload
+                    ), mock.patch.object(cloud, "post_upload_payload", post):
+                        code, result, stdout, error = self._upload(
+                            install_id="install-a", team_id="team-a", yes=applied
+                        )
+
+                    self.assertEqual(code, 1)
+                    self.assertIsNone(result)
+                    self.assertEqual(post.posted, [])
+                    self.assertIn("install profile", error)
+                    self.assertTrue(
+                        "records no" in error or "different" in error, error
+                    )
+                    for protected in (
+                        self.FAKE_CREDENTIAL,
+                        "other-team",
+                        "other-install",
+                        str(self.token_dir),
+                    ):
+                        self.assertNotIn(protected, error + stdout)
+
     def test_malformed_stored_result_is_a_bounded_error(self) -> None:
         """A completed provider with an unusable result stops the upload; nothing partial posts."""
         self._seed(complete=("claude", "codex"))

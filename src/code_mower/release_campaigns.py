@@ -5465,6 +5465,27 @@ def campaign_upload(
         team_id=resolved_team_id,
         install_id=resolved_install_id,
     )
+    # The install profile is resolved again from disk and the payload's own
+    # identity is validated against it, so a profile replaced after the earlier
+    # preflight cannot preview or post this payload with another install's token.
+    upload_resolution = cloud.resolve_cloud_token(
+        token_env=resolved_token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+    )
+    if cloud.resolve_cloud_endpoint(requested_endpoint, upload_resolution) != (
+        resolved_endpoint
+    ):
+        raise cloud.CloudBundleError(
+            "the resolved cloud endpoint changed while the campaign upload was "
+            "prepared; re-select the install profile and retry"
+        )
+    cloud.require_cloud_profile_identity(
+        team_id=str(payload.get("team_id") or ""),
+        install_id=str(payload.get("install_id") or ""),
+        resolution=upload_resolution,
+    )
     if not yes:
         summary["upload"] = cloud.build_dogfood_dry_run_preview(
             endpoint=resolved_endpoint,
@@ -5473,7 +5494,7 @@ def campaign_upload(
         return summary
     token = cloud.require_upload_token(
         endpoint=resolved_endpoint,
-        resolution=token_resolution,
+        resolution=upload_resolution,
         local_endpoint=cloud.is_local_http_endpoint(resolved_endpoint),
     )
     try:

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -110,35 +112,60 @@ def checkout_provenance(repo_path: Path, *, required: bool = False) -> dict[str,
     }
 
 
-@contextmanager
-def index_mutation_guard(repo_path: Path) -> Iterator[Path]:
-    """Hold the worktree's Git index lock for the duration of the block.
+def _set_tree_permissions(root: Path, *, writable: bool) -> None:
+    """Remove or restore write permission for a whole private directory tree."""
 
-    Sampling the checkout before and after a read cannot detect a checkout that
-    moves away and back again in between. Holding the lock Git itself takes for
-    any index mutation makes checkouts, merges, and resets fail while the
-    measured data is read, so accepted evidence is attributable to one commit.
+    directory_mode = 0o700 if writable else 0o500
+    file_mode = 0o600 if writable else 0o400
+    paths = [root, *sorted(root.rglob("*"), reverse=True)]
+    for path in paths:
+        try:
+            if path.is_symlink():
+                continue
+            os.chmod(path, directory_mode if path.is_dir() else file_mode)
+        except OSError:
+            if not writable:
+                raise CloudBundleError(
+                    "unable to make the private exact-commit source read-only"
+                ) from None
+
+
+@contextmanager
+def materialized_commit_source(repo_path: Path, commit_sha: str) -> Iterator[Path]:
+    """Yield a private read-only checkout materialized from an exact commit.
+
+    Tracked and source-derived data is read from Git objects in a private
+    location rather than from the caller's mutable worktree, so a tracked file
+    that is changed and restored while the data is read cannot be observed at
+    all: the only state reachable during collection is the required commit.
+    The materialization is made non-writable for the collection interval, so an
+    attempt to mutate it fails, and it is removed on every exit.
     """
 
-    lock_path = Path(_required_git_output(repo_path, ["rev-parse", "--git-path", "index.lock"]).strip())
-    if not lock_path.is_absolute():
-        lock_path = repo_path / lock_path
+    expected = commit_sha.strip().lower()
+    if not COMMIT_SHA_PATTERN.match(expected):
+        raise CloudBundleError("expected head sha must be an exact 40-character commit")
+    temp_root = Path(tempfile.mkdtemp(prefix="code-mower-exact-commit-"))
+    source = temp_root / "source"
     try:
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-    except OSError as exc:
-        raise CloudBundleError(
-            f"unable to hold the git index lock for {repo_path}: {exc}"
-        ) from exc
-    try:
-        os.close(descriptor)
-        yield lock_path
-    finally:
-        try:
-            lock_path.unlink(missing_ok=True)
-        except OSError as exc:
+        # A local clone reads the original repository's objects and writes
+        # nothing into it, and the private clone cannot be moved to another
+        # commit once it is read-only.
+        _required_git_output(
+            repo_path,
+            ["clone", "--quiet", "--shared", "--no-checkout", str(repo_path), str(source)],
+        )
+        _required_git_output(source, ["checkout", "--quiet", "--detach", expected])
+        materialized = checkout_provenance(source, required=True)
+        if materialized.get("head_sha") != expected or not materialized.get("clean"):
             raise CloudBundleError(
-                f"unable to release the git index lock for {repo_path}: {exc}"
-            ) from exc
+                "unable to materialize a clean private checkout of the required commit"
+            )
+        _set_tree_permissions(source, writable=False)
+        yield source
+    finally:
+        _set_tree_permissions(temp_root, writable=True)
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def require_checkout_provenance(

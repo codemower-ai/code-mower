@@ -5,7 +5,7 @@ import json
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
@@ -717,7 +717,7 @@ def _board_snapshot_dry_run(monkeypatch, repo_path: Path, output_dir: Path, **kw
         source="unit-test",
         endpoint="http://localhost:3000/api/ingest",
         token_env="CODE_MOWER_TEST_BOARD_TOKEN",
-        yes=False,
+        yes=kwargs.pop("yes", False),
         timeout=0.1,
         **kwargs,
     )
@@ -837,11 +837,11 @@ def test_board_snapshot_records_and_enforces_source_git_provenance(monkeypatch, 
 def test_board_snapshot_rejects_a_checkout_that_moves_during_collection(monkeypatch, tmp_path) -> None:
     repo_path = tmp_path / "checkout"
     head_sha = _init_git_checkout(repo_path)
-    index_mutations: list[int] = []
+    mutations: list[int] = []
 
     def moving_status(_config):
         (repo_path / "tracked.txt").write_text("changed\n", encoding="utf-8")
-        index_mutations.append(
+        mutations.append(
             subprocess.run(
                 ["git", "add", "tracked.txt"],
                 cwd=repo_path,
@@ -859,59 +859,100 @@ def test_board_snapshot_rejects_a_checkout_that_moves_during_collection(monkeypa
             require_head_sha=head_sha,
             require_clean=True,
         )
-    assert index_mutations and all(code != 0 for code in index_mutations)
+    assert mutations == [0]
 
 
-def test_board_snapshot_blocks_an_a_b_a_checkout_during_collection(monkeypatch, tmp_path) -> None:
+def test_board_snapshot_reads_only_the_materialized_exact_commit(monkeypatch, tmp_path) -> None:
     repo_path = tmp_path / "checkout"
-    first_sha = _init_git_checkout(repo_path)
-    (repo_path / "tracked.txt").write_text("two\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.txt"], cwd=repo_path, check=True)
-    subprocess.run(["git", "commit", "--quiet", "-m", "second"], cwd=repo_path, check=True)
-    second_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo_path,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    subprocess.run(["git", "checkout", "--quiet", first_sha], cwd=repo_path, check=True)
+    head_sha = _init_git_checkout(repo_path)
+    sources: list[Path] = []
+    observed: list[str] = []
+    write_failures: list[str] = []
+    metadata_paths: list[dict[str, str]] = []
 
-    switches: list[int] = []
-
-    def switching_status(_config):
-        for target in (second_sha, first_sha):
-            switches.append(
-                subprocess.run(
-                    ["git", "checkout", "--quiet", target],
-                    cwd=repo_path,
-                    capture_output=True,
-                ).returncode
-            )
+    def substituting_status(config):
+        tracked = repo_path / "tracked.txt"
+        restored = tracked.read_text(encoding="utf-8")
+        # A tracked file is changed and restored directly in the original
+        # checkout, which no index lock prevents, while the data is read.
+        tracked.write_text("substituted\n", encoding="utf-8")
+        source = Path(config.repo_path)
+        sources.append(source)
+        observed.append((source / "tracked.txt").read_text(encoding="utf-8"))
+        metadata_paths.append(cloud_operations.board.resolved_metadata_paths(config))
+        try:
+            (source / "tracked.txt").write_text("mutated\n", encoding="utf-8")
+        except OSError as exc:
+            write_failures.append(type(exc).__name__)
+        tracked.write_text(restored, encoding="utf-8")
         return _board_snapshot_fixture()
 
     result = _board_snapshot_dry_run(
         monkeypatch,
         repo_path,
-        tmp_path / "aba",
-        status_payload=switching_status,
-        require_head_sha=first_sha,
+        tmp_path / "materialized",
+        status_payload=substituting_status,
+        require_head_sha=head_sha,
         require_clean=True,
     )
-    # Neither switch can run while the snapshot is read, so the accepted
-    # evidence cannot describe data collected from the second commit.
-    assert switches and all(code != 0 for code in switches)
-    assert result["git"]["head_sha"] == first_sha
-    assert (
-        subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_path,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        == first_sha
+
+    # Collection can only observe the exact materialized commit, never the
+    # substituted content that existed in the original at the same moment.
+    assert observed == ["one\n"]
+    assert sources and sources[0] != repo_path
+    # Mutating the private materialization is refused for the whole interval.
+    assert write_failures == ["PermissionError"]
+    # The live Code Mower metadata inputs stay bound to the original checkout.
+    assert metadata_paths and all(
+        str(repo_path) in path for path in metadata_paths[0].values()
     )
+    assert result["git"] == {
+        "available": True,
+        "head_sha": head_sha,
+        "clean": True,
+        "dirty_entry_count": 0,
+    }
+    # The private materialization is removed once collection is over.
+    assert not sources[0].exists()
+
+
+def test_board_snapshot_materialization_is_cleaned_up_after_a_failure(monkeypatch, tmp_path) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path)
+    sources: list[Path] = []
+
+    def failing_status(config):
+        sources.append(Path(config.repo_path))
+        raise CloudBundleError("collection failed")
+
+    with assert_raises(CloudBundleError):
+        _board_snapshot_dry_run(
+            monkeypatch,
+            repo_path,
+            tmp_path / "failed",
+            status_payload=failing_status,
+            require_head_sha=head_sha,
+            require_clean=True,
+        )
+    assert sources and not sources[0].exists()
+
+
+def test_non_strict_board_snapshot_reads_the_original_checkout(monkeypatch, tmp_path) -> None:
+    repo_path = tmp_path / "checkout"
+    _init_git_checkout(repo_path)
+    sources: list[Path] = []
+
+    def recording_status(config):
+        sources.append(Path(config.repo_path))
+        return _board_snapshot_fixture()
+
+    _board_snapshot_dry_run(
+        monkeypatch,
+        repo_path,
+        tmp_path / "plain",
+        status_payload=recording_status,
+    )
+    assert sources == [repo_path.resolve()]
 
 
 def test_board_snapshot_rejects_a_manifest_replaced_after_export(monkeypatch, tmp_path) -> None:
@@ -986,7 +1027,8 @@ def test_resolve_cloud_identity_rejects_a_profile_that_disagrees_with_explicit_v
             resolution=resolution,
         )
 
-    # A profile that omits an identity leaves the explicit value in force.
+    # A selected profile that records no team identity cannot authorize an
+    # explicitly identified payload with its own token.
     partial = CloudTokenResolution(
         status="ok",
         token_env="CODE_MOWER_CLOUD_TOKEN",
@@ -994,11 +1036,43 @@ def test_resolve_cloud_identity_rejects_a_profile_that_disagrees_with_explicit_v
         token="cmw_live_secret",
         install_id="stored-install",
     )
+    with assert_raises(CloudBundleError):
+        resolve_cloud_identity(
+            team_id="explicit-team",
+            install_id="stored-install",
+            resolution=partial,
+        )
+    identityless = CloudTokenResolution(
+        status="ok",
+        token_env="CODE_MOWER_CLOUD_TOKEN",
+        source="install_id",
+        token="cmw_live_secret",
+    )
+    with assert_raises(CloudBundleError):
+        resolve_cloud_identity(
+            team_id="explicit-team",
+            install_id="explicit-install",
+            resolution=identityless,
+        )
+    # An anonymous caller asserting no identity keeps working.
+    assert resolve_cloud_identity(
+        team_id="",
+        install_id="",
+        resolution=identityless,
+    ) == ("", "")
+    # A legacy environment-sourced token is not a selected profile, so it still
+    # leaves explicit values in force.
+    legacy = CloudTokenResolution(
+        status="ok",
+        token_env="CODE_MOWER_CLOUD_TOKEN",
+        source="env",
+        token="cmw_live_secret",
+    )
     assert resolve_cloud_identity(
         team_id="explicit-team",
-        install_id="stored-install",
-        resolution=partial,
-    ) == ("explicit-team", "stored-install")
+        install_id="explicit-install",
+        resolution=legacy,
+    ) == ("explicit-team", "explicit-install")
 
 
 def test_board_snapshot_refuses_to_preview_a_conflicting_profile_identity(
@@ -1023,6 +1097,175 @@ def test_board_snapshot_refuses_to_preview_a_conflicting_profile_identity(
     with assert_raises(CloudBundleError):
         _board_snapshot_dry_run(monkeypatch, tmp_path, output_dir)
     assert not output_dir.exists()
+
+
+def _board_resolution(team_id: str = "", install_id: str = "") -> CloudTokenResolution:
+    return CloudTokenResolution(
+        status="ok",
+        token_env="CODE_MOWER_TEST_BOARD_TOKEN",
+        source="install_id",
+        token="cmw_live_board_secret",
+        endpoint="http://localhost:3000/api/ingest",
+        team_id=team_id,
+        install_id=install_id,
+    )
+
+
+def _board_profile_sequence(monkeypatch, *resolutions: CloudTokenResolution) -> None:
+    """Resolve the stored install profile differently on each producer call."""
+
+    remaining = list(resolutions)
+
+    def _resolve(**_kwargs):
+        resolution = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        return resolution, "http://localhost:3000/api/ingest"
+
+    monkeypatch.setattr(cloud_operations, "_resolve_upload_profile", _resolve)
+
+
+def _refusing_post(*_args, **_kwargs):
+    raise AssertionError("must refuse before any network upload")
+
+
+def test_board_snapshot_accepts_a_stable_matching_profile(monkeypatch, tmp_path) -> None:
+    matching = _board_resolution(team_id="team", install_id="install")
+    _board_profile_sequence(monkeypatch, matching, matching)
+    posted: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        cloud_operations,
+        "post_upload_payload",
+        lambda *, payload, endpoint, token, timeout: (
+            posted.append(payload) or {"status": 200, "endpoint": endpoint}
+        ),
+    )
+
+    preview = _board_snapshot_dry_run(monkeypatch, tmp_path, tmp_path / "preview")
+    assert preview["status"] == "dry_run"
+    assert posted == []
+
+    applied = _board_snapshot_dry_run(monkeypatch, tmp_path, tmp_path / "applied", yes=True)
+    assert applied["status"] == "uploaded"
+    assert len(posted) == 1
+    assert posted[0]["team_id"] == "team"
+    assert posted[0]["install_id"] == "install"
+
+
+def test_board_snapshot_rejects_a_profile_replaced_after_preflight(monkeypatch, tmp_path) -> None:
+    matching = _board_resolution(team_id="team", install_id="install")
+    replacements = (
+        _board_resolution(team_id="other-team", install_id="other-install"),
+        _board_resolution(install_id="install"),
+        _board_resolution(),
+    )
+    monkeypatch.setattr(cloud_operations, "post_upload_payload", _refusing_post)
+
+    for index, replacement in enumerate(replacements):
+        for applied in (False, True):
+            _board_profile_sequence(monkeypatch, matching, replacement)
+            output_dir = tmp_path / f"replaced-{index}-{applied}"
+            with assert_raises(CloudBundleError) as caught:
+                _board_snapshot_dry_run(monkeypatch, tmp_path, output_dir, yes=applied)
+            message = str(caught.exception)
+            assert "profile" in message
+            # Nothing protected reaches the error text.
+            for secret in ("cmw_live_board_secret", "localhost:3000", "other-team", "other-install"):
+                assert secret not in message
+
+
+def _generic_upload_bundle(tmp_path: Path, *, team_id: str, install_id: str) -> Path:
+    output_dir = tmp_path / f"bundle-{team_id or 'anon'}-{install_id or 'anon'}"
+    build_cloud_bundle(
+        reports=[],
+        events=[
+            {
+                "event_type": "dogfood_upload",
+                "repo_slug": "owner/repo",
+                "dimensions": {"lane": "unit-test"},
+            }
+        ],
+        output_dir=output_dir,
+        repo_slug="owner/repo",
+        team_id=team_id,
+        install_id=install_id,
+        anonymous=False,
+    )
+    return output_dir
+
+
+def _run_generic_upload(
+    monkeypatch, bundle_dir: Path, *, resolution, applied: bool
+) -> tuple[int, str]:
+    monkeypatch.delenv("CODE_MOWER_CLOUD_TOKEN", raising=False)
+    monkeypatch.delenv("CODE_MOWER_CLOUD_ENDPOINT", raising=False)
+    monkeypatch.setattr(cloud_cli, "resolve_cloud_token", lambda **_kwargs: resolution)
+    argv = [
+        "upload",
+        str(bundle_dir),
+        "--endpoint",
+        "http://localhost:3000/api/ingest",
+        "--json",
+    ]
+    if applied:
+        argv.append("--yes")
+    stderr = StringIO()
+    with redirect_stdout(StringIO()), redirect_stderr(stderr):
+        return cloud_cli.main(argv), stderr.getvalue()
+
+
+def test_generic_cloud_upload_accepts_a_matching_stored_profile(monkeypatch, tmp_path) -> None:
+    bundle_dir = _generic_upload_bundle(tmp_path, team_id="team", install_id="install")
+    posted: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        cloud_cli,
+        "post_upload_payload",
+        lambda *, payload, endpoint, token, timeout: (
+            posted.append(payload) or {"status": 200, "endpoint": endpoint}
+        ),
+    )
+    resolution = _board_resolution(team_id="team", install_id="install")
+
+    assert _run_generic_upload(
+        monkeypatch, bundle_dir, resolution=resolution, applied=False
+    ) == (0, "")
+    assert posted == []
+    assert _run_generic_upload(
+        monkeypatch, bundle_dir, resolution=resolution, applied=True
+    ) == (0, "")
+    assert len(posted) == 1
+
+
+def test_generic_cloud_upload_rejects_a_substituted_stored_profile(monkeypatch, tmp_path) -> None:
+    bundle_dir = _generic_upload_bundle(tmp_path, team_id="team", install_id="install")
+    monkeypatch.setattr(cloud_cli, "post_upload_payload", _refusing_post)
+
+    for resolution in (
+        _board_resolution(team_id="other-team", install_id="other-install"),
+        _board_resolution(install_id="install"),
+        _board_resolution(),
+    ):
+        for applied in (False, True):
+            code, stderr = _run_generic_upload(
+                monkeypatch, bundle_dir, resolution=resolution, applied=applied
+            )
+            assert code == 1
+            assert "profile" in stderr
+            for secret in (
+                "cmw_live_board_secret",
+                "localhost:3000",
+                "other-team",
+                "other-install",
+            ):
+                assert secret not in stderr
+
+
+def test_generic_cloud_upload_keeps_anonymous_bundles_working(monkeypatch, tmp_path) -> None:
+    bundle_dir = _generic_upload_bundle(tmp_path, team_id="", install_id="")
+    monkeypatch.setattr(cloud_cli, "post_upload_payload", _refusing_post)
+    resolution = _board_resolution()
+
+    assert _run_generic_upload(
+        monkeypatch, bundle_dir, resolution=resolution, applied=False
+    ) == (0, "")
 
 
 def test_cloud_repo_slug_from_remote_supports_common_github_forms() -> None:

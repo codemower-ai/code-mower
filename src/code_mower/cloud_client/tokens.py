@@ -391,20 +391,60 @@ def resolve_cloud_identity(
 
     requested_team = team_id or os.environ.get(DEFAULT_TEAM_ID_ENV, "")
     requested_install = install_id or os.environ.get(DEFAULT_INSTALL_ID_ENV, "")
-    for label, requested, stored in (
-        ("team", requested_team, resolution.team_id),
-        ("install", requested_install, resolution.install_id),
+    require_cloud_profile_identity(
+        team_id=requested_team,
+        install_id=requested_install,
+        resolution=resolution,
+    )
+    return (
+        requested_team or resolution.team_id,
+        requested_install or resolution.install_id,
+    )
+
+
+def require_cloud_profile_identity(
+    *,
+    team_id: str,
+    install_id: str,
+    resolution: CloudTokenResolution,
+) -> None:
+    """Require an asserted identity to match the selected stored profile.
+
+    An identity that is being asserted -- by a flag, the environment, or an
+    already exported bundle -- is only authorized by a selected profile that
+    records the same identity. A profile selected by install id must carry both
+    identity fields, so a replacement profile that records no identity cannot
+    authorize an explicitly identified payload with its own token.
+    """
+
+    if not (team_id or install_id):
+        return
+    if resolution.source == "install_id":
+        missing = [
+            label
+            for label, stored in (
+                ("team", resolution.team_id),
+                ("install", resolution.install_id),
+            )
+            if not stored
+        ]
+        if missing:
+            raise CloudBundleError(
+                "the selected cloud install profile records no "
+                f"{' or '.join(missing)} identity, so it cannot authorize an "
+                "identified upload; re-run `code-mower cloud setup` for this "
+                "install or re-select the profile"
+            )
+    for label, asserted, stored in (
+        ("team", team_id, resolution.team_id),
+        ("install", install_id, resolution.install_id),
     ):
-        if requested and stored and requested != stored:
+        if asserted and stored and asserted != stored:
             raise CloudBundleError(
                 f"the resolved cloud install profile reports a different {label} "
                 "identity than the one requested; re-select the profile or drop "
                 "the explicit value"
             )
-    return (
-        requested_team or resolution.team_id,
-        requested_install or resolution.install_id,
-    )
 
 
 def require_upload_token(

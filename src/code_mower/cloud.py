@@ -45,6 +45,7 @@ if __package__ in {None, ""}:
         read_token_file as _read_token_file,
         render_bundle_readme,
         render_cloud_doctor_text,
+        require_cloud_profile_identity,
         require_upload_token,
         resolve_cloud_endpoint,
         resolve_cloud_token,
@@ -102,6 +103,7 @@ else:  # pragma: no cover - exercised after package extraction.
         read_token_file as _read_token_file,
         render_bundle_readme,
         render_cloud_doctor_text,
+        require_cloud_profile_identity,
         require_upload_token,
         resolve_cloud_endpoint,
         resolve_cloud_token,
@@ -155,6 +157,7 @@ __all__ = [
     "build_cloud_bundle",
     "build_upload_payload",
     "post_upload_payload",
+    "require_cloud_profile_identity",
     "require_upload_token",
     "render_bundle_readme",
     "render_setup_env",
@@ -815,6 +818,14 @@ def main(argv: list[str] | None = None) -> int:
                 install_id=args.install_id,
             )
             resolved_endpoint = resolve_cloud_endpoint(args.endpoint, token_resolution)
+            # The bundle's own identity is checked against the profile that was
+            # just resolved, so a profile swapped after the bundle was exported
+            # cannot authorize this payload with a different install's token.
+            require_cloud_profile_identity(
+                team_id=str(payload.get("team_id") or ""),
+                install_id=str(payload.get("install_id") or ""),
+                resolution=token_resolution,
+            )
             dry_run = args.dry_run or not args.yes
             if dry_run:
                 preview = {

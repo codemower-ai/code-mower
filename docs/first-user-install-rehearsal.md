@@ -315,6 +315,19 @@ publication runs with
 `--ref v1.4.0`; never substitute mutable `main`, because the TestPyPI
 and production PyPI builds must check out identical source.
 
+Both dispatches must name the exact release commit, because the workflow
+requires an `expected_sha` input and refuses to build or publish anything else.
+Bind it once from the peeled `v1.4.0` tag and assert its shape before
+dispatching, in the same shell that runs both commands:
+
+```bash
+set -euo pipefail
+RELEASE_REPO=codemower-ai/code-mower
+RELEASE_SHA="$(git ls-remote "https://github.com/$RELEASE_REPO.git" \
+  'refs/tags/v1.4.0^{}' | awk '{print $1}')"
+printf '%s' "$RELEASE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+```
+
 First, run `release.yml` for TestPyPI only:
 
 ```bash
@@ -322,7 +335,8 @@ gh workflow run release.yml \
   --repo codemower-ai/code-mower \
   --ref v1.4.0 \
   -f publish_testpypi=true \
-  -f publish_pypi=false
+  -f publish_pypi=false \
+  -f expected_sha="$RELEASE_SHA"
 ```
 
 After that workflow run finishes, record its workflow run link and qualify the
@@ -348,7 +362,8 @@ gh workflow run release.yml \
   --repo codemower-ai/code-mower \
   --ref v1.4.0 \
   -f publish_testpypi=false \
-  -f publish_pypi=true
+  -f publish_pypi=true \
+  -f expected_sha="$RELEASE_SHA"
 ```
 
 After that workflow run finishes, record its workflow run link and rehearse the

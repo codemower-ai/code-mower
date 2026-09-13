@@ -101,6 +101,22 @@ def _campaigns_path(config: BoardConfig) -> Path:
     return Path(config.repo_path) / DEFAULT_CAMPAIGNS_RELATIVE_PATH
 
 
+def resolved_metadata_paths(config: BoardConfig) -> dict[str, str]:
+    """Return the local metadata input paths one config resolves to.
+
+    A caller that collects against a different source tree can bind these
+    explicitly, so the live Code Mower metadata inputs stay the ones it means
+    rather than following the collection source's repo path.
+    """
+
+    return {
+        "store_path": str(_store_path(config)),
+        "spend_path": str(_spend_path(config)),
+        "agent_adapters_path": str(_agent_adapters_path(config)),
+        "campaigns_path": str(_campaigns_path(config)),
+    }
+
+
 def _is_loopback(host: str) -> bool:
     return host in {"localhost", "::1"} or host.startswith("127.")
 

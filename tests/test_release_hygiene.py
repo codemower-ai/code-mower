@@ -9493,6 +9493,87 @@ def main():
                     [f"{action['id']} omits -f expected_sha="],
                 )
 
+    def test_public_release_docs_dispatch_every_required_workflow_input(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        docs = {
+            relative_path: (ROOT / relative_path).read_text(encoding="utf-8")
+            for relative_path in release_readiness.RELEASE_DOC_PATHS
+        }
+        documented = {
+            relative_path: release_readiness._documented_dispatch_commands(doc)
+            for relative_path, doc in docs.items()
+        }
+
+        self.assertEqual(
+            release_readiness._required_dispatch_inputs(workflow), ["expected_sha"]
+        )
+        self.assertEqual(len(documented["docs/first-user-install-rehearsal.md"]), 2)
+        self.assertEqual(len(documented["docs/pypi-release.md"]), 3)
+        self.assertEqual(
+            release_readiness._incomplete_documented_dispatches(workflow, docs), []
+        )
+        for relative_path, commands in documented.items():
+            for position, command in enumerate(commands, start=1):
+                with self.subTest(doc=relative_path, dispatch=position):
+                    self.assertIn('-f expected_sha="$RELEASE_SHA"', command)
+
+    def test_install_rehearsal_binds_the_exact_release_sha_before_dispatching(
+        self,
+    ) -> None:
+        doc = (ROOT / "docs" / "first-user-install-rehearsal.md").read_text(
+            encoding="utf-8"
+        )
+        binding = "RELEASE_SHA=\"$(git ls-remote \"https://github.com/$RELEASE_REPO.git\" \\"
+        assertion = "printf '%s' \"$RELEASE_SHA\" | grep -Eq '^[0-9a-f]{40}$'"
+
+        self.assertIn(binding, doc)
+        self.assertIn(assertion, doc)
+        self.assertLess(doc.index(assertion), doc.index("gh workflow run release.yml"))
+
+    def test_release_readiness_rejects_documented_dispatches_without_expected_sha(
+        self,
+    ) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        for relative_path in (
+            "docs/first-user-install-rehearsal.md",
+            "docs/pypi-release.md",
+        ):
+            with self.subTest(doc=relative_path):
+                docs = {
+                    path: (ROOT / path).read_text(encoding="utf-8")
+                    for path in release_readiness.RELEASE_DOC_PATHS
+                }
+                for pattern in (
+                    ' \\\n  -f expected_sha="$RELEASE_SHA"',
+                    ' -f expected_sha="$RELEASE_SHA"',
+                ):
+                    if pattern in docs[relative_path]:
+                        docs[relative_path] = docs[relative_path].replace(
+                            pattern, "", 1
+                        )
+                        break
+                problems = release_readiness._incomplete_documented_dispatches(
+                    workflow, docs
+                )
+
+                self.assertEqual(
+                    problems, [f"{relative_path} dispatch 1 omits -f expected_sha="]
+                )
+                with mock.patch.object(
+                    release_readiness, "_release_docs", return_value=docs
+                ):
+                    payload = release_readiness.render_release_readiness(ROOT)
+                checks = {check["id"]: check for check in payload["checks"]}
+
+                self.assertEqual(
+                    checks["release-workflow-next-actions-dispatchable"]["status"],
+                    "fail",
+                )
+
     def _run_release_assets_gate(
         self, mutate: Callable[[Path], None] | None = None
     ) -> subprocess.CompletedProcess:

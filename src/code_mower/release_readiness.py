@@ -1202,11 +1202,7 @@ def _incomplete_dispatch_actions(
     command must supply every input the workflow marks required.
     """
 
-    required_inputs = sorted(
-        name
-        for name, spec in _workflow_dispatch_inputs(workflow).items()
-        if isinstance(spec, dict) and spec.get("required") is True
-    )
+    required_inputs = _required_dispatch_inputs(workflow)
     problems: list[str] = []
     for action in next_actions:
         command = str(action.get("command") or "")
@@ -1217,6 +1213,56 @@ def _incomplete_dispatch_actions(
             for name in required_inputs
             if f"-f {name}=" not in command
         )
+    return problems
+
+
+def _required_dispatch_inputs(workflow: str) -> list[str]:
+    return sorted(
+        name
+        for name, spec in _workflow_dispatch_inputs(workflow).items()
+        if isinstance(spec, dict) and spec.get("required") is True
+    )
+
+
+def _documented_dispatch_commands(doc: str) -> list[str]:
+    """Return every documented dispatch command, joining continuation lines."""
+
+    commands: list[str] = []
+    lines = doc.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if RELEASE_WORKFLOW_DISPATCH_COMMAND not in line:
+            index += 1
+            continue
+        command = line.strip()
+        while command.endswith("\\") and index + 1 < len(lines):
+            index += 1
+            command = f"{command[:-1].strip()} {lines[index].strip()}"
+        commands.append(command)
+        index += 1
+    return commands
+
+
+def _incomplete_documented_dispatches(
+    workflow: str, docs: dict[str, str]
+) -> list[str]:
+    """Report documented workflow dispatches missing a required input.
+
+    Public release and install guidance is followed verbatim, so a documented
+    command that the workflow rejects at submission blocks the release exactly
+    like a broken generated next action.
+    """
+
+    required_inputs = _required_dispatch_inputs(workflow)
+    problems: list[str] = []
+    for relative_path, doc in sorted(docs.items()):
+        for position, command in enumerate(_documented_dispatch_commands(doc), start=1):
+            problems.extend(
+                f"{relative_path} dispatch {position} omits -f {name}="
+                for name in required_inputs
+                if f"-f {name}=" not in command
+            )
     return problems
 
 
@@ -1775,13 +1821,23 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         },
     ]
     incomplete_dispatch_actions = _incomplete_dispatch_actions(workflow, next_actions)
+    incomplete_documented_dispatches = _incomplete_documented_dispatches(workflow, docs)
     checks.append(
         _release_check(
             check_id="release-workflow-next-actions-dispatchable",
             title="Advertised release workflow dispatches supply every required input",
-            status="pass" if not incomplete_dispatch_actions else "fail",
-            evidence="release-readiness next actions, .github/workflows/release.yml",
-            detail={"incomplete_dispatch_actions": incomplete_dispatch_actions},
+            status="pass"
+            if not incomplete_dispatch_actions and not incomplete_documented_dispatches
+            else "fail",
+            evidence=(
+                "release-readiness next actions, "
+                f"{', '.join(RELEASE_DOC_PATHS)}, .github/workflows/release.yml"
+            ),
+            detail={
+                "incomplete_dispatch_actions": incomplete_dispatch_actions,
+                "incomplete_documented_dispatches": incomplete_documented_dispatches,
+                "required_dispatch_inputs": _required_dispatch_inputs(workflow),
+            },
         )
     )
     failed = sum(1 for check in checks if check["status"] == "fail")
