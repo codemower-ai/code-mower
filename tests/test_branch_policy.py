@@ -303,13 +303,24 @@ class GeneratedRunnerTests(unittest.TestCase):
     def _run_codex_lane(self, delivered_listing: str, *, template: str = JIRA_TEMPLATE,
                         repo: str = "owner/repo",
                         title_lookup: str = "printf 'NV: Accessible label\\n'",
+                        existing_branch: str | None = None,
+                        existing_branch_prs: str = "[]",
                         ) -> tuple[subprocess.CompletedProcess, str, dict]:
         """Run the generated codex runner against a fake provider that opens a PR.
 
         ``delivered_listing`` is the ``gh pr list`` JSON returned once the provider
         has "delivered"; it is the delivery-snapshot discovery input under test.
         ``title_lookup`` is the fake ``gh issue view --json title -q .title`` body.
+        ``existing_branch`` makes the fake ``git ls-remote`` advertise that branch
+        as already present on origin and ``existing_branch_prs`` is the ``gh pr
+        list --head`` JSON attached to it.
         """
+        ls_remote = "exit 0"
+        if existing_branch is not None:
+            ls_remote = (
+                f"case \" $* \" in *' refs/heads/{existing_branch} '*) "
+                f"printf '%s\\trefs/heads/%s\\n' \"$(printf 'c%.0s' {{1..40}})\" '{existing_branch}' ;; esac; exit 0"
+            )
         runner, _text = self._generate(_config_with_policy(template, slug=repo))
         repo_dir = repo.replace("/", "__")
         header = _FAKE_GH_DELIVERY_HEADER.replace("owner/repo", repo).replace(
@@ -337,6 +348,8 @@ elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"NV: Accessible label","labels":[{"name":"tier:R"},{"name":"builder:codex"},{"name":"dispatched:codex"}],"assignees":[],"author":{"login":"owner"}}]'
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
   printf '%s\\n' '[]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--state all --head "* ]]; then
+  printf '%s\\n' '__EXISTING_BRANCH_PRS__'
 elif [ "$cmd" = "repo view" ]; then
   printf 'main\\n'
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json title -q"* ]]; then
@@ -351,7 +364,8 @@ else
   printf 'unexpected gh invocation: %s\\n' "$*" >&2
   exit 2
 fi
-""".replace("owner/repo", repo).replace("__TITLE_LOOKUP__", title_lookup),
+""".replace("owner/repo", repo).replace("__TITLE_LOOKUP__", title_lookup)
+                .replace("__EXISTING_BRANCH_PRS__", existing_branch_prs),
                 encoding="utf-8",
             )
             fake_gh.chmod(0o755)
@@ -363,12 +377,15 @@ if [ "${1:-}" = "-C" ] && [ "${3:-}" = "config" ]; then
   printf '%s\\n' 'https://github.com/owner/repo.git'
   exit 0
 fi
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "ls-remote" ]; then
+  __LS_REMOTE__
+fi
 if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--git-path" ]; then
   printf '%s\\n' ".git/${3}"
   exit 0
 fi
 exit 0
-""".replace("owner/repo", repo),
+""".replace("owner/repo", repo).replace("__LS_REMOTE__", ls_remote),
                 encoding="utf-8",
             )
             fake_git.chmod(0o755)
@@ -429,6 +446,178 @@ printf 'fake codex completed\\n'
         self.assertEqual(guard["allowed_branch"], "fix/12-nv-accessible-label")
         self.assertNotIn("allowed_pattern", guard)
         self.assertEqual(guard["allowed_prefixes"], [])
+
+    def test_runner_refuses_an_existing_policy_branch_it_does_not_own(self) -> None:
+        # fix/12-nv-accessible-label is the one name the policy allows for
+        # issue 12, for every builder and for humans alike. When it already
+        # exists on origin, the pull request attached to it decides ownership;
+        # a foreign builder's, a human's, or no attributable pull request at
+        # all refuses before the guard is installed or a provider starts. The
+        # delivery-snapshot filter must not make such a PR look absent.
+        branch = "fix/12-nv-accessible-label"
+        cases = {
+            "foreign_builder_label": [self._pr(70, branch, labels=("builder:claude",))],
+            "foreign_builder_author": [self._pr(70, branch, author="claude[bot]")],
+            "nonlocal_builder": [self._pr(70, branch, labels=("builder:cursor",), author="cursor[bot]")],
+            "human_pr": [self._pr(70, branch)],
+            "human_pr_beside_own": [
+                self._pr(70, branch),
+                self._pr(71, branch, labels=("builder:codex",), author="chatgpt-codex-connector[bot]"),
+            ],
+            "branch_without_pr": [],
+        }
+        for name, prs in cases.items():
+            with self.subTest(case=name):
+                completed, prompt, guard = self._run_codex_lane(
+                    "[]", existing_branch=branch, existing_branch_prs=json.dumps(prs))
+                self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+                self.assertIn(f"refusing issue #12; policy branch {branch} already exists on owner/repo",
+                              completed.stderr)
+                if prs:
+                    self.assertIn("pull request #70 on it is owned by another builder or a human",
+                                  completed.stderr)
+                else:
+                    self.assertIn("no pull request carrying this lane's provenance", completed.stderr)
+                self.assertNotIn("fake codex completed", completed.stdout)
+                self.assertEqual(prompt, "")
+                self.assertEqual(guard, {})
+
+    def test_runner_refuses_an_existing_policy_branch_when_its_pull_requests_cannot_be_read(self) -> None:
+        branch = "fix/12-nv-accessible-label"
+        completed, prompt, guard = self._run_codex_lane(
+            "[]", existing_branch=branch, existing_branch_prs="'; exit 1; echo '")
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("its pull requests could not be read", completed.stderr)
+        self.assertEqual(prompt, "")
+        self.assertEqual(guard, {})
+
+    def test_runner_continues_on_an_existing_policy_branch_this_lane_owns(self) -> None:
+        branch = "fix/12-nv-accessible-label"
+        own = self._pr(77, branch, labels=("builder:codex",), author="chatgpt-codex-connector[bot]")
+        completed, prompt, guard = self._run_codex_lane(
+            json.dumps([own]), existing_branch=branch, existing_branch_prs=json.dumps([own]))
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn(f"policy branch {branch} already exists on owner/repo with this lane's provenance",
+                      completed.stdout)
+        self.assertIn("fake codex completed", completed.stdout)
+        self.assertIn(f"push exactly the branch {branch}", prompt)
+        self.assertEqual(guard["allowed_branch"], branch)
+        self.assertEqual(guard["allowed_prefixes"], [])
+
+    def _run_codex_fix_round(self, pr_json: dict, *, template: str | None = JIRA_TEMPLATE,
+                             ) -> tuple[subprocess.CompletedProcess, dict]:
+        """Run the generated codex runner with ``--target pr:21`` against ``pr_json``."""
+        runner, _text = self._generate(_config_with_policy(template))
+        pr_view = {"headRefOid": "a" * 40, **pr_json}
+        full_view = {"title": "Fix", "body": "Body", "url": "https://github.com/owner/repo/pull/21",
+                     **pr_view}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            work_root = root / "work"
+            (work_root / "codex" / "owner__repo" / ".git" / "hooks").mkdir(parents=True)
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefName,headRefOid,headRepository,labels,author"* ]]; then
+  printf '%s\\n' '__PR_VIEW__'
+elif [ "$cmd" = "pr view" ]; then
+  printf '%s\\n' '__FULL_VIEW__'
+elif [ "$cmd" = "repo view" ]; then
+  printf 'main\\n'
+elif [ "$cmd" = "api --paginate" ]; then
+  printf '%s\\n' '[[]]'
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""".replace("__PR_VIEW__", json.dumps(pr_view)).replace("__FULL_VIEW__", json.dumps(full_view)),
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            fake_git = bin_dir / "git"
+            fake_git.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "config" ]; then
+  printf '%s\\n' 'https://github.com/owner/repo.git'
+  exit 0
+fi
+if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--git-path" ]; then
+  printf '%s\\n' ".git/${3}"
+  exit 0
+fi
+exit 0
+""",
+                encoding="utf-8",
+            )
+            fake_git.chmod(0o755)
+            fake_codex = bin_dir / "codex"
+            fake_codex.write_text("#!/usr/bin/env bash\ncat >/dev/null\nprintf 'fake codex completed\\n'\n",
+                                  encoding="utf-8")
+            fake_codex.chmod(0o755)
+            completed = subprocess.run(
+                [str(runner), "--lane", "codex", "--repo", "owner/repo", "--max-minutes", "1",
+                 "--target", "pr:21"],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "HOME": str(root),
+                    "LANE_WORK_ROOT": str(work_root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    **_LANE_DELIVERY_ENV,
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            guard_path = work_root / "codex" / "owner__repo" / ".git" / "code-mower-lane-guard.json"
+            guard = json.loads(guard_path.read_text(encoding="utf-8")) if guard_path.exists() else {}
+        return completed, guard
+
+    def test_fix_round_refuses_an_off_policy_target_even_with_the_lane_prefix(self) -> None:
+        # codex/issue-12 carries this lane's prefix, label, and author, yet the
+        # repository policy names fix/... as the only acceptable builder branch.
+        # The prefix alone must not authorize the write.
+        off_policy = self._pr(21, "codex/issue-12", labels=("builder:codex",),
+                              author="chatgpt-codex-connector[bot]")
+        completed, guard = self._run_codex_fix_round(off_policy)
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("refusing target PR #21; head branch codex/issue-12 does not match the "
+                      "owner/repo branch policy", completed.stderr)
+        self.assertNotIn("fake codex completed", completed.stdout)
+        self.assertEqual(guard, {})
+
+    def test_fix_round_guards_exactly_the_policy_compliant_target(self) -> None:
+        branch = "fix/12-nv-accessible-label"
+        own = self._pr(21, branch, labels=("builder:codex",), author="chatgpt-codex-connector[bot]")
+        completed, guard = self._run_codex_fix_round(own)
+        self.assertNotIn("refusing", completed.stderr)
+        self.assertIn("fake codex completed", completed.stdout)
+        self.assertEqual(guard["target_pr_branch"], branch)
+        self.assertEqual(guard["allowed_branch"], branch)
+        self.assertEqual(guard["allowed_prefixes"], [])
+        # Provenance is still required on a policy-compliant target.
+        for name, foreign in {
+            "human": self._pr(21, branch),
+            "foreign_builder": self._pr(21, branch, labels=("builder:claude",), author="claude[bot]"),
+        }.items():
+            with self.subTest(case=name):
+                completed, guard = self._run_codex_fix_round(foreign)
+                self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+                self.assertIn(f"head branch {branch} is not owned by this lane", completed.stderr)
+                self.assertEqual(guard, {})
+
+    def test_fix_round_without_a_policy_keeps_the_lane_prefix_target(self) -> None:
+        own = self._pr(21, "codex/issue-12", labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, guard = self._run_codex_fix_round(own, template=None)
+        self.assertNotIn("refusing", completed.stderr)
+        self.assertIn("fake codex completed", completed.stdout)
+        self.assertEqual(guard["target_pr_branch"], "codex/issue-12")
+        self.assertEqual(guard["allowed_branch"], "")
+        self.assertEqual(guard["allowed_prefixes"], ["codex/"])
 
     def test_runner_refuses_a_resolved_branch_that_is_not_a_valid_git_ref(self) -> None:
         # {repo_name}/{issue_number} renders .github/12 for a repository named
