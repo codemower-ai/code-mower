@@ -3264,7 +3264,9 @@ def main(argv: list[str] | None = None) -> int:
         metavar="LANES",
         help=(
             "render the build-loop dispatcher for comma-separated builder lanes "
-            "(for example: codex,claude,cursor); defaults to --dry-run when no mode is set"
+            "(for example: codex,claude,cursor); defaults to --dry-run when no mode "
+            "is set and to the packaged starter config when the checkout has no "
+            "code-mower.yml"
         ),
     )
     parser.add_argument(
@@ -3358,6 +3360,11 @@ def main(argv: list[str] | None = None) -> int:
             _normalize_repo_slug(args.repo, option="--repo") if args.repo else None
         )
         builder_lanes = _parse_builder_lanes(args.builders)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
         config_source = _resolve_config_path(args.config)
         # An explicitly supplied local file keeps its identity even when its
         # basename matches the starter; only a resolved packaged fallback

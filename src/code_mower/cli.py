@@ -121,6 +121,13 @@ def _has_flag(argv: list[str], flag: str) -> bool:
     return any(arg == flag for arg in argv)
 
 
+def _has_option(argv: list[str], option: str) -> bool:
+    return any(arg.split("=", 1)[0] == option for arg in argv)
+
+
+STARTER_FALLBACK_INIT_OPTIONS = ("--interactive", "--with", "--builders")
+
+
 def _resolve_provider_templates_path(path_text: str) -> Path:
     return code_mower_package.resolve_provider_templates_path(path_text)
 
@@ -512,9 +519,13 @@ def _init_main(argv: list[str]) -> int:
         or _has_positional_config(argv, options_with_values)
     ):
         return code_mower_init.main(argv)
+    # A fresh checkout has no code-mower.yml yet, so first-run selection
+    # options render from the packaged starter instead of failing on a
+    # missing file. A tracked code-mower.yml always wins.
     if (
-        _has_flag(argv, "--interactive") or any(arg.split("=", 1)[0] == "--with" for arg in argv)
-    ) and not Path("code-mower.yml").is_file():
+        any(_has_option(argv, option) for option in STARTER_FALLBACK_INIT_OPTIONS)
+        and not Path("code-mower.yml").is_file()
+    ):
         return code_mower_init.main(argv)
     return code_mower_init.main(
         _default_config_args(
