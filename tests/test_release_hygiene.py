@@ -23,6 +23,10 @@ from pathlib import Path
 from unittest import mock
 
 import yaml
+from packaging import __version__ as packaging_version
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -7658,22 +7662,112 @@ def main():
                     ["installed distribution version does not match the requested candidate"],
                 )
 
-    def test_normalized_release_version_equivalence(self) -> None:
+        # Exact local, epoch, and prerelease candidates stay bound to the
+        # metadata pip actually installed.
+        for requested, installed in (
+            ("1.4.0+local", "1.4.0+local"),
+            ("1.4.0+build.01", "1.4.0+build.1"),
+            ("2!1.4.0", "2!1.4.0"),
+            ("1.4.0-rc.1", "1.4.0rc1"),
+        ):
+            with self.subTest(requested=requested, installed=installed):
+                self.assertEqual(
+                    problems(
+                        version=f"code-mower {installed}",
+                        distribution_version=installed,
+                        requested_version=requested,
+                    ),
+                    [],
+                )
+
+    def test_installed_version_binding_rejects_invalid_installed_metadata(self) -> None:
+        problems = code_mower_migration_readiness.installed_version_problems
+
+        self.assertEqual(
+            problems(version="code-mower not-a-version", distribution_version="not-a-version"),
+            ["installed distribution version is not a valid version"],
+        )
+        # An identically malformed requested candidate must not pass binding
+        # merely because the two strings match.
+        self.assertEqual(
+            problems(
+                version="code-mower not-a-version",
+                distribution_version="not-a-version",
+                requested_version="not-a-version",
+            ),
+            [
+                "installed distribution version is not a valid version",
+                "installed distribution version does not match the requested candidate",
+            ],
+        )
+
+    def test_packaging_is_a_declared_runtime_dependency(self) -> None:
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        dependencies = pyproject["project"]["dependencies"]
+        requirements = {
+            canonicalize_name(Requirement(entry).name): Requirement(entry)
+            for entry in dependencies
+        }
+        # The PEP 440 comparisons the release version binding relies on come
+        # from `packaging`, so an installed distribution must carry it.
+        self.assertIn("packaging", requirements)
+        self.assertTrue(
+            requirements["packaging"].specifier.filter([Version(packaging_version)]),
+            f"declared packaging bound rejects the installed {packaging_version}",
+        )
+        # The generated package tree must publish the same runtime contract.
+        generated = tomllib.loads(
+            code_mower_package_content._pyproject_text("code-mower", version=__version__)
+        )
+        self.assertEqual(generated["project"]["dependencies"], dependencies)
+
+    def test_normalized_release_version_matches_packaging_semantics(self) -> None:
         agree = code_mower_migration_readiness.release_versions_agree
         normalized = code_mower_migration_readiness.normalized_release_version
 
-        self.assertTrue(agree("v1.4.0", "1.4.0"))
-        self.assertTrue(agree("1.4.0.0", "1.4.0"))
-        self.assertTrue(agree("1.4.0-rc.1", "1.4.0rc1"))
-        self.assertTrue(agree("1.4.0.post0", "1.4.0-0"))
-        self.assertFalse(agree("1.4.0", "1.4.0rc1"))
-        self.assertFalse(agree("1.4.0", "1.4.0.post1"))
-        self.assertFalse(agree("1.4.0", "1.5.0"))
-        self.assertIsNone(normalized("nonsense"))
-        # Unparseable values fall back to exact text, so nothing is accepted
-        # on the strength of a failed parse.
-        self.assertTrue(agree("nonsense", "nonsense"))
-        self.assertFalse(agree("nonsense", "1.4.0"))
+        equivalent = (
+            ("v1.4.0", "1.4.0"),
+            ("1.4.0.0", "1.4.0"),
+            (" 1.4.0 ", "1.4.0"),
+            ("1.4.0-rc.1", "1.4.0rc1"),
+            ("1.4.0.alpha2", "1.4.0a2"),
+            ("1.4.0.post0", "1.4.0-0"),
+            ("1.4.0-dev1", "1.4.0.dev1"),
+            ("0!1.4.0", "1.4.0"),
+            ("2!1.4.0", "2!1.4.0.0"),
+            ("1.0+01", "1.0+1"),
+            ("1.0+abc.01", "1.0+abc.1"),
+            ("1.4.0+BUILD-1", "1.4.0+build.1"),
+        )
+        for left, right in equivalent:
+            with self.subTest(left=left, right=right):
+                self.assertEqual(Version(left), Version(right))
+                self.assertTrue(agree(left, right))
+
+        different = (
+            ("1.4.0", "1.5.0"),
+            ("1.4.0", "1.4.0rc1"),
+            ("1.4.0", "1.4.0.post1"),
+            ("1.4.0", "1.4.0.dev1"),
+            ("1.4.0", "2!1.4.0"),
+            ("1.4.0", "1.4.0+build.1"),
+            ("1.0+abc.1", "1.0+abc.01a"),
+            ("1.0+1", "1.0+2"),
+        )
+        for left, right in different:
+            with self.subTest(left=left, right=right):
+                self.assertNotEqual(Version(left), Version(right))
+                self.assertFalse(agree(left, right))
+
+        for invalid in ("nonsense", "1.4.0.0.0.nope", "", "==1.4.0", "1.4.0+"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(InvalidVersion):
+                    Version(invalid)
+                self.assertIsNone(normalized(invalid))
+                # An invalid version never agrees, not even with itself.
+                self.assertFalse(agree(invalid, invalid))
+                self.assertFalse(agree(invalid, "1.4.0"))
+                self.assertFalse(agree("1.4.0", invalid))
 
     def test_requested_candidate_version_binds_specs_and_wheels(self) -> None:
         requested = code_mower_migration_install.requested_candidate_version
@@ -7691,6 +7785,70 @@ def main():
             requested("/tmp/dist/other_package-1.4.0-py3-none-any.whl"),
             "",
         )
+
+    def test_requested_candidate_version_accepts_only_exact_requirements(self) -> None:
+        requested = code_mower_migration_install.requested_candidate_version
+
+        # Every exact PEP 440 candidate derives its normalized version, so it
+        # stays bound to the metadata pip installs.
+        accepted = (
+            ("code-mower==1.4.0", "1.4.0"),
+            ("code-mower ==1.4.0", "1.4.0"),
+            ("code_mower==1.4.0", "1.4.0"),
+            ("Code.Mower==1.4.0", "1.4.0"),
+            ("code-mower==v1.4.0", "1.4.0"),
+            ("code-mower==1.4.0.0", "1.4.0.0"),
+            ("code-mower==1.4.0+local", "1.4.0+local"),
+            ("code-mower==1.4.0+build.01", "1.4.0+build.1"),
+            ("code-mower==2!1.4.0", "2!1.4.0"),
+            ("code-mower==1.4.0-rc.1", "1.4.0rc1"),
+        )
+        for spec, version in accepted:
+            with self.subTest(spec=spec):
+                self.assertEqual(requested(spec), version)
+
+        # Anything that does not name exactly one version for this
+        # distribution establishes no candidate at all.
+        rejected = (
+            "code-mower",
+            "code-mower>=1.4.0",
+            "code-mower~=1.4.0",
+            "code-mower!=1.4.0",
+            "code-mower===1.4.0",
+            "code-mower==1.4.*",
+            "code-mower==1.4.0,!=1.4.0",
+            "code-mower>=1.4.0,<1.5.0",
+            "code-mower[coworker]==1.4.0",
+            'code-mower==1.4.0; python_version >= "3.12"',
+            "code-mower==not-a-version",
+            "code-mower==",
+            "==1.4.0",
+            "other-package==1.4.0",
+            "code mower==1.4.0",
+            "code-mower@1.4.0",
+        )
+        for spec in rejected:
+            with self.subTest(spec=spec):
+                self.assertEqual(requested(spec), "")
+
+    def test_exact_name_version_spec_parsing_is_standards_complete(self) -> None:
+        parse = code_mower_migration_install._parse_exact_name_version_spec
+
+        self.assertEqual(parse("Code_Mower==1.4.0"), ("code-mower", "1.4.0"))
+        self.assertEqual(parse("code-mower==1.4.0+build_01"), ("code-mower", "1.4.0+build.1"))
+        for spec in (
+            "code-mower",
+            "code-mower==1.4.*",
+            "code-mower[coworker]==1.4.0",
+            'code-mower==1.4.0; python_version < "3.13"',
+            "code-mower @ https://example.invalid/code_mower-1.4.0-py3-none-any.whl",
+            "code-mower==1.4.0,>=1.4.0",
+            "code-mower==oops",
+            "!!!",
+        ):
+            with self.subTest(spec=spec):
+                with self.assertRaises(ValueError):
+                    parse(spec)
 
     def test_first_user_readiness_scorecard_fails_on_version_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

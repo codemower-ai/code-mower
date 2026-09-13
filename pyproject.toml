@@ -19,7 +19,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Quality Assurance",
 ]
-dependencies = ["PyYAML>=6.0"]
+dependencies = ["PyYAML>=6.0", "packaging>=23.2"]
 
 [project.urls]
 Homepage = "https://github.com/codemower-ai/code-mower"

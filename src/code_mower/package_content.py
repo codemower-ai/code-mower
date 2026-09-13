@@ -38,7 +38,7 @@ def _pyproject_text(package_name: str, *, version: str) -> str:
             'requires-python = ">=3.12"',
             'readme = "README.md"',
             'license = {text = "Apache-2.0"}',
-            'dependencies = ["PyYAML>=6.0"]',
+            'dependencies = ["PyYAML>=6.0", "packaging>=23.2"]',
             "",
             "[project.optional-dependencies]",
             'coworker = ["mcp>=2.2.0,<2.3", "httpx2>=2.12,<3", "PyJWT[crypto]>=2.10,<3", "keyring>=25,<26"]',

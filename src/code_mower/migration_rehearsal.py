@@ -47,6 +47,7 @@ if __package__ in {None, ""}:
         PRIVACY_EXCLUDED_CONTENT as PRIVACY_EXCLUDED_CONTENT,
         first_user_artifacts as _first_user_artifacts,
         first_user_readiness_scorecard as _first_user_readiness_scorecard,
+        release_versions_agree as _release_versions_agree,
     )
 else:
     from .migration_install import (
@@ -84,6 +85,7 @@ else:
         PRIVACY_EXCLUDED_CONTENT as PRIVACY_EXCLUDED_CONTENT,
         first_user_artifacts as _first_user_artifacts,
         first_user_readiness_scorecard as _first_user_readiness_scorecard,
+        release_versions_agree as _release_versions_agree,
     )
 
 __all__ = [
@@ -354,7 +356,9 @@ def _run_two_stage_candidate_install(
         artifact_identity, artifact_version = _parse_downloaded_artifact_identity(artifact.name)
     except ValueError as exc:
         raise RehearsalError(str(exc), steps) from exc
-    if artifact_identity != expected_identity or artifact_version != expected_version:
+    if artifact_identity != expected_identity or not _release_versions_agree(
+        artifact_version, expected_version
+    ):
         raise RehearsalError(
             f"candidate artifact {artifact.name!r} does not match the requested "
             f"{expected_identity}=={expected_version} spec",

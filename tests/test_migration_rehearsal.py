@@ -359,10 +359,26 @@ class TwoStageCandidateInstallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(migration_rehearsal.RehearsalError) as ctx:
                 self._run(
-                    artifacts=["other-package-1.0.0-py3-none-any.whl"],
+                    artifacts=["other_package-1.0.0-py3-none-any.whl"],
                     work_dir=Path(tmp),
                 )
         self.assertIn("does not match the requested", str(ctx.exception))
+
+    def test_fails_closed_on_artifact_with_invalid_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(migration_rehearsal.RehearsalError) as ctx:
+                self._run(
+                    artifacts=["other-package-1.0.0-py3-none-any.whl"],
+                    work_dir=Path(tmp),
+                )
+        self.assertIn("unrecognized filename", str(ctx.exception))
+
+    def test_accepts_equivalent_pep440_artifact_spelling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(
+                artifacts=["code_mower-1.0.0.0-py3-none-any.whl"],
+                work_dir=Path(tmp),
+            )
 
     def test_rejects_non_exact_package_spec_before_downloading(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
