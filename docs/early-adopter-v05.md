@@ -1,7 +1,7 @@
 # Code Mower Early Adopter Guide
 
 This document records the historical v0.5 early-adopter product plan. The
-current public install path is the v1.3.1 supervised-pilot release; use
+current public install path is the v1.4.0 supervised-pilot release; use
 [Install And Bootstrap](install.md), [Try Code Mower In 10 Minutes](try-in-10-minutes.md),
 and [Quickstart](quickstart.md) for live adoption steps.
 

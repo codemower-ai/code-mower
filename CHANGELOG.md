@@ -5,6 +5,39 @@ project used alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop were hardening; v1.0 and
 later entries are regular releases.
 
+## v1.4.0
+
+Devin can act as an optional peer participant with a durable remote work-order
+lifecycle, Graphify is a bounded optional local repository-graph provider, and
+the Slack command and ingress foundation is in place. Claude Code + Codex remain
+the first-run default and every new integration stays opt-in.
+
+### Added
+
+- One optional Devin setup and readiness path for the local CLI and the hosted
+  v3 API, a provider-neutral remote session lifecycle, trusted hosted work
+  orders, normalized local and hosted review evidence, and authorized context
+  delivery to approved Devin roles.
+- Graphify as an optional bounded local provider behind the packet contract,
+  with an exact pin, revision-bound private graph state, no network access, and
+  no default dependency.
+- The Slack command and identity contract plus authenticated, durable, bounded
+  ingress as a foundation for later worker delivery.
+- A release-hygiene assertion and `release-readiness` check that fail when the
+  committed `code-mower-package-manifest.json` version disagrees with
+  `pyproject.toml` and `src/code_mower/__init__.py`.
+
+### Fixed
+
+- A rejected work-order completion no longer projects a finished session. When a
+  persisted rejection exists and the remote projection reports `complete`, the
+  returned session projection is `running` / `result_not_ready` / `status`,
+  while the authoritative rejection block, the durable remote record, and
+  exact-round and pull-request verification are unchanged.
+- Devin results are recovered across restarts and the merge boundary, running
+  sessions holding a current-round result are recognized, GitHub bot login
+  suffixes are normalized, and collection recovers after a stale completion.
+
 ## v1.3.1
 
 Code Mower can carry optional organizational context through the ordinary

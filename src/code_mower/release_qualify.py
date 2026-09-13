@@ -55,9 +55,10 @@ VALID_CONTEXTS = {"cold_install", "upgrade", "unknown"}
 VALID_PACKAGE_SOURCES = {"pypi", "testpypi"}
 DEFAULT_PACKAGE_SOURCE = "pypi"
 # The one canonical TestPyPI simple index, and the one canonical production
-# PyPI simple index used only as a dependency-only extra index for a TestPyPI
-# candidate (TestPyPI does not mirror every dependency). Fixed constants, not
-# configurable: no credentials, and no other index is ever accepted.
+# PyPI simple index used to resolve dependencies in a separate second stage for
+# a TestPyPI candidate (TestPyPI does not mirror every dependency). The two are
+# never configured in one command. Fixed constants, not configurable: no
+# credentials, and no other index is ever accepted.
 TESTPYPI_INDEX_URL = "https://test.pypi.org/simple/"
 PRODUCTION_PYPI_INDEX_URL = "https://pypi.org/simple/"
 VALID_STEP_STATUSES = {"pass", "fail", "warn", "unavailable", "planned"}

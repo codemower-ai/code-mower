@@ -22,11 +22,11 @@ dry-run-first.
 
 ## Current Public Release
 
-The current package-index release baseline is `v1.3.1`, with pinned package
-install spec `code-mower==1.3.1`. Release evidence is recorded on the GitHub
+The current package-index release baseline is `v1.4.0`, with pinned package
+install spec `code-mower==1.4.0`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal.
 
-Version 1.3.1 requires Python 3.12 or newer. It provides:
+Version 1.4.0 requires Python 3.12 or newer. It provides:
 
 - pipx, uv tool, and contributor installation paths;
 - safe setup previews and selectable participants;
@@ -39,7 +39,7 @@ Version 1.3.1 requires Python 3.12 or newer. It provides:
 - release qualification and resumable provider campaigns; and
 - optional Coworker organizational context through a protected local store.
 
-The v1.3.1 guided context workflow derives repository, work item, selected
+The v1.4.0 guided context workflow derives repository, work item, selected
 connection, policy, packet, builder, pull-request head, input revision, reviewer,
 and feedback recipient from the session. Fetch, delivery, attachment, review,
 and feedback retain explicit authorization, expiry, and refresh checks.
@@ -57,10 +57,10 @@ and feedback retain explicit authorization, expiry, and refresh checks.
 | Hosted builders | Explicit provider-specific dispatch and provenance; no implicit trust or merge authority |
 | Merge-eligible reviewers | Codex and Claude after repository setup and calibration |
 | Informational reviewers | Devin CLI and other optional providers until their evidence supports promotion |
-| Organizational context | Optional Coworker packets for approved Claude/Codex orchestrator, builder, and reviewer roles |
-| Repository context graph | Provider-neutral packet extension and offline scope/freshness checks exist; Graphify is adopted as an optional bounded provider but not yet installed or shipped |
+| Organizational context | Optional Coworker packets for approved Claude/Codex/Devin orchestrator, builder, and reviewer roles |
+| Repository context graph | Provider-neutral packet extension, offline scope/freshness checks, and a revision-bound local graph lifecycle; Graphify is an optional bounded provider with no default dependency |
 | Work tracking | GitHub Issues by default; Jira Cloud optional, bounded, and dry-run-first for writes |
-| Team interaction | CLI, GitHub, local Board, and optional CodeMower.com metadata views; no Slack ingress yet |
+| Team interaction | CLI, GitHub, local Board, and optional CodeMower.com metadata views; Slack has an authenticated bounded ingress foundation with no worker delivery |
 
 Provider selection, execution transport, and review authority are separate.
 For example, selecting Devin does not promote the Devin reviewer, and selecting
@@ -116,9 +116,10 @@ future hosted-service work.
 - `session start` prepares state and instructions; it is not a universal
   multi-provider process launcher.
 - Devin has stronger builder support than reviewer or orchestrator support.
-- Private Coworker delivery is limited to explicitly approved Claude and Codex
-  roles in v1.3.1.
-- Graphify and Slack are not included in v1.3.1.
+- Private Coworker delivery is limited to explicitly approved Claude, Codex, and
+  Devin roles in v1.4.0.
+- Graphify remains an optional bounded provider with no default dependency, and
+  Slack is an ingress foundation only: v1.4.0 delivers no Slack worker results.
 - Provider cost fields remain unknown when the provider does not return them.
 - A successful release campaign proves installation and operational transport,
   not builder quality or reviewer promotion readiness.

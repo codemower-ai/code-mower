@@ -15,12 +15,32 @@ on:
         required: false
         default: false
         type: boolean
+      expected_sha:
+        description: Exact 40-character release commit this dispatch must build.
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
+  release-identity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert the dispatched ref and commit are the expected release
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+          ACTUAL_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          test "$ACTUAL_REF" = "refs/tags/v1.4.0"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+
   build-distributions:
+    needs: release-identity
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -66,7 +86,7 @@ jobs:
           python -m twine check dist/*
 
   publish-testpypi:
-    needs: verify-distributions
+    needs: [release-identity, verify-distributions]
     runs-on: ubuntu-latest
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_testpypi == true) || (github.event_name == 'release' && vars.CODE_MOWER_TESTPYPI_PUBLISH == 'true') }}
     permissions:
@@ -86,7 +106,7 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
 
   publish-pypi:
-    needs: verify-distributions
+    needs: [release-identity, verify-distributions]
     runs-on: ubuntu-latest
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true) || (github.event_name == 'release' && vars.CODE_MOWER_PYPI_PUBLISH == 'true') }}
     permissions:

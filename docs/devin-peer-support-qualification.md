@@ -225,22 +225,58 @@ Setup posture on the qualification head:
   the generated configuration valid, and wrote 36 generated files without
   requiring Devin setup.
 
-Package qualification: fresh wheel installs on Python 3.12, 3.13, and 3.14;
-sdist and wheel Twine and package-content checks; base installation without
-optional dependencies; easy-mode and fresh-clone setup; first-user package
-rehearsal; release readiness; privacy, workflow, and package guards. These run
-in the GitHub package matrix and `code-mower/gate` on the exact PR head, and
-their result is recorded in the PR's status checks rather than copied here.
+Package qualification separates local round-0 results from GitHub CI.
 
-## Board and cloud evidence (pending, trusted orchestrator)
+Locally, on the round-0 builder checkout, `python -m build` produced an sdist
+and a wheel and `python -m twine check dist/*` passed on both. That is a local
+result on one interpreter, not CI coverage.
+
+GitHub CI on the exact PR head covers, in the package matrix and
+`code-mower/gate`: editable `.[coworker]` installs with Ruff, the privacy scan,
+the full unit suite, compilation, and the package-workflow guard on Python 3.12,
+3.13, and 3.14; and, on Python 3.12 only, release readiness, generated-workflow
+actionlint, the regular (non-editable) base install without optional
+dependencies, the easy-mode smoke, the fresh-clone rehearsal, and the
+package-install first-user rehearsal. PR CI does not run Twine; `twine check`
+runs in the release workflow. No fresh-wheel install or Twine check is claimed
+on every Python matrix version. The CI results are recorded in the PR's status
+checks rather than copied here.
+
+Adding this document to `PACKAGE_FILES` is not inert: it changes generated
+standalone package materialization, so the manifest lists it and the generated
+package writes it. Documentation stays outside the built wheel, so the wheel
+contents are unchanged.
+
+## Board and cloud evidence (completed, trusted orchestrator)
 
 Exact-head Board inspection, cloud dry-run inspection, and the metadata-only
-upload are trusted-orchestrator steps. They were pending when this document
-was written and were not performed by the builder. When performed, Board and
-cloud records for this qualification may contain only allowlisted provider,
-transport, state, reason, timing, round, PR/head, ACU/cost, and validation
-metadata; the public task-class descriptions above are documentation, not
-cloud metadata. The cloud dry run is inspected before any upload.
+upload are trusted-orchestrator steps; the builder did not perform them. They
+are recorded as completed on
+[#911](https://github.com/codemower-ai/code-mower/issues/911): the exact-`main`
+Board privacy and gate inspection passed, and CodeMower.com stored one
+zero-report `board_snapshot` event with no report text. Board and cloud records
+for this qualification contain only allowlisted provider, transport, state,
+reason, timing, round, PR/head, ACU/cost, and validation metadata; the public
+task-class descriptions above are documentation, not cloud metadata. The cloud
+dry run was inspected before the upload.
+
+## v1.4.0 release hardening
+
+One pre-release correction was added while preparing the v1.4.0 release
+([#912](https://github.com/codemower-ai/code-mower/issues/912)). During #958
+recovery, a new work-order message advanced the expected round while the
+provider was actively running and its API still returned the prior round's
+structured output. Code Mower correctly rejected that stale completion and
+cleared verified PR evidence, but the same response still projected
+`session.state=complete`, which can make an orchestrator stop polling an active
+fix round. `DevinWorkOrders` now returns a copied logical session projection of
+`state: running`, `reason: result_not_ready`, `next_action: status` whenever a
+persisted completion rejection exists and the remote projection reports
+`complete`. The authoritative rejection block, the durable remote record,
+shared `RemoteSessions` result precedence, and exact-round, issue, repository,
+branch, author, PR, head-SHA, and base-branch verification are unchanged, and a
+later valid exact-round collection clears the rejection and returns verified PR
+evidence.
 
 ## Limitations
 

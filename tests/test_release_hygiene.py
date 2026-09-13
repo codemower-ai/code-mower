@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import copy
+import hashlib
 import importlib.util
 import os
 import re
@@ -15,12 +16,17 @@ import tomllib
 import unittest
 import urllib.error
 from argparse import Namespace
+from collections.abc import Callable
 from contextlib import ExitStack, nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
 
 import yaml
+from packaging import __version__ as packaging_version
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -48,6 +54,7 @@ from code_mower import git_identity as code_mower_git_identity
 from code_mower import init as code_mower_init
 from code_mower import migration as code_mower_migration
 from code_mower import migration_install as code_mower_migration_install
+from code_mower import migration_readiness as code_mower_migration_readiness
 from code_mower import next_steps
 from code_mower import package as code_mower_package
 from code_mower import package_content as code_mower_package_content
@@ -62,10 +69,41 @@ from code_mower.calibration import policy as calibration_policy
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 from scripts import guard_package_workflows, privacy_scan
 
+CLOUD_ENDPOINT = "https://cloud.example.invalid"
+BOARD_GATE_PROVENANCE = {
+    "available": True,
+    "head_sha": "b" * 40,
+    "clean": True,
+    "dirty_entry_count": 0,
+}
+
+
+def _reported_manifest_identity(manifest_bytes: bytes) -> dict:
+    """Mirror the producer-owned manifest identity for runbook gate fixtures."""
+
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+    rows = manifest.get("events")
+    rows = rows if isinstance(rows, list) else []
+    event_ids: list[str] = []
+    event_type_counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        event_ids.append(str(row.get("event_id") or ""))
+        event_type = str(row.get("event_type") or "")
+        event_type_counts[event_type] = event_type_counts.get(event_type, 0) + 1
+    return {
+        "schema": "code_mower.cloudUploadIdentity.v1",
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "event_count": len(event_ids),
+        "event_ids": event_ids,
+        "event_type_counts": dict(sorted(event_type_counts.items())),
+    }
+
 
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_current_supervised_pilot_release(self) -> None:
-        self.assertEqual(__version__, "1.3.1")
+        self.assertEqual(__version__, "1.4.0")
 
     def test_dogfood_repo_has_real_root_config(self) -> None:
         config_path = ROOT / "code-mower.yml"
@@ -117,7 +155,9 @@ class ReleaseHygieneTests(unittest.TestCase):
         )
         self.assertIn("          python -m twine check dist/*\n", workflow)
         publish_job = workflow.split("  publish-pypi:\n", 1)[1]
-        self.assertIn("    needs: verify-distributions\n", publish_job)
+        self.assertIn(
+            "    needs: [release-identity, verify-distributions]\n", publish_job
+        )
 
     def test_test_extra_matches_contributor_setup_docs(self) -> None:
         pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -216,7 +256,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("Cold Install Vs Upgrade", install)
         self.assertIn("Switching Between pipx And uv", install)
         self.assertIn("uv tool install --python 3.12 --reinstall --refresh-package", install)
-        self.assertIn("code-mower==1.3.1", troubleshooting)
+        self.assertIn("code-mower==1.4.0", troubleshooting)
         self.assertNotIn("code-mower==0.8.0b1", troubleshooting)
         self.assertIn("pipx uninstall code-mower", install)
         for env_name in ("PIPX_HOME", "PIPX_BIN_DIR", "PIPX_LOG_DIR"):
@@ -241,6 +281,97 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("E501", lint["ignore"])
         self.assertIn("B019", lint["ignore"])
 
+    def _dispatch_sha_gate_check(self, mutate: Callable[[str], str]) -> dict:
+        workflow_path = ROOT / ".github" / "workflows" / "release.yml"
+        original = release_readiness._read_text_if_exists
+
+        def read(path: Path) -> str:
+            text = original(path)
+            return mutate(text) if path == workflow_path else text
+
+        with mock.patch.object(release_readiness, "_read_text_if_exists", read):
+            payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        return checks["release-dispatch-sha-gate"]
+
+    def test_release_workflow_binds_every_dispatch_to_the_expected_commit(
+        self,
+    ) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        parsed = yaml.safe_load(workflow)
+        triggers = parsed.get("on", parsed.get(True))
+        inputs = triggers["workflow_dispatch"]["inputs"]
+        jobs = parsed["jobs"]
+
+        self.assertTrue(inputs["expected_sha"]["required"])
+        self.assertEqual(inputs["expected_sha"]["type"], "string")
+        self.assertEqual(next(iter(jobs)), "release-identity")
+        self.assertEqual(jobs["build-distributions"]["needs"], "release-identity")
+        for job_name in ("publish-testpypi", "publish-pypi"):
+            self.assertIn("release-identity", jobs[job_name]["needs"])
+        self.assertEqual(self._dispatch_sha_gate_check(lambda text: text)["status"], "pass")
+
+    def test_release_readiness_fails_when_the_dispatch_sha_gate_regresses(self) -> None:
+        for old, new in (
+            ("        required: true\n        type: string\n", "        type: string\n"),
+            ("  release-identity:\n", "  release-identity-disabled:\n"),
+            ("    needs: release-identity\n", "    needs: verify-distributions\n"),
+            ("[release-identity, verify-distributions]", "[verify-distributions]"),
+            ("grep -Eq '^[0-9a-f]{40}$'", "true"),
+            ('test "$ACTUAL_SHA" = "$EXPECTED_SHA"', "true"),
+            ('test "$ACTUAL_REF" = "refs/tags/v1.4.0"', "true"),
+        ):
+            with self.subTest(old=old):
+                check = self._dispatch_sha_gate_check(
+                    lambda text, old=old, new=new: text.replace(old, new)
+                )
+
+                self.assertEqual(check["status"], "fail")
+
+    def test_release_identity_guard_rejects_wrong_expected_commits(self) -> None:
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        )
+        step = workflow["jobs"]["release-identity"]["steps"][0]
+        release_sha = "a" * 40
+        cases = (
+            ("", "refs/tags/v1.4.0", release_sha),
+            ("not-a-sha", "refs/tags/v1.4.0", release_sha),
+            ("b" * 40, "refs/tags/v1.4.0", release_sha),
+            (release_sha, "refs/heads/main", release_sha),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "identity.sh"
+            script.write_text(step["run"], encoding="utf-8")
+            for expected, ref, actual in cases:
+                with self.subTest(expected=expected, ref=ref):
+                    result = subprocess.run(
+                        ["bash", str(script)],
+                        capture_output=True,
+                        text=True,
+                        env={
+                            **os.environ,
+                            "EXPECTED_SHA": expected,
+                            "ACTUAL_REF": ref,
+                            "ACTUAL_SHA": actual,
+                        },
+                    )
+
+                    self.assertNotEqual(result.returncode, 0)
+            ok = subprocess.run(
+                ["bash", str(script)],
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "EXPECTED_SHA": release_sha,
+                    "ACTUAL_REF": "refs/tags/v1.4.0",
+                    "ACTUAL_SHA": release_sha,
+                },
+            )
+
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+
     def test_release_workflow_has_separate_testpypi_publish_gate(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("      publish_testpypi:\n", workflow)
@@ -249,7 +380,9 @@ class ReleaseHygieneTests(unittest.TestCase):
             "  publish-pypi:\n",
             1,
         )[0]
-        self.assertIn("    needs: verify-distributions\n", testpypi_job)
+        self.assertIn(
+            "    needs: [release-identity, verify-distributions]\n", testpypi_job
+        )
         self.assertIn("inputs.publish_testpypi", testpypi_job)
         self.assertIn("inputs.publish_testpypi == true", testpypi_job)
         self.assertIn("github.event_name == 'workflow_dispatch'", testpypi_job)
@@ -1101,7 +1234,7 @@ exit 1
         )
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("pipx install code-mower==1.3.1", completed.stderr)
+        self.assertIn("pipx install code-mower==1.4.0", completed.stderr)
         self.assertIn("scripts/dev-python -m venv .venv", completed.stderr)
         self.assertIn(".venv/bin/code-mower", completed.stderr)
         self.assertNotIn("PYTHONPATH=src", completed.stderr)
@@ -3261,10 +3394,10 @@ jobs:
 
         cases = (
             (
-                'CODE_MOWER_STANDALONE_REF="v1.3.1"\n',
+                'CODE_MOWER_STANDALONE_REF="v1.4.0"\n',
                 "pass",
                 "matches_running_package",
-                "v1.3.1",
+                "v1.4.0",
             ),
             (
                 'CODE_MOWER_STANDALONE_REF="v0.9.1-beta.1"\n',
@@ -3295,12 +3428,12 @@ jobs:
 
                     payload = migration._standalone_pin_drift_summary(
                         repo,
-                        package_version="1.3.1",
+                        package_version="1.4.0",
                     )
 
             self.assertEqual(payload["status"], status)
             self.assertEqual(payload["reason"], reason)
-            self.assertEqual(payload["expected_ref"], "v1.3.1")
+            self.assertEqual(payload["expected_ref"], "v1.4.0")
             if current_ref is None:
                 self.assertNotIn("current_ref", payload)
             else:
@@ -3321,7 +3454,7 @@ jobs:
 
             payload = migration._standalone_pin_drift_summary(
                 repo,
-                package_version="1.3.1",
+                package_version="1.4.0",
             )
 
         self.assertEqual(payload["status"], "warn")
@@ -3384,7 +3517,7 @@ jobs:
             "standalone_pin": {
                 "status": "skip",
                 "reason": "pin_file_absent",
-                "expected_ref": "v1.3.1",
+                "expected_ref": "v1.4.0",
             },
             "builder_hint": {
                 "status": "skip",
@@ -3396,7 +3529,7 @@ jobs:
 
         rendered = migration.render_setup_drift_text(payload)
 
-        self.assertIn("Standalone pin: SKIP pin_file_absent expected=v1.3.1", rendered)
+        self.assertIn("Standalone pin: SKIP pin_file_absent expected=v1.4.0", rendered)
 
     def test_setup_drift_reports_builder_hint_when_builders_omitted(self) -> None:
         from code_mower import migration
@@ -5265,6 +5398,15 @@ printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
         )
         self.assertEqual(manifest["output_dir"], "<generated-output-dir>")
 
+    def test_package_manifest_version_matches_source_version(self) -> None:
+        manifest = json.loads(
+            (ROOT / "code-mower-package-manifest.json").read_text(encoding="utf-8")
+        )
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+        self.assertEqual(manifest["package"]["version"], __version__)
+        self.assertIn(f'version = "{__version__}"', pyproject)
+
     def test_package_manifest_excludes_generated_cache_artifacts(self) -> None:
         forbidden_fragments = (
             "__pycache__",
@@ -5585,11 +5727,11 @@ printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
                 (output_dir / "src/code_mower/cloud_client/dogfood.py").is_file()
             )
             self.assertIn(
-                'version = "1.3.1"',
+                'version = "1.4.0"',
                 (output_dir / "pyproject.toml").read_text(encoding="utf-8"),
             )
             self.assertIn(
-                '__version__ = "1.3.1"',
+                '__version__ = "1.4.0"',
                 (output_dir / "src/code_mower/__init__.py").read_text(
                     encoding="utf-8"
                 ),
@@ -7304,6 +7446,7 @@ def main():
                 toy_repo=toy_repo,
                 outputs=outputs,
                 version="code-mower 0.6.0b3",
+                distribution_version="0.6.0b3",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -7383,6 +7526,7 @@ def main():
                 toy_repo=toy_repo,
                 outputs=outputs,
                 version="code-mower 0.6.0b3",
+                distribution_version="0.6.0b3",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -7445,6 +7589,7 @@ def main():
                 toy_repo=toy_repo,
                 outputs=outputs,
                 version="code-mower 0.6.0b3",
+                distribution_version="0.6.0b3",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -7456,6 +7601,344 @@ def main():
         self.assertEqual(scorecard["status"], "fail")
         failed = {check["id"] for check in scorecard["checks"] if check["status"] == "fail"}
         self.assertEqual(failed, {"cloud-export-metadata-bundle"})
+
+    def test_installed_version_binding_rejects_mismatched_and_missing_versions(
+        self,
+    ) -> None:
+        problems = code_mower_migration_readiness.installed_version_problems
+
+        self.assertEqual(
+            problems(version="code-mower 1.4.0", distribution_version="1.4.0"),
+            [],
+        )
+        self.assertEqual(
+            problems(
+                version="code-mower 1.4.0",
+                distribution_version="1.4.0",
+                requested_version="1.4.0",
+            ),
+            [],
+        )
+        self.assertTrue(
+            problems(version="code-mower 1.3.0", distribution_version="1.4.0")
+        )
+        self.assertTrue(
+            problems(
+                version="code-mower 1.4.0",
+                distribution_version="1.4.0",
+                requested_version="1.4.1",
+            )
+        )
+        self.assertTrue(problems(version="code-mower", distribution_version="1.4.0"))
+        self.assertTrue(
+            problems(version="code-mower 1.4.0", distribution_version="")
+        )
+        self.assertTrue(problems(version="", distribution_version=""))
+
+    def test_installed_version_binding_accepts_pep440_equivalent_spellings(self) -> None:
+        problems = code_mower_migration_readiness.installed_version_problems
+
+        # pip installs normalized metadata, so an equivalent requested spelling
+        # of the same release is the requested candidate.
+        for requested in ("1.4.0", "v1.4.0", "1.4.0.0", "1.4", " 1.4.0 "):
+            with self.subTest(requested=requested):
+                self.assertEqual(
+                    problems(
+                        version="code-mower 1.4.0",
+                        distribution_version="1.4.0",
+                        requested_version=requested,
+                    ),
+                    [],
+                )
+
+        for requested in ("1.4.1", "1.4.0rc1", "1.4.0.post1", "2!1.4.0", "1.4.0+local", "not-a-version"):
+            with self.subTest(requested=requested):
+                self.assertEqual(
+                    problems(
+                        version="code-mower 1.4.0",
+                        distribution_version="1.4.0",
+                        requested_version=requested,
+                    ),
+                    ["installed distribution version does not match the requested candidate"],
+                )
+
+        # Exact local, epoch, and prerelease candidates stay bound to the
+        # metadata pip actually installed.
+        for requested, installed in (
+            ("1.4.0+local", "1.4.0+local"),
+            ("1.4.0+build.01", "1.4.0+build.1"),
+            ("2!1.4.0", "2!1.4.0"),
+            ("1.4.0-rc.1", "1.4.0rc1"),
+        ):
+            with self.subTest(requested=requested, installed=installed):
+                self.assertEqual(
+                    problems(
+                        version=f"code-mower {installed}",
+                        distribution_version=installed,
+                        requested_version=requested,
+                    ),
+                    [],
+                )
+
+    def test_installed_version_binding_rejects_invalid_installed_metadata(self) -> None:
+        problems = code_mower_migration_readiness.installed_version_problems
+
+        self.assertEqual(
+            problems(version="code-mower not-a-version", distribution_version="not-a-version"),
+            ["installed distribution version is not a valid version"],
+        )
+        # An identically malformed requested candidate must not pass binding
+        # merely because the two strings match.
+        self.assertEqual(
+            problems(
+                version="code-mower not-a-version",
+                distribution_version="not-a-version",
+                requested_version="not-a-version",
+            ),
+            [
+                "installed distribution version is not a valid version",
+                "installed distribution version does not match the requested candidate",
+            ],
+        )
+
+    def test_packaging_is_a_declared_runtime_dependency(self) -> None:
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        dependencies = pyproject["project"]["dependencies"]
+        requirements = {
+            canonicalize_name(Requirement(entry).name): Requirement(entry)
+            for entry in dependencies
+        }
+        # The PEP 440 comparisons the release version binding relies on come
+        # from `packaging`, so an installed distribution must carry it.
+        self.assertIn("packaging", requirements)
+        self.assertTrue(
+            requirements["packaging"].specifier.filter([Version(packaging_version)]),
+            f"declared packaging bound rejects the installed {packaging_version}",
+        )
+        # The generated package tree must publish the same runtime contract.
+        generated = tomllib.loads(
+            code_mower_package_content._pyproject_text("code-mower", version=__version__)
+        )
+        self.assertEqual(generated["project"]["dependencies"], dependencies)
+
+    def test_normalized_release_version_matches_packaging_semantics(self) -> None:
+        agree = code_mower_migration_readiness.release_versions_agree
+        normalized = code_mower_migration_readiness.normalized_release_version
+
+        equivalent = (
+            ("v1.4.0", "1.4.0"),
+            ("1.4.0.0", "1.4.0"),
+            (" 1.4.0 ", "1.4.0"),
+            ("1.4.0-rc.1", "1.4.0rc1"),
+            ("1.4.0.alpha2", "1.4.0a2"),
+            ("1.4.0.post0", "1.4.0-0"),
+            ("1.4.0-dev1", "1.4.0.dev1"),
+            ("0!1.4.0", "1.4.0"),
+            ("2!1.4.0", "2!1.4.0.0"),
+            ("1.0+01", "1.0+1"),
+            ("1.0+abc.01", "1.0+abc.1"),
+            ("1.4.0+BUILD-1", "1.4.0+build.1"),
+        )
+        for left, right in equivalent:
+            with self.subTest(left=left, right=right):
+                self.assertEqual(Version(left), Version(right))
+                self.assertTrue(agree(left, right))
+
+        different = (
+            ("1.4.0", "1.5.0"),
+            ("1.4.0", "1.4.0rc1"),
+            ("1.4.0", "1.4.0.post1"),
+            ("1.4.0", "1.4.0.dev1"),
+            ("1.4.0", "2!1.4.0"),
+            ("1.4.0", "1.4.0+build.1"),
+            ("1.0+abc.1", "1.0+abc.01a"),
+            ("1.0+1", "1.0+2"),
+        )
+        for left, right in different:
+            with self.subTest(left=left, right=right):
+                self.assertNotEqual(Version(left), Version(right))
+                self.assertFalse(agree(left, right))
+
+        for invalid in ("nonsense", "1.4.0.0.0.nope", "", "==1.4.0", "1.4.0+"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(InvalidVersion):
+                    Version(invalid)
+                self.assertIsNone(normalized(invalid))
+                # An invalid version never agrees, not even with itself.
+                self.assertFalse(agree(invalid, invalid))
+                self.assertFalse(agree(invalid, "1.4.0"))
+                self.assertFalse(agree("1.4.0", invalid))
+
+    def test_requested_candidate_version_binds_specs_and_wheels(self) -> None:
+        requested = code_mower_migration_install.requested_candidate_version
+
+        self.assertEqual(requested("code-mower==1.4.0"), "1.4.0")
+        self.assertEqual(
+            requested("/tmp/dist/code_mower-1.4.0-py3-none-any.whl"),
+            "1.4.0",
+        )
+        self.assertEqual(requested("/tmp/dist/code_mower-1.4.0.tar.gz"), "1.4.0")
+        self.assertEqual(requested("code-mower"), "")
+        self.assertEqual(requested("code-mower>=1.4.0"), "")
+        self.assertEqual(requested("."), "")
+        self.assertEqual(
+            requested("/tmp/dist/other_package-1.4.0-py3-none-any.whl"),
+            "",
+        )
+
+    def test_requested_candidate_version_accepts_only_exact_requirements(self) -> None:
+        requested = code_mower_migration_install.requested_candidate_version
+
+        # Every exact PEP 440 candidate derives its normalized version, so it
+        # stays bound to the metadata pip installs.
+        accepted = (
+            ("code-mower==1.4.0", "1.4.0"),
+            ("code-mower ==1.4.0", "1.4.0"),
+            ("code_mower==1.4.0", "1.4.0"),
+            ("Code.Mower==1.4.0", "1.4.0"),
+            ("code-mower==v1.4.0", "1.4.0"),
+            ("code-mower==1.4.0.0", "1.4.0.0"),
+            ("code-mower==1.4.0+local", "1.4.0+local"),
+            ("code-mower==1.4.0+build.01", "1.4.0+build.1"),
+            ("code-mower==2!1.4.0", "2!1.4.0"),
+            ("code-mower==1.4.0-rc.1", "1.4.0rc1"),
+        )
+        for spec, version in accepted:
+            with self.subTest(spec=spec):
+                self.assertEqual(requested(spec), version)
+
+        # Anything that does not name exactly one version for this
+        # distribution establishes no candidate at all.
+        rejected = (
+            "code-mower",
+            "code-mower>=1.4.0",
+            "code-mower~=1.4.0",
+            "code-mower!=1.4.0",
+            "code-mower===1.4.0",
+            "code-mower==1.4.*",
+            "code-mower==1.4.0,!=1.4.0",
+            "code-mower>=1.4.0,<1.5.0",
+            "code-mower[coworker]==1.4.0",
+            'code-mower==1.4.0; python_version >= "3.12"',
+            "code-mower==not-a-version",
+            "code-mower==",
+            "==1.4.0",
+            "other-package==1.4.0",
+            "code mower==1.4.0",
+            "code-mower@1.4.0",
+        )
+        for spec in rejected:
+            with self.subTest(spec=spec):
+                self.assertEqual(requested(spec), "")
+
+    def test_exact_name_version_spec_parsing_is_standards_complete(self) -> None:
+        parse = code_mower_migration_install._parse_exact_name_version_spec
+
+        self.assertEqual(parse("Code_Mower==1.4.0"), ("code-mower", "1.4.0"))
+        self.assertEqual(parse("code-mower==1.4.0+build_01"), ("code-mower", "1.4.0+build.1"))
+        for spec in (
+            "code-mower",
+            "code-mower==1.4.*",
+            "code-mower[coworker]==1.4.0",
+            'code-mower==1.4.0; python_version < "3.13"',
+            "code-mower @ https://example.invalid/code_mower-1.4.0-py3-none-any.whl",
+            "code-mower==1.4.0,>=1.4.0",
+            "code-mower==oops",
+            "!!!",
+        ):
+            with self.subTest(spec=spec):
+                with self.assertRaises(ValueError):
+                    parse(spec)
+
+    def test_first_user_readiness_scorecard_fails_on_version_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toy_repo = root / "toy-repo"
+            outputs = root / "outputs"
+            generated = toy_repo / ".code-mower.generated"
+            (generated / "tools").mkdir(parents=True)
+            outputs.mkdir()
+            for path in (
+                generated / "code-mower-init-plan.json",
+                generated / "smoke-tests.sh",
+                generated / "tools" / "code_mower",
+            ):
+                path.write_text("ok\n", encoding="utf-8")
+            artifacts = code_mower_migration._first_user_artifacts(toy_repo)
+            for key in (
+                "draft_calibration_corpus",
+                "draft_reviewer_value_report",
+                "reviewer_value_report",
+            ):
+                Path(artifacts[key]).parent.mkdir(parents=True, exist_ok=True)
+                Path(artifacts[key]).write_text("ok\n", encoding="utf-8")
+            Path(artifacts["cloud_export"]).write_text(
+                json.dumps(
+                    {
+                        "mode": "cloud-export",
+                        "included_reports": [
+                            {"kind": "reviewer-metrics"},
+                            {"kind": "lane-policy"},
+                            {"kind": "value-report"},
+                        ],
+                        "upload_ready": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            dry_run_upload = {
+                "mode": "cloud-upload-dry-run",
+                "privacy_mode": "metadata_and_reports",
+                "requires_yes": True,
+                "would_upload": False,
+                "excluded_content": sorted(
+                    code_mower_migration.PRIVACY_EXCLUDED_CONTENT
+                ),
+            }
+            Path(artifacts["cloud_upload_dry_run"]).write_text(
+                json.dumps(dry_run_upload),
+                encoding="utf-8",
+            )
+            Path(artifacts["cloud_dogfood_dry_run"]).write_text(
+                json.dumps({"status": "dry_run", "upload": dry_run_upload}),
+                encoding="utf-8",
+            )
+            steps = [
+                {
+                    "command": ["code-mower", "doctor", "--easy", "--json"],
+                    "returncode": 0,
+                }
+            ]
+
+            stale_cli = code_mower_migration._first_user_readiness_scorecard(
+                toy_repo=toy_repo,
+                outputs=outputs,
+                version="code-mower 1.3.0",
+                distribution_version="1.4.0",
+                steps=steps,
+            )
+            wrong_candidate = code_mower_migration._first_user_readiness_scorecard(
+                toy_repo=toy_repo,
+                outputs=outputs,
+                version="code-mower 1.4.0",
+                distribution_version="1.4.0",
+                requested_version="1.4.1",
+                steps=steps,
+            )
+            missing_metadata = code_mower_migration._first_user_readiness_scorecard(
+                toy_repo=toy_repo,
+                outputs=outputs,
+                version="code-mower 1.4.0",
+                distribution_version="",
+                steps=steps,
+            )
+
+        for scorecard in (stale_cli, wrong_candidate, missing_metadata):
+            self.assertEqual(scorecard["status"], "fail")
+            failed = {
+                check["id"] for check in scorecard["checks"] if check["status"] == "fail"
+            }
+            self.assertEqual(failed, {"package-installed"})
 
     def test_rehearsal_step_to_file_writes_stdout_and_creates_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -7594,7 +8077,7 @@ def main():
             "pip",
             "install",
             "--no-cache-dir",
-            "code-mower==1.3.1",
+            "code-mower==1.4.0",
         ]
 
         def fake_run_step(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -7661,7 +8144,7 @@ def main():
         self.assertTrue(code_mower_migration._package_spec_uses_package_index("code-mower"))
         self.assertTrue(
             code_mower_migration._package_spec_uses_package_index(
-                "code-mower==1.3.1"
+                "code-mower==1.4.0"
             )
         )
         self.assertFalse(code_mower_migration._package_spec_uses_package_index("."))
@@ -7670,7 +8153,7 @@ def main():
         )
         self.assertFalse(
             code_mower_migration._package_spec_uses_package_index(
-                "git+https://github.com/codemower-ai/code-mower.git@v1.3.1"
+                "git+https://github.com/codemower-ai/code-mower.git@v1.4.0"
             )
         )
 
@@ -7680,7 +8163,7 @@ def main():
 
             with self.assertRaisesRegex(ValueError, "--allow-package-index"):
                 code_mower_migration.run_package_install_rehearsal(
-                    package_spec="code-mower==1.3.1",
+                    package_spec="code-mower==1.4.0",
                     work_dir=work_dir,
                 )
 
@@ -7708,7 +8191,7 @@ def main():
                 [
                     "package-install-rehearsal",
                     "--package-spec",
-                    "code-mower==1.3.1",
+                    "code-mower==1.4.0",
                     "--allow-package-index",
                     "--upgrade-pip",
                     "--pip-no-cache",
@@ -7764,16 +8247,19 @@ def main():
         payload = release_readiness.render_release_readiness(ROOT)
 
         self.assertEqual(payload["status"], "pass")
-        self.assertEqual(payload["version"], "1.3.1")
-        self.assertEqual(payload["release_tag"], "v1.3.1")
-        self.assertEqual(payload["alpha_tag"], "v1.3.1")
-        self.assertEqual(payload["package_index_spec"], "code-mower==1.3.1")
+        self.assertEqual(payload["version"], "1.4.0")
+        self.assertEqual(payload["release_tag"], "v1.4.0")
+        self.assertEqual(payload["alpha_tag"], "v1.4.0")
+        self.assertEqual(payload["package_index_spec"], "code-mower==1.4.0")
         check_ids = {check["id"]: check for check in payload["checks"]}
         self.assertEqual(check_ids["package-version-consistency"]["status"], "pass")
         self.assertEqual(
             check_ids["materialized-package-version-consistency"]["status"],
             "pass",
         )
+        manifest_check = check_ids["committed-package-manifest-version"]
+        self.assertEqual(manifest_check["status"], "pass")
+        self.assertEqual(manifest_check["detail"]["manifest_version"], "1.4.0")
         self.assertEqual(check_ids["testpypi-gate"]["status"], "pass")
         self.assertEqual(check_ids["pypi-gate"]["status"], "pass")
         self.assertEqual(check_ids["trusted-publishing-runbook"]["status"], "pass")
@@ -7783,15 +8269,30 @@ def main():
         self.assertEqual(check_ids["public-support-redaction-guidance"]["status"], "pass")
         commands = {action["id"]: action["command"] for action in payload["next_actions"]}
         urls = {action["id"]: action.get("url", "") for action in payload["next_actions"]}
-        self.assertIn("--ref v1.3.1", commands["dry-run-release-workflow"])
+        self.assertIn("--ref v1.4.0", commands["dry-run-release-workflow"])
         self.assertNotIn("--ref main", commands["dry-run-release-workflow"])
-        self.assertIn("--ref v1.3.1", commands["publish-testpypi-candidate"])
+        self.assertIn("--ref v1.4.0", commands["publish-testpypi-candidate"])
         self.assertNotIn("--ref main", commands["publish-testpypi-candidate"])
         self.assertIn("publish_testpypi=true", commands["publish-testpypi-candidate"])
         self.assertIn("publish_pypi=false", commands["publish-testpypi-candidate"])
-        self.assertIn("--allow-package-index", commands["testpypi-install-rehearsal"])
-        self.assertIn("--upgrade-pip", commands["testpypi-install-rehearsal"])
-        self.assertIn("--pip-index-url https://test.pypi.org/simple/", commands["testpypi-install-rehearsal"])
+        qualification = commands["testpypi-source-exclusive-qualification"]
+        self.assertNotIn("testpypi-install-rehearsal", commands)
+        self.assertIn("code-mower release qualify", qualification)
+        self.assertIn("--release-tag v1.4.0", qualification)
+        self.assertIn("--package-spec code-mower==1.4.0", qualification)
+        self.assertIn("--package-source testpypi", qualification)
+        self.assertIn("--execute", qualification)
+        self.assertNotIn("--pip-extra-index-url", qualification)
+        self.assertNotIn("--pip-index-url", qualification)
+        self.assertEqual(
+            check_ids["package-index-rehearsal-docs"]["status"], "pass"
+        )
+        self.assertEqual(
+            check_ids["package-index-rehearsal-docs"]["detail"][
+                "unsafe_multi_index_docs"
+            ],
+            [],
+        )
         self.assertEqual(
             payload["setup_urls"]["github_environments"],
             "https://github.com/codemower-ai/code-mower/settings/environments",
@@ -7805,9 +8306,97 @@ def main():
             "https://github.com/codemower-ai/code-mower/actions/workflows/release.yml",
         )
         self.assertEqual(
-            urls["testpypi-install-rehearsal"],
+            urls["testpypi-source-exclusive-qualification"],
             "https://test.pypi.org/project/code-mower/",
         )
+
+    def _package_index_docs_check(
+        self, mutate: Callable[[dict[str, str]], None]
+    ) -> dict:
+        docs = release_readiness._release_docs(ROOT)
+        mutate(docs)
+        with mock.patch.object(release_readiness, "_release_docs", return_value=docs):
+            payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        return checks["package-index-rehearsal-docs"]
+
+    def test_package_index_rehearsal_docs_rejects_unsafe_multi_index_pairing(
+        self,
+    ) -> None:
+        def add_unsafe_pairing(docs: dict[str, str]) -> None:
+            docs["docs/first-user-install-rehearsal.md"] += (
+                "\n```bash\ncode-mower migration package-install-rehearsal "
+                "--package-spec code-mower==1.4.0 --allow-package-index "
+                "--pip-index-url https://test.pypi.org/simple/ "
+                "--pip-extra-index-url https://pypi.org/simple/ --json\n```\n"
+            )
+
+        check = self._package_index_docs_check(add_unsafe_pairing)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(
+            check["detail"]["unsafe_multi_index_docs"],
+            ["docs/first-user-install-rehearsal.md"],
+        )
+
+    def test_package_index_rehearsal_docs_requires_source_exclusive_contract(
+        self,
+    ) -> None:
+        def drop_safe_marker(docs: dict[str, str]) -> None:
+            for relative_path, text in docs.items():
+                docs[relative_path] = text.replace("--package-source testpypi", "")
+
+        check = self._package_index_docs_check(drop_safe_marker)
+
+        self.assertEqual(check["status"], "fail")
+
+    def test_release_qualification_doc_documents_the_source_exclusive_flow(
+        self,
+    ) -> None:
+        doc = (ROOT / "docs" / "release-qualification.md").read_text(encoding="utf-8")
+
+        self.assertIn("docs/release-qualification.md", release_readiness.RELEASE_DOC_PATHS)
+        self.assertIn(
+            "docs/release-qualification.md",
+            release_readiness.CURRENT_PACKAGE_INDEX_GUIDANCE_DOC_PATHS,
+        )
+        for marker in release_readiness.UNSAFE_MULTI_INDEX_MARKERS:
+            self.assertNotIn(marker, doc)
+        self.assertIn("--no-deps", doc)
+        self.assertIn("the only configured index", doc)
+        self.assertIn("never\n  combined in one command", doc)
+
+    def test_package_index_rehearsal_docs_reject_qualification_doc_regression(
+        self,
+    ) -> None:
+        for marker in release_readiness.UNSAFE_MULTI_INDEX_MARKERS:
+            with self.subTest(marker=marker):
+
+                def add_marker(docs: dict[str, str], marker: str = marker) -> None:
+                    docs["docs/release-qualification.md"] += f"\n{marker}\n"
+
+                check = self._package_index_docs_check(add_marker)
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(
+                    "docs/release-qualification.md",
+                    check["detail"]["unsafe_multi_index_docs"],
+                )
+
+    def test_public_first_user_docs_omit_unsafe_testpypi_candidate_command(
+        self,
+    ) -> None:
+        doc = (ROOT / "docs" / "first-user-install-rehearsal.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn(release_readiness.UNSAFE_MULTI_INDEX_MARKER, doc)
+        self.assertNotIn("--pip-index-url https://test.pypi.org/simple/", doc)
+        self.assertIn("code-mower release qualify", doc)
+        self.assertIn("--package-source testpypi", doc)
+        # Ordinary production-PyPI rehearsal guidance stays intact.
+        self.assertIn("code-mower migration package-install-rehearsal", doc)
+        self.assertIn("--allow-package-index", doc)
 
     def test_release_readiness_fails_on_materialized_package_version_drift(
         self,
@@ -7822,8 +8411,2252 @@ def main():
         check_ids = {check["id"]: check for check in payload["checks"]}
         check = check_ids["materialized-package-version-consistency"]
         self.assertEqual(check["status"], "fail")
-        self.assertEqual(check["detail"]["source_version"], "1.3.1")
+        self.assertEqual(check["detail"]["source_version"], "1.4.0")
         self.assertEqual(check["detail"]["generated_init_version"], "0.0.0")
+
+    def test_release_readiness_fails_on_committed_manifest_version_drift(self) -> None:
+        with mock.patch.object(
+            release_readiness,
+            "_committed_manifest_version",
+            return_value="0.5.0b53",
+        ):
+            payload = release_readiness.render_release_readiness(ROOT)
+
+        check_ids = {check["id"]: check for check in payload["checks"]}
+        check = check_ids["committed-package-manifest-version"]
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(check["detail"]["manifest_version"], "0.5.0b53")
+        self.assertEqual(check["detail"]["init_version"], "1.4.0")
+
+    def _manifest_drift_check(self, mutate: Callable[[dict], None]) -> dict:
+        committed = json.loads(
+            (ROOT / "code-mower-package-manifest.json").read_text(encoding="utf-8")
+        )
+        generated = code_mower_package.normalized_package_manifest(committed)
+        mutate(committed)
+        with mock.patch.object(
+            release_readiness, "_committed_manifest", return_value=committed
+        ), mock.patch.object(
+            release_readiness.package_module,
+            "generate_committed_package_manifest",
+            return_value=generated,
+        ):
+            payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        return checks["committed-package-manifest-matches-generated"]
+
+    def test_committed_package_manifest_matches_freshly_generated_inventory(self) -> None:
+        committed_text = (ROOT / "code-mower-package-manifest.json").read_text(
+            encoding="utf-8"
+        )
+        generated = code_mower_package.generate_committed_package_manifest(ROOT)
+
+        self.assertEqual(
+            committed_text,
+            code_mower_package.committed_package_manifest_text(generated),
+        )
+        self.assertEqual(generated["output_dir"], "<generated-output-dir>")
+        self.assertEqual(generated["package"]["version"], __version__)
+        targets = {entry["target"] for entry in generated["files_written"]}
+        self.assertIn("docs/context-graph-lifecycle.md", targets)
+        self.assertIn("docs/graphify-evaluation.md", targets)
+
+    def test_release_readiness_accepts_the_exact_regenerated_manifest(self) -> None:
+        check = self._manifest_drift_check(lambda manifest: None)
+
+        self.assertEqual(check["status"], "pass")
+        self.assertEqual(check["detail"]["missing_targets"], [])
+        self.assertEqual(check["detail"]["unexpected_targets"], [])
+        self.assertEqual(check["detail"]["changed_targets"], [])
+        self.assertEqual(check["detail"]["malformed_rows"], [])
+        self.assertEqual(check["detail"]["duplicate_targets"], [])
+        self.assertEqual(
+            check["detail"]["committed_row_count"],
+            check["detail"]["generated_row_count"],
+        )
+
+    def _duplicated_manifest_text(self, replace: str, duplicate: str) -> str:
+        text = (ROOT / "code-mower-package-manifest.json").read_text(encoding="utf-8")
+        self.assertIn(replace, text)
+        return text.replace(replace, duplicate, 1)
+
+    def test_committed_manifest_rejects_duplicate_object_keys(self) -> None:
+        cases = {
+            "top-level": ('"mode":', '"mode": "package", "mode":'),
+            "nested package": ('"version":', '"version": "0.0.1", "version":'),
+            "file row": ('"target":', '"target": "docs/other.md", "target":'),
+            "deferred row": ('"reason":', '"reason": "other", "reason":'),
+        }
+        for label, (replace, duplicate) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                (repo / code_mower_package.COMMITTED_PACKAGE_MANIFEST).write_text(
+                    self._duplicated_manifest_text(replace, duplicate),
+                    encoding="utf-8",
+                )
+
+                self.assertIsNone(release_readiness._committed_manifest(repo))
+
+                drift = release_readiness._committed_manifest_drift(repo)
+                self.assertFalse(drift["matches"])
+                self.assertIn("repeats an object key", drift["error"])
+
+    def test_committed_manifest_accepts_reordered_keys_and_whitespace(self) -> None:
+        manifest = json.loads(
+            (ROOT / "code-mower-package-manifest.json").read_text(encoding="utf-8")
+        )
+        reordered = dict(reversed(list(manifest.items())))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / code_mower_package.COMMITTED_PACKAGE_MANIFEST).write_text(
+                json.dumps(reordered, indent=4, sort_keys=False) + "\n\n",
+                encoding="utf-8",
+            )
+
+            loaded = release_readiness._committed_manifest(repo)
+
+        self.assertEqual(loaded, manifest)
+
+    def test_release_readiness_fails_on_stale_committed_manifest(self) -> None:
+        def truncate(manifest: dict) -> None:
+            manifest["files_written"] = manifest["files_written"][:307]
+
+        check = self._manifest_drift_check(truncate)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(check["detail"]["committed_row_count"], 307)
+        self.assertGreater(
+            check["detail"]["generated_row_count"],
+            check["detail"]["committed_row_count"],
+        )
+        self.assertTrue(check["detail"]["missing_targets"])
+
+    def test_release_readiness_fails_on_missing_manifest_entry(self) -> None:
+        def drop_lifecycle_doc(manifest: dict) -> None:
+            manifest["files_written"] = [
+                entry
+                for entry in manifest["files_written"]
+                if entry["target"] != "docs/context-graph-lifecycle.md"
+            ]
+
+        check = self._manifest_drift_check(drop_lifecycle_doc)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(
+            check["detail"]["missing_targets"], ["docs/context-graph-lifecycle.md"]
+        )
+
+    def test_release_readiness_fails_on_changed_manifest_source_mapping(self) -> None:
+        def rewrite_source(manifest: dict) -> None:
+            for entry in manifest["files_written"]:
+                if entry["target"] == "docs/context-graph-lifecycle.md":
+                    entry["source"] = "docs/graphify-evaluation.md"
+
+        check = self._manifest_drift_check(rewrite_source)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(
+            check["detail"]["changed_targets"], ["docs/context-graph-lifecycle.md"]
+        )
+
+    def test_release_readiness_fails_on_changed_manifest_kind_mapping(self) -> None:
+        def rewrite_kind(manifest: dict) -> None:
+            for entry in manifest["files_written"]:
+                if entry["target"] == "docs/context-graph-lifecycle.md":
+                    entry["kind"] = "source"
+
+        check = self._manifest_drift_check(rewrite_kind)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(
+            check["detail"]["changed_targets"], ["docs/context-graph-lifecycle.md"]
+        )
+
+    def test_release_readiness_fails_on_extra_manifest_entry(self) -> None:
+        def add_unexpected(manifest: dict) -> None:
+            manifest["files_written"].append(
+                {
+                    "target": "docs/not-packaged.md",
+                    "source": "docs/not-packaged.md",
+                    "kind": "doc",
+                }
+            )
+
+        check = self._manifest_drift_check(add_unexpected)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(check["detail"]["unexpected_targets"], ["docs/not-packaged.md"])
+
+    def test_release_readiness_fails_on_duplicate_manifest_targets(self) -> None:
+        def duplicate_row(manifest: dict) -> None:
+            rows = manifest["files_written"]
+            duplicated = next(
+                row
+                for row in rows
+                if row["target"] == "docs/context-graph-lifecycle.md"
+            )
+            rows.append(dict(duplicated))
+
+        check = self._manifest_drift_check(duplicate_row)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(
+            check["detail"]["duplicate_targets"], ["docs/context-graph-lifecycle.md"]
+        )
+        self.assertEqual(check["detail"]["missing_targets"], [])
+        self.assertEqual(check["detail"]["unexpected_targets"], [])
+        self.assertEqual(check["detail"]["changed_targets"], [])
+
+    def test_release_readiness_fails_on_non_object_manifest_row(self) -> None:
+        def replace_with_string(manifest: dict) -> None:
+            manifest["files_written"][0] = "docs/context-graph-lifecycle.md"
+
+        check = self._manifest_drift_check(replace_with_string)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("row 0 is not an object", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_manifest_row_missing_keys(self) -> None:
+        def drop_kind(manifest: dict) -> None:
+            manifest["files_written"][0].pop("kind")
+
+        check = self._manifest_drift_check(drop_kind)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("row 0 is missing kind", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_unexpected_manifest_row_key(self) -> None:
+        def add_key(manifest: dict) -> None:
+            manifest["files_written"][0]["mode"] = "0644"
+
+        check = self._manifest_drift_check(add_key)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("row 0 has unexpected mode", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_non_string_manifest_value(self) -> None:
+        def replace_kind(manifest: dict) -> None:
+            manifest["files_written"][0]["kind"] = ["doc"]
+
+        check = self._manifest_drift_check(replace_kind)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("row 0 has non-string kind", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_unexpected_top_level_manifest_field(self) -> None:
+        def add_field(manifest: dict) -> None:
+            manifest["generated_at"] = "2026-09-13T00:00:00Z"
+
+        check = self._manifest_drift_check(add_field)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("manifest has unexpected generated_at", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_missing_top_level_manifest_field(self) -> None:
+        def drop_output_dir(manifest: dict) -> None:
+            del manifest["output_dir"]
+
+        check = self._manifest_drift_check(drop_output_dir)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("manifest is missing output_dir", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_non_list_manifest_fields(self) -> None:
+        for field in ("files_written", "deferred_package_files"):
+            with self.subTest(field=field):
+                check = self._manifest_drift_check(
+                    lambda manifest, field=field: manifest.__setitem__(field, "everything")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(f"{field} is not a list", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_non_object_manifest_package_field(self) -> None:
+        check = self._manifest_drift_check(
+            lambda manifest: manifest.__setitem__("package", ["code-mower", "1.4.0"])
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("package is not an object", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_malformed_deferred_manifest_rows(self) -> None:
+        cases = {
+            "deferred_package_files row 0 is not an object": "docs/missing.md",
+            "deferred_package_files row 0 is missing reason": {
+                "target": "docs/missing.md",
+                "source": "docs/missing.md",
+            },
+            "deferred_package_files row 0 has unexpected kind": {
+                "target": "docs/missing.md",
+                "source": "docs/missing.md",
+                "reason": "absent",
+                "kind": "doc",
+            },
+            "deferred_package_files row 0 has non-string reason": {
+                "target": "docs/missing.md",
+                "source": "docs/missing.md",
+                "reason": ["absent"],
+            },
+        }
+        for problem, row in cases.items():
+            with self.subTest(problem=problem):
+                check = self._manifest_drift_check(
+                    lambda manifest, row=row: manifest.__setitem__(
+                        "deferred_package_files", [row]
+                    )
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(problem, check["detail"]["malformed_rows"])
+
+    def test_normalized_package_manifest_rejects_invalid_schemas(self) -> None:
+        for manifest in (
+            "not a manifest",
+            {"mode": "standalone"},
+            {
+                "mode": "standalone",
+                "package": {"version": 1},
+                "output_dir": "<generated-output-dir>",
+                "files_written": [],
+                "deferred_package_files": [],
+            },
+        ):
+            with self.subTest(manifest=manifest):
+                with self.assertRaises(code_mower_package.PackageManifestError) as raised:
+                    code_mower_package.normalized_package_manifest(manifest)
+                self.assertTrue(raised.exception.problems)
+
+    def test_packaged_graph_docs_link_target_is_packaged(self) -> None:
+        packaged = {target for _source, target, _kind in code_mower_package.PACKAGE_FILES}
+
+        self.assertIn("docs/context-graph-lifecycle.md", packaged)
+        self.assertTrue((ROOT / "docs" / "context-graph-lifecycle.md").is_file())
+        for doc in ("docs/graphify-evaluation.md", "docs/context-provider-contract.md"):
+            text = (ROOT / doc).read_text(encoding="utf-8")
+            if "context-graph-lifecycle.md" in text:
+                self.assertIn(doc, packaged)
+
+    def test_release_readiness_requires_the_ordered_post_merge_runbook(self) -> None:
+        payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        runbook = checks["post-merge-release-runbook-ordered"]
+
+        self.assertEqual(runbook["status"], "pass")
+        self.assertEqual(runbook["detail"]["missing_or_out_of_order"], [])
+        self.assertIn(
+            "-f publish_testpypi=false -f publish_pypi=true",
+            runbook["detail"]["required_commands"],
+        )
+        self.assertIn("gh release create v1.4.0", runbook["detail"]["required_commands"])
+        commands = {action["id"]: action["command"] for action in payload["next_actions"]}
+        self.assertIn("publish_pypi=true", commands["publish-pypi-release"])
+        self.assertIn("--name code-mower-dist", commands["compare-artifact-digests"])
+        self.assertIn("--verify-tag", commands["create-github-release"])
+
+    def test_release_readiness_fails_when_the_runbook_stops_at_testpypi(self) -> None:
+        docs = release_readiness._release_docs(ROOT)
+        docs["docs/pypi-release.md"] = docs["docs/pypi-release.md"].partition(
+            "### 7. Publish production PyPI only"
+        )[0]
+
+        with mock.patch.object(release_readiness, "_release_docs", return_value=docs):
+            payload = release_readiness.render_release_readiness(ROOT)
+
+        checks = {check["id"]: check for check in payload["checks"]}
+        runbook = checks["post-merge-release-runbook-ordered"]
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(runbook["status"], "fail")
+        self.assertIn(
+            "gh release create v1.4.0", runbook["detail"]["missing_or_out_of_order"]
+        )
+
+    def _runbook_section(self) -> str:
+        return release_readiness._document_section(
+            (ROOT / "docs" / "pypi-release.md").read_text(encoding="utf-8"),
+            f"## v1.4.0 {release_readiness.POST_MERGE_RUNBOOK_HEADING}",
+        )
+
+    def _asserted_runbook_check(self, mutate: Callable[[str], str]) -> dict:
+        docs = release_readiness._release_docs(ROOT)
+        docs["docs/pypi-release.md"] = mutate(docs["docs/pypi-release.md"])
+        with mock.patch.object(release_readiness, "_release_docs", return_value=docs):
+            payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        return checks["post-merge-release-runbook-asserted"]
+
+    def test_release_readiness_requires_asserted_release_gates(self) -> None:
+        payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        asserted = checks["post-merge-release-runbook-asserted"]
+        required = asserted["detail"]["required_assertions"]
+
+        self.assertEqual(asserted["status"], "pass")
+        self.assertEqual(asserted["detail"]["missing_assertions"], [])
+        self.assertEqual(asserted["detail"]["forbidden_commands"], [])
+        self.assertIn("--json mergeCommit --jq '.mergeCommit.oid'", required)
+        self.assertIn('test "$(git rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"', required)
+        self.assertIn('if run.get("headSha") != head_sha:', required)
+        self.assertIn("--set-transport devin=devin_api_v3", required)
+
+    def test_runbook_fetches_the_release_tag_into_the_release_checkout(self) -> None:
+        doc = (ROOT / "docs" / "pypi-release.md").read_text(encoding="utf-8")
+        fetch = (
+            'git -C "$RELEASE_CHECKOUT" fetch --no-tags origin '
+            '"+refs/tags/v1.4.0:refs/tags/v1.4.0"'
+        )
+        assertion = 'test "$(git -C "$RELEASE_CHECKOUT" rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"'
+
+        self.assertIn(fetch, doc)
+        self.assertLess(doc.index(fetch), doc.index(assertion))
+
+    def test_release_readiness_rejects_a_missing_release_tag_fetch(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                'git -C "$RELEASE_CHECKOUT" fetch --no-tags origin '
+                '"+refs/tags/v1.4.0:refs/tags/v1.4.0"\n',
+                "",
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+
+    def test_release_readiness_rejects_mutable_main_release_binding(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                "RELEASE_SHA=\"$(gh pr view \"$RELEASE_PR\" --repo \"$REPO\" \\\n"
+                "  --json mergeCommit --jq '.mergeCommit.oid')\"",
+                'RELEASE_SHA="$(git rev-parse origin/main)"',
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            'RELEASE_SHA="$(git rev-parse origin/main)"',
+            check["detail"]["forbidden_commands"],
+        )
+
+    def test_release_readiness_fails_when_job_posture_assertions_are_deleted(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                'problems.append(f"{job_name} is {actual}, expected skipped")',
+                "pass",
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            'problems.append(f"{job_name} is {actual}, expected skipped")',
+            check["detail"]["missing_assertions"],
+        )
+
+    def test_release_readiness_fails_when_a_run_assertion_is_dropped(self) -> None:
+        for removed in (
+            '"$NO_PUBLISH_RUN_ID" workflow_dispatch "$RELEASE_SHA" v1.4.0 skipped skipped',
+            '"$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" v1.4.0 success skipped',
+            '"$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" v1.4.0 skipped success',
+            '"$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" v1.4.0 skipped skipped',
+        ):
+            with self.subTest(removed=removed):
+                check = self._asserted_runbook_check(
+                    lambda doc, removed=removed: doc.replace(removed, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(removed, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_release_asset_gate_is_deleted(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                'problems.append("release asset SHA-256 values differ from the '
+                'PyPI-verified map")',
+                "pass",
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            'problems.append("release asset SHA-256 values differ from the '
+            'PyPI-verified map")',
+            check["detail"]["missing_assertions"],
+        )
+
+    def test_release_readiness_fails_when_republish_guard_is_deleted(self) -> None:
+        for assertion in (
+            '["gh", "api", f"repos/{repo}/actions/variables/{name}"]',
+            'if value is None or value.strip().lower() != "false"',
+            '"repository-scope publish variables must exist and equal false: "',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "pass")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_a_workflow_identity_assertion_is_deleted(
+        self,
+    ) -> None:
+        for assertion in (
+            'BUILD_JOBS = ("release-identity", "build-distributions", '
+            '"verify-distributions")',
+            'if str(run.get("databaseId")) != run_id:',
+            'if run.get("workflowName") != EXPECTED_WORKFLOW:',
+            'if run.get("event") != event:',
+            'if run.get("headSha") != head_sha:',
+            'if run.get("headBranch") != head_branch:',
+            'if run.get("status") != "completed" or run.get("conclusion") != "success":',
+            'problems.append(f"{job_name} is {actual}, expected success")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "pass")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_a_clean_release_sha_checkout(self) -> None:
+        for assertion in (
+            'git clone --no-checkout "https://github.com/$REPO.git" "$RELEASE_CHECKOUT"',
+            'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
+            'test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_a_board_doctor_assertion_is_deleted(self) -> None:
+        for assertion in (
+            '--json >"$BOARD_DOCTOR_DIR/5332.json"',
+            '--json >"$BOARD_DOCTOR_DIR/5342.json"',
+            '--json >"$BOARD_DOCTOR_DIR/5344.json"',
+            'if report.get("status") != owner_queue:',
+            'raise SystemExit(f"restarted Board doctors are not release-ready:'
+            ' {problems}")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "--json")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_the_campaign_gate_is_print_only(self) -> None:
+        for assertion in (
+            '>"$CAMPAIGN_DIR/watch.json"',
+            '>"$CAMPAIGN_DIR/status.json"',
+            'if required != REQUIRED_PROVIDERS:',
+            'if outcome not in PASSING_OUTCOMES:',
+            'if devin.get("driver") != "hosted_bridge"'
+            ' or devin.get("transport_verified") is not True:',
+            'raise SystemExit(f"release qualification campaign is not a pass: {problems}")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_a_metadata_upload_gate_is_deleted(self) -> None:
+        for assertion in (
+            '--team-id "$CODE_MOWER_CLOUD_TEAM_ID" --yes --json',
+            'if preview.get("status") != "dry_run" or preview.get("would_upload") is not False:',
+            'if preview_upload.get("report_count") != 0:',
+            'if applied.get("counts") != preview.get("counts"):',
+            'raise SystemExit(f"campaign metadata upload is not a verified gate: {problems}")',
+            '--install-id "$CODE_MOWER_INSTALL_ID" --yes --json',
+            'if event_types != ["board_snapshot"] or len(events) != 1:',
+            'if manifest.get("included_reports"):',
+            'raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_without_post_create_asset_verification(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace('assert_release_assets.py" created', "true")
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            'assert_release_assets.py" created', check["detail"]["missing_assertions"]
+        )
+
+    def test_release_readiness_requires_devin_owner_confirmation(self) -> None:
+        for assertion in (
+            'if permissions == "skip" and owner_confirmed != "confirmed":',
+            'if permissions not in {"pass", "skip"}:',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "if False:")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_an_isolated_fresh_source_install(self) -> None:
+        for assertion in (
+            "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS",
+            "-u PIP_NO_INDEX",
+            "--pip-args='--isolated --no-cache-dir'",
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_board_port_repository_binding(self) -> None:
+        for assertion in (
+            'and row.get("repo") == expected_repo',
+            'raise SystemExit("serving mode requires PORT=REPO for every port")',
+            '"5332=codemower-ai/code-mower" "5342=$BOARD_5342_REPO"'
+            ' "5344=$BOARD_5344_REPO"',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_board_doctor_schema_and_identity(self) -> None:
+        for assertion in (
+            'BOARD_DOCTOR_SCHEMA = "code_mower.boardDoctor.v1"',
+            'if report.get("schema") != BOARD_DOCTOR_SCHEMA:',
+            'if report.get("repo") != expected_repo:',
+            "missing = sorted(EXPECTED_CHECK_IDS - set(indexed))",
+            'failing = sorted(name for name in REQUIRED_PASS_CHECK_IDS'
+            ' if checks[name] != "pass")',
+            "owner_queue = checks[OWNER_QUEUE_CHECK_ID]",
+            "if owner_queue not in OWNER_QUEUE_STATUSES:",
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_campaign_schema_and_identity(self) -> None:
+        for assertion in (
+            'WATCH_SCHEMA = "code_mower.releaseCampaignWatch.v1"',
+            'if watch.get("schema") != WATCH_SCHEMA'
+            ' or watch.get("mode") != "release-campaign-watch":',
+            'if watch.get("status") != "complete"'
+            ' or watch.get("stop_reason") != "complete":',
+            'problems.append(f"watch {key} is {watch.get(key)!r},'
+            ' expected {expected!r}")',
+            'watch_lanes, watch_row_problems = exact_provider_rows('
+            'watch.get("providers"), "watch")',
+            'if watch_lanes is not None and set(watch_lanes) != REQUIRED_PROVIDERS:',
+            'CAMPAIGN_SCHEMA = "code_mower.releaseCampaign.v1"',
+            'if status.get("schema") != CAMPAIGN_SCHEMA:',
+            'if status.get("status") != "complete":',
+            'if status.get("dry_run") is not False:',
+            'lanes, lane_row_problems = exact_provider_rows('
+            'status.get("providers"), "campaign")',
+            'if lane.get("state") != "complete":',
+            'ADOPTION_RESULT_SCHEMA = "code_mower.adoptionResult.v1"',
+            'if result.get("schema") != ADOPTION_RESULT_SCHEMA:',
+            'problems.append(f"{name} lane result is not bound to {RELEASE_TAG}")',
+            'if result.get("provider") != name:',
+            'if result.get("qualification_context") != "cold_install":',
+            'if devin_ref.get("transport_kind") != "devin_api_v3":',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_upload_schema_counts_and_correlation(self) -> None:
+        for assertion in (
+            'CAMPAIGN_UPLOAD_SCHEMA = "code_mower.releaseCampaignUpload.v1"',
+            'if payload.get("schema") != CAMPAIGN_UPLOAD_SCHEMA:',
+            'if payload.get("mode") != "release-campaign-upload":',
+            'problems.append(f"{name} campaign identity is not the v1.4.0 campaign")',
+            'if payload.get("provider_postures") != EXPECTED_POSTURES:',
+            'if payload.get("counts") != EXPECTED_COUNTS:',
+            "if len(ids) != 3 or len(set(ids)) != 3 or not all(ids):",
+            'if preview_upload.get("event_types") != {"adoption_run": 3}:',
+            'if applied.get("requires_yes") is not False:',
+            'if not 200 <= int(applied_upload.get("status") or 0) < 300:',
+            'if [str(value) for value in applied.get("event_ids") or []]'
+            " != preview_events:",
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_board_snapshot_schema_assertions(self) -> None:
+        for assertion in (
+            'BUNDLE_SCHEMA = "code_mower.cloudBenchmarkBundle.v1"',
+            'if snapshot.get("mode") != "cloud-board-snapshot"'
+            ' or snapshot.get("status") != "dry_run":',
+            'EXPECTED_REPO_SLUG = "codemower-ai/code-mower"',
+            'if snapshot.get("repo_slug") != EXPECTED_REPO_SLUG:',
+            'if snapshot.get("event_count") != 1:',
+            'if export.get("event_types") != EXPECTED_EVENT_TYPES'
+            ' or export.get("included_reports"):',
+            'if manifest.get("schema") != BUNDLE_SCHEMA:',
+            'if manifest.get("repo_slug") != EXPECTED_REPO_SLUG:',
+            'if event.get("repo_slug") != EXPECTED_REPO_SLUG:',
+            'if preview.get("event_count") != len(events)'
+            ' or preview.get("event_count") != 1:',
+            # Generic `cloud upload --dry-run` emits no event-type map, so the
+            # exact event types come from the digest-bound manifest.
+            "if event_type_counts != EXPECTED_EVENT_TYPES:",
+            "current_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()",
+            "or current_digest != previewed_digest",
+            'before_preview = digest_of(cloud_dir / "board-bundle-before-preview.sha256")',
+            "if before_preview != after_preview or previewed_digest != before_preview:",
+            'SNAPSHOT_DOCTOR_PASSING = ("endpoint", "token", "bundle", "model-provenance")',
+            'if doctor_statuses.get("service") != "skip":',
+            'if event.get("schema") != EVENT_SCHEMA'
+            ' or not str(event.get("event_id") or ""):',
+            'if dimensions.get("snapshot_schema") != SNAPSHOT_SCHEMA:',
+            'if not 200 <= int(applied.get("status") or 0) < 300:',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_rejects_release_asset_clobbering(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                'assert_release_assets.py" existing',
+                'assert_release_assets.py" existing\ngh release upload v1.4.0 --clobber',
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("gh release upload", check["detail"]["forbidden_commands"])
+
+    def test_runbook_proves_testpypi_is_the_exclusive_candidate_source(self) -> None:
+        runbook = self._runbook_section()
+
+        self.assertIn(
+            "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS",
+            runbook,
+        )
+        self.assertIn("PIP_CONFIG_FILE=/dev/null", runbook)
+        self.assertIn(
+            "--index-url https://test.pypi.org/simple/ --dest \"$TESTPYPI_DIST_DIR\"",
+            runbook,
+        )
+        self.assertIn('--package-spec "$TESTPYPI_WHEEL"', runbook)
+        self.assertNotIn("--pip-extra-index-url https://pypi.org/simple/", runbook)
+
+    def test_runbook_production_steps_use_canonical_pypi_only(self) -> None:
+        runbook = self._runbook_section()
+        production = runbook.partition("### 7. Publish production PyPI only")[2]
+
+        self.assertIn("--pip-index-url https://pypi.org/simple/", production)
+        self.assertIn("--pip-no-cache", production)
+        self.assertIn(
+            "--index-url https://pypi.org/simple/ --dest \"$PYPI_DOWNLOAD_DIR\"",
+            production,
+        )
+        self.assertNotIn("test.pypi.org", production.partition("### 10.")[0])
+
+    def test_runbook_rehearsal_flags_exist_on_the_migration_cli(self) -> None:
+        runbook = self._runbook_section()
+        stream = StringIO()
+        with redirect_stdout(stream), self.assertRaises(SystemExit):
+            code_mower_migration.main(["package-install-rehearsal", "--help"])
+        help_text = stream.getvalue()
+
+        flags = {
+            token
+            for line in runbook.splitlines()
+            for token in line.split()
+            if token.startswith("--")
+        }
+        rehearsal_flags = {
+            flag
+            for flag in flags
+            if flag.startswith(("--package-spec", "--pip-", "--work-dir", "--python"))
+            # `--pip-args` belongs to pipx, not the rehearsal CLI.
+            and not flag.startswith("--pip-args")
+        }
+        self.assertIn("--package-spec", rehearsal_flags)
+        for flag in sorted(rehearsal_flags):
+            with self.subTest(flag=flag):
+                self.assertIn(flag, help_text)
+
+    def test_runbook_requires_hosted_devin_readiness_checks(self) -> None:
+        runbook = self._runbook_section()
+        required = {
+            "provider.devin.selection",
+            "provider.devin.capabilities",
+            "provider.devin.hosted_credentials",
+            "provider.devin.repository_scope",
+            "provider.devin.lifecycle",
+        }
+
+        self.assertIn("--set-transport devin=devin_api_v3", runbook)
+        self.assertIn(
+            'problems.append(f"Devin check {name!r} is {statuses.get(name)!r}")',
+            runbook,
+        )
+        self.assertIn(
+            'raise SystemExit(f"hosted Devin readiness is blocked: {problems}")',
+            runbook,
+        )
+        for check_id in sorted(required):
+            with self.subTest(check_id=check_id):
+                self.assertIn(check_id, runbook)
+        for private in ("provider-config-dir\"", "DEVIN_API_KEY="):
+            self.assertNotIn(private, runbook)
+
+    def test_runbook_board_restart_waits_and_polls_every_port(self) -> None:
+        runbook = self._runbook_section()
+        boards = runbook.partition("### 15. Restart the three Boards")[2]
+
+        self.assertIn(
+            'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)"'
+            ' = "$RELEASE_SHA"',
+            boards,
+        )
+        self.assertIn("code-mower board stop --port \"$BOARD_PORT\" --yes --json", boards)
+        self.assertIn('board_wait.py" gone "$BOARD_PORT"', boards)
+        self.assertIn('board_wait.py" serving \\', boards)
+        self.assertIn(
+            '"5332=codemower-ai/code-mower" "5342=$BOARD_5342_REPO"'
+            ' "5344=$BOARD_5344_REPO"',
+            boards,
+        )
+        self.assertIn('and row.get("repo") == expected_repo', boards)
+        self.assertIn(
+            'raise SystemExit("serving mode requires PORT=REPO for every port")',
+            boards,
+        )
+        self.assertIn("code-mower board doctor", boards)
+        self.assertNotIn("board reset --", boards)
+        self.assertNotIn("pkill", boards)
+        for port in ("5332", "5342", "5344"):
+            with self.subTest(port=port):
+                self.assertIn(port, boards)
+
+    def test_release_readiness_requires_duplicate_identity_rejection(self) -> None:
+        for assertion in (
+            'if name in indexed:',
+            'if check_id in indexed:',
+            'if name in statuses:',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "if False:")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_the_cloud_doctor_probe(self) -> None:
+        for assertion in (
+            'code-mower cloud doctor "$CLOUD_DOCTOR_BUNDLE_DIR"',
+            '--probe-service --json >"$CLOUD_DIR/doctor.json"',
+            'PASSING_CLOUD_CHECKS = ("endpoint", "service", "token")',
+            'EXPECTED_CLOUD_CHECKS = frozenset(PASSING_CLOUD_CHECKS) | {"bundle"}',
+            'if report.get("mode") != "cloud-doctor":',
+            'if report.get("failures") != 0:',
+            'problems.append(f"cloud doctor {name} check is {statuses.get(name)!r}")',
+            'raise SystemExit(f"cloud service readiness is not a pass: {problems}")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_private_cloud_identifiers(self) -> None:
+        runbook = self._runbook_section()
+
+        self.assertNotIn("jeff-internal", runbook)
+        self.assertNotIn("--install-id codex-code-mower", runbook)
+        for assertion in (
+            'test -n "$CODE_MOWER_CLOUD_TEAM_ID"',
+            'test -n "$CODE_MOWER_INSTALL_ID"',
+            '--install-id "$CODE_MOWER_INSTALL_ID"',
+            '--team-id "$CODE_MOWER_CLOUD_TEAM_ID"',
+        ):
+            with self.subTest(assertion=assertion):
+                self.assertIn(assertion, runbook)
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_rejects_printed_cloud_identifiers(self) -> None:
+        for printed in (
+            'echo "$CODE_MOWER_CLOUD_TEAM_ID"',
+            'echo "$CODE_MOWER_INSTALL_ID"',
+        ):
+            with self.subTest(printed=printed):
+                check = self._asserted_runbook_check(
+                    lambda doc, printed=printed: doc.replace(
+                        'test -n "$CODE_MOWER_INSTALL_ID"',
+                        f'test -n "$CODE_MOWER_INSTALL_ID"\n{printed}',
+                    )
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(printed, check["detail"]["forbidden_commands"])
+
+    def test_release_readiness_requires_isolation_at_every_pip_site(self) -> None:
+        runbook = self._runbook_section()
+        sites = [
+            (release_readiness._pip_command_kind(command), command)
+            for command in release_readiness._shell_commands(runbook)
+            if release_readiness._pip_command_kind(command)
+        ]
+        kinds = sorted(kind for kind, _ in sites)
+
+        self.assertEqual(
+            len(sites), release_readiness.PIP_ISOLATION_SITE_COUNT, sites
+        )
+        self.assertEqual(
+            kinds, ["pip"] * 5 + ["pipx"] + ["rehearsal"] * 2
+        )
+        self.assertEqual(
+            release_readiness._post_merge_pip_isolation_problems(runbook), []
+        )
+
+    def test_release_readiness_fails_when_a_pip_site_loses_isolation(self) -> None:
+        mutations = (
+            ("-u PIP_NO_INDEX", "", "does not set -u PIP_NO_INDEX"),
+            ("PIP_CONFIG_FILE=/dev/null", "", "does not set PIP_CONFIG_FILE=/dev/null"),
+            ("-m pip --isolated", "-m pip", "does not run an isolated pip"),
+            ("--backend pip", "", "does not use the pip backend"),
+            ("--pip-no-cache", "", "does not bypass the pip cache"),
+        )
+        for old, new, expected in mutations:
+            with self.subTest(expected=expected):
+                check = self._asserted_runbook_check(
+                    lambda doc, old=old, new=new: doc.replace(old, new)
+                )
+                problems = check["detail"]["pip_isolation_problems"]
+
+                self.assertEqual(check["status"], "fail")
+                self.assertTrue(
+                    any(problem.endswith(expected) for problem in problems), problems
+                )
+
+    def test_release_readiness_fails_when_a_pip_site_disappears(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                "PIP_CONFIG_FILE=/dev/null pipx install --force --backend pip",
+                "PIP_CONFIG_FILE=/dev/null true",
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            "expected 8 pip-backed commands, found 7",
+            check["detail"]["pip_isolation_problems"],
+        )
+
+    def test_ordered_runbook_bash_blocks_declare_the_fail_fast_contract(self) -> None:
+        blocks = re.findall(r"```bash\n(.*?)```", self._runbook_section(), flags=re.DOTALL)
+
+        self.assertTrue(blocks)
+        for index, block in enumerate(blocks, start=1):
+            with self.subTest(block=index):
+                self.assertEqual(block.splitlines()[0], "set -euo pipefail")
+
+    def test_the_fail_fast_contract_stops_a_masked_assertion(self) -> None:
+        script = 'test "a" = "b"\necho reached\n'
+        masked = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        guarded = subprocess.run(
+            ["bash", "-c", f"set -euo pipefail\n{script}"],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(masked.returncode, 0)
+        self.assertNotEqual(guarded.returncode, 0)
+        self.assertNotIn("reached", guarded.stdout)
+
+    def test_release_readiness_fails_when_a_bash_block_loses_fail_fast(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                "set -euo pipefail\nRELEASE_EVENT_RUN_ID=",
+                "RELEASE_EVENT_RUN_ID=",
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertTrue(
+            any(
+                "does not set -euo pipefail" in problem
+                for problem in check["detail"]["gate_order_problems"]
+            ),
+            check["detail"]["gate_order_problems"],
+        )
+
+    def test_release_readiness_fails_when_release_notes_are_not_checkout_bound(
+        self,
+    ) -> None:
+        for old, new in (
+            (
+                '--notes-file "$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+                "--notes-file docs/v140-release-notes.md",
+            ),
+            (
+                'problems.append("release body does not match the exact checkout release notes")',
+                "pass",
+            ),
+            (
+                'problems.append("release title is not the expected v1.4.0 title")',
+                "pass",
+            ),
+        ):
+            with self.subTest(old=old):
+                check = self._asserted_runbook_check(
+                    lambda doc, old=old, new=new: doc.replace(old, new)
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(old, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_cloud_identity_binding_is_deleted(
+        self,
+    ) -> None:
+        for assertion in (
+            ': "${CODE_MOWER_CLOUD_TEAM_ID:?private cloud team id is required}"',
+            ': "${CODE_MOWER_INSTALL_ID:?private cloud install id is required}"',
+            'case "$CODE_MOWER_CLOUD_TEAM_ID" in REPLACE_WITH_*) exit 1 ;; esac',
+            'case "$CODE_MOWER_INSTALL_ID" in REPLACE_WITH_*) exit 1 ;; esac',
+            'problems.append("the selected install profile stores a different install identity")',
+            'problems.append("the selected install profile stores a different team identity")',
+            'grep -q \'"cloud_identity": "bound"\' "$CLOUD_DIR/identity.json"',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_runbook_defines_every_variable_before_it_is_used(self) -> None:
+        runbook = self._runbook_section()
+
+        self.assertEqual(
+            release_readiness._post_merge_variable_flow_problems(runbook), []
+        )
+        self.assertNotIn("CODE_MOWER_RELEASE_CHECKOUT", runbook)
+
+    def test_release_readiness_fails_on_a_variable_used_before_assignment(
+        self,
+    ) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                '"$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+                '"$CODE_MOWER_RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertTrue(
+            any(
+                "CODE_MOWER_RELEASE_CHECKOUT is used before" in problem
+                for problem in check["detail"]["gate_order_problems"]
+            ),
+            check["detail"]["gate_order_problems"],
+        )
+
+    def test_release_readiness_fails_when_the_verified_artifact_map_is_bypassed(
+        self,
+    ) -> None:
+        for assertion in (
+            'PYPI_VERIFIED_MAP="$RELEASE_ENV/pypi-verified-artifacts.json"',
+            'test ! -e "$PYPI_VERIFIED_MAP"',
+            'problems.append("local artifacts differ from the PyPI-verified map")',
+            'problems.append("release asset SHA-256 values differ from the PyPI-verified map")',
+            "if remote_peeled_tag_sha(repo) != release_sha:",
+            'problems.append("remote v1.4.0 tag does not peel to the exact release commit")',
+            'assert_release_assets.py" pre-create',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_producer_owned_board_evidence_is_deleted(
+        self,
+    ) -> None:
+        for assertion in (
+            'problems.append("board snapshot does not report the inspected manifest identity")',
+            'problems.append("board upload preview does not report the inspected manifest identity")',
+            'problems.append("board applied upload does not report the previewed manifest identity")',
+            '--require-head-sha "$RELEASE_SHA" --require-clean',
+            'problems.append("board snapshot was not collected from the exact clean release checkout")',
+            'problems.append("board event does not carry the release checkout provenance")',
+            'raise SystemExit("a Board repository path does not match its paired slug")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_ambient_cloud_overrides_are_kept(
+        self,
+    ) -> None:
+        for assertion in (
+            "env -u CODE_MOWER_CLOUD_TOKEN -u CODE_MOWER_CLOUD_ENDPOINT",
+            'if resolution.source != "install_id":',
+            'grep -q \'"source": "install_id"\' "$CLOUD_DIR/identity.json"',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_runbook_dispatches_name_the_expected_release_commit(self) -> None:
+        runbook = self._runbook_section()
+
+        self.assertEqual(
+            runbook.count('\n  -f expected_sha="$RELEASE_SHA"\n'),
+            3,
+            "every workflow_dispatch must name the exact release commit",
+        )
+
+    def test_release_readiness_fails_when_a_dispatch_drops_the_expected_sha(
+        self,
+    ) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace('-f expected_sha="$RELEASE_SHA"', "")
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            '-f expected_sha="$RELEASE_SHA"', check["detail"]["missing_assertions"]
+        )
+
+    def _run_release_run_gate(self, run: dict, head_branch: str) -> subprocess.CompletedProcess:
+        snippet = self._runbook_python_snippet("BUILD_JOBS")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            stub = scratch / "gh"
+            stub.write_text(
+                "#!/bin/sh\n"
+                f"cat {shlex.quote(str(scratch / 'run.json'))}\n",
+                encoding="utf-8",
+            )
+            stub.chmod(0o755)
+            (scratch / "run.json").write_text(json.dumps(run), encoding="utf-8")
+            script = scratch / "assert_release_run.py"
+            script.write_text(snippet, encoding="utf-8")
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "codemower-ai/code-mower",
+                    "4242",
+                    "workflow_dispatch",
+                    "c0ffee",
+                    head_branch,
+                    "success",
+                    "skipped",
+                ],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PATH": f"{scratch}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+    def _release_run_payload(self, head_branch: str) -> dict:
+        return {
+            "databaseId": 4242,
+            "workflowName": "Code Mower Release",
+            "headSha": "c0ffee",
+            "headBranch": head_branch,
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "success",
+            "url": "https://example.invalid/run/4242",
+            "jobs": [
+                {"name": "release-identity", "conclusion": "success"},
+                {"name": "build-distributions", "conclusion": "success"},
+                {"name": "verify-distributions", "conclusion": "success"},
+                {"name": "publish-testpypi", "conclusion": "success"},
+                {"name": "publish-pypi", "conclusion": "skipped"},
+            ],
+        }
+
+    def test_release_run_gate_accepts_the_expected_tag_branch(self) -> None:
+        completed = self._run_release_run_gate(
+            self._release_run_payload("v1.4.0"), "v1.4.0"
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["head_branch"], "v1.4.0")
+
+    def test_release_run_gate_rejects_another_tag_on_the_same_commit(self) -> None:
+        completed = self._run_release_run_gate(
+            self._release_run_payload("v1.4.0rc1"), "v1.4.0"
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("head branch is v1.4.0rc1, not v1.4.0", completed.stderr)
+
+    def test_release_readiness_next_actions_supply_the_required_dispatch_sha(
+        self,
+    ) -> None:
+        payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        commands = {
+            action["id"]: action["command"] for action in payload["next_actions"]
+        }
+        dispatches = [
+            action
+            for action in payload["next_actions"]
+            if "gh workflow run release.yml" in action["command"]
+        ]
+
+        self.assertEqual(
+            checks["release-workflow-next-actions-dispatchable"]["status"], "pass"
+        )
+        self.assertEqual(len(dispatches), 3)
+        for action_id in (
+            "dry-run-release-workflow",
+            "publish-testpypi-candidate",
+            "publish-pypi-release",
+        ):
+            with self.subTest(action=action_id):
+                self.assertIn('-f expected_sha="$RELEASE_SHA"', commands[action_id])
+
+    def test_release_readiness_rejects_a_dispatch_action_without_the_expected_sha(
+        self,
+    ) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        payload = release_readiness.render_release_readiness(ROOT)
+
+        for action in payload["next_actions"]:
+            if "gh workflow run release.yml" not in action["command"]:
+                continue
+            with self.subTest(action=action["id"]):
+                stripped = [
+                    {
+                        **action,
+                        "command": action["command"].replace(
+                            ' -f expected_sha="$RELEASE_SHA"', ""
+                        ),
+                    }
+                ]
+
+                self.assertEqual(
+                    release_readiness._incomplete_dispatch_actions(workflow, stripped),
+                    [f"{action['id']} omits -f expected_sha="],
+                )
+
+    def test_public_release_docs_dispatch_every_required_workflow_input(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        docs = {
+            relative_path: (ROOT / relative_path).read_text(encoding="utf-8")
+            for relative_path in release_readiness.RELEASE_DOC_PATHS
+        }
+        documented = {
+            relative_path: release_readiness._documented_dispatch_commands(doc)
+            for relative_path, doc in docs.items()
+        }
+
+        self.assertEqual(
+            release_readiness._required_dispatch_inputs(workflow), ["expected_sha"]
+        )
+        self.assertEqual(len(documented["docs/first-user-install-rehearsal.md"]), 2)
+        self.assertEqual(len(documented["docs/pypi-release.md"]), 3)
+        self.assertEqual(
+            release_readiness._incomplete_documented_dispatches(workflow, docs), []
+        )
+        for relative_path, commands in documented.items():
+            for position, command in enumerate(commands, start=1):
+                with self.subTest(doc=relative_path, dispatch=position):
+                    self.assertIn('-f expected_sha="$RELEASE_SHA"', command)
+
+    def test_install_rehearsal_binds_the_exact_release_sha_before_dispatching(
+        self,
+    ) -> None:
+        doc = (ROOT / "docs" / "first-user-install-rehearsal.md").read_text(
+            encoding="utf-8"
+        )
+        binding = "RELEASE_SHA=\"$(git ls-remote \"https://github.com/$RELEASE_REPO.git\" \\"
+        assertion = "printf '%s' \"$RELEASE_SHA\" | grep -Eq '^[0-9a-f]{40}$'"
+
+        self.assertIn(binding, doc)
+        self.assertIn(assertion, doc)
+        self.assertLess(doc.index(assertion), doc.index("gh workflow run release.yml"))
+
+    def test_release_readiness_rejects_documented_dispatches_without_expected_sha(
+        self,
+    ) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        for relative_path in (
+            "docs/first-user-install-rehearsal.md",
+            "docs/pypi-release.md",
+        ):
+            with self.subTest(doc=relative_path):
+                docs = {
+                    path: (ROOT / path).read_text(encoding="utf-8")
+                    for path in release_readiness.RELEASE_DOC_PATHS
+                }
+                for pattern in (
+                    ' \\\n  -f expected_sha="$RELEASE_SHA"',
+                    ' -f expected_sha="$RELEASE_SHA"',
+                ):
+                    if pattern in docs[relative_path]:
+                        docs[relative_path] = docs[relative_path].replace(
+                            pattern, "", 1
+                        )
+                        break
+                problems = release_readiness._incomplete_documented_dispatches(
+                    workflow, docs
+                )
+
+                self.assertEqual(
+                    problems, [f"{relative_path} dispatch 1 omits -f expected_sha="]
+                )
+                with mock.patch.object(
+                    release_readiness, "_release_docs", return_value=docs
+                ):
+                    payload = release_readiness.render_release_readiness(ROOT)
+                checks = {check["id"]: check for check in payload["checks"]}
+
+                self.assertEqual(
+                    checks["release-workflow-next-actions-dispatchable"]["status"],
+                    "fail",
+                )
+
+    def _run_release_assets_gate(
+        self, mutate: Callable[[Path], None] | None = None
+    ) -> subprocess.CompletedProcess:
+        snippet = self._runbook_python_snippet('EXPECTED_TITLE = "Code Mower v1.4.0"')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkout = root / "checkout"
+            (checkout / "docs").mkdir(parents=True)
+            (checkout / "docs" / "v140-release-notes.md").write_text(
+                "Code Mower v1.4.0 release notes\n", encoding="utf-8"
+            )
+
+            def git(*args: str) -> str:
+                return subprocess.run(
+                    ["git", "-C", str(checkout), *args],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+
+            git("init")
+            git("config", "user.email", "release@example.invalid")
+            git("config", "user.name", "Release Bot")
+            # This temporary repository must not inherit an operator's global
+            # signing settings, which would make tag and commit creation
+            # prompt or fail here without saying anything about the runbook.
+            git("config", "tag.gpgSign", "false")
+            git("config", "commit.gpgSign", "false")
+            git("add", "docs/v140-release-notes.md")
+            git("commit", "-m", "notes")
+            git("tag", "v1.4.0")
+            release_sha = git("rev-parse", "HEAD")
+            dist = root / "dist"
+            dist.mkdir()
+            verified_map = {}
+            for name in (
+                "code_mower-1.4.0-py3-none-any.whl",
+                "code_mower-1.4.0.tar.gz",
+            ):
+                artifact = dist / name
+                artifact.write_bytes(name.encode("utf-8"))
+                verified_map[name] = hashlib.sha256(
+                    artifact.read_bytes()
+                ).hexdigest()
+            verified_path = root / "pypi-verified-artifacts.json"
+            verified_path.write_text(json.dumps(verified_map), encoding="utf-8")
+            stub_dir = root / "bin"
+            stub_dir.mkdir()
+            stub = stub_dir / "gh"
+            stub.write_text(
+                "#!/usr/bin/env bash\n"
+                f'printf \'{{"object": {{"type": "commit", "sha": "{release_sha}"}}}}\'\n',
+                encoding="utf-8",
+            )
+            stub.chmod(0o755)
+            if mutate is not None:
+                mutate(checkout)
+            script = root / "assert_release_assets.py"
+            script.write_text(snippet, encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(script), "pre-create"],
+                cwd=checkout,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
+                    "REPO": "codemower-ai/code-mower",
+                    "RELEASE_SHA": release_sha,
+                    "PYPI_VERIFIED_MAP": str(verified_path),
+                    "PROD_DIST_DIR": str(dist),
+                    "RELEASE_CHECKOUT": str(checkout),
+                },
+            )
+
+    def test_pre_create_gate_accepts_the_exact_clean_release_checkout(self) -> None:
+        completed = self._run_release_assets_gate()
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertTrue(payload["checkout_match"])
+        self.assertTrue(payload["notes_present"])
+
+    def test_pre_create_gate_is_hermetic_under_global_tag_signing(self) -> None:
+        with tempfile.TemporaryDirectory() as config_home:
+            global_config = Path(config_home) / "gitconfig"
+            global_config.write_text(
+                "[tag]\n\tgpgSign = true\n[commit]\n\tgpgSign = true\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "GIT_CONFIG_GLOBAL": str(global_config),
+                    "GIT_CONFIG_SYSTEM": os.devnull,
+                },
+            ):
+                completed = self._run_release_assets_gate()
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(json.loads(completed.stdout)["checkout_match"])
+
+    def test_pre_create_gate_rejects_a_late_release_checkout_mutation(self) -> None:
+        cases = {
+            "modified notes": (
+                lambda checkout: (checkout / "docs" / "v140-release-notes.md").write_text(
+                    "rewritten notes\n", encoding="utf-8"
+                ),
+                "release checkout has uncommitted or untracked changes",
+            ),
+            "untracked file": (
+                lambda checkout: (checkout / "docs" / "extra.md").write_text(
+                    "untracked\n", encoding="utf-8"
+                ),
+                "release checkout has uncommitted or untracked changes",
+            ),
+            "moved head": (
+                lambda checkout: self._advance_checkout_head(checkout),
+                "release checkout is not the exact release commit",
+            ),
+        }
+        for label, (mutate, expected) in cases.items():
+            with self.subTest(case=label):
+                completed = self._run_release_assets_gate(mutate)
+
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn(expected, completed.stderr)
+                self.assertNotIn("sha256_match", completed.stdout)
+
+    def _advance_checkout_head(self, checkout: Path) -> None:
+        (checkout / "docs" / "later.md").write_text("later\n", encoding="utf-8")
+        for args in (
+            ("add", "docs/later.md"),
+            ("commit", "-m", "later"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(checkout), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+    def test_release_readiness_fails_when_the_late_release_checkout_gate_is_deleted(
+        self,
+    ) -> None:
+        for assertion in (
+            'test -s "$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+            'problems.append("release checkout is not the exact release commit")',
+            'problems.append("release checkout has uncommitted or untracked changes")',
+            'problems.append("release notes in the exact checkout are empty")',
+            "notes_path = checkout / RELEASE_NOTES_RELPATH",
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_the_late_gate_moves_behind_the_release(
+        self,
+    ) -> None:
+        runbook = self._runbook_section()
+        self.assertEqual(
+            release_readiness._release_create_binding_problems(runbook), []
+        )
+
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                'test -s "$RELEASE_CHECKOUT/docs/v140-release-notes.md"\n'
+                'test -s "$PYPI_VERIFIED_MAP"\n'
+                'if gh release view v1.4.0 --repo "$REPO" >/dev/null 2>&1; then',
+                'test -s "$RELEASE_CHECKOUT/docs/v140-release-notes.md"\n'
+                'test -s "$PYPI_VERIFIED_MAP"\n'
+                'echo "about to release"\n'
+                'if gh release view v1.4.0 --repo "$REPO" >/dev/null 2>&1; then',
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertTrue(
+            any(
+                "not re-bound immediately" in problem
+                for problem in check["detail"]["gate_order_problems"]
+            ),
+            check["detail"]["gate_order_problems"],
+        )
+
+    def _runbook_python_snippet(self, marker: str) -> str:
+        snippets = [
+            snippet
+            for snippet in re.findall(
+                r"<<'PY'\n(.*?)\nPY\n", self._runbook_section(), flags=re.DOTALL
+            )
+            if marker in snippet
+        ]
+        self.assertEqual(len(snippets), 1, f"expected one snippet with {marker!r}")
+        return snippets[0]
+
+    def _run_runbook_snippet(
+        self, snippet: str, env: dict[str, str]
+    ) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-c", snippet],
+            capture_output=True,
+            text=True,
+            env={**os.environ, **env},
+        )
+
+    def _campaign_watch_payload(self) -> dict:
+        return {
+            "schema": "code_mower.releaseCampaignWatch.v1",
+            "mode": "release-campaign-watch",
+            "campaign_id": "campaign-v1.4.0",
+            "release_tag": "v1.4.0",
+            "package_identity": "code-mower",
+            "qualification_context": "cold_install",
+            "status": "complete",
+            "stop_reason": "complete",
+            "providers": [
+                {
+                    "provider": name,
+                    "posture": "required",
+                    "state": "complete",
+                    "error": None,
+                }
+                for name in ("claude", "codex", "devin")
+            ],
+        }
+
+    def _campaign_lane_payload(self, provider: str) -> dict:
+        lane = {
+            "provider": provider,
+            "posture": "required",
+            "state": "complete",
+            "dispatch_mode": "applied",
+            "error": None,
+            "adoption_result": {
+                "schema": "code_mower.adoptionResult.v1",
+                "provider": provider,
+                "release_tag": "v1.4.0",
+                "package_identity": "code-mower",
+                "normalized_version": "1.4.0",
+                "qualification_context": "cold_install",
+                "outcome": "pass",
+            },
+        }
+        if provider == "devin":
+            lane["driver"] = "hosted_bridge"
+            lane["transport_verified"] = True
+            lane["dispatch_ref"] = {"transport_kind": "devin_api_v3"}
+        return lane
+
+    def _campaign_status_payload(self) -> dict:
+        return {
+            "schema": "code_mower.releaseCampaign.v1",
+            "campaign_id": "campaign-v1.4.0",
+            "release_tag": "v1.4.0",
+            "package_identity": "code-mower",
+            "package_spec": "code-mower==1.4.0",
+            "normalized_version": "1.4.0",
+            "qualification_context": "cold_install",
+            "package_source": "pypi",
+            "repo_slug": "codemower-ai/code-mower",
+            "status": "complete",
+            "dry_run": False,
+            "provider_posture_configured": True,
+            "providers": [
+                self._campaign_lane_payload(name)
+                for name in ("claude", "codex", "devin")
+            ],
+        }
+
+    def _run_campaign_gate(
+        self, watch: dict, status: dict
+    ) -> subprocess.CompletedProcess:
+        snippet = self._runbook_python_snippet("exact_provider_rows")
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign_dir = Path(tmp)
+            (campaign_dir / "watch.json").write_text(
+                json.dumps(watch), encoding="utf-8"
+            )
+            (campaign_dir / "status.json").write_text(
+                json.dumps(status), encoding="utf-8"
+            )
+            return self._run_runbook_snippet(
+                snippet, {"CAMPAIGN_DIR": str(campaign_dir)}
+            )
+
+    def test_runbook_campaign_gate_accepts_the_required_campaign(self) -> None:
+        result = self._run_campaign_gate(
+            self._campaign_watch_payload(), self._campaign_status_payload()
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["campaign"], "complete")
+
+    def test_runbook_campaign_gate_rejects_a_passing_duplicate_lane(self) -> None:
+        for surface in ("watch", "status"):
+            with self.subTest(surface=surface):
+                watch = self._campaign_watch_payload()
+                status = self._campaign_status_payload()
+                if surface == "watch":
+                    failing = dict(watch["providers"][2], state="error", error="boom")
+                    watch["providers"] = [
+                        watch["providers"][0],
+                        watch["providers"][1],
+                        failing,
+                        watch["providers"][2],
+                    ]
+                else:
+                    failing = dict(status["providers"][2], state="error", error="boom")
+                    status["providers"] = [
+                        status["providers"][0],
+                        status["providers"][1],
+                        failing,
+                        status["providers"][2],
+                    ]
+
+                result = self._run_campaign_gate(watch, status)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("appears more than once", result.stderr)
+
+    def test_runbook_campaign_gate_rejects_malformed_or_unknown_rows(self) -> None:
+        cases = {
+            "malformed": ["claude", {"provider": "codex"}, {"provider": "devin"}],
+            "unknown": [
+                {"provider": "gemini"},
+                {"provider": "codex"},
+                {"provider": "devin"},
+            ],
+            "missing": [{"provider": "codex"}, {"provider": "devin"}],
+        }
+        for label, rows in cases.items():
+            with self.subTest(rows=label):
+                status = self._campaign_status_payload()
+                status["providers"] = rows
+
+                result = self._run_campaign_gate(
+                    self._campaign_watch_payload(), status
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("campaign provider", result.stderr)
+
+    def test_runbook_campaign_gate_rejects_an_unbound_adoption_result(self) -> None:
+        for field, value in (
+            ("provider", "claude"),
+            ("qualification_context", "warm_install"),
+        ):
+            with self.subTest(field=field):
+                status = self._campaign_status_payload()
+                status["providers"][2]["adoption_result"][field] = value
+
+                result = self._run_campaign_gate(
+                    self._campaign_watch_payload(), status
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("devin lane result", result.stderr)
+
+    def _board_doctor_report(
+        self, repo: str, *, owner_queue: str = "pass", status: str | None = None
+    ) -> dict:
+        checks = [
+            {"id": check_id, "status": "pass"}
+            for check_id in (
+                "repo.path",
+                "github.remote",
+                "gate.health",
+                "store.events",
+                "agent.adapters",
+                "spend.timeline",
+            )
+        ]
+        checks.append({"id": "owner.queue", "status": owner_queue})
+        return {
+            "schema": "code_mower.boardDoctor.v1",
+            "repo": repo,
+            "status": status or owner_queue,
+            "checks": checks,
+        }
+
+    def _run_board_doctor_gate(
+        self, reports: dict[str, dict]
+    ) -> subprocess.CompletedProcess:
+        snippet = self._runbook_python_snippet("exact_doctor_checks")
+        with tempfile.TemporaryDirectory() as tmp:
+            doctor_dir = Path(tmp)
+            for port, report in reports.items():
+                (doctor_dir / f"{port}.json").write_text(
+                    json.dumps(report), encoding="utf-8"
+                )
+            return self._run_runbook_snippet(
+                snippet,
+                {
+                    "BOARD_DOCTOR_DIR": str(doctor_dir),
+                    "BOARD_5332_REPO": "codemower-ai/code-mower",
+                    "BOARD_5342_REPO": "private-owner/second",
+                    "BOARD_5344_REPO": "private-owner/third",
+                },
+            )
+
+    def _board_doctor_reports(self, **overrides: dict) -> dict[str, dict]:
+        reports = {
+            "5332": self._board_doctor_report("codemower-ai/code-mower"),
+            "5342": self._board_doctor_report("private-owner/second"),
+            "5344": self._board_doctor_report("private-owner/third"),
+        }
+        reports.update(overrides)
+        return reports
+
+    def test_runbook_board_doctor_gate_allows_only_a_queued_owner_warning(self) -> None:
+        passing = self._run_board_doctor_gate(self._board_doctor_reports())
+        warned = self._run_board_doctor_gate(
+            self._board_doctor_reports(
+                **{
+                    "5342": self._board_doctor_report(
+                        "private-owner/second", owner_queue="warn"
+                    )
+                }
+            )
+        )
+
+        self.assertEqual(passing.returncode, 0, passing.stderr)
+        self.assertEqual(warned.returncode, 0, warned.stderr)
+        self.assertEqual(
+            json.loads(warned.stdout)["board_doctors_release_ready"],
+            ["5332", "5342", "5344"],
+        )
+
+    def test_runbook_board_doctor_gate_rejects_unrelated_degradation(self) -> None:
+        degraded = self._board_doctor_report("private-owner/second")
+        degraded["checks"][2]["status"] = "warn"
+        degraded["status"] = "warn"
+
+        result = self._run_board_doctor_gate(
+            self._board_doctor_reports(**{"5342": degraded})
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("gate.health", result.stderr)
+
+    def test_runbook_board_doctor_gate_requires_the_owner_queue_verdict(self) -> None:
+        mismatched = self._board_doctor_report(
+            "private-owner/second", owner_queue="warn", status="pass"
+        )
+
+        result = self._run_board_doctor_gate(
+            self._board_doctor_reports(**{"5342": mismatched})
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("expected 'warn'", result.stderr)
+
+    def test_runbook_board_doctor_gate_rejects_a_passing_duplicate_check(self) -> None:
+        duplicated = self._board_doctor_report("private-owner/second")
+        duplicated["checks"].insert(0, {"id": "gate.health", "status": "fail"})
+
+        result = self._run_board_doctor_gate(
+            self._board_doctor_reports(**{"5342": duplicated})
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("appears more than once", result.stderr)
+
+    def test_runbook_board_doctor_gate_rejects_an_incomplete_inventory(self) -> None:
+        cases = {}
+        missing = self._board_doctor_report("private-owner/second")
+        missing["checks"] = missing["checks"][1:]
+        cases["missing"] = missing
+        unknown = self._board_doctor_report("private-owner/second")
+        unknown["checks"].append({"id": "owner.mood", "status": "pass"})
+        cases["unknown"] = unknown
+        malformed = self._board_doctor_report("private-owner/second")
+        malformed["checks"].append("gate.health=pass")
+        cases["malformed"] = malformed
+
+        for label, report in cases.items():
+            with self.subTest(report=label):
+                result = self._run_board_doctor_gate(
+                    self._board_doctor_reports(**{"5342": report})
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("5342 doctor", result.stderr)
+
+    def _cloud_doctor_report(self, checks: list[dict] | None = None, **overrides) -> dict:
+        report = {
+            "mode": "cloud-doctor",
+            "status": "pass",
+            "failures": 0,
+            "warnings": 1,
+            "checks": checks
+            if checks is not None
+            else [
+                {"name": "endpoint", "status": "pass"},
+                {"name": "service", "status": "pass"},
+                {"name": "token", "status": "pass"},
+                {"name": "bundle", "status": "warn"},
+            ],
+        }
+        report.update(overrides)
+        return report
+
+    def _run_cloud_doctor_gate(self, report: dict) -> subprocess.CompletedProcess:
+        snippet = self._runbook_python_snippet("PASSING_CLOUD_CHECKS")
+        with tempfile.TemporaryDirectory() as tmp:
+            cloud_dir = Path(tmp)
+            (cloud_dir / "doctor.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+            return self._run_runbook_snippet(snippet, {"CLOUD_DIR": str(cloud_dir)})
+
+    def test_runbook_cloud_doctor_gate_tolerates_the_missing_bundle_warning(self) -> None:
+        result = self._run_cloud_doctor_gate(self._cloud_doctor_report())
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["cloud_doctor"], "pass")
+
+    def test_runbook_cloud_doctor_gate_rejects_a_degraded_service(self) -> None:
+        cases = {
+            "mode": self._cloud_doctor_report(mode="cloud-dogfood"),
+            "status": self._cloud_doctor_report(status="fail"),
+            "failures": self._cloud_doctor_report(failures=1),
+            "service": self._cloud_doctor_report(
+                [
+                    {"name": "endpoint", "status": "pass"},
+                    {"name": "service", "status": "fail"},
+                    {"name": "token", "status": "pass"},
+                ]
+            ),
+            "missing": self._cloud_doctor_report(
+                [
+                    {"name": "endpoint", "status": "pass"},
+                    {"name": "token", "status": "pass"},
+                ]
+            ),
+            "duplicate": self._cloud_doctor_report(
+                [
+                    {"name": "endpoint", "status": "pass"},
+                    {"name": "service", "status": "fail"},
+                    {"name": "service", "status": "pass"},
+                    {"name": "token", "status": "pass"},
+                ]
+            ),
+        }
+        for label, report in cases.items():
+            with self.subTest(report=label):
+                result = self._run_cloud_doctor_gate(report)
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("cloud", result.stderr)
+
+    def _board_snapshot_fixtures(self) -> tuple[dict, dict, dict, dict]:
+        snapshot = {
+            "mode": "cloud-board-snapshot",
+            "status": "dry_run",
+            "repo_slug": "codemower-ai/code-mower",
+            "event_count": 1,
+            "export": {"event_types": {"board_snapshot": 1}, "included_reports": 0},
+            "git": dict(BOARD_GATE_PROVENANCE),
+            "upload": {"endpoint": CLOUD_ENDPOINT},
+            "doctor": {
+                "mode": "cloud-doctor",
+                "status": "pass",
+                "failures": 0,
+                "endpoint": CLOUD_ENDPOINT,
+                "checks": [
+                    {"name": "endpoint", "status": "pass"},
+                    {"name": "service", "status": "skip"},
+                    {"name": "token", "status": "pass"},
+                    {"name": "bundle", "status": "pass"},
+                    {"name": "model-provenance", "status": "pass"},
+                ],
+            },
+        }
+        manifest = {
+            "schema": "code_mower.cloudBenchmarkBundle.v1",
+            "repo_slug": "codemower-ai/code-mower",
+            "included_reports": 0,
+            "events": [
+                {
+                    "schema": "code_mower.benchmarkEvent.v1",
+                    "event_id": "evt-board-1",
+                    "event_type": "board_snapshot",
+                    "repo_slug": "codemower-ai/code-mower",
+                    "dimensions": {
+                        "snapshot_schema": "code_mower.cloudBoardSnapshot.v1",
+                        "source_git": dict(BOARD_GATE_PROVENANCE),
+                    },
+                }
+            ],
+        }
+        preview = {
+            "mode": "cloud-upload-dry-run",
+            "would_upload": False,
+            "requires_yes": True,
+            "upload_mode": "metadata_only",
+            "report_count": 0,
+            "event_count": 1,
+            "endpoint": CLOUD_ENDPOINT,
+        }
+        applied = {
+            "mode": "cloud-upload",
+            "status": 200,
+            "endpoint": CLOUD_ENDPOINT,
+        }
+        return snapshot, manifest, preview, applied
+
+    def _run_board_snapshot_gate(
+        self,
+        snapshot: dict,
+        manifest: dict,
+        preview: dict,
+        applied: dict,
+        *,
+        phase: str = "preflight",
+        snapshot_identity: dict | None = None,
+        preview_identity: dict | None = None,
+        preview_swap: dict | None = None,
+        pre_apply_swap: dict | None = None,
+        during_apply_swap: dict | None = None,
+    ) -> subprocess.CompletedProcess:
+        marker = (
+            "board snapshot preview is not an acceptable payload"
+            if phase == "preflight"
+            else "board snapshot upload is not a verified"
+        )
+        snippet = self._runbook_python_snippet(marker)
+        with tempfile.TemporaryDirectory() as tmp:
+            cloud_dir = Path(tmp) / "cloud"
+            bundle_dir = Path(tmp) / "bundle"
+            cloud_dir.mkdir()
+            bundle_dir.mkdir()
+            (cloud_dir / "doctor.json").write_text(
+                json.dumps({"endpoint": CLOUD_ENDPOINT}), encoding="utf-8"
+            )
+            (cloud_dir / "board-snapshot.json").write_text(
+                json.dumps(snapshot), encoding="utf-8"
+            )
+            (cloud_dir / "board-preview.json").write_text(
+                json.dumps(preview), encoding="utf-8"
+            )
+            (cloud_dir / "board-applied.json").write_text(
+                json.dumps(applied), encoding="utf-8"
+            )
+            manifest_path = bundle_dir / "code-mower-cloud-bundle.json"
+
+            def write_digest(name: str) -> str:
+                digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+                (cloud_dir / name).write_text(
+                    f"{digest}  {manifest_path}\n", encoding="utf-8"
+                )
+                return digest
+
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            reported = _reported_manifest_identity(manifest_path.read_bytes())
+            snapshot = {**snapshot, "manifest": snapshot_identity or reported}
+            preview = {**preview, "manifest": preview_identity or reported}
+            (cloud_dir / "board-snapshot.json").write_text(
+                json.dumps(snapshot), encoding="utf-8"
+            )
+            (cloud_dir / "board-preview.json").write_text(
+                json.dumps(preview), encoding="utf-8"
+            )
+            write_digest("board-bundle-before-preview.sha256")
+            if preview_swap is not None:
+                manifest_path.write_text(json.dumps(preview_swap), encoding="utf-8")
+            previewed = write_digest("board-bundle-after-preview.sha256")
+            (cloud_dir / "board-preflight.json").write_text(
+                json.dumps(
+                    {
+                        "board_preview": "accepted",
+                        "previewed_digest": previewed,
+                        "previewed_identity": preview_identity or reported,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (cloud_dir / "board-applied.json").write_text(
+                json.dumps({**applied, "manifest": preview_identity or reported}),
+                encoding="utf-8",
+            )
+            if pre_apply_swap is not None:
+                manifest_path.write_text(json.dumps(pre_apply_swap), encoding="utf-8")
+            write_digest("board-bundle-before-apply.sha256")
+            if during_apply_swap is not None:
+                manifest_path.write_text(
+                    json.dumps(during_apply_swap), encoding="utf-8"
+                )
+            write_digest("board-bundle-after-apply.sha256")
+            return self._run_runbook_snippet(
+                snippet,
+                {
+                    "CLOUD_DIR": str(cloud_dir),
+                    "BOARD_SNAPSHOT_DIR": str(bundle_dir),
+                    "RELEASE_SHA": BOARD_GATE_PROVENANCE["head_sha"],
+                },
+            )
+
+    def test_runbook_board_snapshot_gate_accepts_the_release_bundle(self) -> None:
+        fixtures = self._board_snapshot_fixtures()
+
+        preflight = self._run_board_snapshot_gate(*fixtures)
+        applied = self._run_board_snapshot_gate(*fixtures, phase="applied")
+
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        self.assertEqual(json.loads(preflight.stdout)["board_preview"], "accepted")
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertEqual(json.loads(applied.stdout)["board_upload"], "accepted")
+
+    def test_runbook_board_snapshot_gate_rejects_foreign_checkout_provenance(
+        self,
+    ) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        wrong_head = copy.deepcopy(snapshot)
+        wrong_head["git"]["head_sha"] = "c" * 40
+        dirty = copy.deepcopy(snapshot)
+        dirty["git"].update({"clean": False, "dirty_entry_count": 2})
+
+        for mutated in (wrong_head, dirty):
+            with self.subTest(head=mutated["git"]["head_sha"]):
+                result = self._run_board_snapshot_gate(
+                    mutated, manifest, preview, applied
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(
+                    "board snapshot was not collected from the exact clean "
+                    "release checkout",
+                    result.stderr,
+                )
+
+    def test_runbook_board_snapshot_gate_rejects_producer_identity_disagreement(
+        self,
+    ) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        other = copy.deepcopy(manifest)
+        other["events"][0]["event_id"] = "evt-board-2"
+        substituted = _reported_manifest_identity(
+            json.dumps(other).encode("utf-8")
+        )
+
+        snapshot_mismatch = self._run_board_snapshot_gate(
+            snapshot, manifest, preview, applied, snapshot_identity=substituted
+        )
+        preview_mismatch = self._run_board_snapshot_gate(
+            snapshot, manifest, preview, applied, preview_identity=substituted
+        )
+
+        self.assertEqual(snapshot_mismatch.returncode, 1)
+        self.assertIn(
+            "board snapshot does not report the inspected manifest identity",
+            snapshot_mismatch.stderr,
+        )
+        self.assertEqual(preview_mismatch.returncode, 1)
+        self.assertIn(
+            "board upload preview does not report the inspected manifest identity",
+            preview_mismatch.stderr,
+        )
+
+    def test_runbook_board_snapshot_gate_rejects_a_swapped_bundle(self) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        swapped = copy.deepcopy(manifest)
+        swapped["events"][0]["event_id"] = "evt-board-2"
+
+        during_preview = self._run_board_snapshot_gate(
+            snapshot, manifest, preview, applied, preview_swap=swapped
+        )
+        before_apply = self._run_board_snapshot_gate(
+            snapshot,
+            manifest,
+            preview,
+            applied,
+            phase="applied",
+            pre_apply_swap=swapped,
+        )
+        during_apply = self._run_board_snapshot_gate(
+            snapshot,
+            manifest,
+            preview,
+            applied,
+            phase="applied",
+            during_apply_swap=swapped,
+        )
+
+        self.assertEqual(during_preview.returncode, 1)
+        self.assertIn(
+            "board bundle changed while the preview was generated",
+            during_preview.stderr,
+        )
+        for result in (before_apply, during_apply):
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "board bundle changed between the preview and the applied upload",
+                result.stderr,
+            )
+
+    def test_runbook_board_snapshot_gate_rejects_a_nested_doctor_failure(self) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        cases = {}
+        for label, status in (("failed", "fail"), ("warned", "warn")):
+            degraded = copy.deepcopy(snapshot)
+            degraded["doctor"]["checks"][4]["status"] = status
+            cases[label] = degraded
+        probing = copy.deepcopy(snapshot)
+        probing["doctor"]["checks"][1]["status"] = "pass"
+        cases["service_not_skipped"] = probing
+        missing = copy.deepcopy(snapshot)
+        missing["doctor"]["checks"] = missing["doctor"]["checks"][:4]
+        cases["missing"] = missing
+        unknown = copy.deepcopy(snapshot)
+        unknown["doctor"]["checks"].append({"name": "owner.mood", "status": "pass"})
+        cases["unknown"] = unknown
+        duplicate = copy.deepcopy(snapshot)
+        duplicate["doctor"]["checks"].insert(0, {"name": "token", "status": "fail"})
+        cases["duplicate"] = duplicate
+        malformed = copy.deepcopy(snapshot)
+        malformed["doctor"]["checks"].append("token=pass")
+        cases["malformed"] = malformed
+        elsewhere = copy.deepcopy(snapshot)
+        elsewhere["doctor"]["endpoint"] = "https://other.example.invalid"
+        cases["endpoint"] = elsewhere
+
+        for label, candidate in cases.items():
+            with self.subTest(doctor=label):
+                result = self._run_board_snapshot_gate(
+                    candidate, manifest, preview, applied
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("board snapshot doctor", result.stderr)
+
+    def test_runbook_board_snapshot_gate_rejects_an_extra_event(self) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        padded = copy.deepcopy(manifest)
+        padded["events"].append("board_snapshot")
+
+        result = self._run_board_snapshot_gate(snapshot, padded, preview, applied)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("exactly one structured event", result.stderr)
+
+    def test_runbook_board_snapshot_gate_rejects_another_repository(self) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        foreign_manifest = copy.deepcopy(manifest)
+        foreign_manifest["repo_slug"] = "private-owner/second"
+        foreign_event = copy.deepcopy(manifest)
+        foreign_event["events"][0]["repo_slug"] = "private-owner/second"
+
+        for label, candidate in (
+            ("bundle", foreign_manifest),
+            ("event", foreign_event),
+        ):
+            with self.subTest(surface=label):
+                result = self._run_board_snapshot_gate(
+                    snapshot, candidate, preview, applied
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(
+                    f"board {label} is not bound to the release repository",
+                    result.stderr,
+                )
+
+    def test_runbook_board_snapshot_gate_rejects_uncorrelated_previews(self) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        cases = {
+            "event_count": dict(preview, event_count=2),
+        }
+        for label, candidate in cases.items():
+            with self.subTest(preview=label):
+                result = self._run_board_snapshot_gate(
+                    snapshot, manifest, candidate, applied
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("board preview event", result.stderr)
 
     def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
@@ -7926,20 +10759,20 @@ def main():
             "v1.0.0-rc.1",
         )
         self.assertEqual(
-            release_readiness._release_tag_for_version("1.3.1"),
-            "v1.3.1",
+            release_readiness._release_tag_for_version("1.4.0"),
+            "v1.4.0",
         )
         self.assertEqual(
-            code_mower_versioning.release_tag_for_version("1.3.1"),
-            "v1.3.1",
+            code_mower_versioning.release_tag_for_version("1.4.0"),
+            "v1.4.0",
         )
 
     def test_public_release_baseline_helpers_derive_announcement_links(self) -> None:
         self.assertEqual(
             code_mower_versioning.public_baseline_sentence(__version__),
             (
-                "The current package-index release baseline is `v1.3.1`, "
-                "with pinned package install spec `code-mower==1.3.1`. "
+                "The current package-index release baseline is `v1.4.0`, "
+                "with pinned package install spec `code-mower==1.4.0`. "
                 "Release evidence is recorded on the GitHub release and in the "
                 "first-user install rehearsal."
             ),
@@ -7948,7 +10781,7 @@ def main():
             code_mower_versioning.tagged_doc_url(__version__),
             (
                 "https://github.com/codemower-ai/code-mower/blob/"
-                "v1.3.1/docs/try-in-10-minutes.md"
+                "v1.4.0/docs/try-in-10-minutes.md"
             ),
         )
 
@@ -8001,12 +10834,12 @@ def main():
 
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         sessions = (ROOT / "docs" / "sessions.md").read_text(encoding="utf-8")
-        release_notes = (ROOT / "docs" / "v131-release-notes.md").read_text(
+        release_notes = (ROOT / "docs" / "v140-release-notes.md").read_text(
             encoding="utf-8"
         )
         self.assertIn("Documentation on `main` follows the source on `main`", readme)
-        self.assertIn("available in `code-mower==1.3.1`", sessions)
-        self.assertIn("# Code Mower v1.3.1 Release Notes", release_notes)
+        self.assertIn("available in `code-mower==1.4.0`", sessions)
+        self.assertIn("# Code Mower v1.4.0 Release Notes", release_notes)
         self.assertIn("The privacy boundary is unchanged.", release_notes)
         release_history = (ROOT / "docs" / "release-history.md").read_text(
             encoding="utf-8"
@@ -8028,8 +10861,8 @@ def main():
             release_history.index("[v1.2.0 release notes](v12-release-notes.md)"),
         )
         self.assertLess(
+            release_history.index("[v1.4.0 release notes](v140-release-notes.md)"),
             release_history.index("[v1.3.1 release notes](v131-release-notes.md)"),
-            release_history.index("[v1.3.0 release notes](v130-release-notes.md)"),
         )
 
     def test_current_release_docs_record_package_index_procedure(self) -> None:
@@ -8052,15 +10885,15 @@ def main():
         )
 
         current_status = (
-            "The current package-index release baseline is `v1.3.1`, with "
-            "pinned package install spec `code-mower==1.3.1`. Release "
+            "The current package-index release baseline is `v1.4.0`, with "
+            "pinned package install spec `code-mower==1.4.0`. Release "
             "evidence is recorded on the GitHub release and in the first-user "
             "install rehearsal."
         )
         for text in (readme, current_state, rollout):
             self.assertIn(current_status, " ".join(text.split()))
         self.assertIn(
-            "The current package-index release entrypoint is `code-mower==1.3.1`",
+            "The current package-index release entrypoint is `code-mower==1.4.0`",
             public_release,
         )
         self.assertIn("The current supervised-pilot release includes", public_release)
@@ -8070,7 +10903,7 @@ def main():
         )
 
         self.assertIn(
-            "The current public-release baseline is `v1.3.1`",
+            "The current public-release baseline is `v1.4.0`",
             oss_checklist,
         )
         self.assertIn(
@@ -8091,9 +10924,16 @@ def main():
         self.assertIn("## Stable Package-Index Release Procedure", first_user)
         self.assertIn("## Cache-Bypass And Local Wheel Checks", first_user)
         self.assertIn("## Cache Bypass And Propagation Triage", pypi_release)
+        self.assertIn("PIP_NO_CACHE_DIR=1 pipx install --force", first_user)
+        self.assertIn(
+            "PIP_CONFIG_FILE=/dev/null pipx install --force --backend pip",
+            pypi_release,
+        )
         for text in (first_user, pypi_release):
-            self.assertIn("PIP_NO_CACHE_DIR=1 pipx install --force", text)
-            self.assertIn("--reinstall --refresh-package code-mower", text)
+            # `--refresh-package` refreshes metadata only, so the cache-bypass
+            # contract is the isolated, uncached, explicitly indexed install.
+            self.assertNotIn("--reinstall --refresh-package code-mower", text)
+            self.assertIn("uv --no-config --no-cache tool install", text)
             self.assertIn("dist/code_mower-*.whl", text)
             self.assertIn("no matching distribution", text)
         self.assertIn(
@@ -8101,7 +10941,7 @@ def main():
             " ".join(first_user.split()),
         )
         self.assertIn("never substitute mutable `main`", first_user)
-        self.assertEqual(first_user.count("  --ref v1.3.1 \\"), 2)
+        self.assertEqual(first_user.count("  --ref v1.4.0 \\"), 2)
         self.assertNotIn("  --ref main \\", first_user)
         self.assertIn("-f publish_testpypi=true", first_user)
         self.assertIn("-f publish_pypi=false", first_user)
@@ -8113,23 +10953,23 @@ def main():
             first_user,
         )
         self.assertNotIn(
-            "The latest public-package rehearsal for `v1.3.1` was run",
+            "The latest public-package rehearsal for `v1.4.0` was run",
             first_user,
         )
-        self.assertNotIn("TestPyPI is not\npublished for `1.3.1`", first_user)
+        self.assertNotIn("TestPyPI is not\npublished for `1.4.0`", first_user)
         for text in (readme, current_state, rollout):
             self.assertNotIn(
-                "published on PyPI as `code-mower==1.3.1`",
+                "published on PyPI as `code-mower==1.4.0`",
                 text,
             )
             self.assertNotIn(
                 "latest 10/10 public-package readiness proof for "
-                "`code-mower==1.3.1`",
+                "`code-mower==1.4.0`",
                 text,
             )
             self.assertNotIn(
                 "public PyPI package-install rehearsal from "
-                "`code-mower==1.3.1`",
+                "`code-mower==1.4.0`",
                 text,
             )
             self.assertNotIn("beta.52: 10/10 first-user readiness", text)
@@ -8434,7 +11274,7 @@ def main():
 
         self.assertIn("Python 3.12 or newer", install)
         self.assertIn('pipx install --python "$CODE_MOWER_PYTHON"', install)
-        self.assertIn("uv tool install --python 3.12 code-mower==1.3.1", install)
+        self.assertIn("uv tool install --python 3.12 code-mower==1.4.0", install)
         self.assertIn(
             'PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON"',
             install,
@@ -8521,7 +11361,7 @@ def main():
             "docs/provider-matrix.md": ROOT / "docs" / "provider-matrix.md",
         }
         stale_phrases = (
-            "pipx install --python python3.12 code-mower==1.3.1",
+            "pipx install --python python3.12 code-mower==1.4.0",
             "Use only after TestPyPI passes.",
             "future newest betas until 1.0",
             "during v0.7 adoption",
@@ -8817,7 +11657,7 @@ def main():
             "doctor --adoption --repo codemower-ai/code-mower",
             doctor_step["command"],
         )
-        self.assertIn("code-mower==1.3.1", package_step["command"])
+        self.assertIn("code-mower==1.4.0", package_step["command"])
         self.assertIn("--allow-package-index", package_step["command"])
         self.assertIn("current published PyPI package", package_step["why"])
         self.assertIn("first_user_readiness", package_step["why"])

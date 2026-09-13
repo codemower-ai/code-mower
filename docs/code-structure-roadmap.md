@@ -22,7 +22,7 @@ of the domain behavior:
 - package and migration helpers own generated files, setup drift, rehearsals,
   and mirror-removal support.
 
-Some root modules are still large. Approximate sizes at v1.3.1 are useful as
+Some root modules are still large. Approximate sizes at v1.4.0 are useful as
 orientation, not as an API promise:
 
 | Module | Lines | Main responsibility |

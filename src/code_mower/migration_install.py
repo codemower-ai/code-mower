@@ -16,6 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
+
 from .git_identity import scratch_git_config_commands
 
 #: Closed taxonomy for package-install failure reasons. Always one of these
@@ -31,13 +35,6 @@ PACKAGE_INSTALL_FAILURE_REASONS = frozenset(
     }
 )
 
-# Grammar for the one exact package-index spec shape a candidate-only download
-# accepts: <name>==<version>. Anything else (ranges, extras, paths, URLs) has
-# no single artifact a downloaded file could be checked against, so it is
-# refused rather than downloaded.
-_EXACT_NAME_VERSION_SPEC_PATTERN = re.compile(
-    r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)==(?P<version>[A-Za-z0-9.]+)$"
-)
 # Wheel and sdist filenames as pip/setuptools emit them: the distribution name
 # and version are escaped (runs of ``-_.`` collapsed to ``_``) ahead of a
 # fixed suffix -- wheel tags for a wheel, ``.tar.gz``/``.zip`` for an sdist.
@@ -433,39 +430,91 @@ def _pip_install_command(
 
 def _normalize_distribution_name(name: str) -> str:
     """PEP 503 normalization, so a spec and a downloaded filename agree on identity."""
-    return re.sub(r"[-_.]+", "-", name.strip()).lower()
+    return canonicalize_name(name.strip())
 
 
 def _parse_exact_name_version_spec(package_spec: str) -> tuple[str, str]:
     """Parse a candidate-only download spec into ``(identity, version)``.
 
-    Only the exact ``<name>==<version>`` shape has one artifact a downloaded
-    file can be checked against; anything else is refused rather than
-    downloaded, matching :func:`_package_spec_uses_package_index`'s refusal of
-    inexact specs elsewhere in this module.
+    Only one exact, non-wildcard ``==`` requirement for a single distribution,
+    with no extras, URL, marker, or additional specifier, has one artifact a
+    downloaded file can be checked against; anything else is refused rather
+    than downloaded, matching :func:`_package_spec_uses_package_index`'s
+    refusal of inexact specs elsewhere in this module. The returned version is
+    the PEP 440 normal form of the requested version.
     """
-    match = _EXACT_NAME_VERSION_SPEC_PATTERN.match(package_spec.strip())
-    if not match:
-        raise ValueError(
-            "candidate-only download requires an exact <name>==<version> spec, "
-            f"got: {package_spec!r}"
-        )
-    return _normalize_distribution_name(match.group("name")), match.group("version")
+    text = package_spec.strip()
+    refusal = ValueError(
+        "candidate-only download requires an exact <name>==<version> spec, "
+        f"got: {package_spec!r}"
+    )
+    try:
+        requirement = Requirement(text)
+    except InvalidRequirement as error:
+        raise refusal from error
+    if requirement.url or requirement.extras or requirement.marker:
+        raise refusal
+    specifiers = list(requirement.specifier)
+    if len(specifiers) != 1:
+        raise refusal
+    specifier = specifiers[0]
+    if specifier.operator != "==" or specifier.version.endswith(".*"):
+        raise refusal
+    try:
+        version = Version(specifier.version)
+    except InvalidVersion as error:
+        raise refusal from error
+    return _normalize_distribution_name(requirement.name), str(version)
 
 
 def _parse_downloaded_artifact_identity(filename: str) -> tuple[str, str]:
     """Parse a downloaded wheel/sdist filename into ``(identity, version)``.
 
     Raises ``ValueError`` for any filename that is not a recognized wheel or
-    sdist shape, so a candidate-only download can fail closed on a malformed
-    artifact instead of accepting it on faith.
+    sdist shape, or whose version is not a valid PEP 440 version, so a
+    candidate-only download can fail closed on a malformed artifact instead of
+    accepting it on faith. The returned version is the PEP 440 normal form, so
+    a filename-escaped spelling still compares equal to the requested version.
     """
     match = _WHEEL_FILENAME_PATTERN.match(filename) or _SDIST_FILENAME_PATTERN.match(filename)
     if not match:
         raise ValueError(
             f"downloaded candidate artifact has an unrecognized filename: {filename!r}"
         )
-    return _normalize_distribution_name(match.group("name")), match.group("version")
+    try:
+        version = Version(match.group("version"))
+    except InvalidVersion as error:
+        raise ValueError(
+            f"downloaded candidate artifact has an unrecognized filename: {filename!r}"
+        ) from error
+    return _normalize_distribution_name(match.group("name")), str(version)
+
+
+def requested_candidate_version(package_spec: str, *, distribution: str = "code-mower") -> str:
+    """Return the exact ``distribution`` version a rehearsal spec requested.
+
+    Returns an empty string for any spec whose candidate version is not
+    derivable -- a source tree, a URL, an inexact requirement, or an artifact
+    naming another distribution -- so callers can bind the version only when
+    the spec itself establishes it.
+    """
+    candidate_text = package_spec.strip()
+    if not candidate_text:
+        return ""
+    expected_identity = _normalize_distribution_name(distribution)
+    if _package_spec_uses_package_index(candidate_text):
+        try:
+            identity, version = _parse_exact_name_version_spec(candidate_text)
+        except ValueError:
+            return ""
+    else:
+        try:
+            identity, version = _parse_downloaded_artifact_identity(
+                Path(candidate_text).name
+            )
+        except ValueError:
+            return ""
+    return version if identity == expected_identity else ""
 
 
 def _pip_download_candidate_command(

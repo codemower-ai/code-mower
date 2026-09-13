@@ -83,12 +83,19 @@ from .events import (
     validate_cloud_event,
 )
 from .git_metadata import (
+    checkout_provenance,
     detect_repo_slug,
+    git_top_level,
+    materialized_commit_source,
     repo_slug_from_remote,
+    require_checkout_provenance,
     run_git,
 )
 from .manifest import (
+    UPLOAD_IDENTITY_SCHEMA,
+    bundle_manifest_identity,
     load_bundle_manifest,
+    read_bundle_manifest,
     report_path_from_manifest,
 )
 from .reports import included_report_payloads
@@ -127,6 +134,7 @@ from .tokens import (
     default_token_dir,
     display_token_path,
     read_token_profile,
+    require_cloud_profile_identity,
     require_upload_token,
     resolve_cloud_endpoint,
     resolve_cloud_identity,
@@ -183,6 +191,7 @@ from .upload import (
     build_event_upload_payload,
     build_upload_payload,
     build_upload_payload_from_manifest,
+    build_upload_payload_with_identity,
     post_upload_payload,
 )
 from .work_types import (
@@ -284,6 +293,14 @@ __all__ = [
     "build_event_upload_payload",
     "build_upload_payload",
     "build_upload_payload_from_manifest",
+    "build_upload_payload_with_identity",
+    "bundle_manifest_identity",
+    "checkout_provenance",
+    "git_top_level",
+    "materialized_commit_source",
+    "require_checkout_provenance",
+    "read_bundle_manifest",
+    "UPLOAD_IDENTITY_SCHEMA",
     "build_board_snapshot_event",
     "build_provenance_summary",
     "board_snapshot_upload",
@@ -322,6 +339,7 @@ __all__ = [
     "repo_sync_output_name",
     "repo_sync_upload",
     "report_path_from_manifest",
+    "require_cloud_profile_identity",
     "require_upload_token",
     "resolve_cloud_endpoint",
     "resolve_cloud_identity",

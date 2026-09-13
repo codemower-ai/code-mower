@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -39,16 +40,27 @@ from .pr_outcomes import (
 )
 from .export import build_cloud_bundle
 from .events import safe_event_type
-from .git_metadata import detect_repo_slug
+from .git_metadata import (
+    checkout_provenance,
+    detect_repo_slug,
+    git_top_level,
+    materialized_commit_source,
+    require_checkout_provenance,
+)
 from .productivity_windows import load_productivity_window_events
 from .tokens import (
     CloudTokenResolution,
+    require_cloud_profile_identity,
     require_upload_token,
     resolve_cloud_endpoint,
     resolve_cloud_identity,
     resolve_cloud_token,
 )
-from .upload import build_upload_payload, post_upload_payload
+from .upload import (
+    build_upload_payload,
+    build_upload_payload_with_identity,
+    post_upload_payload,
+)
 
 
 CATCH_UP_TRUST_GUIDANCE = {
@@ -307,10 +319,20 @@ def board_snapshot_upload(
     workflow_limit: int = 20,
     stale_minutes: int = 30,
     event_limit: int = 20,
+    require_head_sha: str = "",
+    require_clean: bool = False,
     yes: bool,
     timeout: float,
 ) -> dict[str, Any]:
     repo_path = repo_path.expanduser().resolve()
+    provenance_required = bool(require_head_sha.strip() or require_clean)
+    if provenance_required:
+        # A strict snapshot is attributed to one repository and commit, so the
+        # canonical repository root is resolved before anything repository
+        # relative is derived. A nested path and the root then produce the same
+        # default live metadata inputs rather than two snapshots that differ
+        # while claiming the same provenance.
+        repo_path = git_top_level(repo_path, required=True)
     detected_repo_slug = repo_slug or detect_repo_slug(repo_path)
     if not detected_repo_slug:
         raise CloudBundleError(
@@ -339,14 +361,50 @@ def board_snapshot_upload(
         stale_minutes=stale_minutes,
         event_limit=event_limit,
     )
-    snapshot = board.status_payload(config)
-    snapshot["timelines"] = board.timelines_payload(config)
+    # The checkout must be clean at the required commit before collection, and
+    # strict collection then reads a private materialization of that exact
+    # commit, so no state other than the required commit can be measured.
+    provenance = checkout_provenance(repo_path, required=provenance_required)
+    require_checkout_provenance(
+        provenance,
+        expected_head_sha=require_head_sha,
+        require_clean=require_clean,
+    )
+    if provenance_required:
+        # Tracked and source-derived data is read from a private read-only
+        # checkout materialized from the required commit, so a tracked file
+        # that changes and is restored in the original during collection cannot
+        # be observed. The live Code Mower metadata inputs stay bound to the
+        # original checkout explicitly rather than following the new repo path.
+        metadata_paths = board.resolved_metadata_paths(config)
+        with materialized_commit_source(repo_path, provenance["head_sha"]) as stable_path:
+            stable_config = replace(
+                config,
+                repo_path=str(stable_path),
+                **metadata_paths,
+            )
+            snapshot = board.status_payload(stable_config)
+            snapshot["timelines"] = board.timelines_payload(stable_config)
+    else:
+        snapshot = board.status_payload(config)
+        snapshot["timelines"] = board.timelines_payload(config)
+    collected_provenance = checkout_provenance(repo_path, required=provenance_required)
+    if collected_provenance != provenance:
+        raise CloudBundleError(
+            "source checkout changed while the Board snapshot was collected"
+        )
+    require_checkout_provenance(
+        collected_provenance,
+        expected_head_sha=require_head_sha,
+        require_clean=require_clean,
+    )
     event = build_board_snapshot_event(
         repo_slug=detected_repo_slug,
         team_id=resolved_team_id,
         install_id=resolved_install_id,
         source=source,
         snapshot=snapshot,
+        git_provenance=provenance,
     )
     export_result = build_cloud_bundle(
         reports=[],
@@ -373,9 +431,39 @@ def board_snapshot_upload(
             "repo_slug": detected_repo_slug,
             "event_count": 1,
             "export": export_result,
+            "git": provenance,
             "doctor": doctor_result,
         }
-    payload = build_upload_payload(bundle_dir=output_dir, include_reports=False)
+    # The manifest identity is derived from the same bytes the payload was
+    # built from, so the snapshot names the exact manifest it just wrote.
+    payload, manifest_identity = build_upload_payload_with_identity(
+        bundle_dir=output_dir,
+        include_reports=False,
+    )
+    if manifest_identity != export_result["manifest_identity"]:
+        raise CloudBundleError(
+            "the exported Board snapshot manifest was replaced before upload"
+        )
+    # The install profile is resolved again from disk and the exported bundle's
+    # own identity is validated against it, so a profile replaced after this
+    # command started cannot preview or post this payload with another token.
+    upload_resolution, upload_endpoint = _resolve_upload_profile(
+        endpoint=endpoint,
+        token_env=token_env,
+        token_file=token_file,
+        token_dir=token_dir,
+        install_id=install_id,
+    )
+    if upload_endpoint != resolved_endpoint:
+        raise CloudBundleError(
+            "the resolved cloud endpoint changed while the Board snapshot was "
+            "exported; re-select the install profile and retry"
+        )
+    require_cloud_profile_identity(
+        team_id=str(payload.get("team_id") or ""),
+        install_id=str(payload.get("install_id") or ""),
+        resolution=upload_resolution,
+    )
     if not yes:
         return {
             "mode": "cloud-board-snapshot",
@@ -383,6 +471,8 @@ def board_snapshot_upload(
             "repo_slug": detected_repo_slug,
             "event_count": 1,
             "export": export_result,
+            "git": provenance,
+            "manifest": manifest_identity,
             "doctor": doctor_result,
             "upload": build_dogfood_dry_run_preview(
                 endpoint=resolved_endpoint,
@@ -391,7 +481,7 @@ def board_snapshot_upload(
         }
     token = require_upload_token(
         endpoint=resolved_endpoint,
-        resolution=token_resolution,
+        resolution=upload_resolution,
         local_endpoint=is_local_http_endpoint(resolved_endpoint),
     )
     return {
@@ -400,6 +490,8 @@ def board_snapshot_upload(
         "repo_slug": detected_repo_slug,
         "event_count": 1,
         "export": export_result,
+        "git": provenance,
+        "manifest": manifest_identity,
         "doctor": doctor_result,
         "upload": post_upload_payload(
             payload=payload,

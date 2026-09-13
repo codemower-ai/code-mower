@@ -18,7 +18,7 @@ from .endpoints import validate_upload_endpoint
 from .errors import CloudBundleError
 from .events import normalize_event, validate_cloud_event
 from .export import build_provenance_summary
-from .manifest import load_bundle_manifest
+from .manifest import bundle_manifest_identity, load_bundle_manifest, read_bundle_manifest
 from .reports import included_report_payloads
 
 
@@ -84,6 +84,34 @@ def build_upload_payload(
         ),
         include_reports=include_reports,
     )
+
+
+def build_upload_payload_with_identity(
+    *,
+    bundle_dir: Path,
+    include_reports: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return an upload payload plus the identity of the bytes it was built from.
+
+    The payload and its manifest digest/event identity come from a single read,
+    so a same-shape manifest substituted after the read cannot be reported as
+    the thing that was previewed or submitted.
+    """
+
+    bundle_dir = bundle_dir.expanduser()
+    if not bundle_dir.is_dir():
+        raise CloudBundleError(f"bundle directory does not exist: {bundle_dir}")
+    manifest, manifest_bytes = read_bundle_manifest(bundle_dir)
+    payload = build_upload_payload_from_manifest(
+        manifest,
+        reports=included_report_payloads(
+            manifest,
+            bundle_dir,
+            include_reports=include_reports,
+        ),
+        include_reports=include_reports,
+    )
+    return payload, bundle_manifest_identity(manifest, manifest_bytes)
 
 
 def build_event_upload_payload(
