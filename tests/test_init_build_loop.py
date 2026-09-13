@@ -268,8 +268,18 @@ class InitBuildLoopTests(unittest.TestCase):
                 "configured_trusted_authors=${LANE_TRUSTED_AUTHORS:-''}",
                 runner_text,
             )
-            self.assertNotIn("grok-bot[bot]", runner_text)
-            self.assertNotIn("cursor[bot]", runner_text)
+            # cursor has no local runner, so it is neither a runnable lane nor
+            # in builder_labels_json, but its provenance still takes part in
+            # cross-builder conflict detection.
+            self.assertNotIn("cursor/", runner_text)
+            self.assertIn(
+                """provenance_labels_json='{"builder:claude":"claude","builder:codex":"codex","builder:cursor":"cursor","builder:grok-bot":"cursor"}'""",
+                runner_text,
+            )
+            self.assertIn(
+                """builder_authors_json='{"chatgpt-codex-connector[bot]":"codex","claude[bot]":"claude","cursor[bot]":"cursor","grok-bot[bot]":"cursor"}'""",
+                runner_text,
+            )
             self.assertIn("remote_repo_slug()", runner_text)
             self.assertIn('install_pre_push_guard "$target_pr_branch" "$mode"', runner_text)
             self.assertIn(

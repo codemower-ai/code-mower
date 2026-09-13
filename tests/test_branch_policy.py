@@ -418,10 +418,49 @@ printf 'fake codex completed\\n'
                       f"{JIRA_TEMPLATE} (pattern {policy.pattern}, for example {policy.example})",
                       prompt)
         self.assertIn("push exactly the branch fix/12-nv-accessible-label", prompt)
-        # Write authority is the exact resolved branch, never the policy regex.
+        # Write authority is the exact resolved branch, never the policy regex
+        # and not the lane's ordinary prefixes either: a policy-bound issue run
+        # may push no other name.
         self.assertEqual(guard["allowed_branch"], "fix/12-nv-accessible-label")
         self.assertNotIn("allowed_pattern", guard)
-        self.assertEqual(guard["allowed_prefixes"], ["codex/"])
+        self.assertEqual(guard["allowed_prefixes"], [])
+
+    def test_runner_without_policy_keeps_lane_prefix_write_authority(self) -> None:
+        _runner, text = self._generate(_config_with_policy(None))
+        self.assertIn(
+            'allowed_prefixes: (if $mode == "audit" or $policy_branch != "" then [] else (.[$lane] // []) end)',
+            text,
+        )
+        for path in (ROOT / "tools/lanes/run_mac_lane.sh",
+                     ROOT / "templates/lanes/run_mac_lane.sh",
+                     ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh"):
+            with self.subTest(path=path.name):
+                self.assertIn('or $policy_branch != "" then []', path.read_text(encoding="utf-8"))
+
+    def test_runner_embeds_provenance_for_every_configured_builder_lane(self) -> None:
+        # cursor is a configured builder without a local runner. Its labels and
+        # authors still take part in conflict detection; execution eligibility
+        # (the lane case and builder_labels_json) stays limited to local lanes.
+        _runner, text = self._generate(_config_with_policy())
+        self.assertIn('case "$LANE" in codex|claude)', text)
+        self.assertIn(
+            """builder_labels_json='{"claude":"builder:claude","codex":"builder:codex"}'""",
+            text,
+        )
+        provenance = next(row for row in text.splitlines() if row.startswith("provenance_labels_json="))
+        self.assertEqual(
+            json.loads(provenance[len("provenance_labels_json="):].strip("'")),
+            {"builder:claude": "claude", "builder:codex": "codex",
+             "builder:cursor": "cursor", "builder:grok-bot": "cursor"},
+        )
+        authors = next(row for row in text.splitlines() if row.startswith("builder_authors_json="))
+        self.assertEqual(
+            json.loads(authors[len("builder_authors_json="):].strip("'")),
+            {"chatgpt-codex-connector[bot]": "codex", "claude[bot]": "claude",
+             "cursor[bot]": "cursor", "grok-bot[bot]": "cursor"},
+        )
+        # A builder that is not configured at all contributes no provenance.
+        self.assertNotIn("devin-ai-integration", text)
 
     def test_label_alone_or_author_alone_is_sufficient_lane_provenance(self) -> None:
         for own in (
@@ -437,8 +476,13 @@ printf 'fake codex completed\\n'
         cases = {
             "cross_builder_label": self._pr(77, branch, labels=("builder:claude",)),
             "cross_builder_author": self._pr(77, branch, author="claude[bot]"),
+            "nonlocal_builder_label": self._pr(77, branch, labels=("builder:cursor",)),
+            "nonlocal_builder_author": self._pr(77, branch, author="cursor[bot]"),
             "human": self._pr(77, branch),
             "conflicting_signals": self._pr(77, branch, labels=("builder:codex",), author="claude[bot]"),
+            "conflict_with_nonlocal_author": self._pr(77, branch, labels=("builder:codex",), author="cursor[bot]"),
+            "conflict_with_nonlocal_alias_label": self._pr(
+                77, branch, labels=("builder:codex", "builder:grok-bot"), author="chatgpt-codex-connector[bot]"),
             "fork_head": self._pr(77, branch, labels=("builder:codex",), repo="fork/repo"),
             "other_policy_branch": self._pr(77, "fix/12-something-else", labels=("builder:codex",)),
             "lane_prefix_not_policy_branch": self._pr(77, "codex/issue-12", labels=("builder:codex",)),

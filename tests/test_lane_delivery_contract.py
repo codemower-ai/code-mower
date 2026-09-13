@@ -2012,12 +2012,11 @@ class PrePushGuardTests(unittest.TestCase):
             repo, branch="fix/MB-9506-nv-accessible-label", local=SHA_B, remote=SHA_A
         )
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
-        # Lane prefixes still work alongside the policy branch, and other names
-        # do not -- including other branches that match the same policy.
-        pushed = self._push(repo, branch="claude/751-work", local=SHA_B, remote=SHA_A)
-        self.assertEqual(pushed.returncode, 0, pushed.stderr)
-        for foreign in ("fix/MB-9506-nv-accessible-labels", "fix/MB-9507-nv-accessible-label",
-                        "fix/MB-9506", "muse/MB-9506-x"):
+        # The resolved branch is the whole allowance: the lane's own prefixes
+        # grant nothing while a policy branch is set (even if a stale config
+        # still lists them), and neither do other branches matching the policy.
+        for foreign in ("claude/751-work", "fix/MB-9506-nv-accessible-labels",
+                        "fix/MB-9507-nv-accessible-label", "fix/MB-9506", "muse/MB-9506-x"):
             with self.subTest(branch=foreign):
                 pushed = self._push(repo, branch=foreign, local=SHA_B, remote=SHA_A)
                 self.assertEqual(pushed.returncode, 1)

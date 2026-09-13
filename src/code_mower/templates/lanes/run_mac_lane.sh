@@ -157,17 +157,20 @@ if [ -n "$repo_branch_pattern" ]; then
     || { echo "${LANE}: refusing to run; branch policy for ${REPO} is not a usable pattern" >&2; exit 2; }
 fi
 
-# Builder provenance for PR ownership. builder_labels_json maps lanes to their
-# builder labels and builder_authors_json maps the authenticated PR authors
-# builder_identity knows to lanes. A PR is this lane's only when at least one
-# of those signals maps to this lane and none maps to another lane; a branch
-# name, including one that merely matches the repository policy, never grants
-# ownership or write authority by itself.
+# Builder provenance for PR ownership. provenance_labels_json maps every
+# configured builder label to its lane and builder_authors_json maps the
+# authenticated PR authors builder_identity knows to lanes. Both cover all
+# configured builder lanes, not only the ones this runner may execute, so a
+# PR another builder also claims is a conflict rather than unowned. A PR is
+# this lane's only when at least one of those signals maps to this lane and
+# none maps to another lane; a branch name, including one that merely matches
+# the repository policy, never grants ownership or write authority by itself.
+provenance_labels_json=__LANE_MAC_RUNNER_PROVENANCE_LABELS_JSON__
 builder_authors_json=__LANE_MAC_RUNNER_BUILDER_AUTHORS_JSON__
 lane_provenance_jq='
   def mapped_lanes:
     ([ (.labels // [])[] | (.name // "") as $name
-       | $builder_labels | to_entries[] | select(.value == $name) | .key ]
+       | $provenance_labels | to_entries[] | select(.key == $name) | .value ]
      + [ ((.author.login // "") | ascii_downcase) as $login
          | select($login != "")
          | $builder_authors | to_entries[] | select((.key | ascii_downcase) == $login) | .value ])
@@ -182,7 +185,7 @@ lane_provenance_jq='
 '
 lane_provenance_args=(
   --arg lane "$LANE" --arg repo "$expected_repo_slug" --arg pattern "$repo_branch_pattern"
-  --argjson builder_labels "$builder_labels_json" --argjson builder_authors "$builder_authors_json"
+  --argjson provenance_labels "$provenance_labels_json" --argjson builder_authors "$builder_authors_json"
   --argjson prefixes "$lane_branch_prefixes_json"
 )
 work_root="${LANE_WORK_ROOT:-${HOME}/actions-runner/_work/lanes}"
@@ -366,9 +369,11 @@ install_pre_push_guard() {
   mkdir -p "$(dirname "$hook")"
   # Normal single-writer enforcement is unchanged: allowed_prefixes carries the
   # lane's own branch prefixes. allowed_branch is the one branch this unit
-  # resolved from the repository policy for its issue; the policy pattern
-  # itself never authorizes a push. handoff is populated only by a validated
-  # explicit recovery handoff, and it authorizes exactly one foreign branch.
+  # resolved from the repository policy for its issue; when it is set it is
+  # the whole allowance and the lane prefixes are withheld, since the target
+  # repository accepts no other name from this unit. The policy pattern itself
+  # never authorizes a push. handoff is populated only by a validated explicit
+  # recovery handoff, and it authorizes exactly one foreign branch.
   printf '%s\n' "$branch_prefixes_json" \
     | jq -c --arg lane "$LANE" --arg target "$target_branch" --arg mode "$guard_mode" \
         --arg policy_branch "$resolved_branch" --argjson handoff "${handoff_json:-null}" '
@@ -376,7 +381,7 @@ install_pre_push_guard() {
         lane: $lane,
         mode: $mode,
         target_pr_branch: (if $mode == "audit" then "" else $target end),
-        allowed_prefixes: (if $mode == "audit" then [] else (.[$lane] // []) end),
+        allowed_prefixes: (if $mode == "audit" or $policy_branch != "" then [] else (.[$lane] // []) end),
         allowed_branch: (if $mode == "audit" then "" else $policy_branch end),
         handoff: $handoff
       }' > "$guard_config"
@@ -419,10 +424,12 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   # never separately writable by name -- the branch a handoff covers must go
   # through the handoff's own checks below.
   authority="$(jq -r --arg branch "$branch" '
-    def allowed_prefix: any((.allowed_prefixes // [])[]; . as $prefix | ($branch | startswith($prefix)));
     def allowed_branch: (.allowed_branch // "") != "" and $branch == .allowed_branch;
-    if allowed_prefix then "lane_prefix"
-    elif allowed_branch then "repo_policy_branch"
+    def allowed_prefix:
+      (.allowed_branch // "") == ""
+      and any((.allowed_prefixes // [])[]; . as $prefix | ($branch | startswith($prefix)));
+    if allowed_branch then "repo_policy_branch"
+    elif allowed_prefix then "lane_prefix"
     elif (.handoff // null) != null then
       (if (.handoff.target_branch // "") == $branch then "explicit_handoff" else "none" end)
     elif (.target_pr_branch // "") != "" and $branch == .target_pr_branch then "target_pr"

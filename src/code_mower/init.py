@@ -1143,10 +1143,31 @@ def _lane_mac_runner_script_entry(
     for prefix, lane in sorted(configured_prefixes.items()):
         if lane in branch_prefixes and prefix not in branch_prefixes[lane]:
             branch_prefixes[lane].append(prefix)
+    # Provenance covers every configured builder lane, local or not, so a PR
+    # carrying another builder's label or author reads as a conflict rather
+    # than as unowned. Which lanes this runner may execute stays mac_lanes.
+    builder_lanes = [str(entry["lane"]) for entry in builder_entries]
+    provenance_labels: dict[str, str] = {}
+    for entry in builder_entries:
+        lane = str(entry["lane"])
+        aliases = entry.get("builder_labels")
+        labels = [str(entry["builder_label"])]
+        if isinstance(aliases, (list, tuple)):
+            labels.extend(str(label) for label in aliases)
+        for label in labels:
+            if label:
+                provenance_labels.setdefault(label, lane)
+    for label, lane in sorted(
+        _identity_section(identity, "labels", canonicalize_lanes=True).items()
+    ):
+        if lane in builder_lanes:
+            provenance_labels.setdefault(label, lane)
     builder_authors = {
         login: lane
-        for login, lane in sorted(_identity_section(identity, "authors").items())
-        if lane in mac_lanes
+        for login, lane in sorted(
+            _identity_section(identity, "authors", canonicalize_lanes=True).items()
+        )
+        if lane in builder_lanes
     }
     return {
         "path": LANE_MAC_RUNNER_SCRIPT_PATH,
@@ -1163,6 +1184,11 @@ def _lane_mac_runner_script_entry(
         ),
         "lane_mac_runner_branch_prefixes_json": json.dumps(
             branch_prefixes,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "lane_mac_runner_provenance_labels_json": json.dumps(
+            provenance_labels,
             separators=(",", ":"),
             sort_keys=True,
         ),
@@ -1961,6 +1987,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         ),
         "__LANE_MAC_RUNNER_BRANCH_PREFIXES_JSON__": str(
             _shell_literal(entry.get("lane_mac_runner_branch_prefixes_json") or "{}")
+        ),
+        "__LANE_MAC_RUNNER_PROVENANCE_LABELS_JSON__": str(
+            _shell_literal(entry.get("lane_mac_runner_provenance_labels_json") or "{}")
         ),
         "__LANE_MAC_RUNNER_BUILDER_AUTHORS_JSON__": str(
             _shell_literal(entry.get("lane_mac_runner_builder_authors_json") or "{}")
