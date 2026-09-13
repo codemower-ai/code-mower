@@ -79,17 +79,20 @@ code-mower migration package-install-rehearsal \
   --json
 ```
 
-For a TestPyPI candidate, use the exact version published to TestPyPI:
+For a TestPyPI candidate, qualify it from TestPyPI alone. pip gives its primary
+index no priority over an extra index, so a single install naming both TestPyPI
+and production PyPI cannot show which index supplied the candidate;
+`--package-source testpypi` downloads the candidate with TestPyPI as its only
+index, verifies the artifact identity and version, and resolves dependencies
+separately from canonical PyPI:
 
 ```bash
-code-mower migration package-install-rehearsal \
+code-mower release qualify \
+  --release-tag v<candidate-version> \
   --package-spec code-mower==<candidate-version> \
-  --allow-package-index \
-  --upgrade-pip \
-  --pip-index-url https://test.pypi.org/simple/ \
-  --pip-extra-index-url https://pypi.org/simple/ \
-  --python "$(command -v python3.12)" \
-  --json
+  --output /tmp/code-mower-testpypi-qualification.json \
+  --package-source testpypi \
+  --execute
 ```
 
 Use `--pip-install-attempts` and `--pip-retry-delay` only when you need to tune
@@ -322,24 +325,21 @@ gh workflow run release.yml \
   -f publish_pypi=false
 ```
 
-After that workflow run finishes, record its workflow run link and rehearse the
-candidate from TestPyPI. This command only shows that the candidate installs
-alongside canonical PyPI: pip does not prefer `--index-url` over
-`--extra-index-url`, so use the source-exclusive TestPyPI fetch in the
-[v1.4.0 post-merge release runbook](pypi-release.md#6-publish-testpypi-only-then-rehearse-the-exact-candidate-from-testpypi)
-when TestPyPI must be proven as the artifact source:
+After that workflow run finishes, record its workflow run link and qualify the
+candidate from TestPyPI alone, so the accepted artifact is proven to come from
+TestPyPI rather than from an identically versioned package on another index:
 
 ```bash
-code-mower migration package-install-rehearsal \
+code-mower release qualify \
+  --release-tag v1.4.0 \
   --package-spec code-mower==1.4.0 \
-  --allow-package-index \
-  --upgrade-pip \
-  --pip-index-url https://test.pypi.org/simple/ \
-  --pip-extra-index-url https://pypi.org/simple/ \
-  --python "$(command -v python3.12)" \
-  --work-dir /tmp/code-mower-v140-testpypi-rehearsal \
-  --json
+  --output /tmp/code-mower-v140-testpypi-qualification.json \
+  --package-source testpypi \
+  --execute
 ```
+
+The equivalent no-deps TestPyPI download plus local-artifact rehearsal is in the
+[v1.4.0 post-merge release runbook](pypi-release.md#6-publish-testpypi-only-then-rehearse-the-exact-candidate-from-testpypi).
 
 Then run `release.yml` for production PyPI only:
 

@@ -29,6 +29,17 @@ REQUIRED_PUBLIC_PACKAGE_SPEC_DOC_PATHS = (
     "docs/first-user-install-rehearsal.md",
     "docs/public-release-checklist.md",
 )
+# Current public release and install guidance that must never present a
+# TestPyPI candidate install that also names production PyPI as an extra index.
+CURRENT_PACKAGE_INDEX_GUIDANCE_DOC_PATHS = (
+    "README.md",
+    "docs/quickstart.md",
+    "docs/try-in-10-minutes.md",
+    "docs/first-user-install-rehearsal.md",
+    "docs/pypi-release.md",
+    "docs/public-release-checklist.md",
+)
+UNSAFE_MULTI_INDEX_MARKER = "--pip-extra-index-url https://pypi.org/simple/"
 PUBLIC_HYGIENE_DOC_PATHS = (
     "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
@@ -1110,6 +1121,13 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         for relative_path, text in docs.items()
         if package_index_spec and package_index_spec in text
     ]
+    # pip gives its primary index no priority, so a candidate rehearsal that
+    # also names production PyPI cannot show which index supplied the package.
+    unsafe_package_index_docs = [
+        relative_path
+        for relative_path in CURRENT_PACKAGE_INDEX_GUIDANCE_DOC_PATHS
+        if UNSAFE_MULTI_INDEX_MARKER in docs.get(relative_path, "")
+    ]
     missing_public_hygiene_docs = [
         relative_path
         for relative_path, text in public_hygiene_docs.items()
@@ -1305,21 +1323,24 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         ),
         _release_check(
             check_id="package-index-rehearsal-docs",
-            title="Package-index rehearsal is documented",
+            title="Package-index rehearsal is documented with source-exclusive TestPyPI",
             status=(
                 "pass"
                 if (
                     package_index_spec
                     and package_index_spec in doc_blob
                     and "--allow-package-index" in doc_blob
-                    and "--pip-index-url https://test.pypi.org/simple/" in doc_blob
-                    and "--pip-extra-index-url https://pypi.org/simple/" in doc_blob
+                    and "--package-source testpypi" in doc_blob
                     and "package-install-rehearsal" in doc_blob
+                    and not unsafe_package_index_docs
                 )
                 else "fail"
             ),
             evidence=package_index_spec or "missing version",
-            detail={"docs": package_index_docs},
+            detail={
+                "docs": package_index_docs,
+                "unsafe_multi_index_docs": unsafe_package_index_docs,
+            },
         ),
         _release_check(
             check_id="ci-package-install-rehearsal",
@@ -1444,16 +1465,15 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },
         {
-            "id": "testpypi-install-rehearsal",
-            "title": "Install from TestPyPI in a fresh toy repo",
+            "id": "testpypi-source-exclusive-qualification",
+            "title": "Qualify the TestPyPI candidate from TestPyPI alone",
             "command": (
-                "code-mower migration package-install-rehearsal "
+                "code-mower release qualify "
+                f"--release-tag {release_workflow_ref} "
                 f"--package-spec {package_index_spec} "
-                "--allow-package-index "
-                "--upgrade-pip "
-                "--pip-index-url https://test.pypi.org/simple/ "
-                "--pip-extra-index-url https://pypi.org/simple/ "
-                "--json"
+                "--output result.json "
+                "--package-source testpypi "
+                "--execute"
             ),
             "url": PACKAGE_INDEX_SETUP_URLS["testpypi_project"],
         },

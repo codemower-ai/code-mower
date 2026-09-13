@@ -7949,9 +7949,24 @@ def main():
         self.assertNotIn("--ref main", commands["publish-testpypi-candidate"])
         self.assertIn("publish_testpypi=true", commands["publish-testpypi-candidate"])
         self.assertIn("publish_pypi=false", commands["publish-testpypi-candidate"])
-        self.assertIn("--allow-package-index", commands["testpypi-install-rehearsal"])
-        self.assertIn("--upgrade-pip", commands["testpypi-install-rehearsal"])
-        self.assertIn("--pip-index-url https://test.pypi.org/simple/", commands["testpypi-install-rehearsal"])
+        qualification = commands["testpypi-source-exclusive-qualification"]
+        self.assertNotIn("testpypi-install-rehearsal", commands)
+        self.assertIn("code-mower release qualify", qualification)
+        self.assertIn("--release-tag v1.4.0", qualification)
+        self.assertIn("--package-spec code-mower==1.4.0", qualification)
+        self.assertIn("--package-source testpypi", qualification)
+        self.assertIn("--execute", qualification)
+        self.assertNotIn("--pip-extra-index-url", qualification)
+        self.assertNotIn("--pip-index-url", qualification)
+        self.assertEqual(
+            check_ids["package-index-rehearsal-docs"]["status"], "pass"
+        )
+        self.assertEqual(
+            check_ids["package-index-rehearsal-docs"]["detail"][
+                "unsafe_multi_index_docs"
+            ],
+            [],
+        )
         self.assertEqual(
             payload["setup_urls"]["github_environments"],
             "https://github.com/codemower-ai/code-mower/settings/environments",
@@ -7965,9 +7980,64 @@ def main():
             "https://github.com/codemower-ai/code-mower/actions/workflows/release.yml",
         )
         self.assertEqual(
-            urls["testpypi-install-rehearsal"],
+            urls["testpypi-source-exclusive-qualification"],
             "https://test.pypi.org/project/code-mower/",
         )
+
+    def _package_index_docs_check(
+        self, mutate: Callable[[dict[str, str]], None]
+    ) -> dict:
+        docs = release_readiness._release_docs(ROOT)
+        mutate(docs)
+        with mock.patch.object(release_readiness, "_release_docs", return_value=docs):
+            payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        return checks["package-index-rehearsal-docs"]
+
+    def test_package_index_rehearsal_docs_rejects_unsafe_multi_index_pairing(
+        self,
+    ) -> None:
+        def add_unsafe_pairing(docs: dict[str, str]) -> None:
+            docs["docs/first-user-install-rehearsal.md"] += (
+                "\n```bash\ncode-mower migration package-install-rehearsal "
+                "--package-spec code-mower==1.4.0 --allow-package-index "
+                "--pip-index-url https://test.pypi.org/simple/ "
+                "--pip-extra-index-url https://pypi.org/simple/ --json\n```\n"
+            )
+
+        check = self._package_index_docs_check(add_unsafe_pairing)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(
+            check["detail"]["unsafe_multi_index_docs"],
+            ["docs/first-user-install-rehearsal.md"],
+        )
+
+    def test_package_index_rehearsal_docs_requires_source_exclusive_contract(
+        self,
+    ) -> None:
+        def drop_safe_marker(docs: dict[str, str]) -> None:
+            for relative_path, text in docs.items():
+                docs[relative_path] = text.replace("--package-source testpypi", "")
+
+        check = self._package_index_docs_check(drop_safe_marker)
+
+        self.assertEqual(check["status"], "fail")
+
+    def test_public_first_user_docs_omit_unsafe_testpypi_candidate_command(
+        self,
+    ) -> None:
+        doc = (ROOT / "docs" / "first-user-install-rehearsal.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn(release_readiness.UNSAFE_MULTI_INDEX_MARKER, doc)
+        self.assertNotIn("--pip-index-url https://test.pypi.org/simple/", doc)
+        self.assertIn("code-mower release qualify", doc)
+        self.assertIn("--package-source testpypi", doc)
+        # Ordinary production-PyPI rehearsal guidance stays intact.
+        self.assertIn("code-mower migration package-install-rehearsal", doc)
+        self.assertIn("--allow-package-index", doc)
 
     def test_release_readiness_fails_on_materialized_package_version_drift(
         self,
