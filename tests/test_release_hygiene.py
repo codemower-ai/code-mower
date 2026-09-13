@@ -7900,6 +7900,48 @@ def main():
             check["detail"]["generated_row_count"],
         )
 
+    def _duplicated_manifest_text(self, replace: str, duplicate: str) -> str:
+        text = (ROOT / "code-mower-package-manifest.json").read_text(encoding="utf-8")
+        self.assertIn(replace, text)
+        return text.replace(replace, duplicate, 1)
+
+    def test_committed_manifest_rejects_duplicate_object_keys(self) -> None:
+        cases = {
+            "top-level": ('"mode":', '"mode": "package", "mode":'),
+            "nested package": ('"version":', '"version": "0.0.1", "version":'),
+            "file row": ('"target":', '"target": "docs/other.md", "target":'),
+            "deferred row": ('"reason":', '"reason": "other", "reason":'),
+        }
+        for label, (replace, duplicate) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                (repo / code_mower_package.COMMITTED_PACKAGE_MANIFEST).write_text(
+                    self._duplicated_manifest_text(replace, duplicate),
+                    encoding="utf-8",
+                )
+
+                self.assertIsNone(release_readiness._committed_manifest(repo))
+
+                drift = release_readiness._committed_manifest_drift(repo)
+                self.assertFalse(drift["matches"])
+                self.assertIn("repeats an object key", drift["error"])
+
+    def test_committed_manifest_accepts_reordered_keys_and_whitespace(self) -> None:
+        manifest = json.loads(
+            (ROOT / "code-mower-package-manifest.json").read_text(encoding="utf-8")
+        )
+        reordered = dict(reversed(list(manifest.items())))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / code_mower_package.COMMITTED_PACKAGE_MANIFEST).write_text(
+                json.dumps(reordered, indent=4, sort_keys=False) + "\n\n",
+                encoding="utf-8",
+            )
+
+            loaded = release_readiness._committed_manifest(repo)
+
+        self.assertEqual(loaded, manifest)
+
     def test_release_readiness_fails_on_stale_committed_manifest(self) -> None:
         def truncate(manifest: dict) -> None:
             manifest["files_written"] = manifest["files_written"][:307]
@@ -8341,6 +8383,136 @@ def main():
                 self.assertEqual(check["status"], "fail")
                 self.assertIn(assertion, check["detail"]["missing_assertions"])
 
+    def test_release_readiness_fails_without_post_create_asset_verification(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace('assert_release_assets.py" created', "true")
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            'assert_release_assets.py" created', check["detail"]["missing_assertions"]
+        )
+
+    def test_release_readiness_requires_devin_owner_confirmation(self) -> None:
+        for assertion in (
+            'if permissions == "skip" and owner_confirmed != "confirmed":',
+            'if permissions not in {"pass", "skip"}:',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "if False:")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_an_isolated_fresh_source_install(self) -> None:
+        isolation = "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS"
+        check = self._asserted_runbook_check(lambda doc: doc.replace(isolation, "env"))
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(isolation, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_board_port_repository_binding(self) -> None:
+        for assertion in (
+            'and row.get("repo") == expected_repo',
+            'raise SystemExit("serving mode requires PORT=REPO for every port")',
+            '"5332=codemower-ai/code-mower" "5342=$BOARD_5342_REPO"'
+            ' "5344=$BOARD_5344_REPO"',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_board_doctor_schema_and_identity(self) -> None:
+        for assertion in (
+            'BOARD_DOCTOR_SCHEMA = "code_mower.boardDoctor.v1"',
+            'if report.get("schema") != BOARD_DOCTOR_SCHEMA:',
+            'if report.get("repo") != expected_repo:',
+            "if not EXPECTED_CHECK_IDS or not EXPECTED_CHECK_IDS <= set(checks):",
+            'failing = sorted(name for name, value in checks.items() if value != "pass")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_campaign_schema_and_identity(self) -> None:
+        for assertion in (
+            'WATCH_SCHEMA = "code_mower.releaseCampaignWatch.v1"',
+            'if watch.get("schema") != WATCH_SCHEMA'
+            ' or watch.get("mode") != "release-campaign-watch":',
+            'if watch.get("status") != "complete"'
+            ' or watch.get("stop_reason") != "complete":',
+            "if set(watch_lanes) != REQUIRED_PROVIDERS:",
+            'CAMPAIGN_SCHEMA = "code_mower.releaseCampaign.v1"',
+            'if status.get("schema") != CAMPAIGN_SCHEMA:',
+            'if status.get("dry_run") is not False:',
+            'ADOPTION_RESULT_SCHEMA = "code_mower.adoptionResult.v1"',
+            'if result.get("schema") != ADOPTION_RESULT_SCHEMA:',
+            'if devin_ref.get("transport_kind") != "devin_api_v3":',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_upload_schema_counts_and_correlation(self) -> None:
+        for assertion in (
+            'CAMPAIGN_UPLOAD_SCHEMA = "code_mower.releaseCampaignUpload.v1"',
+            'if payload.get("schema") != CAMPAIGN_UPLOAD_SCHEMA:',
+            'if payload.get("mode") != "release-campaign-upload":',
+            'problems.append(f"{name} campaign identity is not the v1.4.0 campaign")',
+            'if payload.get("provider_postures") != EXPECTED_POSTURES:',
+            'if payload.get("counts") != EXPECTED_COUNTS:',
+            "if len(ids) != 3 or len(set(ids)) != 3 or not all(ids):",
+            'if preview_upload.get("event_types") != {"adoption_run": 3}:',
+            'if applied.get("requires_yes") is not False:',
+            'if not 200 <= int(applied_upload.get("status") or 0) < 300:',
+            'if [str(value) for value in applied.get("event_ids") or []]'
+            " != preview_events:",
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_board_snapshot_schema_assertions(self) -> None:
+        for assertion in (
+            'BUNDLE_SCHEMA = "code_mower.cloudBenchmarkBundle.v1"',
+            'if snapshot.get("mode") != "cloud-board-snapshot"'
+            ' or snapshot.get("status") != "dry_run":',
+            'if snapshot.get("repo_slug") != "codemower-ai/code-mower":',
+            'if snapshot.get("event_count") != 1:',
+            'if export.get("event_types") != {"board_snapshot": 1}'
+            ' or export.get("included_reports"):',
+            'if manifest.get("schema") != BUNDLE_SCHEMA:',
+            'if event.get("schema") != EVENT_SCHEMA'
+            ' or not str(event.get("event_id") or ""):',
+            'if dimensions.get("snapshot_schema") != SNAPSHOT_SCHEMA:',
+            'if not 200 <= int(applied.get("status") or 0) < 300:',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
     def test_release_readiness_rejects_release_asset_clobbering(self) -> None:
         check = self._asserted_runbook_check(
             lambda doc: doc.replace(
@@ -8437,7 +8609,17 @@ def main():
         )
         self.assertIn("code-mower board stop --port \"$BOARD_PORT\" --yes --json", boards)
         self.assertIn('board_wait.py" gone "$BOARD_PORT"', boards)
-        self.assertIn('board_wait.py" serving 5332 5342 5344', boards)
+        self.assertIn('board_wait.py" serving \\', boards)
+        self.assertIn(
+            '"5332=codemower-ai/code-mower" "5342=$BOARD_5342_REPO"'
+            ' "5344=$BOARD_5344_REPO"',
+            boards,
+        )
+        self.assertIn('and row.get("repo") == expected_repo', boards)
+        self.assertIn(
+            'raise SystemExit("serving mode requires PORT=REPO for every port")',
+            boards,
+        )
         self.assertIn("code-mower board doctor", boards)
         self.assertNotIn("board reset --", boards)
         self.assertNotIn("pkill", boards)

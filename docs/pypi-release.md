@@ -177,8 +177,8 @@ clone of `RELEASE_SHA`.
 RELEASE_ENV="$(mktemp -d /tmp/code-mower-v140-release-env.XXXXXX)"
 python3.12 -m venv "$RELEASE_ENV/venv"
 RELEASE_PYTHON="$RELEASE_ENV/venv/bin/python"
-PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL= PIP_EXTRA_INDEX_URL= \
-  "$RELEASE_PYTHON" -m pip install --no-cache-dir \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
+  PIP_CONFIG_FILE=/dev/null "$RELEASE_PYTHON" -m pip install --no-cache-dir \
   --index-url https://pypi.org/simple/ "$RELEASE_CHECKOUT"
 RELEASE_CLI="$RELEASE_ENV/venv/bin/code-mower"
 test "$("$RELEASE_CLI" --version)" = "code-mower 1.4.0"
@@ -615,8 +615,10 @@ gh run watch "$RELEASE_EVENT_RUN_ID" --repo "$REPO" --exit-status
 with `skip`, so it does not prove readiness. Select hosted Devin explicitly with
 a supported generated configuration, then require the hosted checks to pass for
 the exact `codemower-ai/code-mower` scope. `provider.devin.permissions` is
-reported, never probed: it is the account owner's confirmation and is the only
-non-`pass` status accepted.
+reported, never probed: the doctor cannot read the account's own permission
+settings, so `skip` is accepted only when the account owner separately confirms
+them. Supply that confirmation privately as `confirmed`; any other value, an
+unset variable, or any other check status fails closed.
 
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
@@ -626,13 +628,16 @@ PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
 test "$(code-mower --version)" = "code-mower 1.4.0"
 
 DEVIN_PROVIDER_PROFILE="REPLACE_WITH_PROTECTED_PROFILE_SELECTOR"
+DEVIN_PERMISSIONS_OWNER_CONFIRMED="REPLACE_WITH_OWNER_CONFIRMATION"
 DEVIN_DOCTOR_DIR="$(mktemp -d /tmp/code-mower-v140-devin-doctor.XXXXXX)"
 code-mower init code-mower.yml --profile recommended \
   --set-transport devin=devin_api_v3 --apply --output-dir "$DEVIN_DOCTOR_DIR"
 code-mower doctor "$DEVIN_DOCTOR_DIR/code-mower.yml" --profile recommended \
   --devin --repo codemower-ai/code-mower \
   --provider-profile "$DEVIN_PROVIDER_PROFILE" --json >"$DEVIN_DOCTOR_DIR/doctor.json"
-DEVIN_DOCTOR_JSON="$DEVIN_DOCTOR_DIR/doctor.json" "$RELEASE_PYTHON" - <<'PY'
+DEVIN_DOCTOR_JSON="$DEVIN_DOCTOR_DIR/doctor.json" \
+  DEVIN_PERMISSIONS_OWNER_CONFIRMED="$DEVIN_PERMISSIONS_OWNER_CONFIRMED" \
+  "$RELEASE_PYTHON" - <<'PY'
 import json
 import os
 
@@ -652,9 +657,21 @@ required = (
 blocked = [name for name in required if checks.get(name) != "pass"]
 if blocked:
     raise SystemExit(f"hosted Devin readiness is blocked: {blocked}")
-if checks.get("provider.devin.permissions") not in {"pass", "skip"}:
-    raise SystemExit("Devin permission requirements are not confirmable")
-print(json.dumps({"devin_transport": "hosted", "required_pass": list(required)}))
+permissions = checks.get("provider.devin.permissions")
+owner_confirmed = os.environ.get("DEVIN_PERMISSIONS_OWNER_CONFIRMED", "").strip().lower()
+if permissions == "skip" and owner_confirmed != "confirmed":
+    raise SystemExit(
+        "Devin permissions are reported skip and the account owner has not "
+        "separately confirmed them"
+    )
+if permissions not in {"pass", "skip"}:
+    raise SystemExit(f"Devin permission check is {permissions!r}")
+print(json.dumps({
+    "devin_transport": "hosted",
+    "required_pass": list(required),
+    "permissions": permissions,
+    "owner_confirmed": permissions == "pass" or owner_confirmed == "confirmed",
+}))
 PY
 ```
 
@@ -697,6 +714,13 @@ from pathlib import Path
 campaign_dir = Path(os.environ["CAMPAIGN_DIR"])
 REQUIRED_PROVIDERS = {"claude", "codex", "devin"}
 PASSING_OUTCOMES = {"pass", "pass_with_warnings"}
+CAMPAIGN_SCHEMA = "code_mower.releaseCampaign.v1"
+WATCH_SCHEMA = "code_mower.releaseCampaignWatch.v1"
+ADOPTION_RESULT_SCHEMA = "code_mower.adoptionResult.v1"
+CAMPAIGN_ID = "campaign-v1.4.0"
+RELEASE_TAG = "v1.4.0"
+PACKAGE_IDENTITY = "code-mower"
+VERSION = "1.4.0"
 
 
 def load(name: str) -> dict:
@@ -706,12 +730,55 @@ def load(name: str) -> dict:
 watch = load("watch.json")
 status = load("status.json")
 problems = []
+if watch.get("schema") != WATCH_SCHEMA or watch.get("mode") != "release-campaign-watch":
+    problems.append(f"watch schema/mode is {watch.get('schema')!r}/{watch.get('mode')!r}")
+watch_identity = {
+    "campaign_id": CAMPAIGN_ID,
+    "release_tag": RELEASE_TAG,
+    "package_identity": PACKAGE_IDENTITY,
+    "qualification_context": "cold_install",
+}
+for key, expected in watch_identity.items():
+    if watch.get(key) != expected:
+        problems.append(f"watch {key} is {watch.get(key)!r}, expected {expected!r}")
 if watch.get("status") != "complete" or watch.get("stop_reason") != "complete":
     problems.append(
         f"watch stopped as {watch.get('stop_reason')!r} with status {watch.get('status')!r}"
     )
+watch_lanes = {
+    str(row.get("provider") or ""): row
+    for row in watch.get("providers") or []
+    if isinstance(row, dict)
+}
+if set(watch_lanes) != REQUIRED_PROVIDERS:
+    problems.append(f"watch provider set is {sorted(watch_lanes)}")
+for name in sorted(REQUIRED_PROVIDERS & set(watch_lanes)):
+    row = watch_lanes[name]
+    if row.get("posture") != "required" or row.get("state") != "complete" or row.get("error"):
+        problems.append(
+            f"watch {name} summary is {row.get('posture')!r}/{row.get('state')!r}"
+        )
+if status.get("schema") != CAMPAIGN_SCHEMA:
+    problems.append(f"campaign schema is {status.get('schema')!r}")
+status_identity = {
+    "campaign_id": CAMPAIGN_ID,
+    "release_tag": RELEASE_TAG,
+    "package_identity": PACKAGE_IDENTITY,
+    "package_spec": f"{PACKAGE_IDENTITY}=={VERSION}",
+    "normalized_version": VERSION,
+    "qualification_context": "cold_install",
+    "package_source": "pypi",
+    "repo_slug": "codemower-ai/code-mower",
+}
+for key, expected in status_identity.items():
+    if status.get(key) != expected:
+        problems.append(f"campaign {key} is {status.get(key)!r}, expected {expected!r}")
 if status.get("status") != "complete":
     problems.append(f"campaign status is {status.get('status')!r}, not complete")
+if status.get("dry_run") is not False:
+    problems.append(f"campaign dry_run is {status.get('dry_run')!r}, expected False")
+if status.get("provider_posture_configured") is not True:
+    problems.append("campaign provider posture was not explicitly configured")
 lanes = {
     str(row.get("provider") or ""): row
     for row in status.get("providers") or []
@@ -726,13 +793,28 @@ for name in sorted(REQUIRED_PROVIDERS & set(lanes)):
     lane = lanes[name]
     if lane.get("state") != "complete":
         problems.append(f"{name} lane state is {lane.get('state')!r}")
+    if lane.get("dispatch_mode") != "applied" or lane.get("error"):
+        problems.append(f"{name} lane dispatch is {lane.get('dispatch_mode')!r}")
     result = lane.get("adoption_result")
-    outcome = result.get("outcome") if isinstance(result, dict) else None
+    result = result if isinstance(result, dict) else {}
+    if result.get("schema") != ADOPTION_RESULT_SCHEMA:
+        problems.append(f"{name} lane result schema is {result.get('schema')!r}")
+    if (
+        result.get("release_tag") != RELEASE_TAG
+        or result.get("package_identity") != PACKAGE_IDENTITY
+        or result.get("normalized_version") != VERSION
+    ):
+        problems.append(f"{name} lane result is not bound to {RELEASE_TAG}")
+    outcome = result.get("outcome")
     if outcome not in PASSING_OUTCOMES:
         problems.append(f"{name} lane result outcome is {outcome!r}")
 devin = lanes.get("devin") or {}
+devin_ref = devin.get("dispatch_ref")
+devin_ref = devin_ref if isinstance(devin_ref, dict) else {}
 if devin.get("driver") != "hosted_bridge" or devin.get("transport_verified") is not True:
     problems.append("Devin lane did not verify the hosted bridge transport")
+if devin_ref.get("transport_kind") != "devin_api_v3":
+    problems.append(f"Devin transport kind is {devin_ref.get('transport_kind')!r}")
 if problems:
     raise SystemExit(f"release qualification campaign is not a pass: {problems}")
 print(json.dumps({
@@ -765,7 +847,13 @@ test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"
 test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"
 
 cat >"$RELEASE_ENV/board_wait.py" <<'PY'
-"""Bounded waits on the Board inventory: gone after a stop, serving after a start."""
+"""Bounded waits on the Board inventory: gone after a stop, serving after a start.
+
+Serving mode takes `PORT=REPO` arguments and requires each port to serve exactly
+its expected repository as well as healthy 1.4.0 serving/installed versions, so a
+Board that came back on the wrong repository cannot satisfy another port's gate.
+Only ports are printed; the expected slugs stay in the private arguments.
+"""
 
 import json
 import subprocess
@@ -792,24 +880,34 @@ def row_for(port: int) -> dict | None:
     return None
 
 
+def serving(row: dict | None, expected_repo: str) -> bool:
+    return bool(
+        row is not None
+        and expected_repo
+        and row.get("repo") == expected_repo
+        and row.get("health") == "ok"
+        and row.get("serving_version") == "1.4.0"
+        and row.get("installed_version") == "1.4.0"
+    )
+
+
 def main() -> None:
     mode = sys.argv[1]
-    ports = [int(value) for value in sys.argv[2:]]
+    expected: dict[int, str] = {}
+    for value in sys.argv[2:]:
+        port, _, repo = value.partition("=")
+        expected[int(port)] = repo
+    if mode == "serving" and not all(expected.values()):
+        raise SystemExit("serving mode requires PORT=REPO for every port")
     deadline = time.monotonic() + DEADLINE_SECONDS
-    pending = list(ports)
+    pending = list(expected)
     while pending and time.monotonic() < deadline:
         remaining = []
         for port in pending:
             row = row_for(port)
             if mode == "gone" and row is None:
                 continue
-            if (
-                mode == "serving"
-                and row is not None
-                and row.get("health") == "ok"
-                and row.get("serving_version") == "1.4.0"
-                and row.get("installed_version") == "1.4.0"
-            ):
+            if mode == "serving" and serving(row, expected[port]):
                 continue
             remaining.append(port)
         pending = remaining
@@ -817,7 +915,7 @@ def main() -> None:
             time.sleep(INTERVAL_SECONDS)
     if pending:
         raise SystemExit(f"ports still not {mode} within {DEADLINE_SECONDS}s: {pending}")
-    print(json.dumps({"mode": mode, "ports": ports}))
+    print(json.dumps({"mode": mode, "ports": sorted(expected)}))
 
 
 main()
@@ -838,7 +936,8 @@ nohup code-mower board serve --repo "$BOARD_5342_REPO" \
 nohup code-mower board serve --repo "$BOARD_5344_REPO" \
   --repo-path "$BOARD_5344_REPO_PATH" --host 127.0.0.1 \
   --port 5344 --record-events >/tmp/code-mower-board-5344.log 2>&1 &
-"$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" serving 5332 5342 5344
+"$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" serving \
+  "5332=codemower-ai/code-mower" "5342=$BOARD_5342_REPO" "5344=$BOARD_5344_REPO"
 
 BOARD_DOCTOR_DIR="$(mktemp -d /tmp/code-mower-v140-board-doctor.XXXXXX)"
 code-mower board doctor --repo codemower-ai/code-mower \
@@ -847,25 +946,57 @@ code-mower board doctor --repo "$BOARD_5342_REPO" \
   --repo-path "$BOARD_5342_REPO_PATH" --json >"$BOARD_DOCTOR_DIR/5342.json"
 code-mower board doctor --repo "$BOARD_5344_REPO" \
   --repo-path "$BOARD_5344_REPO_PATH" --json >"$BOARD_DOCTOR_DIR/5344.json"
-BOARD_DOCTOR_DIR="$BOARD_DOCTOR_DIR" "$RELEASE_PYTHON" - <<'PY'
+BOARD_DOCTOR_DIR="$BOARD_DOCTOR_DIR" \
+  BOARD_5332_REPO="codemower-ai/code-mower" \
+  BOARD_5342_REPO="$BOARD_5342_REPO" BOARD_5344_REPO="$BOARD_5344_REPO" \
+  "$RELEASE_PYTHON" - <<'PY'
 import json
 import os
 from pathlib import Path
 
+BOARD_DOCTOR_SCHEMA = "code_mower.boardDoctor.v1"
+EXPECTED_CHECK_IDS = {
+    "repo.path",
+    "github.remote",
+    "gate.health",
+    "store.events",
+    "owner.queue",
+    "agent.adapters",
+    "spend.timeline",
+}
 doctor_dir = Path(os.environ["BOARD_DOCTOR_DIR"])
 problems = []
 for port in ("5332", "5342", "5344"):
+    expected_repo = os.environ[f"BOARD_{port}_REPO"]
     report = json.loads((doctor_dir / f"{port}.json").read_text(encoding="utf-8"))
+    if report.get("schema") != BOARD_DOCTOR_SCHEMA:
+        problems.append(f"board {port} doctor schema is {report.get('schema')!r}")
+    if report.get("repo") != expected_repo:
+        problems.append(f"board {port} doctor reports another repository")
     if report.get("status") != "pass":
         problems.append(f"board {port} doctor status is {report.get('status')!r}")
+    checks = {
+        str(row.get("id") or ""): str(row.get("status") or "")
+        for row in report.get("checks") or []
+        if isinstance(row, dict)
+    }
+    if not EXPECTED_CHECK_IDS or not EXPECTED_CHECK_IDS <= set(checks):
+        problems.append(
+            f"board {port} doctor is missing {sorted(EXPECTED_CHECK_IDS - set(checks))}"
+        )
+    failing = sorted(name for name, value in checks.items() if value != "pass")
+    if failing:
+        problems.append(f"board {port} doctor checks are not pass: {failing}")
 if problems:
     raise SystemExit(f"restarted Board doctors are not all pass: {problems}")
 print(json.dumps({"board_doctors_pass": ["5332", "5342", "5344"]}))
 PY
 ```
 
-`code-mower board doctor` exits zero for `warn`, so each report's own top-level
-status is parsed and required to be `pass`; printing the JSON is not the gate.
+`code-mower board doctor` exits zero for `warn`, so each report is parsed and
+required to carry the `code_mower.boardDoctor.v1` schema, the expected
+repository, a top-level `pass`, the full expected check inventory, and a `pass`
+on every individual check; printing the JSON is not the gate.
 Do not use raw process kills or Board reset, and never copy private repository
 slugs or paths into public evidence.
 
@@ -899,11 +1030,49 @@ def load(name: str) -> dict:
     return json.loads((cloud_dir / name).read_text(encoding="utf-8"))
 
 
+CAMPAIGN_UPLOAD_SCHEMA = "code_mower.releaseCampaignUpload.v1"
+REQUIRED_PROVIDERS = ["claude", "codex", "devin"]
+EXPECTED_POSTURES = {name: "required" for name in REQUIRED_PROVIDERS}
+EXPECTED_COUNTS = {
+    "providers": 3,
+    "complete": 3,
+    "skipped": 0,
+    "accepted": 3,
+    "rejected": 0,
+    "events": 3,
+}
 preview = load("campaign-preview.json")
 applied = load("campaign-applied.json")
 preview_upload = preview.get("upload") or {}
 applied_upload = applied.get("upload") or {}
 problems = []
+for name, payload in (("preview", preview), ("applied", applied)):
+    if payload.get("schema") != CAMPAIGN_UPLOAD_SCHEMA:
+        problems.append(f"{name} schema is {payload.get('schema')!r}")
+    if payload.get("mode") != "release-campaign-upload":
+        problems.append(f"{name} mode is {payload.get('mode')!r}")
+    if (
+        payload.get("campaign_id") != "campaign-v1.4.0"
+        or payload.get("release_tag") != "v1.4.0"
+        or payload.get("package_identity") != "code-mower"
+        or payload.get("qualification_context") != "cold_install"
+    ):
+        problems.append(f"{name} campaign identity is not the v1.4.0 campaign")
+    if payload.get("provider_postures") != EXPECTED_POSTURES:
+        problems.append(f"{name} provider postures are {payload.get('provider_postures')!r}")
+    if payload.get("counts") != EXPECTED_COUNTS:
+        problems.append(f"{name} counts are {payload.get('counts')!r}")
+    if sorted(payload.get("accepted_providers") or []) != REQUIRED_PROVIDERS:
+        problems.append(f"{name} accepted providers are {payload.get('accepted_providers')!r}")
+    if payload.get("skipped_providers") or payload.get("rejected_providers"):
+        problems.append(f"{name} skipped or rejected a provider")
+    ids = [str(value) for value in payload.get("event_ids") or []]
+    if len(ids) != 3 or len(set(ids)) != 3 or not all(ids):
+        problems.append(f"{name} does not carry three unique event identifiers")
+if preview_upload.get("event_types") != {"adoption_run": 3}:
+    problems.append(f"preview event types are {preview_upload.get('event_types')!r}")
+if preview_upload.get("would_upload") is not False:
+    problems.append("preview payload would upload without --yes")
 if preview.get("status") != "dry_run" or preview.get("would_upload") is not False:
     problems.append(f"preview status is {preview.get('status')!r}")
 if preview.get("requires_yes") is not True or preview_upload.get("requires_yes") is not True:
@@ -919,6 +1088,8 @@ if not preview_events or preview_upload.get("event_count") != len(preview_events
     problems.append("preview event identifiers and count disagree")
 if applied.get("status") != "uploaded" or applied.get("would_upload") is not True:
     problems.append(f"applied status is {applied.get('status')!r}")
+if applied.get("requires_yes") is not False:
+    problems.append("applied result is still a preview")
 if applied.get("upload_mode") != "metadata_only":
     problems.append(f"applied upload mode is {applied.get('upload_mode')!r}")
 if applied_upload.get("mode") != "cloud-upload":
@@ -964,19 +1135,40 @@ def load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+BUNDLE_SCHEMA = "code_mower.cloudBenchmarkBundle.v1"
+EVENT_SCHEMA = "code_mower.benchmarkEvent.v1"
+SNAPSHOT_SCHEMA = "code_mower.cloudBoardSnapshot.v1"
 snapshot = load(cloud_dir / "board-snapshot.json")
 preview = load(cloud_dir / "board-preview.json")
 applied = load(cloud_dir / "board-applied.json")
 manifest = load(bundle_dir / "code-mower-cloud-bundle.json")
+export = snapshot.get("export") or {}
 events = [row for row in manifest.get("events") or [] if isinstance(row, dict)]
 event_types = sorted({str(row.get("event_type") or "") for row in events})
 problems = []
-if snapshot.get("status") not in {"dry_run", "uploaded"}:
-    problems.append(f"board snapshot status is {snapshot.get('status')!r}")
+if snapshot.get("mode") != "cloud-board-snapshot" or snapshot.get("status") != "dry_run":
+    problems.append(
+        f"board snapshot is {snapshot.get('mode')!r}/{snapshot.get('status')!r}"
+    )
+if snapshot.get("repo_slug") != "codemower-ai/code-mower":
+    problems.append("board snapshot is not bound to the release repository")
+if snapshot.get("event_count") != 1:
+    problems.append(f"board snapshot carries {snapshot.get('event_count')!r} events")
+if export.get("event_types") != {"board_snapshot": 1} or export.get("included_reports"):
+    problems.append(f"board export carries {export.get('event_types')!r}")
+if manifest.get("schema") != BUNDLE_SCHEMA:
+    problems.append(f"board bundle schema is {manifest.get('schema')!r}")
 if event_types != ["board_snapshot"] or len(events) != 1:
     problems.append(f"board bundle carries {event_types} events")
 if manifest.get("included_reports"):
     problems.append("board bundle carries report content")
+event = events[0] if events else {}
+dimensions = event.get("dimensions")
+dimensions = dimensions if isinstance(dimensions, dict) else {}
+if event.get("schema") != EVENT_SCHEMA or not str(event.get("event_id") or ""):
+    problems.append(f"board event schema/id is {event.get('schema')!r}")
+if dimensions.get("snapshot_schema") != SNAPSHOT_SCHEMA:
+    problems.append(f"board event snapshot schema is {dimensions.get('snapshot_schema')!r}")
 if preview.get("mode") != "cloud-upload-dry-run" or preview.get("would_upload") is not False:
     problems.append(f"board preview mode is {preview.get('mode')!r}")
 if preview.get("requires_yes") is not True:

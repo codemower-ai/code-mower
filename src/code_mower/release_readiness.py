@@ -126,13 +126,33 @@ def _materialized_package_versions(repo_path: Path) -> dict[str, Any]:
         }
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build one JSON object, refusing repeated keys instead of keeping the last.
+
+    ``json.loads`` keeps only the final value for a repeated key, so a committed
+    manifest carrying two values for one key -- at the top level or inside any
+    row -- would compare as exact while publishing something else.
+    """
+
+    seen: set[str] = set()
+    for key, _value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        seen.add(key)
+    return dict(pairs)
+
+
 def _committed_manifest(repo_path: Path) -> dict[str, Any] | None:
     text = _read_text_if_exists(
         repo_path / package_module.COMMITTED_PACKAGE_MANIFEST
     )
     try:
-        manifest = json.loads(text) if text.strip() else None
-    except json.JSONDecodeError:
+        manifest = (
+            json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+            if text.strip()
+            else None
+        )
+    except (json.JSONDecodeError, ValueError):
         return None
     return manifest if isinstance(manifest, dict) else None
 
@@ -230,7 +250,10 @@ def _committed_manifest_drift(repo_path: Path) -> dict[str, Any]:
     if committed is None:
         return {
             **empty,
-            "error": "committed package manifest is missing or not valid JSON",
+            "error": (
+                "committed package manifest is missing, is not a JSON object, "
+                "or repeats an object key"
+            ),
         }
     try:
         generated = package_module.generate_committed_package_manifest(repo_path)
@@ -316,7 +339,7 @@ def _post_merge_runbook_markers(release_tag: str, package_index_spec: str) -> tu
         "code-mower release campaign create",
         "--required-providers claude,codex,devin",
         "code-mower board stop --port",
-        'board_wait.py" serving 5332 5342 5344',
+        'board_wait.py" serving \\',
         "code-mower board doctor",
         "code-mower release campaign upload --release-tag",
         "code-mower cloud board-snapshot",
@@ -381,37 +404,85 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'raise SystemExit(f"{mode} release assets are not acceptable: {problems}")',
         'problems.append("release asset SHA-256 values differ from PROD_DIST_DIR")',
         'assert_release_assets.py" existing',
+        # The post-create verification is unconditional: it runs for a release
+        # this runbook created as well as one it found already present.
+        'assert_release_assets.py" created',
         # Hosted Devin readiness is required, not reported.
         "--set-transport devin=devin_api_v3",
         'raise SystemExit(f"hosted Devin readiness is blocked: {blocked}")',
+        # A reported `skip` on permissions is only acceptable with the account
+        # owner's separately supplied confirmation.
+        'if permissions == "skip" and owner_confirmed != "confirmed":',
+        'if permissions not in {"pass", "skip"}:',
+        # The exact-release source rehearsal cannot reach ambient packages.
+        "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS",
         # Boards stop, are waited for, and only then restart from the release.
         'test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
         'board_wait.py" gone "$BOARD_PORT"',
+        # Serving is only satisfied by the expected repository on each port.
+        'and row.get("repo") == expected_repo',
+        'raise SystemExit("serving mode requires PORT=REPO for every port")',
+        '"5332=codemower-ai/code-mower" "5342=$BOARD_5342_REPO" "5344=$BOARD_5344_REPO"',
         'raise SystemExit(f"ports still not {mode} within {DEADLINE_SECONDS}s: {pending}")',
         # Every restarted Board's own doctor verdict is parsed; the CLI exits
         # zero on warn, so exit status is not the gate.
         '--json >"$BOARD_DOCTOR_DIR/5332.json"',
         '--json >"$BOARD_DOCTOR_DIR/5342.json"',
         '--json >"$BOARD_DOCTOR_DIR/5344.json"',
+        'BOARD_DOCTOR_SCHEMA = "code_mower.boardDoctor.v1"',
+        'if report.get("schema") != BOARD_DOCTOR_SCHEMA:',
+        'if report.get("repo") != expected_repo:',
         'if report.get("status") != "pass":',
+        "if not EXPECTED_CHECK_IDS or not EXPECTED_CHECK_IDS <= set(checks):",
+        'failing = sorted(name for name, value in checks.items() if value != "pass")',
         'raise SystemExit(f"restarted Board doctors are not all pass: {problems}")',
         # The required campaign is a parsed gate, not printed output.
         '>"$CAMPAIGN_DIR/watch.json"',
         '>"$CAMPAIGN_DIR/status.json"',
+        'WATCH_SCHEMA = "code_mower.releaseCampaignWatch.v1"',
+        'if watch.get("schema") != WATCH_SCHEMA or watch.get("mode") != "release-campaign-watch":',
+        'if watch.get("status") != "complete" or watch.get("stop_reason") != "complete":',
+        'if set(watch_lanes) != REQUIRED_PROVIDERS:',
+        'CAMPAIGN_SCHEMA = "code_mower.releaseCampaign.v1"',
+        'if status.get("schema") != CAMPAIGN_SCHEMA:',
+        'if status.get("dry_run") is not False:',
         'if set(lanes) != REQUIRED_PROVIDERS:',
         'if required != REQUIRED_PROVIDERS:',
+        'ADOPTION_RESULT_SCHEMA = "code_mower.adoptionResult.v1"',
+        'if result.get("schema") != ADOPTION_RESULT_SCHEMA:',
         'if outcome not in PASSING_OUTCOMES:',
         'if devin.get("driver") != "hosted_bridge" or devin.get("transport_verified") is not True:',
+        'if devin_ref.get("transport_kind") != "devin_api_v3":',
         'raise SystemExit(f"release qualification campaign is not a pass: {problems}")',
         # Both metadata-only uploads are previewed, applied, and correlated.
         '--team-id jeff-internal --yes --json',
+        'CAMPAIGN_UPLOAD_SCHEMA = "code_mower.releaseCampaignUpload.v1"',
+        'if payload.get("schema") != CAMPAIGN_UPLOAD_SCHEMA:',
+        'if payload.get("mode") != "release-campaign-upload":',
+        'problems.append(f"{name} campaign identity is not the v1.4.0 campaign")',
+        'if payload.get("provider_postures") != EXPECTED_POSTURES:',
+        'if payload.get("counts") != EXPECTED_COUNTS:',
+        "if len(ids) != 3 or len(set(ids)) != 3 or not all(ids):",
+        'if preview_upload.get("event_types") != {"adoption_run": 3}:',
         'if preview.get("status") != "dry_run" or preview.get("would_upload") is not False:',
         'if preview_upload.get("report_count") != 0:',
+        'if applied.get("requires_yes") is not False:',
+        'if not 200 <= int(applied_upload.get("status") or 0) < 300:',
+        'if [str(value) for value in applied.get("event_ids") or []] != preview_events:',
         'if applied.get("counts") != preview.get("counts"):',
         'raise SystemExit(f"campaign metadata upload is not a verified gate: {problems}")',
         '--install-id codex-code-mower --yes --json',
+        'BUNDLE_SCHEMA = "code_mower.cloudBenchmarkBundle.v1"',
+        'if snapshot.get("mode") != "cloud-board-snapshot" or snapshot.get("status") != "dry_run":',
+        'if snapshot.get("repo_slug") != "codemower-ai/code-mower":',
+        'if snapshot.get("event_count") != 1:',
+        'if export.get("event_types") != {"board_snapshot": 1} or export.get("included_reports"):',
+        'if manifest.get("schema") != BUNDLE_SCHEMA:',
         'if event_types != ["board_snapshot"] or len(events) != 1:',
         'if manifest.get("included_reports"):',
+        'if event.get("schema") != EVENT_SCHEMA or not str(event.get("event_id") or ""):',
+        'if dimensions.get("snapshot_schema") != SNAPSHOT_SCHEMA:',
+        'if not 200 <= int(applied.get("status") or 0) < 300:',
         'raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")',
     )
 
