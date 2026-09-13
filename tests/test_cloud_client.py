@@ -916,6 +916,35 @@ def test_board_snapshot_reads_only_the_materialized_exact_commit(monkeypatch, tm
     assert not sources[0].exists()
 
 
+def test_board_snapshot_materializes_from_a_repository_subdirectory(monkeypatch, tmp_path) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path)
+    nested = repo_path / "nested"
+    nested.mkdir()
+    sources: list[Path] = []
+    observed_tracked: list[str] = []
+
+    def recording_status(config):
+        source = Path(config.repo_path)
+        sources.append(source)
+        observed_tracked.append((source / "tracked.txt").read_text(encoding="utf-8"))
+        return _board_snapshot_fixture()
+
+    # Git discovers the enclosing repository from a subdirectory, so strict
+    # collection must materialize the commit from the repository root.
+    result = _board_snapshot_dry_run(
+        monkeypatch,
+        nested,
+        tmp_path / "nested-out",
+        status_payload=recording_status,
+        require_head_sha=head_sha,
+        require_clean=True,
+    )
+    assert sources and sources[0] != nested
+    assert observed_tracked == ["one\n"]
+    assert result["git"]["head_sha"] == head_sha
+
+
 def test_board_snapshot_materialization_is_cleaned_up_after_a_failure(monkeypatch, tmp_path) -> None:
     repo_path = tmp_path / "checkout"
     head_sha = _init_git_checkout(repo_path)

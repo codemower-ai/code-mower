@@ -148,12 +148,25 @@ def materialized_commit_source(repo_path: Path, commit_sha: str) -> Iterator[Pat
     temp_root = Path(tempfile.mkdtemp(prefix="code-mower-exact-commit-"))
     source = temp_root / "source"
     try:
+        # Git discovers the enclosing repository from any path inside it, but a
+        # clone source must name the repository itself, so the enclosing root is
+        # resolved before materializing.
+        clone_source = Path(
+            _required_git_output(repo_path, ["rev-parse", "--show-toplevel"]).strip()
+        )
         # A local clone reads the original repository's objects and writes
         # nothing into it, and the private clone cannot be moved to another
         # commit once it is read-only.
         _required_git_output(
             repo_path,
-            ["clone", "--quiet", "--shared", "--no-checkout", str(repo_path), str(source)],
+            [
+                "clone",
+                "--quiet",
+                "--shared",
+                "--no-checkout",
+                str(clone_source),
+                str(source),
+            ],
         )
         _required_git_output(source, ["checkout", "--quiet", "--detach", expected])
         materialized = checkout_provenance(source, required=True)
