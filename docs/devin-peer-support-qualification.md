@@ -15,7 +15,7 @@ reviews, and merge.
 | Distinction | Kept separate as |
 | --- | --- |
 | Local CLI builder evidence vs. hosted API builder evidence | Five bounded local Devin CLI samples in one table; two hosted v3 work orders in a second table. They are never combined into one aggregate. |
-| Transport and lifecycle parity vs. live model quality | Synthetic reviewer controls and the offline context canary prove parsing, schema, lifecycle, and severity normalization. They do not measure live Devin reviewer accuracy. |
+| Transport and lifecycle parity vs. live model quality | Synthetic reviewer controls and the offline synthetic protected-path context canary prove parsing, schema, lifecycle, and severity normalization. They do not measure live Devin reviewer accuracy, live private-context retrieval, or context relevance. |
 | Informational Devin review adapters vs. merge-authority reviewers | Both `devin_cli` and `devin_api_v3` report `merge_authority=false`. Codex audit and Claude audit remain the only merge-authority lanes. |
 | Public event wall time vs. active provider time | Local rows report active builder seconds. Hosted rows report public wall time from PR creation to merge; active provider time is unavailable. |
 | Known ACU/cost values vs. unavailable values | Caps and observed ACU are recorded where the transport returned them. Tokens, monetary cost, and local ACU are reported as unavailable, never as zero. |
@@ -28,7 +28,10 @@ The Claude + Codex first-run default is unchanged.
 ## Evidence baseline
 
 - Dispatched from a `main` containing #904 through #909 plus the recovery
-  corrections from #936, #938, #941, #942, #939, and #944.
+  corrections for issues #936, #938, #941, and #943 (merged as PRs #937,
+  #939, #942, and #944). Round 1 incorporated `origin/main` at
+  `cd26b9a569d3d765622db4804b0db65380dc155d`, which includes the Graphify
+  PR #926 merged after the original dispatch.
 - [#932](https://github.com/codemower-ai/code-mower/pull/932) is a verified
   hosted Devin builder delivery at `619638849b32308046342e0d839c58f80ca99edd`,
   merged as `da475b64a7696b5780b78d54aa61dbfbbc9d1e41`.
@@ -46,7 +49,9 @@ The Claude + Codex first-run default is unchanged.
 
 Local Devin CLI 3000.6.14, model `adaptive`, selected explicitly by the
 runner. The local transport has no ACU metric; tokens and cost were
-unavailable rather than zero. Time is active builder time.
+unavailable rather than zero. Time is active builder time. The task-class
+descriptions in this table repeat already-public issue and PR titles; they are
+allowed public documentation but are never cloud metadata.
 
 | Sample | Task | Final PR head | Merge commit | Active time | Intervention | Review/fix rounds | Accepted findings | Result |
 | --- | --- | --- | --- | ---: | --- | --- | --- | --- |
@@ -72,8 +77,8 @@ unavailable. Monetary cost is unavailable for both rows.
 
 | Work order | ACU cap | Observed ACU | Public wall time | Active time | Work-order round | Exact-head audit cycles | Intervention | Verified PR / head | Recovery result |
 | --- | ---: | ---: | ---: | --- | ---: | --- | --- | --- | --- |
-| [#932](https://github.com/codemower-ai/code-mower/pull/932) | 5 | 0.0 returned | 24,253s | Unavailable | 10 | Codex: four BLOCKED, two PASS (first PASS invalidated by a supplemental P2); final head same-head Codex and Claude PASS | Supervised: authorization/provenance, binding, migration, collection, and bot-login corrections | `619638849b32308046342e0d839c58f80ca99edd`, merged `da475b64a7696b5780b78d54aa61dbfbbc9d1e41` | Recovered; no duplicate paid create |
-| [#940](https://github.com/codemower-ai/code-mower/pull/940) / [#910](https://github.com/codemower-ai/code-mower/issues/910) | 4 | 0.0 returned | 14,184s | Unavailable | 14 | Codex: seven BLOCKED carrying twelve accepted P2; six intermediate Claude PASS became stale; final head same-head Codex and Claude PASS | Supervised fix rounds through the same work order; six additional P2-level pre-audit corrections by the trusted orchestrator | `965d002cc0c42519de8729e1e66ef0496ff3f0ac`, merged `d09e523895dd12abfa5775bd088f7d687d45d6bc` | Recovered; no duplicate paid create |
+| [#932](https://github.com/codemower-ai/code-mower/pull/932) | 5 | 0.0 returned | 24,253s | Unavailable | 10 | Codex: four BLOCKED, two PASS (first PASS invalidated by a supplemental P2); final head same-head Codex and Claude PASS | Trusted-orchestrator intervention: supervised; orchestrator-side authorization/provenance, work-item binding, capability migration, collection, and bot-login corrections; no owner intervention recorded | `619638849b32308046342e0d839c58f80ca99edd`, merged `da475b64a7696b5780b78d54aa61dbfbbc9d1e41` | Recovered; no duplicate paid create |
+| [#940](https://github.com/codemower-ai/code-mower/pull/940) / [#910](https://github.com/codemower-ai/code-mower/issues/910) | 4 | 0.0 returned | 14,184s | Unavailable | 14 | Codex: seven BLOCKED carrying twelve accepted P2; six intermediate Claude PASS became stale; final head same-head Codex PASS and Claude PASS with one nonblocking P3 advisory | Trusted-orchestrator intervention: supervised; fix rounds routed through the same work order plus six P2-level pre-audit corrections by the orchestrator; no owner intervention recorded | `965d002cc0c42519de8729e1e66ef0496ff3f0ac`, merged `d09e523895dd12abfa5775bd088f7d687d45d6bc` | Recovered; no duplicate paid create |
 
 A returned observed ACU of `0.0` is recorded as the value the transport
 returned, not as a measured cost of zero. Both are supervised hosted transport
@@ -118,7 +123,9 @@ and recovery evidence, not first-pass deliveries.
 5. Recovery and fix rounds reused the original paid create; no duplicate
    session creation.
 6. Final head `965d002cc0c42519de8729e1e66ef0496ff3f0ac` received same-head
-   Codex PASS and Claude PASS; `code-mower/gate`, the aggregate package job,
+   Codex PASS and Claude PASS. The final Claude PASS carried one nonblocking
+   P3 advisory; its disposition was recorded as advisory, not accepted as a
+   blocker, and the PASS stands unchanged. `code-mower/gate`, the aggregate package job,
    and the Python 3.12, 3.13, and 3.14 package matrices passed; merged as
    `d09e523895dd12abfa5775bd088f7d687d45d6bc`.
 7. Final verified collection was round 14 and bound the expected author,
@@ -155,11 +162,14 @@ unqualified, and they are not fitness evidence for promotion.
 
 ## Trusted-orchestrator context canary
 
-The trusted orchestrator completed an offline synthetic canary on
-`26135c62f191b171a5b88d0234eb82c306ece169` using protected temporary state,
-fake authorization/retrieval/remote/GitHub seams, and zero external provider
-calls. Only these metadata outcomes are published; the builder did not fetch,
-print, persist, or reconstruct any private context.
+The trusted orchestrator completed an offline synthetic protected-path canary
+on `26135c62f191b171a5b88d0234eb82c306ece169` using protected temporary
+state, fake authorization/retrieval/remote/GitHub seams, and zero external
+provider calls. It exercises the protected code path only. It does not prove
+live authenticated private-context retrieval and it does not measure context
+relevance; both remain unqualified. Only these metadata outcomes are
+published; the builder did not fetch, print, persist, or reconstruct any
+private context, and no live private-context evidence is inferred here.
 
 | Case | Sanitized outcome |
 | --- | --- |
@@ -170,8 +180,7 @@ print, persist, or reconstruct any private context.
 | No-context compatibility | Running; policy `none`; dispatch `omitted`; one fake provider mutation; legacy input shape preserved |
 
 The corresponding focused packet, delivery, guided-session, and Devin
-work-order suites passed 44 tests. Context relevance is not measured by this
-canary.
+work-order suites passed 44 tests.
 
 ## Setup and package qualification
 
@@ -195,12 +204,15 @@ rehearsal; release readiness; privacy, workflow, and package guards. These run
 in the GitHub package matrix and `code-mower/gate` on the exact PR head, and
 their result is recorded in the PR's status checks rather than copied here.
 
-## Board and cloud evidence
+## Board and cloud evidence (pending, trusted orchestrator)
 
-Board and cloud records for this qualification contain only allowlisted
-provider, transport, state, reason, timing, round, PR/head, ACU/cost, and
-validation metadata. The cloud dry run is inspected before the trusted
-orchestrator performs any upload; the builder performs no upload.
+Exact-head Board inspection, cloud dry-run inspection, and the metadata-only
+upload are trusted-orchestrator steps. They were pending when this document
+was written and were not performed by the builder. When performed, Board and
+cloud records for this qualification may contain only allowlisted provider,
+transport, state, reason, timing, round, PR/head, ACU/cost, and validation
+metadata; the public task-class descriptions above are documentation, not
+cloud metadata. The cloud dry run is inspected before any upload.
 
 ## Limitations
 
@@ -215,8 +227,10 @@ orchestrator performs any upload; the builder performs no upload.
   everywhere; local ACU does not exist; hosted observed ACU is the returned
   `0.0`, not an audited spend.
 - No measured productivity lift: no baseline comparison was performed.
-- Unmeasured context relevance: the canary proves lifecycle and privacy
-  behavior, not the usefulness of delivered context.
+- Live private-context retrieval unqualified: the canary is offline and
+  synthetic; no live authenticated retrieval was exercised.
+- Unmeasured context relevance: the canary proves protected-path lifecycle
+  and privacy behavior, not the usefulness of delivered context.
 - Informational reviewer authority: live Devin reviewer accuracy and
   false-positive rate are unqualified; both transports stay informational.
 
