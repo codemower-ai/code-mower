@@ -144,9 +144,58 @@ def _committed_manifest_version(repo_path: Path) -> str:
     return version if isinstance(version, str) else ""
 
 
+MANIFEST_ENTRY_KEYS = ("target", "source", "kind")
+
+POST_MERGE_RUNBOOK_HEADING = "Post-Merge Release Runbook"
+
+
+def _manifest_rows(manifest: dict[str, Any]) -> list[Any]:
+    rows = manifest.get("files_written")
+    return list(rows) if isinstance(rows, list) else []
+
+
+def _malformed_manifest_rows(manifest: dict[str, Any]) -> list[str]:
+    """Describe rows that cannot be compared, instead of dropping them."""
+
+    problems: list[str] = []
+    for index, row in enumerate(_manifest_rows(manifest)):
+        if not isinstance(row, dict):
+            problems.append(f"row {index} is not an object")
+            continue
+        missing = [key for key in MANIFEST_ENTRY_KEYS if key not in row]
+        if missing:
+            problems.append(f"row {index} is missing {', '.join(missing)}")
+        unexpected = sorted(set(row) - set(MANIFEST_ENTRY_KEYS))
+        if unexpected:
+            problems.append(f"row {index} has unexpected {', '.join(unexpected)}")
+        non_text = sorted(
+            key
+            for key in MANIFEST_ENTRY_KEYS
+            if key in row and not isinstance(row[key], str)
+        )
+        if non_text:
+            problems.append(f"row {index} has non-string {', '.join(non_text)}")
+    return problems
+
+
+def _duplicate_manifest_targets(manifest: dict[str, Any]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for row in _manifest_rows(manifest):
+        if not isinstance(row, dict):
+            continue
+        target = row.get("target")
+        if not isinstance(target, str):
+            continue
+        if target in seen:
+            duplicates.add(target)
+        seen.add(target)
+    return sorted(duplicates)
+
+
 def _manifest_inventory(manifest: dict[str, Any]) -> dict[str, dict[str, str]]:
     inventory: dict[str, dict[str, str]] = {}
-    for entry in manifest.get("files_written", []):
+    for entry in _manifest_rows(manifest):
         if isinstance(entry, dict):
             inventory[str(entry.get("target", ""))] = {
                 "source": str(entry.get("source", "")),
@@ -159,33 +208,40 @@ def _committed_manifest_drift(repo_path: Path) -> dict[str, Any]:
     """Compare the whole normalized committed manifest with a fresh generation.
 
     A stale committed artifact is a release defect: it is the published record of
-    the standalone package surface, so missing targets, unexpected targets, and
-    changed source mappings all fail readiness, not only a drifted version.
+    the standalone package surface. The gate is strict equality of the whole
+    normalized manifest, so malformed rows, duplicated targets, and extra rows
+    cannot normalize into apparent agreement; the target diagnostics are only
+    bounded reporting on top of that equality.
     """
 
+    empty = {
+        "matches": False,
+        "error": "",
+        "malformed_rows": [],
+        "duplicate_targets": [],
+        "missing_targets": [],
+        "unexpected_targets": [],
+        "changed_targets": [],
+        "committed_row_count": 0,
+        "generated_row_count": 0,
+        "metadata_matches": False,
+    }
     committed = _committed_manifest(repo_path)
     if committed is None:
         return {
+            **empty,
             "error": "committed package manifest is missing or not valid JSON",
-            "missing_targets": [],
-            "unexpected_targets": [],
-            "changed_targets": [],
-            "committed_file_count": 0,
-            "generated_file_count": 0,
-            "metadata_matches": False,
         }
     try:
         generated = package_module.generate_committed_package_manifest(repo_path)
     except Exception as exc:  # pragma: no cover - exercised through status output.
         return {
+            **empty,
             "error": str(exc),
-            "missing_targets": [],
-            "unexpected_targets": [],
-            "changed_targets": [],
-            "committed_file_count": len(_manifest_inventory(committed)),
-            "generated_file_count": 0,
-            "metadata_matches": False,
+            "committed_row_count": len(_manifest_rows(committed)),
         }
+    malformed = _malformed_manifest_rows(committed)
+    duplicates = _duplicate_manifest_targets(committed)
     normalized = package_module.normalized_package_manifest(committed)
     committed_files = _manifest_inventory(normalized)
     generated_files = _manifest_inventory(generated)
@@ -194,58 +250,140 @@ def _committed_manifest_drift(repo_path: Path) -> dict[str, Any]:
         for target, entry in generated_files.items()
         if target in committed_files and committed_files[target] != entry
     )
+    metadata_matches = all(
+        normalized.get(key) == generated.get(key)
+        for key in ("mode", "package", "output_dir", "deferred_package_files")
+    )
+    committed_rows = _manifest_rows(committed)
     return {
+        "matches": bool(
+            not malformed
+            and not duplicates
+            and normalized == generated
+            and len(committed_rows) == len(_manifest_rows(generated))
+        ),
         "error": "",
+        "malformed_rows": malformed[:20],
+        "duplicate_targets": duplicates[:20],
         "missing_targets": sorted(set(generated_files) - set(committed_files))[:20],
         "unexpected_targets": sorted(set(committed_files) - set(generated_files))[:20],
         "changed_targets": changed[:20],
-        "committed_file_count": len(committed_files),
-        "generated_file_count": len(generated_files),
-        "metadata_matches": all(
-            normalized.get(key) == generated.get(key)
-            for key in ("mode", "package", "output_dir", "deferred_package_files")
-        ),
+        "committed_row_count": len(committed_rows),
+        "generated_row_count": len(_manifest_rows(generated)),
+        "metadata_matches": metadata_matches,
     }
 
 
 def _manifest_matches_generated(drift: dict[str, Any]) -> bool:
-    return bool(
-        not drift["error"]
-        and drift["metadata_matches"]
-        and not drift["missing_targets"]
-        and not drift["unexpected_targets"]
-        and not drift["changed_targets"]
-        and drift["committed_file_count"] == drift["generated_file_count"]
-    )
+    return bool(drift["matches"] and not drift["error"])
 
 
 def _post_merge_runbook_markers(release_tag: str, package_index_spec: str) -> tuple[str, ...]:
     """Ordered, exact commands the post-merge runbook must publish in sequence."""
 
     return (
-        'RELEASE_SHA="$(git rev-parse origin/main)"',
+        "gh pr view \"$RELEASE_PR\" --repo \"$REPO\" --json state --jq '.state'",
+        'git fetch origin "$RELEASE_SHA"',
+        "migration release-readiness --json",
         f'git tag -a {release_tag} "$RELEASE_SHA"',
         f"git push origin refs/tags/{release_tag}",
         "-f publish_testpypi=false -f publish_pypi=false",
         "-f publish_testpypi=true -f publish_pypi=false",
-        f"--package-spec {package_index_spec}",
-        "--pip-index-url https://test.pypi.org/simple/",
+        "--index-url https://test.pypi.org/simple/",
         "-f publish_testpypi=false -f publish_pypi=true",
+        f"--package-spec {package_index_spec}",
         "gh run download",
         "--name code-mower-dist",
         "python3.12 -m pip download",
         "sha256",
+        "CODE_MOWER_PYPI_PUBLISH",
         f"gh release create {release_tag}",
         "--verify-tag",
-        "code-mower doctor --easy --devin",
+        "provider.devin.repository_scope",
         "code-mower release campaign create",
         "--required-providers claude,codex,devin",
-        "--port 5332",
-        "--port 5342",
-        "--port 5344",
+        "code-mower board stop --port",
+        'board_wait.py" serving 5332 5342 5344',
+        "code-mower board doctor",
         "code-mower cloud upload",
         "--dry-run --json",
     )
+
+
+def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str, ...]:
+    """Assertions the post-merge runbook must contain, not merely describe.
+
+    Ordered presence of commands cannot show that an irreversible step is gated:
+    each entry here is the assertion whose removal would let the release proceed
+    on an unverified merge commit, workflow run, publish-job posture, artifact
+    source, Release asset, Devin posture, publish variable, or Board.
+    """
+
+    return (
+        # The release commit is the merged pull request's own merge commit.
+        "--json mergeCommit --jq '.mergeCommit.oid'",
+        'test "$(git rev-parse HEAD)" = "$RELEASE_SHA"',
+        # Readiness runs from a fresh environment built at that exact commit.
+        f'test "$("$RELEASE_CLI" --version)" = "code-mower {version}"',
+        "committed-package-manifest-matches-generated",
+        "post-merge-release-runbook-asserted",
+        "raise SystemExit(f\"release readiness is not ready: {missing or failing}\")",
+        # The tag dereferences to that commit locally and on the remote.
+        f'test "$(git rev-list -n 1 {release_tag})" = "$RELEASE_SHA"',
+        f"test \"$(git ls-remote origin 'refs/tags/{release_tag}^{{}}' | awk '{{print $1}}')\""
+        ' = "$RELEASE_SHA"',
+        # Every workflow run is asserted, including both publish-job postures.
+        'if run.get("workflowName") != EXPECTED_WORKFLOW:',
+        'if run.get("headSha") != head_sha:',
+        'problems.append(f"{job_name} is {actual}, expected skipped")',
+        'problems.append(f"{job_name} is {actual}, expected success")',
+        '"$NO_PUBLISH_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped skipped',
+        '"$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" success skipped',
+        '"$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped success',
+        '"$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" skipped skipped',
+        # TestPyPI is the exclusive source of the candidate artifacts.
+        f"PIP_CONFIG_FILE=/dev/null python3.12 -m pip download code-mower=={version}",
+        "--index-url https://test.pypi.org/simple/ --dest \"$TESTPYPI_DIST_DIR\"",
+        '--package-spec "$TESTPYPI_WHEEL"',
+        # Production commands reach canonical PyPI explicitly, without caches.
+        "--index-url https://pypi.org/simple/ --dest \"$PYPI_DOWNLOAD_DIR\"",
+        "--pip-index-url https://pypi.org/simple/",
+        "--pip-no-cache",
+        # Republishing is impossible before the irreversible release creation.
+        'if values.get(name, "false").strip().lower() == "true"',
+        'raise SystemExit(f"release-event republishing is enabled: {enabled}")',
+        # The Release's own assets are downloaded and compared digest by digest.
+        'raise SystemExit(f"{mode} release assets are not acceptable: {problems}")',
+        'problems.append("release asset SHA-256 values differ from PROD_DIST_DIR")',
+        'assert_release_assets.py" existing',
+        # Hosted Devin readiness is required, not reported.
+        "--set-transport devin=devin_api_v3",
+        'raise SystemExit(f"hosted Devin readiness is blocked: {blocked}")',
+        # Boards stop, are waited for, and only then restart from the release.
+        'test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
+        'board_wait.py" gone "$BOARD_PORT"',
+        'raise SystemExit(f"ports still not {mode} within {DEADLINE_SECONDS}s: {pending}")',
+    )
+
+
+def _forbidden_runbook_markers() -> tuple[str, ...]:
+    """Commands the post-merge runbook must not publish."""
+
+    return (
+        'RELEASE_SHA="$(git rev-parse origin/main)"',
+        "gh release upload",
+        "--pip-extra-index-url https://pypi.org/simple/",
+    )
+
+
+def _document_section(text: str, heading: str) -> str:
+    """Return one Markdown section, so a gate reads the runbook and nothing else."""
+
+    start = text.find(heading) if heading else -1
+    if start < 0:
+        return ""
+    end = text.find("\n## ", start + len(heading))
+    return text[start:] if end < 0 else text[start:end]
 
 
 def _unordered_markers(text: str, markers: tuple[str, ...]) -> list[str]:
@@ -359,7 +497,10 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     release_tag = _release_tag_for_version(version) if version else ""
     package_index_spec = f"code-mower=={version}" if version else ""
     doc_blob = "\n".join(docs.values())
-    runbook_doc = docs.get("docs/pypi-release.md", "")
+    runbook_doc = _document_section(
+        docs.get("docs/pypi-release.md", ""),
+        f"## {release_tag} {POST_MERGE_RUNBOOK_HEADING}" if release_tag else "",
+    )
     runbook_markers = (
         _post_merge_runbook_markers(release_tag, package_index_spec)
         if release_tag and package_index_spec
@@ -370,6 +511,17 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         if runbook_markers
         else ["unknown release version"]
     )
+    runbook_assertions = (
+        _post_merge_runbook_assertions(version, release_tag) if release_tag else ()
+    )
+    missing_runbook_assertions = (
+        [marker for marker in runbook_assertions if marker not in runbook_doc]
+        if runbook_assertions
+        else ["unknown release version"]
+    )
+    forbidden_runbook_markers = [
+        marker for marker in _forbidden_runbook_markers() if marker in runbook_doc
+    ]
     public_hygiene_blobs = {
         relative_path: text.lower()
         for relative_path, text in public_hygiene_docs.items()
@@ -495,8 +647,8 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             status="pass" if _manifest_matches_generated(manifest_drift) else "fail",
             evidence=(
                 f"{package_module.COMMITTED_PACKAGE_MANIFEST}="
-                f"{manifest_drift['committed_file_count']} file(s), "
-                f"generated={manifest_drift['generated_file_count']} file(s)"
+                f"{manifest_drift['committed_row_count']} row(s), "
+                f"generated={manifest_drift['generated_row_count']} row(s)"
             ),
             detail=manifest_drift,
         ),
@@ -646,6 +798,22 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 "release_tag": release_tag,
                 "required_commands": list(runbook_markers),
                 "missing_or_out_of_order": missing_runbook_markers,
+            },
+        ),
+        _release_check(
+            check_id="post-merge-release-runbook-asserted",
+            title="Post-merge runbook asserts every irreversible release gate",
+            status=(
+                "pass"
+                if not missing_runbook_assertions and not forbidden_runbook_markers
+                else "fail"
+            ),
+            evidence="docs/pypi-release.md",
+            detail={
+                "release_tag": release_tag,
+                "required_assertions": list(runbook_assertions),
+                "missing_assertions": missing_runbook_assertions,
+                "forbidden_commands": forbidden_runbook_markers,
             },
         ),
         _release_check(

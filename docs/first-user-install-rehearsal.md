@@ -317,7 +317,11 @@ gh workflow run release.yml \
 ```
 
 After that workflow run finishes, record its workflow run link and rehearse the
-candidate from TestPyPI:
+candidate from TestPyPI. This command only shows that the candidate installs
+alongside canonical PyPI: pip does not prefer `--index-url` over
+`--extra-index-url`, so use the source-exclusive TestPyPI fetch in the
+[v1.4.0 post-merge release runbook](pypi-release.md#6-publish-testpypi-only-then-rehearse-the-exact-candidate-from-testpypi)
+when TestPyPI must be proven as the artifact source:
 
 ```bash
 code-mower migration package-install-rehearsal \
@@ -327,7 +331,7 @@ code-mower migration package-install-rehearsal \
   --pip-index-url https://test.pypi.org/simple/ \
   --pip-extra-index-url https://pypi.org/simple/ \
   --python "$(command -v python3.12)" \
-  --work-dir /tmp/code-mower-v100-testpypi-rehearsal \
+  --work-dir /tmp/code-mower-v140-testpypi-rehearsal \
   --json
 ```
 
@@ -350,7 +354,7 @@ code-mower migration package-install-rehearsal \
   --allow-package-index \
   --upgrade-pip \
   --python "$(command -v python3.12)" \
-  --work-dir /tmp/code-mower-v100-pypi-rehearsal \
+  --work-dir /tmp/code-mower-v140-pypi-rehearsal \
   --json
 ```
 

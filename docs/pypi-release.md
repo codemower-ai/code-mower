@@ -131,23 +131,68 @@ publish inputs set to `false` and confirm `build-distributions` and
 ## v1.4.0 Post-Merge Release Runbook
 
 Run these steps in this order after the release pull request merges. Every
-irreversible step binds its inputs first: the exact merge head, the tag target,
-the workflow run ID, and the artifact filenames and digests. Replace each
+irreversible step binds its inputs and asserts them before it runs: the exact
+merge commit OID, the tag target, the workflow run identity and job posture, and
+the artifact filenames and digests. Every check below is an assertion that exits
+nonzero on mismatch; printed JSON alone is not evidence. Replace each
 `REPLACE_WITH_...` value with the exact observed value, and keep tokens, profile
 paths, private repository paths, and provider prose out of recorded output.
 
-### 1. Bind the immutable merge head
+### 1. Bind the immutable release commit from the merged release PR
+
+`origin/main` is mutable and may already carry later commits, so the release
+commit is the release pull request's own merge commit OID.
 
 ```bash
 REPO="codemower-ai/code-mower"
-git fetch origin main --tags
-RELEASE_SHA="$(git rev-parse origin/main)"
-git checkout "$RELEASE_SHA"
+RELEASE_PR="REPLACE_WITH_RELEASE_PR_NUMBER"
+test "$(gh pr view "$RELEASE_PR" --repo "$REPO" --json state --jq '.state')" = "MERGED"
+RELEASE_SHA="$(gh pr view "$RELEASE_PR" --repo "$REPO" \
+  --json mergeCommit --jq '.mergeCommit.oid')"
+printf '%s\n' "$RELEASE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+git fetch origin "$RELEASE_SHA"
+git checkout --detach "$RELEASE_SHA"
 test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
-code-mower migration release-readiness --json
+test "$(git cat-file -t "$RELEASE_SHA")" = "commit"
 ```
 
-### 2. Create and verify the annotated `v1.4.0` tag
+### 2. Run release readiness from a fresh source environment at that commit
+
+The ambient `code-mower` executable is still the previous release, so readiness
+runs from a clean virtual environment built out of the exact `RELEASE_SHA`
+checkout.
+
+```bash
+RELEASE_ENV="$(mktemp -d /tmp/code-mower-v140-release-env.XXXXXX)"
+python3.12 -m venv "$RELEASE_ENV/venv"
+RELEASE_PYTHON="$RELEASE_ENV/venv/bin/python"
+PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL= PIP_EXTRA_INDEX_URL= \
+  "$RELEASE_PYTHON" -m pip install --no-cache-dir --index-url https://pypi.org/simple/ .
+RELEASE_CLI="$RELEASE_ENV/venv/bin/code-mower"
+test "$("$RELEASE_CLI" --version)" = "code-mower 1.4.0"
+"$RELEASE_CLI" migration release-readiness --json >"$RELEASE_ENV/readiness.json"
+READINESS_JSON="$RELEASE_ENV/readiness.json" "$RELEASE_PYTHON" - <<'PY'
+import json
+import os
+
+report = json.loads(open(os.environ["READINESS_JSON"], encoding="utf-8").read())
+checks = {row["id"]: row["status"] for row in report["checks"]}
+required = [
+    "package-version-consistency",
+    "committed-package-manifest-version",
+    "committed-package-manifest-matches-generated",
+    "post-merge-release-runbook-ordered",
+    "post-merge-release-runbook-asserted",
+]
+missing = [check for check in required if checks.get(check) != "pass"]
+failing = sorted(check for check, status in checks.items() if status == "fail")
+if missing or failing:
+    raise SystemExit(f"release readiness is not ready: {missing or failing}")
+print(json.dumps({"checks": len(checks), "required_pass": required}))
+PY
+```
+
+### 3. Create and verify the annotated `v1.4.0` tag on that exact commit
 
 ```bash
 git tag -a v1.4.0 "$RELEASE_SHA" -m "Code Mower v1.4.0"
@@ -156,69 +201,202 @@ test "$(git rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"
 test "$(git ls-remote origin 'refs/tags/v1.4.0^{}' | awk '{print $1}')" = "$RELEASE_SHA"
 ```
 
-### 3. Run `release.yml` with no publishing first
+### 4. Install the workflow-run assertion helper
+
+Every workflow run below is asserted with this helper: workflow identity,
+triggering event, exact head SHA, `success` conclusion, and the exact posture of
+both publish jobs. A job that is expected to skip must be reported skipped or be
+absent from the run; a job that is expected to publish must report `success`.
+
+```bash
+cat >"$RELEASE_ENV/assert_release_run.py" <<'PY'
+"""Assert one release workflow run's identity, head, conclusion, and job posture."""
+
+import json
+import os
+import subprocess
+import sys
+
+EXPECTED_WORKFLOW = "Code Mower Release"
+SKIPPED = {"skipped", "absent"}
+
+
+def run_view(repo: str, run_id: str) -> dict:
+    completed = subprocess.run(
+        [
+            "gh", "run", "view", run_id, "--repo", repo, "--json",
+            "databaseId,workflowName,headSha,event,status,conclusion,url,jobs",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def job_posture(run: dict, job_name: str) -> str:
+    for job in run.get("jobs") or []:
+        if job.get("name") == job_name:
+            return str(job.get("conclusion") or job.get("status") or "unknown")
+    return "absent"
+
+
+def main() -> None:
+    repo, run_id, event, head_sha, testpypi, pypi = sys.argv[1:7]
+    run = run_view(repo, run_id)
+    problems = []
+    if str(run.get("databaseId")) != run_id:
+        problems.append("run id does not match the inspected run")
+    if run.get("workflowName") != EXPECTED_WORKFLOW:
+        problems.append("run belongs to another workflow")
+    if run.get("event") != event:
+        problems.append(f"event is {run.get('event')}, not {event}")
+    if run.get("headSha") != head_sha:
+        problems.append("run head is not the exact release commit")
+    if run.get("status") != "completed" or run.get("conclusion") != "success":
+        problems.append("run did not complete successfully")
+    for job_name, expected in (
+        ("publish-testpypi", testpypi),
+        ("publish-pypi", pypi),
+    ):
+        actual = job_posture(run, job_name)
+        if expected == "skipped" and actual not in SKIPPED:
+            problems.append(f"{job_name} is {actual}, expected skipped")
+        if expected == "success" and actual != "success":
+            problems.append(f"{job_name} is {actual}, expected success")
+    if problems:
+        raise SystemExit("; ".join(problems))
+    print(json.dumps({
+        "run_id": run_id,
+        "event": event,
+        "head_sha": head_sha,
+        "publish_testpypi": job_posture(run, "publish-testpypi"),
+        "publish_pypi": job_posture(run, "publish-pypi"),
+        "url": run.get("url"),
+    }))
+
+
+main()
+PY
+```
+
+### 5. Run `release.yml` with no publishing first
+
+Both publish jobs must skip on this run.
 
 ```bash
 gh workflow run release.yml --repo "$REPO" --ref v1.4.0 \
   -f publish_testpypi=false -f publish_pypi=false
 NO_PUBLISH_RUN_ID="REPLACE_WITH_EXACT_RUN_ID"
 gh run watch "$NO_PUBLISH_RUN_ID" --repo "$REPO" --exit-status
-gh run view "$NO_PUBLISH_RUN_ID" --repo "$REPO" \
-  --json databaseId,headSha,event,status,conclusion,url
+"$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_run.py" "$REPO" \
+  "$NO_PUBLISH_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped skipped
 ```
 
-### 4. Publish TestPyPI only, then rehearse it
+### 6. Publish TestPyPI only, then rehearse the exact candidate from TestPyPI
+
+TestPyPI must publish while production PyPI skips. pip does not prefer
+`--index-url` over `--extra-index-url`, so the candidate artifacts are fetched
+from TestPyPI alone, with no cache, no dependency resolution, and no ambient pip
+configuration; their exact filenames and digests are bound before the rehearsal,
+which then installs those local files. Dependencies resolve separately from
+canonical PyPI.
 
 ```bash
 gh workflow run release.yml --repo "$REPO" --ref v1.4.0 \
   -f publish_testpypi=true -f publish_pypi=false
 TESTPYPI_RUN_ID="REPLACE_WITH_EXACT_RUN_ID"
 gh run watch "$TESTPYPI_RUN_ID" --repo "$REPO" --exit-status
+"$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_run.py" "$REPO" \
+  "$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" success skipped
+
+TESTPYPI_DIST_DIR="$(mktemp -d /tmp/code-mower-v140-testpypi-dist.XXXXXX)"
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
+  PIP_CONFIG_FILE=/dev/null python3.12 -m pip download code-mower==1.4.0 \
+  --no-cache-dir --no-deps --only-binary :all: \
+  --index-url https://test.pypi.org/simple/ --dest "$TESTPYPI_DIST_DIR"
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
+  PIP_CONFIG_FILE=/dev/null python3.12 -m pip download code-mower==1.4.0 \
+  --no-cache-dir --no-deps --no-binary :all: \
+  --index-url https://test.pypi.org/simple/ --dest "$TESTPYPI_DIST_DIR"
+TESTPYPI_DIST_DIR="$TESTPYPI_DIST_DIR" "$RELEASE_PYTHON" - <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+
+files = sorted(
+    path for path in Path(os.environ["TESTPYPI_DIST_DIR"]).iterdir() if path.is_file()
+)
+digests = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
+wheels = [name for name in digests if name == "code_mower-1.4.0-py3-none-any.whl"]
+sdists = [name for name in digests if name == "code_mower-1.4.0.tar.gz"]
+if len(digests) != 2 or len(wheels) != 1 or len(sdists) != 1:
+    raise SystemExit(f"TestPyPI candidate artifact set is unexpected: {sorted(digests)}")
+print(json.dumps({"source": "testpypi", "artifacts": digests}, sort_keys=True))
+PY
+TESTPYPI_WHEEL="$TESTPYPI_DIST_DIR/code_mower-1.4.0-py3-none-any.whl"
+test -f "$TESTPYPI_WHEEL"
 TESTPYPI_WORK_DIR="$(mktemp -d /tmp/code-mower-v140-testpypi-rehearsal.XXXXXX)"
-code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.4.0 \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null \
+  "$RELEASE_CLI" migration package-install-rehearsal \
+  --package-spec "$TESTPYPI_WHEEL" \
   --python "$(command -v python3.12)" \
   --work-dir "$TESTPYPI_WORK_DIR" \
-  --pip-index-url https://test.pypi.org/simple/ \
-  --pip-extra-index-url https://pypi.org/simple/ \
-  --allow-package-index --upgrade-pip --json
+  --pip-index-url https://pypi.org/simple/ \
+  --pip-no-cache --upgrade-pip --json
 ```
 
-### 5. Publish production PyPI only, then rehearse it
+The rehearsal installs the exact TestPyPI file, so production PyPI cannot satisfy
+this step; only its dependencies come from canonical PyPI.
+
+### 7. Publish production PyPI only, then rehearse the published package
+
+Production PyPI must publish while TestPyPI skips, and the rehearsal must reach
+canonical `https://pypi.org/simple/` explicitly with no cache, so no ambient
+`pip.conf`, `PIP_INDEX_URL`, or mirror can satisfy a production-labelled gate.
 
 ```bash
 gh workflow run release.yml --repo "$REPO" --ref v1.4.0 \
   -f publish_testpypi=false -f publish_pypi=true
 PYPI_RUN_ID="REPLACE_WITH_EXACT_RUN_ID"
 gh run watch "$PYPI_RUN_ID" --repo "$REPO" --exit-status
+"$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_run.py" "$REPO" \
+  "$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped success
+
 PYPI_WORK_DIR="$(mktemp -d /tmp/code-mower-v140-pypi-rehearsal.XXXXXX)"
-code-mower migration package-install-rehearsal \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
+  PIP_CONFIG_FILE=/dev/null "$RELEASE_CLI" migration package-install-rehearsal \
   --package-spec code-mower==1.4.0 \
   --python "$(command -v python3.12)" \
   --work-dir "$PYPI_WORK_DIR" \
-  --allow-package-index --upgrade-pip --json
+  --pip-index-url https://pypi.org/simple/ \
+  --allow-package-index --pip-no-cache --upgrade-pip --json
 ```
 
-### 6. Download the exact workflow artifact
+### 8. Download the exact workflow artifact
 
 ```bash
 PROD_DIST_DIR="$(mktemp -d /tmp/code-mower-v140-prod-dist.XXXXXX)"
 gh run download "$PYPI_RUN_ID" --repo "$REPO" \
   --name code-mower-dist --dir "$PROD_DIST_DIR"
-ls -1 "$PROD_DIST_DIR"
 sha256sum "$PROD_DIST_DIR"/*
 ```
 
-### 7. Compare SHA-256 digests with the files downloaded from PyPI
+### 9. Compare SHA-256 digests with the files downloaded from canonical PyPI
 
 ```bash
 PYPI_DOWNLOAD_DIR="$(mktemp -d /tmp/code-mower-v140-pypi-download.XXXXXX)"
-python3.12 -m pip download code-mower==1.4.0 --no-deps --no-binary :all: \
-  --dest "$PYPI_DOWNLOAD_DIR"
-python3.12 -m pip download code-mower==1.4.0 --no-deps --only-binary :all: \
-  --dest "$PYPI_DOWNLOAD_DIR"
-sha256sum "$PYPI_DOWNLOAD_DIR"/*
-PROD_DIST_DIR="$PROD_DIST_DIR" PYPI_DOWNLOAD_DIR="$PYPI_DOWNLOAD_DIR" python3.12 - <<'PY'
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
+  PIP_CONFIG_FILE=/dev/null python3.12 -m pip download code-mower==1.4.0 \
+  --no-cache-dir --no-deps --no-binary :all: \
+  --index-url https://pypi.org/simple/ --dest "$PYPI_DOWNLOAD_DIR"
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS \
+  PIP_CONFIG_FILE=/dev/null python3.12 -m pip download code-mower==1.4.0 \
+  --no-cache-dir --no-deps --only-binary :all: \
+  --index-url https://pypi.org/simple/ --dest "$PYPI_DOWNLOAD_DIR"
+PROD_DIST_DIR="$PROD_DIST_DIR" PYPI_DOWNLOAD_DIR="$PYPI_DOWNLOAD_DIR" \
+  "$RELEASE_PYTHON" - <<'PY'
 import hashlib
 import json
 import os
@@ -235,7 +413,8 @@ def digests(directory):
 
 workflow = digests(os.environ["PROD_DIST_DIR"])
 published = digests(os.environ["PYPI_DOWNLOAD_DIR"])
-if len(workflow) != 2 or set(workflow) != set(published):
+expected = {"code_mower-1.4.0-py3-none-any.whl", "code_mower-1.4.0.tar.gz"}
+if set(workflow) != expected or set(published) != expected:
     raise SystemExit("workflow and PyPI artifact sets differ")
 if any(workflow[name] != published[name] for name in workflow):
     raise SystemExit("workflow and PyPI SHA-256 values differ")
@@ -246,41 +425,201 @@ PY
 Only continue when the artifact set and every digest match. A mismatch is a
 release blocker: do not attach unverified files.
 
-### 8. Create the GitHub Release with those exact assets
+### 10. Assert the publish variables are off before creating the Release
+
+The published Release triggers one `release`-event run whose publish jobs are
+gated on repository variables. Assert they cannot republish before the
+irreversible release creation, not afterwards.
 
 ```bash
-gh release create v1.4.0 "$PROD_DIST_DIR"/* --repo "$REPO" \
-  --verify-tag --title "Code Mower v1.4.0" \
-  --notes-file docs/v140-release-notes.md --latest --fail-on-no-commits
-gh release view v1.4.0 --repo "$REPO" \
-  --json tagName,targetCommitish,isDraft,isPrerelease,publishedAt,url,assets
-RELEASE_EVENT_RUN_ID="REPLACE_WITH_EXACT_RELEASE_EVENT_RUN_ID"
-gh run watch "$RELEASE_EVENT_RUN_ID" --repo "$REPO" --exit-status
-gh run view "$RELEASE_EVENT_RUN_ID" --repo "$REPO" \
-  --json databaseId,headSha,event,status,conclusion,url
+REPO="$REPO" "$RELEASE_PYTHON" - <<'PY'
+import json
+import os
+import subprocess
+
+repo = os.environ["REPO"]
+completed = subprocess.run(
+    ["gh", "api", f"repos/{repo}/actions/variables", "--paginate"],
+    check=True, capture_output=True, text=True,
+)
+values = {
+    row["name"]: str(row.get("value", ""))
+    for row in json.loads(completed.stdout).get("variables", [])
+}
+enabled = [
+    name
+    for name in ("CODE_MOWER_TESTPYPI_PUBLISH", "CODE_MOWER_PYPI_PUBLISH")
+    if values.get(name, "false").strip().lower() == "true"
+]
+if enabled:
+    raise SystemExit(f"release-event republishing is enabled: {enabled}")
+print(json.dumps({"republish_variables_off": True}))
+PY
 ```
 
-Use `gh release upload v1.4.0 "$PROD_DIST_DIR"/* --repo "$REPO" --clobber` when
-the release already exists. The publish jobs of the `release`-event run must stay
-skipped; it must not publish again.
+### 11. Create the GitHub Release with those exact assets and verify them
 
-### 9. Install locally and verify Devin readiness
+An existing `v1.4.0` release is never clobbered: inspect it first and stop
+unless its tag and its exact asset set and digests already match
+`PROD_DIST_DIR`. Install the asset assertion first. It downloads the Release's
+own assets and requires the exact filename set and every SHA-256 value to equal
+`PROD_DIST_DIR`, with exactly one wheel and one sdist:
+
+```bash
+cat >"$RELEASE_ENV/assert_release_assets.py" <<'PY'
+"""Assert the GitHub Release tag and its downloaded assets match PROD_DIST_DIR."""
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+EXPECTED = {"code_mower-1.4.0-py3-none-any.whl", "code_mower-1.4.0.tar.gz"}
+
+
+def digests(directory: Path) -> dict[str, str]:
+    return {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(directory.iterdir())
+        if path.is_file()
+    }
+
+
+def main() -> None:
+    mode = sys.argv[1]
+    repo = os.environ["REPO"]
+    release_sha = os.environ["RELEASE_SHA"]
+    local = digests(Path(os.environ["PROD_DIST_DIR"]))
+    view = json.loads(subprocess.run(
+        ["gh", "release", "view", "v1.4.0", "--repo", repo, "--json",
+         "tagName,isDraft,isPrerelease,assets"],
+        check=True, capture_output=True, text=True,
+    ).stdout)
+    problems = []
+    if view.get("tagName") != "v1.4.0":
+        problems.append("release tag is not v1.4.0")
+    if view.get("isDraft") or view.get("isPrerelease"):
+        problems.append("release is a draft or prerelease")
+    tag_target = subprocess.run(
+        ["git", "rev-list", "-n", "1", "v1.4.0"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    if tag_target != release_sha:
+        problems.append("release tag does not target the exact release commit")
+    if set(local) != EXPECTED:
+        problems.append(f"local artifact set is unexpected: {sorted(local)}")
+    asset_names = {asset["name"] for asset in view.get("assets") or []}
+    if asset_names != set(local):
+        problems.append(f"release asset set differs: {sorted(asset_names)}")
+    with tempfile.TemporaryDirectory() as scratch:
+        target = Path(scratch)
+        subprocess.run(
+            ["gh", "release", "download", "v1.4.0", "--repo", repo,
+             "--dir", str(target), "--clobber"],
+            check=True, capture_output=True, text=True,
+        )
+        downloaded = digests(target)
+    if downloaded != local:
+        problems.append("release asset SHA-256 values differ from PROD_DIST_DIR")
+    if problems:
+        raise SystemExit(f"{mode} release assets are not acceptable: {problems}")
+    print(json.dumps({
+        "mode": mode,
+        "assets": sorted(local),
+        "sha256_match": True,
+    }, sort_keys=True))
+
+
+main()
+PY
+```
+
+The `--clobber` flag above only writes into the private scratch download
+directory; Release assets are never overwritten, and a `v1.4.0` release whose
+assets differ stops the runbook for inspection.
+
+```bash
+if gh release view v1.4.0 --repo "$REPO" >/dev/null 2>&1; then
+  REPO="$REPO" PROD_DIST_DIR="$PROD_DIST_DIR" RELEASE_SHA="$RELEASE_SHA" \
+    "$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_assets.py" existing
+else
+  gh release create v1.4.0 "$PROD_DIST_DIR"/* --repo "$REPO" \
+    --verify-tag --title "Code Mower v1.4.0" \
+    --notes-file docs/v140-release-notes.md --latest --fail-on-no-commits
+fi
+REPO="$REPO" PROD_DIST_DIR="$PROD_DIST_DIR" RELEASE_SHA="$RELEASE_SHA" \
+  "$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_assets.py" created
+gh release view v1.4.0 --repo "$REPO" \
+  --json tagName,targetCommitish,isDraft,isPrerelease,publishedAt,url,assets
+```
+
+### 12. Assert the `release`-event run published nothing
+
+```bash
+RELEASE_EVENT_RUN_ID="REPLACE_WITH_EXACT_RELEASE_EVENT_RUN_ID"
+gh run watch "$RELEASE_EVENT_RUN_ID" --repo "$REPO" --exit-status
+"$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_run.py" "$REPO" \
+  "$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" skipped skipped
+```
+
+### 13. Install locally and require hosted Devin readiness
+
+`code-mower doctor --easy --devin` reports the unselected posture and can exit 0
+with `skip`, so it does not prove readiness. Select hosted Devin explicitly with
+a supported generated configuration, then require the hosted checks to pass for
+the exact `codemower-ai/code-mower` scope. `provider.devin.permissions` is
+reported, never probed: it is the account owner's confirmation and is the only
+non-`pass` status accepted.
 
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
 test -n "$CODE_MOWER_PYTHON"
 PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
   'code-mower[coworker]==1.4.0'
-code-mower --version
+test "$(code-mower --version)" = "code-mower 1.4.0"
+
 DEVIN_PROVIDER_PROFILE="REPLACE_WITH_PROTECTED_PROFILE_SELECTOR"
-code-mower doctor --easy --devin \
-  --provider-profile "$DEVIN_PROVIDER_PROFILE" --json
+DEVIN_DOCTOR_DIR="$(mktemp -d /tmp/code-mower-v140-devin-doctor.XXXXXX)"
+code-mower init code-mower.yml --profile recommended \
+  --set-transport devin=devin_api_v3 --apply --output-dir "$DEVIN_DOCTOR_DIR"
+code-mower doctor "$DEVIN_DOCTOR_DIR/code-mower.yml" --profile recommended \
+  --devin --repo codemower-ai/code-mower \
+  --provider-profile "$DEVIN_PROVIDER_PROFILE" --json >"$DEVIN_DOCTOR_DIR/doctor.json"
+DEVIN_DOCTOR_JSON="$DEVIN_DOCTOR_DIR/doctor.json" "$RELEASE_PYTHON" - <<'PY'
+import json
+import os
+
+report = json.loads(open(os.environ["DEVIN_DOCTOR_JSON"], encoding="utf-8").read())
+checks = {
+    row["name"]: row["status"]
+    for row in report.get("checks", [])
+    if row["name"].startswith("provider.devin.")
+}
+required = (
+    "provider.devin.selection",
+    "provider.devin.capabilities",
+    "provider.devin.hosted_credentials",
+    "provider.devin.repository_scope",
+    "provider.devin.lifecycle",
+)
+blocked = [name for name in required if checks.get(name) != "pass"]
+if blocked:
+    raise SystemExit(f"hosted Devin readiness is blocked: {blocked}")
+if checks.get("provider.devin.permissions") not in {"pass", "skip"}:
+    raise SystemExit("Devin permission requirements are not confirmable")
+print(json.dumps({"devin_transport": "hosted", "required_pass": list(required)}))
+PY
 ```
 
-### 10. Run the required Claude + Codex + Devin campaign
+Keep the generated directory, profile selector, credential values, organization
+identifier, and repository inventory out of recorded evidence.
+
+### 14. Run the required Claude + Codex + Devin campaign
 
 ```bash
-RELEASE_PR="REPLACE_WITH_RELEASE_PR_NUMBER"
 code-mower release campaign create \
   --release-tag v1.4.0 \
   --package-spec code-mower==1.4.0 \
@@ -300,7 +639,13 @@ code-mower release campaign status --release-tag v1.4.0 --json
 All three provider results must pass, and Devin's result must identify the
 hosted transport before peer support is claimed.
 
-### 11. Restart the three Boards from the release
+### 15. Restart the three Boards from the release, waiting on each stop
+
+The port 5332 Board must serve the exact v1.4.0 release checkout because its
+pre-release repository path is stale. Assert that checkout first, then stop each
+Board and wait through the bounded Board inventory until its listener is gone
+before starting the replacement, so no start races a dying listener on a fixed
+port.
 
 ```bash
 CODE_MOWER_RELEASE_CHECKOUT="REPLACE_WITH_EXACT_V140_CHECKOUT"
@@ -308,10 +653,74 @@ BOARD_5342_REPO="REUSE_PRIVATE_INVENTORIED_SLUG"
 BOARD_5342_REPO_PATH="REUSE_PRIVATE_INVENTORIED_PATH"
 BOARD_5344_REPO="REUSE_PRIVATE_INVENTORIED_SLUG"
 BOARD_5344_REPO_PATH="REUSE_PRIVATE_INVENTORIED_PATH"
+test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"
+test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"
+
+cat >"$RELEASE_ENV/board_wait.py" <<'PY'
+"""Bounded waits on the Board inventory: gone after a stop, serving after a start."""
+
+import json
+import subprocess
+import sys
+import time
+
+DEADLINE_SECONDS = 120
+INTERVAL_SECONDS = 3
+
+
+def inventory() -> list[dict]:
+    completed = subprocess.run(
+        ["code-mower", "board", "list", "--json"],
+        check=True, capture_output=True, text=True,
+    )
+    payload = json.loads(completed.stdout)
+    return [row for row in payload.get("boards") or [] if isinstance(row, dict)]
+
+
+def row_for(port: int) -> dict | None:
+    for row in inventory():
+        if int(row.get("port") or 0) == port:
+            return row
+    return None
+
+
+def main() -> None:
+    mode = sys.argv[1]
+    ports = [int(value) for value in sys.argv[2:]]
+    deadline = time.monotonic() + DEADLINE_SECONDS
+    pending = list(ports)
+    while pending and time.monotonic() < deadline:
+        remaining = []
+        for port in pending:
+            row = row_for(port)
+            if mode == "gone" and row is None:
+                continue
+            if (
+                mode == "serving"
+                and row is not None
+                and row.get("health") == "ok"
+                and row.get("serving_version") == "1.4.0"
+                and row.get("installed_version") == "1.4.0"
+            ):
+                continue
+            remaining.append(port)
+        pending = remaining
+        if pending:
+            time.sleep(INTERVAL_SECONDS)
+    if pending:
+        raise SystemExit(f"ports still not {mode} within {DEADLINE_SECONDS}s: {pending}")
+    print(json.dumps({"mode": mode, "ports": ports}))
+
+
+main()
+PY
+
 code-mower board list --json
-code-mower board stop --port 5332 --yes --json
-code-mower board stop --port 5342 --yes --json
-code-mower board stop --port 5344 --yes --json
+for BOARD_PORT in 5332 5342 5344; do
+  code-mower board stop --port "$BOARD_PORT" --yes --json
+  "$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" gone "$BOARD_PORT"
+done
+
 nohup code-mower board serve --repo codemower-ai/code-mower \
   --repo-path "$CODE_MOWER_RELEASE_CHECKOUT" --host 127.0.0.1 \
   --port 5332 --record-events >/tmp/code-mower-board-5332.log 2>&1 &
@@ -321,19 +730,20 @@ nohup code-mower board serve --repo "$BOARD_5342_REPO" \
 nohup code-mower board serve --repo "$BOARD_5344_REPO" \
   --repo-path "$BOARD_5344_REPO_PATH" --host 127.0.0.1 \
   --port 5344 --record-events >/tmp/code-mower-board-5344.log 2>&1 &
-code-mower board list --json
+"$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" serving 5332 5342 5344
+
 code-mower board doctor --repo codemower-ai/code-mower \
   --repo-path "$CODE_MOWER_RELEASE_CHECKOUT" --json
+code-mower board doctor --repo "$BOARD_5342_REPO" \
+  --repo-path "$BOARD_5342_REPO_PATH" --json
+code-mower board doctor --repo "$BOARD_5344_REPO" \
+  --repo-path "$BOARD_5344_REPO_PATH" --json
 ```
 
-Each inventory row must report serving and installed version `1.4.0`. The port
-5332 Board must be restarted from the exact v1.4.0 release checkout because its
-pre-release repository path is stale. Run `code-mower board doctor` for the other
-two Boards with their privately inventoried slugs and paths. Do not use raw
-process kills or Board reset, and do not copy private repository slugs or paths
-into public evidence.
+Every `board doctor` run must pass. Do not use raw process kills or Board reset,
+and never copy private repository slugs or paths into public evidence.
 
-### 12. Dry-run, inspect, then upload metadata-only cloud evidence
+### 16. Dry-run, inspect, then upload metadata-only cloud evidence
 
 ```bash
 code-mower cloud doctor --install-id codex-code-mower --probe-service --json

@@ -7893,9 +7893,11 @@ def main():
         self.assertEqual(check["detail"]["missing_targets"], [])
         self.assertEqual(check["detail"]["unexpected_targets"], [])
         self.assertEqual(check["detail"]["changed_targets"], [])
+        self.assertEqual(check["detail"]["malformed_rows"], [])
+        self.assertEqual(check["detail"]["duplicate_targets"], [])
         self.assertEqual(
-            check["detail"]["committed_file_count"],
-            check["detail"]["generated_file_count"],
+            check["detail"]["committed_row_count"],
+            check["detail"]["generated_row_count"],
         )
 
     def test_release_readiness_fails_on_stale_committed_manifest(self) -> None:
@@ -7905,10 +7907,10 @@ def main():
         check = self._manifest_drift_check(truncate)
 
         self.assertEqual(check["status"], "fail")
-        self.assertEqual(check["detail"]["committed_file_count"], 307)
+        self.assertEqual(check["detail"]["committed_row_count"], 307)
         self.assertGreater(
-            check["detail"]["generated_file_count"],
-            check["detail"]["committed_file_count"],
+            check["detail"]["generated_row_count"],
+            check["detail"]["committed_row_count"],
         )
         self.assertTrue(check["detail"]["missing_targets"])
 
@@ -7940,6 +7942,90 @@ def main():
             check["detail"]["changed_targets"], ["docs/context-graph-lifecycle.md"]
         )
 
+    def test_release_readiness_fails_on_changed_manifest_kind_mapping(self) -> None:
+        def rewrite_kind(manifest: dict) -> None:
+            for entry in manifest["files_written"]:
+                if entry["target"] == "docs/context-graph-lifecycle.md":
+                    entry["kind"] = "source"
+
+        check = self._manifest_drift_check(rewrite_kind)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(
+            check["detail"]["changed_targets"], ["docs/context-graph-lifecycle.md"]
+        )
+
+    def test_release_readiness_fails_on_extra_manifest_entry(self) -> None:
+        def add_unexpected(manifest: dict) -> None:
+            manifest["files_written"].append(
+                {
+                    "target": "docs/not-packaged.md",
+                    "source": "docs/not-packaged.md",
+                    "kind": "doc",
+                }
+            )
+
+        check = self._manifest_drift_check(add_unexpected)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(check["detail"]["unexpected_targets"], ["docs/not-packaged.md"])
+
+    def test_release_readiness_fails_on_duplicate_manifest_targets(self) -> None:
+        def duplicate_row(manifest: dict) -> None:
+            rows = manifest["files_written"]
+            duplicated = next(
+                row
+                for row in rows
+                if row["target"] == "docs/context-graph-lifecycle.md"
+            )
+            rows.append(dict(duplicated))
+
+        check = self._manifest_drift_check(duplicate_row)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(
+            check["detail"]["duplicate_targets"], ["docs/context-graph-lifecycle.md"]
+        )
+        self.assertEqual(check["detail"]["missing_targets"], [])
+        self.assertEqual(check["detail"]["unexpected_targets"], [])
+        self.assertEqual(check["detail"]["changed_targets"], [])
+
+    def test_release_readiness_fails_on_non_object_manifest_row(self) -> None:
+        def replace_with_string(manifest: dict) -> None:
+            manifest["files_written"][0] = "docs/context-graph-lifecycle.md"
+
+        check = self._manifest_drift_check(replace_with_string)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("row 0 is not an object", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_manifest_row_missing_keys(self) -> None:
+        def drop_kind(manifest: dict) -> None:
+            manifest["files_written"][0].pop("kind")
+
+        check = self._manifest_drift_check(drop_kind)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("row 0 is missing kind", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_unexpected_manifest_row_key(self) -> None:
+        def add_key(manifest: dict) -> None:
+            manifest["files_written"][0]["mode"] = "0644"
+
+        check = self._manifest_drift_check(add_key)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("row 0 has unexpected mode", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_non_string_manifest_value(self) -> None:
+        def replace_kind(manifest: dict) -> None:
+            manifest["files_written"][0]["kind"] = ["doc"]
+
+        check = self._manifest_drift_check(replace_kind)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("row 0 has non-string kind", check["detail"]["malformed_rows"])
+
     def test_packaged_graph_docs_link_target_is_packaged(self) -> None:
         packaged = {target for _source, target, _kind in code_mower_package.PACKAGE_FILES}
 
@@ -7970,7 +8056,7 @@ def main():
     def test_release_readiness_fails_when_the_runbook_stops_at_testpypi(self) -> None:
         docs = release_readiness._release_docs(ROOT)
         docs["docs/pypi-release.md"] = docs["docs/pypi-release.md"].partition(
-            "### 5. Publish production PyPI only"
+            "### 7. Publish production PyPI only"
         )[0]
 
         with mock.patch.object(release_readiness, "_release_docs", return_value=docs):
@@ -7983,6 +8069,210 @@ def main():
         self.assertIn(
             "gh release create v1.4.0", runbook["detail"]["missing_or_out_of_order"]
         )
+
+    def _runbook_section(self) -> str:
+        return release_readiness._document_section(
+            (ROOT / "docs" / "pypi-release.md").read_text(encoding="utf-8"),
+            f"## v1.4.0 {release_readiness.POST_MERGE_RUNBOOK_HEADING}",
+        )
+
+    def _asserted_runbook_check(self, mutate: Callable[[str], str]) -> dict:
+        docs = release_readiness._release_docs(ROOT)
+        docs["docs/pypi-release.md"] = mutate(docs["docs/pypi-release.md"])
+        with mock.patch.object(release_readiness, "_release_docs", return_value=docs):
+            payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        return checks["post-merge-release-runbook-asserted"]
+
+    def test_release_readiness_requires_asserted_release_gates(self) -> None:
+        payload = release_readiness.render_release_readiness(ROOT)
+        checks = {check["id"]: check for check in payload["checks"]}
+        asserted = checks["post-merge-release-runbook-asserted"]
+        required = asserted["detail"]["required_assertions"]
+
+        self.assertEqual(asserted["status"], "pass")
+        self.assertEqual(asserted["detail"]["missing_assertions"], [])
+        self.assertEqual(asserted["detail"]["forbidden_commands"], [])
+        self.assertIn("--json mergeCommit --jq '.mergeCommit.oid'", required)
+        self.assertIn('test "$(git rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"', required)
+        self.assertIn('if run.get("headSha") != head_sha:', required)
+        self.assertIn("--set-transport devin=devin_api_v3", required)
+
+    def test_release_readiness_rejects_mutable_main_release_binding(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                "RELEASE_SHA=\"$(gh pr view \"$RELEASE_PR\" --repo \"$REPO\" \\\n"
+                "  --json mergeCommit --jq '.mergeCommit.oid')\"",
+                'RELEASE_SHA="$(git rev-parse origin/main)"',
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            'RELEASE_SHA="$(git rev-parse origin/main)"',
+            check["detail"]["forbidden_commands"],
+        )
+
+    def test_release_readiness_fails_when_job_posture_assertions_are_deleted(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                'problems.append(f"{job_name} is {actual}, expected skipped")',
+                "pass",
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            'problems.append(f"{job_name} is {actual}, expected skipped")',
+            check["detail"]["missing_assertions"],
+        )
+
+    def test_release_readiness_fails_when_a_run_assertion_is_dropped(self) -> None:
+        for removed in (
+            '"$NO_PUBLISH_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped skipped',
+            '"$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" success skipped',
+            '"$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped success',
+            '"$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" skipped skipped',
+        ):
+            with self.subTest(removed=removed):
+                check = self._asserted_runbook_check(
+                    lambda doc, removed=removed: doc.replace(removed, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(removed, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_release_asset_gate_is_deleted(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                'problems.append("release asset SHA-256 values differ from PROD_DIST_DIR")',
+                "pass",
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            'problems.append("release asset SHA-256 values differ from PROD_DIST_DIR")',
+            check["detail"]["missing_assertions"],
+        )
+
+    def test_release_readiness_fails_when_republish_guard_is_deleted(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                'raise SystemExit(f"release-event republishing is enabled: {enabled}")',
+                "pass",
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn(
+            'raise SystemExit(f"release-event republishing is enabled: {enabled}")',
+            check["detail"]["missing_assertions"],
+        )
+
+    def test_release_readiness_rejects_release_asset_clobbering(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                'assert_release_assets.py" existing',
+                'assert_release_assets.py" existing\ngh release upload v1.4.0 --clobber',
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("gh release upload", check["detail"]["forbidden_commands"])
+
+    def test_runbook_proves_testpypi_is_the_exclusive_candidate_source(self) -> None:
+        runbook = self._runbook_section()
+
+        self.assertIn(
+            "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS",
+            runbook,
+        )
+        self.assertIn("PIP_CONFIG_FILE=/dev/null", runbook)
+        self.assertIn(
+            "--index-url https://test.pypi.org/simple/ --dest \"$TESTPYPI_DIST_DIR\"",
+            runbook,
+        )
+        self.assertIn('--package-spec "$TESTPYPI_WHEEL"', runbook)
+        self.assertNotIn("--pip-extra-index-url https://pypi.org/simple/", runbook)
+
+    def test_runbook_production_steps_use_canonical_pypi_only(self) -> None:
+        runbook = self._runbook_section()
+        production = runbook.partition("### 7. Publish production PyPI only")[2]
+
+        self.assertIn("--pip-index-url https://pypi.org/simple/", production)
+        self.assertIn("--pip-no-cache", production)
+        self.assertIn(
+            "--index-url https://pypi.org/simple/ --dest \"$PYPI_DOWNLOAD_DIR\"",
+            production,
+        )
+        self.assertNotIn("test.pypi.org", production.partition("### 10.")[0])
+
+    def test_runbook_rehearsal_flags_exist_on_the_migration_cli(self) -> None:
+        runbook = self._runbook_section()
+        stream = StringIO()
+        with redirect_stdout(stream), self.assertRaises(SystemExit):
+            code_mower_migration.main(["package-install-rehearsal", "--help"])
+        help_text = stream.getvalue()
+
+        flags = {
+            token
+            for line in runbook.splitlines()
+            for token in line.split()
+            if token.startswith("--")
+        }
+        rehearsal_flags = {
+            flag
+            for flag in flags
+            if flag.startswith(("--package-spec", "--pip-", "--work-dir", "--python"))
+        }
+        self.assertIn("--package-spec", rehearsal_flags)
+        for flag in sorted(rehearsal_flags):
+            with self.subTest(flag=flag):
+                self.assertIn(flag, help_text)
+
+    def test_runbook_requires_hosted_devin_readiness_checks(self) -> None:
+        runbook = self._runbook_section()
+        required = {
+            "provider.devin.selection",
+            "provider.devin.capabilities",
+            "provider.devin.hosted_credentials",
+            "provider.devin.repository_scope",
+            "provider.devin.lifecycle",
+        }
+
+        self.assertIn("--set-transport devin=devin_api_v3", runbook)
+        self.assertIn(
+            'blocked = [name for name in required if checks.get(name) != "pass"]',
+            runbook,
+        )
+        self.assertIn(
+            'raise SystemExit(f"hosted Devin readiness is blocked: {blocked}")', runbook
+        )
+        for check_id in sorted(required):
+            with self.subTest(check_id=check_id):
+                self.assertIn(check_id, runbook)
+        for private in ("provider-config-dir\"", "DEVIN_API_KEY="):
+            self.assertNotIn(private, runbook)
+
+    def test_runbook_board_restart_waits_and_polls_every_port(self) -> None:
+        runbook = self._runbook_section()
+        boards = runbook.partition("### 15. Restart the three Boards")[2]
+
+        self.assertIn(
+            'test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)"'
+            ' = "$RELEASE_SHA"',
+            boards,
+        )
+        self.assertIn("code-mower board stop --port \"$BOARD_PORT\" --yes --json", boards)
+        self.assertIn('board_wait.py" gone "$BOARD_PORT"', boards)
+        self.assertIn('board_wait.py" serving 5332 5342 5344', boards)
+        self.assertIn("code-mower board doctor", boards)
+        self.assertNotIn("board reset --", boards)
+        self.assertNotIn("pkill", boards)
+        for port in ("5332", "5342", "5344"):
+            with self.subTest(port=port):
+                self.assertIn(port, boards)
 
     def test_public_support_docs_are_packaged_and_privacy_forward(self) -> None:
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
