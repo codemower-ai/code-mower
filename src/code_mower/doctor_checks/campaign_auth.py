@@ -169,7 +169,7 @@ def _active_campaign_count(repo_root: Path | None) -> int:
 
     try:
         campaigns = list_campaigns(default_campaigns_dir(repo_root))
-    except OSError:
+    except (OSError, ValueError):
         return 0
     return sum(1 for campaign in campaigns if campaign.get("status") != "complete")
 
