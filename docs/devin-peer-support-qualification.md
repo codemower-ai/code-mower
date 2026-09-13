@@ -15,7 +15,7 @@ reviews, and merge.
 | Distinction | Kept separate as |
 | --- | --- |
 | Local CLI builder evidence vs. hosted API builder evidence | Five bounded local Devin CLI samples in one table; two hosted v3 work orders in a second table. They are never combined into one aggregate. |
-| Transport and lifecycle parity vs. live model quality | Synthetic reviewer controls and the offline synthetic protected-path context canary prove parsing, schema, lifecycle, and severity normalization. They do not measure live Devin reviewer accuracy, live private-context retrieval, or context relevance. |
+| Transport and lifecycle parity vs. live model quality | Synthetic reviewer controls and the offline synthetic protected-path context canary prove parsing, schema, lifecycle, and severity normalization. They do not measure live Devin reviewer accuracy or context relevance. A separate live Coworker canary proves the retrieval/authorization/replay boundary only, not Coworker-to-Devin delivery. |
 | Informational Devin review adapters vs. merge-authority reviewers | Both `devin_cli` and `devin_api_v3` report `merge_authority=false`. Codex audit and Claude audit remain the only merge-authority lanes. |
 | Public event wall time vs. active provider time | Local rows report active builder seconds. Hosted rows report public wall time from PR creation to merge; active provider time is unavailable. |
 | Known ACU/cost values vs. unavailable values | Caps and observed ACU are recorded where the transport returned them. Tokens, monetary cost, and local ACU are reported as unavailable, never as zero. |
@@ -160,14 +160,14 @@ and severity normalization parity between the two transports. They do not
 measure live Devin reviewer accuracy or false-positive rate, which remain
 unqualified, and they are not fitness evidence for promotion.
 
-## Trusted-orchestrator context canary
+## Trusted-orchestrator offline synthetic context canary
 
 The trusted orchestrator completed an offline synthetic protected-path canary
 on `26135c62f191b171a5b88d0234eb82c306ece169` using protected temporary
 state, fake authorization/retrieval/remote/GitHub seams, and zero external
 provider calls. It exercises the protected code path only. It does not prove
-live authenticated private-context retrieval and it does not measure context
-relevance; both remain unqualified. Only these metadata outcomes are
+live authenticated private-context retrieval (see the separate live canary
+below) and it does not measure context relevance, which remains unqualified. Only these metadata outcomes are
 published; the builder did not fetch, print, persist, or reconstruct any
 private context, and no live private-context evidence is inferred here.
 
@@ -181,6 +181,34 @@ private context, and no live private-context evidence is inferred here.
 
 The corresponding focused packet, delivery, guided-session, and Devin
 work-order suites passed 44 tests.
+
+## Trusted-orchestrator live Coworker canary
+
+Separately from the offline synthetic canary, the trusted orchestrator ran one
+bounded live Coworker canary on `main` at
+`cd26b9a569d3d765622db4804b0db65380dc155d`. Only the sanitized metadata
+below is published; the builder did not run, observe, or reconstruct it, and
+no context content, identity, account, repository scope name, prompt,
+message, or raw output appears here.
+
+| Check | Sanitized outcome |
+| --- | --- |
+| Authenticated retrieval, authorization, normalization, protected storage, fresh authorized replay | PASS |
+| Organization identity | Configured identity matched |
+| Authorized scope | Four authorized repository scopes; six approved recipients present |
+| Bounded live search | Two MCP read requests and one discovery page; 1.750s elapsed; cost unavailable |
+| Normalization | Three documents normalized; completeness `partial`; provider-truncated `false` |
+| Fresh authorized replay | 1,724 bytes of rendered evidence delivered to `codex:orchestrator`; evidence never emitted |
+| Protected temporary state | Four state files with private permissions; all temporary state deleted afterward |
+| Mutations | Zero provider mutations; zero hosted-builder calls |
+| Post-canary verification | Fresh online verification of the persistent connection succeeded |
+
+Material limitation: the existing saved connection does not authorize
+`devin:builder`. This canary proves the live Coworker
+retrieval/authorization/replay boundary; it does not qualify live
+Coworker-to-Devin delivery, which remains unqualified. Expanding the recipient
+set requires an explicit reconnect and OAuth flow that was not performed as
+part of this canary. Context relevance was not measured.
 
 ## Setup and package qualification
 
@@ -227,10 +255,12 @@ cloud metadata. The cloud dry run is inspected before any upload.
   everywhere; local ACU does not exist; hosted observed ACU is the returned
   `0.0`, not an audited spend.
 - No measured productivity lift: no baseline comparison was performed.
-- Live private-context retrieval unqualified: the canary is offline and
-  synthetic; no live authenticated retrieval was exercised.
-- Unmeasured context relevance: the canary proves protected-path lifecycle
-  and privacy behavior, not the usefulness of delivered context.
+- Live Coworker-to-Devin delivery unqualified: the live canary proved the
+  retrieval/authorization/replay boundary to `codex:orchestrator` only; the
+  saved connection does not authorize `devin:builder`, and no reconnect was
+  performed.
+- Unmeasured context relevance: neither canary measures the usefulness of
+  retrieved or delivered context.
 - Informational reviewer authority: live Devin reviewer accuracy and
   false-positive rate are unqualified; both transports stay informational.
 
