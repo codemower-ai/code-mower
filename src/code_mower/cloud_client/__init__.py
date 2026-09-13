@@ -85,6 +85,7 @@ from .events import (
 from .git_metadata import (
     checkout_provenance,
     detect_repo_slug,
+    git_top_level,
     materialized_commit_source,
     repo_slug_from_remote,
     require_checkout_provenance,
@@ -295,6 +296,7 @@ __all__ = [
     "build_upload_payload_with_identity",
     "bundle_manifest_identity",
     "checkout_provenance",
+    "git_top_level",
     "materialized_commit_source",
     "require_checkout_provenance",
     "read_bundle_manifest",

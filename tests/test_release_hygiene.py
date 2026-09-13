@@ -9597,6 +9597,11 @@ def main():
             git("init")
             git("config", "user.email", "release@example.invalid")
             git("config", "user.name", "Release Bot")
+            # This temporary repository must not inherit an operator's global
+            # signing settings, which would make tag and commit creation
+            # prompt or fail here without saying anything about the runbook.
+            git("config", "tag.gpgSign", "false")
+            git("config", "commit.gpgSign", "false")
             git("add", "docs/v140-release-notes.md")
             git("commit", "-m", "notes")
             git("tag", "v1.4.0")
@@ -9651,6 +9656,25 @@ def main():
         payload = json.loads(completed.stdout)
         self.assertTrue(payload["checkout_match"])
         self.assertTrue(payload["notes_present"])
+
+    def test_pre_create_gate_is_hermetic_under_global_tag_signing(self) -> None:
+        with tempfile.TemporaryDirectory() as config_home:
+            global_config = Path(config_home) / "gitconfig"
+            global_config.write_text(
+                "[tag]\n\tgpgSign = true\n[commit]\n\tgpgSign = true\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "GIT_CONFIG_GLOBAL": str(global_config),
+                    "GIT_CONFIG_SYSTEM": os.devnull,
+                },
+            ):
+                completed = self._run_release_assets_gate()
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(json.loads(completed.stdout)["checkout_match"])
 
     def test_pre_create_gate_rejects_a_late_release_checkout_mutation(self) -> None:
         cases = {

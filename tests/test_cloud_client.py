@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -684,13 +685,19 @@ def test_board_snapshot_upload_posts_with_explicit_yes(monkeypatch, tmp_path) ->
     assert "cmw_live_board_secret" not in serialized
 
 
-def _init_git_checkout(path: Path) -> str:
+def _init_git_checkout(path: Path, *, executable: bool = False) -> str:
     path.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "--quiet"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.email", "dev@example.com"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "Dev"], cwd=path, check=True)
+    subprocess.run(["git", "config", "commit.gpgSign", "false"], cwd=path, check=True)
     (path / "tracked.txt").write_text("one\n", encoding="utf-8")
     subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True)
+    if executable:
+        script = path / "tool.sh"
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(0o755)
+        subprocess.run(["git", "add", "tool.sh"], cwd=path, check=True)
     subprocess.run(["git", "commit", "--quiet", "-m", "first"], cwd=path, check=True)
     return subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -943,6 +950,153 @@ def test_board_snapshot_materializes_from_a_repository_subdirectory(monkeypatch,
     assert sources and sources[0] != nested
     assert observed_tracked == ["one\n"]
     assert result["git"]["head_sha"] == head_sha
+
+
+def _strict_collection_inputs(monkeypatch, repo_path: Path, output_dir: Path, **kwargs):
+    """Collect strictly and report what the collection source actually was."""
+
+    collected: dict[str, object] = {}
+
+    def recording_status(config):
+        source = Path(config.repo_path)
+        collected["source"] = source
+        collected["metadata"] = cloud_operations.board.resolved_metadata_paths(config)
+        collected["tracked"] = (source / "tracked.txt").read_text(encoding="utf-8")
+        collected["modes"] = {
+            path.name: stat.S_IMODE(path.stat().st_mode)
+            for path in sorted(source.glob("*"))
+        }
+        return _board_snapshot_fixture()
+
+    result = _board_snapshot_dry_run(
+        monkeypatch,
+        repo_path,
+        output_dir,
+        status_payload=recording_status,
+        **kwargs,
+    )
+    collected["result"] = result
+    return collected
+
+
+def test_strict_board_snapshot_inputs_are_identical_from_root_and_nested_paths(
+    monkeypatch, tmp_path
+) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path)
+    nested = repo_path / "nested"
+    nested.mkdir()
+
+    from_root = _strict_collection_inputs(
+        monkeypatch,
+        repo_path,
+        tmp_path / "root-out",
+        require_head_sha=head_sha,
+        require_clean=True,
+    )
+    from_nested = _strict_collection_inputs(
+        monkeypatch,
+        nested,
+        tmp_path / "nested-out",
+        require_head_sha=head_sha,
+        require_clean=True,
+    )
+
+    # The same repository and commit must yield the same live metadata inputs
+    # and the same exact provenance from either invocation directory.
+    assert from_nested["metadata"] == from_root["metadata"]
+    assert all(
+        str(repo_path.resolve()) in path for path in from_root["metadata"].values()
+    )
+    assert from_nested["tracked"] == from_root["tracked"] == "one\n"
+    assert from_root["source"] != repo_path and from_nested["source"] != nested
+    expected_git = {
+        "available": True,
+        "head_sha": head_sha,
+        "clean": True,
+        "dirty_entry_count": 0,
+    }
+    assert from_root["result"]["git"] == from_nested["result"]["git"] == expected_git
+    assert not Path(from_root["source"]).exists()
+    assert not Path(from_nested["source"]).exists()
+
+
+def test_strict_board_snapshot_keeps_explicit_metadata_paths_from_a_nested_path(
+    monkeypatch, tmp_path
+) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path)
+    nested = repo_path / "nested"
+    nested.mkdir()
+    explicit_store = tmp_path / "explicit-store.json"
+
+    collected = _strict_collection_inputs(
+        monkeypatch,
+        nested,
+        tmp_path / "explicit-out",
+        store_path=explicit_store,
+        require_head_sha=head_sha,
+        require_clean=True,
+    )
+
+    assert collected["metadata"]["store_path"] == str(explicit_store)
+
+
+def test_strict_board_snapshot_preserves_tracked_executable_modes(
+    monkeypatch, tmp_path
+) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path, executable=True)
+    nested = repo_path / "nested"
+    nested.mkdir()
+
+    collected = _strict_collection_inputs(
+        monkeypatch,
+        nested,
+        tmp_path / "modes-out",
+        require_head_sha=head_sha,
+        require_clean=True,
+    )
+
+    modes = collected["modes"]
+    # A tracked executable stays executable, no path stays writable, and the
+    # materialization is still exactly the required clean commit.
+    assert modes["tool.sh"] & 0o111
+    assert not modes["tool.sh"] & 0o222
+    assert not modes["tracked.txt"] & 0o222
+    assert modes["tracked.txt"] & 0o400
+    assert collected["result"]["git"]["head_sha"] == head_sha
+    assert collected["result"]["git"]["clean"] is True
+    assert not Path(collected["source"]).exists()
+
+
+def test_strict_board_snapshot_cleans_up_a_materialization_with_executables(
+    monkeypatch, tmp_path
+) -> None:
+    repo_path = tmp_path / "checkout"
+    head_sha = _init_git_checkout(repo_path, executable=True)
+    nested = repo_path / "nested"
+    nested.mkdir()
+    monkeypatch.setattr(cloud_operations, "post_upload_payload", _refusing_post)
+    sources: list[Path] = []
+
+    def failing_status(config):
+        sources.append(Path(config.repo_path))
+        raise CloudBundleError("collection failed")
+
+    # A failure during collection removes the read-only materialization,
+    # executable bits and all, and never reaches the network.
+    with assert_raises(CloudBundleError):
+        _board_snapshot_dry_run(
+            monkeypatch,
+            nested,
+            tmp_path / "exec-failure",
+            status_payload=failing_status,
+            require_head_sha=head_sha,
+            require_clean=True,
+            yes=True,
+        )
+    assert sources and not sources[0].exists()
 
 
 def test_board_snapshot_materialization_is_cleaned_up_after_a_failure(monkeypatch, tmp_path) -> None:

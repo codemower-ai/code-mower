@@ -43,6 +43,7 @@ from .events import safe_event_type
 from .git_metadata import (
     checkout_provenance,
     detect_repo_slug,
+    git_top_level,
     materialized_commit_source,
     require_checkout_provenance,
 )
@@ -324,6 +325,14 @@ def board_snapshot_upload(
     timeout: float,
 ) -> dict[str, Any]:
     repo_path = repo_path.expanduser().resolve()
+    provenance_required = bool(require_head_sha.strip() or require_clean)
+    if provenance_required:
+        # A strict snapshot is attributed to one repository and commit, so the
+        # canonical repository root is resolved before anything repository
+        # relative is derived. A nested path and the root then produce the same
+        # default live metadata inputs rather than two snapshots that differ
+        # while claiming the same provenance.
+        repo_path = git_top_level(repo_path, required=True)
     detected_repo_slug = repo_slug or detect_repo_slug(repo_path)
     if not detected_repo_slug:
         raise CloudBundleError(
@@ -355,7 +364,6 @@ def board_snapshot_upload(
     # The checkout must be clean at the required commit before collection, and
     # strict collection then reads a private materialization of that exact
     # commit, so no state other than the required commit can be measured.
-    provenance_required = bool(require_head_sha.strip() or require_clean)
     provenance = checkout_provenance(repo_path, required=provenance_required)
     require_checkout_provenance(
         provenance,

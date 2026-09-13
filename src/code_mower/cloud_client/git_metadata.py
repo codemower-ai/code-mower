@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -56,6 +57,26 @@ def repo_slug_from_remote(remote_url: str) -> str:
 
 def detect_repo_slug(repo_path: Path) -> str:
     return repo_slug_from_remote(run_git(repo_path, ["config", "--get", "remote.origin.url"]))
+
+
+def git_top_level(repo_path: Path, *, required: bool = False) -> Path:
+    """Return the enclosing repository root for a path inside a checkout.
+
+    Git discovers the enclosing repository from any directory inside it, so a
+    nested path and the repository root describe the same source. Callers that
+    derive repository-relative inputs resolve the canonical root first, so the
+    same repository and commit cannot yield different inputs.
+    """
+
+    if required:
+        top_level = _required_git_output(repo_path, ["rev-parse", "--show-toplevel"]).strip()
+    else:
+        top_level = run_git(repo_path, ["rev-parse", "--show-toplevel"]).strip()
+    if not top_level:
+        if required:
+            raise CloudBundleError(f"unable to resolve the git root of {repo_path}")
+        return repo_path
+    return Path(top_level).expanduser().resolve()
 
 
 def _required_git_output(repo_path: Path, args: list[str]) -> str:
@@ -113,16 +134,25 @@ def checkout_provenance(repo_path: Path, *, required: bool = False) -> dict[str,
 
 
 def _set_tree_permissions(root: Path, *, writable: bool) -> None:
-    """Remove or restore write permission for a whole private directory tree."""
+    """Remove or restore write permission for a whole private directory tree.
 
-    directory_mode = 0o700 if writable else 0o500
-    file_mode = 0o600 if writable else 0o400
+    Only the write bits change: each path keeps its existing read and execute
+    bits, so a tracked executable stays executable and the materialization does
+    not become dirty through mode changes, and directories stay traversable.
+    """
+
     paths = [root, *sorted(root.rglob("*"), reverse=True)]
     for path in paths:
         try:
             if path.is_symlink():
                 continue
-            os.chmod(path, directory_mode if path.is_dir() else file_mode)
+            mode = stat.S_IMODE(path.stat().st_mode)
+            if writable:
+                target = mode | (0o700 if path.is_dir() else 0o600)
+            else:
+                target = (mode & ~0o222) | (0o500 if path.is_dir() else 0o400)
+            if target != mode:
+                os.chmod(path, target)
         except OSError:
             if not writable:
                 raise CloudBundleError(
@@ -148,12 +178,9 @@ def materialized_commit_source(repo_path: Path, commit_sha: str) -> Iterator[Pat
     temp_root = Path(tempfile.mkdtemp(prefix="code-mower-exact-commit-"))
     source = temp_root / "source"
     try:
-        # Git discovers the enclosing repository from any path inside it, but a
-        # clone source must name the repository itself, so the enclosing root is
-        # resolved before materializing.
-        clone_source = Path(
-            _required_git_output(repo_path, ["rev-parse", "--show-toplevel"]).strip()
-        )
+        # A clone source must name the repository itself, so the enclosing root
+        # is resolved before materializing.
+        clone_source = git_top_level(repo_path, required=True)
         # A local clone reads the original repository's objects and writes
         # nothing into it, and the private clone cannot be moved to another
         # commit once it is read-only.
@@ -175,6 +202,13 @@ def materialized_commit_source(repo_path: Path, commit_sha: str) -> Iterator[Pat
                 "unable to materialize a clean private checkout of the required commit"
             )
         _set_tree_permissions(source, writable=False)
+        # Hardening must not have changed the materialized tree itself, so the
+        # exact commit and cleanliness are proven again before it is read.
+        hardened = checkout_provenance(source, required=True)
+        if hardened != materialized:
+            raise CloudBundleError(
+                "the private exact-commit source changed while it was made read-only"
+            )
         yield source
     finally:
         _set_tree_permissions(temp_root, writable=True)
