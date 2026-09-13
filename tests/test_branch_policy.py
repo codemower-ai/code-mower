@@ -43,10 +43,10 @@ ORDER_ARGS = dict(repository="owner/repo", issue=907, base="main",
                   author_id=123, author_login="builder[bot]", acu_limit=5)
 
 
-def _config_with_policy(template: str | None = JIRA_TEMPLATE) -> dict:
+def _config_with_policy(template: str | None = JIRA_TEMPLATE, *, slug: str = "owner/repo") -> dict:
     cfg = copy.deepcopy(code_mower_config.load_config(CONFIG_PATH))
     repo = cfg["repositories"][0]
-    repo["slug"] = "owner/repo"
+    repo["slug"] = slug
     if template is not None:
         repo["delivery_policy"] = {"branch_template": template}
     return cfg
@@ -300,14 +300,16 @@ class GeneratedRunnerTests(unittest.TestCase):
         expected = branch_policy.compile_template(JIRA_TEMPLATE).describe()
         self.assertEqual(embedded, {"owner/repo": expected})
 
-    def _run_codex_lane(self, delivered_listing: str) -> tuple[subprocess.CompletedProcess, str, dict]:
+    def _run_codex_lane(self, delivered_listing: str, *, template: str = JIRA_TEMPLATE,
+                        repo: str = "owner/repo") -> tuple[subprocess.CompletedProcess, str, dict]:
         """Run the generated codex runner against a fake provider that opens a PR.
 
         ``delivered_listing`` is the ``gh pr list`` JSON returned once the provider
         has "delivered"; it is the delivery-snapshot discovery input under test.
         """
-        runner, _text = self._generate(_config_with_policy())
-        header = _FAKE_GH_DELIVERY_HEADER.replace(
+        runner, _text = self._generate(_config_with_policy(template, slug=repo))
+        repo_dir = repo.replace("/", "__")
+        header = _FAKE_GH_DELIVERY_HEADER.replace("owner/repo", repo).replace(
             "[{\"number\":77,\"headRefName\":\"codex/issue-12\","
             "\"headRepository\":{\"nameWithOwner\":\"owner/repo\"},"
             "\"labels\":[{\"name\":\"builder:codex\"}],"
@@ -321,7 +323,7 @@ class GeneratedRunnerTests(unittest.TestCase):
             bin_dir = root / "bin"
             bin_dir.mkdir()
             work_root = root / "work"
-            (work_root / "codex" / "owner__repo" / ".git" / "hooks").mkdir(parents=True)
+            (work_root / "codex" / repo_dir / ".git" / "hooks").mkdir(parents=True)
             prompt_log = root / "prompt.md"
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
@@ -346,7 +348,7 @@ else
   printf 'unexpected gh invocation: %s\\n' "$*" >&2
   exit 2
 fi
-""",
+""".replace("owner/repo", repo),
                 encoding="utf-8",
             )
             fake_gh.chmod(0o755)
@@ -363,7 +365,7 @@ if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--git-path" ]; then
   exit 0
 fi
 exit 0
-""",
+""".replace("owner/repo", repo),
                 encoding="utf-8",
             )
             fake_git.chmod(0o755)
@@ -379,7 +381,7 @@ printf 'fake codex completed\\n'
             )
             fake_codex.chmod(0o755)
             completed = subprocess.run(
-                [str(runner), "--lane", "codex", "--repo", "owner/repo", "--max-minutes", "1"],
+                [str(runner), "--lane", "codex", "--repo", repo, "--max-minutes", "1"],
                 cwd=ROOT,
                 env={
                     **os.environ,
@@ -394,7 +396,7 @@ printf 'fake codex completed\\n'
                 check=False,
             )
             prompt = prompt_log.read_text(encoding="utf-8") if prompt_log.exists() else ""
-            guard_path = work_root / "codex" / "owner__repo" / ".git" / "code-mower-lane-guard.json"
+            guard_path = work_root / "codex" / repo_dir / ".git" / "code-mower-lane-guard.json"
             guard = json.loads(guard_path.read_text(encoding="utf-8")) if guard_path.exists() else {}
         return completed, prompt, guard
 
@@ -424,6 +426,45 @@ printf 'fake codex completed\\n'
         self.assertEqual(guard["allowed_branch"], "fix/12-nv-accessible-label")
         self.assertNotIn("allowed_pattern", guard)
         self.assertEqual(guard["allowed_prefixes"], [])
+
+    def test_runner_refuses_a_resolved_branch_that_is_not_a_valid_git_ref(self) -> None:
+        # {repo_name}/{issue_number} renders .github/12 for a repository named
+        # .github: it matches the policy pattern yet no git ref may start a
+        # component with a dot. The Python resolver refuses it; the runner must
+        # refuse it too, before the guard is installed or a provider starts.
+        template = "{repo_name}/{issue_number}"
+        policy = branch_policy.compile_template(template)
+        self.assertIsNotNone(re.fullmatch(policy.pattern, ".github/12"))
+        with self.assertRaises(branch_policy.BranchPolicyError):
+            branch_policy.resolve_branch(policy, lane="codex", issue_number=12,
+                                         repository="owner/.github")
+        completed, prompt, guard = self._run_codex_lane(
+            "[]", template=template, repo="owner/.github")
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("resolved branch .github/12 is not a valid git branch name", completed.stderr)
+        self.assertNotIn("fake codex completed", completed.stdout)
+        self.assertEqual(prompt, "")
+        self.assertEqual(guard, {})
+
+    def test_runner_ref_validation_matches_the_python_resolver(self) -> None:
+        _runner, text = self._generate(_config_with_policy())
+        start = text.index("is_valid_ref() {")
+        function = text[start:text.index("\n}\n", start) + 3]
+        cases = {
+            "fix/12-nv-accessible-label": True, "repo/12": True, "a.b/c_d-e": True,
+            ".github/12": False, "fix/.hidden": False, "fix/12.": False, "fix/12.lock": False,
+            "fix/12..13": False, "fix//12": False, "fix/12/": False, "fix/@{12}": False,
+            "-fix/12": False, "fix/12 x": False, "fix/12~": False, "": False,
+            "x" * 201: False, "x" * 200: True,
+        }
+        for branch, expected in cases.items():
+            with self.subTest(branch=branch):
+                self.assertEqual(branch_policy.is_valid_ref(branch), expected)
+                probe = subprocess.run(
+                    ["bash", "-c", function + '\nis_valid_ref "$1"', "probe", branch],
+                    cwd=ROOT, text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(probe.returncode == 0, expected, probe.stderr)
 
     def test_runner_without_policy_keeps_lane_prefix_write_authority(self) -> None:
         _runner, text = self._generate(_config_with_policy(None))

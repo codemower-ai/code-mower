@@ -570,6 +570,19 @@ git -C "$work" clean -fdxq -e .build -e node_modules -e .venv
 # provider run, so a nonconforming name is refused here rather than at push and
 # the pre-push guard can authorize exactly that branch.
 lane_branch_prefixes_json_first="$(printf '%s\n' "$lane_branch_prefixes_json" | jq -r '.[0] // empty')"
+# Mirrors code_mower.branch_policy.is_valid_ref: the same conservative subset
+# of git-check-ref-format the Python resolver enforces, so a rendered name
+# such as .github/12 is refused here, before the guard or any provider.
+is_valid_ref() {
+  local branch="$1" part
+  [ -n "$branch" ] && [ "${#branch}" -le 200 ] || return 1
+  printf '%s' "$branch" | LC_ALL=C grep -Eqx '[A-Za-z0-9][A-Za-z0-9/_.-]*' || return 1
+  case "$branch" in *..*|*//*|*@\{*|*/) return 1 ;; esac
+  while IFS= read -r -d / part || [ -n "$part" ]; do
+    case "$part" in .*|*.|*.lock) return 1 ;; esac
+  done < <(printf '%s' "$branch")
+  git check-ref-format --branch "$branch" >/dev/null 2>&1
+}
 resolved_branch=""
 if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
   issue_title="$(gh issue view "$num" -R "$REPO" --json title -q .title 2>/dev/null || true)"
@@ -581,6 +594,10 @@ if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
         | gsub("\\{lane\\}"; $lane) | gsub("\\{issue_key\\}"; $issue) | gsub("\\{issue_number\\}"; $issue)
         | gsub("\\{slug\\}"; $slug) | gsub("\\{work_type\\}"; "fix") | gsub("\\{repo_name\\}"; $repo)'
   )"
+  if ! is_valid_ref "$resolved_branch"; then
+    echo "${LANE}: refusing issue #${num}; resolved branch ${resolved_branch} is not a valid git branch name (template ${repo_branch_template} for ${REPO})" >&2
+    exit 1
+  fi
   if ! jq -n --arg branch "$resolved_branch" --arg pattern "$repo_branch_pattern" \
       '$branch | test("^(?:" + $pattern + ")$")' | grep -qx true; then
     echo "${LANE}: refusing issue #${num}; resolved branch ${resolved_branch} does not match the ${REPO} branch policy ${repo_branch_pattern} (for example ${repo_branch_example})" >&2
