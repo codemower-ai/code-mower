@@ -514,20 +514,25 @@ class DevinWorkOrders:
                             "pull_request_binding_mismatch",
                         }:
                             raise
-                        # Verification consumes no provider mutation. Release only
-                        # this compare-bound local artifact/count so a corrected
-                        # provider result can be collected on the next attempt.
-                        self.remote.discard_private_result(key, claim)
                         reason = (
                             "stale_completion"
                             if error == "stale_completion"
                             else "invalid_completion"
                         )
+                        # Persist the bounded rejection before releasing the
+                        # rejected result. An interruption after the release must
+                        # not leave the provider's unchanged completion
+                        # projecting a finished session with no rejection.
                         record["completion_rejection"] = {
                             "state": "rejected", "reason": reason,
                             "next_action": "collect_after_provider_update",
                         }
                         locked.write(record)
+                        # Verification consumes no provider mutation. Release only
+                        # this compare-bound local artifact/count so a corrected
+                        # provider result can be collected on the next attempt;
+                        # a later collect repeats cleanup and verification.
+                        self.remote.discard_private_result(key, claim)
                         raise
                     acu = self.remote.observed_acu(key)
                     if acu is not None and (type(acu) not in (int, float)

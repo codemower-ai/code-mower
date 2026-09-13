@@ -377,6 +377,35 @@ class DeliveryTests(WorkOrderCase):
         self.assertEqual(verified["session"]["state"], "complete")
         self.assertEqual(self.run_order("status")["session"]["state"], "complete")
 
+    def test_interruption_after_the_rejected_result_discard_still_hides_completion(self):
+        self.run_order("dispatch")
+        self.run_order("clarify", request="clarification", prose=CANARY)
+        self.complete(round=0)
+        discard = self.remote.discard_private_result
+
+        def interrupted(session, expected):
+            discard(session, expected)
+            raise KeyboardInterrupt("stopped after the compare-bound discard")
+
+        with patch.object(self.remote, "discard_private_result", interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_order("collect")
+
+        self.service = DevinWorkOrders(self.root / "builder", self.remote, self.github)
+        self.assertIsNone(self.remote.private_result(self.key))
+        self.assert_rejected_projection(self.run_order("status"), "stale_completion")
+        with self.assertRaisesRegex(RemoteError, "^stale_completion"):
+            self.run_order("collect")
+        self.assert_rejected_projection(self.run_order("status"), "stale_completion")
+
+        replacement_head = "b" * 40
+        self.github.pr = replace(self.github.pr, head_sha=replacement_head)
+        self.complete(round=1, head_sha=replacement_head)
+        verified = self.run_order("collect")
+        self.assertEqual(verified["verified_pr"]["head_sha"], replacement_head)
+        self.assertNotIn("completion", verified)
+        self.assertEqual(verified["session"]["state"], "complete")
+
     def test_malformed_and_pr_binding_rejections_are_projected_as_running_work(self):
         self.run_order("dispatch")
         self.provider.set_state(self.binding(), "complete", result={"raw": CANARY})
