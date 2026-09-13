@@ -379,13 +379,16 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'if run.get("workflowName") != EXPECTED_WORKFLOW:',
         'if run.get("event") != event:',
         'if run.get("headSha") != head_sha:',
+        # A commit can carry more than one tag, so each run is also bound to the
+        # release tag it was dispatched for.
+        'if run.get("headBranch") != head_branch:',
         'if run.get("status") != "completed" or run.get("conclusion") != "success":',
         'problems.append(f"{job_name} is {actual}, expected skipped")',
         'problems.append(f"{job_name} is {actual}, expected success")',
-        '"$NO_PUBLISH_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped skipped',
-        '"$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" success skipped',
-        '"$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped success',
-        '"$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" skipped skipped',
+        f'"$NO_PUBLISH_RUN_ID" workflow_dispatch "$RELEASE_SHA" {release_tag} skipped skipped',
+        f'"$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" {release_tag} success skipped',
+        f'"$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" {release_tag} skipped success',
+        f'"$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" {release_tag} skipped skipped',
         # TestPyPI is the exclusive source of the candidate artifacts.
         f"python3.12 -m pip --isolated download code-mower=={version}",
         "--index-url https://test.pypi.org/simple/ --dest \"$TESTPYPI_DIST_DIR\"",
@@ -407,9 +410,28 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         # The post-create verification is unconditional: it runs for a release
         # this runbook created as well as one it found already present.
         'assert_release_assets.py" created',
+        # Notes come from the clean checkout of the exact release commit, and
+        # the published body and title are compared with that file.
+        '--notes-file "$CODE_MOWER_RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+        'notes_path = Path(os.environ["CODE_MOWER_RELEASE_CHECKOUT"]) / RELEASE_NOTES_RELPATH',
+        'problems.append("release notes in the exact checkout are empty")',
+        'problems.append("release body does not match the exact checkout release notes")',
+        'problems.append("release title is not the expected v1.4.0 title")',
         # Hosted Devin readiness is required, not reported.
         "--set-transport devin=devin_api_v3",
-        'raise SystemExit(f"hosted Devin readiness is blocked: {blocked}")',
+        'raise SystemExit(f"hosted Devin readiness is blocked: {problems}")',
+        # The doctor report is validated before any row is indexed, so a
+        # falsified verdict, a malformed row, or a duplicate identity cannot
+        # stand in for a hosted posture.
+        'if not isinstance(report, dict) or report.get("mode") != "doctor":',
+        'if report.get("status") not in {"pass", "warn"}:',
+        'if summary.get("failures") != 0:',
+        'raise SystemExit("hosted Devin doctor check list is not a list")',
+        'problems.append(f"doctor check {name!r} failed")',
+        'problems.append(f"unexpected Devin check {name!r}")',
+        'problems.append(f"Devin check {name!r} appears more than once")',
+        'problems.append(f"Devin checks are missing {missing}")',
+        'problems.append(f"Devin check {name!r} is {statuses.get(name)!r}")',
         # A reported `skip` on permissions is only acceptable with the account
         # owner's separately supplied confirmation.
         'if permissions == "skip" and owner_confirmed != "confirmed":',
@@ -480,19 +502,60 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         # variables, required to be nonempty, and never printed.
         'test -n "$CODE_MOWER_CLOUD_TEAM_ID"',
         'test -n "$CODE_MOWER_INSTALL_ID"',
+        # A forgotten placeholder, and an identity the selected install profile
+        # does not hold, both fail before the service is probed.
+        ': "${CODE_MOWER_CLOUD_TEAM_ID:?private cloud team id is required}"',
+        ': "${CODE_MOWER_INSTALL_ID:?private cloud install id is required}"',
+        'case "$CODE_MOWER_CLOUD_TEAM_ID" in REPLACE_WITH_*) exit 1 ;; esac',
+        'case "$CODE_MOWER_INSTALL_ID" in REPLACE_WITH_*) exit 1 ;; esac',
+        'resolution = resolve_cloud_token(token_env=DEFAULT_TOKEN_ENV, install_id=install_id)',
+        'problems.append("the selected install profile stores a different install identity")',
+        'problems.append("the selected install profile stores a different team identity")',
+        'raise SystemExit(f"cloud identity is not bound to the selected profile: {problems}")',
+        'grep -q \'"cloud_identity": "bound"\' "$CLOUD_DIR/identity.json"',
         '--install-id "$CODE_MOWER_INSTALL_ID"',
         '--team-id "$CODE_MOWER_CLOUD_TEAM_ID"',
-        # The cloud service itself is probed and parsed before either upload.
-        'code-mower cloud doctor --install-id "$CODE_MOWER_INSTALL_ID"',
+        # The cloud service itself is probed and parsed before either upload,
+        # against a newly created empty bundle directory so the expected check
+        # inventory is deterministic.
+        'CLOUD_DOCTOR_BUNDLE_DIR="$(mktemp -d',
+        'code-mower cloud doctor "$CLOUD_DOCTOR_BUNDLE_DIR"',
         '--probe-service --json >"$CLOUD_DIR/doctor.json"',
-        'REQUIRED_CLOUD_CHECKS = ("endpoint", "service", "token")',
+        'PASSING_CLOUD_CHECKS = ("endpoint", "service", "token")',
+        'EXPECTED_CLOUD_CHECKS = frozenset(PASSING_CLOUD_CHECKS) | {"bundle"}',
         'if report.get("mode") != "cloud-doctor":',
         'if report.get("failures") != 0:',
+        'raise SystemExit("cloud doctor check list is not a list")',
         'if name in statuses:',
         'problems.append(f"cloud doctor {name} check is {statuses.get(name)!r}")',
+        # Health comes from the raw rows, so falsified aggregate fields cannot
+        # hide a degraded, missing, extra, or duplicated check.
+        'problems.append(f"cloud doctor reported unexpected checks {unexpected}")',
+        'problems.append(f"cloud doctor is missing checks {missing}")',
+        'if statuses.get("bundle") != "warn":',
+        'if raw_failures or raw_failures != report.get("failures"):',
         'raise SystemExit(f"cloud service readiness is not a pass: {problems}")',
-        # Both metadata-only uploads are previewed, applied, and correlated.
+        # Both metadata-only uploads are previewed, accepted, applied, and
+        # correlated. The preview verdict is a required file, so the applied
+        # mutation cannot run on an unvalidated payload.
         '--team-id "$CODE_MOWER_CLOUD_TEAM_ID" --yes --json',
+        '>"$CLOUD_DIR/campaign-preflight.json"',
+        'raise SystemExit(f"campaign upload preview is not an acceptable payload: {problems}")',
+        '"campaign_preview": "accepted",',
+        'grep -q \'"campaign_preview": "accepted"\' "$CLOUD_DIR/campaign-preflight.json"',
+        '>"$CLOUD_DIR/board-preflight.json"',
+        'raise SystemExit(f"board snapshot preview is not an acceptable payload: {problems}")',
+        '"board_preview": "accepted",',
+        'grep -q \'"board_preview": "accepted"\' "$CLOUD_DIR/board-preflight.json"',
+        # Every preview and applied producer must name the endpoint the probe
+        # actually reached, so a re-resolved install profile cannot be accepted.
+        'probed_endpoint = str(load("doctor.json").get("endpoint") or "")',
+        'problems.append("the probed cloud endpoint was not recorded")',
+        'problems.append("campaign upload preview does not target the probed service")',
+        'problems.append("campaign applied upload does not target the probed service")',
+        'problems.append("board snapshot preview does not target the probed service")',
+        'problems.append("board upload preview does not target the probed service")',
+        'problems.append("board applied upload does not target the probed service")',
         'CAMPAIGN_UPLOAD_SCHEMA = "code_mower.releaseCampaignUpload.v1"',
         'if payload.get("schema") != CAMPAIGN_UPLOAD_SCHEMA:',
         'if payload.get("mode") != "release-campaign-upload":',
@@ -522,14 +585,117 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'if manifest.get("repo_slug") != EXPECTED_REPO_SLUG:',
         'if event.get("repo_slug") != EXPECTED_REPO_SLUG:',
         'if event_types != ["board_snapshot"] or len(events) != 1:',
+        # Malformed rows are reported, never filtered, so one valid event plus
+        # anything else cannot look like a single-event bundle.
+        'problems.append("board bundle does not carry exactly one structured event")',
         'if manifest.get("included_reports"):',
         'if event.get("schema") != EVENT_SCHEMA or not str(event.get("event_id") or ""):',
         'if dimensions.get("snapshot_schema") != SNAPSHOT_SCHEMA:',
         'if preview.get("event_count") != len(events) or preview.get("event_count") != 1:',
-        'if preview.get("event_types") != EXPECTED_EVENT_TYPES:',
+        # Generic `cloud upload --dry-run` emits no event-type map, so exact
+        # event types come from the digest-bound manifest instead.
+        'if event_type_counts != EXPECTED_EVENT_TYPES:',
         'if not 200 <= int(applied.get("status") or 0) < 300:',
+        # The Board snapshot reads a checkout, and its event carries no commit
+        # or dirty-state field, so the checkout is re-bound immediately before.
+        'test -z "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+        # The Board snapshot's own nested cloud doctor must be healthy on its
+        # raw rows; only the producer's skipped service probe is tolerated.
+        'snapshot_doctor = snapshot.get("doctor")',
+        'if snapshot_doctor.get("mode") != "cloud-doctor":',
+        'if snapshot_doctor.get("status") != "pass":',
+        'if status not in {"pass", "warn", "skip"}:',
+        'problems.append(f"board snapshot doctor check {name!r} appears more than once")',
+        'problems.append(f"board snapshot doctor is missing checks {missing_doctor}")',
+        'if doctor_failures != snapshot_doctor.get("failures"):',
+        # Generic cloud upload returns no event identifiers, so the applied
+        # upload is bound to the previewed bundle by digest.
+        '>"$CLOUD_DIR/board-bundle-before-apply.sha256"',
+        '>"$CLOUD_DIR/board-bundle-after-apply.sha256"',
+        'before_digest = digest_of(cloud_dir / "board-bundle-before-apply.sha256")',
+        'after_digest = digest_of(cloud_dir / "board-bundle-after-apply.sha256")',
+        'current_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()',
+        'if before_digest != after_digest or current_digest != before_digest:',
+        'problems.append("board bundle changed between the preview and the applied upload")',
         'raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")',
     )
+
+
+def _post_merge_runbook_gate_orders() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Ordered command sequences the post-merge runbook must publish in order.
+
+    Presence alone cannot show that a network mutation is gated: a validator
+    that runs after its own `--yes` command has already uploaded whatever the
+    producer built. Each sequence below fails if a preflight validator is
+    deleted or moved behind the mutation it guards.
+    """
+
+    return (
+        (
+            "campaign-preflight-before-apply",
+            (
+                'grep -q \'"cloud_identity": "bound"\' "$CLOUD_DIR/identity.json"',
+                '>"$CLOUD_DIR/campaign-preview.json"',
+                'raise SystemExit(f"campaign upload preview is not an acceptable payload: {problems}")',
+                'grep -q \'"campaign_preview": "accepted"\' "$CLOUD_DIR/campaign-preflight.json"',
+                '--team-id "$CODE_MOWER_CLOUD_TEAM_ID" --yes --json',
+                'raise SystemExit(f"campaign metadata upload is not a verified gate: {problems}")',
+            ),
+        ),
+        (
+            "board-preflight-before-apply",
+            (
+                'test -z "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+                "code-mower cloud board-snapshot",
+                '--dry-run --json \\\n  >"$CLOUD_DIR/board-preview.json"',
+                'raise SystemExit(f"board snapshot preview is not an acceptable payload: {problems}")',
+                'grep -q \'"board_preview": "accepted"\' "$CLOUD_DIR/board-preflight.json"',
+                '>"$CLOUD_DIR/board-bundle-before-apply.sha256"',
+                '--install-id "$CODE_MOWER_INSTALL_ID" --yes --json',
+                '>"$CLOUD_DIR/board-bundle-after-apply.sha256"',
+                'raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")',
+            ),
+        ),
+    )
+
+
+BOARD_SNAPSHOT_COMMAND = "code-mower cloud board-snapshot"
+BOARD_SNAPSHOT_BINDING_ASSERTIONS = (
+    'test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
+    'test -z "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+)
+
+
+def _board_snapshot_binding_problems(runbook_doc: str) -> list[str]:
+    """Require the checkout re-binding immediately before the Board snapshot.
+
+    The snapshot event carries no commit or dirty-state field, so an assertion
+    made earlier in the runbook cannot speak for a checkout that moved since.
+    Both assertions must be the last commands before the snapshot runs.
+    """
+
+    start = runbook_doc.find(BOARD_SNAPSHOT_COMMAND)
+    if start < 0:
+        return [f"{BOARD_SNAPSHOT_COMMAND} is missing"]
+    preceding = [
+        line.strip()
+        for line in runbook_doc[:start].splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if preceding[-2:] != list(BOARD_SNAPSHOT_BINDING_ASSERTIONS):
+        return [
+            "the release checkout is not re-bound immediately before "
+            f"{BOARD_SNAPSHOT_COMMAND}"
+        ]
+    return []
+
+
+def _post_merge_gate_order_problems(runbook_doc: str) -> list[str]:
+    problems: list[str] = []
+    for name, sequence in _post_merge_runbook_gate_orders():
+        for marker in _unordered_markers(runbook_doc, sequence):
+            problems.append(f"{name}: {marker}")
+    return problems
 
 
 def _forbidden_runbook_markers() -> tuple[str, ...]:
@@ -545,6 +711,67 @@ def _forbidden_runbook_markers() -> tuple[str, ...]:
         'echo "$CODE_MOWER_CLOUD_TEAM_ID"',
         'echo "$CODE_MOWER_INSTALL_ID"',
     )
+
+
+def _forbidden_release_document_markers() -> tuple[str, ...]:
+    """Commands the release document must not publish anywhere.
+
+    pip gives its primary index no priority over an extra index, so a TestPyPI
+    candidate rehearsal that also names production PyPI cannot show which index
+    supplied the package.
+    """
+
+    return (
+        "--pip-extra-index-url https://pypi.org/simple/",
+        "--refresh-package code-mower",
+    )
+
+
+UV_ISOLATION_SITE_COUNT = 2
+UV_ISOLATION_ENVIRONMENT = (
+    "-u UV_INDEX",
+    "-u UV_DEFAULT_INDEX",
+    "-u UV_INDEX_URL",
+    "-u UV_EXTRA_INDEX_URL",
+    "-u UV_FIND_LINKS",
+    "-u UV_NO_INDEX",
+    "-u UV_OFFLINE",
+)
+UV_ISOLATION_ARGUMENTS = (
+    "uv --no-config --no-cache tool install",
+    "--default-index https://pypi.org/simple/",
+)
+
+
+def _uv_isolation_problems(release_doc: str) -> list[str]:
+    """Report documented `uv tool install` commands that could resolve elsewhere.
+
+    An ambient `UV_INDEX`, find-links value, offline flag, or project
+    configuration redirects uv the same way a `pip.conf` redirects pip, and only
+    `--no-cache` bypasses the cache.
+    """
+
+    sites = [
+        command for command in _shell_commands(release_doc) if "tool install" in command
+    ]
+    problems: list[str] = []
+    if len(sites) != UV_ISOLATION_SITE_COUNT:
+        problems.append(
+            f"expected {UV_ISOLATION_SITE_COUNT} uv tool installs, found {len(sites)}"
+        )
+    for command in sites:
+        label = command.split("uv ", 1)[-1].strip()[:72]
+        problems.extend(
+            f"{label} does not clear {fragment}"
+            for fragment in UV_ISOLATION_ENVIRONMENT
+            if fragment not in command
+        )
+        problems.extend(
+            f"{label} does not use {fragment}"
+            for fragment in UV_ISOLATION_ARGUMENTS
+            if fragment not in command
+        )
+    return problems
 
 
 PIP_ISOLATION_SITE_COUNT = 8
@@ -639,6 +866,43 @@ def _post_merge_pip_isolation_problems(runbook_doc: str) -> list[str]:
                 problems.append(f"{label} does not isolate its pip arguments")
         if kind != "rehearsal" and "--index-url http" not in command:
             problems.append(f"{label} does not name an explicit index")
+    return problems
+
+
+FAIL_FAST_CONTRACT = "set -euo pipefail"
+
+
+def _post_merge_fail_fast_problems(runbook_doc: str) -> list[str]:
+    """Report ordered runbook Bash blocks that keep running after a failure.
+
+    A block without the fail-fast contract reports only its last command's exit
+    status, so a failed assertion in the middle of a block can be masked by a
+    later command that happens to succeed.
+    """
+
+    problems: list[str] = []
+    in_block = False
+    is_bash = False
+    block: list[str] = []
+    index = 0
+    for line in runbook_doc.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if not in_block:
+                in_block = True
+                is_bash = stripped == "```bash"
+                block = []
+                continue
+            in_block = False
+            if is_bash:
+                index += 1
+                if block and block[0] != FAIL_FAST_CONTRACT:
+                    problems.append(f"bash block {index} does not {FAIL_FAST_CONTRACT}")
+            continue
+        if in_block and is_bash and stripped:
+            block.append(stripped)
+    if not index:
+        problems.append("the post-merge runbook publishes no bash block")
     return problems
 
 
@@ -785,11 +1049,24 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         if runbook_assertions
         else ["unknown release version"]
     )
+    release_doc = docs.get("docs/pypi-release.md", "")
     forbidden_runbook_markers = [
         marker for marker in _forbidden_runbook_markers() if marker in runbook_doc
+    ] + [
+        marker
+        for marker in _forbidden_release_document_markers()
+        if marker in release_doc
     ]
+    uv_isolation_problems = _uv_isolation_problems(release_doc) if release_doc else []
     pip_isolation_problems = (
         _post_merge_pip_isolation_problems(runbook_doc) if runbook_doc else []
+    )
+    gate_order_problems = (
+        _post_merge_gate_order_problems(runbook_doc)
+        + _board_snapshot_binding_problems(runbook_doc)
+        + _post_merge_fail_fast_problems(runbook_doc)
+        if runbook_doc
+        else ["unknown release version"]
     )
     public_hygiene_blobs = {
         relative_path: text.lower()
@@ -1078,6 +1355,8 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                     not missing_runbook_assertions
                     and not forbidden_runbook_markers
                     and not pip_isolation_problems
+                    and not uv_isolation_problems
+                    and not gate_order_problems
                 )
                 else "fail"
             ),
@@ -1088,6 +1367,8 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                 "missing_assertions": missing_runbook_assertions,
                 "forbidden_commands": forbidden_runbook_markers,
                 "pip_isolation_problems": pip_isolation_problems[:20],
+                "uv_isolation_problems": uv_isolation_problems[:20],
+                "gate_order_problems": gate_order_problems[:20],
             },
         ),
         _release_check(

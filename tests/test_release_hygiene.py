@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import copy
+import hashlib
 import importlib.util
 import os
 import re
@@ -49,6 +50,7 @@ from code_mower import git_identity as code_mower_git_identity
 from code_mower import init as code_mower_init
 from code_mower import migration as code_mower_migration
 from code_mower import migration_install as code_mower_migration_install
+from code_mower import migration_readiness as code_mower_migration_readiness
 from code_mower import next_steps
 from code_mower import package as code_mower_package
 from code_mower import package_content as code_mower_package_content
@@ -62,6 +64,8 @@ from code_mower.calibration import arms as calibration_arms
 from code_mower.calibration import policy as calibration_policy
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 from scripts import guard_package_workflows, privacy_scan
+
+CLOUD_ENDPOINT = "https://cloud.example.invalid"
 
 
 class ReleaseHygieneTests(unittest.TestCase):
@@ -7314,6 +7318,7 @@ def main():
                 toy_repo=toy_repo,
                 outputs=outputs,
                 version="code-mower 0.6.0b3",
+                distribution_version="0.6.0b3",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -7393,6 +7398,7 @@ def main():
                 toy_repo=toy_repo,
                 outputs=outputs,
                 version="code-mower 0.6.0b3",
+                distribution_version="0.6.0b3",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -7455,6 +7461,7 @@ def main():
                 toy_repo=toy_repo,
                 outputs=outputs,
                 version="code-mower 0.6.0b3",
+                distribution_version="0.6.0b3",
                 steps=[
                     {
                         "command": ["code-mower", "doctor", "--easy", "--json"],
@@ -7466,6 +7473,146 @@ def main():
         self.assertEqual(scorecard["status"], "fail")
         failed = {check["id"] for check in scorecard["checks"] if check["status"] == "fail"}
         self.assertEqual(failed, {"cloud-export-metadata-bundle"})
+
+    def test_installed_version_binding_rejects_mismatched_and_missing_versions(
+        self,
+    ) -> None:
+        problems = code_mower_migration_readiness.installed_version_problems
+
+        self.assertEqual(
+            problems(version="code-mower 1.4.0", distribution_version="1.4.0"),
+            [],
+        )
+        self.assertEqual(
+            problems(
+                version="code-mower 1.4.0",
+                distribution_version="1.4.0",
+                requested_version="1.4.0",
+            ),
+            [],
+        )
+        self.assertTrue(
+            problems(version="code-mower 1.3.0", distribution_version="1.4.0")
+        )
+        self.assertTrue(
+            problems(
+                version="code-mower 1.4.0",
+                distribution_version="1.4.0",
+                requested_version="1.4.1",
+            )
+        )
+        self.assertTrue(problems(version="code-mower", distribution_version="1.4.0"))
+        self.assertTrue(
+            problems(version="code-mower 1.4.0", distribution_version="")
+        )
+        self.assertTrue(problems(version="", distribution_version=""))
+
+    def test_requested_candidate_version_binds_specs_and_wheels(self) -> None:
+        requested = code_mower_migration_install.requested_candidate_version
+
+        self.assertEqual(requested("code-mower==1.4.0"), "1.4.0")
+        self.assertEqual(
+            requested("/tmp/dist/code_mower-1.4.0-py3-none-any.whl"),
+            "1.4.0",
+        )
+        self.assertEqual(requested("/tmp/dist/code_mower-1.4.0.tar.gz"), "1.4.0")
+        self.assertEqual(requested("code-mower"), "")
+        self.assertEqual(requested("code-mower>=1.4.0"), "")
+        self.assertEqual(requested("."), "")
+        self.assertEqual(
+            requested("/tmp/dist/other_package-1.4.0-py3-none-any.whl"),
+            "",
+        )
+
+    def test_first_user_readiness_scorecard_fails_on_version_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toy_repo = root / "toy-repo"
+            outputs = root / "outputs"
+            generated = toy_repo / ".code-mower.generated"
+            (generated / "tools").mkdir(parents=True)
+            outputs.mkdir()
+            for path in (
+                generated / "code-mower-init-plan.json",
+                generated / "smoke-tests.sh",
+                generated / "tools" / "code_mower",
+            ):
+                path.write_text("ok\n", encoding="utf-8")
+            artifacts = code_mower_migration._first_user_artifacts(toy_repo)
+            for key in (
+                "draft_calibration_corpus",
+                "draft_reviewer_value_report",
+                "reviewer_value_report",
+            ):
+                Path(artifacts[key]).parent.mkdir(parents=True, exist_ok=True)
+                Path(artifacts[key]).write_text("ok\n", encoding="utf-8")
+            Path(artifacts["cloud_export"]).write_text(
+                json.dumps(
+                    {
+                        "mode": "cloud-export",
+                        "included_reports": [
+                            {"kind": "reviewer-metrics"},
+                            {"kind": "lane-policy"},
+                            {"kind": "value-report"},
+                        ],
+                        "upload_ready": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            dry_run_upload = {
+                "mode": "cloud-upload-dry-run",
+                "privacy_mode": "metadata_and_reports",
+                "requires_yes": True,
+                "would_upload": False,
+                "excluded_content": sorted(
+                    code_mower_migration.PRIVACY_EXCLUDED_CONTENT
+                ),
+            }
+            Path(artifacts["cloud_upload_dry_run"]).write_text(
+                json.dumps(dry_run_upload),
+                encoding="utf-8",
+            )
+            Path(artifacts["cloud_dogfood_dry_run"]).write_text(
+                json.dumps({"status": "dry_run", "upload": dry_run_upload}),
+                encoding="utf-8",
+            )
+            steps = [
+                {
+                    "command": ["code-mower", "doctor", "--easy", "--json"],
+                    "returncode": 0,
+                }
+            ]
+
+            stale_cli = code_mower_migration._first_user_readiness_scorecard(
+                toy_repo=toy_repo,
+                outputs=outputs,
+                version="code-mower 1.3.0",
+                distribution_version="1.4.0",
+                steps=steps,
+            )
+            wrong_candidate = code_mower_migration._first_user_readiness_scorecard(
+                toy_repo=toy_repo,
+                outputs=outputs,
+                version="code-mower 1.4.0",
+                distribution_version="1.4.0",
+                requested_version="1.4.1",
+                steps=steps,
+            )
+            missing_metadata = code_mower_migration._first_user_readiness_scorecard(
+                toy_repo=toy_repo,
+                outputs=outputs,
+                version="code-mower 1.4.0",
+                distribution_version="",
+                steps=steps,
+            )
+
+        for scorecard in (stale_cli, wrong_candidate, missing_metadata):
+            self.assertEqual(scorecard["status"], "fail")
+            failed = {
+                check["id"] for check in scorecard["checks"] if check["status"] == "fail"
+            }
+            self.assertEqual(failed, {"package-installed"})
 
     def test_rehearsal_step_to_file_writes_stdout_and_creates_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8254,10 +8401,10 @@ def main():
 
     def test_release_readiness_fails_when_a_run_assertion_is_dropped(self) -> None:
         for removed in (
-            '"$NO_PUBLISH_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped skipped',
-            '"$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" success skipped',
-            '"$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped success',
-            '"$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" skipped skipped',
+            '"$NO_PUBLISH_RUN_ID" workflow_dispatch "$RELEASE_SHA" v1.4.0 skipped skipped',
+            '"$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" v1.4.0 success skipped',
+            '"$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" v1.4.0 skipped success',
+            '"$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" v1.4.0 skipped skipped',
         ):
             with self.subTest(removed=removed):
                 check = self._asserted_runbook_check(
@@ -8304,6 +8451,7 @@ def main():
             'if run.get("workflowName") != EXPECTED_WORKFLOW:',
             'if run.get("event") != event:',
             'if run.get("headSha") != head_sha:',
+            'if run.get("headBranch") != head_branch:',
             'if run.get("status") != "completed" or run.get("conclusion") != "success":',
             'problems.append(f"{job_name} is {actual}, expected success")',
         ):
@@ -8527,7 +8675,11 @@ def main():
             'if event.get("repo_slug") != EXPECTED_REPO_SLUG:',
             'if preview.get("event_count") != len(events)'
             ' or preview.get("event_count") != 1:',
-            'if preview.get("event_types") != EXPECTED_EVENT_TYPES:',
+            # Generic `cloud upload --dry-run` emits no event-type map, so the
+            # exact event types come from the digest-bound manifest.
+            "if event_type_counts != EXPECTED_EVENT_TYPES:",
+            "current_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()",
+            "if before_digest != after_digest or current_digest != before_digest:",
             'if event.get("schema") != EVENT_SCHEMA'
             ' or not str(event.get("event_id") or ""):',
             'if dimensions.get("snapshot_schema") != SNAPSHOT_SCHEMA:',
@@ -8616,11 +8768,12 @@ def main():
 
         self.assertIn("--set-transport devin=devin_api_v3", runbook)
         self.assertIn(
-            'blocked = [name for name in required if checks.get(name) != "pass"]',
+            'problems.append(f"Devin check {name!r} is {statuses.get(name)!r}")',
             runbook,
         )
         self.assertIn(
-            'raise SystemExit(f"hosted Devin readiness is blocked: {blocked}")', runbook
+            'raise SystemExit(f"hosted Devin readiness is blocked: {problems}")',
+            runbook,
         )
         for check_id in sorted(required):
             with self.subTest(check_id=check_id):
@@ -8673,9 +8826,10 @@ def main():
 
     def test_release_readiness_requires_the_cloud_doctor_probe(self) -> None:
         for assertion in (
-            'code-mower cloud doctor --install-id "$CODE_MOWER_INSTALL_ID"',
+            'code-mower cloud doctor "$CLOUD_DOCTOR_BUNDLE_DIR"',
             '--probe-service --json >"$CLOUD_DIR/doctor.json"',
-            'REQUIRED_CLOUD_CHECKS = ("endpoint", "service", "token")',
+            'PASSING_CLOUD_CHECKS = ("endpoint", "service", "token")',
+            'EXPECTED_CLOUD_CHECKS = frozenset(PASSING_CLOUD_CHECKS) | {"bundle"}',
             'if report.get("mode") != "cloud-doctor":',
             'if report.get("failures") != 0:',
             'problems.append(f"cloud doctor {name} check is {statuses.get(name)!r}")',
@@ -8777,6 +8931,154 @@ def main():
             "expected 8 pip-backed commands, found 7",
             check["detail"]["pip_isolation_problems"],
         )
+
+    def test_ordered_runbook_bash_blocks_declare_the_fail_fast_contract(self) -> None:
+        blocks = re.findall(r"```bash\n(.*?)```", self._runbook_section(), flags=re.DOTALL)
+
+        self.assertTrue(blocks)
+        for index, block in enumerate(blocks, start=1):
+            with self.subTest(block=index):
+                self.assertEqual(block.splitlines()[0], "set -euo pipefail")
+
+    def test_the_fail_fast_contract_stops_a_masked_assertion(self) -> None:
+        script = 'test "a" = "b"\necho reached\n'
+        masked = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        guarded = subprocess.run(
+            ["bash", "-c", f"set -euo pipefail\n{script}"],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(masked.returncode, 0)
+        self.assertNotEqual(guarded.returncode, 0)
+        self.assertNotIn("reached", guarded.stdout)
+
+    def test_release_readiness_fails_when_a_bash_block_loses_fail_fast(self) -> None:
+        check = self._asserted_runbook_check(
+            lambda doc: doc.replace(
+                "set -euo pipefail\nRELEASE_EVENT_RUN_ID=",
+                "RELEASE_EVENT_RUN_ID=",
+            )
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertTrue(
+            any(
+                "does not set -euo pipefail" in problem
+                for problem in check["detail"]["gate_order_problems"]
+            ),
+            check["detail"]["gate_order_problems"],
+        )
+
+    def test_release_readiness_fails_when_release_notes_are_not_checkout_bound(
+        self,
+    ) -> None:
+        for old, new in (
+            (
+                '--notes-file "$CODE_MOWER_RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+                "--notes-file docs/v140-release-notes.md",
+            ),
+            (
+                'problems.append("release body does not match the exact checkout release notes")',
+                "pass",
+            ),
+            (
+                'problems.append("release title is not the expected v1.4.0 title")',
+                "pass",
+            ),
+        ):
+            with self.subTest(old=old):
+                check = self._asserted_runbook_check(
+                    lambda doc, old=old, new=new: doc.replace(old, new)
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(old, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_cloud_identity_binding_is_deleted(
+        self,
+    ) -> None:
+        for assertion in (
+            ': "${CODE_MOWER_CLOUD_TEAM_ID:?private cloud team id is required}"',
+            ': "${CODE_MOWER_INSTALL_ID:?private cloud install id is required}"',
+            'case "$CODE_MOWER_CLOUD_TEAM_ID" in REPLACE_WITH_*) exit 1 ;; esac',
+            'case "$CODE_MOWER_INSTALL_ID" in REPLACE_WITH_*) exit 1 ;; esac',
+            'problems.append("the selected install profile stores a different install identity")',
+            'problems.append("the selected install profile stores a different team identity")',
+            'grep -q \'"cloud_identity": "bound"\' "$CLOUD_DIR/identity.json"',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def _run_release_run_gate(self, run: dict, head_branch: str) -> subprocess.CompletedProcess:
+        snippet = self._runbook_python_snippet("BUILD_JOBS")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            stub = scratch / "gh"
+            stub.write_text(
+                "#!/bin/sh\n"
+                f"cat {shlex.quote(str(scratch / 'run.json'))}\n",
+                encoding="utf-8",
+            )
+            stub.chmod(0o755)
+            (scratch / "run.json").write_text(json.dumps(run), encoding="utf-8")
+            script = scratch / "assert_release_run.py"
+            script.write_text(snippet, encoding="utf-8")
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "codemower-ai/code-mower",
+                    "4242",
+                    "workflow_dispatch",
+                    "c0ffee",
+                    head_branch,
+                    "success",
+                    "skipped",
+                ],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PATH": f"{scratch}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+    def _release_run_payload(self, head_branch: str) -> dict:
+        return {
+            "databaseId": 4242,
+            "workflowName": "Code Mower Release",
+            "headSha": "c0ffee",
+            "headBranch": head_branch,
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "success",
+            "url": "https://example.invalid/run/4242",
+            "jobs": [
+                {"name": "build-distributions", "conclusion": "success"},
+                {"name": "verify-distributions", "conclusion": "success"},
+                {"name": "publish-testpypi", "conclusion": "success"},
+                {"name": "publish-pypi", "conclusion": "skipped"},
+            ],
+        }
+
+    def test_release_run_gate_accepts_the_expected_tag_branch(self) -> None:
+        completed = self._run_release_run_gate(
+            self._release_run_payload("v1.4.0"), "v1.4.0"
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["head_branch"], "v1.4.0")
+
+    def test_release_run_gate_rejects_another_tag_on_the_same_commit(self) -> None:
+        completed = self._run_release_run_gate(
+            self._release_run_payload("v1.4.0rc1"), "v1.4.0"
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("head branch is v1.4.0rc1, not v1.4.0", completed.stderr)
 
     def _runbook_python_snippet(self, marker: str) -> str:
         snippets = [
@@ -9097,7 +9399,7 @@ def main():
         return report
 
     def _run_cloud_doctor_gate(self, report: dict) -> subprocess.CompletedProcess:
-        snippet = self._runbook_python_snippet("REQUIRED_CLOUD_CHECKS")
+        snippet = self._runbook_python_snippet("PASSING_CLOUD_CHECKS")
         with tempfile.TemporaryDirectory() as tmp:
             cloud_dir = Path(tmp)
             (cloud_dir / "doctor.json").write_text(
@@ -9152,6 +9454,18 @@ def main():
             "repo_slug": "codemower-ai/code-mower",
             "event_count": 1,
             "export": {"event_types": {"board_snapshot": 1}, "included_reports": 0},
+            "upload": {"endpoint": CLOUD_ENDPOINT},
+            "doctor": {
+                "mode": "cloud-doctor",
+                "status": "pass",
+                "failures": 0,
+                "checks": [
+                    {"name": "endpoint", "status": "pass"},
+                    {"name": "service", "status": "skip"},
+                    {"name": "token", "status": "pass"},
+                    {"name": "bundle", "status": "pass"},
+                ],
+            },
         }
         manifest = {
             "schema": "code_mower.cloudBenchmarkBundle.v1",
@@ -9176,20 +9490,39 @@ def main():
             "upload_mode": "metadata_only",
             "report_count": 0,
             "event_count": 1,
-            "event_types": {"board_snapshot": 1},
+            "endpoint": CLOUD_ENDPOINT,
         }
-        applied = {"mode": "cloud-upload", "status": 200}
+        applied = {
+            "mode": "cloud-upload",
+            "status": 200,
+            "endpoint": CLOUD_ENDPOINT,
+        }
         return snapshot, manifest, preview, applied
 
     def _run_board_snapshot_gate(
-        self, snapshot: dict, manifest: dict, preview: dict, applied: dict
+        self,
+        snapshot: dict,
+        manifest: dict,
+        preview: dict,
+        applied: dict,
+        *,
+        phase: str = "preflight",
+        applied_manifest: dict | None = None,
     ) -> subprocess.CompletedProcess:
-        snippet = self._runbook_python_snippet("board snapshot upload is not a verified")
+        marker = (
+            "board snapshot preview is not an acceptable payload"
+            if phase == "preflight"
+            else "board snapshot upload is not a verified"
+        )
+        snippet = self._runbook_python_snippet(marker)
         with tempfile.TemporaryDirectory() as tmp:
             cloud_dir = Path(tmp) / "cloud"
             bundle_dir = Path(tmp) / "bundle"
             cloud_dir.mkdir()
             bundle_dir.mkdir()
+            (cloud_dir / "doctor.json").write_text(
+                json.dumps({"endpoint": CLOUD_ENDPOINT}), encoding="utf-8"
+            )
             (cloud_dir / "board-snapshot.json").write_text(
                 json.dumps(snapshot), encoding="utf-8"
             )
@@ -9199,8 +9532,19 @@ def main():
             (cloud_dir / "board-applied.json").write_text(
                 json.dumps(applied), encoding="utf-8"
             )
-            (bundle_dir / "code-mower-cloud-bundle.json").write_text(
-                json.dumps(manifest), encoding="utf-8"
+            manifest_path = bundle_dir / "code-mower-cloud-bundle.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            (cloud_dir / "board-bundle-before-apply.sha256").write_text(
+                f"{digest}  {manifest_path}\n", encoding="utf-8"
+            )
+            if applied_manifest is not None:
+                manifest_path.write_text(
+                    json.dumps(applied_manifest), encoding="utf-8"
+                )
+            after = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            (cloud_dir / "board-bundle-after-apply.sha256").write_text(
+                f"{after}  {manifest_path}\n", encoding="utf-8"
             )
             return self._run_runbook_snippet(
                 snippet,
@@ -9211,10 +9555,48 @@ def main():
             )
 
     def test_runbook_board_snapshot_gate_accepts_the_release_bundle(self) -> None:
-        result = self._run_board_snapshot_gate(*self._board_snapshot_fixtures())
+        fixtures = self._board_snapshot_fixtures()
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["board_upload"], "accepted")
+        preflight = self._run_board_snapshot_gate(*fixtures)
+        applied = self._run_board_snapshot_gate(*fixtures, phase="applied")
+
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        self.assertEqual(json.loads(preflight.stdout)["board_preview"], "accepted")
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertEqual(json.loads(applied.stdout)["board_upload"], "accepted")
+
+    def test_runbook_board_snapshot_gate_rejects_a_swapped_bundle(self) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        swapped = copy.deepcopy(manifest)
+        swapped["events"][0]["event_id"] = "evt-board-2"
+
+        result = self._run_board_snapshot_gate(
+            snapshot, manifest, preview, applied, phase="applied",
+            applied_manifest=swapped,
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("board bundle changed", result.stderr)
+
+    def test_runbook_board_snapshot_gate_rejects_a_nested_doctor_failure(self) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        degraded = copy.deepcopy(snapshot)
+        degraded["doctor"]["checks"][1]["status"] = "fail"
+
+        result = self._run_board_snapshot_gate(degraded, manifest, preview, applied)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("board snapshot doctor check", result.stderr)
+
+    def test_runbook_board_snapshot_gate_rejects_an_extra_event(self) -> None:
+        snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
+        padded = copy.deepcopy(manifest)
+        padded["events"].append("board_snapshot")
+
+        result = self._run_board_snapshot_gate(snapshot, padded, preview, applied)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("exactly one structured event", result.stderr)
 
     def test_runbook_board_snapshot_gate_rejects_another_repository(self) -> None:
         snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
@@ -9241,7 +9623,6 @@ def main():
     def test_runbook_board_snapshot_gate_rejects_uncorrelated_previews(self) -> None:
         snapshot, manifest, preview, applied = self._board_snapshot_fixtures()
         cases = {
-            "event_types": dict(preview, event_types={"adoption_run": 1}),
             "event_count": dict(preview, event_count=2),
         }
         for label, candidate in cases.items():
@@ -9525,7 +9906,10 @@ def main():
             pypi_release,
         )
         for text in (first_user, pypi_release):
-            self.assertIn("--reinstall --refresh-package code-mower", text)
+            # `--refresh-package` refreshes metadata only, so the cache-bypass
+            # contract is the isolated, uncached, explicitly indexed install.
+            self.assertNotIn("--reinstall --refresh-package code-mower", text)
+            self.assertIn("uv --no-config --no-cache tool install", text)
             self.assertIn("dist/code_mower-*.whl", text)
             self.assertIn("no matching distribution", text)
         self.assertIn(

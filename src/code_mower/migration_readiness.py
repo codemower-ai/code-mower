@@ -30,6 +30,37 @@ PRIVACY_EXCLUDED_CONTENT = frozenset(
 )
 
 
+def installed_version_problems(
+    *,
+    version: str,
+    distribution_version: str,
+    requested_version: str = "",
+) -> list[str]:
+    """Require the CLI, the installed distribution, and the requested candidate to agree.
+
+    A ``code-mower <anything>`` prefix proves only that some Code Mower CLI is
+    on the path: it can be an older ambient build whose distribution metadata
+    says otherwise, and for an exact ``code-mower==VERSION`` or wheel rehearsal
+    it does not establish that the requested candidate is what got installed.
+    """
+    problems: list[str] = []
+    reported = version.strip()
+    installed = distribution_version.strip()
+    if not installed:
+        problems.append("installed distribution version is missing")
+    if not reported:
+        problems.append("CLI version output is missing")
+    if installed and reported != f"code-mower {installed}":
+        problems.append(
+            "CLI version output does not match the installed distribution version"
+        )
+    if requested_version and installed and requested_version != installed:
+        problems.append(
+            "installed distribution version does not match the requested candidate"
+        )
+    return problems
+
+
 def first_user_artifacts(toy_repo: Path) -> dict[str, str]:
     return {key: str(toy_repo / relative_path) for key, relative_path in FIRST_USER_ARTIFACTS}
 
@@ -131,6 +162,8 @@ def first_user_readiness_scorecard(
     outputs: Path,
     version: str,
     steps: Sequence[dict[str, Any]],
+    distribution_version: str = "",
+    requested_version: str = "",
 ) -> dict[str, Any]:
     artifacts = first_user_artifacts(toy_repo)
     generated_dir = toy_repo / ".code-mower.generated"
@@ -139,13 +172,24 @@ def first_user_readiness_scorecard(
     cloud_export_payload = _read_json_file(Path(artifacts["cloud_export"]))
     dogfood_payload = _read_json_file(dogfood_path)
     dogfood_upload = dogfood_payload.get("upload") if isinstance(dogfood_payload, dict) else None
+    version_problems = installed_version_problems(
+        version=version,
+        distribution_version=distribution_version,
+        requested_version=requested_version,
+    )
 
     checks = [
         _readiness_check(
             check_id="package-installed",
-            title="Package installs and exposes the CLI",
-            status="pass" if version.startswith("code-mower ") else "fail",
+            title="Installed CLI version matches the installed distribution",
+            status="pass" if not version_problems else "fail",
             evidence=version,
+            detail={
+                "cli_version": version,
+                "distribution_version": distribution_version,
+                "requested_version": requested_version,
+                "problems": version_problems,
+            },
         ),
         _readiness_check(
             check_id="easy-init-generated",

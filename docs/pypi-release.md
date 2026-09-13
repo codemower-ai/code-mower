@@ -144,6 +144,7 @@ paths, private repository paths, and provider prose out of recorded output.
 commit is the release pull request's own merge commit OID.
 
 ```bash
+set -euo pipefail
 REPO="codemower-ai/code-mower"
 RELEASE_PR="REPLACE_WITH_RELEASE_PR_NUMBER"
 test "$(gh pr view "$RELEASE_PR" --repo "$REPO" --json state --jq '.state')" = "MERGED"
@@ -159,6 +160,7 @@ a fresh clone bound to that commit and machine-asserted clean before anything is
 built or installed from it.
 
 ```bash
+set -euo pipefail
 RELEASE_CHECKOUT="$(mktemp -d /tmp/code-mower-v140-release-src.XXXXXX)/code-mower"
 git clone --no-checkout "https://github.com/$REPO.git" "$RELEASE_CHECKOUT"
 git -C "$RELEASE_CHECKOUT" fetch origin "$RELEASE_SHA"
@@ -181,6 +183,7 @@ pip commands add `--isolated` so no ambient environment or configuration can
 reintroduce another package source.
 
 ```bash
+set -euo pipefail
 RELEASE_ENV="$(mktemp -d /tmp/code-mower-v140-release-env.XXXXXX)"
 python3.12 -m venv "$RELEASE_ENV/venv"
 RELEASE_PYTHON="$RELEASE_ENV/venv/bin/python"
@@ -215,6 +218,7 @@ PY
 ### 3. Create and verify the annotated `v1.4.0` tag on that exact commit
 
 ```bash
+set -euo pipefail
 git tag -a v1.4.0 "$RELEASE_SHA" -m "Code Mower v1.4.0"
 git push origin refs/tags/v1.4.0
 test "$(git rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"
@@ -231,6 +235,7 @@ A job that is expected to skip must be reported skipped or be absent from the
 run; a job that is expected to publish must report `success`.
 
 ```bash
+set -euo pipefail
 cat >"$RELEASE_ENV/assert_release_run.py" <<'PY'
 """Assert one release workflow run's identity, head, conclusion, and job posture."""
 
@@ -248,7 +253,7 @@ def run_view(repo: str, run_id: str) -> dict:
     completed = subprocess.run(
         [
             "gh", "run", "view", run_id, "--repo", repo, "--json",
-            "databaseId,workflowName,headSha,event,status,conclusion,url,jobs",
+            "databaseId,workflowName,headSha,headBranch,event,status,conclusion,url,jobs",
         ],
         check=True,
         capture_output=True,
@@ -265,7 +270,7 @@ def job_posture(run: dict, job_name: str) -> str:
 
 
 def main() -> None:
-    repo, run_id, event, head_sha, testpypi, pypi = sys.argv[1:7]
+    repo, run_id, event, head_sha, head_branch, testpypi, pypi = sys.argv[1:8]
     run = run_view(repo, run_id)
     problems = []
     if str(run.get("databaseId")) != run_id:
@@ -276,6 +281,10 @@ def main() -> None:
         problems.append(f"event is {run.get('event')}, not {event}")
     if run.get("headSha") != head_sha:
         problems.append("run head is not the exact release commit")
+    # A commit can carry several tags, so the commit alone does not prove the
+    # run was dispatched for the v1.4.0 tag.
+    if run.get("headBranch") != head_branch:
+        problems.append(f"head branch is {run.get('headBranch')}, not {head_branch}")
     if run.get("status") != "completed" or run.get("conclusion") != "success":
         problems.append("run did not complete successfully")
     for job_name in BUILD_JOBS:
@@ -297,6 +306,7 @@ def main() -> None:
         "run_id": run_id,
         "event": event,
         "head_sha": head_sha,
+        "head_branch": head_branch,
         "build_distributions": job_posture(run, "build-distributions"),
         "verify_distributions": job_posture(run, "verify-distributions"),
         "publish_testpypi": job_posture(run, "publish-testpypi"),
@@ -314,12 +324,13 @@ PY
 Both publish jobs must skip on this run.
 
 ```bash
+set -euo pipefail
 gh workflow run release.yml --repo "$REPO" --ref v1.4.0 \
   -f publish_testpypi=false -f publish_pypi=false
 NO_PUBLISH_RUN_ID="REPLACE_WITH_EXACT_RUN_ID"
 gh run watch "$NO_PUBLISH_RUN_ID" --repo "$REPO" --exit-status
 "$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_run.py" "$REPO" \
-  "$NO_PUBLISH_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped skipped
+  "$NO_PUBLISH_RUN_ID" workflow_dispatch "$RELEASE_SHA" v1.4.0 skipped skipped
 ```
 
 ### 6. Publish TestPyPI only, then rehearse the exact candidate from TestPyPI
@@ -332,12 +343,13 @@ which then installs those local files. Dependencies resolve separately from
 canonical PyPI.
 
 ```bash
+set -euo pipefail
 gh workflow run release.yml --repo "$REPO" --ref v1.4.0 \
   -f publish_testpypi=true -f publish_pypi=false
 TESTPYPI_RUN_ID="REPLACE_WITH_EXACT_RUN_ID"
 gh run watch "$TESTPYPI_RUN_ID" --repo "$REPO" --exit-status
 "$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_run.py" "$REPO" \
-  "$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" success skipped
+  "$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" v1.4.0 success skipped
 
 TESTPYPI_DIST_DIR="$(mktemp -d /tmp/code-mower-v140-testpypi-dist.XXXXXX)"
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
@@ -390,12 +402,13 @@ canonical `https://pypi.org/simple/` explicitly with no cache, so no ambient
 `pip.conf`, `PIP_INDEX_URL`, or mirror can satisfy a production-labelled gate.
 
 ```bash
+set -euo pipefail
 gh workflow run release.yml --repo "$REPO" --ref v1.4.0 \
   -f publish_testpypi=false -f publish_pypi=true
 PYPI_RUN_ID="REPLACE_WITH_EXACT_RUN_ID"
 gh run watch "$PYPI_RUN_ID" --repo "$REPO" --exit-status
 "$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_run.py" "$REPO" \
-  "$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped success
+  "$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" v1.4.0 skipped success
 
 PYPI_WORK_DIR="$(mktemp -d /tmp/code-mower-v140-pypi-rehearsal.XXXXXX)"
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
@@ -410,6 +423,7 @@ env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
 ### 8. Download the exact workflow artifact
 
 ```bash
+set -euo pipefail
 PROD_DIST_DIR="$(mktemp -d /tmp/code-mower-v140-prod-dist.XXXXXX)"
 gh run download "$PYPI_RUN_ID" --repo "$REPO" \
   --name code-mower-dist --dir "$PROD_DIST_DIR"
@@ -419,6 +433,7 @@ sha256sum "$PROD_DIST_DIR"/*
 ### 9. Compare SHA-256 digests with the files downloaded from canonical PyPI
 
 ```bash
+set -euo pipefail
 PYPI_DOWNLOAD_DIR="$(mktemp -d /tmp/code-mower-v140-pypi-download.XXXXXX)"
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   PIP_CONFIG_FILE=/dev/null python3.12 -m pip --isolated download code-mower==1.4.0 \
@@ -472,6 +487,7 @@ organization value. Anything else -- absent, `true`, or unparseable -- fails
 closed.
 
 ```bash
+set -euo pipefail
 REPO="$REPO" "$RELEASE_PYTHON" - <<'PY'
 import json
 import os
@@ -521,6 +537,7 @@ own assets and requires the exact filename set and every SHA-256 value to equal
 `PROD_DIST_DIR`, with exactly one wheel and one sdist:
 
 ```bash
+set -euo pipefail
 cat >"$RELEASE_ENV/assert_release_assets.py" <<'PY'
 """Assert the GitHub Release tag and its downloaded assets match PROD_DIST_DIR."""
 
@@ -533,6 +550,8 @@ import tempfile
 from pathlib import Path
 
 EXPECTED = {"code_mower-1.4.0-py3-none-any.whl", "code_mower-1.4.0.tar.gz"}
+EXPECTED_TITLE = "Code Mower v1.4.0"
+RELEASE_NOTES_RELPATH = "docs/v140-release-notes.md"
 
 
 def digests(directory: Path) -> dict[str, str]:
@@ -548,14 +567,24 @@ def main() -> None:
     repo = os.environ["REPO"]
     release_sha = os.environ["RELEASE_SHA"]
     local = digests(Path(os.environ["PROD_DIST_DIR"]))
+    # The notes are read from the clean checkout of the exact release commit, so
+    # an ambient working copy cannot describe the published release.
+    notes_path = Path(os.environ["CODE_MOWER_RELEASE_CHECKOUT"]) / RELEASE_NOTES_RELPATH
+    expected_notes = notes_path.read_text(encoding="utf-8").strip()
     view = json.loads(subprocess.run(
         ["gh", "release", "view", "v1.4.0", "--repo", repo, "--json",
-         "tagName,isDraft,isPrerelease,assets"],
+         "tagName,isDraft,isPrerelease,assets,body,name"],
         check=True, capture_output=True, text=True,
     ).stdout)
     problems = []
     if view.get("tagName") != "v1.4.0":
         problems.append("release tag is not v1.4.0")
+    if not expected_notes:
+        problems.append("release notes in the exact checkout are empty")
+    if str(view.get("body") or "").replace("\r\n", "\n").strip() != expected_notes:
+        problems.append("release body does not match the exact checkout release notes")
+    if view.get("name") != EXPECTED_TITLE:
+        problems.append("release title is not the expected v1.4.0 title")
     if view.get("isDraft") or view.get("isPrerelease"):
         problems.append("release is a draft or prerelease")
     tag_target = subprocess.run(
@@ -585,6 +614,8 @@ def main() -> None:
         "mode": mode,
         "assets": sorted(local),
         "sha256_match": True,
+        "notes_match": True,
+        "title_match": True,
     }, sort_keys=True))
 
 
@@ -597,15 +628,20 @@ overwritten anywhere, and a `v1.4.0` release whose assets differ stops the
 runbook for inspection.
 
 ```bash
+set -euo pipefail
+test -f "$CODE_MOWER_RELEASE_CHECKOUT/docs/v140-release-notes.md"
 if gh release view v1.4.0 --repo "$REPO" >/dev/null 2>&1; then
   REPO="$REPO" PROD_DIST_DIR="$PROD_DIST_DIR" RELEASE_SHA="$RELEASE_SHA" \
+    CODE_MOWER_RELEASE_CHECKOUT="$CODE_MOWER_RELEASE_CHECKOUT" \
     "$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_assets.py" existing
 else
   gh release create v1.4.0 "$PROD_DIST_DIR"/* --repo "$REPO" \
     --verify-tag --title "Code Mower v1.4.0" \
-    --notes-file docs/v140-release-notes.md --latest --fail-on-no-commits
+    --notes-file "$CODE_MOWER_RELEASE_CHECKOUT/docs/v140-release-notes.md" \
+    --latest --fail-on-no-commits
 fi
 REPO="$REPO" PROD_DIST_DIR="$PROD_DIST_DIR" RELEASE_SHA="$RELEASE_SHA" \
+  CODE_MOWER_RELEASE_CHECKOUT="$CODE_MOWER_RELEASE_CHECKOUT" \
   "$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_assets.py" created
 gh release view v1.4.0 --repo "$REPO" \
   --json tagName,targetCommitish,isDraft,isPrerelease,publishedAt,url,assets
@@ -614,10 +650,11 @@ gh release view v1.4.0 --repo "$REPO" \
 ### 12. Assert the `release`-event run published nothing
 
 ```bash
+set -euo pipefail
 RELEASE_EVENT_RUN_ID="REPLACE_WITH_EXACT_RELEASE_EVENT_RUN_ID"
 gh run watch "$RELEASE_EVENT_RUN_ID" --repo "$REPO" --exit-status
 "$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_run.py" "$REPO" \
-  "$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" skipped skipped
+  "$RELEASE_EVENT_RUN_ID" release "$RELEASE_SHA" v1.4.0 skipped skipped
 ```
 
 ### 13. Install locally and require hosted Devin readiness
@@ -632,6 +669,7 @@ them. Supply that confirmation privately as `confirmed`; any other value, an
 unset variable, or any other check status fails closed.
 
 ```bash
+set -euo pipefail
 CODE_MOWER_PYTHON="$(command -v python3.12)"
 test -n "$CODE_MOWER_PYTHON"
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
@@ -654,34 +692,77 @@ DEVIN_DOCTOR_JSON="$DEVIN_DOCTOR_DIR/doctor.json" \
 import json
 import os
 
-report = json.loads(open(os.environ["DEVIN_DOCTOR_JSON"], encoding="utf-8").read())
-checks = {
-    row["name"]: row["status"]
-    for row in report.get("checks", [])
-    if row["name"].startswith("provider.devin.")
-}
-required = (
+REQUIRED_DEVIN_CHECKS = (
     "provider.devin.selection",
     "provider.devin.capabilities",
     "provider.devin.hosted_credentials",
     "provider.devin.repository_scope",
     "provider.devin.lifecycle",
 )
-blocked = [name for name in required if checks.get(name) != "pass"]
-if blocked:
-    raise SystemExit(f"hosted Devin readiness is blocked: {blocked}")
-permissions = checks.get("provider.devin.permissions")
+PERMISSIONS_CHECK = "provider.devin.permissions"
+EXPECTED_DEVIN_CHECKS = frozenset(REQUIRED_DEVIN_CHECKS) | {PERMISSIONS_CHECK}
+report = json.loads(open(os.environ["DEVIN_DOCTOR_JSON"], encoding="utf-8").read())
+problems = []
+if not isinstance(report, dict) or report.get("mode") != "doctor":
+    raise SystemExit("hosted Devin readiness output is not a doctor report")
+summary = report.get("summary")
+summary = summary if isinstance(summary, dict) else {}
+if report.get("status") not in {"pass", "warn"}:
+    problems.append(f"doctor verdict is {report.get('status')!r}")
+if summary.get("failures") != 0:
+    problems.append(f"doctor summary reports {summary.get('failures')!r} failures")
+rows = report.get("checks")
+if not isinstance(rows, list):
+    raise SystemExit("hosted Devin doctor check list is not a list")
+# The aggregate verdict is cross-checked against the raw rows, so a falsified
+# summary cannot hide a failing check, and the Devin rows are validated in the
+# raw list: indexing first would let a failing row be overwritten by a later
+# duplicate that passes.
+statuses = {}
+raw_failures = 0
+for row in rows:
+    if not isinstance(row, dict):
+        problems.append("doctor check row is malformed")
+        continue
+    name = row.get("name")
+    status = row.get("status")
+    if not isinstance(name, str) or not isinstance(status, str):
+        problems.append("doctor check identity is malformed")
+        continue
+    if status == "fail":
+        raw_failures += 1
+        problems.append(f"doctor check {name!r} failed")
+    if not name.startswith("provider.devin."):
+        continue
+    if name not in EXPECTED_DEVIN_CHECKS:
+        problems.append(f"unexpected Devin check {name!r}")
+        continue
+    if name in statuses:
+        problems.append(f"Devin check {name!r} appears more than once")
+        continue
+    statuses[name] = status
+missing = sorted(EXPECTED_DEVIN_CHECKS - set(statuses))
+if missing:
+    problems.append(f"Devin checks are missing {missing}")
+if raw_failures or raw_failures != summary.get("failures"):
+    problems.append(f"doctor rows report {raw_failures} failures")
+for name in REQUIRED_DEVIN_CHECKS:
+    if statuses.get(name) != "pass":
+        problems.append(f"Devin check {name!r} is {statuses.get(name)!r}")
+permissions = statuses.get(PERMISSIONS_CHECK)
 owner_confirmed = os.environ.get("DEVIN_PERMISSIONS_OWNER_CONFIRMED", "").strip().lower()
-if permissions == "skip" and owner_confirmed != "confirmed":
-    raise SystemExit(
+if permissions not in {"pass", "skip"}:
+    problems.append(f"Devin permission check is {permissions!r}")
+elif permissions == "skip" and owner_confirmed != "confirmed":
+    problems.append(
         "Devin permissions are reported skip and the account owner has not "
         "separately confirmed them"
     )
-if permissions not in {"pass", "skip"}:
-    raise SystemExit(f"Devin permission check is {permissions!r}")
+if problems:
+    raise SystemExit(f"hosted Devin readiness is blocked: {problems}")
 print(json.dumps({
     "devin_transport": "hosted",
-    "required_pass": list(required),
+    "required_pass": list(REQUIRED_DEVIN_CHECKS),
     "permissions": permissions,
     "owner_confirmed": permissions == "pass" or owner_confirmed == "confirmed",
 }))
@@ -704,6 +785,7 @@ already selected explicitly in step 13). The protected profile is named on
 watch and status too, so a protected or ambiguous profile stays selected.
 
 ```bash
+set -euo pipefail
 CAMPAIGN_DIR="$(mktemp -d /tmp/code-mower-v140-campaign.XXXXXX)"
 code-mower release campaign create \
   --release-tag v1.4.0 \
@@ -885,6 +967,7 @@ before starting the replacement, so no start races a dying listener on a fixed
 port.
 
 ```bash
+set -euo pipefail
 CODE_MOWER_RELEASE_CHECKOUT="REPLACE_WITH_EXACT_V140_CHECKOUT"
 BOARD_5342_REPO="REUSE_PRIVATE_INVENTORIED_SLUG"
 BOARD_5342_REPO_PATH="REUSE_PRIVATE_INVENTORIED_PATH"
@@ -1095,35 +1178,91 @@ slugs or paths into public evidence.
 
 ### 16. Dry-run, inspect, then upload metadata-only cloud evidence
 
-Both uploads are gates: the preview and the applied result are saved and
-parsed. A preview must be metadata-only, carry zero reports, require explicit
-application, and report the event identifiers and counts it would send; the
-applied upload must be accepted by the service and carry exactly the previewed
-identifiers and counts.
+Both uploads run in two phases, so "dry-run, inspect, then upload" is true of
+the commands and not only of the prose: the preview is saved and fully
+validated, its accepted verdict is required to exist, and only then may the
+`--yes` mutation run. A preview must be metadata-only, carry zero reports,
+require explicit application, target the probed service, and report the event
+identifiers and counts it would send; the applied upload is validated
+separately and must be accepted by the service, target the same endpoint, and
+carry exactly the previewed identifiers and counts.
 
 The cloud identifiers are account-specific, so they are supplied privately and
-only ever passed as variables; their values are never printed or recorded. The
-service itself is probed and asserted before either upload, and the probe
-report is saved privately because it names the endpoint and describes the token
-resolution.
+only ever passed as variables; their values are never printed or recorded. An
+empty value or a forgotten `REPLACE_WITH_...` placeholder fails before the
+probe, and the selected install profile is resolved privately so a conflicting
+explicit team identity fails before any preview or application rather than
+uploading under the wrong account. The service itself is probed and asserted
+before either upload against a newly created empty bundle directory, so the
+expected check inventory is exactly
+`endpoint`, `service`, `token`, and the `bundle` warning for the bundle that is
+exported later; the probe report is saved privately because it names the
+endpoint and describes the token resolution. Every later producer re-resolves
+the install profile on its own, so each preview and applied payload is required
+to report the endpoint read back from that private probe report; the value is
+compared, never printed.
 
 ```bash
+set -euo pipefail
 CLOUD_DIR="$(mktemp -d /tmp/code-mower-v140-cloud.XXXXXX)"
-CODE_MOWER_CLOUD_TEAM_ID="REPLACE_WITH_PRIVATE_CLOUD_TEAM_ID"
-CODE_MOWER_INSTALL_ID="REPLACE_WITH_PRIVATE_CLOUD_INSTALL_ID"
+# Supply both privately, for example by sourcing a protected token env file.
+# Never echo them and never write them into release evidence.
+: "${CODE_MOWER_CLOUD_TEAM_ID:?private cloud team id is required}"
+: "${CODE_MOWER_INSTALL_ID:?private cloud install id is required}"
 test -n "$CODE_MOWER_CLOUD_TEAM_ID"
 test -n "$CODE_MOWER_INSTALL_ID"
-code-mower cloud doctor --install-id "$CODE_MOWER_INSTALL_ID" \
+case "$CODE_MOWER_CLOUD_TEAM_ID" in REPLACE_WITH_*) exit 1 ;; esac
+case "$CODE_MOWER_INSTALL_ID" in REPLACE_WITH_*) exit 1 ;; esac
+CODE_MOWER_CLOUD_TEAM_ID="$CODE_MOWER_CLOUD_TEAM_ID" \
+  CODE_MOWER_INSTALL_ID="$CODE_MOWER_INSTALL_ID" "$RELEASE_PYTHON" - \
+  >"$CLOUD_DIR/identity.json" <<'PY'
+import json
+import os
+
+from code_mower.cloud_client import DEFAULT_TOKEN_ENV, resolve_cloud_token
+
+# The stored profile is resolved privately and only compared: the supplied
+# identifiers must be exactly the ones the selected install profile holds, so
+# an upload cannot silently target another install or team. Only the verdict is
+# printed.
+install_id = os.environ["CODE_MOWER_INSTALL_ID"].strip()
+team_id = os.environ["CODE_MOWER_CLOUD_TEAM_ID"].strip()
+resolution = resolve_cloud_token(token_env=DEFAULT_TOKEN_ENV, install_id=install_id)
+problems = []
+if not install_id or install_id.startswith("REPLACE_WITH_"):
+    problems.append("the private install identifier is empty or a placeholder")
+if not team_id or team_id.startswith("REPLACE_WITH_"):
+    problems.append("the private team identifier is empty or a placeholder")
+if not resolution.has_token:
+    problems.append("the selected install profile has no usable cloud token")
+if not resolution.install_id or resolution.install_id.strip() != install_id:
+    problems.append("the selected install profile stores a different install identity")
+if not resolution.team_id or resolution.team_id.strip() != team_id:
+    problems.append("the selected install profile stores a different team identity")
+if problems:
+    raise SystemExit(f"cloud identity is not bound to the selected profile: {problems}")
+print(json.dumps({"cloud_identity": "bound", "source": resolution.source}))
+PY
+grep -q '"cloud_identity": "bound"' "$CLOUD_DIR/identity.json"
+CLOUD_DOCTOR_BUNDLE_DIR="$(mktemp -d /tmp/code-mower-v140-cloud-doctor.XXXXXX)"
+code-mower cloud doctor "$CLOUD_DOCTOR_BUNDLE_DIR" \
+  --install-id "$CODE_MOWER_INSTALL_ID" \
   --probe-service --json >"$CLOUD_DIR/doctor.json"
 CLOUD_DIR="$CLOUD_DIR" "$RELEASE_PYTHON" - <<'PY'
 import json
 import os
 from pathlib import Path
 
-REQUIRED_CLOUD_CHECKS = ("endpoint", "service", "token")
+# The empty bundle directory makes the inventory deterministic: endpoint,
+# service, and token must pass, and the only tolerated condition is the bundle
+# warning for the release bundle that is exported later in this step.
+PASSING_CLOUD_CHECKS = ("endpoint", "service", "token")
+EXPECTED_CLOUD_CHECKS = frozenset(PASSING_CLOUD_CHECKS) | {"bundle"}
 report = json.loads(
     (Path(os.environ["CLOUD_DIR"]) / "doctor.json").read_text(encoding="utf-8")
 )
+if not isinstance(report, dict):
+    raise SystemExit("cloud doctor output is not a report")
 problems = []
 if report.get("mode") != "cloud-doctor":
     problems.append(f"cloud doctor mode is {report.get('mode')!r}")
@@ -1132,10 +1271,12 @@ if report.get("status") != "pass":
 if report.get("failures") != 0:
     problems.append(f"cloud doctor reports {report.get('failures')!r} failures")
 rows = report.get("checks")
-statuses = {}
 if not isinstance(rows, list):
-    problems.append("cloud doctor check list is not a list")
-    rows = []
+    raise SystemExit("cloud doctor check list is not a list")
+# Health is derived from the raw rows and only then compared with the aggregate
+# fields, so falsified status/failures values cannot hide a degraded check.
+statuses = {}
+raw_failures = 0
 for row in rows:
     if not isinstance(row, dict):
         problems.append("cloud doctor check row is malformed")
@@ -1145,21 +1286,123 @@ for row in rows:
     if not isinstance(name, str) or not isinstance(status, str):
         problems.append("cloud doctor check identity is malformed")
         continue
+    if status == "fail":
+        raw_failures += 1
     if name in statuses:
         problems.append(f"cloud doctor check {name!r} appears more than once")
         continue
     statuses[name] = status
-for name in REQUIRED_CLOUD_CHECKS:
+unexpected = sorted(set(statuses) - EXPECTED_CLOUD_CHECKS)
+missing = sorted(EXPECTED_CLOUD_CHECKS - set(statuses))
+if unexpected:
+    problems.append(f"cloud doctor reported unexpected checks {unexpected}")
+if missing:
+    problems.append(f"cloud doctor is missing checks {missing}")
+for name in PASSING_CLOUD_CHECKS:
     if statuses.get(name) != "pass":
         problems.append(f"cloud doctor {name} check is {statuses.get(name)!r}")
+if statuses.get("bundle") != "warn":
+    problems.append(f"cloud doctor bundle check is {statuses.get('bundle')!r}")
+if raw_failures or raw_failures != report.get("failures"):
+    problems.append(f"cloud doctor rows report {raw_failures} failures")
 if problems:
     raise SystemExit(f"cloud service readiness is not a pass: {problems}")
-print(json.dumps({"cloud_doctor": "pass", "checks": sorted(REQUIRED_CLOUD_CHECKS)}))
+print(json.dumps({"cloud_doctor": "pass", "checks": sorted(PASSING_CLOUD_CHECKS)}))
 PY
 
 code-mower release campaign upload --release-tag v1.4.0 \
   --install-id "$CODE_MOWER_INSTALL_ID" --team-id "$CODE_MOWER_CLOUD_TEAM_ID" --json \
   >"$CLOUD_DIR/campaign-preview.json"
+CLOUD_DIR="$CLOUD_DIR" "$RELEASE_PYTHON" - \
+  >"$CLOUD_DIR/campaign-preflight.json" <<'PY'
+import json
+import os
+from pathlib import Path
+
+cloud_dir = Path(os.environ["CLOUD_DIR"])
+CAMPAIGN_UPLOAD_SCHEMA = "code_mower.releaseCampaignUpload.v1"
+REQUIRED_PROVIDERS = ["claude", "codex", "devin"]
+EXPECTED_POSTURES = {name: "required" for name in REQUIRED_PROVIDERS}
+EXPECTED_COUNTS = {
+    "providers": 3,
+    "complete": 3,
+    "skipped": 0,
+    "accepted": 3,
+    "rejected": 0,
+    "events": 3,
+}
+
+
+def identity_problems(name: str, payload: dict) -> list:
+    problems = []
+    if payload.get("schema") != CAMPAIGN_UPLOAD_SCHEMA:
+        problems.append(f"{name} schema is {payload.get('schema')!r}")
+    if payload.get("mode") != "release-campaign-upload":
+        problems.append(f"{name} mode is {payload.get('mode')!r}")
+    if (
+        payload.get("campaign_id") != "campaign-v1.4.0"
+        or payload.get("release_tag") != "v1.4.0"
+        or payload.get("package_identity") != "code-mower"
+        or payload.get("qualification_context") != "cold_install"
+    ):
+        problems.append(f"{name} campaign identity is not the v1.4.0 campaign")
+    if payload.get("provider_postures") != EXPECTED_POSTURES:
+        problems.append(f"{name} provider postures are {payload.get('provider_postures')!r}")
+    if payload.get("counts") != EXPECTED_COUNTS:
+        problems.append(f"{name} counts are {payload.get('counts')!r}")
+    if sorted(payload.get("accepted_providers") or []) != REQUIRED_PROVIDERS:
+        problems.append(f"{name} accepted providers are {payload.get('accepted_providers')!r}")
+    if payload.get("skipped_providers") or payload.get("rejected_providers"):
+        problems.append(f"{name} skipped or rejected a provider")
+    ids = [str(value) for value in payload.get("event_ids") or []]
+    if len(ids) != 3 or len(set(ids)) != 3 or not all(ids):
+        problems.append(f"{name} does not carry three unique event identifiers")
+    return problems
+
+
+# Nothing has been sent yet: the preview alone decides whether the applied
+# upload may run at all, so it is validated before the --yes command exists.
+preview = json.loads((cloud_dir / "campaign-preview.json").read_text(encoding="utf-8"))
+preview_upload = preview.get("upload") or {}
+# The endpoint the probe actually reached is read back from the private doctor
+# report, so an upload that re-resolved a different install profile cannot be
+# accepted. It is compared, never printed.
+probed_endpoint = str(
+    json.loads((cloud_dir / "doctor.json").read_text(encoding="utf-8")).get("endpoint")
+    or ""
+)
+problems = identity_problems("preview", preview)
+if not probed_endpoint:
+    problems.append("the probed cloud endpoint was not recorded")
+if preview_upload.get("endpoint") != probed_endpoint:
+    problems.append("campaign upload preview does not target the probed service")
+if preview_upload.get("event_types") != {"adoption_run": 3}:
+    problems.append(f"preview event types are {preview_upload.get('event_types')!r}")
+if preview_upload.get("would_upload") is not False:
+    problems.append("preview payload would upload without --yes")
+if preview.get("status") != "dry_run" or preview.get("would_upload") is not False:
+    problems.append(f"preview status is {preview.get('status')!r}")
+if preview.get("requires_yes") is not True or preview_upload.get("requires_yes") is not True:
+    problems.append("preview does not require explicit application")
+if preview.get("upload_mode") != "metadata_only":
+    problems.append(f"preview upload mode is {preview.get('upload_mode')!r}")
+if preview_upload.get("upload_mode") != "metadata_only":
+    problems.append(f"preview payload mode is {preview_upload.get('upload_mode')!r}")
+if preview_upload.get("report_count") != 0:
+    problems.append(f"preview carries {preview_upload.get('report_count')!r} reports")
+preview_events = [str(value) for value in preview.get("event_ids") or []]
+if not preview_events or preview_upload.get("event_count") != len(preview_events):
+    problems.append("preview event identifiers and count disagree")
+if problems:
+    raise SystemExit(f"campaign upload preview is not an acceptable payload: {problems}")
+print(json.dumps({
+    "campaign_preview": "accepted",
+    "event_count": len(preview_events),
+    "reports": 0,
+}))
+PY
+grep -q '"campaign_preview": "accepted"' "$CLOUD_DIR/campaign-preflight.json"
+
 code-mower release campaign upload --release-tag v1.4.0 \
   --install-id "$CODE_MOWER_INSTALL_ID" --team-id "$CODE_MOWER_CLOUD_TEAM_ID" --yes --json \
   >"$CLOUD_DIR/campaign-applied.json"
@@ -1186,12 +1429,10 @@ EXPECTED_COUNTS = {
     "rejected": 0,
     "events": 3,
 }
-preview = load("campaign-preview.json")
-applied = load("campaign-applied.json")
-preview_upload = preview.get("upload") or {}
-applied_upload = applied.get("upload") or {}
-problems = []
-for name, payload in (("preview", preview), ("applied", applied)):
+
+
+def identity_problems(name: str, payload: dict) -> list:
+    problems = []
     if payload.get("schema") != CAMPAIGN_UPLOAD_SCHEMA:
         problems.append(f"{name} schema is {payload.get('schema')!r}")
     if payload.get("mode") != "release-campaign-upload":
@@ -1214,23 +1455,17 @@ for name, payload in (("preview", preview), ("applied", applied)):
     ids = [str(value) for value in payload.get("event_ids") or []]
     if len(ids) != 3 or len(set(ids)) != 3 or not all(ids):
         problems.append(f"{name} does not carry three unique event identifiers")
-if preview_upload.get("event_types") != {"adoption_run": 3}:
-    problems.append(f"preview event types are {preview_upload.get('event_types')!r}")
-if preview_upload.get("would_upload") is not False:
-    problems.append("preview payload would upload without --yes")
-if preview.get("status") != "dry_run" or preview.get("would_upload") is not False:
-    problems.append(f"preview status is {preview.get('status')!r}")
-if preview.get("requires_yes") is not True or preview_upload.get("requires_yes") is not True:
-    problems.append("preview does not require explicit application")
-if preview.get("upload_mode") != "metadata_only":
-    problems.append(f"preview upload mode is {preview.get('upload_mode')!r}")
-if preview_upload.get("upload_mode") != "metadata_only":
-    problems.append(f"preview payload mode is {preview_upload.get('upload_mode')!r}")
-if preview_upload.get("report_count") != 0:
-    problems.append(f"preview carries {preview_upload.get('report_count')!r} reports")
+    return problems
+
+
+preview = load("campaign-preview.json")
+applied = load("campaign-applied.json")
+applied_upload = applied.get("upload") or {}
+probed_endpoint = str(load("doctor.json").get("endpoint") or "")
 preview_events = [str(value) for value in preview.get("event_ids") or []]
-if not preview_events or preview_upload.get("event_count") != len(preview_events):
-    problems.append("preview event identifiers and count disagree")
+problems = identity_problems("applied", applied)
+if not probed_endpoint or applied_upload.get("endpoint") != probed_endpoint:
+    problems.append("campaign applied upload does not target the probed service")
 if applied.get("status") != "uploaded" or applied.get("would_upload") is not True:
     problems.append(f"applied status is {applied.get('status')!r}")
 if applied.get("requires_yes") is not False:
@@ -1255,6 +1490,11 @@ print(json.dumps({
 PY
 
 BOARD_SNAPSHOT_DIR="$(mktemp -d /tmp/code-mower-v140-board-snapshot.XXXXXX)"
+# The Board snapshot event carries no commit or dirty-state field, so the
+# checkout it reads is re-bound to the released commit immediately before the
+# snapshot runs: an earlier assertion cannot speak for a checkout that moved.
+test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"
+test -z "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"
 code-mower cloud board-snapshot \
   --repo-path "$CODE_MOWER_RELEASE_CHECKOUT" \
   --repo-slug codemower-ai/code-mower \
@@ -1264,10 +1504,8 @@ code-mower cloud board-snapshot \
 code-mower cloud upload "$BOARD_SNAPSHOT_DIR" \
   --install-id "$CODE_MOWER_INSTALL_ID" --dry-run --json \
   >"$CLOUD_DIR/board-preview.json"
-code-mower cloud upload "$BOARD_SNAPSHOT_DIR" \
-  --install-id "$CODE_MOWER_INSTALL_ID" --yes --json \
-  >"$CLOUD_DIR/board-applied.json"
-CLOUD_DIR="$CLOUD_DIR" BOARD_SNAPSHOT_DIR="$BOARD_SNAPSHOT_DIR" "$RELEASE_PYTHON" - <<'PY'
+CLOUD_DIR="$CLOUD_DIR" BOARD_SNAPSHOT_DIR="$BOARD_SNAPSHOT_DIR" "$RELEASE_PYTHON" - \
+  >"$CLOUD_DIR/board-preflight.json" <<'PY'
 import json
 import os
 from pathlib import Path
@@ -1287,12 +1525,30 @@ EXPECTED_REPO_SLUG = "codemower-ai/code-mower"
 EXPECTED_EVENT_TYPES = {"board_snapshot": 1}
 snapshot = load(cloud_dir / "board-snapshot.json")
 preview = load(cloud_dir / "board-preview.json")
-applied = load(cloud_dir / "board-applied.json")
-manifest = load(bundle_dir / "code-mower-cloud-bundle.json")
+# The endpoint the probe actually reached is read back from the private doctor
+# report, so a producer that re-resolved a different install profile cannot be
+# accepted. It is compared, never printed.
+probed_endpoint = str(load(cloud_dir / "doctor.json").get("endpoint") or "")
+manifest_path = bundle_dir / "code-mower-cloud-bundle.json"
+manifest = load(manifest_path)
 export = snapshot.get("export") or {}
-events = [row for row in manifest.get("events") or [] if isinstance(row, dict)]
-event_types = sorted({str(row.get("event_type") or "") for row in events})
+snapshot_preview = snapshot.get("upload") or {}
+raw_events = manifest.get("events")
 problems = []
+# Malformed rows are reported instead of being filtered away, so a bundle that
+# carries a valid event plus anything else cannot look like a single event.
+if not isinstance(raw_events, list) or len(raw_events) != 1 or not isinstance(
+    raw_events[0], dict
+):
+    problems.append("board bundle does not carry exactly one structured event")
+    events = []
+else:
+    events = list(raw_events)
+event_types = sorted({str(row.get("event_type") or "") for row in events})
+event_type_counts = {}
+for row in events:
+    key = str(row.get("event_type") or "")
+    event_type_counts[key] = event_type_counts.get(key, 0) + 1
 if snapshot.get("mode") != "cloud-board-snapshot" or snapshot.get("status") != "dry_run":
     problems.append(
         f"board snapshot is {snapshot.get('mode')!r}/{snapshot.get('status')!r}"
@@ -1320,6 +1576,47 @@ if event.get("repo_slug") != EXPECTED_REPO_SLUG:
     problems.append("board event is not bound to the release repository")
 if dimensions.get("snapshot_schema") != SNAPSHOT_SCHEMA:
     problems.append(f"board event snapshot schema is {dimensions.get('snapshot_schema')!r}")
+snapshot_doctor = snapshot.get("doctor")
+if not isinstance(snapshot_doctor, dict):
+    problems.append("board snapshot carries no doctor report")
+    snapshot_doctor = {}
+if snapshot_doctor.get("mode") != "cloud-doctor":
+    problems.append(f"board snapshot doctor mode is {snapshot_doctor.get('mode')!r}")
+if snapshot_doctor.get("status") != "pass":
+    problems.append(f"board snapshot doctor status is {snapshot_doctor.get('status')!r}")
+if snapshot_doctor.get("failures") != 0:
+    problems.append(
+        f"board snapshot doctor reports {snapshot_doctor.get('failures')!r} failures"
+    )
+doctor_rows = snapshot_doctor.get("checks")
+if not isinstance(doctor_rows, list) or not doctor_rows:
+    problems.append("board snapshot doctor check list is not a nonempty list")
+    doctor_rows = []
+# The nested report is produced without --probe-service, so the skipped service
+# probe stays acceptable while any failing or unrecognized status does not.
+doctor_statuses = {}
+doctor_failures = 0
+for row in doctor_rows:
+    if not isinstance(row, dict):
+        problems.append("board snapshot doctor check row is malformed")
+        continue
+    name = row.get("name")
+    status = row.get("status")
+    if not isinstance(name, str) or not isinstance(status, str):
+        problems.append("board snapshot doctor check identity is malformed")
+        continue
+    if status not in {"pass", "warn", "skip"}:
+        doctor_failures += 1
+        problems.append(f"board snapshot doctor check {name!r} is {status!r}")
+    if name in doctor_statuses:
+        problems.append(f"board snapshot doctor check {name!r} appears more than once")
+        continue
+    doctor_statuses[name] = status
+missing_doctor = sorted({"endpoint", "service", "token", "bundle"} - set(doctor_statuses))
+if missing_doctor:
+    problems.append(f"board snapshot doctor is missing checks {missing_doctor}")
+if doctor_failures != snapshot_doctor.get("failures"):
+    problems.append(f"board snapshot doctor rows report {doctor_failures} failures")
 if preview.get("mode") != "cloud-upload-dry-run" or preview.get("would_upload") is not False:
     problems.append(f"board preview mode is {preview.get('mode')!r}")
 if preview.get("requires_yes") is not True:
@@ -1330,17 +1627,88 @@ if preview.get("report_count") != 0:
     problems.append(f"board preview carries {preview.get('report_count')!r} reports")
 if preview.get("event_count") != len(events) or preview.get("event_count") != 1:
     problems.append("board preview event count is not the single bundled event")
-if preview.get("event_types") != EXPECTED_EVENT_TYPES:
-    problems.append(f"board preview event types are {preview.get('event_types')!r}")
+# Generic `cloud upload --dry-run` reports no event-type map, so the exact event
+# types come from the manifest this preview describes, and that manifest is the
+# one bound to the applied upload by digest.
+if event_type_counts != EXPECTED_EVENT_TYPES:
+    problems.append(f"board bundle event types are {event_type_counts}")
+if not probed_endpoint:
+    problems.append("the probed cloud endpoint was not recorded")
+if snapshot_preview.get("endpoint") != probed_endpoint:
+    problems.append("board snapshot preview does not target the probed service")
+if preview.get("endpoint") != probed_endpoint:
+    problems.append("board upload preview does not target the probed service")
+if problems:
+    raise SystemExit(f"board snapshot preview is not an acceptable payload: {problems}")
+print(json.dumps({
+    "board_preview": "accepted",
+    "event_types": event_types,
+    "reports": 0,
+}))
+PY
+grep -q '"board_preview": "accepted"' "$CLOUD_DIR/board-preflight.json"
+
+sha256sum "$BOARD_SNAPSHOT_DIR/code-mower-cloud-bundle.json" \
+  >"$CLOUD_DIR/board-bundle-before-apply.sha256"
+code-mower cloud upload "$BOARD_SNAPSHOT_DIR" \
+  --install-id "$CODE_MOWER_INSTALL_ID" --yes --json \
+  >"$CLOUD_DIR/board-applied.json"
+sha256sum "$BOARD_SNAPSHOT_DIR/code-mower-cloud-bundle.json" \
+  >"$CLOUD_DIR/board-bundle-after-apply.sha256"
+CLOUD_DIR="$CLOUD_DIR" BOARD_SNAPSHOT_DIR="$BOARD_SNAPSHOT_DIR" "$RELEASE_PYTHON" - <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+
+cloud_dir = Path(os.environ["CLOUD_DIR"])
+bundle_dir = Path(os.environ["BOARD_SNAPSHOT_DIR"])
+
+
+def load(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def digest_of(path: Path) -> str:
+    return path.read_text(encoding="utf-8").split()[0]
+
+
+EXPECTED_EVENT_TYPES = {"board_snapshot": 1}
+applied = load(cloud_dir / "board-applied.json")
+probed_endpoint = str(load(cloud_dir / "doctor.json").get("endpoint") or "")
+manifest_path = bundle_dir / "code-mower-cloud-bundle.json"
+manifest = load(manifest_path)
+raw_events = manifest.get("events")
+events = list(raw_events) if isinstance(raw_events, list) else []
+event_type_counts = {}
+for row in events:
+    if not isinstance(row, dict):
+        event_type_counts = {}
+        break
+    key = str(row.get("event_type") or "")
+    event_type_counts[key] = event_type_counts.get(key, 0) + 1
+problems = []
+if event_type_counts != EXPECTED_EVENT_TYPES:
+    problems.append(f"board bundle event types are {event_type_counts}")
 if applied.get("mode") != "cloud-upload":
     problems.append(f"board applied mode is {applied.get('mode')!r}")
 if not 200 <= int(applied.get("status") or 0) < 300:
     problems.append(f"board upload was not accepted: {applied.get('status')!r}")
+if not probed_endpoint or applied.get("endpoint") != probed_endpoint:
+    problems.append("board applied upload does not target the probed service")
+# Generic cloud upload returns no event identifiers, so the applied upload is
+# bound to the inspected bundle by digest instead: the manifest may not change
+# between the accepted preview and the applied upload.
+before_digest = digest_of(cloud_dir / "board-bundle-before-apply.sha256")
+after_digest = digest_of(cloud_dir / "board-bundle-after-apply.sha256")
+current_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+if before_digest != after_digest or current_digest != before_digest:
+    problems.append("board bundle changed between the preview and the applied upload")
 if problems:
     raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")
 print(json.dumps({
     "board_upload": "accepted",
-    "event_types": event_types,
+    "event_types": sorted(event_type_counts),
     "reports": 0,
 }))
 PY
@@ -1350,10 +1718,14 @@ Record accepted event identifiers and counts only, never report prose, profile
 paths, tokens, cloud team or install identifiers, endpoints, or local
 configuration. The bundle manifest and its single event must name the release
 repository, not only the top-level summary, so a truthful summary cannot cover
-evidence gathered from another repository. `cloud doctor` may still warn that no
-bundle exists: the release-specific Board bundle is created after the probe, so
-that warning is informational and the gate is the `endpoint`, `service`, and
-`token` checks plus zero failures.
+evidence gathered from another repository. The health of both `cloud doctor`
+reports -- the standalone probe and the one nested in the Board snapshot -- is
+derived from their raw check rows, so a falsified `status` or `failures` cannot
+hide a degraded check; the nested report is produced without `--probe-service`,
+so its skipped service probe stays acceptable. Generic `cloud upload` returns
+no event identifiers, so the applied upload is bound to the previewed bundle by
+the SHA-256 digest taken immediately after the preview and recomputed
+immediately after the upload.
 
 ## Cache Bypass And Propagation Triage
 
@@ -1381,9 +1753,17 @@ For uv:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.4.0
+env -u UV_INDEX -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_EXTRA_INDEX_URL \
+  -u UV_FIND_LINKS -u UV_NO_INDEX -u UV_OFFLINE \
+  uv --no-config --no-cache tool install --python 3.12 --reinstall \
+  --default-index https://pypi.org/simple/ code-mower==1.4.0
 code-mower --version
 ```
+
+`--no-cache` is what bypasses the cache; `--refresh-package` only refreshes
+resolution metadata. `--no-config` and the cleared `UV_*` variables keep a
+project or user configuration from redirecting the index the same way an
+ambient `pip.conf` can.
 
 Before the candidate is available on TestPyPI or PyPI, validate the local wheel
 from the release checkout:
@@ -1395,8 +1775,10 @@ env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   PIP_CONFIG_FILE=/dev/null pipx install --force --backend pip \
   --python "$CODE_MOWER_PYTHON" --index-url https://pypi.org/simple/ \
   --pip-args='--isolated --no-cache-dir' dist/code_mower-*.whl
-uv tool install --python 3.12 --reinstall --index-url https://pypi.org/simple/ \
-  dist/code_mower-*.whl
+env -u UV_INDEX -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_EXTRA_INDEX_URL \
+  -u UV_FIND_LINKS -u UV_NO_INDEX -u UV_OFFLINE \
+  uv --no-config --no-cache tool install --python 3.12 --reinstall \
+  --default-index https://pypi.org/simple/ dist/code_mower-*.whl
 ```
 
 If an exact-version install fails within a few minutes of publication, retry
@@ -1435,12 +1817,14 @@ env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   --json
 ```
 
-For a TestPyPI candidate, add:
-
-```bash
-  --pip-index-url https://test.pypi.org/simple/ \
-  --pip-extra-index-url https://pypi.org/simple/
-```
+Do not rehearse a TestPyPI candidate by adding production PyPI as an extra
+index: pip gives the primary index no priority, so production PyPI can satisfy
+`code-mower` and the run proves nothing about the candidate. Rehearse the
+candidate the way the v1.4.0 runbook does instead -- download the exact
+candidate wheel in an isolated, no-deps, TestPyPI-only step, bind its filename
+and SHA-256, then rehearse that local wheel with
+`--package-spec /path/to/code_mower-1.4.0-py3-none-any.whl` while dependencies
+resolve from canonical PyPI.
 
 `code-mower release qualify` and `code-mower release campaign` accept the
 equivalent closed `--package-source testpypi` flag (default: `pypi`) to

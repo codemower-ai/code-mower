@@ -40,6 +40,7 @@ if __package__ in {None, ""}:
         _venv_python,
         _write_json,
         _write_public_rehearsal_toy_repo,
+        requested_candidate_version,
     )
     from code_mower.migration_readiness import (
         FIRST_USER_ARTIFACTS as FIRST_USER_ARTIFACTS,
@@ -76,6 +77,7 @@ else:
         _venv_python,
         _write_json,
         _write_public_rehearsal_toy_repo,
+        requested_candidate_version,
     )
     from .migration_readiness import (
         FIRST_USER_ARTIFACTS as FIRST_USER_ARTIFACTS,
@@ -114,6 +116,7 @@ __all__ = [
     "_write_public_rehearsal_toy_repo",
     "_write_rehearsal_auto_discovery_fixture",
     "render_package_install_rehearsal_text",
+    "requested_candidate_version",
     "run_package_install_rehearsal",
 ]
 
@@ -548,6 +551,18 @@ def run_package_install_rehearsal(
         steps=steps,
         timeout=timeout,
     ).stdout.strip()
+    distribution_version = _run_rehearsal_step(
+        [
+            str(venv_python),
+            "-c",
+            'import importlib.metadata as m; print(m.version("code-mower"))',
+        ],
+        cwd=work_dir,
+        env=None,
+        steps=steps,
+        timeout=timeout,
+    ).stdout.strip()
+    requested_version = requested_candidate_version(requested_package_spec)
 
     env = os.environ.copy()
     env["PATH"] = f"{code_mower_bin.parent}{os.pathsep}{env.get('PATH', '')}"
@@ -864,6 +879,8 @@ def run_package_install_rehearsal(
         outputs=outputs,
         version=version,
         steps=steps,
+        distribution_version=distribution_version,
+        requested_version=requested_version,
     )
     _write_json(outputs / "first-user-readiness.json", readiness)
     if readiness.get("status") != "pass":
@@ -892,6 +909,8 @@ def run_package_install_rehearsal(
         "venv_dir": str(venv_dir),
         "code_mower_bin": str(code_mower_bin),
         "version": version,
+        "distribution_version": distribution_version,
+        "requested_version": requested_version,
         "toy_repo": str(toy_repo),
         "first_user_artifacts": _first_user_artifacts(toy_repo),
         "first_user_readiness": readiness,

@@ -468,6 +468,33 @@ def _parse_downloaded_artifact_identity(filename: str) -> tuple[str, str]:
     return _normalize_distribution_name(match.group("name")), match.group("version")
 
 
+def requested_candidate_version(package_spec: str, *, distribution: str = "code-mower") -> str:
+    """Return the exact ``distribution`` version a rehearsal spec requested.
+
+    Returns an empty string for any spec whose candidate version is not
+    derivable -- a source tree, a URL, an inexact requirement, or an artifact
+    naming another distribution -- so callers can bind the version only when
+    the spec itself establishes it.
+    """
+    candidate_text = package_spec.strip()
+    if not candidate_text:
+        return ""
+    expected_identity = _normalize_distribution_name(distribution)
+    if _package_spec_uses_package_index(candidate_text):
+        try:
+            identity, version = _parse_exact_name_version_spec(candidate_text)
+        except ValueError:
+            return ""
+    else:
+        try:
+            identity, version = _parse_downloaded_artifact_identity(
+                Path(candidate_text).name
+            )
+        except ValueError:
+            return ""
+    return version if identity == expected_identity else ""
+
+
 def _pip_download_candidate_command(
     venv_python: Path,
     package_spec: str,

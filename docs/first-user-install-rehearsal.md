@@ -120,7 +120,10 @@ code-mower --version
 For uv:
 
 ```bash
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.4.0
+env -u UV_INDEX -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_EXTRA_INDEX_URL \
+  -u UV_FIND_LINKS -u UV_NO_INDEX -u UV_OFFLINE \
+  uv --no-config --no-cache tool install --python 3.12 --reinstall \
+  --default-index https://pypi.org/simple/ code-mower==1.4.0
 code-mower --version
 ```
 
@@ -131,7 +134,10 @@ release checkout:
 scripts/dev-python -m build
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
 PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" dist/code_mower-*.whl
-uv tool install --python 3.12 --reinstall dist/code_mower-*.whl
+env -u UV_INDEX -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_EXTRA_INDEX_URL \
+  -u UV_FIND_LINKS -u UV_NO_INDEX -u UV_OFFLINE \
+  uv --no-config --no-cache tool install --python 3.12 --reinstall \
+  --default-index https://pypi.org/simple/ dist/code_mower-*.whl
 ```
 
 If exact-version installs repeatedly report "no matching distribution" or index
