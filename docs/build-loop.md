@@ -186,7 +186,9 @@ expiry posture.
 To rehearse a fresh repository:
 
 1. Run `code-mower init --builders codex,claude,cursor --dry-run` and inspect the
-   plan, including the labels listed under `Labels to ensure`.
+   plan, including the labels listed under `Labels to ensure`. A checkout
+   without `code-mower.yml` previews from the packaged starter config; a
+   tracked `code-mower.yml` is used as-is.
 2. Run `code-mower init --builders codex,claude,cursor --apply`.
    This creates missing labels in the current checkout's GitHub repo unless
    `--skip-github-labels` is passed. If you are rendering outside the target

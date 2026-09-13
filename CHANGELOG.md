@@ -37,6 +37,11 @@ the first-run default and every new integration stays opt-in.
 - Devin results are recovered across restarts and the merge boundary, running
   sessions holding a current-round result are recognized, GitHub bot login
   suffixes are normalized, and collection recovers after a stale completion.
+- `code-mower init --builders LANES` now previews from the packaged starter
+  config in a checkout without `code-mower.yml`, matching the documented first
+  run and the existing `--with`/`--interactive` cold-start behavior. A tracked
+  `code-mower.yml` still wins, preview stays the default, and an invalid lane
+  name is reported on its own instead of as a configuration-loading error.
 
 ## v1.3.1
 
