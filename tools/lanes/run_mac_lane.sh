@@ -118,6 +118,10 @@ lane_branch_prefixes_json="$(
 lane_branch_prefixes_display="$(
   printf '%s\n' "$lane_branch_prefixes_json" | jq -r 'join(", ")'
 )"
+# Optional per-repository branch-name policy (repositories[].delivery_policy),
+# keyed by lower-cased slug. It says which branch names the target repository
+# accepts; provenance still comes from the builder label and PR author.
+branch_policy_json='{}'
 dispatch_label="dispatched:${LANE}"
 lane_doc="${repo_root}/docs/lanes/${LANE}.md"
 [ -f "$lane_doc" ] || { echo "missing ${lane_doc}" >&2; exit 1; }
@@ -132,6 +136,18 @@ case "$repo_owner" in *[!A-Za-z0-9_.-]*) echo "--repo owner contains unsupported
 case "$repo_name" in *[!A-Za-z0-9_.-]*) echo "--repo name contains unsupported characters" >&2; exit 2 ;; esac
 repo_key="${repo_owner}__${repo_name}"
 expected_repo_slug="$(printf '%s\n' "$REPO" | tr '[:upper:]' '[:lower:]')"
+repo_branch_policy_json="$(
+  printf '%s\n' "$branch_policy_json" | jq -c --arg repo "$expected_repo_slug" '.[$repo] // {}'
+)"
+repo_branch_pattern="$(printf '%s\n' "$repo_branch_policy_json" | jq -r '.pattern // empty')"
+repo_branch_example="$(printf '%s\n' "$repo_branch_policy_json" | jq -r '.example // empty')"
+repo_branch_template="$(printf '%s\n' "$repo_branch_policy_json" | jq -r '.template // empty')"
+if [ -n "$repo_branch_pattern" ]; then
+  # Fail closed on a malformed pattern before it can reach the pre-push guard.
+  jq -n --arg pattern "$repo_branch_pattern" --arg example "$repo_branch_example" \
+    '$example | test("^(?:" + $pattern + ")$")' >/dev/null 2>&1 \
+    || { echo "${LANE}: refusing to run; branch policy for ${REPO} is not a usable pattern" >&2; exit 2; }
+fi
 work_root="${LANE_WORK_ROOT:-${HOME}/actions-runner/_work/lanes}"
 work="${work_root}/${LANE}/${repo_key}"
 log_dir="${HOME}/.cache/code-mower-lanes/${LANE}/${repo_key}"
@@ -199,9 +215,9 @@ if [ -z "$kind" ]; then
   num="$(
     gh pr list -R "$REPO" --state open --label "$builder_label" --limit 100 \
       --json number,labels,updatedAt,headRepository,headRefName \
-      | jq -r --arg repo "$expected_repo_slug" --argjson prefixes "$lane_branch_prefixes_json" '
+      | jq -r --arg repo "$expected_repo_slug" --argjson prefixes "$lane_branch_prefixes_json" --arg pattern "$repo_branch_pattern" '
         def same_head_repo: ((.headRepository.nameWithOwner // "") | ascii_downcase) == $repo;
-        def has_lane_prefix: (.headRefName // "") as $branch | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
+        def has_lane_prefix: (.headRefName // "") as $branch | any($prefixes[]; . as $prefix | ($branch | startswith($prefix))) or ($pattern != "" and ($branch | test("^(?:" + $pattern + ")$")));
         [.[] | select(same_head_repo) | select(has_lane_prefix) | select(any(.labels[]; '"${audit_block_filter}"'))]
         | sort_by(.updatedAt) | .[0].number // empty'
   )"
@@ -317,12 +333,13 @@ install_pre_push_guard() {
   # explicit recovery handoff, and it authorizes exactly one foreign branch.
   printf '%s\n' "$branch_prefixes_json" \
     | jq -c --arg lane "$LANE" --arg target "$target_branch" --arg mode "$guard_mode" \
-        --argjson handoff "${handoff_json:-null}" '
+        --arg pattern "$repo_branch_pattern" --argjson handoff "${handoff_json:-null}" '
       {
         lane: $lane,
         mode: $mode,
         target_pr_branch: (if $mode == "audit" then "" else $target end),
         allowed_prefixes: (if $mode == "audit" then [] else (.[$lane] // []) end),
+        allowed_pattern: (if $mode == "audit" then "" else $pattern end),
         handoff: $handoff
       }' > "$guard_config"
   cat > "$hook" <<'HOOK'
@@ -337,6 +354,7 @@ config="$(git rev-parse --git-path code-mower-lane-guard.json)"
 lane="$(jq -r '.lane' "$config")"
 summary="$(jq -r '
   "prefixes=" + ((.allowed_prefixes // []) | join(",")) +
+  (if (.allowed_pattern // "") != "" then "; policy=" + .allowed_pattern else "" end) +
   (if (.target_pr_branch // "") != "" then "; target=" + .target_pr_branch else "" end) +
   (if (.handoff // null) != null
    then "; handoff=" + ((.handoff.source_lane // "?") + "->" + (.handoff.destination_lane // "?"))
@@ -364,7 +382,9 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   # through the handoff's own checks below.
   authority="$(jq -r --arg branch "$branch" '
     def allowed_prefix: any((.allowed_prefixes // [])[]; . as $prefix | ($branch | startswith($prefix)));
+    def allowed_pattern: ((.allowed_pattern // "") as $pattern | $pattern != "" and ($branch | test("^(?:" + $pattern + ")$")));
     if allowed_prefix then "lane_prefix"
+    elif allowed_pattern then "repo_policy"
     elif (.handoff // null) != null then
       (if (.handoff.target_branch // "") == $branch then "explicit_handoff" else "none" end)
     elif (.target_pr_branch // "") != "" and $branch == .target_pr_branch then "target_pr"
@@ -421,10 +441,11 @@ if [ "$kind" = "pr" ]; then
     fi
     target_pr_owned_by_lane="$(
       printf '%s\n' "$target_pr_json" \
-        | jq -r --argjson prefixes "$lane_branch_prefixes_json" '
+        | jq -r --argjson prefixes "$lane_branch_prefixes_json" --arg pattern "$repo_branch_pattern" '
           def has_lane_prefix:
             (.headRefName // "") as $branch
-            | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
+            | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)))
+              or ($pattern != "" and ($branch | test("^(?:" + $pattern + ")$")));
           if has_lane_prefix then "true" else "false" end
         '
     )"
@@ -516,8 +537,8 @@ lane_pr_for_issue() {
   listing="$(gh pr list -R "$REPO" --state open --search "\"#${issue}\" in:body" --limit 30 \
     --json number,closingIssuesReferences,headRefName 2>/dev/null)" || return 1
   printf '%s\n' "$listing" \
-    | jq -r --arg issue "$issue" --argjson prefixes "$lane_branch_prefixes_json" '
-      def has_lane_prefix: (.headRefName // "") as $branch | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
+    | jq -r --arg issue "$issue" --argjson prefixes "$lane_branch_prefixes_json" --arg pattern "$repo_branch_pattern" '
+      def has_lane_prefix: (.headRefName // "") as $branch | any($prefixes[]; . as $prefix | ($branch | startswith($prefix))) or ($pattern != "" and ($branch | test("^(?:" + $pattern + ")$")));
       [.[] | select(has_lane_prefix) | select(any((.closingIssuesReferences // [])[]; ((.number // "") | tostring) == $issue))]
       | sort_by(.number) | last | .number // empty'
 }
@@ -601,6 +622,26 @@ snapshot_is_complete() {
   [ "$(jq -r '.snapshot_complete // false' "$1" 2>/dev/null || printf 'false')" = "true" ]
 }
 
+# Resolve the branch this unit must open from the repository policy before any
+# provider run, so a nonconforming name is refused here rather than at push.
+lane_branch_prefixes_json_first="$(printf '%s\n' "$lane_branch_prefixes_json" | jq -r '.[0] // empty')"
+resolved_branch=""
+if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
+  issue_title="$(gh issue view "$num" -R "$REPO" --json title -q .title 2>/dev/null || true)"
+  issue_slug="$(printf '%s' "$issue_title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-48 | sed -E 's/-+$//')"
+  resolved_branch="$(
+    printf '%s\n' "$repo_branch_template" \
+      | jq -Rr --arg lane "$LANE" --arg issue "$num" --arg slug "$issue_slug" --arg repo "$repo_name" '
+        (if $slug == "" then gsub("[-_/.]\\{slug\\}"; "") else . end)
+        | gsub("\\{lane\\}"; $lane) | gsub("\\{issue_key\\}"; $issue) | gsub("\\{issue_number\\}"; $issue)
+        | gsub("\\{slug\\}"; $slug) | gsub("\\{work_type\\}"; "fix") | gsub("\\{repo_name\\}"; $repo)'
+  )"
+  if ! jq -n --arg branch "$resolved_branch" --arg pattern "$repo_branch_pattern" \
+      '$branch | test("^(?:" + $pattern + ")$")' | grep -qx true; then
+    echo "${LANE}: refusing issue #${num}; resolved branch ${resolved_branch} does not match the ${REPO} branch policy ${repo_branch_pattern} (for example ${repo_branch_example})" >&2
+    exit 1
+  fi
+fi
 prompt_file="$(mktemp)"
 trap 'rm -f "$prompt_file"' EXIT
 {
@@ -617,6 +658,11 @@ trap 'rm -f "$prompt_file"' EXIT
   echo "- Open exactly one PR per issue. Label it ${builder_label} plus the audit labels named in the standing file."
   echo "- Single-writer rule: only the owning builder pushes to its PR branch. Other lanes comment or audit."
   echo "- A pre-push hook enforces the single-writer rule by rejecting pushes outside this lane's allowed branch prefixes or the exact targeted PR branch."
+  if [ -n "$resolved_branch" ]; then
+    echo "- Branch policy: ${REPO} accepts builder branches matching the template ${repo_branch_template} (pattern ${repo_branch_pattern}, for example ${repo_branch_example}). Create and push exactly the branch ${resolved_branch}; the pre-push hook rejects branch names outside that pattern."
+  elif [ "$kind" = "issue" ]; then
+    echo "- Branch naming: start your branch with one of this lane's prefixes (${lane_branch_prefixes_display}), for example ${lane_branch_prefixes_json_first}${num}-short-description."
+  fi
   echo "- Fix rounds: address every P0/P1/P2 in the latest audit verdicts, push to the same branch, and reply on the PR with the new head SHA. Do not force-push unless the branch owner must repair history, and then use --force-with-lease."
   echo "- Audit duty: if this target is an audit, run the lane audit wrapper for the PR and do not edit product code."
   echo "- Anything requiring the owner, credentials, UI clicks, or a product decision gets label ${owner_label} with an exact numbered action list, then stop this unit."

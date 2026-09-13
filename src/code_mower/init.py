@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from code_mower import branch_policy
 from code_mower import participants as code_mower_participants
 from code_mower.package_rendering import _render_provider_catalog
 
@@ -1160,6 +1161,11 @@ def _lane_mac_runner_script_entry(
             separators=(",", ":"),
             sort_keys=True,
         ),
+        "lane_mac_runner_branch_policy_json": json.dumps(
+            branch_policy.configured_policies(config),
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
         "lane_mac_runner_blocked_labels_jq": " or ".join(
             f'.name=={json.dumps(label)}' for label in blocked_labels
         )
@@ -1945,6 +1951,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         ),
         "__LANE_MAC_RUNNER_BRANCH_PREFIXES_JSON__": str(
             _shell_literal(entry.get("lane_mac_runner_branch_prefixes_json") or "{}")
+        ),
+        "__LANE_MAC_RUNNER_BRANCH_POLICY_JSON__": str(
+            _shell_literal(entry.get("lane_mac_runner_branch_policy_json") or "{}")
         ),
         "__LANE_MAC_RUNNER_AUDIT_LABELS_JSON__": str(
             _shell_literal(entry.get("lane_mac_runner_audit_labels_json") or "{}")

@@ -669,6 +669,34 @@ default-branch definitions. Record the same token's expiry date in
 `owner_surface.dispatch_token_expires_var` so `doctor --github` can report the
 rotation countdown.
 
+### Repository branch-name policy
+
+Provenance and accepted branch names are separate contracts. Without
+configuration, builders open provider-prefixed branches (`codex/907-slug`,
+`muse/MB-9506-slug`) and `builder_identity.branch_prefixes` infers the lane from
+that prefix. When a target repository only accepts its own naming scheme, set a
+delivery policy on that repository; the branch is then resolved and validated
+before any provider run, push, or PR open, and a nonconforming branch fails with
+the expected pattern and one valid example instead of a closed-and-reopened PR:
+
+```yaml
+repositories:
+  - slug: owner/example
+    default_branch: main
+    delivery_policy:
+      branch_template: "fix/{issue_key}-{slug}"   # MB-9506 -> fix/MB-9506-nv-accessible-label
+```
+
+Allowed template variables are `{lane}`, `{issue_key}`, `{issue_number}`,
+`{slug}`, `{work_type}`, and `{repo_name}`; a template must include
+`{issue_key}` or `{issue_number}`. `{issue_key}` is the tracker key when the
+work item is bound to one and the GitHub issue number otherwise; an empty
+`{slug}` drops itself and its leading separator. A policy branch such as
+`fix/MB-9506-…` does not encode the builder, so provenance stays with the
+`builder:<lane>` label, the authenticated PR author, the PR marker, and the
+builder-run sidecar (`muse_cli` runs remain `builder:muse`). Repositories
+without `delivery_policy` keep the provider-prefix convention unchanged.
+
 Branch protection should require the `code-mower/gate` commit status from **Any
 source**, alongside normal CI, before autonomous merge is trusted. Do not select
 the GitHub Actions source for `code-mower/gate` in the branch-protection UI:

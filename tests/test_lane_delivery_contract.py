@@ -2001,6 +2001,27 @@ class PrePushGuardTests(unittest.TestCase):
         pushed = self._push(repo, branch="codex/other", local=SHA_B, remote=SHA_A)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
 
+    def test_a_repository_policy_branch_is_writable_without_a_lane_prefix(self) -> None:
+        # The target repository accepts fix/<key>-<slug> only. The lane keeps
+        # its provenance label; the branch name carries the repository's policy.
+        pattern = r"fix/[A-Za-z0-9][A-Za-z0-9_-]*(?:-[a-z0-9][a-z0-9-]*)?"
+        repo = self._repo(self._config(handoff=None, allowed_pattern=pattern))
+        pushed = self._push(
+            repo, branch="fix/MB-9506-nv-accessible-label", local=SHA_B, remote=SHA_A
+        )
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        # Lane prefixes still work alongside the policy, and other names do not.
+        pushed = self._push(repo, branch="claude/751-work", local=SHA_B, remote=SHA_A)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        pushed = self._push(repo, branch="muse/MB-9506-x", local=SHA_B, remote=SHA_A)
+        self.assertEqual(pushed.returncode, 1)
+        self.assertIn("refusing claude push to branch muse/MB-9506-x", pushed.stderr)
+
+    def test_without_a_policy_only_lane_prefixes_authorize(self) -> None:
+        repo = self._repo(self._config(handoff=None))
+        pushed = self._push(repo, branch="fix/MB-9506-x", local=SHA_B, remote=SHA_A)
+        self.assertEqual(pushed.returncode, 1)
+
     def test_a_non_branch_ref_is_refused(self) -> None:
         repo = self._repo(self._config())
         pushed = self._push(

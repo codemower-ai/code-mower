@@ -939,7 +939,8 @@ class ContextInjectionTests(WorkOrderCase):
 
     def test_context_free_orders_keep_their_pre_context_binding_and_input(self):
         legacy = replace(self.order, context_policy="none")
-        legacy_fields = {k: v for k, v in asdict(legacy).items() if k not in ("context_policy", "context_work_item")}
+        legacy_fields = {k: v for k, v in asdict(legacy).items()
+                         if k not in ("context_policy", "context_work_item", "branch_pattern", "branch_example")}
         self.assertEqual(self.service._binding(legacy),
                          _hash([legacy_fields, self.provider.name, self.provider.account]))
         self.assertIn(json.dumps({k: v for k, v in legacy_fields.items() if k != "body"}, sort_keys=True)[1:-1],
