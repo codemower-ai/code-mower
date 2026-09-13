@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -133,6 +134,82 @@ def checkout_provenance(repo_path: Path, *, required: bool = False) -> dict[str,
     }
 
 
+def _require_contained_symlink(path: Path, root: Path) -> None:
+    """Resolve a link without allowing even an intermediate step outside source.
+
+    A final-path containment check alone can depend on mutable external links.
+    Resolve components in order so parent traversal uses the actual directory,
+    and reject entry into Git metadata even if a later component leaves it.
+    """
+
+    remaining = deque(path.relative_to(root).parts)
+    target = root
+    followed = 0
+    unsafe = "the private exact-commit source contains an unsafe symlink"
+    while remaining:
+        component = remaining.popleft()
+        if component == "..":
+            if target == root:
+                raise CloudBundleError(unsafe)
+            target = target.parent
+            continue
+        target = target / component
+        mode = target.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            followed += 1
+            # Bound cyclic or excessive link chains independently of Python's
+            # version-specific Path.resolve cycle handling.
+            if followed > 40:
+                raise CloudBundleError(unsafe)
+            link = target.readlink()
+            if link.anchor:
+                try:
+                    link = link.relative_to(root)
+                except ValueError:
+                    raise CloudBundleError(unsafe) from None
+                target = root
+            else:
+                target = target.parent
+            remaining.extendleft(reversed(link.parts))
+        else:
+            # File identity catches alternate .git casing on case-insensitive
+            # filesystems. Intermediate non-directories cannot be traversed.
+            if target.samefile(root / ".git") or (remaining and not stat.S_ISDIR(mode)):
+                raise CloudBundleError(unsafe)
+    # Check the original spelling too: Path components discard trailing slashes
+    # and dots, which the filesystem may reject for a non-directory target.
+    path.stat()
+
+
+def _validate_materialized_symlinks(root: Path) -> None:
+    """Allow only resolvable symlinks contained in the private source tree.
+
+    Git records a symlink's target spelling, not the content it points to.
+    Validate every source link before collection, without descending through
+    directory symlinks or treating the clone's Git metadata as source data.
+    """
+
+    try:
+        root = root.resolve(strict=True)
+        git_dir = root / ".git"
+        pending = [root]
+        while pending:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    if path == git_dir:
+                        continue
+                    if entry.is_symlink():
+                        _require_contained_symlink(path, root)
+                    elif entry.is_dir(follow_symlinks=False):
+                        pending.append(path)
+    except (OSError, RuntimeError):
+        # Keep traversal and resolution errors bounded, with no paths leaked.
+        raise CloudBundleError(
+            "unable to validate symlinks in the private exact-commit source"
+        ) from None
+
+
 def _set_tree_permissions(root: Path, *, writable: bool) -> None:
     """Remove or restore write permission for a whole private directory tree.
 
@@ -184,6 +261,8 @@ def materialized_commit_source(repo_path: Path, commit_sha: str) -> Iterator[Pat
     location rather than from the caller's mutable worktree, so a tracked file
     that is changed and restored while the data is read cannot be observed at
     all: the only state reachable during collection is the required commit.
+    Every step of symlink resolution must stay within that source tree, outside
+    its Git metadata; dangling links and cycles are rejected before collection.
     The materialization is made non-writable for the collection interval, so an
     attempt to mutate it fails, and it is removed on every exit.
     """
@@ -213,6 +292,7 @@ def materialized_commit_source(repo_path: Path, commit_sha: str) -> Iterator[Pat
             ],
         )
         _required_git_output(source, ["checkout", "--quiet", "--detach", expected])
+        _validate_materialized_symlinks(source)
         materialized = checkout_provenance(source, required=True)
         if materialized.get("head_sha") != expected or not materialized.get("clean"):
             raise CloudBundleError(

@@ -954,6 +954,35 @@ def test_board_snapshot_materializes_from_a_repository_subdirectory(monkeypatch,
     assert result["git"]["head_sha"] == head_sha
 
 
+def test_strict_board_snapshot_rejects_unsafe_symlinks_before_collection(monkeypatch, tmp_path) -> None:
+    repo_path = tmp_path / "checkout"
+    _init_git_checkout(repo_path)
+    external = tmp_path / "external.yml"
+    external.write_text("fixture: true\n", encoding="utf-8")
+    (repo_path / "code-mower.yml").symlink_to(external)
+    subprocess.run(["git", "add", "code-mower.yml"], cwd=repo_path, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "symlink fixture"], cwd=repo_path, check=True)
+    head_sha = git_metadata.run_git(repo_path, ["rev-parse", "HEAD"])
+    output = tmp_path / "rejected-snapshot"
+
+    def refusing_status(_config):
+        raise AssertionError("Board must not read an unvalidated source")
+
+    monkeypatch.setattr(cloud_operations, "post_upload_payload", _refusing_post)
+    with assert_raises(CloudBundleError) as caught:
+        _board_snapshot_dry_run(
+            monkeypatch,
+            repo_path,
+            output,
+            status_payload=refusing_status,
+            require_head_sha=head_sha,
+            require_clean=True,
+            yes=True,
+        )
+    assert str(caught.exception) == "the private exact-commit source contains an unsafe symlink"
+    assert not output.exists()
+
+
 def _strict_collection_inputs(monkeypatch, repo_path: Path, output_dir: Path, **kwargs):
     """Collect strictly and report what the collection source actually was."""
 
