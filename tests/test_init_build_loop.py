@@ -60,18 +60,22 @@ _FAKE_GH_DELIVERY_HEADER = """#!/usr/bin/env bash
 set -euo pipefail
 cmd="${1:-} ${2:-}"
 args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author"* ]]; then
   if [ -f "$HOME/lane-delivered" ]; then
-    printf '%s\\n' '[{"number":77,"headRefName":"codex/issue-12","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:codex"}],"author":{"login":"chatgpt-codex-connector[bot]"},"closingIssuesReferences":[{"number":12}]}]'
+    printf '%s\\n' '[{"number":77,"headRefName":"codex/issue-12","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:codex"}],"author":{"login":"chatgpt-codex-connector[bot]"},"closingIssuesReferences":[{"number":12,"repository":{"nameWithOwner":"owner/repo"},"url":"https://github.com/owner/repo/issues/12"}]}]'
   else
-    printf '%s\\n' '[]'
+    printf '%s\\n' "${EXISTING_OPEN_PRS_JSON:-[]}"
   fi
   exit 0
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
   printf '%s\\n' '["tier:R","builder:codex","dispatched:codex"]'
   exit 0
 elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefOid,state,labels"* ]]; then
-  printf '%s\\n' '{"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"OPEN","labels":[]}'
+  if [ -f "$HOME/lane-delivered" ]; then
+    printf '%s\\n' '{"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"OPEN","labels":[]}'
+  else
+    printf '%s\\n' '{"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","labels":[]}'
+  fi
   exit 0
 elif [ "$cmd" = "issue comment" ] || [ "$cmd" = "pr comment" ]; then
   printf 'https://github.com/owner/repo/issues/12#issuecomment-1\\n'

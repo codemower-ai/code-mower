@@ -171,6 +171,16 @@ lane_provenance_jq='
   def lane_provenance:
     mapped_lanes as $lanes | any($lanes[]; . == $lane) and all($lanes[]; . == $lane);
   def same_head_repo: ((.headRepository.nameWithOwner // "") | ascii_downcase) == $repo;
+  def closing_ref_repo:
+    if ((.repository.nameWithOwner // "") | length) > 0
+    then (.repository.nameWithOwner | ascii_downcase)
+    else (((.repository.owner.login // "") + "/" + (.repository.name // "")) | ascii_downcase)
+    end;
+  def closes_issue($issue):
+    any((.closingIssuesReferences // [])[];
+      ((.number // "") | tostring) == $issue
+      and (closing_ref_repo == $repo
+        or (((.url // "") | ascii_downcase) == ("https://github.com/" + $repo + "/issues/" + $issue))));
   def has_lane_prefix:
     (.headRefName // "") as $branch | any($prefixes[]; . as $prefix | ($branch | startswith($prefix)));
   def matches_repo_policy:
@@ -183,6 +193,23 @@ lane_provenance_args=(
   --argjson provenance_labels "$provenance_labels_json" --argjson builder_authors "$builder_authors_json"
   --argjson prefixes "$lane_branch_prefixes_json"
 )
+
+# Enumerate open PRs without relying on body search. GitHub's
+# closingIssuesReferences includes Development-sidebar links and is the stable
+# relation used below. gh paginates to the requested limit; asking for one more
+# than the supported campaign bound lets the runner reject a truncated view
+# instead of treating it as complete.
+open_pr_enumeration_cap=1000
+list_open_prs_with_closing_issues() {
+  local listing="" count=""
+  listing="$(gh pr list -R "$REPO" --state open --limit "$((open_pr_enumeration_cap + 1))" \
+    --json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author 2>/dev/null)" \
+    || return 1
+  jq -e 'type == "array"' >/dev/null <<< "$listing" || return 1
+  count="$(jq -r 'length' <<< "$listing")" || return 1
+  [ "$count" -le "$open_pr_enumeration_cap" ] || return 2
+  printf '%s\n' "$listing"
+}
 work_root="${LANE_WORK_ROOT:-${HOME}/actions-runner/_work/lanes}"
 work="${work_root}/${LANE}/${repo_key}"
 log_dir="${HOME}/.cache/code-mower-lanes/${LANE}/${repo_key}"
@@ -275,17 +302,11 @@ fi
 
 has_open_pr_for_issue() {
   local issue="$1"
-  gh pr list -R "$REPO" --state open --search "\"#${issue}\" in:body" --limit 100 \
-    --json closingIssuesReferences \
-    | jq -r --arg issue "$issue" --arg repo "$REPO" '
-      def ref_repo:
-        ((.repository // {}) as $repository
-          | (($repository.owner.login // "") + "/" + ($repository.name // "")));
-      any(.[]; any((.closingIssuesReferences // [])[];
-        ((.number // "") | tostring) == $issue
-        and ((ref_repo == "/") or ((ref_repo | ascii_downcase) == ($repo | ascii_downcase)))
-      ))
-    '
+  local listing=""
+  listing="$(list_open_prs_with_closing_issues)" || return 1
+  printf '%s\n' "$listing" \
+    | jq -r "${lane_provenance_args[@]}" --arg issue "$issue" \
+        "${lane_provenance_jq}"' any(.[]; closes_issue($issue))'
 }
 
 issue_work_order_gate() {
@@ -313,7 +334,11 @@ issue_work_order_gate() {
 if [ -z "$kind" ]; then
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
-    if [ "$(has_open_pr_for_issue "$candidate")" != "true" ] && \
+    if ! candidate_has_open_pr="$(has_open_pr_for_issue "$candidate")"; then
+      echo "${LANE}: refusing to select issue #${candidate}; open pull requests could not be completely enumerated" >&2
+      exit 1
+    fi
+    if [ "$candidate_has_open_pr" != "true" ] && \
       [ "$(issue_work_order_gate "$candidate")" = "true" ]; then
       num="$candidate"
       kind="issue"
@@ -360,8 +385,20 @@ install_pre_push_guard() {
   local target_branch="$1"
   local guard_mode="$2"
   local guard_config="${work}/.git/code-mower-lane-guard.json"
+  local guard_ledger="${work}/.git/code-mower-lane-guard-pushed"
   local hook="${work}/.git/hooks/pre-push"
   mkdir -p "$(dirname "$hook")"
+  # Ledger entries authorize follow-up pushes only within this installation's
+  # run. Atomically replace even a stale symlink before the new config/hook is
+  # installed, so neither its target nor a head from a prior run can supply
+  # authority to this run.
+  if [ -d "$guard_ledger" ] && [ ! -L "$guard_ledger" ]; then
+    echo "${LANE}: refusing to install the pre-push guard; ledger path is a directory" >&2
+    exit 1
+  fi
+  guard_ledger_tmp="$(mktemp "${guard_ledger}.new.XXXXXX")"
+  chmod 600 "$guard_ledger_tmp"
+  mv -f "$guard_ledger_tmp" "$guard_ledger"
   # Normal single-writer enforcement is unchanged: allowed_prefixes carries the
   # lane's own branch prefixes. allowed_branch is the one branch this unit
   # resolved from the repository policy for its issue; when it is set it is
@@ -629,16 +666,14 @@ if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
   # branch even when the title changed; foreign or multiple candidates are not
   # a branch choice this runner may make. This lookup happens before the title
   # is required so a known delivery cannot be hidden by mutable display text.
-  if ! issue_prs="$(gh pr list -R "$REPO" --state open --search "\"#${num}\" in:body" --limit 50 \
-      --json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author 2>/dev/null)"; then
-    echo "${LANE}: refusing issue #${num}; could not discover existing pull requests by closing issue" >&2
+  if ! issue_prs="$(list_open_prs_with_closing_issues)"; then
+    echo "${LANE}: refusing issue #${num}; could not completely enumerate existing pull requests by closing issue" >&2
     exit 1
   fi
   if ! issue_pr_selection="$(
     printf '%s\n' "$issue_prs" \
       | jq -c "${lane_provenance_args[@]}" --arg issue "$num" "${lane_provenance_jq}"'
-        [.[]
-          | select(any((.closingIssuesReferences // [])[]; ((.number // "") | tostring) == $issue))]
+        [.[] | select(closes_issue($issue))]
         | if length == 0 then {status:"none"}
           elif length > 1 then {status:"ambiguous", numbers:[.[].number]}
           elif (.[0] | same_head_repo | not) or (.[0] | lane_provenance | not)
@@ -795,8 +830,7 @@ install_pre_push_guard "$target_pr_branch" "$mode"
 lane_pr_for_issue() {
   local issue="$1"
   local listing=""
-  listing="$(gh pr list -R "$REPO" --state open --search "\"#${issue}\" in:body" --limit 30 \
-    --json number,closingIssuesReferences,headRefName,headRepository,labels,author 2>/dev/null)" || return 1
+  listing="$(list_open_prs_with_closing_issues)" || return 1
   # Only a same-repository PR carrying this lane's builder provenance on the
   # exact branch this unit resolved (or, without a policy, a lane-prefixed
   # branch) can be attributed to this run. More than one such PR is not a
@@ -807,7 +841,7 @@ lane_pr_for_issue() {
       | jq -r "${lane_provenance_args[@]}" --arg issue "$issue" --arg resolved "$resolved_branch" "${lane_provenance_jq}"'
         [.[] | select(same_head_repo) | select(lane_provenance)
           | select(if $resolved != "" then (.headRefName // "") == $resolved else has_lane_prefix end)
-          | select(any((.closingIssuesReferences // [])[]; ((.number // "") | tostring) == $issue))]
+          | select(closes_issue($issue))]
         | if length > 1 then error("multiple pull requests carry the lane provenance for the issue")
           else (.[0].number // empty) end'
   )" || return 1

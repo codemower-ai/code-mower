@@ -307,6 +307,7 @@ class GeneratedRunnerTests(unittest.TestCase):
                         existing_branch: str | None = None,
                         existing_branch_head: str = "c" * 40,
                         existing_branch_prs: str = "[]",
+                        explicit_issue_target: bool = False,
                         ) -> tuple[subprocess.CompletedProcess, str, dict]:
         """Run the generated codex runner against a fake provider that opens a PR.
 
@@ -327,10 +328,13 @@ class GeneratedRunnerTests(unittest.TestCase):
         repo_dir = repo.replace("/", "__")
         header = _FAKE_GH_DELIVERY_HEADER.replace("owner/repo", repo).replace(
             "[{\"number\":77,\"headRefName\":\"codex/issue-12\","
+            "\"headRefOid\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\","
             "\"headRepository\":{\"nameWithOwner\":\"owner/repo\"},"
             "\"labels\":[{\"name\":\"builder:codex\"}],"
             "\"author\":{\"login\":\"chatgpt-codex-connector[bot]\"},"
-            "\"closingIssuesReferences\":[{\"number\":12}]}]",
+            "\"closingIssuesReferences\":[{\"number\":12,"
+            "\"repository\":{\"nameWithOwner\":\"owner/repo\"},"
+            "\"url\":\"https://github.com/owner/repo/issues/12\"}]}]",
             delivered_listing,
         )
         self.assertNotEqual(header, _FAKE_GH_DELIVERY_HEADER)
@@ -348,8 +352,6 @@ class GeneratedRunnerTests(unittest.TestCase):
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"NV: Accessible label","labels":[{"name":"tier:R"},{"name":"builder:codex"},{"name":"dispatched:codex"}],"assignees":[],"author":{"login":"owner"}}]'
-elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]] && [[ "$args" == *"--limit 50"* ]]; then
-  printf '%s\\n' '__EXISTING_ISSUE_PRS__'
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--state all --head "* ]]; then
@@ -369,7 +371,6 @@ else
   exit 2
 fi
 """.replace("owner/repo", repo).replace("__TITLE_LOOKUP__", title_lookup)
-                .replace("__EXISTING_ISSUE_PRS__", existing_issue_prs)
                 .replace("__EXISTING_BRANCH_PRS__", existing_branch_prs),
                 encoding="utf-8",
             )
@@ -405,8 +406,11 @@ printf 'fake codex completed\\n'
                 encoding="utf-8",
             )
             fake_codex.chmod(0o755)
+            argv = [str(runner), "--lane", "codex", "--repo", repo, "--max-minutes", "1"]
+            if explicit_issue_target:
+                argv.extend(["--target", "issue:12"])
             completed = subprocess.run(
-                [str(runner), "--lane", "codex", "--repo", repo, "--max-minutes", "1"],
+                argv,
                 cwd=ROOT,
                 env={
                     **os.environ,
@@ -414,6 +418,7 @@ printf 'fake codex completed\\n'
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                     "PROMPT_LOG": str(prompt_log),
+                    "EXISTING_OPEN_PRS_JSON": existing_issue_prs,
                     **_LANE_DELIVERY_ENV,
                 },
                 text=True,
@@ -427,13 +432,18 @@ printf 'fake codex completed\\n'
 
     @staticmethod
     def _pr(number: int, branch: str, *, labels=(), author: str = "owner",
-            repo: str = "owner/repo", head: str | None = "c" * 40) -> dict:
+            repo: str = "owner/repo", head: str | None = "c" * 40,
+            closing_repo: str = "owner/repo") -> dict:
         return {"number": number, "headRefName": branch,
                 **({"headRefOid": head} if head is not None else {}),
                 "headRepository": {"nameWithOwner": repo},
                 "labels": [{"name": name} for name in labels],
                 "author": {"login": author},
-                "closingIssuesReferences": [{"number": 12}]}
+                "closingIssuesReferences": [{
+                    "number": 12,
+                    "repository": {"nameWithOwner": closing_repo},
+                    "url": f"https://github.com/{closing_repo}/issues/12",
+                }]}
 
     def test_runner_resolves_the_policy_branch_before_the_provider_runs(self) -> None:
         own = self._pr(77, "fix/12-nv-accessible-label", labels=("builder:codex",),
@@ -519,7 +529,10 @@ printf 'fake codex completed\\n'
         self.assertEqual(guard["allowed_branch_expected_head"], "c" * 40)
         self.assertEqual(guard["allowed_prefixes"], [])
 
-    def test_runner_reuses_the_existing_issue_pr_branch_after_the_title_changes(self) -> None:
+    def test_runner_reuses_a_sidebar_linked_pr_after_the_issue_title_changes(self) -> None:
+        # The PR has a GitHub closingIssuesReferences relationship and no body
+        # field or #12 text. Discovery must use that Development-sidebar link,
+        # then retain its branch even though the mutable title now differs.
         old_branch = "fix/12-original-title"
         own = self._pr(77, old_branch, labels=("builder:codex",),
                        author="chatgpt-codex-connector[bot]")
@@ -529,6 +542,7 @@ printf 'fake codex completed\\n'
             existing_issue_prs=json.dumps([own]),
             existing_branch=old_branch,
             existing_branch_prs=json.dumps([own]),
+            explicit_issue_target=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertIn(f"reusing policy branch {old_branch} from existing pull request #77",
@@ -538,13 +552,38 @@ printf 'fake codex completed\\n'
         self.assertEqual(guard["allowed_branch"], old_branch)
         self.assertEqual(guard["allowed_branch_expected_head"], "c" * 40)
 
+    def test_runner_ignores_a_same_number_closing_reference_from_another_repo(self) -> None:
+        cross_repo = self._pr(
+            70, "fix/12-other-repo", labels=("builder:codex",),
+            author="chatgpt-codex-connector[bot]", closing_repo="other/repo")
+        delivered = self._pr(
+            77, "fix/12-nv-accessible-label", labels=("builder:codex",),
+            author="chatgpt-codex-connector[bot]")
+        completed, prompt, guard = self._run_codex_lane(
+            json.dumps([delivered]), existing_issue_prs=json.dumps([cross_repo]))
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertNotIn("reusing policy branch fix/12-other-repo", completed.stdout)
+        self.assertIn("push exactly the branch fix/12-nv-accessible-label", prompt)
+        self.assertEqual(guard["allowed_branch"], "fix/12-nv-accessible-label")
+        self.assertEqual(guard["allowed_branch_expected_head"], "absent")
+
+    def test_runner_fails_closed_when_open_pr_enumeration_exceeds_its_bound(self) -> None:
+        completed, prompt, guard = self._run_codex_lane(
+            "[]", existing_issue_prs=json.dumps([{}] * 1001), explicit_issue_target=True)
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("could not completely enumerate existing pull requests",
+                      completed.stderr)
+        self.assertNotIn("fake codex completed", completed.stdout)
+        self.assertEqual(prompt, "")
+        self.assertEqual(guard, {})
+
     def test_runner_refuses_ambiguous_existing_pull_requests_for_the_issue(self) -> None:
         prs = [
             self._pr(77, "fix/12-original-title", labels=("builder:codex",)),
             self._pr(78, "fix/12-renamed-title", labels=("builder:codex",)),
         ]
         completed, prompt, guard = self._run_codex_lane(
-            "[]", existing_issue_prs=json.dumps(prs))
+            "[]", existing_issue_prs=json.dumps(prs), explicit_issue_target=True)
         self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
         self.assertIn("multiple pull requests (77, 78) close it", completed.stderr)
         self.assertEqual(prompt, "")
@@ -554,7 +593,7 @@ printf 'fake codex completed\\n'
         own = self._pr(77, "codex/12-original-title", labels=("builder:codex",),
                        author="chatgpt-codex-connector[bot]")
         completed, prompt, guard = self._run_codex_lane(
-            "[]", existing_issue_prs=json.dumps([own]))
+            "[]", existing_issue_prs=json.dumps([own]), explicit_issue_target=True)
         self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
         self.assertIn("existing pull request #77 branch codex/12-original-title does not match",
                       completed.stderr)
@@ -566,7 +605,8 @@ printf 'fake codex completed\\n'
                            author="claude[bot]")
         completed, prompt, guard = self._run_codex_lane(
             "[]", existing_issue_prs=json.dumps([foreign]),
-            title_lookup="printf 'title lookup must not run\\n' >&2; exit 99")
+            title_lookup="printf 'title lookup must not run\\n' >&2; exit 99",
+            explicit_issue_target=True)
         self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
         self.assertIn("pull request #77 already closes it but is owned by another builder",
                       completed.stderr)

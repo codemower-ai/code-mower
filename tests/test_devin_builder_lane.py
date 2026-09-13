@@ -96,11 +96,11 @@ _FAKE_GH_DELIVERY_HEADER = f"""#!/usr/bin/env bash
 set -euo pipefail
 cmd="${{1:-}} ${{2:-}}"
 args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author"* ]]; then
   if [ -f "$HOME/{_DELIVERY_MARKER_NAME}" ]; then
-    printf '%s\\n' '[{{"number":77,"headRefName":"devin/issue-12","headRepository":{{"nameWithOwner":"owner/repo"}},"labels":[{{"name":"builder:devin"}}],"author":{{"login":"devin-ai-integration[bot]"}},"closingIssuesReferences":[{{"number":12}}]}}]'
+    printf '%s\\n' '[{{"number":77,"headRefName":"devin/issue-12","headRefOid":"{_HEAD_AFTER}","headRepository":{{"nameWithOwner":"owner/repo"}},"labels":[{{"name":"builder:devin"}}],"author":{{"login":"devin-ai-integration[bot]"}},"closingIssuesReferences":[{{"number":12,"repository":{{"nameWithOwner":"owner/repo"}},"url":"https://github.com/owner/repo/issues/12"}}]}}]'
   else
-    printf '%s\\n' '[]'
+    printf '%s\\n' "${{EXISTING_OPEN_PRS_JSON:-[]}}"
   fi
   exit 0
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then

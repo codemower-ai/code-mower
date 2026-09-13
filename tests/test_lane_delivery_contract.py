@@ -52,6 +52,14 @@ def _pre_push_hook(path: Path) -> str:
     return text[opened : text.index("\nHOOK\n", opened) + 1]
 
 
+def _pre_push_installer(path: Path) -> str:
+    """Return the runner function that installs a fresh guard and ledger."""
+
+    text = path.read_text(encoding="utf-8")
+    opened = text.index("install_pre_push_guard() {")
+    return text[opened : text.index("\n}\n\ntarget_pr_branch=", opened) + 3]
+
+
 def _broker_block(path: Path) -> str:
     """The runner's bounded-outcome brokering block, read out of the runner.
 
@@ -1917,6 +1925,59 @@ class PrePushGuardTests(unittest.TestCase):
         packaged = _pre_push_hook(PACKAGED_RUNNER_TEMPLATE)
         self.assertEqual(_pre_push_hook(RUNNER_TEMPLATE), packaged)
         self.assertEqual(self.hook, packaged)
+
+    def test_guard_installation_discards_heads_recorded_by_a_prior_run(self) -> None:
+        branch = "fix/MB-9506-nv-accessible-label"
+        stale_head = "e" * 40
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+        subprocess.run([str(self.git), "init", "-q", str(repo)], check=True,
+                       capture_output=True)
+        ledger = repo / ".git" / "code-mower-lane-guard-pushed"
+        symlink_target = repo / "must-not-be-truncated"
+        symlink_target.write_text("private data\n", encoding="utf-8")
+        ledger.symlink_to(symlink_target)
+        harness = (
+            _pre_push_installer(REPO_RUNNER)
+            + "\n"
+              'work="$1"\n'
+              'LANE="claude"\n'
+              'branch_prefixes_json='"'"'{"claude":["claude/"]}'"'"'\n'
+              f'resolved_branch="{branch}"\n'
+              f'policy_branch_expected_head="{PINNED_HEAD}"\n'
+              'install_pre_push_guard "" "build"\n'
+        )
+        installed = subprocess.run(
+            ["bash", "-c", harness, "install-guard", str(repo)], text=True,
+            capture_output=True, check=False)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertFalse(ledger.is_symlink())
+        self.assertEqual(symlink_target.read_text(encoding="utf-8"), "private data\n")
+        self.assertEqual(ledger.read_text(encoding="utf-8"), "")
+        self.assertEqual(ledger.stat().st_mode & 0o777, 0o600)
+
+        # A second installation replaces the first run's ordinary ledger too.
+        ledger.write_text(f"{branch} {stale_head}\n", encoding="utf-8")
+        installed_again = subprocess.run(
+            ["bash", "-c", harness, "install-guard", str(repo)], text=True,
+            capture_output=True, check=False)
+        self.assertEqual(installed_again.returncode, 0, installed_again.stderr)
+        self.assertEqual(ledger.read_text(encoding="utf-8"), "")
+        self.assertEqual(ledger.stat().st_mode & 0o777, 0o600)
+
+        pushed = subprocess.run(
+            ["bash", str(repo / ".git" / "hooks" / "pre-push"), "origin",
+             "git@github.com:owner/repo.git"],
+            input=f"refs/heads/{branch} {SHA_B} refs/heads/{branch} {stale_head}\n",
+            cwd=str(repo), text=True, capture_output=True, check=False)
+        self.assertEqual(pushed.returncode, 1)
+        self.assertIn("does not match the inspected head", pushed.stderr)
+
+        for path in (RUNNER_TEMPLATE, PACKAGED_RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path):
+                installer = _pre_push_installer(path)
+                self.assertIn('mktemp "${guard_ledger}.new.XXXXXX"', installer)
+                self.assertIn('mv -f "$guard_ledger_tmp" "$guard_ledger"', installer)
 
     def test_a_handoff_push_at_the_pinned_head_is_authorized(self) -> None:
         repo = self._repo(self._config())
