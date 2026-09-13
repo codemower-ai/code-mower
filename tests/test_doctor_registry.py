@@ -494,6 +494,48 @@ class DoctorRegistryTests(unittest.TestCase):
 
                 self.assertEqual(captured["adoption_posture"], expected)
 
+    def test_campaign_cli_flag_implies_adoption_and_requests_campaign_auth(self) -> None:
+        cases = (
+            (["--adoption", "--repo", "owner/repo"], False),
+            (["--campaign", "--repo", "owner/repo"], True),
+            (["--adoption", "--campaign", "--repo", "owner/repo"], True),
+        )
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                captured: dict[str, object] = {}
+
+                def fake_run_doctor(
+                    *,
+                    _captured: dict[str, object] = captured,
+                    **kwargs: object,
+                ) -> DoctorReport:
+                    _captured.update(kwargs)
+                    return DoctorReport(
+                        config_path="code-mower.yml",
+                        provider_templates_path="providers.yml",
+                        profile=str(kwargs.get("profile") or ""),
+                        checks=(),
+                    )
+
+                with (
+                    mock.patch.object(
+                        code_mower_doctor,
+                        "resolve_doctor_config_path",
+                        return_value=ROOT / "code-mower.yml",
+                    ),
+                    mock.patch.object(
+                        code_mower_doctor,
+                        "resolve_doctor_provider_templates_path",
+                        return_value=ROOT / "src/code_mower/templates/providers.yml",
+                    ),
+                    mock.patch.object(code_mower_doctor, "run_doctor", fake_run_doctor),
+                ):
+                    with redirect_stdout(StringIO()):
+                        self.assertEqual(code_mower_doctor.main(argv), 0)
+
+                self.assertTrue(captured["adoption"])
+                self.assertEqual(captured["campaign"], expected)
+
     def test_supervised_pilot_cli_aliases_set_pilot_mode(self) -> None:
         cases = (
             (["--supervised-pilot", "--repo", "owner/repo"], "manual"),

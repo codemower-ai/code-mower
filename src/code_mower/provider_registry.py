@@ -148,6 +148,9 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
                 "not logged in",
                 "not authenticated",
             ),
+            # The isolated campaign home is keyring-only, so a headless Linux
+            # host without a desktop session keyring cannot hold its login.
+            "campaign_auth_keyring_required": True,
         },
     ),
     "claude_review": ProviderLane(

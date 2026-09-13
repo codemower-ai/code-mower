@@ -23,9 +23,16 @@ from code_mower.doctor_checks.campaign_auth import (
     AUTH_ERROR_UNAUTHENTICATED,
     CAMPAIGN_AUTH_CHECK_NAME,
     CAMPAIGN_AUTH_PROBE_ENV,
+    CAMPAIGN_INTENT_ACTIVE,
+    CAMPAIGN_INTENT_CONFIGURED,
+    CAMPAIGN_INTENT_EXPLICIT,
+    CAMPAIGN_INTENT_NONE,
+    campaign_auth_keyring_required,
     campaign_auth_logged_out_exit_codes,
     campaign_auth_logged_out_markers,
     campaign_auth_probe_args,
+    headless_linux_host,
+    resolve_campaign_intent,
 )
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 
@@ -55,24 +62,63 @@ def _completed(returncode: int, stdout: str = "", stderr: str = ""):
     )
 
 
-def _run_checks(probe_runner, *, providers=("codex",), env=None, posture="reviewer-gate"):
+NO_CAMPAIGN_CONFIG = {"lanes": {"codex": {"enabled": True}}}
+
+
+def _store_campaign(repo_root: Path, status: str) -> None:
+    """Write one minimal stored campaign under the repository's campaign dir."""
+    from code_mower.release_campaigns import (
+        CAMPAIGN_SCHEMA,
+        default_campaigns_dir,
+        save_campaign,
+    )
+
+    save_campaign(
+        {
+            "schema": CAMPAIGN_SCHEMA,
+            "campaign_id": f"c-{status}",
+            "status": status,
+            "providers": [],
+            "updated_at": "2026-01-01T00:00:00+00:00",
+        },
+        default_campaigns_dir(repo_root),
+    )
+
+
+def _run_checks(
+    probe_runner,
+    *,
+    providers=("codex",),
+    env=None,
+    posture="reviewer-gate",
+    config=CODEX_CONFIG,
+    campaign_requested=False,
+    stored_campaign_status=None,
+):
     """Run campaign readiness against a disposable isolated Codex home."""
     with tempfile.TemporaryDirectory() as tmp:
         codex_home = Path(tmp) / "codex-home"
+        if stored_campaign_status is not None:
+            _store_campaign(Path(tmp), stored_campaign_status)
         with mock.patch.dict(
             os.environ,
             {CODEX_CAMPAIGN_HOME_ENV: str(codex_home)},
             clear=False,
         ):
             return check_adoption_campaign_readiness(
-                config=CODEX_CONFIG,
+                config=config,
                 repo_root=Path(tmp),
                 adoption_posture=posture,
                 env={} if env is None else env,
                 which_fn=_which,
                 auth_probe_runner=probe_runner,
                 providers=list(providers),
+                campaign_requested=campaign_requested,
             )
+
+
+def _intent_check(checks):
+    return next(check for check in checks if check.name == "doctor.campaign.intent")
 
 
 def _auth_checks(checks):
@@ -683,6 +729,186 @@ class CampaignAuthProbeTests(unittest.TestCase):
             self.assertEqual(readiness.detail.get("ready_providers"), ["antigravity", "muse"])
             self.assertEqual(readiness.detail.get("actionable_providers"), [])
             self.assertEqual(readiness.detail.get("optional_providers"), [])
+
+
+class CampaignIntentTests(unittest.TestCase):
+    """Release-campaign auth is scoped to explicit, configured, or active intent."""
+
+    def _logged_out(self, argv, timeout, env):
+        return _completed(1, stderr="Not logged in: run codex login")
+
+    def test_no_campaign_skips_auth_without_probing(self) -> None:
+        recorded: list = []
+
+        def runner(argv, timeout, env):
+            recorded.append(argv)
+            return self._logged_out(argv, timeout, env)
+
+        checks = _run_checks(runner, config=NO_CAMPAIGN_CONFIG)
+        self.assertEqual(recorded, [])
+        intent = _intent_check(checks)
+        self.assertEqual(intent.status, STATUS_PASS)
+        self.assertEqual(intent.detail.get("campaign_intent"), CAMPAIGN_INTENT_NONE)
+        self.assertFalse(intent.detail.get("campaign_requested"))
+        self.assertIn("--campaign", intent.remediation)
+
+        auth_checks = _auth_checks(checks)
+        self.assertEqual(len(auth_checks), 1)
+        check = auth_checks[0]
+        self.assertEqual(check.status, STATUS_SKIP)
+        self.assertEqual(check.detail.get("auth_probe"), "not_requested")
+        self.assertFalse(check.detail.get("actionable"))
+        self.assertTrue(check.detail.get("optional"))
+        self.assertNotIn("owner_action", check.detail)
+        self.assertNotIn("error", check.detail)
+        self.assertIn("no release campaign is configured, active, or requested", check.message)
+
+        owner_actions = [c for c in checks if c.status == STATUS_WARN and c.lane == "codex"]
+        self.assertEqual(owner_actions, [])
+        readiness = next(c for c in checks if c.name == "doctor.campaign.readiness")
+        self.assertEqual(readiness.detail.get("actionable_providers"), [])
+
+    def test_no_campaign_skip_is_provider_neutral_and_private(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp) / "secret-codex-home"
+            with mock.patch.dict(os.environ, {CODEX_CAMPAIGN_HOME_ENV: str(codex_home)}):
+                checks = check_adoption_campaign_readiness(
+                    config={"lanes": {}},
+                    repo_root=Path(tmp),
+                    env={"OPENAI_API_KEY": "sk-secret-value"},
+                    which_fn=lambda cmd: f"/opt/bin/{cmd}",
+                    auth_probe_runner=lambda argv, timeout, env: _completed(0, "acct@x"),
+                    providers=["codex", "claude"],
+                )
+        auth_checks = _auth_checks(checks)
+        self.assertEqual(sorted(c.lane for c in auth_checks), ["claude", "codex"])
+        for check in auth_checks:
+            self.assertEqual(check.status, STATUS_SKIP)
+            self.assertEqual(check.detail.get("auth_probe"), "not_requested")
+        payload = json.dumps([c.as_dict() for c in checks])
+        self.assertNotIn("secret-codex-home", payload)
+        self.assertNotIn("sk-secret-value", payload)
+        self.assertNotIn("acct@x", payload)
+        self.assertNotIn(tmp, payload)
+
+    def test_explicit_request_checks_provider_without_configuration(self) -> None:
+        checks = _run_checks(
+            self._logged_out,
+            config=NO_CAMPAIGN_CONFIG,
+            campaign_requested=True,
+            env={"DISPLAY": ":0"},
+        )
+        self.assertEqual(
+            _intent_check(checks).detail.get("campaign_intent"), CAMPAIGN_INTENT_EXPLICIT
+        )
+        check = _auth_checks(checks)[0]
+        self.assertEqual(check.status, STATUS_WARN)
+        self.assertEqual(check.detail.get("auth_probe"), "unauthenticated")
+        self.assertTrue(check.detail.get("owner_action"))
+        self.assertIn("docs/release-qualification.md", check.remediation)
+
+    def test_configured_campaign_keeps_auth_in_scope(self) -> None:
+        checks = _run_checks(self._logged_out, env={"DISPLAY": ":0"})
+        intent = _intent_check(checks)
+        self.assertEqual(intent.detail.get("campaign_intent"), CAMPAIGN_INTENT_CONFIGURED)
+        self.assertEqual(intent.detail.get("configured_campaign_providers"), ["codex"])
+        check = _auth_checks(checks)[0]
+        self.assertEqual(check.status, STATUS_WARN)
+        self.assertEqual(check.detail.get("auth_probe"), "unauthenticated")
+
+    def test_active_stored_campaign_keeps_auth_in_scope(self) -> None:
+        checks = _run_checks(
+            self._logged_out,
+            config=NO_CAMPAIGN_CONFIG,
+            stored_campaign_status="running",
+            env={"DISPLAY": ":0"},
+        )
+        intent = _intent_check(checks)
+        self.assertEqual(intent.detail.get("campaign_intent"), CAMPAIGN_INTENT_ACTIVE)
+        self.assertEqual(intent.detail.get("active_campaigns"), 1)
+        check = _auth_checks(checks)[0]
+        self.assertEqual(check.status, STATUS_WARN)
+        self.assertEqual(check.detail.get("auth_probe"), "unauthenticated")
+        self.assertNotIn("c-running", json.dumps([c.as_dict() for c in checks]))
+
+    def test_complete_stored_campaign_is_not_intent(self) -> None:
+        checks = _run_checks(
+            self._logged_out,
+            config=NO_CAMPAIGN_CONFIG,
+            stored_campaign_status="complete",
+        )
+        intent = _intent_check(checks)
+        self.assertEqual(intent.detail.get("campaign_intent"), CAMPAIGN_INTENT_NONE)
+        self.assertEqual(intent.detail.get("active_campaigns"), 0)
+        self.assertEqual(_auth_checks(checks)[0].detail.get("auth_probe"), "not_requested")
+
+    def test_resolve_campaign_intent_priority_and_non_mapping_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _store_campaign(Path(tmp), "blocked")
+            intent = resolve_campaign_intent(
+                config=CODEX_CONFIG, repo_root=Path(tmp), explicit=True
+            )
+            self.assertEqual(intent.reason, CAMPAIGN_INTENT_EXPLICIT)
+            self.assertTrue(intent.requested)
+            self.assertEqual(intent.configured_providers, ("codex",))
+            self.assertEqual(intent.active_campaigns, 1)
+            self.assertEqual(
+                resolve_campaign_intent(config=None, repo_root=Path(tmp)).reason,
+                CAMPAIGN_INTENT_ACTIVE,
+            )
+        self.assertEqual(
+            resolve_campaign_intent(config=None, repo_root=None).reason,
+            CAMPAIGN_INTENT_NONE,
+        )
+
+    def test_headless_linux_detection_is_platform_and_session_bound(self) -> None:
+        self.assertTrue(headless_linux_host({}, platform="linux"))
+        self.assertFalse(headless_linux_host({"DISPLAY": ":0"}, platform="linux"))
+        self.assertFalse(headless_linux_host({"WAYLAND_DISPLAY": "wayland-0"}, platform="linux"))
+        self.assertFalse(headless_linux_host({}, platform="darwin"))
+        self.assertFalse(headless_linux_host({}, platform="win32"))
+
+    def test_codex_declares_keyring_requirement_and_claude_does_not(self) -> None:
+        self.assertTrue(campaign_auth_keyring_required(REFERENCE_PROVIDERS["codex"]))
+        self.assertFalse(campaign_auth_keyring_required(REFERENCE_PROVIDERS["claude_audit"]))
+
+    def test_headless_linux_unauthenticated_codex_gets_truthful_guidance(self) -> None:
+        with mock.patch("code_mower.doctor_checks.campaign_auth.sys.platform", "linux"):
+            checks = _run_checks(self._logged_out, campaign_requested=True, env={})
+        check = _auth_checks(checks)[0]
+        self.assertEqual(check.status, STATUS_WARN)
+        self.assertEqual(check.detail.get("auth_probe"), "unauthenticated")
+        self.assertTrue(check.detail.get("keyring_required"))
+        self.assertFalse(check.detail.get("host_keyring_available"))
+        self.assertIn("headless Linux host has no desktop session keyring", check.message)
+        self.assertIn("host with a desktop session keyring", check.remediation)
+        self.assertIn("--hosted-builders or --orchestrator-only", check.remediation)
+        self.assertIn(f"{CAMPAIGN_AUTH_PROBE_ENV}=0", check.remediation)
+        self.assertNotIn("codex login", check.remediation)
+        payload = json.dumps(check.as_dict())
+        self.assertNotIn("run codex login", payload)
+        self.assertNotIn("codex-home", payload)
+
+    def test_desktop_linux_unauthenticated_codex_keeps_login_guidance(self) -> None:
+        with mock.patch("code_mower.doctor_checks.campaign_auth.sys.platform", "linux"):
+            checks = _run_checks(self._logged_out, env={"DISPLAY": ":0"})
+        check = _auth_checks(checks)[0]
+        self.assertTrue(check.detail.get("keyring_required"))
+        self.assertTrue(check.detail.get("host_keyring_available"))
+        self.assertEqual(check.message, "codex isolated campaign home is not authenticated")
+        self.assertIn("docs/release-qualification.md", check.remediation)
+        self.assertNotIn("headless", check.remediation)
+
+    def test_headless_authenticated_codex_passes_unchanged(self) -> None:
+        with mock.patch("code_mower.doctor_checks.campaign_auth.sys.platform", "linux"):
+            checks = _run_checks(
+                lambda argv, timeout, env: _completed(0, stdout="Logged in as acct"),
+                env={},
+            )
+        check = _auth_checks(checks)[0]
+        self.assertEqual(check.status, STATUS_PASS)
+        self.assertEqual(check.detail.get("auth_probe"), "authenticated")
+        self.assertNotIn("keyring_required", check.detail)
 
 
 if __name__ == "__main__":

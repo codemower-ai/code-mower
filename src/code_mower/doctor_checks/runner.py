@@ -113,6 +113,7 @@ def run_doctor(
     config_source: str = "",
     adoption: bool = False,
     adoption_posture: str = "reviewer-gate",
+    campaign: bool = False,
     devin: bool = False,
     probe_runtime: bool = False,
     github: bool = False,
@@ -348,6 +349,7 @@ def run_doctor(
                 # so an authenticated CLI is credentials even with no token
                 # variable exported. Doctor and dispatch must not disagree.
                 gh_auth_probe=release_campaigns.run_gh_auth_probe,
+                campaign_requested=campaign,
             )
         )
 
