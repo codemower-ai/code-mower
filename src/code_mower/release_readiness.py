@@ -241,7 +241,21 @@ def _committed_manifest_drift(repo_path: Path) -> dict[str, Any]:
             "committed_row_count": len(_manifest_rows(committed)),
         }
     malformed = _malformed_manifest_rows(committed)
+    malformed.extend(
+        problem
+        for problem in package_module.package_manifest_problems(committed)
+        if problem not in malformed
+    )
     duplicates = _duplicate_manifest_targets(committed)
+    committed_rows = _manifest_rows(committed)
+    if malformed:
+        return {
+            **empty,
+            "malformed_rows": malformed[:20],
+            "duplicate_targets": duplicates[:20],
+            "committed_row_count": len(committed_rows),
+            "generated_row_count": len(_manifest_rows(generated)),
+        }
     normalized = package_module.normalized_package_manifest(committed)
     committed_files = _manifest_inventory(normalized)
     generated_files = _manifest_inventory(generated)
@@ -254,7 +268,6 @@ def _committed_manifest_drift(repo_path: Path) -> dict[str, Any]:
         normalized.get(key) == generated.get(key)
         for key in ("mode", "package", "output_dir", "deferred_package_files")
     )
-    committed_rows = _manifest_rows(committed)
     return {
         "matches": bool(
             not malformed
@@ -305,6 +318,8 @@ def _post_merge_runbook_markers(release_tag: str, package_index_spec: str) -> tu
         "code-mower board stop --port",
         'board_wait.py" serving 5332 5342 5344',
         "code-mower board doctor",
+        "code-mower release campaign upload --release-tag",
+        "code-mower cloud board-snapshot",
         "code-mower cloud upload",
         "--dry-run --json",
     )
@@ -322,8 +337,11 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
     return (
         # The release commit is the merged pull request's own merge commit.
         "--json mergeCommit --jq '.mergeCommit.oid'",
-        'test "$(git rev-parse HEAD)" = "$RELEASE_SHA"',
-        # Readiness runs from a fresh environment built at that exact commit.
+        'test "$(git cat-file -t "$RELEASE_SHA")" = "commit"',
+        # Readiness runs from a fresh, machine-asserted clean clone of that commit.
+        'git clone --no-checkout "https://github.com/$REPO.git" "$RELEASE_CHECKOUT"',
+        'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
+        'test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
         f'test "$("$RELEASE_CLI" --version)" = "code-mower {version}"',
         "committed-package-manifest-matches-generated",
         "post-merge-release-runbook-asserted",
@@ -333,8 +351,12 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         f"test \"$(git ls-remote origin 'refs/tags/{release_tag}^{{}}' | awk '{{print $1}}')\""
         ' = "$RELEASE_SHA"',
         # Every workflow run is asserted, including both publish-job postures.
+        'BUILD_JOBS = ("build-distributions", "verify-distributions")',
+        'if str(run.get("databaseId")) != run_id:',
         'if run.get("workflowName") != EXPECTED_WORKFLOW:',
+        'if run.get("event") != event:',
         'if run.get("headSha") != head_sha:',
+        'if run.get("status") != "completed" or run.get("conclusion") != "success":',
         'problems.append(f"{job_name} is {actual}, expected skipped")',
         'problems.append(f"{job_name} is {actual}, expected success")',
         '"$NO_PUBLISH_RUN_ID" workflow_dispatch "$RELEASE_SHA" skipped skipped',
@@ -350,8 +372,11 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         "--pip-index-url https://pypi.org/simple/",
         "--pip-no-cache",
         # Republishing is impossible before the irreversible release creation.
-        'if values.get(name, "false").strip().lower() == "true"',
-        'raise SystemExit(f"release-event republishing is enabled: {enabled}")',
+        # An absent repository variable can inherit an organization value, so
+        # each one must exist at repository scope and read false.
+        '["gh", "api", f"repos/{repo}/actions/variables/{name}"]',
+        'if value is None or value.strip().lower() != "false"',
+        '"repository-scope publish variables must exist and equal false: "',
         # The Release's own assets are downloaded and compared digest by digest.
         'raise SystemExit(f"{mode} release assets are not acceptable: {problems}")',
         'problems.append("release asset SHA-256 values differ from PROD_DIST_DIR")',
@@ -363,6 +388,31 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'test "$(git -C "$CODE_MOWER_RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
         'board_wait.py" gone "$BOARD_PORT"',
         'raise SystemExit(f"ports still not {mode} within {DEADLINE_SECONDS}s: {pending}")',
+        # Every restarted Board's own doctor verdict is parsed; the CLI exits
+        # zero on warn, so exit status is not the gate.
+        '--json >"$BOARD_DOCTOR_DIR/5332.json"',
+        '--json >"$BOARD_DOCTOR_DIR/5342.json"',
+        '--json >"$BOARD_DOCTOR_DIR/5344.json"',
+        'if report.get("status") != "pass":',
+        'raise SystemExit(f"restarted Board doctors are not all pass: {problems}")',
+        # The required campaign is a parsed gate, not printed output.
+        '>"$CAMPAIGN_DIR/watch.json"',
+        '>"$CAMPAIGN_DIR/status.json"',
+        'if set(lanes) != REQUIRED_PROVIDERS:',
+        'if required != REQUIRED_PROVIDERS:',
+        'if outcome not in PASSING_OUTCOMES:',
+        'if devin.get("driver") != "hosted_bridge" or devin.get("transport_verified") is not True:',
+        'raise SystemExit(f"release qualification campaign is not a pass: {problems}")',
+        # Both metadata-only uploads are previewed, applied, and correlated.
+        '--team-id jeff-internal --yes --json',
+        'if preview.get("status") != "dry_run" or preview.get("would_upload") is not False:',
+        'if preview_upload.get("report_count") != 0:',
+        'if applied.get("counts") != preview.get("counts"):',
+        'raise SystemExit(f"campaign metadata upload is not a verified gate: {problems}")',
+        '--install-id codex-code-mower --yes --json',
+        'if event_types != ["board_snapshot"] or len(events) != 1:',
+        'if manifest.get("included_reports"):',
+        'raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")',
     )
 
 

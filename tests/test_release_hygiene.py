@@ -8026,6 +8026,89 @@ def main():
         self.assertEqual(check["status"], "fail")
         self.assertIn("row 0 has non-string kind", check["detail"]["malformed_rows"])
 
+    def test_release_readiness_fails_on_unexpected_top_level_manifest_field(self) -> None:
+        def add_field(manifest: dict) -> None:
+            manifest["generated_at"] = "2026-09-13T00:00:00Z"
+
+        check = self._manifest_drift_check(add_field)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("manifest has unexpected generated_at", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_missing_top_level_manifest_field(self) -> None:
+        def drop_output_dir(manifest: dict) -> None:
+            del manifest["output_dir"]
+
+        check = self._manifest_drift_check(drop_output_dir)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("manifest is missing output_dir", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_non_list_manifest_fields(self) -> None:
+        for field in ("files_written", "deferred_package_files"):
+            with self.subTest(field=field):
+                check = self._manifest_drift_check(
+                    lambda manifest, field=field: manifest.__setitem__(field, "everything")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(f"{field} is not a list", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_non_object_manifest_package_field(self) -> None:
+        check = self._manifest_drift_check(
+            lambda manifest: manifest.__setitem__("package", ["code-mower", "1.4.0"])
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("package is not an object", check["detail"]["malformed_rows"])
+
+    def test_release_readiness_fails_on_malformed_deferred_manifest_rows(self) -> None:
+        cases = {
+            "deferred_package_files row 0 is not an object": "docs/missing.md",
+            "deferred_package_files row 0 is missing reason": {
+                "target": "docs/missing.md",
+                "source": "docs/missing.md",
+            },
+            "deferred_package_files row 0 has unexpected kind": {
+                "target": "docs/missing.md",
+                "source": "docs/missing.md",
+                "reason": "absent",
+                "kind": "doc",
+            },
+            "deferred_package_files row 0 has non-string reason": {
+                "target": "docs/missing.md",
+                "source": "docs/missing.md",
+                "reason": ["absent"],
+            },
+        }
+        for problem, row in cases.items():
+            with self.subTest(problem=problem):
+                check = self._manifest_drift_check(
+                    lambda manifest, row=row: manifest.__setitem__(
+                        "deferred_package_files", [row]
+                    )
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(problem, check["detail"]["malformed_rows"])
+
+    def test_normalized_package_manifest_rejects_invalid_schemas(self) -> None:
+        for manifest in (
+            "not a manifest",
+            {"mode": "standalone"},
+            {
+                "mode": "standalone",
+                "package": {"version": 1},
+                "output_dir": "<generated-output-dir>",
+                "files_written": [],
+                "deferred_package_files": [],
+            },
+        ):
+            with self.subTest(manifest=manifest):
+                with self.assertRaises(code_mower_package.PackageManifestError) as raised:
+                    code_mower_package.normalized_package_manifest(manifest)
+                self.assertTrue(raised.exception.problems)
+
     def test_packaged_graph_docs_link_target_is_packaged(self) -> None:
         packaged = {target for _source, target, _kind in code_mower_package.PACKAGE_FILES}
 
@@ -8157,18 +8240,106 @@ def main():
         )
 
     def test_release_readiness_fails_when_republish_guard_is_deleted(self) -> None:
-        check = self._asserted_runbook_check(
-            lambda doc: doc.replace(
-                'raise SystemExit(f"release-event republishing is enabled: {enabled}")',
-                "pass",
-            )
-        )
+        for assertion in (
+            '["gh", "api", f"repos/{repo}/actions/variables/{name}"]',
+            'if value is None or value.strip().lower() != "false"',
+            '"repository-scope publish variables must exist and equal false: "',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "pass")
+                )
 
-        self.assertEqual(check["status"], "fail")
-        self.assertIn(
-            'raise SystemExit(f"release-event republishing is enabled: {enabled}")',
-            check["detail"]["missing_assertions"],
-        )
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_a_workflow_identity_assertion_is_deleted(
+        self,
+    ) -> None:
+        for assertion in (
+            'BUILD_JOBS = ("build-distributions", "verify-distributions")',
+            'if str(run.get("databaseId")) != run_id:',
+            'if run.get("workflowName") != EXPECTED_WORKFLOW:',
+            'if run.get("event") != event:',
+            'if run.get("headSha") != head_sha:',
+            'if run.get("status") != "completed" or run.get("conclusion") != "success":',
+            'problems.append(f"{job_name} is {actual}, expected success")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "pass")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_requires_a_clean_release_sha_checkout(self) -> None:
+        for assertion in (
+            'git clone --no-checkout "https://github.com/$REPO.git" "$RELEASE_CHECKOUT"',
+            'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
+            'test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "true")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_a_board_doctor_assertion_is_deleted(self) -> None:
+        for assertion in (
+            '--json >"$BOARD_DOCTOR_DIR/5332.json"',
+            '--json >"$BOARD_DOCTOR_DIR/5342.json"',
+            '--json >"$BOARD_DOCTOR_DIR/5344.json"',
+            'if report.get("status") != "pass":',
+            'raise SystemExit(f"restarted Board doctors are not all pass: {problems}")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "--json")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_the_campaign_gate_is_print_only(self) -> None:
+        for assertion in (
+            '>"$CAMPAIGN_DIR/watch.json"',
+            '>"$CAMPAIGN_DIR/status.json"',
+            'if required != REQUIRED_PROVIDERS:',
+            'if outcome not in PASSING_OUTCOMES:',
+            'if devin.get("driver") != "hosted_bridge"'
+            ' or devin.get("transport_verified") is not True:',
+            'raise SystemExit(f"release qualification campaign is not a pass: {problems}")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
+
+    def test_release_readiness_fails_when_a_metadata_upload_gate_is_deleted(self) -> None:
+        for assertion in (
+            "--team-id jeff-internal --yes --json",
+            'if preview.get("status") != "dry_run" or preview.get("would_upload") is not False:',
+            'if preview_upload.get("report_count") != 0:',
+            'if applied.get("counts") != preview.get("counts"):',
+            'raise SystemExit(f"campaign metadata upload is not a verified gate: {problems}")',
+            "--install-id codex-code-mower --yes --json",
+            'if event_types != ["board_snapshot"] or len(events) != 1:',
+            'if manifest.get("included_reports"):',
+            'raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")',
+        ):
+            with self.subTest(assertion=assertion):
+                check = self._asserted_runbook_check(
+                    lambda doc, assertion=assertion: doc.replace(assertion, "")
+                )
+
+                self.assertEqual(check["status"], "fail")
+                self.assertIn(assertion, check["detail"]["missing_assertions"])
 
     def test_release_readiness_rejects_release_asset_clobbering(self) -> None:
         check = self._asserted_runbook_check(

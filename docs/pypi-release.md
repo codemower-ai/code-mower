@@ -151,26 +151,39 @@ RELEASE_SHA="$(gh pr view "$RELEASE_PR" --repo "$REPO" \
   --json mergeCommit --jq '.mergeCommit.oid')"
 printf '%s\n' "$RELEASE_SHA" | grep -Eq '^[0-9a-f]{40}$'
 git fetch origin "$RELEASE_SHA"
-git checkout --detach "$RELEASE_SHA"
-test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
 test "$(git cat-file -t "$RELEASE_SHA")" = "commit"
+```
+
+A working checkout can retain dirty or untracked files, so the release source is
+a fresh clone bound to that commit and machine-asserted clean before anything is
+built or installed from it.
+
+```bash
+RELEASE_CHECKOUT="$(mktemp -d /tmp/code-mower-v140-release-src.XXXXXX)/code-mower"
+git clone --no-checkout "https://github.com/$REPO.git" "$RELEASE_CHECKOUT"
+git -C "$RELEASE_CHECKOUT" fetch origin "$RELEASE_SHA"
+git -C "$RELEASE_CHECKOUT" checkout --detach "$RELEASE_SHA"
+test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"
+test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"
 ```
 
 ### 2. Run release readiness from a fresh source environment at that commit
 
 The ambient `code-mower` executable is still the previous release, so readiness
-runs from a clean virtual environment built out of the exact `RELEASE_SHA`
-checkout.
+runs from a clean virtual environment built out of the clean `RELEASE_CHECKOUT`
+clone of `RELEASE_SHA`.
 
 ```bash
 RELEASE_ENV="$(mktemp -d /tmp/code-mower-v140-release-env.XXXXXX)"
 python3.12 -m venv "$RELEASE_ENV/venv"
 RELEASE_PYTHON="$RELEASE_ENV/venv/bin/python"
 PIP_CONFIG_FILE=/dev/null PIP_INDEX_URL= PIP_EXTRA_INDEX_URL= \
-  "$RELEASE_PYTHON" -m pip install --no-cache-dir --index-url https://pypi.org/simple/ .
+  "$RELEASE_PYTHON" -m pip install --no-cache-dir \
+  --index-url https://pypi.org/simple/ "$RELEASE_CHECKOUT"
 RELEASE_CLI="$RELEASE_ENV/venv/bin/code-mower"
 test "$("$RELEASE_CLI" --version)" = "code-mower 1.4.0"
-"$RELEASE_CLI" migration release-readiness --json >"$RELEASE_ENV/readiness.json"
+(cd "$RELEASE_CHECKOUT" && "$RELEASE_CLI" migration release-readiness --json) \
+  >"$RELEASE_ENV/readiness.json"
 READINESS_JSON="$RELEASE_ENV/readiness.json" "$RELEASE_PYTHON" - <<'PY'
 import json
 import os
@@ -204,9 +217,11 @@ test "$(git ls-remote origin 'refs/tags/v1.4.0^{}' | awk '{print $1}')" = "$RELE
 ### 4. Install the workflow-run assertion helper
 
 Every workflow run below is asserted with this helper: workflow identity,
-triggering event, exact head SHA, `success` conclusion, and the exact posture of
-both publish jobs. A job that is expected to skip must be reported skipped or be
-absent from the run; a job that is expected to publish must report `success`.
+triggering event, exact head SHA, `success` conclusion, successful
+`build-distributions` and `verify-distributions` jobs, and the exact posture of
+both publish jobs. A run whose only reported jobs are skipped publish jobs fails.
+A job that is expected to skip must be reported skipped or be absent from the
+run; a job that is expected to publish must report `success`.
 
 ```bash
 cat >"$RELEASE_ENV/assert_release_run.py" <<'PY'
@@ -218,6 +233,7 @@ import subprocess
 import sys
 
 EXPECTED_WORKFLOW = "Code Mower Release"
+BUILD_JOBS = ("build-distributions", "verify-distributions")
 SKIPPED = {"skipped", "absent"}
 
 
@@ -255,6 +271,10 @@ def main() -> None:
         problems.append("run head is not the exact release commit")
     if run.get("status") != "completed" or run.get("conclusion") != "success":
         problems.append("run did not complete successfully")
+    for job_name in BUILD_JOBS:
+        actual = job_posture(run, job_name)
+        if actual != "success":
+            problems.append(f"{job_name} is {actual}, expected success")
     for job_name, expected in (
         ("publish-testpypi", testpypi),
         ("publish-pypi", pypi),
@@ -270,6 +290,8 @@ def main() -> None:
         "run_id": run_id,
         "event": event,
         "head_sha": head_sha,
+        "build_distributions": job_posture(run, "build-distributions"),
+        "verify_distributions": job_posture(run, "verify-distributions"),
         "publish_testpypi": job_posture(run, "publish-testpypi"),
         "publish_pypi": job_posture(run, "publish-pypi"),
         "url": run.get("url"),
@@ -431,6 +453,13 @@ The published Release triggers one `release`-event run whose publish jobs are
 gated on repository variables. Assert they cannot republish before the
 irreversible release creation, not afterwards.
 
+`vars.CODE_MOWER_TESTPYPI_PUBLISH` and `vars.CODE_MOWER_PYPI_PUBLISH` resolve
+through organization scope when the repository does not define them, so an
+absent repository variable is not a false value. Each variable must exist at
+repository scope and equal `false`, which is also what overrides an inherited
+organization value. Anything else -- absent, `true`, or unparseable -- fails
+closed.
+
 ```bash
 REPO="$REPO" "$RELEASE_PYTHON" - <<'PY'
 import json
@@ -438,22 +467,37 @@ import os
 import subprocess
 
 repo = os.environ["REPO"]
-completed = subprocess.run(
-    ["gh", "api", f"repos/{repo}/actions/variables", "--paginate"],
-    check=True, capture_output=True, text=True,
-)
-values = {
-    row["name"]: str(row.get("value", ""))
-    for row in json.loads(completed.stdout).get("variables", [])
-}
-enabled = [
+REQUIRED_VARIABLES = ("CODE_MOWER_TESTPYPI_PUBLISH", "CODE_MOWER_PYPI_PUBLISH")
+
+
+def repository_variable(name: str) -> str | None:
+    """Read one repository-scoped variable, never an inherited organization one."""
+    completed = subprocess.run(
+        ["gh", "api", f"repos/{repo}/actions/variables/{name}"],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return None
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return None
+    value = payload.get("value")
+    return value if isinstance(value, str) else None
+
+
+values = {name: repository_variable(name) for name in REQUIRED_VARIABLES}
+blocked = sorted(
     name
-    for name in ("CODE_MOWER_TESTPYPI_PUBLISH", "CODE_MOWER_PYPI_PUBLISH")
-    if values.get(name, "false").strip().lower() == "true"
-]
-if enabled:
-    raise SystemExit(f"release-event republishing is enabled: {enabled}")
-print(json.dumps({"republish_variables_off": True}))
+    for name, value in values.items()
+    if value is None or value.strip().lower() != "false"
+)
+if blocked:
+    raise SystemExit(
+        "repository-scope publish variables must exist and equal false: " f"{blocked}"
+    )
+print(json.dumps({"republish_repository_variables_false": sorted(values)}))
 PY
 ```
 
@@ -518,7 +562,7 @@ def main() -> None:
         target = Path(scratch)
         subprocess.run(
             ["gh", "release", "download", "v1.4.0", "--repo", repo,
-             "--dir", str(target), "--clobber"],
+             "--dir", str(target)],
             check=True, capture_output=True, text=True,
         )
         downloaded = digests(target)
@@ -537,9 +581,9 @@ main()
 PY
 ```
 
-The `--clobber` flag above only writes into the private scratch download
-directory; Release assets are never overwritten, and a `v1.4.0` release whose
-assets differ stops the runbook for inspection.
+Assets are downloaded into a private empty scratch directory, so nothing is
+overwritten anywhere, and a `v1.4.0` release whose assets differ stops the
+runbook for inspection.
 
 ```bash
 if gh release view v1.4.0 --repo "$REPO" >/dev/null 2>&1; then
@@ -619,7 +663,16 @@ identifier, and repository inventory out of recorded evidence.
 
 ### 14. Run the required Claude + Codex + Devin campaign
 
+The campaign is a gate, so its watch and status output is saved and asserted:
+the campaign must finish `complete`, the selected and required provider sets
+must be exactly Claude, Codex, and Devin, every required lane must hold a
+passing adoption result, and the Devin lane must report the verified hosted
+bridge transport (`devin_api_v3`, the only hosted Code Mower Devin transport,
+already selected explicitly in step 13). The protected profile is named on
+watch and status too, so a protected or ambiguous profile stays selected.
+
 ```bash
+CAMPAIGN_DIR="$(mktemp -d /tmp/code-mower-v140-campaign.XXXXXX)"
 code-mower release campaign create \
   --release-tag v1.4.0 \
   --package-spec code-mower==1.4.0 \
@@ -630,14 +683,69 @@ code-mower release campaign create \
   --repo-slug codemower-ai/code-mower \
   --issue 912 --release-pr "$RELEASE_PR" \
   --provider-profile "$DEVIN_PROVIDER_PROFILE" \
-  --apply --json
+  --apply --json >"$CAMPAIGN_DIR/create.json"
 code-mower release campaign watch --release-tag v1.4.0 \
-  --interval 10 --timeout 3600 --json
-code-mower release campaign status --release-tag v1.4.0 --json
+  --provider-profile "$DEVIN_PROVIDER_PROFILE" \
+  --interval 10 --timeout 3600 --json >"$CAMPAIGN_DIR/watch.json"
+code-mower release campaign status --release-tag v1.4.0 \
+  --provider-profile "$DEVIN_PROVIDER_PROFILE" --json >"$CAMPAIGN_DIR/status.json"
+CAMPAIGN_DIR="$CAMPAIGN_DIR" "$RELEASE_PYTHON" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+campaign_dir = Path(os.environ["CAMPAIGN_DIR"])
+REQUIRED_PROVIDERS = {"claude", "codex", "devin"}
+PASSING_OUTCOMES = {"pass", "pass_with_warnings"}
+
+
+def load(name: str) -> dict:
+    return json.loads((campaign_dir / name).read_text(encoding="utf-8"))
+
+
+watch = load("watch.json")
+status = load("status.json")
+problems = []
+if watch.get("status") != "complete" or watch.get("stop_reason") != "complete":
+    problems.append(
+        f"watch stopped as {watch.get('stop_reason')!r} with status {watch.get('status')!r}"
+    )
+if status.get("status") != "complete":
+    problems.append(f"campaign status is {status.get('status')!r}, not complete")
+lanes = {
+    str(row.get("provider") or ""): row
+    for row in status.get("providers") or []
+    if isinstance(row, dict)
+}
+if set(lanes) != REQUIRED_PROVIDERS:
+    problems.append(f"campaign provider set is {sorted(lanes)}")
+required = {name for name, row in lanes.items() if row.get("posture") == "required"}
+if required != REQUIRED_PROVIDERS:
+    problems.append(f"required provider set is {sorted(required)}")
+for name in sorted(REQUIRED_PROVIDERS & set(lanes)):
+    lane = lanes[name]
+    if lane.get("state") != "complete":
+        problems.append(f"{name} lane state is {lane.get('state')!r}")
+    result = lane.get("adoption_result")
+    outcome = result.get("outcome") if isinstance(result, dict) else None
+    if outcome not in PASSING_OUTCOMES:
+        problems.append(f"{name} lane result outcome is {outcome!r}")
+devin = lanes.get("devin") or {}
+if devin.get("driver") != "hosted_bridge" or devin.get("transport_verified") is not True:
+    problems.append("Devin lane did not verify the hosted bridge transport")
+if problems:
+    raise SystemExit(f"release qualification campaign is not a pass: {problems}")
+print(json.dumps({
+    "campaign": "complete",
+    "required_providers": sorted(REQUIRED_PROVIDERS),
+    "devin_transport": "hosted_bridge",
+}))
+PY
 ```
 
 All three provider results must pass, and Devin's result must identify the
-hosted transport before peer support is claimed.
+hosted transport before peer support is claimed. Keep the profile selector,
+credentials, and result prose out of recorded evidence.
 
 ### 15. Restart the three Boards from the release, waiting on each stop
 
@@ -732,35 +840,165 @@ nohup code-mower board serve --repo "$BOARD_5344_REPO" \
   --port 5344 --record-events >/tmp/code-mower-board-5344.log 2>&1 &
 "$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" serving 5332 5342 5344
 
+BOARD_DOCTOR_DIR="$(mktemp -d /tmp/code-mower-v140-board-doctor.XXXXXX)"
 code-mower board doctor --repo codemower-ai/code-mower \
-  --repo-path "$CODE_MOWER_RELEASE_CHECKOUT" --json
+  --repo-path "$CODE_MOWER_RELEASE_CHECKOUT" --json >"$BOARD_DOCTOR_DIR/5332.json"
 code-mower board doctor --repo "$BOARD_5342_REPO" \
-  --repo-path "$BOARD_5342_REPO_PATH" --json
+  --repo-path "$BOARD_5342_REPO_PATH" --json >"$BOARD_DOCTOR_DIR/5342.json"
 code-mower board doctor --repo "$BOARD_5344_REPO" \
-  --repo-path "$BOARD_5344_REPO_PATH" --json
+  --repo-path "$BOARD_5344_REPO_PATH" --json >"$BOARD_DOCTOR_DIR/5344.json"
+BOARD_DOCTOR_DIR="$BOARD_DOCTOR_DIR" "$RELEASE_PYTHON" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+doctor_dir = Path(os.environ["BOARD_DOCTOR_DIR"])
+problems = []
+for port in ("5332", "5342", "5344"):
+    report = json.loads((doctor_dir / f"{port}.json").read_text(encoding="utf-8"))
+    if report.get("status") != "pass":
+        problems.append(f"board {port} doctor status is {report.get('status')!r}")
+if problems:
+    raise SystemExit(f"restarted Board doctors are not all pass: {problems}")
+print(json.dumps({"board_doctors_pass": ["5332", "5342", "5344"]}))
+PY
 ```
 
-Every `board doctor` run must pass. Do not use raw process kills or Board reset,
-and never copy private repository slugs or paths into public evidence.
+`code-mower board doctor` exits zero for `warn`, so each report's own top-level
+status is parsed and required to be `pass`; printing the JSON is not the gate.
+Do not use raw process kills or Board reset, and never copy private repository
+slugs or paths into public evidence.
 
 ### 16. Dry-run, inspect, then upload metadata-only cloud evidence
 
+Both uploads are gates: the preview and the applied result are saved and
+parsed. A preview must be metadata-only, carry zero reports, require explicit
+application, and report the event identifiers and counts it would send; the
+applied upload must be accepted by the service and carry exactly the previewed
+identifiers and counts.
+
 ```bash
-code-mower cloud doctor --install-id codex-code-mower --probe-service --json
+CLOUD_DIR="$(mktemp -d /tmp/code-mower-v140-cloud.XXXXXX)"
+code-mower cloud doctor --install-id codex-code-mower --probe-service --json \
+  >"$CLOUD_DIR/doctor.json"
 code-mower release campaign upload --release-tag v1.4.0 \
-  --install-id codex-code-mower --team-id jeff-internal --json
+  --install-id codex-code-mower --team-id jeff-internal --json \
+  >"$CLOUD_DIR/campaign-preview.json"
 code-mower release campaign upload --release-tag v1.4.0 \
-  --install-id codex-code-mower --team-id jeff-internal --yes --json
+  --install-id codex-code-mower --team-id jeff-internal --yes --json \
+  >"$CLOUD_DIR/campaign-applied.json"
+CLOUD_DIR="$CLOUD_DIR" "$RELEASE_PYTHON" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+cloud_dir = Path(os.environ["CLOUD_DIR"])
+
+
+def load(name: str) -> dict:
+    return json.loads((cloud_dir / name).read_text(encoding="utf-8"))
+
+
+preview = load("campaign-preview.json")
+applied = load("campaign-applied.json")
+preview_upload = preview.get("upload") or {}
+applied_upload = applied.get("upload") or {}
+problems = []
+if preview.get("status") != "dry_run" or preview.get("would_upload") is not False:
+    problems.append(f"preview status is {preview.get('status')!r}")
+if preview.get("requires_yes") is not True or preview_upload.get("requires_yes") is not True:
+    problems.append("preview does not require explicit application")
+if preview.get("upload_mode") != "metadata_only":
+    problems.append(f"preview upload mode is {preview.get('upload_mode')!r}")
+if preview_upload.get("upload_mode") != "metadata_only":
+    problems.append(f"preview payload mode is {preview_upload.get('upload_mode')!r}")
+if preview_upload.get("report_count") != 0:
+    problems.append(f"preview carries {preview_upload.get('report_count')!r} reports")
+preview_events = [str(value) for value in preview.get("event_ids") or []]
+if not preview_events or preview_upload.get("event_count") != len(preview_events):
+    problems.append("preview event identifiers and count disagree")
+if applied.get("status") != "uploaded" or applied.get("would_upload") is not True:
+    problems.append(f"applied status is {applied.get('status')!r}")
+if applied.get("upload_mode") != "metadata_only":
+    problems.append(f"applied upload mode is {applied.get('upload_mode')!r}")
+if applied_upload.get("mode") != "cloud-upload":
+    problems.append(f"applied upload mode is {applied_upload.get('mode')!r}")
+if not 200 <= int(applied_upload.get("status") or 0) < 300:
+    problems.append(f"applied upload was not accepted: {applied_upload.get('status')!r}")
+if [str(value) for value in applied.get("event_ids") or []] != preview_events:
+    problems.append("applied event identifiers differ from the preview")
+if applied.get("counts") != preview.get("counts"):
+    problems.append("applied counts differ from the preview")
+if problems:
+    raise SystemExit(f"campaign metadata upload is not a verified gate: {problems}")
+print(json.dumps({
+    "campaign_upload": "accepted",
+    "event_count": len(preview_events),
+    "reports": 0,
+}))
+PY
+
 BOARD_SNAPSHOT_DIR="$(mktemp -d /tmp/code-mower-v140-board-snapshot.XXXXXX)"
 code-mower cloud board-snapshot \
   --repo-path "$CODE_MOWER_RELEASE_CHECKOUT" \
   --repo-slug codemower-ai/code-mower \
   --output-dir "$BOARD_SNAPSHOT_DIR" \
-  --install-id codex-code-mower --team-id jeff-internal --json
+  --install-id codex-code-mower --team-id jeff-internal --json \
+  >"$CLOUD_DIR/board-snapshot.json"
 code-mower cloud upload "$BOARD_SNAPSHOT_DIR" \
-  --install-id codex-code-mower --dry-run --json
+  --install-id codex-code-mower --dry-run --json \
+  >"$CLOUD_DIR/board-preview.json"
 code-mower cloud upload "$BOARD_SNAPSHOT_DIR" \
-  --install-id codex-code-mower --yes --json
+  --install-id codex-code-mower --yes --json \
+  >"$CLOUD_DIR/board-applied.json"
+CLOUD_DIR="$CLOUD_DIR" BOARD_SNAPSHOT_DIR="$BOARD_SNAPSHOT_DIR" "$RELEASE_PYTHON" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+cloud_dir = Path(os.environ["CLOUD_DIR"])
+bundle_dir = Path(os.environ["BOARD_SNAPSHOT_DIR"])
+
+
+def load(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+snapshot = load(cloud_dir / "board-snapshot.json")
+preview = load(cloud_dir / "board-preview.json")
+applied = load(cloud_dir / "board-applied.json")
+manifest = load(bundle_dir / "code-mower-cloud-bundle.json")
+events = [row for row in manifest.get("events") or [] if isinstance(row, dict)]
+event_types = sorted({str(row.get("event_type") or "") for row in events})
+problems = []
+if snapshot.get("status") not in {"dry_run", "uploaded"}:
+    problems.append(f"board snapshot status is {snapshot.get('status')!r}")
+if event_types != ["board_snapshot"] or len(events) != 1:
+    problems.append(f"board bundle carries {event_types} events")
+if manifest.get("included_reports"):
+    problems.append("board bundle carries report content")
+if preview.get("mode") != "cloud-upload-dry-run" or preview.get("would_upload") is not False:
+    problems.append(f"board preview mode is {preview.get('mode')!r}")
+if preview.get("requires_yes") is not True:
+    problems.append("board preview does not require explicit application")
+if preview.get("upload_mode") != "metadata_only":
+    problems.append(f"board preview upload mode is {preview.get('upload_mode')!r}")
+if preview.get("report_count") != 0:
+    problems.append(f"board preview carries {preview.get('report_count')!r} reports")
+if preview.get("event_count") != len(events):
+    problems.append("board preview event count differs from the bundle")
+if applied.get("mode") != "cloud-upload":
+    problems.append(f"board applied mode is {applied.get('mode')!r}")
+if not 200 <= int(applied.get("status") or 0) < 300:
+    problems.append(f"board upload was not accepted: {applied.get('status')!r}")
+if problems:
+    raise SystemExit(f"board snapshot upload is not a verified gate: {problems}")
+print(json.dumps({
+    "board_upload": "accepted",
+    "event_types": event_types,
+    "reports": 0,
+}))
+PY
 ```
 
 Record accepted event identifiers and counts only, never report prose, profile

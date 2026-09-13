@@ -10,7 +10,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 def _render_provider_catalog_json_fallback(data: Mapping[str, Any]) -> str:
@@ -614,6 +614,111 @@ def materialize_package_plan(
 
 COMMITTED_PACKAGE_MANIFEST = "code-mower-package-manifest.json"
 GENERATED_OUTPUT_DIR = "<generated-output-dir>"
+MANIFEST_TEXT_FIELDS = ("mode", "output_dir")
+MANIFEST_MAPPING_FIELDS = ("package",)
+MANIFEST_LIST_FIELDS = ("files_written", "deferred_package_files")
+MANIFEST_TOP_LEVEL_FIELDS = (
+    *MANIFEST_TEXT_FIELDS,
+    *MANIFEST_MAPPING_FIELDS,
+    *MANIFEST_LIST_FIELDS,
+)
+MANIFEST_FILE_FIELDS = ("target", "source", "kind")
+MANIFEST_DEFERRED_FIELDS = ("target", "source", "reason")
+
+
+class PackageManifestError(ValueError):
+    """A package manifest that cannot be compared, with bounded problem text."""
+
+    def __init__(self, problems: Sequence[str]) -> None:
+        self.problems = list(problems)
+        super().__init__("; ".join(self.problems))
+
+
+def _manifest_row_problems(
+    label: str, rows: object, fields: Sequence[str], unique_targets: bool
+) -> list[str]:
+    if not isinstance(rows, list):
+        return [f"{label} is not a list"]
+    problems: list[str] = []
+    seen: set[str] = set()
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            problems.append(f"{label} row {index} is not an object")
+            continue
+        missing = [field for field in fields if field not in row]
+        if missing:
+            problems.append(f"{label} row {index} is missing {', '.join(missing)}")
+        unexpected = sorted(set(row) - set(fields))
+        if unexpected:
+            problems.append(f"{label} row {index} has unexpected {', '.join(unexpected)}")
+        non_text = sorted(
+            field
+            for field in fields
+            if field in row and not isinstance(row[field], str)
+        )
+        if non_text:
+            problems.append(f"{label} row {index} has non-string {', '.join(non_text)}")
+        target = row.get("target")
+        if unique_targets and isinstance(target, str):
+            if target in seen:
+                problems.append(f"{label} has a duplicate target {target}")
+            seen.add(target)
+    return problems
+
+
+def package_manifest_problems(manifest: object) -> list[str]:
+    """Describe every structural problem that blocks an exact manifest comparison.
+
+    Normalization is a comparison surface, not a repair step: filtering unknown
+    fields or malformed rows would let a corrupted committed artifact normalize
+    into apparent agreement with a freshly generated one.
+    """
+
+    if not isinstance(manifest, Mapping):
+        return ["manifest is not an object"]
+    problems: list[str] = []
+    missing = [field for field in MANIFEST_TOP_LEVEL_FIELDS if field not in manifest]
+    if missing:
+        problems.append(f"manifest is missing {', '.join(missing)}")
+    unexpected = sorted(set(manifest) - set(MANIFEST_TOP_LEVEL_FIELDS))
+    if unexpected:
+        problems.append(f"manifest has unexpected {', '.join(unexpected)}")
+    for field in MANIFEST_TEXT_FIELDS:
+        if field in manifest and not isinstance(manifest[field], str):
+            problems.append(f"{field} is not a string")
+    for field in MANIFEST_MAPPING_FIELDS:
+        value = manifest.get(field)
+        if field in manifest and not isinstance(value, Mapping):
+            problems.append(f"{field} is not an object")
+        elif isinstance(value, Mapping):
+            invalid = sorted(
+                str(key)
+                for key, item in value.items()
+                if not isinstance(key, str) or not isinstance(item, str)
+            )
+            if invalid:
+                problems.append(f"{field} has non-string {', '.join(invalid)}")
+    problems.extend(
+        _manifest_row_problems(
+            "files_written",
+            manifest.get("files_written") if "files_written" in manifest else [],
+            MANIFEST_FILE_FIELDS,
+            unique_targets=True,
+        )
+    )
+    problems.extend(
+        _manifest_row_problems(
+            "deferred_package_files",
+            (
+                manifest.get("deferred_package_files")
+                if "deferred_package_files" in manifest
+                else []
+            ),
+            MANIFEST_DEFERRED_FIELDS,
+            unique_targets=False,
+        )
+    )
+    return problems
 
 
 def normalized_package_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -621,29 +726,29 @@ def normalized_package_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
 
     The local output directory is replaced by a placeholder and the written-file
     inventory is ordered, so the committed artifact records the package surface
-    and its source mappings rather than one machine's materialization run.
+    and its source mappings rather than one machine's materialization run. A
+    manifest that cannot be compared raises ``PackageManifestError`` instead of
+    being silently repaired.
     """
 
+    problems = package_manifest_problems(manifest)
+    if problems:
+        raise PackageManifestError(problems)
     files = [
-        {
-            "target": str(entry.get("target", "")),
-            "source": str(entry.get("source", "")),
-            "kind": str(entry.get("kind", "")),
-        }
-        for entry in manifest.get("files_written", [])
-        if isinstance(entry, Mapping)
+        {field: str(entry[field]) for field in MANIFEST_FILE_FIELDS}
+        for entry in manifest["files_written"]
     ]
-    deferred = [
-        dict(entry)
-        for entry in manifest.get("deferred_package_files", [])
-        if isinstance(entry, Mapping)
-    ]
+    deferred = sorted(
+        ({field: str(entry[field]) for field in MANIFEST_DEFERRED_FIELDS}
+         for entry in manifest["deferred_package_files"]),
+        key=lambda entry: tuple(entry[field] for field in MANIFEST_DEFERRED_FIELDS),
+    )
     return {
-        "mode": str(manifest.get("mode", "")),
-        "package": dict(manifest.get("package", {})),
+        "mode": str(manifest["mode"]),
+        "package": {str(key): str(value) for key, value in manifest["package"].items()},
         "output_dir": GENERATED_OUTPUT_DIR,
         "files_written": sorted(
-            files, key=lambda entry: (entry["target"], entry["source"], entry["kind"])
+            files, key=lambda entry: tuple(entry[field] for field in MANIFEST_FILE_FIELDS)
         ),
         "deferred_package_files": deferred,
     }
