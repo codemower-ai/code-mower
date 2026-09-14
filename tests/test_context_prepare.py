@@ -13,7 +13,7 @@ from unittest import mock
 
 from code_mower import context_prepare, context_session, session
 from code_mower.context_connections import connect
-from code_mower.context_contract import ContextError
+from code_mower.context_contract import ContextError, ContextRetrievalError
 from code_mower.context_store import ContextStore
 from test_context_connections import MemoryVault
 from test_context_packets import RetrievalBackend
@@ -170,6 +170,22 @@ class ContextPrepareTests(unittest.TestCase):
         self.assertEqual((code, unavailable["status"]), (0, "optional_unavailable"))
         self.assertEqual(unavailable["dependent_work"], "usable")
         self.assertNotIn("SECRET-123", json.dumps(unavailable))
+
+    def test_response_failure_keeps_guided_session_diagnostics_distinct_from_authorization(self):
+        record = self.create_record()
+        self.backend.result["result"]["results"][0].pop("source_row_id")
+        report, code = self.prepare(record)
+        self.assertEqual(code, 1)
+        self.assertEqual(report["reason"], "response_invalid")
+        self.assertIn("response adapter", report["next_action"])
+        self.assertNotIn("SECRET-123", json.dumps(report))
+        saved = context_session.read(self.associations, record["session_id"])
+        self.assertEqual(saved["context_state"], "unavailable")
+        self.assertIsNone(saved["packet"])
+        self.assertEqual(self.backend.searches, 1)
+        for reason in ContextRetrievalError.REASONS:
+            self.assertEqual(context_session.failure_state(ContextRetrievalError(reason)),
+                             "authorization_failed" if reason == "access_denied" else "unavailable")
 
     def test_no_provider_keeps_the_ordinary_workflow_usable(self):
         record = context_session.create(

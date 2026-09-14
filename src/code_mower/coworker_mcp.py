@@ -23,7 +23,7 @@ from mcp.shared.auth import (
     OAuthMetadata, OAuthToken, ProtectedResourceMetadata,
 )
 
-from .context_contract import ContextError
+from .context_contract import ContextError, ContextRetrievalError
 from .context_store import strict_json
 from .coworker_retrieval import SEARCH_TOOL, normalize_search, search_arguments, verify_search_schema
 
@@ -137,7 +137,7 @@ class ReadTransport(PinnedTransport):
         response = await super().handle_async_request(request)
         if response.status_code in (401, 403, 429):
             await response.aclose()
-            raise ContextError("context access is unavailable or rate limited; no retry was sent")
+            raise ContextRetrievalError("rate_limited" if response.status_code == 429 else "access_denied")
         return response
 
 
@@ -216,15 +216,36 @@ def _auth(storage, redirect_uri="http://127.0.0.1/callback", redirect=None, call
     ), storage, redirect, callback)
 
 
+def _retrieval_failure(error):
+    """Unwrap SDK task groups without exposing exception messages or bodies."""
+    pending, reasons, visited = [error], set(), 0
+    while pending and visited < 64:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        elif isinstance(current, ContextRetrievalError):
+            reasons.add(current.reason)
+        elif isinstance(current, (TimeoutError, httpx2.TimeoutException)):
+            reasons.add("timeout")
+        else:
+            reasons.add("retrieval_failed")
+    # A mixed/unknown failure is not evidence that authorization failed.
+    reason = next(iter(reasons)) if not pending and len(reasons) == 1 else "retrieval_failed"
+    return ContextRetrievalError(reason)
+
+
 class CoworkerBackend:
     """Synchronous lifecycle facade; each operation owns a bounded SDK session."""
 
-    def _run(self, operation):
+    def _run(self, operation, *, retrieval=False):
         try:
             return asyncio.run(operation)
-        except ContextError:
-            raise
-        except Exception:
+        except Exception as exc:
+            if retrieval:
+                raise _retrieval_failure(exc) from None
+            if isinstance(exc, ContextError):
+                raise
             raise ContextError("Coworker authorization unavailable; reconnect or retry after service recovery") from None
 
     def refresh(self, expected, credentials, *, timeout_seconds=30) -> ConnectionProof:
@@ -312,7 +333,8 @@ class CoworkerBackend:
         self._run(self._revoke(credentials))
 
     def retrieve(self, credentials, query, source, limits, *, timeout_seconds):
-        return self._run(self._retrieve(credentials, query, source, limits, timeout_seconds=timeout_seconds))
+        return self._run(self._retrieve(credentials, query, source, limits,
+                                       timeout_seconds=timeout_seconds), retrieval=True)
 
     async def _retrieve(self, credentials, query, source, limits, *, timeout_seconds):
         started = time.monotonic()
@@ -353,18 +375,25 @@ class CoworkerBackend:
                     result = await client.session.call_tool(SEARCH_TOOL, arguments,
                                                            read_timeout_seconds=timeout_seconds)
                     data = result.model_dump(mode="json", by_alias=True)
-                    blocks = data.get("content")
-                    if (data.get("isError") or data.get("structuredContent") is not None
-                            or not isinstance(blocks, list) or len(blocks) != 1
-                            or blocks[0].get("type") != "text"):
-                        raise ContextError("Coworker search returned an unsupported content envelope")
-                    normalized = normalize_search(strict_json(blocks[0]["text"]), limits=limits,
-                                                  maximum_results=arguments["top_k"])
-                    normalized["usage"] = {"requests": transport.read_requests, "pages": transport.pages,
-                                           "response_bytes": normalized["response_bytes"],
-                                           "elapsed_seconds": round(time.monotonic() - started, 3),
-                                           "cost_usd": None}
-                    return normalized
+            # Parse after the SDK task groups close: local response validation
+            # must not become a transport/authorization failure during teardown.
+            blocks = data.get("content")
+            if data.get("isError"):
+                raise ContextRetrievalError("retrieval_failed")
+            if (data.get("structuredContent") is not None
+                    or not isinstance(blocks, list) or len(blocks) != 1
+                    or blocks[0].get("type") != "text"):
+                raise ContextRetrievalError("response_invalid")
+            try:
+                value = strict_json(blocks[0]["text"])
+            except (ContextError, TypeError, ValueError):
+                raise ContextRetrievalError("response_invalid") from None
+            normalized = normalize_search(value, limits=limits, maximum_results=arguments["top_k"])
+            normalized["usage"] = {"requests": transport.read_requests, "pages": transport.pages,
+                                   "response_bytes": normalized["response_bytes"],
+                                   "elapsed_seconds": round(time.monotonic() - started, 3),
+                                   "cost_usd": None}
+            return normalized
 
     async def _revoke(self, credentials):
         async with asyncio.timeout(20):
