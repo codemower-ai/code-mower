@@ -443,6 +443,26 @@ dispatch is therefore counted and reported on its own line
 (`unsupported_inputs`) rather than folded into `indexed_files`, and zero nodes
 for a stamped file is a complete *read* of that file and nothing more.
 
+### Where the boundary runs
+
+`classify_file` is the eligibility oracle. What it deterministically calls
+not-code — every suffix outside its registry included — is not in the code
+denominator, does not make a run partial, and is not counted anywhere; there is
+no all-non-code skipped tally. `unsupported_inputs` counts the inputs it *does*
+call code that then reach a dispatch with no extractor: the static table
+difference, a code shebang with no dispatch entry, and a `.m` whose bytes carry
+no Objective-C directive. That last one is decided from the bytes, not a table
+— `.m` is Objective-C or MATLAB/Octave, the suffix map routes it to the
+Objective-C extractor, and the pin returns no extractor for a `.m` without an
+Objective-C directive rather than force-parsing MATLAB into garbage. The row is
+stamped regardless, so counting it as an indexed file would report work that
+did not happen.
+
+Everything else stays partial: an eligible code input that failed, one whose
+postcondition is unknown, one whose row disagrees with the bytes it was given,
+one this build could not classify against the pin's own dispatch, and a
+zero-node result that cannot be told apart from a failure.
+
 Blank rows are the cases the pin's rule makes blank: an extractor error or an
 anomalous zero-node extract. They stay `partial` here. The evaluation's
 clean-room repeat that exited zero in 1.63 seconds requeued 54 entries; the

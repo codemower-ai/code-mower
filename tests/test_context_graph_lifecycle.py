@@ -1635,6 +1635,68 @@ class ProviderLaunchTests(TemporaryWorkspace):
         self.assertEqual(result.indexed_files, 1)
         self.assertEqual(result.unsupported_inputs, 1)
 
+    def test_a_matlab_dot_m_is_dispatched_but_is_not_an_indexed_file(self) -> None:
+        """``.m`` is the one dispatch the pin decides from the bytes (#1702).
+
+        The suffix table maps ``.m`` to the Objective-C extractor, but
+        ``_get_extractor`` returns ``None`` for a ``.m`` carrying no
+        Objective-C directive rather than force-parsing MATLAB through the ObjC
+        grammar. The row is stamped all the same -- that short circuit carries
+        neither marker the failed-source rule looks for -- so the static table
+        difference cannot see it and a stamped row alone would report work the
+        provider demonstrably did not do. An Objective-C file beside it is a
+        real extraction and still has to count.
+        """
+        root = self.root / "objc"
+        (root / "src").mkdir(parents=True)
+        sources = {
+            "src/solver.m": b"function y = f(x)\n  y = x + 1;\nend\n",
+            "src/Thing.m": b'#import "Thing.h"\n@implementation Thing\n@end\n',
+        }
+        for path, body in sources.items():
+            (root / path).write_bytes(body)
+        census = census_of(*sources)
+        inputs = lifecycle._provider_inputs(census, root)
+        self.assertEqual(set(inputs.dispatched), set(sources))
+        self.assertEqual(inputs.unsupported, frozenset({"src/solver.m"}))
+        self.assertEqual(inputs.unclassified, ())
+        digests = {
+            path: hashlib.md5(body, usedforsecurity=False).hexdigest()
+            for path, body in sources.items()
+        }
+        result = lifecycle._read_completeness(
+            {path: manifest_row(digest) for path, digest in digests.items()},
+            census,
+            digests,
+            inputs,
+        )
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, 1)
+        self.assertEqual(result.unsupported_inputs, 1)
+
+    def test_a_dot_m_the_copy_cannot_be_read_for_stays_unclassified(self) -> None:
+        """Which way the pin dispatched it is unknown, so the run stays partial.
+
+        The pin's own sniff answers "not Objective-C" when its read fails, but
+        that is a statement about its read. This adapter failing to read the
+        same bytes proves nothing, and guessing either way would either excuse a
+        real extraction or invent an unsupported one.
+        """
+        census = census_of("src/solver.m")
+        inputs = lifecycle._provider_inputs(census, self.root / "absent")
+        self.assertEqual(inputs.dispatched, ("src/solver.m",))
+        self.assertEqual(inputs.unsupported, frozenset())
+        self.assertEqual(inputs.unclassified, ("src/solver.m",))
+        digest = hashlib.md5(b"function y = f(x)\n", usedforsecurity=False).hexdigest()
+        result = lifecycle._read_completeness(
+            {"src/solver.m": manifest_row(digest)},
+            census,
+            {"src/solver.m": digest},
+            inputs,
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("could not classify 1 tracked inputs", " ".join(result.notes))
+
     def test_an_unsupported_extension_still_has_to_be_accounted_for(self) -> None:
         """Reported, not excused: an absent row for one is still partial."""
         census = census_of(CODE_INPUT, "web/view.ejs")

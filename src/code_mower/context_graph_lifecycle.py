@@ -2306,6 +2306,27 @@ _PROVIDER_SHEBANG_EXTRACTORS = frozenset({
 #: the files this build says were indexed.
 _PROVIDER_UNSUPPORTED_EXTENSIONS = frozenset({".ejs", ".ets", ".r"})
 
+#: ``.m`` is the one suffix whose dispatch the pin decides from the *bytes*
+#: rather than the table: it is Objective-C or MATLAB/Octave, and
+#: ``_get_extractor`` returns ``None`` for a ``.m`` carrying no Objective-C
+#: directive (#1702) rather than force-parsing MATLAB through the ObjC grammar.
+#: The static table difference above cannot see that, so without this branch a
+#: MATLAB file would be counted as a file this build indexed on the strength of
+#: a stamped row alone -- and the row *is* stamped, because a ``None`` extractor
+#: short-circuits to ``{"nodes": [], "edges": []}`` carrying neither marker the
+#: failed-source rule looks for. It is code either way, so it stays in the
+#: denominator; what is decided here is only whether it contributed anything.
+_PROVIDER_OBJC_AMBIGUOUS_SUFFIX = ".m"
+
+#: ``extract._OBJC_HEADER_MARKERS``: the Objective-C-only directives the pin
+#: sniffs for, and the window it sniffs in (``_is_objc_header`` slices the first
+#: 256 KiB). A marker past that window is invisible to the pin too, so reading
+#: exactly that much decides the same way while staying bounded.
+_PROVIDER_OBJC_MARKERS = (
+    b"@interface", b"@protocol", b"@implementation", b"@import", b"#import",
+)
+_OBJC_PROBE_BYTES = 256 * 1024
+
 #: How much of an extensionless input is read to find its shebang. The pin
 #: reads the same 256 bytes and keeps only the first line.
 _SHEBANG_PROBE_BYTES = 256
@@ -2549,6 +2570,28 @@ def _shebang_interpreter(path: Path) -> tuple[str | None, bool]:
     return None, True
 
 
+def _objc_source(path: Path) -> tuple[bool, bool]:
+    """``(objective_c, resolved)`` for one materialized ``.m`` input.
+
+    ``(False, True)`` is a decision: the bytes carry no Objective-C directive,
+    so the pin's ``_get_extractor`` returns ``None`` for this file and it is
+    dispatched, stamped, and contributes nothing. ``(False, False)`` is a
+    refusal: the copy could not be read here, so which way the pin decided is
+    unknown and the caller carries the input as unclassified rather than
+    guessing. The pin's own sniff answers ``False`` on a read error, but that is
+    a statement about *its* read; this adapter failing to read the same bytes
+    proves nothing about what the provider was shown.
+    """
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False, False
+        with path.open("rb") as stream:
+            head = stream.read(_OBJC_PROBE_BYTES)
+    except OSError:
+        return False, False
+    return any(marker in head for marker in _PROVIDER_OBJC_MARKERS), True
+
+
 def _provider_inputs(
     census: TrackedCensus, source_root: Path | None = None
 ) -> _ProviderInputs:
@@ -2569,8 +2612,14 @@ def _provider_inputs(
 
     ``source_root`` is the materialized copy, read *before* the provider is
     launched -- the only moment those bytes are still exactly what this build
-    handed over. Without it no extensionless input can be classified, so every
-    one of them is unclassified and the run stays partial.
+    handed over. Without it no extensionless input and no ``.m`` can be
+    classified, so each of them is unclassified and the run stays partial.
+
+    Two dispatch questions are answered from those bytes rather than from a
+    table: which interpreter an extensionless script names, and whether a ``.m``
+    is Objective-C or MATLAB. The second decides only whether a code input had
+    an extractor at all, never whether it is code -- ``.m`` is in the pin's
+    extension table either way.
     """
     dispatched: list[str] = []
     unsupported: set[str] = set()
@@ -2602,6 +2651,16 @@ def _provider_inputs(
             dispatched.append(path)
             if suffix.lower() in _PROVIDER_UNSUPPORTED_EXTENSIONS:
                 unsupported.add(path)
+            elif suffix.lower() == _PROVIDER_OBJC_AMBIGUOUS_SUFFIX:
+                # The one dispatch the pin decides from the bytes. Read from the
+                # same pre-launch copy every other classification here reads, so
+                # the answer is about what the provider was handed.
+                host = _census_host_path(source_root, path) if source_root is not None else None
+                objective_c, resolved = _objc_source(host) if host is not None else (False, False)
+                if not resolved:
+                    unclassified.append(path)
+                elif not objective_c:
+                    unsupported.add(path)
     return _ProviderInputs(tuple(dispatched), frozenset(unsupported), tuple(unclassified))
 
 
@@ -2656,6 +2715,17 @@ def _read_completeness(
     reported separately (``unsupported_inputs``) rather than folded into
     ``indexed_files``, and zero nodes for a file whose row is stamped is a
     complete *read* of that file and nothing more.
+
+    The boundary, plainly. ``classify_file`` is the eligibility oracle: what it
+    deterministically calls not-code -- every suffix outside its registry
+    included -- is not in the denominator and does not make a run partial, so
+    there is no separate count of it. ``unsupported_inputs`` counts the inputs
+    it *does* call code that then reach a dispatch the pin has no extractor for:
+    the static table difference, a code shebang with no ``_SHEBANG_DISPATCH``
+    entry, and a ``.m`` whose bytes carry no Objective-C directive. Anything
+    else is partial: an eligible code input that failed, one whose postcondition
+    is unknown, one whose row disagrees with the bytes, and one whose zero-node
+    result cannot be told apart from a failure.
 
     Blank rows are the cases the pin's rule makes blank: an extractor error or
     an anomalous zero-node extract. They stay partial here. The clean-room
