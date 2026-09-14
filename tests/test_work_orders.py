@@ -176,7 +176,40 @@ class WorkOrderTests(unittest.TestCase):
             )
 
             self.assertEqual(work_order["role_lenses"], list(work_orders.DEFAULT_ROLE_LENSES))
-            self.assertEqual(work_order["review_lanes"], list(work_orders.DEFAULT_REVIEW_LANES))
+            self.assertEqual(work_order["review_lanes"], ["codex-audit", "claude-audit"])
+
+    def test_work_order_draft_default_and_explicit_review_lanes_in_all_artifacts(self) -> None:
+        for selected_lanes, expected_lanes in (
+            ([], ["codex-audit", "claude-audit"]),
+            (["gitar"], ["gitar"]),
+            (
+                ["codex-audit", "claude-audit", "gitar"],
+                ["codex-audit", "claude-audit", "gitar"],
+            ),
+        ):
+            with self.subTest(selected_lanes=selected_lanes), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                args = [
+                    "draft",
+                    "--title", "Planning workflow",
+                    "--body", "Add a planning workflow.",
+                    "--repo", "owner/repo",
+                    "--output", str(root / "work-order.md"),
+                    "--json",
+                ]
+                for lane in selected_lanes:
+                    args.extend(["--review-lane", lane])
+                with redirect_stdout(StringIO()):
+                    self.assertEqual(work_orders.work_order_main(args), 0)
+
+                markdown = (root / "work-order.md").read_text(encoding="utf-8")
+                review_section = markdown.split("## Review Lanes\n\n", 1)[1].split("\n\n", 1)[0]
+                self.assertEqual(review_section.splitlines(), [f"- {lane}" for lane in expected_lanes])
+                manifest = json.loads((root / "work-order.json").read_text(encoding="utf-8"))
+                event = json.loads((root / "work-order.cloud-event.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest["review_lanes"], expected_lanes)
+                self.assertEqual(event["dimensions"]["review_lanes"], expected_lanes)
+                self.assertEqual(event["metrics"]["review_lane_count"], len(expected_lanes))
 
     def test_work_order_draft_reads_json_issue_plan_as_structured_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
