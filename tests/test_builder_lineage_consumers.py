@@ -569,13 +569,29 @@ class PublishBeforeReconcile(unittest.TestCase):
             identity_json=json.dumps(IDENTITY), publish=True, reconcile_labels=True,
             json=True,
         )
-        return lane_delivery._lineage_main(
-            args,
-            head=lambda repo, number: head,
-            labels=lambda repo, number, add, remove: self.labelled.append((add, remove)),
-            comment_bodies=lambda repo, number: tuple(bodies or self.published),
-            publish_comment=lambda repo, number, body: self.published.append(body),
-        )
+        # Publication now requires a configured decision authority, because a
+        # marker no consumer would read is not evidence: codex:6dfb331284ea.
+        authority = "codemower-ai"
+        with mock.patch.dict(
+            os.environ,
+            {
+                "CODE_MOWER_DECISION_AUTHORITIES": authority,
+                "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+            },
+            clear=False,
+        ):
+            return lane_delivery._lineage_main(
+                args,
+                head=lambda repo, number: head,
+                labels=lambda repo, number, add, remove: self.labelled.append(
+                    (add, remove)
+                ),
+                comment_bodies=lambda repo, number: tuple(
+                    {"user": {"login": authority}, "body": body}
+                    for body in (bodies if bodies is not None else self.published)
+                ),
+                publish_comment=lambda repo, number, body: self.published.append(body),
+            )
 
     def test_evidence_is_published_and_then_the_label_moves(self):
         self.assertEqual(self.run_lineage(), 0)
@@ -633,7 +649,14 @@ class PublishBeforeReconcile(unittest.TestCase):
             identity_json=json.dumps(IDENTITY), publish=True, reconcile_labels=True,
             json=True,
         )
-        with self.assertRaises(subprocess.CalledProcessError):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "CODE_MOWER_DECISION_AUTHORITIES": "codemower-ai",
+                "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+            },
+            clear=False,
+        ), self.assertRaises(subprocess.CalledProcessError):
             lane_delivery._lineage_main(
                 args,
                 head=lambda repo, number: TAKEN,
@@ -642,6 +665,34 @@ class PublishBeforeReconcile(unittest.TestCase):
                 publish_comment=explode,
             )
         self.assertEqual(self.labelled, [])
+
+    def test_no_configured_authority_publishes_nothing_and_moves_no_label(self):
+        """codex:6dfb331284ea -- a marker no consumer reads is not evidence."""
+
+        args = SimpleNamespace(
+            repo=REPO, pr=str(PR), branch=BRANCH, head=TAKEN, labels=["builder:devin"],
+            author="devin-ai-integration[bot]", state_dir=self.root,
+            identity_json=json.dumps(IDENTITY), publish=True, reconcile_labels=True,
+            json=True,
+        )
+        with mock.patch.dict(
+            os.environ,
+            {
+                "CODE_MOWER_DECISION_AUTHORITIES": "",
+                "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+            },
+            clear=False,
+        ):
+            code = lane_delivery._lineage_main(
+                args,
+                head=lambda repo, number: TAKEN,
+                labels=lambda repo, number, add, remove: self.labelled.append((add, remove)),
+                comment_bodies=lambda repo, number: (),
+                publish_comment=lambda repo, number, body: self.published.append(body),
+            )
+        self.assertEqual(code, 3)
+        self.assertEqual(self.published, [], "nothing may be published")
+        self.assertEqual(self.labelled, [], "no label may be reconciled")
 
 
 class LabelerCallersCarryLineage(unittest.TestCase):

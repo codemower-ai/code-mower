@@ -1324,13 +1324,28 @@ def publish_lineage_evidence(
     by anyone else is evidence nobody will read: treating it as "already
     published" would let an untrusted commenter suppress the publication this
     path exists to guarantee. By the same rule a successful comment POST is not
-    by itself proof, so once ``trusted_author`` is supplied the comment is read
-    back and the publication only counts when a trusted author now carries the
-    marker.
+    by itself proof, so the comment is read back and the publication only
+    counts when a trusted author now carries the marker.
+
+    ``trusted_author`` is therefore required, not optional. With no configured
+    decision authority there is no account whose marker any consumer would
+    read, so publishing would leave evidence nobody can use while the caller
+    went on to move the builder label -- exactly the conflict this path exists
+    to prevent. That case fails here, before anything is posted.
     """
 
     from . import builder_lineage
 
+    if trusted_author is None:
+        # Nothing is posted and nothing is reconciled: the caller is told what
+        # to configure instead of writing evidence no consumer would read.
+        return {"published": False, "duplicate": False,
+                "reason": "no_decision_authority",
+                "owner_action": (
+                    "configure decision authorities before publishing builder "
+                    "lineage: with none configured no consumer trusts any "
+                    "published marker"
+                )}
     lineage = builder_lineage.resolve_lineage(
         repo=repo, pr_number=pr_number, branch=branch, head_sha=head_sha,
         episodes=episodes, opener_lane=opener_lane, label_lanes=label_lanes,
@@ -1351,7 +1366,7 @@ def publish_lineage_evidence(
                 login, body = "", str(item)
             if marker not in body:
                 continue
-            if trusted_author is None or trusted_author(login):
+            if trusted_author(login):
                 return True
         return False
 
@@ -1364,7 +1379,7 @@ def publish_lineage_evidence(
         f"- contributors: {', '.join('`' + lane + '`' for lane in lineage.contributors)}\n"
         f"- head: `{lineage.head_sha}`\n\n" + marker
     )
-    if trusted_author is not None and not _readable_marker_present():
+    if not _readable_marker_present():
         # The comment went up under an account the consumers do not trust, so
         # the evidence is unreadable to everyone who needs it. Reporting this
         # as published would move the builder label onto lineage the gate
@@ -1415,23 +1430,39 @@ def _lineage_main(args: argparse.Namespace, *,
         )
         # One trust contract, shared with the gate, the labelers and every
         # reviewer: the repository's configured decision authorities and
-        # nobody else. With none configured there is nobody to verify against,
-        # and publication keeps its historical body-only idempotency.
+        # nobody else. With none configured there is nobody to publish under
+        # and nobody whose marker a consumer would read, so this stops before
+        # the comment and before the label -- an unreadable publication plus a
+        # moved label is the conflict this whole path exists to avoid.
         from .audit_labeler_lib import lineage_marker_author_trust
         from .decisions import decision_authorities_from_env
 
         authorities = decision_authorities_from_env()
+        if not authorities:
+            payload = {
+                "schema": builder_lineage.SCHEMA, "status": "blocked",
+                "reason": "lineage_no_decision_authority", "head_sha": args.head,
+                "current_writer": "", "add": [], "remove": [],
+                "applied": False, "published": False,
+                "owner_action": (
+                    "configure decision authorities before publishing builder "
+                    "lineage: with none configured no consumer trusts any "
+                    "published marker"
+                ),
+            }
+            _assert_safe_metadata(payload, path="lineage")
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(f"lineage {payload['status']}: {payload['reason']}")
+            return 3
         published = publish_lineage_evidence(
             repo=repo, pr_number=number, branch=args.branch, head_sha=args.head,
             episodes=episodes, opener_lane=opener_lane,
             label_lanes=publish_label_lanes,
             existing_bodies=lambda: comment_bodies(repo, number),
             publish=lambda body: publish_comment(repo, number, body),
-            trusted_author=(
-                lineage_marker_author_trust(authorities=authorities)
-                if authorities
-                else None
-            ),
+            trusted_author=lineage_marker_author_trust(authorities=authorities),
         )
         if not (published["published"] or published.get("duplicate")):
             # The label says who may write next; the published episodes are how

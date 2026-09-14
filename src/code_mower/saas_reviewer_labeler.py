@@ -202,6 +202,37 @@ def fetch_issue_comments(
     )
 
 
+def fetch_lineage_comments(
+    repo: str,
+    pr_number: int,
+    *,
+    tokens: Sequence[GitHubToken],
+    adapter: SaaSReviewerAdapter,
+) -> Optional[list[dict[str, Any]]]:
+    """The bounded trusted comment history exact-head lineage is published on.
+
+    Every entry path needs the same three things before it can resolve lineage
+    rather than identity: the exact current head, the head branch and the
+    comments the evidence lives on. Only the last one costs a request, and only
+    when the repository configured decision authorities -- with none there is
+    nobody whose marker would be read and the fetch would buy nothing, which is
+    also the ordinary no-lineage behaviour this preserves.
+
+    Read failures are raised, never swallowed: a path that cannot tell a
+    verified takeover from its absence must stop instead of mutating labels on
+    identity alone.
+    """
+
+    if not lineage_decision_authorities():
+        return None
+    return fetch_issue_comments(
+        repo,
+        pr_number,
+        tokens=tokens,
+        page_cap=adapter.review_comments_page_cap,
+    )
+
+
 def has_same_head_review(
     reviews: list[dict[str, Any]],
     *,
@@ -735,8 +766,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 label.get("name", "") for label in pr_current.get("labels") or []
             ]
             candidate_head = pr_current.get("head", {}).get("sha")
+            candidate_branch = str((pr_current.get("head") or {}).get("ref") or "")
             candidate_author = str(((pr_current.get("user") or {}).get("login") or ""))
             candidate_body = str(pr_current.get("body") or "")
+            try:
+                candidate_comments = fetch_lineage_comments(
+                    repo, candidate_number, tokens=tokens, adapter=adapter
+                )
+            except (GitHubRequestError, ReviewCommentsTruncated) as exc:
+                print(
+                    f"skip: could not fetch published builder lineage for "
+                    f"PR #{candidate_number}: {exc}"
+                )
+                continue
             if adapter.opt_in_required and not adapter.is_opted_in(candidate_labels):
                 _, reason = resolve_label_decision(
                     event,
@@ -748,7 +790,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     pr_body=candidate_body,
                     current_head_sha=candidate_head,
                     repo=repo,
-                    head_branch=str((pr_current.get("head") or {}).get("ref") or ""),
+                    head_branch=candidate_branch,
+                    issue_comments=candidate_comments,
                     decision_authorities=lineage_decision_authorities(),
                 )
                 print(f"skip: {reason}")
@@ -764,7 +807,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 pr_body=candidate_body,
                 current_head_sha=candidate_head,
                 repo=repo,
-                head_branch=str((pr_current.get("head") or {}).get("ref") or ""),
+                head_branch=candidate_branch,
+                issue_comments=candidate_comments,
                 decision_authorities=lineage_decision_authorities(),
             )
             if decision is None:
@@ -812,21 +856,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         head_branch = str((pr_current.get("head") or {}).get("ref") or "")
         # The review path decides the same question about the same head as the
         # issue-comment path, so it reads the same published lineage under the
-        # same trust rule. Only when authorities are configured: with none,
-        # there is nobody to trust and the fetch would buy nothing. With them,
-        # a fetch that fails leaves this path unable to tell a takeover from
-        # its absence, so it stops rather than labelling on identity alone.
-        if lineage_decision_authorities():
-            try:
-                lineage_comments = fetch_issue_comments(
-                    repo,
-                    pr_number,
-                    tokens=tokens,
-                    page_cap=adapter.review_comments_page_cap,
-                )
-            except (GitHubRequestError, ReviewCommentsTruncated) as exc:
-                print(f"skip: could not fetch published builder lineage: {exc}")
-                return 0
+        # same trust rule.
+        try:
+            lineage_comments = fetch_lineage_comments(
+                repo, pr_number, tokens=tokens, adapter=adapter
+            )
+        except (GitHubRequestError, ReviewCommentsTruncated) as exc:
+            print(f"skip: could not fetch published builder lineage: {exc}")
+            return 0
         if adapter.requires_review_comments:
             review = event.get("review") or {}
             review_id = review.get("id")
@@ -862,7 +899,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     return 0
                 _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name)
                 return 0
-    elif event_type == "issue_comment" and pr_number and adapter.opt_in_required:
+    elif event_type == "issue_comment" and pr_number:
         issue = event.get("issue") or {}
         comment = event.get("comment") or {}
         author = (comment.get("user") or {}).get("login", "")
@@ -871,6 +908,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             pr_labels = [label.get("name", "") for label in pr_current.get("labels") or []]
             pr_author = str(((pr_current.get("user") or {}).get("login") or ""))
             pr_body = str(pr_current.get("body") or "")
+            # The comment event carries the issue, never the pull request, so
+            # the head and branch this decision is about come from the same
+            # authenticated read that supplied the labels -- not from the
+            # payload, and not left unset, which resolved identity-only lineage
+            # and skipped an otherwise eligible independent reviewer's update.
+            current_head_sha = pr_current.get("head", {}).get("sha")
+            head_branch = str((pr_current.get("head") or {}).get("ref") or "")
+            try:
+                lineage_comments = fetch_lineage_comments(
+                    repo, pr_number, tokens=tokens, adapter=adapter
+                )
+            except (GitHubRequestError, ReviewCommentsTruncated) as exc:
+                print(f"skip: could not fetch published builder lineage: {exc}")
+                return 0
     elif event_type == "issues" and pr_number and adapter.event_type == "issue_comment":
         if event.get("action") != "labeled":
             print(f"skip: unsupported issues action: {event.get('action')}")
@@ -903,6 +954,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except (GitHubRequestError, ReviewCommentsTruncated) as exc:
             print(f"skip: could not fetch issue comments: {exc}")
             return 0
+        # Replay decides about the head the pull request has now, so it uses
+        # the head from the same authenticated read as the labels rather than
+        # the dry-run override, which is unset on this path and left every
+        # replayed comment resolving identity-only lineage.
+        replay_head = pr_current.get("head", {}).get("sha") or current_head_sha
+        replay_branch = str((pr_current.get("head") or {}).get("ref") or "")
         for comment in reversed(comments):
             synthetic_event = {
                 "action": "created",
@@ -917,9 +974,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 pr_labels=pr_labels,
                 pr_author=pr_author,
                 pr_body=pr_body,
-                current_head_sha=current_head_sha,
+                current_head_sha=replay_head,
                 repo=repo,
-                head_branch=str((pr_current.get("head") or {}).get("ref") or ""),
+                head_branch=replay_branch,
                 issue_comments=comments,
                 decision_authorities=lineage_decision_authorities(),
             )

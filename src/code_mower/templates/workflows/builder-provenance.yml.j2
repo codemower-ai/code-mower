@@ -11,12 +11,25 @@ permissions:
 
 env:
   CODE_MOWER_PACKAGE_SPEC: code-mower==1.4.0
+  # The same configured decision-authority contract every other Code Mower
+  # consumer reads. `builder auto-record` trusts published lineage markers from
+  # these accounts and nobody else, so a job that supplies neither field trusts
+  # nobody, discards every comment fetched below, and records a taken-over pull
+  # request against whoever opened it instead of its verified current writer.
+  # The repository variable overrides the checked-in configuration, exactly as
+  # it does for the gate and the labelers.
+  CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE: {% raw %}${{ vars.CODE_MOWER_DECISION_AUTHORITIES || '' }}{% endraw %}
 
 jobs:
   auto-record:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check out the repository configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
       - name: Set up Python
         uses: actions/setup-python@8fc423ec5f48d6a2f5a10347eab979e8a63b7ab9
         with:
@@ -27,6 +40,34 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install "${CODE_MOWER_PACKAGE_SPEC}"
+
+      - name: Load configured decision authorities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "${GITHUB_ENV}"
+          import re
+          from pathlib import Path
+
+          from code_mower.config import load_config
+          from code_mower.decisions import decision_authorities_from_config
+
+          # The repository's own configuration is the authority source the rest
+          # of Code Mower already resolves; nothing here grants trust of its
+          # own. Logins only, so a malformed entry cannot write a second
+          # environment assignment into GITHUB_ENV.
+          config_path = Path("code-mower.yml")
+          authorities = (
+              decision_authorities_from_config(load_config(config_path))
+              if config_path.is_file()
+              else ()
+          )
+          safe = [
+              item for item in authorities
+              if re.fullmatch(r"[A-Za-z0-9._\[\]-]{1,100}", str(item))
+          ]
+          print("CODE_MOWER_DECISION_AUTHORITIES=" + ",".join(safe))
+          PY
 
       - name: Record inferred builder provenance
         id: record
