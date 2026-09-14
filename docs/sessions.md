@@ -480,6 +480,13 @@ The default provider is the fully offline `fake` simulator. Select `--provider
 devin` for the reusable organization-scoped Devin v3 adapter. Live dispatch
 requires existing Devin credentials and the exact repository acknowledgement
 `CODE_MOWER_DEVIN_REPOSITORIES`; `--max-acu-limit` defaults to 10 (range 1–100).
+Live Devin `dispatch` and new-work `message` also require `--config
+code-mower.yml --runtime-readiness ready`, supplied by the trusted supervisor
+after checking the selected execution path. The same bounded builder decision
+as the hosted work-order library runs before credential/prose/state access.
+Omitted readiness, disabled policy, or missing/stale qualification rejects new
+work. Preview retains its no-I/O behavior; `status`, `collect`, and `cancel`
+remain available for existing bindings without these admission options.
 There are no automatic provider mutation retries. Credentials are resolved for
 each invocation and never saved in remote-session records. Keep the same
 provider and organization on subsequent calls; changed bindings fail closed.

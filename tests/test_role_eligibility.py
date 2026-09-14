@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from code_mower import config, init, participants, role_eligibility as roles, session
+from code_mower import config, init, participants, remote_session_cli, role_eligibility as roles, session
 from code_mower.devin_readiness import devin_readiness
 from code_mower.provider_capabilities import normalize_lane
 from code_mower.devin_work_orders import DevinWorkOrders
@@ -219,6 +219,84 @@ class SessionRoleAdmissionTests(unittest.TestCase):
         self.assertEqual(decisions["orchestrator"]["status"], "ineligible")
         self.assertEqual(decisions["merge_reviewer"]["status"], "ineligible")
         self.assertEqual(decisions["reviewer"]["scope"], "informational")
+
+
+class RawRemoteRoleAdmissionTests(unittest.TestCase):
+    def test_denied_devin_cli_new_work_has_no_credential_prose_or_state_access(self):
+        for command in ("dispatch", "message"):
+            for configuration, runtime in ((None, "ready"), (policy("builder", enabled=False), "ready"),
+                                           (policy("builder", qualification="missing"), "ready"),
+                                           ({}, "unchecked"), ({}, "unavailable")):
+                with self.subTest(command=command, runtime=runtime), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    args = [command, "private-work", "--provider", "devin", "--apply",
+                            "--remote-state-dir", str(root / "state"), "--input-file", str(root / "absent"),
+                            "--runtime-readiness", runtime]
+                    args += ["--repo", "owner/repo"] if command == "dispatch" else ["--request", "message-one"]
+                    if configuration is not None:
+                        path = root / "policy.yml"
+                        settings = configuration.get("role_policy", {}).get("devin", {}).get("builder", {})
+                        content = "role_policy:\n  devin:\n    builder:\n" + "".join(
+                            f"      {key}: {str(value).lower() if isinstance(value, bool) else value}\n"
+                            for key, value in settings.items()
+                        ) if settings else "version: 1\n"
+                        path.write_text(content)
+                        args += ["--config", str(path)]
+                    before = sorted(root.rglob("*"))
+                    errors = io.StringIO()
+                    with mock.patch("code_mower.devin_api.credentials_from_env", side_effect=AssertionError("credential access")), \
+                            mock.patch.object(remote_session_cli, "RemoteSessions", side_effect=AssertionError("state access")), \
+                            redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                        self.assertEqual(session.main(args), 1)
+                    self.assertIn("role_not_eligible", errors.getvalue())
+                    self.assertEqual(len(errors.getvalue().splitlines()), 1)
+                    self.assertEqual(sorted(root.rglob("*")), before)
+
+    def test_eligible_cli_work_keeps_request_identity_and_bounded_input(self):
+        credentials = mock.Mock(has_credentials=True, org_id="test", api_key="test")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            configuration = root / "code-mower.yml"
+            configuration.write_text("version: 1\n")
+            prose = root / "input.txt"
+            prose.write_text("approved bounded work")
+            for command in ("dispatch", "message"):
+                args = [command, "work", "--provider", "devin", "--apply", "--config", str(configuration),
+                        "--runtime-readiness", "ready", "--input-file", str(prose)]
+                args += ["--repo", "owner/repo", "--max-acu-limit", "1"] if command == "dispatch" else ["--request", "message-one"]
+                with mock.patch("code_mower.devin_api.credentials_from_env", return_value=credentials), \
+                        mock.patch("code_mower.devin_api.repository_scope_acknowledged", return_value=True), \
+                        mock.patch.object(remote_session_cli, "DevinClient"), \
+                        mock.patch.object(remote_session_cli, "DevinProvider"), \
+                        mock.patch.object(remote_session_cli, "RemoteSessions") as remote, redirect_stdout(io.StringIO()):
+                    remote.return_value.run.return_value = {"state": "running"}
+                    self.assertEqual(session.main(args), 0)
+                    call = remote.return_value.run.call_args
+                    self.assertEqual(call.args, (command, "work"))
+                    self.assertEqual(call.kwargs["prose"], "approved bounded work")
+                    self.assertTrue(call.kwargs["apply"])
+                    if command == "dispatch":
+                        self.assertEqual((call.kwargs["repo"], call.kwargs["limit"]), ("owner/repo", 1))
+                    else:
+                        self.assertEqual(call.kwargs["request"], "message-one")
+
+    def test_existing_devin_binding_controls_do_not_require_builder_admission(self):
+        credentials = mock.Mock(has_credentials=True, org_id="test", api_key="test")
+        for command in ("status", "collect", "cancel"):
+            args = [command, "old-work", "--provider", "devin", "--apply"]
+            if command == "cancel":
+                args += ["--request", "cancel-one"]
+            with mock.patch("code_mower.devin_api.credentials_from_env", return_value=credentials), \
+                    mock.patch.object(remote_session_cli, "DevinClient"), \
+                    mock.patch.object(remote_session_cli, "DevinProvider"), \
+                    mock.patch.object(remote_session_cli, "RemoteSessions") as remote, \
+                    mock.patch.object(remote_session_cli, "require_builder", side_effect=AssertionError("unexpected admission")), \
+                    redirect_stdout(io.StringIO()):
+                remote.return_value.run.return_value = {"state": "running"}
+                self.assertEqual(session.main(args), 0)
+                self.assertEqual(remote.return_value.run.call_args.args, (command, "old-work"))
+                if command == "cancel":
+                    self.assertEqual(remote.return_value.run.call_args.kwargs["request"], "cancel-one")
 
 
 class HostedRoleAdmissionTests(WorkOrderCase):

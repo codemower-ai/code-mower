@@ -182,3 +182,16 @@ def require_role(decision: Mapping[str, Any], *, execution: bool = False) -> Non
         f"{product} cannot act as {role}: {detail}; select a qualified, ready participant "
         "or supply separately reviewed role qualification. No participant was substituted."
     )
+
+
+def require_builder(
+    *, config: Mapping[str, Any] | None, runtime: str = "unchecked",
+    transport: str, execution: bool = True,
+) -> dict[str, Any]:
+    """Shared bounded Devin entrypoint for trusted dispatchers and CLI adapters."""
+    if config is None:
+        raise ConfigError("new builder work requires explicit trusted repository configuration")
+    decision = decide_role("devin", "builder", config=config, runtime=runtime,
+                           transport=transport, bounded=True)
+    require_role(decision, execution=execution)
+    return decision

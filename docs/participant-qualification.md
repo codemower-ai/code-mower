@@ -52,7 +52,10 @@ available. An eligible
 mutating start prints the exact lease inspection and release commands; see
 [session lifecycle](sessions.md#single-orchestrator-lease).
 The hosted work-order library checks dispatch, clarification, and fix admission
-before state locks, reservations, or provider calls. Read-only inspection and
+before state locks, reservations, or provider calls. The maintained raw
+`session dispatch/message --provider devin` CLI uses the same `require_builder`
+entrypoint with explicit trusted configuration and runtime readiness, before
+credential or prose access. Read-only inspection and
 collection, and cancellation of an existing binding, remain usable after
 eligibility changes. Qualification never becomes part of the immutable
 work-order identity; see [hosted work orders](devin-work-orders.md).

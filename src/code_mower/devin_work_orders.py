@@ -29,7 +29,7 @@ from .context_store import ContextStore
 from .devin_sessions import REPO, DevinClient
 from .provider_capabilities import resolve_transport
 from .remote_session import DevinProvider, RemoteError, RemoteSessions, public_projection
-from .role_eligibility import decide_role, require_role
+from .role_eligibility import require_builder
 from .yaml_subset import ConfigError
 from .work_orders import WORK_ORDER_SCHEMA
 
@@ -495,12 +495,10 @@ class DevinWorkOrders:
             raise RemoteError("invalid_request")
         if command in {"dispatch", "clarify", "fix"}:
             try:
-                if self.role_config is None:
-                    raise ConfigError("new builder work requires explicit trusted repository configuration")
-                require_role(decide_role(
-                    "devin", "builder", transport=self.transport.transport,
-                    config=self.role_config, runtime=self.runtime, bounded=True,
-                ), execution=apply)
+                require_builder(
+                    transport=self.transport.transport, config=self.role_config,
+                    runtime=self.runtime, execution=apply,
+                )
             except ConfigError as exc:
                 raise RemoteError(f"role_not_eligible: {exc}") from None
         # Library equivalent of --apply: no reads, writes or provider calls in preview.
