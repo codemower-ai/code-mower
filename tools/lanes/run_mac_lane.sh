@@ -1600,10 +1600,22 @@ if [ "${#lane_delivery[@]}" -gt 0 ] && [ "$mode" != "audit" ]; then
         --branch "$reconcile_branch" --state-dir "$HANDOFF_STATE_DIR"
         --publish --reconcile-labels --json
       )
+      # The label set handed to reconciliation decides what is *removed*. A
+      # failed read is not an empty label set: passing none makes the move
+      # purely additive, so the destination lane's label goes on while the
+      # source lane's stays, the pull request carries two builder labels, and
+      # the run reports success. This read is required, and it is required
+      # before publication -- neither the lineage comment nor the label may be
+      # written against a label set nobody observed.
+      if ! reconcile_labels="$(gh pr view "$num" -R "$REPO" \
+        --json labels -q '.labels[].name' 2>/dev/null)"; then
+        echo "${LANE}: refusing to publish builder lineage or reconcile the builder label for ${REPO}#${num} at ${reconcile_head}: the current label set could not be read, and reconciling against an unobserved label set can leave two builder labels on the pull request. Re-run this unit once 'gh pr view --json labels' succeeds for it." >&2
+        exit 2
+      fi
       while IFS= read -r reconcile_label; do
         [ -n "$reconcile_label" ] || continue
         reconcile_args+=(--label "$reconcile_label")
-      done < <(gh pr view "$num" -R "$REPO" --json labels -q '.labels[].name' 2>/dev/null || true)
+      done <<< "$reconcile_labels"
       "${lane_delivery[@]}" "${reconcile_args[@]}" > "${log%.log}.lineage.json" 2>/dev/null \
         || echo "${LANE}: builder label reconciliation did not resolve at ${reconcile_head}" >&2
     fi

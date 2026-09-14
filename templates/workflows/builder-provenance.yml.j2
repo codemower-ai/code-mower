@@ -52,7 +52,6 @@ jobs:
           mkdir -p .code-mower/builder-runs
           number="{% raw %}${{ github.event.pull_request.number }}{% endraw %}"
           output=".code-mower/builder-runs/pr-${number}.cloud-event.json"
-          pages=".code-mower/pr-comment-pages.json"
           comments=".code-mower/pr-comments.json"
           # The event payload carries the opener, the head and the labels, but
           # never the comments the verified lineage is published on. Without
@@ -64,41 +63,75 @@ jobs:
           # that proves a takeover is posted when the takeover happens, so it is
           # among the newest comments on a long-running pull request: reading
           # one page, or substituting an empty list for a failed read, silently
-          # re-attributes the run to whoever opened it. This is the same bounded
-          # paginated read the gate makes, and every failure stops the job
-          # before any attribution artifact exists.
-          gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/issues/${number}/comments?per_page=100" \
-            > "${pages}"
-          python - "${pages}" "${comments}" <<'PY'
+          # re-attributes the run to whoever opened it. So every page is asked
+          # for explicitly, the number of requests is finite before the first
+          # one is made, and every failure stops the job before any attribution
+          # artifact exists.
+          python - "${comments}" "${number}" <<'PY'
           import json
+          import os
+          import subprocess
           import sys
 
-          # An explicit ceiling on how much history is read, so a pathological
-          # pull request refuses rather than paginating without end.
-          MAX_PAGES = 50
+          # Finite before the first request: at most MAX_PAGES pages of history
+          # plus one probe. Reading until the server stops answering is what
+          # "bounded" exists to rule out.
+          PER_PAGE = 100
+          MAX_PAGES = 20
+          MAX_COMMENTS = PER_PAGE * MAX_PAGES
+
+          destination, number = sys.argv[1], sys.argv[2]
+          repo = os.environ["GITHUB_REPOSITORY"]
 
           def refuse(reason):
               raise SystemExit(f"builder provenance: {reason}; refusing to attribute")
 
-          try:
-              with open(sys.argv[1], encoding="utf-8") as handle:
-                  slurped = json.load(handle)
-          except (OSError, ValueError):
-              refuse("the comment history could not be read whole")
-          if not isinstance(slurped, list):
-              refuse("the comment history is not a paginated array")
-          if len(slurped) > MAX_PAGES:
-              refuse(f"the comment history exceeds the {MAX_PAGES}-page cap")
+          def read_page(index):
+              completed = subprocess.run(
+                  [
+                      "gh",
+                      "api",
+                      f"repos/{repo}/issues/{number}/comments"
+                      f"?per_page={PER_PAGE}&page={index}",
+                  ],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  text=True,
+              )
+              if completed.returncode != 0:
+                  refuse(f"page {index} of the comment history could not be read")
+              try:
+                  payload = json.loads(completed.stdout)
+              except ValueError:
+                  refuse(f"page {index} of the comment history was not complete JSON")
+              if not isinstance(payload, list):
+                  refuse(f"page {index} of the comment history is not an array")
+              if len(payload) > PER_PAGE:
+                  refuse(f"page {index} of the comment history is over the page size")
+              for entry in payload:
+                  if not isinstance(entry, dict):
+                      refuse(f"page {index} of the comment history holds a non-object")
+              return payload
+
           comments = []
-          for page in slurped:
-              if not isinstance(page, list):
-                  refuse("a comment page is not an array")
-              for comment in page:
-                  if not isinstance(comment, dict):
-                      refuse("a comment entry is not an object")
-                  comments.append(comment)
-          with open(sys.argv[2], "w", encoding="utf-8") as handle:
+          index = 1
+          while index <= MAX_PAGES:
+              page = read_page(index)
+              comments.extend(page)
+              if len(page) < PER_PAGE:
+                  break
+              index += 1
+          else:
+              # Exactly MAX_PAGES full pages. One more request settles whether
+              # the history ends here or runs past the cap -- and an unread
+              # remainder is precisely where the newest marker would be.
+              if read_page(MAX_PAGES + 1):
+                  refuse(f"the comment history is longer than {MAX_COMMENTS} comments")
+          if len(comments) > MAX_COMMENTS:
+              refuse(f"the comment history is longer than {MAX_COMMENTS} comments")
+          # One flat array of comment objects: nested page arrays are silently
+          # ignored by the reader this feeds.
+          with open(destination, "w", encoding="utf-8") as handle:
               json.dump(comments, handle)
           PY
           code-mower builder auto-record \

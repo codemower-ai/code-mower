@@ -657,23 +657,60 @@ class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):
             .replace("${{ github.token }}", "unused-in-this-test")
         )
 
-    def _run_job(self, *, gh_stdout=None, gh_exit_code=0, comments=None):
-        """Execute the generated step with a fake `gh` and a real auto-record."""
+    #: The job's own bound: MAX_PAGES pages of history plus one probe.
+    MAX_REQUESTS = 21
+
+    def _run_job(self, *, pages=None, raw=None, fail_from_page=None):
+        """Execute the generated step with a page-aware fake `gh`.
+
+        The fake answers each page request individually and records it, so the
+        test can assert what the job actually asked for rather than trusting a
+        single canned body.
+        """
 
         root = git_free_tempdir(self, "code-mower-generated-job-")
         bin_dir = root / "bin"
         bin_dir.mkdir()
-        payload = (
-            json.dumps(comments) if gh_stdout is None else gh_stdout
+        requests_log = root / "gh-requests.log"
+        spec = bin_dir / "gh-spec.json"
+        spec.write_text(
+            json.dumps(
+                {
+                    "pages": pages if pages is not None else [[]],
+                    "raw": raw,
+                    "fail_from_page": fail_from_page,
+                    "log": str(requests_log),
+                }
+            ),
+            encoding="utf-8",
         )
-        (bin_dir / "payload.json").write_text(payload, encoding="utf-8")
+        gh_py = bin_dir / "gh_fake.py"
+        gh_py.write_text(
+            "import json, re, sys\n"
+            f"spec = json.load(open({str(spec)!r}, encoding='utf-8'))\n"
+            "with open(spec['log'], 'a', encoding='utf-8') as fh:\n"
+            "    fh.write(' '.join(sys.argv[1:]) + '\\n')\n"
+            "match = re.search(r'[?&]page=(\\d+)', sys.argv[-1])\n"
+            "page = int(match.group(1)) if match else 1\n"
+            "fail = spec['fail_from_page']\n"
+            "if fail is not None and page >= fail:\n"
+            "    sys.stderr.write('gh: HTTP 502\\n')\n"
+            "    raise SystemExit(1)\n"
+            "if spec['raw'] is not None:\n"
+            "    sys.stdout.write(spec['raw'])\n"
+            "    raise SystemExit(0)\n"
+            "pages = spec['pages']\n"
+            "body = pages[page - 1] if page - 1 < len(pages) else []\n"
+            "sys.stdout.write(json.dumps(body))\n",
+            encoding="utf-8",
+        )
         (bin_dir / "gh").write_text(
             "#!/bin/sh\n"
-            f"cat {shlex.quote(str(bin_dir / 'payload.json'))}\n"
-            f"exit {gh_exit_code}\n",
+            f"exec {shlex.quote(sys.executable)} {shlex.quote(str(gh_py))} \"$@\"\n",
             encoding="utf-8",
         )
         (bin_dir / "gh").chmod(0o755)
+        self._requests_log = requests_log
 
         shim = bin_dir / "auto_record_shim.py"
         shim.write_text(
@@ -730,13 +767,31 @@ class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):
             for index in range(count)
         ]
 
+    def _requests(self):
+        if not self._requests_log.is_file():
+            return []
+        return [
+            line
+            for line in self._requests_log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
     def _assert_refused(self, completed, artifact):
         self.assertNotEqual(completed.returncode, 0, completed.stdout)
         self.assertIsNone(artifact, "a refusal may leave no attribution artifact")
 
+    def _assert_bounded(self):
+        requests = self._requests()
+        self.assertLessEqual(
+            len(requests), self.MAX_REQUESTS, "the job asked for more than its bound"
+        )
+        for request in requests:
+            self.assertNotIn("--paginate", request, "pagination must stay explicit")
+            self.assertIn("page=", request, "each request names the page it wants")
+
     def test_a_trusted_marker_beyond_the_first_page_is_still_read(self):
         completed, artifact = self._run_job(
-            comments=[self._filler(100), [marker_comment()]]
+            pages=[self._filler(100), [marker_comment()]]
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIsNotNone(artifact)
@@ -745,60 +800,109 @@ class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):
         )
         self.assertEqual(artifact["dimensions"]["builder_executor"],
                          "chatgpt-codex-connector")
+        self._assert_bounded()
+        self.assertEqual(len(self._requests()), 2, "page 1 short-circuits nothing")
 
     def test_an_empty_final_page_is_read_as_the_end_of_the_history(self):
         completed, artifact = self._run_job(
-            comments=[self._filler(99) + [marker_comment()], []]
+            pages=[self._filler(99) + [marker_comment()], []]
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             artifact["dimensions"]["builder_current_writer"], "codex"
         )
+        # Page one is full, so page two is asked for and comes back empty.
+        self.assertEqual(len(self._requests()), 2)
+        self._assert_bounded()
 
-    def test_an_exact_page_boundary_is_read_whole(self):
+    def test_an_exact_page_boundary_probes_one_more_page(self):
+        """A full page is not the end of the history until the next one is."""
+
         completed, artifact = self._run_job(
-            comments=[self._filler(99) + [marker_comment()]]
+            pages=[self._filler(100), self._filler(99) + [marker_comment()]]
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             artifact["dimensions"]["builder_current_writer"], "codex"
         )
+        self.assertEqual(len(self._requests()), 3, "full page 2 is probed by page 3")
+        self._assert_bounded()
 
-    def test_a_failed_read_refuses_instead_of_attributing_the_opener(self):
-        completed, artifact = self._run_job(
-            gh_stdout="", gh_exit_code=1, comments=[]
-        )
+    def test_a_first_page_failure_refuses_instead_of_attributing_the_opener(self):
+        completed, artifact = self._run_job(fail_from_page=1)
         self._assert_refused(completed, artifact)
 
     def test_a_later_page_failure_refuses(self):
-        # `gh --paginate` fails as a whole when any page does; the partial
-        # body it already emitted must not be accepted as the history.
         completed, artifact = self._run_job(
-            gh_stdout=json.dumps([self._filler(100)]), gh_exit_code=1
+            pages=[self._filler(100), self._filler(100)], fail_from_page=2
         )
         self._assert_refused(completed, artifact)
+        self.assertEqual(len(self._requests()), 2, "it stopped at the failure")
 
     def test_a_malformed_api_shape_refuses(self):
-        for shape in ('{"comments": []}', '[{"user": {}}]', '[[ "text" ]]'):
+        shapes = (
+            '{"comments": []}',          # an object, not a page
+            '[{"user": {}}, "text"]',    # a non-object entry
+            '[[{"user": {}}]]',          # a nested page array
+        )
+        for shape in shapes:
             with self.subTest(shape=shape):
-                completed, artifact = self._run_job(gh_stdout=shape)
+                completed, artifact = self._run_job(raw=shape)
                 self._assert_refused(completed, artifact)
 
     def test_truncated_json_refuses(self):
-        completed, artifact = self._run_job(gh_stdout='[[{"user": {"login":')
+        completed, artifact = self._run_job(raw='[{"user": {"login":')
         self._assert_refused(completed, artifact)
 
-    def test_exceeding_the_explicit_page_cap_refuses(self):
-        completed, artifact = self._run_job(comments=[[] for _ in range(51)])
+    def test_an_oversized_page_refuses(self):
+        completed, artifact = self._run_job(pages=[self._filler(101)])
         self._assert_refused(completed, artifact)
-        self.assertIn("page cap", completed.stderr + completed.stdout)
+
+    def test_a_history_past_the_comment_cap_refuses(self):
+        # Twenty full pages, and a twenty-first that still has more: the probe
+        # is what separates "exactly at the cap" from "past it".
+        completed, artifact = self._run_job(
+            pages=[self._filler(100) for _ in range(21)]
+        )
+        self._assert_refused(completed, artifact)
+        self.assertIn("longer than", completed.stderr + completed.stdout)
+        self._assert_bounded()
+        self.assertEqual(len(self._requests()), self.MAX_REQUESTS)
+
+    def test_a_history_exactly_at_the_cap_is_accepted(self):
+        pages = [self._filler(100) for _ in range(19)]
+        pages.append(self._filler(99) + [marker_comment()])
+        completed, artifact = self._run_job(pages=pages)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            artifact["dimensions"]["builder_current_writer"], "codex"
+        )
+        self.assertEqual(len(self._requests()), self.MAX_REQUESTS)
+        self._assert_bounded()
+
+    def test_the_comments_handed_on_are_one_flat_array(self):
+        """Nested page arrays are silently ignored by the reader downstream."""
+
+        completed, _ = self._run_job(
+            pages=[self._filler(100), [marker_comment()]]
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        written = json.loads(
+            (self._requests_log.parent / ".code-mower/pr-comments.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertIsInstance(written, list)
+        self.assertEqual(len(written), 101)
+        for entry in written:
+            self.assertIsInstance(entry, dict)
 
     def test_an_empty_history_still_records_the_opener(self):
         """Absence of evidence is not a failure -- only unreadability is."""
 
-        completed, artifact = self._run_job(comments=[[]])
+        completed, artifact = self._run_job(pages=[[]])
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(artifact["dimensions"]["builder_executor"], "devin")
+        self.assertEqual(len(self._requests()), 1)
 
 
 class AttributionMovesOnlyOnAVerifiedTransition(unittest.TestCase):

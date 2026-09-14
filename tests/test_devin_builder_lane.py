@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -95,6 +96,10 @@ def _lane_delivery_env() -> dict[str, str]:
 # $HOME/lane-delivered to model "this run opened or advanced the lane's PR";
 # a fixture whose provider does not drop it models a run that delivered nothing.
 _DELIVERY_MARKER_NAME = "lane-delivered"
+#: Every fake `gh` call is recorded, so a test can assert what was *not* done.
+_GH_INVOCATION_LOG = "gh-invocations.log"
+#: Present when the fixture should fail only the fresh label lookup.
+_LABEL_LOOKUP_FAILS_MARKER = "labels-lookup-fails"
 _HEAD_BEFORE = "a" * 40
 _HEAD_AFTER = "b" * 40
 # The snapshot carries the head branch from the same authenticated PR read as
@@ -104,7 +109,17 @@ _FAKE_GH_DELIVERY_HEADER = f"""#!/usr/bin/env bash
 set -euo pipefail
 cmd="${{1:-}} ${{2:-}}"
 args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author"* ]]; then
+printf '%s\\n' "$*" >> "$HOME/{_GH_INVOCATION_LOG}"
+if [ "$cmd" = "pr view" ] && [[ "$args" == *"--json labels"* ]]; then
+  # The fresh label read reconciliation depends on. A lane that cannot see the
+  # current labels must refuse rather than reconcile against an empty set.
+  if [ -f "$HOME/{_LABEL_LOOKUP_FAILS_MARKER}" ]; then
+    printf 'gh: could not resolve labels for this pull request\\n' >&2
+    exit 1
+  fi
+  printf '%s\\n' 'builder:devin'
+  exit 0
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author"* ]]; then
   if [ -f "$HOME/{_DELIVERY_MARKER_NAME}" ]; then
     printf '%s\\n' '[{{"number":77,"headRefName":"devin/issue-12","headRefOid":"{_HEAD_AFTER}","headRepository":{{"nameWithOwner":"owner/repo"}},"labels":[{{"name":"builder:devin"}}],"author":{{"login":"devin-ai-integration[bot]"}},"closingIssuesReferences":[{{"number":12,"repository":{{"nameWithOwner":"owner/repo"}},"url":"https://github.com/owner/repo/issues/12"}}]}}]'
   else
@@ -533,6 +548,134 @@ exit 0
         # run. `_FAKE_GH_DELIVERY_HEADER` opens #77 once the provider delivers.
         self.assertIn("--pr owner/repo#77", record_argv)
         self.assertIn("--status pr-opened", record_argv)
+
+    def _rendered_reconcile_block(self, output_dir: Path) -> str:
+        """The generated runner's own label-read-then-reconcile fragment."""
+
+        runner = self._generated_runner(output_dir)
+        text = runner.read_text(encoding="utf-8")
+        start = text.index("      # The label set handed to reconciliation")
+        end = text.index('      done <<< "$reconcile_labels"') + len(
+            '      done <<< "$reconcile_labels"'
+        )
+        return textwrap.dedent(text[start:end])
+
+    def test_devin_lane_refuses_to_reconcile_when_the_label_read_fails(self) -> None:
+        """A failed label read is not an empty label set.
+
+        Reconciliation is told which labels are present so it knows which to
+        *remove*. Handed none, the move is purely additive: the destination
+        lane's label goes on, the source lane's stays, and the pull request
+        ends up carrying two builder labels while the run reports success. The
+        read is required, and required before anything is published or moved.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            fragment = self._rendered_reconcile_block(output_dir)
+            self.assertNotIn("|| true", fragment)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            invocations = root / "gh-invocations.log"
+            (bin_dir / "gh").write_text(
+                "#!/usr/bin/env bash\n"
+                f'printf "%s\\n" "$*" >> {invocations}\n'
+                'if [ "${1:-} ${2:-}" = "pr view" ] '
+                '&& [[ " $* " == *"--json labels"* ]]; then\n'
+                "  printf 'gh: could not resolve labels\\n' >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            (bin_dir / "gh").chmod(0o755)
+
+            harness = root / "reconcile.sh"
+            harness.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'LANE="devin"\n'
+                'REPO="owner/repo"\n'
+                'num="77"\n'
+                f'reconcile_head="{_HEAD_AFTER}"\n'
+                "reconcile_args=(lineage --publish --reconcile-labels)\n"
+                f'lane_delivery=("{bin_dir}/lane-delivery-must-not-run")\n'
+                + fragment
+                + "\n"
+                '"${lane_delivery[@]}" "${reconcile_args[@]}"\n',
+                encoding="utf-8",
+            )
+            harness.chmod(0o755)
+
+            completed = subprocess.run(
+                ["bash", str(harness)],
+                env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+                text=True,
+                capture_output=True,
+            )
+            attempted = [
+                line
+                for line in invocations.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("refusing to publish builder lineage", completed.stderr)
+        self.assertIn("gh pr view --json labels", completed.stderr)
+        # Nothing was published and no label was moved: the delivery CLI that
+        # would have done both was never reached.
+        self.assertNotIn("lane-delivery-must-not-run", completed.stderr)
+        self.assertEqual(
+            attempted,
+            ["pr view 77 -R owner/repo --json labels -q .labels[].name"],
+            "only the required read was attempted",
+        )
+
+    def test_devin_lane_reconciles_against_the_labels_it_read(self) -> None:
+        """The ordinary path is unchanged: observed labels are passed through."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "generated"
+            fragment = self._rendered_reconcile_block(output_dir)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "gh").write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'builder:devin\\nneeds-codex-audit\\n'\n",
+                encoding="utf-8",
+            )
+            (bin_dir / "gh").chmod(0o755)
+
+            harness = root / "reconcile.sh"
+            harness.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'LANE="devin"\n'
+                'REPO="owner/repo"\n'
+                'num="77"\n'
+                f'reconcile_head="{_HEAD_AFTER}"\n'
+                "reconcile_args=(lineage)\n"
+                + fragment
+                + "\n"
+                'printf "%s\\n" "${reconcile_args[@]}"\n',
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                ["bash", str(harness)],
+                env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+                text=True,
+                capture_output=True,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            completed.stdout.split(),
+            ["lineage", "--label", "builder:devin", "--label", "needs-codex-audit"],
+        )
 
     def test_devin_lane_warns_but_still_succeeds_when_builder_record_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
