@@ -1,7 +1,25 @@
 name: Code Mower Builder Provenance
 
 on:
-  pull_request:
+  # Base-controlled, deliberately. The decision-authority list this job trusts
+  # is rendered into this file, so the file itself is part of the trust
+  # boundary: under `pull_request` GitHub runs the workflow *as it exists on
+  # the proposed revision*, and a contributor could edit their own copy of this
+  # workflow and name themselves an authority. `pull_request_target` runs the
+  # definition from the base branch, in the base context -- the reviewed copy,
+  # and the reviewed authority list with it.
+  #
+  # The usual hazard of `pull_request_target` is running untrusted code with a
+  # privileged token. That does not arise here, and must not be introduced:
+  # this job never checks the pull request out, never installs its
+  # dependencies, and never reads its configuration. It installs a pinned
+  # release of Code Mower and reads GitHub's own metadata for the bound pull
+  # request. Permissions stay read-only for the same reason -- nothing here
+  # needs to write, and a base-context token that could would be worth
+  # attacking. Keep it that way if this workflow is ever extended.
+  #
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target
+  pull_request_target:
     types: [opened, edited, synchronize, reopened, ready_for_review]
 
 permissions:
@@ -18,11 +36,12 @@ env:
   # request against whoever opened it instead of its verified current writer.
   #
   # The list is rendered here, from the configuration this repository reviewed
-  # and installed, exactly as the gate and the labelers receive it. This job
-  # runs on `pull_request`, so it must never read the authority list out of the
-  # proposed head: a contributor who could edit the checked-out configuration
-  # would otherwise name themselves an authority and have their own lineage
-  # marker believed. The repository variable still overrides it.
+  # and installed, exactly as the gate and the labelers receive it -- and,
+  # because of the event above, from the base copy of this file rather than the
+  # proposed one. Nothing is read out of the pull request's tree: not its
+  # configuration, and not its copy of this workflow. The repository variable,
+  # which is a repository setting and not part of any revision, still overrides
+  # it.
   CODE_MOWER_DECISION_AUTHORITIES: __DECISION_AUTHORITIES__
   CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE: {% raw %}${{ vars.CODE_MOWER_DECISION_AUTHORITIES || '' }}{% endraw %}
 
@@ -47,10 +66,21 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+          # Carried as an environment value rather than expanded into the
+          # script, and checked before use: event data names the bound target,
+          # it never becomes part of a command.
+          CODE_MOWER_PR_NUMBER: {% raw %}${{ github.event.pull_request.number }}{% endraw %}
         run: |
           set -euo pipefail
           mkdir -p .code-mower/builder-runs
-          number="{% raw %}${{ github.event.pull_request.number }}{% endraw %}"
+          number="${CODE_MOWER_PR_NUMBER}"
+          case "${number}" in
+            ''|*[!0-9]*)
+              echo "builder provenance: the event named no numeric pull request;" \
+                   "refusing to attribute" >&2
+              exit 1
+              ;;
+          esac
           output=".code-mower/builder-runs/pr-${number}.cloud-event.json"
           comments=".code-mower/pr-comments.json"
           # The event payload carries the opener, the head and the labels, but

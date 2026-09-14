@@ -910,16 +910,33 @@ class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):
             for item in workflow["jobs"]["auto-record"]["steps"]
             if item.get("id") == "record"
         )
-        return (
-            step["run"]
-            .replace("${{ github.event.pull_request.number }}", str(PR))
-            .replace("${{ github.token }}", "unused-in-this-test")
+        # The PR number now arrives as an environment value the script checks,
+        # not as an expression expanded into it, so nothing is substituted here.
+        return step["run"]
+
+    def _workflow_env(self, *, authorities=AUTHORITY, variable="", template=None):
+        """The job environment GitHub composes from the *base* workflow file.
+
+        The authority list is rendered into the workflow, so this is the whole
+        point of the base-controlled event: the job's inputs come from this
+        file, not from the pull request.
+        """
+
+        from code_mower import init
+
+        rendered = init._render_workflow_template(
+            (template or self.TEMPLATE).read_text(encoding="utf-8"),
+            {"decision_authorities": authorities},
         )
+        env = dict(yaml.safe_load(rendered).get("env") or {})
+        env["CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE"] = variable
+        env.pop("CODE_MOWER_PACKAGE_SPEC", None)
+        return {str(key): str(value) for key, value in env.items()}
 
     #: The job's own bound: MAX_PAGES pages of history plus one probe.
     MAX_REQUESTS = 21
 
-    def _run_job(self, *, pages=None, raw=None, fail_from_page=None):
+    def _run_job(self, *, pages=None, raw=None, fail_from_page=None, job_env=None):
         """Execute the generated step with a page-aware fake `gh`.
 
         The fake answers each page request individually and records it, so the
@@ -1006,8 +1023,8 @@ class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):
                 "GITHUB_REPOSITORY": REPO,
                 "GITHUB_EVENT_PATH": str(event_path),
                 "GITHUB_OUTPUT": str(root / "github_output"),
-                "CODE_MOWER_DECISION_AUTHORITIES": AUTHORITY,
-                "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+                "CODE_MOWER_PR_NUMBER": str(PR),
+                **(self._workflow_env() if job_env is None else dict(job_env)),
             },
             capture_output=True,
             text=True,
@@ -1154,6 +1171,127 @@ class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):
         self.assertEqual(len(written), 101)
         for entry in written:
             self.assertIsInstance(entry, dict)
+
+    def test_the_workflow_runs_from_the_base_branch_not_the_proposal(self):
+        """The authority list lives in this file, so the file must be trusted.
+
+        Under `pull_request` GitHub runs the workflow as it exists on the
+        proposed revision, which would let a contributor edit their own copy
+        and name themselves an authority. `pull_request_target` runs the base
+        copy, in the base context.
+        """
+
+        for template in (
+            ROOT / "templates/workflows/builder-provenance.yml.j2",
+            ROOT / "src/code_mower/templates/workflows/builder-provenance.yml.j2",
+        ):
+            with self.subTest(template=template.name):
+                from code_mower import init
+
+                rendered = init._render_workflow_template(
+                    template.read_text(encoding="utf-8"),
+                    {"decision_authorities": AUTHORITY},
+                )
+                workflow = yaml.safe_load(rendered)
+                triggers = workflow[True] if True in workflow else workflow["on"]
+                self.assertEqual(list(triggers), ["pull_request_target"])
+                self.assertEqual(
+                    workflow["permissions"],
+                    {"contents": "read", "pull-requests": "read"},
+                    "a base-context token stays read-only",
+                )
+                # The base context is only safe while nothing from the
+                # proposal is fetched, built or executed.
+                self.assertNotIn("actions/checkout", rendered)
+                self.assertNotIn("code-mower.yml", rendered)
+                for step in workflow["jobs"]["auto-record"]["steps"]:
+                    run = step.get("run", "")
+                    self.assertNotIn("git ", run)
+                    self.assertNotIn("requirements", run)
+                self.assertIn("pull_request_target", rendered)
+
+    def test_a_proposed_workflow_and_config_cannot_change_who_is_trusted(self):
+        """The hostile-head case, end to end through real auto-record.
+
+        The proposal carries its own copy of this workflow naming an outsider
+        as an authority, and its own `code-mower.yml` doing the same. The job
+        runs from the base copy, so neither is read: the outsider's marker
+        stays untrusted and the reviewed authority's is believed.
+        """
+
+        hostile = git_free_tempdir(self, "code-mower-hostile-head-")
+        (hostile / "code-mower.yml").write_text(
+            f"decisions:\n  authorities:\n    - {OUTSIDER}\n", encoding="utf-8"
+        )
+        proposed = hostile / "builder-provenance.yml.j2"
+        proposed.write_text(
+            self.TEMPLATE.read_text(encoding="utf-8").replace(
+                "__DECISION_AUTHORITIES__", f'"{OUTSIDER}"'
+            ),
+            encoding="utf-8",
+        )
+        # What the proposal *would* have supplied, had it been trusted.
+        self.assertEqual(
+            self._workflow_env(template=proposed, authorities=OUTSIDER)[
+                "CODE_MOWER_DECISION_AUTHORITIES"
+            ],
+            OUTSIDER,
+        )
+
+        trusted = self._workflow_env(authorities=AUTHORITY)
+        self.assertEqual(trusted["CODE_MOWER_DECISION_AUTHORITIES"], AUTHORITY)
+
+        outsider_marker = {
+            "user": {"login": OUTSIDER},
+            "body": MARKER_BODY
+            + builder_lineage.lineage_comment_marker((takeover_episode(),)),
+        }
+        completed, artifact = self._run_job(
+            pages=[[outsider_marker]], job_env=trusted
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotEqual(
+            artifact["dimensions"]["builder_executor"],
+            "chatgpt-codex-connector",
+            "a proposed authority may not be believed",
+        )
+
+        completed, artifact = self._run_job(
+            pages=[[marker_comment()]], job_env=trusted
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            artifact["dimensions"]["builder_executor"], "chatgpt-codex-connector",
+            "the reviewed authority is still believed",
+        )
+
+    def test_the_repository_variable_still_overrides_the_reviewed_list(self):
+        """A repository setting is not part of any revision, so it still wins."""
+
+        env = self._workflow_env(authorities="someone-else", variable=AUTHORITY)
+        completed, artifact = self._run_job(
+            pages=[[marker_comment()]], job_env=env
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            artifact["dimensions"]["builder_executor"], "chatgpt-codex-connector"
+        )
+
+    def test_a_non_numeric_bound_target_refuses(self):
+        """Event data names the target; it never becomes part of a command."""
+
+        root = git_free_tempdir(self, "code-mower-bad-number-")
+        script = root / "record.sh"
+        script.write_text(self._step_script(), encoding="utf-8")
+        result = subprocess.run(
+            ["bash", str(script)],
+            cwd=str(root),
+            env={"PATH": os.environ.get("PATH", ""), "HOME": str(root),
+                 "GITHUB_REPOSITORY": REPO, "CODE_MOWER_PR_NUMBER": "12; rm -rf /"},
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("numeric pull request", result.stderr)
 
     def test_an_empty_history_still_records_the_opener(self):
         """Absence of evidence is not a failure -- only unreadability is."""
