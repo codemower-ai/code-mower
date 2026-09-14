@@ -130,14 +130,19 @@ class FakeChild:
 
 
 def recording_indexer(payload: bytes = b"graph-bytes", *, completeness: str = lifecycle.COMPLETE,
-                      seen: list | None = None, indexed_files: int = 0):
+                      seen: list | None = None, indexed_files: int = 0,
+                      unsupported_inputs: int = 0):
     """An indexer that writes a fixed artifact and records what it was shown."""
 
     def run(request: lifecycle.IndexRequest) -> lifecycle.IndexResult:
         if seen is not None:
             seen.append(request)
         request.output_path.write_bytes(payload)
-        return lifecycle.IndexResult(completeness=completeness, indexed_files=indexed_files)
+        return lifecycle.IndexResult(
+            completeness=completeness,
+            indexed_files=indexed_files,
+            unsupported_inputs=unsupported_inputs,
+        )
 
     return run
 
@@ -1544,6 +1549,105 @@ class ProviderLaunchTests(TemporaryWorkspace):
         self.assertIn("could not re-read 1 code files", " ".join(result.notes))
         self.assertEqual(result.indexed_files, 0)
 
+    def test_a_named_package_manifest_is_in_the_denominator(self) -> None:
+        """``classify_file`` routes these by filename before any suffix class.
+
+        ``.toml`` is not a code extension, so an extension-only denominator
+        drops ``pyproject.toml`` entirely: the provider could fail on it while
+        ``src/app.py`` alone let the run claim it was complete. Every name the
+        pin's ``PACKAGE_MANIFEST_NAMES`` carries is checked, including the
+        mixed-case spellings the repositories that use them actually commit.
+        """
+        for name in (
+            "pyproject.toml", "Cargo.toml", "go.mod", "pom.xml", "apm.yml", "apm.yaml",
+        ):
+            with self.subTest(name=name):
+                inputs = lifecycle._provider_inputs(census_of(CODE_INPUT, name))
+                self.assertIn(name, inputs.dispatched)
+                self.assertEqual(inputs.unsupported, frozenset())
+                result = lifecycle._read_completeness(
+                    FINISHED_MANIFEST,
+                    census_of(CODE_INPUT, name),
+                    {CODE_INPUT: CODE_INPUT_DIGEST},
+                    inputs,
+                )
+                self.assertEqual(result.completeness, lifecycle.PARTIAL)
+                self.assertIn("does not account for 1 code files", " ".join(result.notes))
+
+    def test_a_shebang_script_without_a_suffix_is_in_the_denominator(self) -> None:
+        """The pin routes extensionless files by their first line, so this does.
+
+        Both halves matter: a supported interpreter is a dispatched input whose
+        absence from the manifest keeps the run partial, and one the pin has no
+        extractor for is dispatched *and* reported as unsupported rather than
+        counted as work.
+        """
+        root = self.root / "copy"
+        (root / "bin").mkdir(parents=True)
+        (root / "bin" / "devctl").write_bytes(b"#!/usr/bin/env python3\nprint(1)\n")
+        (root / "bin" / "report").write_bytes(b"#!/usr/bin/perl\nprint 1;\n")
+        (root / "bin" / "notes").write_bytes(b"plain text, no shebang\n")
+        (root / "bin" / "packed").write_bytes(b"#!/usr/bin/env -S python3 -u\n")
+        inputs = lifecycle._provider_inputs(
+            census_of("bin/devctl", "bin/report", "bin/notes", "bin/packed"), root
+        )
+        self.assertEqual(
+            set(inputs.dispatched), {"bin/devctl", "bin/report"}
+        )
+        # perl is code to ``detect`` and has no entry in ``_SHEBANG_DISPATCH``.
+        self.assertEqual(inputs.unsupported, frozenset({"bin/report"}))
+        # No shebang is a decision, not a refusal: the pin would not call it code.
+        self.assertNotIn("bin/notes", inputs.unclassified)
+        # ``env -S`` is the option-carrying form this adapter declines to guess at.
+        self.assertEqual(inputs.unclassified, ("bin/packed",))
+
+    def test_an_input_that_cannot_be_classified_keeps_the_run_partial(self) -> None:
+        """Unknown is not the same as not-code, and must not read as coverage."""
+        result = lifecycle._read_completeness(
+            FINISHED_MANIFEST,
+            census_of(CODE_INPUT),
+            {CODE_INPUT: CODE_INPUT_DIGEST},
+            lifecycle._ProviderInputs(
+                dispatched=(CODE_INPUT,), unclassified=("bin/packed",)
+            ),
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("could not classify 1 tracked inputs", " ".join(result.notes))
+
+    def test_unsupported_dispatch_is_counted_apart_from_indexed_files(self) -> None:
+        """A stamped row proves read bytes, not a supported extraction.
+
+        ``_get_extractor`` returns ``None`` for a code-classified extension with
+        no wired extractor, which short-circuits to an empty result carrying
+        neither an ``error`` nor a ``skipped`` marker -- so the CLI's
+        failed-source rule leaves the row stamped. Counting that as an indexed
+        file would report work the provider demonstrably did not do.
+        """
+        census = census_of(CODE_INPUT, "analysis/model.r")
+        digest = hashlib.md5(b"x", usedforsecurity=False).hexdigest()
+        result = lifecycle._read_completeness(
+            {CODE_INPUT: manifest_row(), "analysis/model.r": manifest_row(digest)},
+            census,
+            {CODE_INPUT: CODE_INPUT_DIGEST, "analysis/model.r": digest},
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, 1)
+        self.assertEqual(result.unsupported_inputs, 1)
+
+    def test_an_unsupported_extension_still_has_to_be_accounted_for(self) -> None:
+        """Reported, not excused: an absent row for one is still partial."""
+        census = census_of(CODE_INPUT, "web/view.ejs")
+        result = lifecycle._read_completeness(
+            FINISHED_MANIFEST,
+            census,
+            {CODE_INPUT: CODE_INPUT_DIGEST},
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("does not account for 1 code files", " ".join(result.notes))
+        self.assertEqual(result.unsupported_inputs, 0)
+
     def test_a_request_without_a_census_cannot_be_complete(self) -> None:
         """There is no denominator, so there is no coverage claim to make."""
         self.assertEqual(
@@ -2836,6 +2940,48 @@ class BuildAndPublishTests(TemporaryWorkspace):
         manifest = self.build()
         self.assertEqual(lifecycle.load_manifest(manifest.to_json()), manifest)
 
+    def test_the_unsupported_count_survives_the_build_and_the_status_report(self) -> None:
+        """The number has to outlive the indexer, or it is not a report.
+
+        ``IndexResult.notes`` are read by the build and then dropped, so a
+        count that lived only there would never reach an operator. This one is
+        written into the manifest, round-trips through validation, and appears
+        in the summary ``status`` emits.
+        """
+        manifest = self.build(
+            indexer=recording_indexer(indexed_files=1, unsupported_inputs=2)
+        )
+        self.assertEqual(manifest.unsupported_inputs, 2)
+        self.assertEqual(manifest.to_json()["unsupported_inputs"], 2)
+        self.assertEqual(lifecycle.load_manifest(manifest.to_json()), manifest)
+        self.assertEqual(manifest.shareable_summary()["unsupported_inputs"], 2)
+        status = lifecycle.graph_status(self.repository, root=self.state)
+        self.assertIsNotNone(status.manifest)
+        self.assertEqual(status.shareable_summary()["build"]["unsupported_inputs"], 2)
+
+    def test_the_unsupported_count_is_not_the_unmaterialized_count(self) -> None:
+        """Two different questions, so two different numbers.
+
+        ``skipped_paths`` is what this build declined to materialize; the new
+        count is what the provider could not extract from what it *was* given.
+        Folding either into the other would report a number an operator cannot
+        act on.
+        """
+        manifest = self.build(
+            indexer=recording_indexer(indexed_files=1, unsupported_inputs=1)
+        )
+        self.assertEqual(manifest.skipped_paths, 0)
+        self.assertEqual(manifest.unsupported_inputs, 1)
+
+    def test_a_manifest_published_before_the_count_existed_still_loads(self) -> None:
+        """Compatibility, bounded to exactly the one new name."""
+        payload = self.build().to_json()
+        payload.pop("unsupported_inputs")
+        self.assertEqual(lifecycle.load_manifest(payload).unsupported_inputs, 0)
+        payload["some_other_field"] = 1
+        with self.assertRaises(ContextError):
+            lifecycle.load_manifest(payload)
+
     def test_shareable_summary_carries_no_content_or_local_path(self) -> None:
         summary = self.build().shareable_summary()
         rendered = json.dumps(summary)
@@ -3636,12 +3782,31 @@ class CommandTests(TemporaryWorkspace):
                 # file looks like to the collector.
                 + (
                     (
+                        # The real pin stamps ``_md5_file`` of the bytes it was
+                        # handed, and the collector checks the row against the
+                        # immutable materialized copy. A constant here would be
+                        # a stand-in that never reads its inputs, so it stamps
+                        # the actual digest -- ``md5 -q`` on macOS, ``md5sum``
+                        # elsewhere -- and a build/refresh round trip exercises
+                        # the same contract a real provider has to meet.
+                        # Three spellings because the host decides which exists:
+                        # openssl and md5 ship with macOS, md5sum with GNU
+                        # coreutils. An empty result is left empty rather than
+                        # faked, so a host with none of them fails the coverage
+                        # check loudly instead of passing on a constant.
+                        "digest_of() {\n"
+                        "  h=$(openssl dgst -md5 -r \"$1\" 2>/dev/null | cut -d' ' -f1)\n"
+                        "  [ -n \"$h\" ] || h=$(md5 -q \"$1\" 2>/dev/null)\n"
+                        "  [ -n \"$h\" ] || h=$(md5sum \"$1\" 2>/dev/null | cut -d' ' -f1)\n"
+                        "  printf '%s' \"$h\"\n"
+                        "}\n"
                         "{ printf '{'; sep=''; "
                         "find . -path ./graphify-out -prune -o -type f -print | "
                         "sed 's|^\\./||' | while read -r f; do "
+                        'h=$(digest_of "$f"); '
                         'printf \'%s"%s":{"mtime":1,"seen":2,'
-                        '"ast_hash":"0123456789abcdef0123456789abcdef",'
-                        "\"semantic_hash\":\"0123456789abcdef0123456789abcdef\"}' \"$sep\" \"$f\"; "
+                        '"ast_hash":"%s",'
+                        "\"semantic_hash\":\"%s\"}' \"$sep\" \"$f\" \"$h\" \"$h\"; "
                         "sep=','; done; printf '}'; } > graphify-out/manifest.json\n"
                     )
                     if complete

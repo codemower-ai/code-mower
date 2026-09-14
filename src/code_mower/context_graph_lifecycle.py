@@ -58,6 +58,7 @@ import os
 import re
 import io
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -1363,6 +1364,12 @@ class IndexResult:
 
     completeness: str = COMPLETE
     indexed_files: int = 0
+    #: Inputs this provider classified as code and then deterministically could
+    #: not extract -- no wired extractor, or an extractor that declined by
+    #: design. Read bytes, no contribution; reported rather than counted as
+    #: indexed, and distinct from the census entries a build declines to
+    #: materialize at all.
+    unsupported_inputs: int = 0
     notes: tuple[str, ...] = ()
 
 
@@ -2251,6 +2258,58 @@ _PROVIDER_CODE_EXTENSIONS = frozenset({
     ".robot", ".resource",
 })
 
+#: Names the pinned ``detect.classify_file`` routes to code by *filename*,
+#: ahead of every suffix class, because ``manifest_ingest`` parses them
+#: deterministically (``PACKAGE_MANIFEST_NAMES``, compared lower-cased against
+#: the basename). Suffix membership alone misses all of them -- ``.yml``,
+#: ``.toml``, ``.mod`` and ``.xml`` are not in ``CODE_EXTENSIONS`` -- so a
+#: denominator built from extensions would let a package manifest the provider
+#: failed on drop out of the coverage question entirely.
+_PROVIDER_PACKAGE_MANIFEST_NAMES = frozenset({
+    "apm.yml", "apm.yaml", "pyproject.toml", "cargo.toml", "go.mod", "pom.xml",
+})
+
+#: The one compound suffix the pin tests before the simple one. ``.blade.php``
+#: already ends in a code extension, so this only decides *which* extractor the
+#: pin uses; it is named here because the classification below is meant to be
+#: readable against ``classify_file``'s own order rather than to be minimal.
+_PROVIDER_COMPOUND_CODE_SUFFIX = ".blade.php"
+
+#: ``detect._SHEBANG_CODE_INTERPRETERS``: the interpreters that make an
+#: *extensionless* tracked file code to this pin. ``classify_file`` reaches
+#: this branch before any extension test, so a CLI entry point with no suffix
+#: is dispatched exactly like a ``.py`` file and belongs in the denominator.
+_PROVIDER_SHEBANG_CODE_INTERPRETERS = frozenset({
+    "python", "python3", "python2",
+    "ruby", "perl", "node", "nodejs",
+    "bash", "sh", "dash", "zsh", "fish", "ksh", "tcsh",
+    "lua", "php", "julia", "Rscript",
+})
+
+#: ``extract._SHEBANG_DISPATCH``: the subset of the above that the pin has an
+#: extractor for. The remainder (``perl``, ``fish``, ``tcsh``, ``Rscript``) is
+#: classified as code and then deterministically contributes nothing.
+_PROVIDER_SHEBANG_EXTRACTORS = frozenset({
+    "python", "python2", "python3",
+    "bash", "sh", "dash", "zsh", "ksh",
+    "node", "nodejs", "ruby", "lua", "php", "julia",
+})
+
+#: The extensions in the pin's ``CODE_EXTENSIONS`` with no entry in
+#: ``extract._DISPATCH`` -- the exact set difference of the two staged tables.
+#: The pin warns about these itself (#1689: "classified as code but graphify
+#: has no AST extractor for their language"), dispatches them, and stamps them,
+#: because ``_get_extractor`` returning ``None`` short-circuits to
+#: ``{"nodes": [], "edges": []}`` with neither an ``error`` nor a ``skipped``
+#: marker, and the CLI's failed-source rule only clears rows for the two cases
+#: that carry one. They are counted and reported, never silently folded into
+#: the files this build says were indexed.
+_PROVIDER_UNSUPPORTED_EXTENSIONS = frozenset({".ejs", ".ets", ".r"})
+
+#: How much of an extensionless input is read to find its shebang. The pin
+#: reads the same 256 bytes and keeps only the first line.
+_SHEBANG_PROBE_BYTES = 256
+
 #: A manifest row's content hash, as the pin computes it: ``_md5_file`` streams
 #: the file and returns a hex digest, or the empty string when the read failed.
 #: So a well-formed 32-character digest is the provider's own statement that it
@@ -2298,7 +2357,9 @@ def _materialized_digest(path: Path) -> str:
 
 
 def _materialized_digests(
-    source_root: Path, census: TrackedCensus | None
+    source_root: Path,
+    census: TrackedCensus | None,
+    inputs: _ProviderInputs | None = None,
 ) -> dict[str, str] | None:
     """What every eligible code input's manifest row must say, before the run.
 
@@ -2315,16 +2376,14 @@ def _materialized_digests(
     """
     if census is None:
         return None
+    if inputs is None:
+        inputs = _provider_inputs(census, source_root)
     digests: dict[str, str] = {}
-    for path in _eligible_code_inputs(census):
-        parts = PurePosixPath(path).parts
-        # ``read_tracked_census`` reads Git's own index paths, which are
-        # relative and carry no traversal segment. Held to that here anyway,
-        # because this is the one place a census path is turned back into a
-        # host path, and a join is not the place to discover otherwise.
-        if not parts or any(part in ("", ".", "..", "/") for part in parts):
+    for path in inputs.dispatched:
+        host = _census_host_path(source_root, path)
+        if host is None:
             continue
-        digest = _materialized_digest(source_root.joinpath(*parts))
+        digest = _materialized_digest(host)
         if digest:
             digests[unicodedata.normalize("NFC", path)] = digest
     return digests
@@ -2411,26 +2470,146 @@ def _provider_manifest(output_directory: Path) -> Mapping[str, Any] | None:
     return payload if isinstance(payload, Mapping) else None
 
 
-def _eligible_code_inputs(census: TrackedCensus) -> tuple[str, ...]:
-    """The census paths this pin would dispatch, in census order.
+@dataclass(frozen=True)
+class _ProviderInputs:
+    """How the pin would classify this census, decided before it is launched.
 
-    Case is tried both ways because the pin's set carries both ``.f90`` and
-    ``.F90``: matching the spelling first and the lower-cased suffix second can
-    only widen the denominator, which is the direction that refuses rather than
-    over-claims.
+    ``dispatched`` is the denominator: every tracked path ``classify_file``
+    would call code, in census order. ``unsupported`` is the subset of those the
+    pin then has no extractor for, which is a real and reportable outcome rather
+    than a failure. ``unclassified`` is everything the classification could not
+    decide -- an extensionless input the copy could not be read for, or a
+    shebang spelling this adapter refuses to guess at -- and it keeps the run
+    partial, because an input nobody can classify is an input nobody can say was
+    covered.
     """
-    eligible: list[str] = []
+
+    dispatched: tuple[str, ...] = ()
+    unsupported: frozenset[str] = frozenset()
+    unclassified: tuple[str, ...] = ()
+
+
+def _census_host_path(source_root: Path, path: str) -> Path | None:
+    """Where a census path lives in the materialized copy, or ``None``.
+
+    ``read_tracked_census`` reads Git's own index paths, which are relative and
+    carry no traversal segment. Held to that here anyway, because this is the
+    only place a census path is turned back into a host path, and a join is not
+    the place to discover otherwise.
+    """
+    parts = PurePosixPath(path).parts
+    if not parts or any(part in ("", ".", "..", "/") for part in parts):
+        return None
+    return source_root.joinpath(*parts)
+
+
+def _shebang_interpreter(path: Path) -> tuple[str | None, bool]:
+    """``(interpreter, resolved)`` for an extensionless input's first line.
+
+    ``(None, True)`` is a decision: there is no shebang, so ``classify_file``
+    would not call this file code. ``(None, False)`` is a refusal: the bytes
+    could not be read, or the line is one of the ``env(1)`` spellings the pin
+    resolves through option parsing this adapter deliberately does not
+    reimplement (``-S``/``--split-string`` and friends). A refusal is carried as
+    *unclassified* rather than guessed either way, because guessing "not code"
+    would drop a real input out of the denominator and guessing "code" would
+    demand a row for a file the pin never dispatched.
+
+    Only the simple, unambiguous ``env`` forms are resolved here: leading
+    ``NAME=value`` assignments followed by the interpreter, which is what a
+    tracked script ordinarily carries.
+    """
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None, False
+        with path.open("rb") as stream:
+            head = stream.read(_SHEBANG_PROBE_BYTES)
+    except OSError:
+        return None, False
+    if not head.startswith(b"#!"):
+        return None, True
+    line = head.split(b"\n")[0].decode(errors="replace")[2:].strip()
+    try:
+        parts = shlex.split(line)
+    except ValueError:
+        return None, False
+    if not parts:
+        return None, True
+    interpreter = PurePosixPath(parts[0].replace("\\", "/")).name
+    if interpreter != "env":
+        return interpreter, True
+    for argument in parts[1:]:
+        if argument.startswith("-"):
+            # An option-carrying ``env`` line. The pin has a full parser for
+            # these; this one says so rather than pretending to.
+            return None, False
+        if "=" in argument:
+            continue
+        return PurePosixPath(argument.replace("\\", "/")).name, True
+    return None, True
+
+
+def _provider_inputs(
+    census: TrackedCensus, source_root: Path | None = None
+) -> _ProviderInputs:
+    """Classify the census the way the pinned ``detect.classify_file`` would.
+
+    In its order, which is the part suffix membership gets wrong: a package
+    manifest is routed by *filename* before any extension is looked at, and an
+    extensionless file is routed by its *shebang* before the extension table is
+    reached at all. A denominator built from ``CODE_EXTENSIONS`` alone drops
+    both, so a ``pyproject.toml`` or a ``#!/usr/bin/env python3`` CLI the
+    provider failed on could be missing from the manifest while an unrelated
+    ``.py`` file let the run claim it was complete.
+
+    Case is tried both ways for the extension test because the pin's set carries
+    both ``.f90`` and ``.F90``; matching the spelling first and the lower-cased
+    suffix second can only widen the denominator, which is the direction that
+    refuses rather than over-claims.
+
+    ``source_root`` is the materialized copy, read *before* the provider is
+    launched -- the only moment those bytes are still exactly what this build
+    handed over. Without it no extensionless input can be classified, so every
+    one of them is unclassified and the run stays partial.
+    """
+    dispatched: list[str] = []
+    unsupported: set[str] = set()
+    unclassified: list[str] = []
     for entry in census.entries:
-        suffix = PurePosixPath(entry.path).suffix
+        path = entry.path
+        pure = PurePosixPath(path)
+        name = pure.name.lower()
+        if name in _PROVIDER_PACKAGE_MANIFEST_NAMES or name.endswith(
+            _PROVIDER_COMPOUND_CODE_SUFFIX
+        ):
+            dispatched.append(path)
+            continue
+        suffix = pure.suffix
+        if not suffix:
+            host = _census_host_path(source_root, path) if source_root is not None else None
+            if host is None:
+                unclassified.append(path)
+                continue
+            interpreter, resolved = _shebang_interpreter(host)
+            if not resolved:
+                unclassified.append(path)
+            elif interpreter in _PROVIDER_SHEBANG_CODE_INTERPRETERS:
+                dispatched.append(path)
+                if interpreter not in _PROVIDER_SHEBANG_EXTRACTORS:
+                    unsupported.add(path)
+            continue
         if suffix in _PROVIDER_CODE_EXTENSIONS or suffix.lower() in _PROVIDER_CODE_EXTENSIONS:
-            eligible.append(entry.path)
-    return tuple(eligible)
+            dispatched.append(path)
+            if suffix.lower() in _PROVIDER_UNSUPPORTED_EXTENSIONS:
+                unsupported.add(path)
+    return _ProviderInputs(tuple(dispatched), frozenset(unsupported), tuple(unclassified))
 
 
 def _read_completeness(
     manifest: Mapping[str, Any] | None,
     census: TrackedCensus | None,
     digests: Mapping[str, str] | None = None,
+    inputs: _ProviderInputs | None = None,
 ) -> IndexResult:
     """Classify a provider run against its own manifest, defaulting to partial.
 
@@ -2440,9 +2619,12 @@ def _read_completeness(
     coverage question: did every input this pin would dispatch come back with a
     hash proving the provider read its bytes?
 
-    The denominator is the immutable materialized census narrowed to the pin's
-    own code extensions. Inputs outside that set are deterministically not code
-    to this pin and are skipped, not missing. Everything else is counted, and a
+    The denominator is the immutable materialized census classified the way
+    ``detect.classify_file`` classifies it -- filename-routed package manifests
+    first, then extensionless shebang scripts, then the extension table (see
+    ``_provider_inputs``). Inputs outside that classification are
+    deterministically not code to this pin and are skipped, not missing.
+    Everything else is counted, and a
     file is processed only when its row carries a well-formed ``ast_hash`` *and
     that hash is the digest of the bytes this build actually handed the
     provider*. A well-formed digest alone says a hash-shaped string is present;
@@ -2451,25 +2633,47 @@ def _read_completeness(
     as proof of work on bytes the provider was never shown -- and the digests
     come from ``_materialized_digests``, taken before the launch, so they cannot
     have been influenced by what the run wrote. A row whose digest disagrees, and
-    an input the copy could not be re-read for, both stay partial. The
-    pin blanks that field on exactly the cases an operator needs to hear about:
-    ``clear_ast`` zeroes both hashes for an extractor error or an anomalous
-    zero-node extract, so a requeued file is a blank row rather than an absent
-    one. The clean-room run's 54 requeued entries -- from a repeat that exited
-    zero in 1.63 s -- are that shape, and they stay partial here.
+    an input the copy could not be re-read for, both stay partial.
+
+    What a stamped row is evidence *of* comes from the pin's own
+    post-extraction writer rule, staged in ``extract.py`` and ``cli.py``. After
+    the run, ``_failed_sources`` is assembled from the per-file results and the
+    CLI clears (``clear_ast``) exactly those rows; every other dispatched input
+    is stamped. A result lands in ``_failed_sources`` when it carries an
+    ``error``, or when its extractor produced zero nodes. It does **not** when:
+
+    * ``_get_extractor`` returned ``None`` -- the file short-circuits to
+      ``{"nodes": [], "edges": []}`` with neither marker, so a code-classified
+      input the pin has no extractor for is stamped while contributing nothing
+      (the pin's own #1689 warning); or
+    * the extractor declined by design -- ``extractors/json_config`` returns a
+      ``skipped`` marker for data JSON and for a non-object root, and the CLI
+      skips those deliberately so they are not requeued forever (#2879).
+
+    So a stamped, matching row proves the provider read those exact bytes and
+    did not fail on them. It does not prove nodes, and it is not read here as
+    if it did. The deterministically unsupported dispatch is counted and
+    reported separately (``unsupported_inputs``) rather than folded into
+    ``indexed_files``, and zero nodes for a file whose row is stamped is a
+    complete *read* of that file and nothing more.
+
+    Blank rows are the cases the pin's rule makes blank: an extractor error or
+    an anomalous zero-node extract. They stay partial here. The clean-room
+    repeat that exited zero in 1.63 s requeued 54 entries; the retained
+    evidence for that run carries *stamped* rows, so requeueing there is not
+    observable as a blank row and nothing in this adapter claims it is. That
+    remains an observed limitation of the incremental gate rather than a shape
+    this module reports on.
 
     Nothing upgrades a run: the exit status, a non-empty graph, and the raw
     extraction's ``extracted_sources`` are all statements about what was
-    *dispatched*, failures included, so none of them is success evidence. A
-    hash proves processed bytes, not that anything was understood; zero nodes
-    for a file whose row is stamped is still a complete read of that file, and
-    an unstamped one is partial however large the graph is. Missing evidence,
-    an unparseable manifest, a shape this adapter does not recognize, and a row
-    that cannot be told apart from a failure all stay ``partial``, which
-    ``graph_status`` refuses by default. The provider owns no provenance (the
-    evaluation records this as the first product constraint), so that refusal
-    is the failure an operator can act on; silently calling it complete is the
-    one they cannot.
+    *dispatched*, failures included, so none of them is success evidence.
+    Missing evidence, an unparseable manifest, a shape this adapter does not
+    recognize, an input it could not classify, and a row that cannot be told
+    apart from a failure all stay ``partial``, which ``graph_status`` refuses
+    by default. The provider owns no provenance (the evaluation records this as
+    the first product constraint), so that refusal is the failure an operator
+    can act on; silently calling it complete is the one they cannot.
     """
     if census is None:
         return IndexResult(
@@ -2486,7 +2690,9 @@ def _read_completeness(
             completeness=PARTIAL,
             notes=("build recorded no input digests to check the provider's manifest against",),
         )
-    eligible = _eligible_code_inputs(census)
+    if inputs is None:
+        inputs = _provider_inputs(census)
+    eligible = inputs.dispatched
     rows: dict[str, Any] = {}
     malformed_rows = 0
     for key, row in manifest.items():
@@ -2499,11 +2705,15 @@ def _read_completeness(
             malformed_rows += 1
             continue
         rows[unicodedata.normalize("NFC", key)] = row
+    unsupported_keys = {
+        unicodedata.normalize("NFC", path) for path in inputs.unsupported
+    }
     missing = 0
     unstamped = 0
     unreadable = 0
     mismatched = 0
     processed = 0
+    unsupported = 0
     for path in eligible:
         key = unicodedata.normalize("NFC", path)
         row = rows.get(key)
@@ -2522,6 +2732,11 @@ def _read_completeness(
             unreadable += 1
         elif digest != expected:
             mismatched += 1
+        elif key in unsupported_keys:
+            # Read, not failed, and deterministically not extractable by this
+            # pin. Counted on its own line rather than as a file this build
+            # indexed, which it is not.
+            unsupported += 1
         else:
             processed += 1
     notes: list[str] = []
@@ -2535,11 +2750,23 @@ def _read_completeness(
         notes.append(f"build could not re-read {unreadable} code files to check their hashes")
     if mismatched:
         notes.append(f"provider hashed {mismatched} code files that are not the bytes it was given")
+    if inputs.unclassified:
+        notes.append(
+            f"build could not classify {len(inputs.unclassified)} tracked inputs "
+            "against this provider's own dispatch"
+        )
     if not eligible:
         notes.append("the census carried no code files this provider would index")
     if notes:
-        return IndexResult(completeness=PARTIAL, indexed_files=processed, notes=tuple(notes))
-    return IndexResult(completeness=COMPLETE, indexed_files=processed)
+        return IndexResult(
+            completeness=PARTIAL,
+            indexed_files=processed,
+            unsupported_inputs=unsupported,
+            notes=tuple(notes),
+        )
+    return IndexResult(
+        completeness=COMPLETE, indexed_files=processed, unsupported_inputs=unsupported
+    )
 
 
 class _BoundedBuffer(io.BytesIO):
@@ -2854,7 +3081,15 @@ def subprocess_indexer(
         # the provider; once the child has run, the same tree also holds the
         # provider's own output, and a digest taken then would be checking the
         # provider's manifest against the provider's own leavings.
-        digests = _materialized_digests(request.source_root, request.census)
+        # Classified and digested from the copy *before* the launch: after the
+        # run the same tree also holds provider output, and a shebang read then
+        # would be classifying whatever the provider left behind.
+        inputs = (
+            _provider_inputs(request.census, request.source_root)
+            if request.census is not None
+            else None
+        )
+        digests = _materialized_digests(request.source_root, request.census, inputs)
         # Built per run, because the boundary is a function of what this build
         # exposes: the materialized copy and the build's own scratch areas are
         # writable, the pinned provider's install is readable, and nothing else
@@ -2888,7 +3123,7 @@ def subprocess_indexer(
             raise ContextError("local graph provider failed; no generation was published")
         output_directory = _provider_output_directory(request.source_root)
         result = _read_completeness(
-            _provider_manifest(output_directory), request.census, digests
+            _provider_manifest(output_directory), request.census, digests, inputs
         )
         _write_private_file(request.output_path, _pack_state(output_directory))
         return result
@@ -2921,6 +3156,13 @@ class BuildManifest:
     completeness: str
     skipped_paths: int
     indexed_files: int
+    #: Inputs the provider classified as code and deterministically could not
+    #: extract. Deliberately *not* folded into ``skipped_paths``, which counts
+    #: tracked entries this build declined to materialize at all (symlinks,
+    #: submodules, private state). Those two numbers answer different questions
+    #: -- what this build withheld, and what the provider could not read --
+    #: and an operator who needs to act on one cannot act on their sum.
+    unsupported_inputs: int = 0
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -2938,6 +3180,7 @@ class BuildManifest:
             "completeness": self.completeness,
             "skipped_paths": self.skipped_paths,
             "indexed_files": self.indexed_files,
+            "unsupported_inputs": self.unsupported_inputs,
         }
 
     def shareable_summary(self) -> dict[str, Any]:
@@ -2954,11 +3197,21 @@ class BuildManifest:
             "graph_digest": self.graph_digest,
             "graph_bytes": self.graph_bytes,
             "completeness": self.completeness,
+            "unsupported_inputs": self.unsupported_inputs,
         }
 
 
 def load_manifest(payload: Mapping[str, Any]) -> BuildManifest:
-    """Validate a manifest. Every unreadable shape is a refusal, not a default."""
+    """Validate a manifest. Every unreadable shape is a refusal, not a default.
+
+    ``unsupported_inputs`` is accepted as optional so a generation published
+    before it existed still loads. It is always written, so the only manifests
+    that take the default are older ones, and ``0`` is the honest reading of
+    them: that build never counted the provider's unsupported dispatch, and a
+    zero says the same thing a missing key does. Nothing else is optional --
+    an unrecognized key is still a refusal, so this widens what loads by
+    exactly one name.
+    """
     if not isinstance(payload, Mapping):
         raise ContextError("local graph manifest must be an object")
     expected = {
@@ -2966,7 +3219,9 @@ def load_manifest(payload: Mapping[str, Any]) -> BuildManifest:
         "tracked_files", "tracked_bytes", "census_digest", "graph_digest",
         "graph_bytes", "completeness", "skipped_paths", "indexed_files",
     }
-    if set(payload) != expected:
+    optional = {"unsupported_inputs"}
+    present = set(payload)
+    if not expected <= present or not present <= (expected | optional):
         raise ContextError("local graph manifest fields are missing or unrecognized")
     if payload["schema"] != MANIFEST_SCHEMA:
         raise ContextError("unsupported local graph manifest schema")
@@ -2996,6 +3251,9 @@ def load_manifest(payload: Mapping[str, Any]) -> BuildManifest:
         completeness=completeness,
         skipped_paths=_size(payload["skipped_paths"], MAX_SKIPPED_PATHS),
         indexed_files=_size(payload["indexed_files"], MAX_TRACKED_FILES),
+        unsupported_inputs=_size(
+            payload.get("unsupported_inputs", 0), MAX_TRACKED_FILES
+        ),
     )
 
 
@@ -3782,6 +4040,9 @@ def build_graph(
                 completeness=result.completeness,
                 skipped_paths=len(census.skipped),
                 indexed_files=min(_size(result.indexed_files, MAX_TRACKED_FILES), census.file_count),
+                unsupported_inputs=min(
+                    _size(result.unsupported_inputs, MAX_TRACKED_FILES), census.file_count
+                ),
             )
             published = state.publish(manifest, artifact)
             if not keep_previous:
@@ -3998,6 +4259,8 @@ def render_status_text(status: GenerationStatus) -> str:
                 f"  census:     {manifest.census_digest}",
                 f"  graph:      {manifest.graph_digest} ({manifest.graph_bytes} bytes)",
                 f"  complete:   {manifest.completeness}",
+                f"  indexed:    {manifest.indexed_files} files "
+                f"({manifest.unsupported_inputs} unsupported by this provider)",
             ]
         )
     return "\n".join(lines) + "\n"

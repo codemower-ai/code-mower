@@ -324,6 +324,7 @@ Every published generation carries, in `manifest.json`:
 | `graph_digest`, `graph_bytes` | Detects a truncated or tampered artifact on every read. |
 | `completeness` | `complete` or `partial`, from the provider's own admission. |
 | `indexed_files` | What the provider claims it processed, bounded by the census. |
+| `unsupported_inputs` | How many inputs the provider classified as code and then deterministically could not extract — no wired extractor, or an extractor that declined by design. Read bytes, no contribution. Kept separate from `skipped_paths`, which counts what this build declined to materialize at all; the two answer different questions and their sum answers neither. Optional on read so a generation published before the field existed still loads as `0`; always written. |
 
 `shareable_summary()` is the metadata-only view: revisions, digests, counts and
 states. It carries no indexed content, no provider output, and no local path.
@@ -410,22 +411,51 @@ what says it is a hash of this input, and without it a manifest carried over
 from another tree, another revision, or a resumed cache would read as proof of
 work on bytes the provider never saw.
 
+The denominator is the census classified the way the pinned
+`detect.classify_file` classifies it, **in its order** — not by extension
+membership. A package manifest is routed by filename first (`apm.yml`,
+`apm.yaml`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `pom.xml`), an
+extensionless file by its shebang second, and only then is the extension table
+reached. Suffix membership alone misses both: `.yml`, `.toml`, `.mod` and
+`.xml` are not code extensions, so a `pyproject.toml` the provider failed on
+could drop out of the coverage question entirely while an unrelated `.py` file
+let the run claim it was complete.
+
 Everything else is `partial`: a row the manifest never wrote, a blank or
 malformed hash, a hash that disagrees with those bytes, an input the copy could
-not be re-read for, a record this adapter cannot classify, an unreadable or
-oversized manifest, no manifest at all, and a build with no census. The pin
-blanks hashes through `clear_ast` on an extractor error or an anomalous
-zero-node extract, so a requeued file is a blank row rather than an absent one
-— the direct consequence of the requeue defect the evaluation recorded, where a
-repeat that exits zero in 1.63 seconds having requeued 54 entries has not built
-a complete graph.
+not be re-read for, a record this adapter cannot classify, an input it cannot
+classify against the provider's own dispatch, an unreadable or oversized
+manifest, no manifest at all, and a build with no census.
+
+### What a stamped row is evidence of
+
+From the pin's own post-extraction writer rule. After a run the CLI clears
+(`clear_ast`) exactly the rows in `_failed_sources`, and stamps every other
+dispatched input. A result is a failed source when it carries an `error`, or
+when its extractor produced zero nodes. It is **not** when `_get_extractor`
+returned `None` — the file short-circuits to an empty result with neither
+marker — and **not** when the extractor declined by design, as the JSON
+extractor does for data JSON and for a non-object root.
+
+So a stamped, matching row proves the provider read those exact bytes and did
+not fail on them. It does not prove nodes. The deterministically unsupported
+dispatch is therefore counted and reported on its own line
+(`unsupported_inputs`) rather than folded into `indexed_files`, and zero nodes
+for a stamped file is a complete *read* of that file and nothing more.
+
+Blank rows are the cases the pin's rule makes blank: an extractor error or an
+anomalous zero-node extract. They stay `partial` here. The evaluation's
+clean-room repeat that exited zero in 1.63 seconds requeued 54 entries; the
+retained evidence for that run carries *stamped* rows, so requeueing there is
+not observable as a blank row, and nothing in this module claims it is. That
+requeue behaviour remains an observed limitation of the provider's incremental
+gate rather than a shape this adapter reports on.
 
 Nothing upgrades a run. The exit status, a non-empty graph, and the raw
 extraction's `extracted_sources` all describe what was *dispatched*, failures
-included. A hash proves processed bytes, not that anything was understood: zero
-nodes for a stamped file is still a complete read of it, and an unstamped file
-is `partial` however large the graph is. `partial` is the state `graph_status`
-refuses by default, so the failure is one an operator can see and act on.
+included. An unstamped file is `partial` however large the graph is. `partial`
+is the state `graph_status` refuses by default, so the failure is one an
+operator can see and act on.
 
 The manifest is provider output of unknown size, so it is read to one byte past
 the manifest bound and refused if it is longer, rather than loaded whole and
