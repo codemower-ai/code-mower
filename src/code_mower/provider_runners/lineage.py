@@ -136,7 +136,17 @@ def identity_with_lane_floor(identity: Mapping[str, Any] | None, lane: str) -> M
         _claim_own_identity(merged_labels, f"builder:{reviewer}", reviewer, "label")
         for login in LANE_ACCOUNT_FLOOR.get(reviewer, ()):
             _claim_own_identity(merged_authors, login, reviewer, "account")
-    return {"enabled": True, "labels": merged_labels, "authors": merged_authors}
+    # The floor raises the three fields it is responsible for and leaves the
+    # rest of the deployment's contract intact. Rebuilding the mapping from
+    # scratch dropped `branch_prefixes` and `require_verified_lineage`, so
+    # every real wrapper resolved without the configured branch identity it
+    # was rendered to use -- and a `codex/` branch labelled `builder:claude`
+    # came back a sole Claude writer, admitting Codex to its own diff.
+    floored = dict(base)
+    floored.update(
+        {"enabled": True, "labels": merged_labels, "authors": merged_authors}
+    )
+    return floored
 
 
 class ReviewerIdentityInvalid(RuntimeError):

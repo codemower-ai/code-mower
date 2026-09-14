@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -871,6 +872,139 @@ class ConfiguredBranchIdentityIsCounted(unittest.TestCase):
         self.assertFalse(decision["admitted"])
 
 
+class TheWrapperCompositionKeepsTheConfiguredBranchContract(unittest.TestCase):
+    """The floor must raise three fields, not rebuild the contract.
+
+    Every real wrapper resolves through ``identity_with_lane_floor``. It was
+    reconstructing the mapping from ``enabled``/``labels``/``authors`` alone,
+    so ``branch_prefixes`` and ``require_verified_lineage`` -- rendered into
+    the contract for exactly this decision -- never reached the resolver. The
+    lower-helper branch tests pass an already-resolved identity and so walk
+    straight past the composition that drops it. These load the configured
+    contract from the environment and go through the real admission boundary.
+    """
+
+    CONFIG = {
+        "enabled": True,
+        "labels": {"builder:claude": "claude", "builder:codex": "codex",
+                   "builder:devin": "devin"},
+        "authors": {"claude[bot]": "claude", "codex[bot]": "codex",
+                    "devin-ai-integration[bot]": "devin"},
+        "branch_prefixes": {"claude/": "claude", "codex/": "codex",
+                            "feature/cx-": "codex"},
+        "require_verified_lineage": True,
+    }
+
+    @contextmanager
+    def _configured(self):
+        with mock.patch.dict(
+            "os.environ",
+            {
+                reviewer_lineage.AUTHOR_EXCLUSION_ENV: json.dumps(self.CONFIG),
+                "CODE_MOWER_DECISION_AUTHORITIES": AUTHORITY,
+            },
+        ):
+            yield
+
+    def _codex(self, lane, meta, *, comments=()):
+        from code_mower import codex_audit_pr
+
+        with self._configured():
+            return codex_audit_pr._require_independent_review(
+                lane, REPO, PR, meta, TAKEN,
+                authorities=(AUTHORITY,), fetch_comments=lambda: list(comments),
+            )
+
+    def _claude(self, lane, meta, *, comments=()):
+        from code_mower import claude_audit_pr
+
+        with self._configured():
+            return claude_audit_pr._require_independent_review(
+                lane, REPO, PR, meta, TAKEN,
+                authorities=(AUTHORITY,), fetch_comments=lambda: list(comments),
+            )
+
+    def _devin(self, meta, author, *, comments=()):
+        from code_mower import devin_cli_audit_pr
+
+        config = SimpleNamespace(repo=REPO, pr_number=PR, github_token="unused")
+        with self._configured():
+            return devin_cli_audit_pr._require_independent_devin_review(
+                config, meta, TAKEN, author, fetch_comments=lambda: list(comments),
+            )
+
+    DISAGREEING = dict(author="a-human", labels=("builder:claude",),
+                       branch="codex/topic")
+
+    def test_the_codex_wrapper_stops_before_the_provider_runs(self):
+        with self.assertRaises(RuntimeError) as raised:
+            self._codex("codex", pr_meta(**self.DISAGREEING))
+        self.assertIn("lineage", str(raised.exception).lower())
+
+    def test_the_claude_wrapper_stops_on_the_same_disagreement(self):
+        # Asked about `codex`, which the unfixed composition admits outright:
+        # a sole-Claude answer makes Codex look independent of its own branch.
+        with self.assertRaises(RuntimeError) as raised:
+            self._claude("codex", pr_meta(**self.DISAGREEING))
+        self.assertNotIn("contributor_not_independent", str(raised.exception))
+
+    def test_the_devin_wrapper_stops_on_the_same_disagreement(self):
+        from code_mower import devin_cli_audit_pr
+
+        with self.assertRaises(
+            (devin_cli_audit_pr.AuthorExcludedError, RuntimeError)
+        ):
+            self._devin(pr_meta(**self.DISAGREEING), "a-human")
+
+    def test_a_custom_configured_branch_prefix_is_honoured(self):
+        with self.assertRaises(RuntimeError):
+            self._codex(
+                "codex",
+                pr_meta(author="a-human", labels=("builder:claude",),
+                        branch="feature/cx-topic"),
+            )
+
+    def test_a_matched_branch_and_label_keep_their_intended_behaviour(self):
+        matched = pr_meta(author="a-human", labels=("builder:claude",),
+                          branch="claude/topic")
+        decision = self._codex("codex", matched)
+        self.assertTrue(decision["admitted"])
+        with self.assertRaises(RuntimeError) as raised:
+            self._claude("claude", matched)
+        self.assertIn("contributor_not_independent", str(raised.exception))
+
+    def test_a_recorded_cross_lane_takeover_is_accepted_and_excludes_both(self):
+        comments = [published([takeover_episode()])]
+        taken = pr_meta(author="devin-ai-integration[bot]",
+                        labels=("builder:codex",), branch=BRANCH)
+        decision = self._claude("claude", taken, comments=comments)
+        self.assertTrue(decision["admitted"])
+        self.assertEqual(decision["current_writer"], "codex")
+        for lane in ("codex", "devin"):
+            with self.subTest(lane=lane):
+                with self.assertRaises(RuntimeError):
+                    self._claude(lane, taken, comments=comments)
+
+    def test_the_floor_still_refuses_a_conflicting_own_remap(self):
+        conflicting = dict(self.CONFIG)
+        conflicting["labels"] = dict(self.CONFIG["labels"])
+        conflicting["labels"]["builder:codex"] = "claude"
+        with mock.patch.dict(
+            "os.environ",
+            {reviewer_lineage.AUTHOR_EXCLUSION_ENV: json.dumps(conflicting)},
+        ):
+            with self.assertRaises(reviewer_lineage.ReviewerIdentityInvalid):
+                reviewer_lineage.identity_with_lane_floor(
+                    reviewer_lineage.load_identity(), "codex"
+                )
+
+    def test_the_floor_carries_the_branch_contract_through(self):
+        floored = reviewer_lineage.identity_with_lane_floor(self.CONFIG, "codex")
+        self.assertEqual(floored["branch_prefixes"], self.CONFIG["branch_prefixes"])
+        self.assertTrue(floored["require_verified_lineage"])
+        self.assertEqual(floored["labels"]["builder:codex"], "codex")
+
+
 class ATrustedMarkerMustParseOrSaySo(unittest.TestCase):
     """A broken marker is unreadable evidence, never absent evidence.
 
@@ -968,6 +1102,60 @@ class ATrustedMarkerMustParseOrSaySo(unittest.TestCase):
         )
         with self.assertRaises(builder_lineage.LineageError):
             self._gate(comments)
+
+    def _duplicated(self, key: str, extra: str) -> str:
+        """The valid marker with ``key`` named a second time."""
+
+        marker = self._valid()
+        head, _, tail = marker.partition("{")
+        return f'{head}{{{json.dumps(key)}:{extra},{tail}'
+
+    def test_a_duplicate_top_level_key_is_unreadable(self):
+        for key, extra in (
+            ("schema", '"code_mower.builderLineage.v1"'),
+            ("schema", '"something.else"'),
+            ("episodes", "[]"),
+        ):
+            with self.subTest(key=key, extra=extra):
+                self._assert_unreadable(self._duplicated(key, extra))
+
+    def test_a_duplicate_key_inside_an_episode_is_unreadable(self):
+        marker = self._valid()
+        # Name the episode's own binding twice: two answers to "which head".
+        forged = marker.replace(
+            '"resulting_head"', '"resulting_head":"' + "c" * 40 + '","resulting_head"', 1
+        )
+        self.assertNotEqual(forged, marker)
+        self._assert_unreadable(forged)
+
+    def test_a_duplicate_nested_identity_key_is_unreadable(self):
+        marker = self._valid()
+        forged = marker.replace(
+            '"destination_lane"', '"destination_lane":"claude","destination_lane"', 1
+        )
+        self.assertNotEqual(forged, marker)
+        self._assert_unreadable(forged)
+
+    def test_a_unique_key_payload_still_reads(self):
+        self.assertEqual(len(self._gate(self._trusted(self._valid()))), 1)
+
+    def test_an_untrusted_duplicate_key_marker_is_not_authoritative(self):
+        comments = self._trusted(self._duplicated("episodes", "[]"), author=OUTSIDER)
+        self.assertEqual(self._gate(comments), ())
+        self.assertEqual(self._labeler(comments).episodes, ())
+
+    def test_a_duplicate_key_marker_admits_no_reviewer(self):
+        """The wrapper boundary: unreadable evidence stops, never admits."""
+
+        comments = self._trusted(self._duplicated("episodes", "[]"))
+        with self.assertRaises(RuntimeError) as raised:
+            from code_mower import claude_audit_pr
+
+            claude_audit_pr._require_independent_review(
+                "claude", REPO, PR, pr_meta(), TAKEN,
+                authorities=(AUTHORITY,), fetch_comments=lambda: comments,
+            )
+        self.assertIn("lineage_unreadable", str(raised.exception))
 
     def test_a_valid_history_beside_unrelated_comments_still_resolves(self):
         comments = (

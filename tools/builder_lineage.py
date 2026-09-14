@@ -1025,6 +1025,29 @@ def lineage_comment_marker(episodes: Sequence[ContributionEpisode]) -> str:
     return f"<!-- {LINEAGE_MARKER} {json.dumps(payload, sort_keys=True, separators=(',', ':'))} -->"
 
 
+def _reject_duplicate_keys(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+    """``object_pairs_hook`` that refuses an object naming a key twice.
+
+    ``json.loads`` keeps the last value for a repeated key, so one marker can
+    carry two answers to the same question -- two ``episodes`` lists, two
+    ``schema`` values, two ``resulting_head`` shas inside one episode -- and
+    every reader silently agrees on whichever came last. Which one describes
+    the diff is exactly what must not be decided by parser order. This applies
+    at every depth, so a conflicting nested binding is refused too.
+    """
+
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate key in published builder lineage: {key}")
+        seen[key] = value
+    return seen
+
+
+def _loads_without_duplicate_keys(payload: str) -> Any:
+    return json.loads(payload, object_pairs_hook=_reject_duplicate_keys)
+
+
 def episodes_from_comment_body(body: str) -> tuple[ContributionEpisode, ...]:
     """Parse lineage markers out of one already trusted comment body.
 
@@ -1047,7 +1070,7 @@ def episodes_from_comment_body(body: str) -> tuple[ContributionEpisode, ...]:
         # of it: unterminated, not an object, or cut off past the bound.
         raise LineageError("published builder lineage is unreadable")
     try:
-        payload = json.loads(matches[0])
+        payload = _loads_without_duplicate_keys(matches[0])
     except (ValueError, RecursionError):
         raise LineageError("published builder lineage is unreadable") from None
     if not isinstance(payload, Mapping) or payload.get("schema") != SCHEMA:

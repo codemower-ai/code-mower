@@ -697,6 +697,56 @@ class ASuccessfulButInvalidCommentReadIsNotAnEmptyHistory(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(applied, [], "no label may move on an unread history")
 
+    def test_the_saas_labeler_mutates_no_label_on_duplicate_key_evidence(self):
+        """Duplicate keys give one marker two answers; neither may be picked."""
+
+        marker = builder_lineage.lineage_comment_marker((takeover_episode(),))
+        head, _, tail = marker.partition("{")
+        ambiguous = f'{head}{{"episodes":[],{tail}'
+        comments = [{"user": {"login": AUTHORITY}, "body": MARKER_BODY + ambiguous}]
+        applied = []
+
+        def api(method, path, **_kwargs):
+            if "/comments" in path:
+                return comments if "page=1" in path else []
+            if re.search(r"/pulls/\d+$", path):
+                return _pull_request()
+            if "/commits/" in path:
+                return [{"number": PR}]
+            return []
+
+        root = git_free_tempdir(self, "code-mower-duplicate-keys-")
+        event = {
+            "action": "completed",
+            "check_run": {
+                "status": "completed", "conclusion": "success",
+                "name": "greptile review", "app": {"slug": "greptile-apps"},
+                "head_sha": TAKEN, "pull_requests": [{"number": PR}],
+            },
+        }
+        event_path = Path(root) / "event.json"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        env = {
+            "GITHUB_EVENT_PATH": str(event_path),
+            "GITHUB_REPOSITORY": REPO,
+            "GITHUB_EVENT_NAME": "check_run",
+            "GREPTILE_LABEL_TOKEN": "t",
+            "GITHUB_TOKEN": "t",
+            "CODE_MOWER_DECISION_AUTHORITIES": AUTHORITY,
+            "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+            "DRY_RUN": "",
+        }
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(labeler, "github_request_with_fallback", api), \
+                mock.patch(
+                    "code_mower.audit_labeler_lib.github_request_with_fallback", api), \
+                mock.patch.object(
+                    labeler, "_apply_or_log", lambda *a, **k: applied.append(a)), \
+                mock.patch("sys.stdout", new_callable=_Capture):
+            code = labeler.main(["--adapter", "greptile"])
+        self.assertEqual(code, 0)
+        self.assertEqual(applied, [], "ambiguous evidence may move no label")
+
     def test_a_genuinely_empty_page_stays_ordinary(self):
         def api(method, path, **_kwargs):
             if "/comments" in path:
