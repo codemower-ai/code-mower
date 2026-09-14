@@ -311,6 +311,8 @@ PACKAGE_FILES = (
     ("src/code_mower/lane_handoff.py", "src/code_mower/lane_handoff.py", "core"),
     ("src/code_mower/lane_runtime.py", "src/code_mower/lane_runtime.py", "core"),
     ("src/code_mower/participants.py", "src/code_mower/participants.py", "core"),
+    ("src/code_mower/role_eligibility.py", "src/code_mower/role_eligibility.py", "core"),
+    ("src/code_mower/role_eligibility.schema.json", "src/code_mower/role_eligibility.schema.json", "schema"),
     ("src/code_mower/provider_capabilities.py", "src/code_mower/provider_capabilities.py", "core"),
     ("src/code_mower/provider_capabilities.schema.json", "src/code_mower/provider_capabilities.schema.json", "schema"),
     ("src/code_mower/session.py", "src/code_mower/session.py", "core"),
@@ -574,6 +576,7 @@ PACKAGE_FILES = (
     ("docs/builders-grok-cursor.md", "docs/builders-grok-cursor.md", "doc"),
     ("docs/build-loop.md", "docs/build-loop.md", "doc"),
     ("docs/planning-work-orders.md", "docs/planning-work-orders.md", "doc"),
+    ("docs/participant-qualification.md", "docs/participant-qualification.md", "doc"),
     ("docs/devin-work-orders.md", "docs/devin-work-orders.md", "doc"),
     ("docs/devin-review-parity.md", "docs/devin-review-parity.md", "doc"),
     (

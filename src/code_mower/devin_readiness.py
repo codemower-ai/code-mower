@@ -38,6 +38,7 @@ from .participants import (
     selected_transports,
 )
 from .provider_capabilities import TRANSPORTS, devin_lane_transport_name
+from .role_eligibility import decide_role
 
 SCHEMA = "code_mower.devinReadiness.v1"
 
@@ -1056,6 +1057,20 @@ def devin_readiness(
                 pin=pin,
             )
         )
+    decisions = {
+        role: decide_role("devin", role, transport=selected, config=config, bounded=True)
+        for role in ("builder", "orchestrator", "reviewer")
+    }
+    decisions["merge_reviewer"] = decide_role(
+        "devin", "reviewer", transport=selected, config=config, merge_authority=True,
+    )
+    findings.append(ReadinessFinding(
+        name="provider.devin.role_eligibility", status=STATUS_PASS, lane=lane,
+        message="Role qualification and runtime readiness are separate; inspect role decisions before assigning work.",
+        detail={"schema": SCHEMA, "roles": decisions},
+        remediation="Check the role decision and runtime readiness before assigning work. "
+                    "Use a qualified Codex or Claude supervisor; selection does not promote a role.",
+    ))
     findings.append(_permission_finding(selected, lane))
     findings.append(_lifecycle_finding(selected, lane))
     return tuple(findings)

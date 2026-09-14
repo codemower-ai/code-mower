@@ -2594,6 +2594,17 @@ def render_init_plan(
     lanes: Mapping[str, Mapping[str, Any]] = config["lanes"]
     selected_lanes = {lane_id: lanes[lane_id] for lane_id in profile.lanes}
 
+    from .role_eligibility import PRODUCTS, decide_role, require_role
+    builder_eligibility = {}
+    for builder in builders:
+        if builder in PRODUCTS:
+            decision = decide_role(
+                builder, "builder", config=config, bounded=True,
+                transport=code_mower_participants.configured_transports(config).get(builder),
+            )
+            require_role(decision)
+            builder_eligibility[builder] = decision
+
     labels: list[str] = []
     workflows: list[dict[str, str]] = []
     generated_files: list[dict[str, Any]] = []
@@ -3071,6 +3082,7 @@ def render_init_plan(
         "builder_loop": {
             "enabled": bool(builder_entries),
             "builders": list(builders),
+            "role_eligibility": builder_eligibility,
             "lanes": list(builder_entries),
             "ready_label": owner_surface["ready_label"],
             "owner_labels": json.loads(

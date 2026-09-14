@@ -36,8 +36,9 @@ and makes the prompt pack safe to copy across repositories.
 
 For an already installed repository, use the
 [session-start prompt](sessions.md#start-from-any-agent). The agent hosting the
-conversation supplies its own `--host` identity and becomes the default
-orchestrator. The selected participant set is shared with setup.
+conversation supplies its own `--host` identity and checks role eligibility
+before becoming the orchestrator. A mutating start acquires a local lease; save
+its session ID and release it explicitly when the session finishes. The selected participant set is shared with setup.
 
 Use this when asking any capable agent to become an active Code Mower
 participant. It works for Claude Code, Codex, Cursor or Grok Bot,
@@ -50,8 +51,8 @@ Adopt Code Mower on OWNER/REPO using the current release tag I provide, or the
 latest GitHub release if I do not provide one.
 
 First identify your role on this host:
-- orchestrator: you can monitor issues/PRs, run code-mower lanes status, and
-  drive fix rounds;
+- orchestrator: your role is qualified and repository policy permits it, and
+  you can monitor issues/PRs, run code-mower lanes status, and drive fix rounds;
 - builder: you can take one assigned issue and open one PR branch;
 - reviewer: you can review a PR through a Code Mower lane or as informational
   evidence; or
@@ -74,6 +75,22 @@ Run the posture-appropriate doctor:
 - hosted builder or observer: code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json
 - orchestrator-only host: code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
 - supervised pilot readiness: code-mower doctor --supervised-pilot --repo OWNER/REPO --json
+
+Provider selection and a working CLI do not qualify an orchestrator. Devin is
+currently limited to bounded builder work and informational review; use a
+qualified supervisor such as Claude or Codex for orchestration. Check the
+installed version's role policy before starting a mutating session.
+
+For an eligible orchestrator, session start takes a local lease, normally for
+12 hours. Record its session ID and the exact show/release commands printed by
+startup. Inspect it with code-mower session lease show. When the session ends,
+quiesce its writers and run code-mower session lease release --session-id
+SESSION_ID using the saved ID. A later shell must pass that ID explicitly.
+If work intentionally continues, renew only your live lease with code-mower
+session lease renew --session-id SESSION_ID. Use session show --current to
+find the matching saved brief from this checkout.
+Do not force-release another session as routine cleanup. A read-only adoption
+check can use session start --dry-run or --no-lease.
 
 Then run code-mower lanes status --repo OWNER/REPO and, when useful, start or
 check the local Board with code-mower board serve --repo OWNER/REPO.

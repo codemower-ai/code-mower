@@ -751,7 +751,7 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
             issues.append(ConfigIssue(f"{path}.driver", f"must be one of {sorted(ALLOWED_DRIVERS)}"))
         _require_string(lane_map.get("provider"), f"{path}.provider", issues)
         try:
-            lane_transport(lane_id, lane_map)
+            lane_transport(lane_id, lane_map, config=config)
         except ConfigError as exc:
             issues.append(ConfigIssue(path, str(exc)))
         if lane_map.get("trailer_lane") is not None:
