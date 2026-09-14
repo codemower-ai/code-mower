@@ -374,7 +374,7 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/builder_lineage.py",
+      "source": "tools/builder_lineage.py",
       "target": "src/code_mower/builder_lineage.py"
     },
     {

@@ -29,6 +29,7 @@ if __package__:
         from .builder_lineage import (
             Lineage,
             LineageError,
+            episodes_from_comment_body,
             lanes_from_identity,
             resolve_identity_only,
             resolve_lineage,
@@ -39,6 +40,7 @@ if __package__:
         from builder_lineage import (  # type: ignore
             Lineage,
             LineageError,
+            episodes_from_comment_body,
             lanes_from_identity,
             resolve_identity_only,
             resolve_lineage,
@@ -49,6 +51,7 @@ else:  # pragma: no cover - direct helper execution
     from builder_lineage import (  # type: ignore
         Lineage,
         LineageError,
+        episodes_from_comment_body,
         lanes_from_identity,
         resolve_identity_only,
         resolve_lineage,

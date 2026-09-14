@@ -285,10 +285,12 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   attested_non_current_audit_heads,
                   audit_run_in_flight_detail_for_lane,
                   audit_verdict_newer_than_in_flight,
+                  episodes_from_comment_body,
                   flatten_paginated_items,
                   github_actions_comment_attested,
                   latest_current_audit_verdict,
                   latest_current_audit_verdict_detail,
+                  resolve_builder_lineage,
               )
           except ImportError:  # pragma: no cover - unit-test/package fallback
               from code_mower.context_review import required_for_checkout
@@ -297,11 +299,15 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   attested_non_current_audit_heads,
                   audit_run_in_flight_detail_for_lane,
                   audit_verdict_newer_than_in_flight,
+                  episodes_from_comment_body,
                   flatten_paginated_items,
                   github_actions_comment_attested,
                   latest_current_audit_verdict,
                   latest_current_audit_verdict_detail,
+                  resolve_builder_lineage,
               )
+
+          LINEAGE_MARKER = "CODE_MOWER_BUILDER_LINEAGE"
 
           # github_actions_comment_attested verifies the hidden CODE_MOWER_AUDIT_RUN marker
           # and requires comment_id/body_sha256 to match the issue comment being evaluated.
@@ -431,16 +437,37 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   context_required=context_required,
               )
 
-          builder_matches = []
-          if isinstance(exclusion, dict) and exclusion.get("enabled"):
-              label_map = mapping("labels")
-              for label in labels:
-                  if label in label_map:
-                      builder_matches.append(str(label_map[label]))
-              author_map = {str(k).lower(): str(v) for k, v in mapping("authors").items()}
-              if pr_author.lower() in author_map:
-                  builder_matches.append(author_map[pr_author.lower()])
-          builder_matches = list(dict.fromkeys(builder_matches))
+          # Contribution lineage, not one label and one author. Episodes are
+          # read only from comments this gate already trusts, so publishing a
+          # marker is a transport and never an authorization. The resolver is
+          # the same one the runner and the reviewer wrappers use.
+          lineage_episodes = []
+          lineage_readable = True
+          for comment in comments:
+              comment_body = str(comment.get("body") or "")
+              if LINEAGE_MARKER not in comment_body:
+                  continue
+              comment_author = str(((comment.get("user") or {}).get("login")) or "")
+              if not any(
+                  trusted_comment_author(lane, comment_author, comment_body, comment.get("id"))
+                  for lane in lanes
+              ):
+                  continue
+              try:
+                  lineage_episodes.extend(episodes_from_comment_body(comment_body))
+              except Exception:
+                  lineage_readable = False
+          builder_lineage = resolve_builder_lineage(
+              labels=sorted(labels),
+              author=pr_author,
+              config=exclusion if isinstance(exclusion, dict) else {"enabled": False},
+              repo=os.environ.get("GITHUB_REPOSITORY", ""),
+              pr_number=pr_number,
+              branch=str(((pr_payload.get("head") or {}).get("ref")) or ""),
+              head_sha=head_sha,
+              episodes=lineage_episodes,
+          )
+          builder_matches = list(builder_lineage.contributors)
 
           def lane_display(lane):
               return str(lane.get("display_name") or lane.get("id") or lane.get("done") or "")
@@ -530,8 +557,12 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
               )
           )
 
-          if len(builder_matches) > 1:
-              emit("failure", "conflicting Code Mower builder identity")
+          if not lineage_readable:
+              emit("failure", "Code Mower builder contribution evidence is unreadable")
+          elif builder_lineage.status == "conflict":
+              emit("failure", "conflicting Code Mower builder identity: " + builder_lineage.owner_action)
+          elif builder_lineage.status == "waiting":
+              emit("pending", "waiting for builder lineage: " + builder_lineage.owner_action)
           elif owner_label in labels:
               emit("pending", owner_label + ": waiting on owner")
           elif owner_sitting_label and owner_sitting_label in labels:
@@ -547,11 +578,13 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           elif blocked:
               emit("failure", "blocked audit: " + ", ".join(blocked))
           else:
-              excluded_builder = builder_matches[0] if builder_matches else ""
+              # Every verified contributor to this head is excluded, not just
+              # the one the active label happens to name.
+              excluded_builders = set(builder_matches)
               required = [
                   lane
                   for lane in lanes
-                  if str(lane.get("author_lane") or lane.get("id") or "") != excluded_builder
+                  if str(lane.get("author_lane") or lane.get("id") or "") not in excluded_builders
               ]
               in_flight = in_flight_lanes(required)
               missing = [
@@ -561,7 +594,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   or latest_current_verdict(lane) != "done"
               ]
               if not required:
-                  if excluded_builder:
+                  if excluded_builders:
                       emit("failure", "no independent Code Mower audit lane remains")
                   else:
                       emit("failure", "no Code Mower merge-authority lanes configured")
