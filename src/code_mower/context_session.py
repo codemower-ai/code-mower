@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping
 
 from . import session_lease
+from .config import ConfigError
 from .context_contract import ContextError, _object, _text, normalize_policy
 from .context_store import ContextStore, default_context_root
 from .participants import PARTICIPANTS, participant_id
@@ -273,8 +274,13 @@ def parse_session(raw: bytes) -> dict[str, Any]:
         raise ContextError("saved Code Mower session is unavailable or invalid")
     _session_id(value["id"])
     _repo(value["repo"])
-    participant_id(value["host"])
-    participant_id(value["orchestrator"])
+    for field in ("host", "orchestrator"):
+        if not isinstance(value[field], str):
+            raise ContextError("saved Code Mower session is unavailable or invalid")
+        try:
+            participant_id(value[field])
+        except ConfigError:
+            raise ContextError("saved Code Mower session is unavailable or invalid") from None
     if not isinstance(value["participants"], list):
         raise ContextError("saved Code Mower session is unavailable or invalid")
     return value

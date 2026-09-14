@@ -171,6 +171,35 @@ class ResolveCurrentSessionTests(unittest.TestCase):
             self.assertEqual((code, err), (0, ""))
             self.assertIn("Status: prepared", out)
 
+    def test_malformed_participant_identifiers_return_bounded_invalid_brief_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
+            saved = start_session()
+            path = Path(saved["session_file"])
+            for field in ("host", "orchestrator"):
+                for value in (None, 42, False, [], {}, "", "unknown-private-participant"):
+                    with self.subTest(field=field, value=value):
+                        path.write_text(json.dumps({**saved, field: value}), encoding="utf-8")
+                        before = _tree_snapshot(Path(tmp))
+                        result = session_current.resolve_current_session()
+                        self.assertEqual(result["state"], "brief_invalid")
+                        self.assertFalse(result["current"])
+                        self.assertIsNone(result["session"])
+                        for args in ((), ("--json",)):
+                            code, out, err = show_current(*args)
+                            self.assertEqual(code, 1)
+                            self.assertIn("unavailable or invalid", err)
+                            self.assertNotIn("Traceback", err)
+                            self.assertNotIn("unknown-private-participant", out + err)
+                            if args:
+                                self.assertEqual(json.loads(out)["state"], "brief_invalid")
+                                self.assertIsNone(json.loads(out)["session"])
+                            else:
+                                self.assertEqual(out, "")
+                        self.assertEqual(_tree_snapshot(Path(tmp)), before)
+            path.write_text(json.dumps(saved), encoding="utf-8")
+            self.assertEqual(show_current()[0], 0)
+
     @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFOs are required")
     def test_a_fifo_at_the_brief_path_is_refused_without_blocking(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
