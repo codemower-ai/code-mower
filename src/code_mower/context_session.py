@@ -374,6 +374,10 @@ def update(
 
 def failure_state(error: BaseException) -> str:
     """Map private/provider failures to the closed session status vocabulary."""
+    from .context_contract import ContextRetrievalError
+
+    if isinstance(error, ContextRetrievalError):
+        return "authorization_failed" if error.reason == "access_denied" else "unavailable"
     message = str(error).lower()
     if any(text in message for text in (
         "authorization has expired", "packet is expired", "input is unavailable or expired",
