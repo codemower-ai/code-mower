@@ -225,10 +225,14 @@ def load_pull_request_metadata(
     path: Path, *, repo: str = "", comments_path: Path | None = None
 ) -> PullRequestMetadata:
     payload = _load_json_object(path)
-    if comments_path is not None:
-        # A GitHub event payload never carries the pull request's comments, so
-        # the published lineage arrives as its own authenticated fetch.
-        payload = {**payload, "comments": _load_json_list(comments_path)}
+    # A GitHub event payload never carries the pull request's comments, so the
+    # published lineage arrives as its own authenticated fetch. It is kept
+    # apart from the payload rather than merged into it: REST states the
+    # *number* of comments under the same key, and a merged list could no
+    # longer be told from the metadata it sits beside.
+    explicit_comments = (
+        _load_json_list(comments_path) if comments_path is not None else None
+    )
     pr = _record(payload.get("pull_request")) or payload
     number = _text(pr.get("number")) or _text(payload.get("number"))
     url = _text(pr.get("html_url")) or _text(pr.get("url"))
@@ -241,7 +245,7 @@ def load_pull_request_metadata(
         body=_text(pr.get("body")),
         head_sha=_text((_record(pr.get("head")) or {}).get("sha")),
         labels=_labels_from_pr_payload(pr),
-        comments=_comments_from_pr_payload(payload, pr),
+        comments=_comments_from_pr_payload(payload, pr, explicit=explicit_comments),
     )
 
 
@@ -257,8 +261,42 @@ def _labels_from_pr_payload(pr: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _comments_from_pr_payload(
+#: "This payload carries no comment history at all", which is not the same
+#: answer as "it carries one that cannot be read".
+_NO_HISTORY = object()
+
+
+def _selected_embedded_history(
     payload: Mapping[str, Any], pr: Mapping[str, Any]
+) -> tuple[Any, str]:
+    """The embedded comment history, told apart from REST's comment *count*.
+
+    ``gh ... --json comments`` nests the history under the pull request. REST
+    puts an integer under the same name -- how many comments there are, with
+    the history fetched separately -- so a count is metadata, not a malformed
+    history, and must not shadow the fetched list or fail the run. Anything
+    else present under that name is a selected history and has to be readable:
+    null, false, an object and a nested list are all unreadable, not absent.
+    """
+
+    for container, source in (
+        (pr, "the pull request's embedded comment history"),
+        (payload, "the event payload's embedded comment history"),
+    ):
+        if "comments" not in container:
+            continue
+        value = container["comments"]
+        if isinstance(value, int) and not isinstance(value, bool):
+            continue
+        return value, source
+    return _NO_HISTORY, ""
+
+
+def _comments_from_pr_payload(
+    payload: Mapping[str, Any],
+    pr: Mapping[str, Any],
+    *,
+    explicit: Any = None,
 ) -> tuple[Mapping[str, Any], ...]:
     """Pull request comments from whichever transport supplied the payload.
 
@@ -268,26 +306,27 @@ def _comments_from_pr_payload(
     every lineage reader consumes, so auto-record applies the same marker-trust
     rule as the gate rather than a transport-specific one.
 
-    The source actually used is validated *before* it is normalised. This is
-    the direct CLI's own input boundary: normalising first skipped entries that
-    were not objects and ran `_text()` over whatever was there, so a list-valued
-    body or an object login became a plausible-looking record, and the
-    already-clean tuple handed on afterwards had nothing left to detect. An
-    unreadable comments source is refused here, before any attribution exists.
+    The source actually used is selected explicitly, then validated *before*
+    it is normalised. This is the direct CLI's own input boundary: normalising
+    first skipped entries that were not objects and ran `_text()` over whatever
+    was there, so a list-valued body or an object login became a
+    plausible-looking record, and the already-clean tuple handed on afterwards
+    had nothing left to detect. An unreadable comments source is refused here,
+    before any attribution exists -- and a REST comment *count* is not one.
     """
 
     from .builder_lineage import require_comment_list
 
-    if "comments" in pr:
-        raw, source = pr["comments"], "pull request comments"
-    elif "comments" in payload:
-        raw, source = payload["comments"], "supplied comments"
+    if explicit is not None:
+        # The caller fetched the history itself and said so. That is the
+        # selected source, and no field beside it may shadow it.
+        raw, source = explicit, "the supplied comment history"
     else:
-        return ()
-    # A source that is present but null carries no history to read; that is
-    # the ordinary "this payload has no comments" shape, not a malformed one.
-    if raw is None:
-        return ()
+        raw, source = _selected_embedded_history(payload, pr)
+        if raw is _NO_HISTORY:
+            # No history field at all. Ordinary: the run is attributed from
+            # the pull request's own metadata, as it always was.
+            return ()
     validated = require_comment_list(raw, what=source)
     normalised: list[Mapping[str, Any]] = []
     for item in validated:

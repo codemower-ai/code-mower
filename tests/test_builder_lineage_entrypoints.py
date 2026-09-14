@@ -664,6 +664,9 @@ VALID_COMMENT_RECORDS = (
     {"user": {"login": AUTHORITY}, "body": "ordinary comment"},
 )
 
+#: "This fixture leaves the field out entirely", which no JSON value can say.
+_OMITTED = object()
+
 INVALID_COMMENT_RESPONSES = (
     None,
     False,
@@ -1167,6 +1170,114 @@ class TheDirectAutoRecordCliValidatesItsRawInput(unittest.TestCase):
         self.assertEqual(code, 0, errors)
         self.assertEqual(json.loads(out)["executor"], "devin")
 
+    def _cli_with_embedded(self, embedded, *, explicit=None):
+        """Put a raw value under the pull request's own `comments` key."""
+
+        from code_mower import builder_runs
+
+        root = git_free_tempdir(self, "code-mower-source-selection-")
+        pull_request = _pull_request()
+        pull_request["user"] = {"login": OPENER}
+        pull_request["labels"] = [{"name": "builder:codex"}]
+        if embedded is not _OMITTED:
+            pull_request["comments"] = embedded
+        pr_json = root / "event.json"
+        pr_json.write_text(
+            json.dumps({"pull_request": pull_request}), encoding="utf-8"
+        )
+        argv = [
+            "auto-record", "--pr-json", str(pr_json), "--repo", REPO,
+            "--output", str(root / "run.json"), "--force", "--json",
+        ]
+        if explicit is not None:
+            comments_json = root / "comments.json"
+            comments_json.write_text(json.dumps(explicit), encoding="utf-8")
+            argv[5:5] = ["--comments-json", str(comments_json)]
+        env = {
+            "CODE_MOWER_DECISION_AUTHORITIES": AUTHORITY,
+            "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+        }
+        captured, errors = _Capture(), _Capture()
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch("sys.stdout", captured), \
+                mock.patch("sys.stderr", errors):
+            code = builder_runs.main(argv)
+        artifact = root / "run.json"
+        return code, captured.text(), errors.text(), artifact.is_file()
+
+    def test_a_rest_comment_count_is_metadata_not_a_history(self):
+        for count in (0, 1, 42):
+            with self.subTest(count=count):
+                code, out, errors, artifact = self._cli_with_embedded(count)
+                self.assertEqual(code, 0, errors)
+                self.assertTrue(artifact)
+                self.assertEqual(json.loads(out)["executor"], "devin")
+
+    def test_the_supplied_history_wins_over_a_rest_count(self):
+        code, out, errors, artifact = self._cli_with_embedded(
+            7, explicit=[marker_comment()]
+        )
+        self.assertEqual(code, 0, errors)
+        self.assertTrue(artifact)
+        self.assertEqual(json.loads(out)["executor"], "chatgpt-codex-connector")
+
+    def test_the_supplied_history_wins_over_an_embedded_list(self):
+        """Explicit selection is not overridden by what sits beside it."""
+
+        code, out, errors, artifact = self._cli_with_embedded(
+            [], explicit=[marker_comment()]
+        )
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(json.loads(out)["executor"], "chatgpt-codex-connector")
+
+    def test_a_supplied_empty_history_wins_over_an_embedded_takeover(self):
+        code, out, errors, artifact = self._cli_with_embedded(
+            [marker_comment()], explicit=[]
+        )
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(json.loads(out)["executor"], "devin")
+
+    def test_a_supported_embedded_gh_list_is_still_read(self):
+        marker = {
+            "author": {"login": AUTHORITY},
+            "body": MARKER_BODY
+            + builder_lineage.lineage_comment_marker((takeover_episode(),)),
+        }
+        code, out, errors, artifact = self._cli_with_embedded([marker])
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(json.loads(out)["executor"], "chatgpt-codex-connector")
+
+    def test_an_omitted_history_field_is_ordinary(self):
+        code, out, errors, artifact = self._cli_with_embedded(_OMITTED)
+        self.assertEqual(code, 0, errors)
+        self.assertTrue(artifact)
+        self.assertEqual(json.loads(out)["executor"], "devin")
+
+    def test_a_present_but_malformed_embedded_history_fails_closed(self):
+        """Present-and-unreadable is not absent, whatever sits beside it."""
+
+        for embedded in (
+            None,
+            False,
+            {},
+            "comments",
+            [[marker_comment()]],
+            [marker_comment(), "text"],
+            [{"user": {"login": 7}, "body": "hi"}],
+            [{"user": {"login": AUTHORITY}, "body": None}],
+        ):
+            with self.subTest(embedded=embedded):
+                code, _, errors, artifact = self._cli_with_embedded(embedded)
+                self.assertEqual(code, 1, errors)
+                self.assertFalse(artifact, "no artifact on an unreadable history")
+
+    def test_a_malformed_supplied_history_fails_closed_beside_a_valid_count(self):
+        code, _, errors, artifact = self._cli_with_embedded(
+            3, explicit=[{"user": {"login": 7}, "body": "hi"}]
+        )
+        self.assertEqual(code, 1, errors)
+        self.assertFalse(artifact)
+
 
 class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):
     """Run the workflow's own recording step, with only `gh` replaced.
@@ -1220,7 +1331,15 @@ class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):
     #: The job's own bound: MAX_PAGES pages of history plus one probe.
     MAX_REQUESTS = 21
 
-    def _run_job(self, *, pages=None, raw=None, fail_from_page=None, job_env=None):
+    def _run_job(
+        self,
+        *,
+        pages=None,
+        raw=None,
+        fail_from_page=None,
+        job_env=None,
+        comment_count=0,
+    ):
         """Execute the generated step with a page-aware fake `gh`.
 
         The fake answers each page request individually and records it, so the
@@ -1293,6 +1412,10 @@ class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):
         pull_request = _pull_request()
         pull_request["user"] = {"login": OPENER}
         pull_request["labels"] = [{"name": "builder:codex"}]
+        # What GitHub actually sends: `comments` is the *count*, and the
+        # history is the separate authenticated fetch this job makes.
+        pull_request["comments"] = comment_count
+        pull_request["review_comments"] = 0
         event_path.write_text(
             json.dumps({"pull_request": pull_request}), encoding="utf-8"
         )
@@ -1576,6 +1699,39 @@ class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("numeric pull request", result.stderr)
+
+    def test_a_rest_comment_count_does_not_shadow_the_fetched_history(self):
+        """What GitHub actually sends: `comments` is a number, not a history.
+
+        The event's nested `comments` field states how many comments there
+        are; the history is the separate fetch this job makes. Reading that
+        number as the history refuses ordinary pull requests outright.
+        """
+
+        for count in (0, 1, 7):
+            with self.subTest(count=count, history="empty"):
+                completed, artifact = self._run_job(
+                    pages=[[]], comment_count=count
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertIsNotNone(artifact, "a valid run must be attributed")
+                self.assertEqual(
+                    artifact["dimensions"]["builder_executor"], "devin",
+                    "no evidence, so the opener keeps the run",
+                )
+            with self.subTest(count=count, history="takeover"):
+                completed, artifact = self._run_job(
+                    pages=[[marker_comment()]], comment_count=count
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(
+                    artifact["dimensions"]["builder_executor"],
+                    "chatgpt-codex-connector",
+                    "the verified current writer takes the run",
+                )
+                self.assertEqual(
+                    artifact["dimensions"]["builder_current_writer"], "codex"
+                )
 
     def test_an_empty_history_still_records_the_opener(self):
         """Absence of evidence is not a failure -- only unreadability is."""
