@@ -6,6 +6,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 
+from . import context_graph_connection as graph_connection
 from . import context_review
 from .context_connections import _state
 from .context_contract import ContextError, ContextRequest, ValidatedPacket, _identifier, _object, _text, normalize_policy
@@ -114,8 +115,18 @@ def reserve_attachment(
         "state": "available", "expires_at": payload["binding"]["expires_at"]})
     render_evidence(packet, handle)
     with store.locked(name) as locked:
-        state = _state(locked.read(), name)
-        if state["state"] != "verified" or state["generation"] != payload["binding"]["generation"]:
+        saved = locked.read()
+        if graph_connection.is_graph(saved):
+            state = graph_connection.saved_state(saved, name)
+            # The local graph's "authorization changed" is a rebuild: the
+            # published generation is what a packet binds, so a graph rebuilt
+            # between preparation and attachment fails the same check a revoked
+            # organization authorization does.
+            generation = graph_connection.current_generation(state, root=store.root)
+        else:
+            state = _state(saved, name)
+            generation = state["generation"]
+        if state["state"] != "verified" or generation != payload["binding"]["generation"]:
             raise ContextError("context authorization changed before attachment")
         index_file, index = _index(locked)
         entry = next((item for item in index["entries"] if item["handle"] == handle), None)

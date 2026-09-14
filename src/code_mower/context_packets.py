@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import context_graph_connection as graph_connection
 from .context_connections import _backend, _state, authorize_locked
 from .context_contract import (
     CAPABILITY_VERSION, PACKET_SCHEMA, ContextError, ContextRequest, _object,
@@ -114,17 +115,33 @@ def _load(store, entry, policy, request, envelope):
                        request=request, authorize=lambda: envelope)
 
 
-def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False):
-    """Retrieve once, or reauthorize and reuse; never redispatch automatically."""
+def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revision="HEAD"):
+    """Retrieve once, or reauthorize and reuse; never redispatch automatically.
+
+    Which provider answers is the connection's own saved state, read here under
+    the same lock that guards the retrieval. A local repository graph reaches
+    the same index, the same packet files, and the same delivery contract as an
+    organization connection; what differs is only where authorization and
+    evidence come from, and neither kind can be mistaken for the other because
+    the saved schema is checked before either path is taken.
+    """
     spec = request_spec(spec, name)
     policy = spec["policy"]
     started = time.monotonic()
-    backend = backend or _backend()
     with store.locked(name, timeout_seconds=policy["timeout_seconds"]) as locked:
+        local = graph_connection.is_graph(locked.read())
         left = policy["timeout_seconds"] - (time.monotonic() - started)
         if left <= 0:
             raise ContextError("context retrieval deadline exceeded before authorization")
-        envelope = authorize_locked(locked, name, backend, timeout_seconds=min(left, 30))
+        if local:
+            envelope = graph_connection.authorize_locked(
+                locked, name, root=store.root, revision=revision,
+            )
+        else:
+            # Deferred until the connection kind is known: a local graph must
+            # not require the optional provider SDK to be installed at all.
+            backend = backend or _backend()
+            envelope = authorize_locked(locked, name, backend, timeout_seconds=min(left, 30))
         if spec["repository"] not in envelope["repositories"] or spec["recipient"] not in envelope["recipients"]:
             raise ContextError("context connection does not authorize this repository or recipient")
         fingerprint = _key({k: v for k, v in spec.items() if k != "recipient"})
@@ -149,42 +166,66 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False):
         left = policy["timeout_seconds"] - (time.monotonic() - started)
         if left <= 0:
             raise ContextError("context retrieval deadline exceeded; no search was sent")
-        state = _state(locked.read(), name)
-        credentials = locked.vault.get(state["credential_id"])
+        state = graph_connection.saved_state(locked.read(), name) if local else _state(locked.read(), name)
         try:
-            result = backend.retrieve(credentials, spec["query"], spec["source"], policy, timeout_seconds=left)
-            now = datetime.now(timezone.utc)
-            expiry = min(_timestamp(envelope["expires_at"]), now + timedelta(seconds=policy["max_age_seconds"]))
-            packet_data = {"schema": PACKET_SCHEMA, "capability_version": CAPABILITY_VERSION,
-                           "provider": "coworker", "kind": "organization", "retrieved_at": now.isoformat(),
-                           **{key: result[key] for key in ("documents", "completeness", "truncated", "source_revision", "source_built_at", "omissions")},
-                           "binding": {**{key: envelope[key] for key in ("connection", "generation", "identity", "recipients")},
-                                       "repository": spec["repository"], "work_item": spec["work_item"],
-                                       "policy_version": policy["policy_version"], "expires_at": expiry.isoformat()}}
+            if local:
+                # The local graph mints its own packet: it decides what the
+                # evidence is, and the envelope above decides who may read it.
+                packet_data = graph_connection.retrieve(
+                    state, spec, envelope=envelope, root=store.root, revision=revision,
+                )
+                usage = None
+            else:
+                credentials = locked.vault.get(state["credential_id"])
+                result = backend.retrieve(credentials, spec["query"], spec["source"], policy, timeout_seconds=left)
+                now = datetime.now(timezone.utc)
+                expiry = min(_timestamp(envelope["expires_at"]), now + timedelta(seconds=policy["max_age_seconds"]))
+                packet_data = {"schema": PACKET_SCHEMA, "capability_version": CAPABILITY_VERSION,
+                               "provider": "coworker", "kind": "organization", "retrieved_at": now.isoformat(),
+                               **{key: result[key] for key in ("documents", "completeness", "truncated", "source_revision", "source_built_at", "omissions")},
+                               "binding": {**{key: envelope[key] for key in ("connection", "generation", "identity", "recipients")},
+                                           "repository": spec["repository"], "work_item": spec["work_item"],
+                                           "policy_version": policy["policy_version"], "expires_at": expiry.isoformat()}}
+                usage = result["usage"]
             locked.artifact("p-" + entry["handle"]).write(packet_data)
             raw = json.dumps(packet_data, allow_nan=False, separators=(",", ":")).encode()
             entry["reference"] = {"path": ".p-" + entry["handle"] + ".json", "sha256": hashlib.sha256(raw).hexdigest()}
             packet = _load(store, entry, policy, _request(spec), envelope)
-            entry["usage"] = result["usage"]
+            entry["usage"] = usage
             index_file.write(index)
             _index(locked)
-            locked.write({**state, "capability_status": {"search": "available", "memory": "available"}})
+            if not local:
+                locked.write({**state, "capability_status": {"search": "available", "memory": "available"}})
         except Exception:
             entry["reference"] = None
             entry["usage"] = None
             index_file.write(index)
             locked.artifact("p-" + entry["handle"]).delete()
-            locked.write({**state, "capability_status": {"search": "unavailable", "memory": "unavailable"}})
+            if not local:
+                locked.write({**state, "capability_status": {"search": "unavailable", "memory": "unavailable"}})
             raise ContextError("context search unavailable; no automatic retry; verify access or explicitly refresh") from None
         return {**packet.shareable_summary(), "status": "available", "packet_handle": entry["handle"],
                 "reused": False, "usage": entry["usage"]}
 
 
-def load_authorized(store, name, handle, policy, request: ContextRequest, *, backend=None):
-    """Every participant replay obtains a new online authorization under lock."""
+def load_authorized(store, name, handle, policy, request: ContextRequest, *, backend=None,
+                    revision="HEAD"):
+    """Every participant replay obtains a new authorization under lock.
+
+    For an organization connection that is a fresh online check. For a local
+    repository graph it is a fresh read of current local state: the published
+    generation for ``revision``. Either way the envelope is minted here and
+    now, so a packet whose graph was rebuilt or whose revision has moved on is
+    refused by the shared contract rather than replayed.
+    """
     _handle(handle)
     with store.locked(name) as locked:
-        envelope = authorize_locked(locked, name, backend or _backend())
+        if graph_connection.is_graph(locked.read()):
+            envelope = graph_connection.authorize_locked(
+                locked, name, root=store.root, revision=revision,
+            )
+        else:
+            envelope = authorize_locked(locked, name, backend or _backend())
         _file, index = _index(locked)
         entry = next((entry for entry in index["entries"] if entry["handle"] == handle), None)
         if entry is None:

@@ -237,11 +237,57 @@ is written to a freshly created private sibling and renamed over the
 destination, which is also atomic — a reader never sees a half-written packet,
 and a failed write leaves the previous file untouched.
 
+## Guided sessions
+
+`context-graph query` is the standalone verb. The same graph is also reachable
+from the ordinary guided route, by registering it as a context connection:
+
+```
+code-mower context-graph connect --connection local-graph \
+    --repository owner/repo --recipient claude:builder --recipient codex:reviewer
+code-mower context-graph connection-status --connection local-graph
+code-mower context-graph disconnect --connection local-graph
+```
+
+A local connection has no principal, no workspace, and no credential. Nothing
+is written to the OS credential vault, no browser opens, and no endpoint is
+contacted; the connection's whole state is one checkout and the repositories
+and recipients the operator approved for it. `session context prepare` then
+reaches it through the shared packet store, with the same protected handle, the
+same authorization scope, the same work item and recipient contract, and the
+same attachment and delivery path an organization connection uses:
+
+```
+code-mower session context prepare SESSION.json \
+    --question impact --query-stdin   # stdin names the symbol or path
+```
+
+`--question` is this connection's retrieval source, and the query names the
+symbol or repository-relative path. Both are explicit: a graph answers about a
+named target, and guessing one out of a work item's prose would produce
+confident evidence about whatever happened to match. `--question` defaults to
+`symbol`.
+
+What replaces the credential is the graph. Authorization is re-derived from
+current local state on every load and every replay — never cached — and the
+envelope carries the **published generation** as its `generation`. Two rules
+then fall out of the shared packet contract rather than out of new checks:
+
+- A **rebuilt** graph publishes a new generation, so a packet bound to the old
+  one no longer matches its envelope and is refused at load.
+- A **moved `HEAD`** makes the published generation stale for that revision, so
+  authorization fails outright and nothing is delivered.
+
+Required context that is refused pauses the dependent work; optional context
+degrades and the session continues with ordinary repository tools. Claude,
+Codex and Devin receive byte-identical approved evidence, and no recipient
+needs the provider, the pin, or any Graphify tool to read it.
+
 ## Boundary
 
 This change adds no dependency, no background service, and no mandatory
-indexing step. It does not wire the graph into `code-mower context fetch` or any
-default guided-context selection: a graph packet is produced by an explicit
-command, and the operator attaches it through the ordinary path. Hosted
+indexing step. Nothing is selected by default: a graph is indexed only when an
+operator builds one, and reached from a guided session only when an operator
+connects one. Hosted
 Graphify, semantic or model-based extraction, clustering, watchers, and provider
 API keys remain out of scope and separate decisions.

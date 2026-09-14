@@ -20,10 +20,11 @@ import os
 import sys
 from pathlib import Path
 
+from . import context_graph_connection as connection
 from . import context_graph_lifecycle as lifecycle
 from . import context_graph_query as query
 from .context_contract import ContextError
-from .context_store import strict_json
+from .context_store import ContextStore, strict_json
 
 MAX_PIN_BYTES = 8192
 
@@ -132,8 +133,15 @@ def main(argv=None) -> int:
     remove = sub.add_parser("remove", help="Delete this checkout's private local graph state")
     doctor = sub.add_parser("doctor", help="Check the local graph posture without building anything")
     ask = sub.add_parser("query", help="Answer one bounded question and emit a revision-bound packet")
+    # The guided route. ``query`` is the standalone verb an operator drives by
+    # hand; these three register the same graph as an ordinary context
+    # connection, so ``session context prepare``/``deliver`` can reach it
+    # through the shared packet store without a Coworker account or SDK.
+    join = sub.add_parser("connect", help="Register this checkout's graph as a local context connection")
+    leave = sub.add_parser("disconnect", help="Disable the connection and drop the packets it authorized")
+    linked = sub.add_parser("connection-status", help="Report the connection and the graph behind it")
 
-    for command in (build, refresh, status, remove, doctor, ask):
+    for command in (build, refresh, status, remove, doctor, ask, join, leave, linked):
         command.add_argument("--repo-path", type=Path, default=Path.cwd(), help="Checkout to bind")
         command.add_argument("--state-dir", type=Path, help="Private state root; defaults to the context store")
         command.add_argument("--json", action="store_true", help="Emit a machine-readable summary")
@@ -157,6 +165,13 @@ def main(argv=None) -> int:
     ask.add_argument("--depth", type=int, help="Traversal depth; defaults to the question's own ceiling")
     ask.add_argument("--node-budget", type=int, default=query.DEFAULT_NODE_BUDGET,
                      help="Most relationships one answer may carry before it reports truncation")
+    linked.add_argument("--revision", default="HEAD", help="Revision the connection must currently bind")
+    for command in (join, leave, linked):
+        command.add_argument("--connection", required=True, help="Context connection name to register or inspect")
+    join.add_argument("--repository", required=True, action="append", metavar="OWNER/NAME",
+                      help="Approved context repository; repeat for more than one")
+    join.add_argument("--recipient", required=True, action="append", metavar="HOST:ROLE",
+                      help="Approved recipient, for example claude:builder; repeat for more than one")
 
     args = parser.parse_args(argv)
     try:
@@ -237,6 +252,25 @@ def main(argv=None) -> int:
                          if key not in ("schema", "status"))
             _emit(outcome.summary, as_json=args.json, text="\n".join(lines) + "\n")
             return outcome.exit_code
+        if args.command in ("connect", "disconnect", "connection-status"):
+            store = ContextStore(args.state_dir)
+            if args.command == "connect":
+                summary = connection.connect(store, args.connection, {
+                    "repository_root": str(Path(args.repo_path).resolve()),
+                    "repositories": list(args.repository),
+                    "recipients": list(args.recipient),
+                })
+            elif args.command == "disconnect":
+                summary = connection.disconnect(store, args.connection)
+            else:
+                summary = connection.status(
+                    store, args.connection, root=args.state_dir, revision=args.revision,
+                )
+            lines = [f"Local graph connection: {summary['status']}"]
+            lines.extend(f"  {key}: {value}" for key, value in sorted(summary.items())
+                         if key not in ("schema", "status"))
+            _emit(summary, as_json=args.json, text="\n".join(lines) + "\n")
+            return 0 if summary.get("authorization", "available") == "available" else 1
         if args.command == "remove":
             state = lifecycle.GraphStateRoot(args.repo_path, root=args.state_dir)
             path = str(state.path) if args.show_local_paths else None
