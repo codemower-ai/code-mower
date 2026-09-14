@@ -676,6 +676,105 @@ class TraversalTests(GraphWorkspace):
             self.query(question="everything")
 
 
+class CallableLabelSeedTests(unittest.TestCase):
+    """Bare names against the labels the pinned extractor actually writes.
+
+    A fresh contained extraction of the public fixture at 0.9.58 labels the
+    function ``parse_graph_citation`` as ``parse_graph_citation()`` and the
+    function ``packet`` as ``packet()``. An exact-label-only reader answers
+    "unresolved" for every natural spelling of a function name, so a bare symbol
+    resolves to the canonical callable label with only its syntactic trailing
+    argument list removed -- and to nothing else. These tests are as much about
+    what that must *not* reach.
+    """
+
+    def load(self, *nodes, edges=()) -> query.CodeGraph:
+        document = graph_document(nodes=list(nodes), edges=list(edges))
+        return query.load_graph(document, generation="a" * 32, commit="b" * 40)
+
+    def test_a_bare_name_resolves_to_the_canonical_callable_label(self) -> None:
+        graph = self.load(
+            node("n-citation", "parse_graph_citation()", "example_pkg/config.py", 12))
+        self.assertEqual([item.id for item in graph.seeds("parse_graph_citation")], ["n-citation"])
+
+    def test_the_literal_label_still_resolves_exactly(self) -> None:
+        """Stripping is an addition, not a replacement: the written label wins."""
+        graph = self.load(
+            node("n-citation", "parse_graph_citation()", "example_pkg/config.py", 12))
+        self.assertEqual(
+            [item.id for item in graph.seeds("parse_graph_citation()")], ["n-citation"])
+
+    def test_an_exact_label_beats_the_same_string_read_as_a_callable(self) -> None:
+        """Both exist, and the tier that matched what was written is the answer.
+
+        A module attribute ``packet`` and a function ``packet()`` are different
+        definitions. Merging them would report a relationship of one as a
+        relationship of the other, so the exact label resolves alone and the
+        result is not ambiguous.
+        """
+        graph = self.load(
+            node("n-attribute", "packet", "example_pkg/config.py", 4),
+            node("n-function", "packet()", "example_pkg/config.py", 12),
+        )
+        self.assertEqual([item.id for item in graph.seeds("packet")], ["n-attribute"])
+
+    def test_a_near_name_does_not_reach_a_longer_callable(self) -> None:
+        """No prefix, substring, or edit-distance matching -- an equality test."""
+        graph = self.load(
+            node("n-citation", "parse_graph_citation()", "example_pkg/config.py", 12),
+            node("n-other", "parse_graph_citations()", "example_pkg/config.py", 20),
+        )
+        for target in ("parse_graph", "parse", "graph_citation", "arse_graph_citation"):
+            with self.subTest(target=target):
+                self.assertEqual(graph.seeds(target), ())
+
+    def test_overload_like_labels_are_ambiguity_rather_than_a_pick(self) -> None:
+        """Two labels reduce to one name, so the target names two definitions."""
+        graph = self.load(
+            node("n-int", "render(int)", "example_pkg/report.py", 5),
+            node("n-str", "render(str)", "example_pkg/report.py", 9),
+        )
+        result = query.run_query(graph, question="symbol", target="render")
+        self.assertEqual([item.id for item in result.seeds], ["n-int", "n-str"])
+        self.assertTrue(result.ambiguous)
+        self.assertIn("unresolved_entities", result.omissions)
+
+    def test_the_seed_bound_and_its_truncation_still_apply_to_bare_names(self) -> None:
+        nodes = [
+            node(f"n-{index:02d}", f"render(arg{index})", "example_pkg/report.py", index + 1)
+            for index in range(query.MAX_SEEDS + 1)
+        ]
+        result = query.run_query(self.load(*nodes), question="symbol", target="render")
+        self.assertEqual(len(result.seeds), query.MAX_SEEDS)
+        self.assertTrue(result.truncated)
+        self.assertIn("provider_has_more", result.omissions)
+
+    def test_a_path_target_is_unchanged_and_still_last(self) -> None:
+        """Paths are literal, and a callable label never stands in for one."""
+        graph = self.load(
+            node("n-citation", "parse_graph_citation()", "example_pkg/config.py", 12))
+        self.assertEqual(
+            [item.id for item in graph.seeds("example_pkg/config.py")], ["n-citation"])
+        self.assertEqual(graph.seeds("example_pkg"), ())
+
+    def test_only_a_whole_trailing_argument_list_is_removed(self) -> None:
+        """The rule as a table, including every shape that must reduce to nothing."""
+        for label, expected in (
+            ("parse_graph_citation()", "parse_graph_citation"),
+            ("render(int)", "render"),
+            ("render(Callable[(int)])", "render"),
+            ("parse_graph_citation", ""),
+            ("()", ""),
+            ("render(int))", ""),
+            ("render()x", ""),
+            ("render(int", ""),
+            ("ren)der()", ""),
+            ("", ""),
+        ):
+            with self.subTest(label=label):
+                self.assertEqual(query._callable_base(label), expected)
+
+
 class CitationValidationTests(GraphWorkspace):
     def validator(self) -> query.CitationValidator:
         census = lifecycle.read_tracked_census(self.repository, self.manifest.commit)

@@ -1021,17 +1021,47 @@ class NetworkIsolationTests(unittest.TestCase):
 CODE_INPUT = "src/app.py"
 DOC_INPUT = "docs/guide.md"
 
+#: The bytes a launch fixture actually materializes for each of those, because
+#: a manifest row is now checked against them rather than merely shaped like a
+#: hash. A census that named files the copy does not hold would be a build that
+#: cannot check any row, which is its own (partial) case and has its own test.
+FIXTURE_INPUTS = {
+    CODE_INPUT: b"def main():\n    return 0\n",
+    DOC_INPUT: b"# guide\n",
+}
+
+#: What the pin's ``_md5_file`` would return for the code input above. The
+#: adapter derives the same value from the copy before the launch, so this is
+#: the one digest a finished manifest can carry for ``src/app.py``.
+CODE_INPUT_DIGEST = hashlib.md5(FIXTURE_INPUTS[CODE_INPUT], usedforsecurity=False).hexdigest()
+
 
 def census_of(*paths: str) -> lifecycle.TrackedCensus:
     """A census naming ``paths``, shaped the way ``read_tracked_census`` does."""
     entries = tuple(
-        lifecycle.TrackedEntry(path=path, mode="100644", blob="0" * 40, size=1)
+        lifecycle.TrackedEntry(
+            path=path, mode="100644", blob="0" * 40, size=len(FIXTURE_INPUTS.get(path, b"x"))
+        )
         for path in paths
     )
     return lifecycle.TrackedCensus(entries=entries, skipped=(), digest="0" * 64)
 
 
-def manifest_row(digest: str = "a" * 32) -> dict:
+def materialize_fixture_inputs(source_root: Path, census: lifecycle.TrackedCensus) -> None:
+    """Write the census's own bytes into the copy, as a real build would.
+
+    ``materialize_tracked_files`` puts the commit's blobs here before the
+    provider is launched; the launch fixtures used to leave the copy empty,
+    which no longer describes a build whose completeness check reads those
+    bytes.
+    """
+    for entry in census.entries:
+        destination = source_root.joinpath(*entry.path.split("/"))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(FIXTURE_INPUTS.get(entry.path, b"x"))
+
+
+def manifest_row(digest: str = CODE_INPUT_DIGEST) -> dict:
     """One ``save_manifest`` row, in the pin's own shape."""
     return {"mtime": 1.0, "seen": 2.0, "ast_hash": digest, "semantic_hash": digest}
 
@@ -1076,6 +1106,11 @@ class ProviderLaunchTests(TemporaryWorkspace):
         # than exercise anything, so each request names its own.
         artifact = Path(tempfile.mkdtemp(dir=self.root)) / "graph.bin"
         self.artifacts.append(artifact)
+        census = census_of(CODE_INPUT, DOC_INPUT)
+        # A real build materializes the census into the copy before launching.
+        # The completeness check now reads those bytes, so the fixture has to
+        # actually hold them rather than name them.
+        materialize_fixture_inputs(source, census)
         return lifecycle.IndexRequest(
             source_root=source,
             output_path=artifact,
@@ -1083,7 +1118,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             pin=pin,
             commit="a" * 40,
             tree="b" * 40,
-            census=census_of(CODE_INPUT, DOC_INPUT),
+            census=census,
         )
 
     def run_indexer(
@@ -1448,17 +1483,78 @@ class ProviderLaunchTests(TemporaryWorkspace):
         Nothing else upgrades a run: the exit status is zero in every case here,
         and the graph document is ``{}`` -- an empty graph with every input
         stamped is a complete read, and a full graph with one input unstamped is
-        not.
+        not. The hash has to be *this* input's, which is the next test.
         """
-        _, result = self.run_indexer("graphify", report={CODE_INPUT: manifest_row("b" * 32)})
+        _, result = self.run_indexer("graphify", report={CODE_INPUT: manifest_row()})
         self.assertEqual(result.completeness, lifecycle.COMPLETE)
         self.assertEqual(result.indexed_files, 1)
+
+    def test_a_hash_that_is_not_this_input_s_bytes_is_partial(self) -> None:
+        """A hash-shaped string is not a hash of what the provider was given.
+
+        ``b`` repeated is well formed by every rule the old check applied, and it
+        is not the digest of ``src/app.py``. A row like it is what a manifest
+        carried over from another tree or resumed from a cache looks like, so it
+        must not count as work done on these bytes.
+        """
+        _, result = self.run_indexer("graphify", report={CODE_INPUT: manifest_row("b" * 32)})
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("not the bytes it was given", " ".join(result.notes))
+        self.assertEqual(result.indexed_files, 0)
+
+    def test_the_expected_digest_is_taken_before_the_provider_runs(self) -> None:
+        """The comparison is against what this build handed over, not leavings.
+
+        The stand-in rewrites ``src/app.py`` while it "runs" and stamps the
+        manifest with the digest of what it wrote. Read after the fact, that
+        agrees with itself; read before the launch, as it is, it does not.
+        """
+        request = self.request()
+        replacement = b"def main():\n    return 1\n"
+        stamped = hashlib.md5(replacement, usedforsecurity=False).hexdigest()
+
+        def fake_popen(argv, **kwargs):
+            request.source_root.joinpath(*CODE_INPUT.split("/")).write_bytes(replacement)
+            written = request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY
+            written.mkdir(exist_ok=True)
+            (written / "graph.json").write_text("{}", encoding="utf-8")
+            (written / "manifest.json").write_text(
+                json.dumps({CODE_INPUT: manifest_row(stamped)}), encoding="utf-8"
+            )
+            return FakeChild()
+
+        with stand_in_containment(("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                result = indexer(request)
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("not the bytes it was given", " ".join(result.notes))
+
+    def test_a_code_input_the_copy_does_not_hold_cannot_be_counted(self) -> None:
+        """An unreadable input is a row this build cannot check, so it is partial.
+
+        Not an error: the census is the denominator and the copy is the
+        evidence, and a build that lost one of the two states that rather than
+        believing the provider's row on its own word.
+        """
+        result = lifecycle._read_completeness(
+            {CODE_INPUT: manifest_row()}, census_of(CODE_INPUT), {}
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("could not re-read 1 code files", " ".join(result.notes))
+        self.assertEqual(result.indexed_files, 0)
 
     def test_a_request_without_a_census_cannot_be_complete(self) -> None:
         """There is no denominator, so there is no coverage claim to make."""
         self.assertEqual(
             lifecycle._read_completeness(FINISHED_MANIFEST, None).completeness, lifecycle.PARTIAL
         )
+
+    def test_a_build_that_recorded_no_input_digests_cannot_be_complete(self) -> None:
+        """Without the immutable bytes there is nothing to check a row against."""
+        result = lifecycle._read_completeness(FINISHED_MANIFEST, census_of(CODE_INPUT), None)
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("no input digests", " ".join(result.notes))
 
     def test_a_run_that_left_no_manifest_is_partial_rather_than_complete(self) -> None:
         # Exit status zero is not completion evidence. Absent evidence resolves

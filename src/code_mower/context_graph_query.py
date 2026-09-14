@@ -251,6 +251,53 @@ MAX_EDGES = 500_000
 #: large generated file costs the lines up to the claim.
 _BLOB_CHUNK_BYTES = 256 * 1024
 
+#: The syntactic argument list the pinned extractor appends to a callable's
+#: label. A real 0.9.58 graph of this repository labels the function
+#: ``parse_graph_citation`` as ``parse_graph_citation()`` and the function
+#: ``packet`` as ``packet()``, so the label a human would type and the label the
+#: provider wrote differ by exactly this suffix.
+_CALLABLE_OPEN = "("
+_CALLABLE_CLOSE = ")"
+
+
+def _callable_base(label: str) -> str:
+    """A callable label's name with only its trailing argument list removed.
+
+    ``""`` for anything that is not a callable label, and that emptiness is
+    load-bearing: ``seed_matches`` compares this against a target that ``_text``
+    has already rejected as empty, so a non-callable label can never match by
+    both sides being blank.
+
+    Deliberately syntactic and deliberately narrow. The suffix must begin at the
+    label's *first* ``(``, must be a balanced parenthesized group, and that group
+    must close on the label's last character; the name before it must be
+    non-empty and carry no ``)`` of its own. So ``render(int)``,
+    ``render(Callable[(int)])`` and ``render()`` all reduce to ``render`` while
+    ``render(int))``, ``render()x``, ``render(int`` and ``()`` reduce to nothing.
+    It is not a parser: the pinned extractor writes the label, this reads the one
+    suffix it writes, and everything else stays an exact comparison.
+    """
+    if not label.endswith(_CALLABLE_CLOSE):
+        return ""
+    opened = label.find(_CALLABLE_OPEN)
+    if opened <= 0:
+        return ""
+    base = label[:opened]
+    if _CALLABLE_CLOSE in base:
+        return ""
+    depth = 0
+    for index in range(opened, len(label)):
+        character = label[index]
+        if character == _CALLABLE_OPEN:
+            depth += 1
+        elif character == _CALLABLE_CLOSE:
+            depth -= 1
+            if depth == 0:
+                # The first group closes here. Anything after it means the tail
+                # is not one argument list, so the label is left alone.
+                return base if index == len(label) - 1 else ""
+    return ""
+
 
 @dataclass(frozen=True)
 class GraphNode:
@@ -322,6 +369,24 @@ class CodeGraph:
         all is read as a path. Ordered by id so two runs against one generation
         seed identically.
 
+        Resolution is three ordered tiers, and a later tier is consulted only
+        when every earlier one is empty, so a literal label always wins over
+        the same string read as a bare callable and both win over a path:
+
+        1. The provider's label, exactly as written.
+        2. The provider's *canonical callable label* with only its syntactic
+           trailing argument list removed (``_callable_base``). A real pinned
+           graph labels a function ``parse_graph_citation()``, so without this
+           tier the natural bare spelling of a function name resolves to
+           nothing and every query about it answers "unresolved".
+        3. The path, exactly as written.
+
+        Tier 2 is an equality test against a label with one suffix stripped --
+        not a prefix, substring, or edit-distance match. ``parse_graph`` does
+        not reach ``parse_graph_citation()``, and two overloads that differ
+        only in their argument lists both match, which is real ambiguity and is
+        reported as such rather than resolved by picking one.
+
         The overflow flag is not cosmetic. A name carried by more than
         ``MAX_SEEDS`` definitions has definitions this traversal will never
         start from, and every relationship reachable only from those is absent
@@ -331,6 +396,10 @@ class CodeGraph:
         """
         name = _text(target, maximum=512)
         matches = [node for node in self.nodes.values() if node.name == name]
+        if not matches:
+            matches = [
+                node for node in self.nodes.values() if _callable_base(node.name) == name
+            ]
         if not matches:
             matches = [node for node in self.nodes.values() if node.path == name]
         ordered = tuple(sorted(matches, key=lambda node: node.id))

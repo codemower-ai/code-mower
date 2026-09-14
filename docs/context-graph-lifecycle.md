@@ -44,9 +44,10 @@ provenance at all. If Code Mower does not bind the revision, nothing does.
    repository it was never authorized to read. Committed private state is
    skipped for a third reason, at any depth and case-folded: the roots are
    `context_graph`'s excluded roots themselves — `.git`, `.graph`, `.graphify`,
-   `.code-mower` — bound rather than copied, so the set that refuses a citation
-   into private state is the same set that keeps those bytes away from the
-   indexer. A tracked `.graphify/` or `.graph/` is somebody's old index, and
+   `graphify-out`, `.code-mower` — bound rather than copied, so the set that
+   refuses a citation into private state is the same set that keeps those bytes
+   away from the indexer. A tracked `.graphify/`, `.graph/` or `graphify-out/`
+   is somebody's old index, and
    materializing it would let the provider resume from a cache built over
    content this build never saw, and let the adapter collect tracked repository
    bytes as if the provider had just produced them. A tracked `.code-mower/`
@@ -361,8 +362,12 @@ valued form such as `--code-only=false` — is refused rather than quietly
 overridden by argument order.
 
 So the adapter collects an artifact afterwards rather than naming one up front.
-The state directory the provider wrote (`.graphify` or `.graph`, both already on
-the excluded-roots list) is packed into a single reproducible archive: names
+The output root the provider wrote — exactly `graphify-out`, the literal default
+of the pin's own `GRAPHIFY_OUT`, resolved beneath the materialized copy and
+never from a caller path or that environment override, and required to be a real
+non-symlinked directory holding `graph.json` as a regular file, with a second
+provider root beside it refused rather than guessed between — is packed into a
+single reproducible archive: names
 sorted, timestamps and ownership fixed, modes normalized, symlinks dropped. Two
 builds of one commit have to produce identical bytes, because the manifest binds
 a digest of them. That state lands inside the throwaway materialized copy, never
@@ -382,26 +387,53 @@ build from this module there is none; the refusal is the second check, because
 everything after the run treats whatever is in that directory as output this
 run produced.
 
-**Completeness is read from the provider's report, never from its exit status,
-and only an affirmative claim counts.** `complete` requires a report shaped the
-way the adapter understands one: a claim that the run finished (`complete`,
-`completed`, `finished`, or a recognized `status`), a count of what was
-indexed, and no counter admitting requeued, pending, or failed work. Everything
-else is `partial` — a report that denies completion, one in an unrecognized
-schema, an empty object, an unreadable one, one larger than a manifest, and no
-report at all. Absent evidence is not evidence of a complete build, and
-`partial` is the state `graph_status` refuses by default, so the failure is one
-an operator can see and act on. This is the direct consequence of the requeue
-defect the evaluation recorded — a repeat that exits zero in 1.63 seconds
-having requeued 54 entries has not built a complete graph.
+**Completeness is coverage, read from the provider's own manifest and never
+from its exit status.** The pinned `save_manifest` writes a flat map of
+repository-relative POSIX path to `{mtime, seen, ast_hash, semantic_hash}`. It
+carries no completion flag and no indexed count, so there is no affirmative
+claim to accept: the question is whether every input this pin would dispatch
+came back with a hash proving the provider read its bytes.
 
-The report is provider output of unknown size, so it is read to one byte past
+The denominator is the immutable materialized census narrowed to the pin's own
+`detect.CODE_EXTENSIONS`. Inputs outside that set are deterministically not code
+to this pin and are skipped rather than counted missing — holding a correct run
+to every tracked Markdown file would make it permanently `partial`.
+
+A file counts as processed only when its row carries a well-formed 32-character
+`ast_hash` **and that hash is the digest of the bytes this build actually handed
+the provider**. The pin's `_md5_file` streams a file and returns the MD5 hex
+digest of its contents, so the adapter takes the same digest of every eligible
+input from the materialized copy *before* the launch — the only moment that tree
+is still exactly what the provider was given — and compares. A well-formed
+digest on its own only says a hash-shaped string is present; the comparison is
+what says it is a hash of this input, and without it a manifest carried over
+from another tree, another revision, or a resumed cache would read as proof of
+work on bytes the provider never saw.
+
+Everything else is `partial`: a row the manifest never wrote, a blank or
+malformed hash, a hash that disagrees with those bytes, an input the copy could
+not be re-read for, a record this adapter cannot classify, an unreadable or
+oversized manifest, no manifest at all, and a build with no census. The pin
+blanks hashes through `clear_ast` on an extractor error or an anomalous
+zero-node extract, so a requeued file is a blank row rather than an absent one
+— the direct consequence of the requeue defect the evaluation recorded, where a
+repeat that exits zero in 1.63 seconds having requeued 54 entries has not built
+a complete graph.
+
+Nothing upgrades a run. The exit status, a non-empty graph, and the raw
+extraction's `extracted_sources` all describe what was *dispatched*, failures
+included. A hash proves processed bytes, not that anything was understood: zero
+nodes for a stamped file is still a complete read of it, and an unstamped file
+is `partial` however large the graph is. `partial` is the state `graph_status`
+refuses by default, so the failure is one an operator can see and act on.
+
+The manifest is provider output of unknown size, so it is read to one byte past
 the manifest bound and refused if it is longer, rather than loaded whole and
 measured afterwards. A bound checked on bytes already in memory bounds nothing.
 
 The provider's own stdout and stderr are the other unbounded output, and they
 are discarded at the kernel: `stdin`, `stdout` and `stderr` are all
-`DEVNULL`. Nothing reads them — completeness comes from the report, not from
+`DEVNULL`. Nothing reads them — completeness comes from the manifest, not from
 what the run printed — so buffering them would only accumulate whatever a
 talkative indexer chose to log, for up to the timeout, under neither the
 tracked-content budget nor the artifact one. Inheriting them is not the

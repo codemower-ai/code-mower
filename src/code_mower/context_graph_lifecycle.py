@@ -2262,6 +2262,73 @@ _MANIFEST_HASH = re.compile(r"[0-9a-f]{32}\Z")
 #: only: a mapping missing them is not the document this adapter can classify.
 _MANIFEST_ROW_FIELDS = ("mtime", "seen", "ast_hash", "semantic_hash")
 
+#: How much of a materialized input is hashed at a time while deriving what the
+#: provider's row for it must say. Bounded by the census, which is already
+#: bounded by ``MAX_TRACKED_BYTES``, so this only bounds resident memory.
+_MANIFEST_DIGEST_CHUNK_BYTES = 1024 * 1024
+
+
+def _materialized_digest(path: Path) -> str:
+    """The pin's own content digest of one materialized input, or ``""``.
+
+    ``_md5_file`` in the pinned 0.9.58 wheel streams the file and returns the
+    MD5 hex digest of its bytes -- the same digest the fresh contained
+    extraction's manifest carried for both Python inputs of the public fixture,
+    matching their exact bytes. So this is not a re-implementation of the
+    provider's AST work: it is the one thing the provider's row is a statement
+    *about*, computed here so the statement can be checked rather than believed.
+
+    ``""`` for anything that cannot be read as a regular file, which is a
+    refusal rather than a pass: a row this build cannot check is a row it cannot
+    count.
+    """
+    digest = hashlib.md5(usedforsecurity=False)
+    try:
+        if path.is_symlink() or not path.is_file():
+            return ""
+        with path.open("rb") as stream:
+            while True:
+                chunk = stream.read(_MANIFEST_DIGEST_CHUNK_BYTES)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError:
+        return ""
+    return digest.hexdigest()
+
+
+def _materialized_digests(
+    source_root: Path, census: TrackedCensus | None
+) -> dict[str, str] | None:
+    """What every eligible code input's manifest row must say, before the run.
+
+    Taken from the materialized copy *before* the provider is launched, which is
+    the only moment those bytes are still exactly what this build gave it. After
+    the run the same tree also holds provider output, and a digest read then
+    would be checking the provider's manifest against whatever the provider left
+    behind.
+
+    ``None`` when there is no census, because there is then nothing to enumerate
+    -- that case is already the partial one. An input the copy cannot be read
+    for is simply absent from the map, and ``_read_completeness`` keeps the run
+    partial for it rather than accepting the row unchecked.
+    """
+    if census is None:
+        return None
+    digests: dict[str, str] = {}
+    for path in _eligible_code_inputs(census):
+        parts = PurePosixPath(path).parts
+        # ``read_tracked_census`` reads Git's own index paths, which are
+        # relative and carry no traversal segment. Held to that here anyway,
+        # because this is the one place a census path is turned back into a
+        # host path, and a join is not the place to discover otherwise.
+        if not parts or any(part in ("", ".", "..", "/") for part in parts):
+            continue
+        digest = _materialized_digest(source_root.joinpath(*parts))
+        if digest:
+            digests[unicodedata.normalize("NFC", path)] = digest
+    return digests
+
 
 def _refuse_pre_existing_provider_state(source_root: Path) -> None:
     """Refuse to extract on top of index state this build did not produce.
@@ -2361,7 +2428,9 @@ def _eligible_code_inputs(census: TrackedCensus) -> tuple[str, ...]:
 
 
 def _read_completeness(
-    manifest: Mapping[str, Any] | None, census: TrackedCensus | None
+    manifest: Mapping[str, Any] | None,
+    census: TrackedCensus | None,
+    digests: Mapping[str, str] | None = None,
 ) -> IndexResult:
     """Classify a provider run against its own manifest, defaulting to partial.
 
@@ -2374,7 +2443,15 @@ def _read_completeness(
     The denominator is the immutable materialized census narrowed to the pin's
     own code extensions. Inputs outside that set are deterministically not code
     to this pin and are skipped, not missing. Everything else is counted, and a
-    file is processed only when its row carries a well-formed ``ast_hash``. The
+    file is processed only when its row carries a well-formed ``ast_hash`` *and
+    that hash is the digest of the bytes this build actually handed the
+    provider*. A well-formed digest alone says a hash-shaped string is present;
+    only the comparison says it is a hash of this input. Without it a row
+    carried over from another tree, another revision, or a resumed cache reads
+    as proof of work on bytes the provider was never shown -- and the digests
+    come from ``_materialized_digests``, taken before the launch, so they cannot
+    have been influenced by what the run wrote. A row whose digest disagrees, and
+    an input the copy could not be re-read for, both stay partial. The
     pin blanks that field on exactly the cases an operator needs to hear about:
     ``clear_ast`` zeroes both hashes for an extractor error or an anomalous
     zero-node extract, so a requeued file is a blank row rather than an absent
@@ -2404,6 +2481,11 @@ def _read_completeness(
             completeness=PARTIAL,
             notes=("provider left no readable manifest of what it processed",),
         )
+    if digests is None:
+        return IndexResult(
+            completeness=PARTIAL,
+            notes=("build recorded no input digests to check the provider's manifest against",),
+        )
     eligible = _eligible_code_inputs(census)
     rows: dict[str, Any] = {}
     malformed_rows = 0
@@ -2419,17 +2501,29 @@ def _read_completeness(
         rows[unicodedata.normalize("NFC", key)] = row
     missing = 0
     unstamped = 0
+    unreadable = 0
+    mismatched = 0
     processed = 0
     for path in eligible:
-        row = rows.get(unicodedata.normalize("NFC", path))
+        key = unicodedata.normalize("NFC", path)
+        row = rows.get(key)
         if row is None:
             missing += 1
             continue
         digest = row.get("ast_hash")
-        if isinstance(digest, str) and _MANIFEST_HASH.fullmatch(digest):
-            processed += 1
-        else:
+        if not isinstance(digest, str) or not _MANIFEST_HASH.fullmatch(digest):
             unstamped += 1
+            continue
+        expected = digests.get(key)
+        if expected is None:
+            # The row is well formed and this build cannot say what it should
+            # have contained. Counting it would be believing the row on its own
+            # word, which is the whole thing the comparison exists to stop.
+            unreadable += 1
+        elif digest != expected:
+            mismatched += 1
+        else:
+            processed += 1
     notes: list[str] = []
     if malformed_rows:
         notes.append(f"provider manifest carried {malformed_rows} unreadable records")
@@ -2437,6 +2531,10 @@ def _read_completeness(
         notes.append(f"provider manifest does not account for {missing} code files")
     if unstamped:
         notes.append(f"provider left {unstamped} code files unprocessed or requeued")
+    if unreadable:
+        notes.append(f"build could not re-read {unreadable} code files to check their hashes")
+    if mismatched:
+        notes.append(f"provider hashed {mismatched} code files that are not the bytes it was given")
     if not eligible:
         notes.append("the census carried no code files this provider would index")
     if notes:
@@ -2752,6 +2850,11 @@ def subprocess_indexer(
                 "against; no generation was published"
             )
         _refuse_pre_existing_provider_state(request.source_root)
+        # Before the launch, and only here. These are the bytes this build hands
+        # the provider; once the child has run, the same tree also holds the
+        # provider's own output, and a digest taken then would be checking the
+        # provider's manifest against the provider's own leavings.
+        digests = _materialized_digests(request.source_root, request.census)
         # Built per run, because the boundary is a function of what this build
         # exposes: the materialized copy and the build's own scratch areas are
         # writable, the pinned provider's install is readable, and nothing else
@@ -2784,7 +2887,9 @@ def subprocess_indexer(
         if returncode != 0:
             raise ContextError("local graph provider failed; no generation was published")
         output_directory = _provider_output_directory(request.source_root)
-        result = _read_completeness(_provider_manifest(output_directory), request.census)
+        result = _read_completeness(
+            _provider_manifest(output_directory), request.census, digests
+        )
         _write_private_file(request.output_path, _pack_state(output_directory))
         return result
 

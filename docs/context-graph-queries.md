@@ -168,6 +168,25 @@ breadth-first over adjacency sorted by `(kind, target, source)`, so one
 generation and one question produce one answer, every time, and a budget cut
 removes the furthest relationships rather than arbitrary ones.
 
+A target resolves in three ordered tiers, and a later tier is consulted only
+when every earlier one is empty:
+
+1. the provider's label, exactly as written;
+2. the provider's canonical callable label with only its syntactic trailing
+   argument list removed;
+3. the path, exactly as written.
+
+Tier 2 exists because the pinned extractor labels a callable with its argument
+list: a real 0.9.58 graph of this repository names the function
+`parse_graph_citation` as `parse_graph_citation()`. Without it, the natural bare
+spelling of a function resolves to nothing and every question about it answers
+"unresolved". It is an equality test against a label with one suffix stripped —
+not a prefix, substring, or edit-distance match. `parse_graph` does not reach
+`parse_graph_citation()`; an attribute `packet` and a function `packet()` stay
+different definitions, and the exact label wins; and two overloads that differ
+only in their argument lists both resolve, which is real ambiguity and is
+reported as `unresolved_entities` rather than settled by picking one.
+
 Reaching the node budget sets `truncated` and raises `provider_has_more`. It
 never silently shortens the answer. A target name carried by more definitions
 than the seed bound allows does the same: seeds the bound drops take their whole
