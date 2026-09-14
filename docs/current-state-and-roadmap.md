@@ -130,6 +130,30 @@ future hosted-service work.
 
 ## Near-Term Roadmap
 
+`v1.4.0` is released and its published artifacts are immutable. The agreed
+sequence from the stabilization epic is:
+
+1. Close the seven `v1.4.0` stabilization implementation children plus the
+   [#974](https://github.com/codemower-ai/code-mower/issues/974) evidence
+   verification. These are main-only fixes.
+2. Ship those fixes together with Graphify as `v1.4.1`
+   ([#915](https://github.com/codemower-ai/code-mower/issues/915)).
+3. Ship Board as `v1.4.2`. Board work is underway;
+   [#935](https://github.com/codemower-ai/code-mower/issues/935) is complete.
+4. Supervised Slack remains planned for `v1.5.0`; its runtime work is deferred
+   until the sequence above is complete.
+
+Devin support is a bounded builder qualification only: a maintained local CLI
+builder lane and the exact PR-bound hosted work-order library seam. Hosted
+dispatch has no packaged CLI command. Devin review stays informational and
+Devin is not a qualified peer orchestrator.
+
+Role-policy enforcement
+([#975](https://github.com/codemower-ai/code-mower/issues/975)) and
+effective-authority rendering
+([#955](https://github.com/codemower-ai/code-mower/issues/955)) are planned
+runtime work, not shipped behavior.
+
 The next three capabilities should ship as independently gated epics rather
 than one cross-cutting implementation PR.
 

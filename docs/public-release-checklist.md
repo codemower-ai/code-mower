@@ -183,7 +183,8 @@ interpreter.
   release-hygiene integration tests.
 - Add static-analysis gates in stages: broaden Ruff for stable subpackages
   first, then add scoped type checking as module contracts stabilize.
-- Add a zero-config first-value experiment, such as `code-mower try OWNER/REPO`,
+- Add a zero-config first-value experiment — a future "try this repository"
+  entry point, not a command that exists today —
   that can auto-discover recent PR history, generate a draft corpus, and
   produce a value report without asking a new user to understand the full
   calibration model first.
