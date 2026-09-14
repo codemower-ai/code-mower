@@ -15,7 +15,7 @@ from . import context_graph_connection as graph_connection
 from . import context_graph_lifecycle as lifecycle
 from .context_connections import _backend, _state, authorize_locked
 from .context_contract import (
-    CAPABILITY_VERSION, PACKET_SCHEMA, ContextError, ContextRequest, _object,
+    CAPABILITY_VERSION, PACKET_SCHEMA, ContextError, ContextRequest, ContextRetrievalError, _object,
     _text, _timestamp, load_packet, normalize_policy,
 )
 from .context_store import ContextStore, strict_json
@@ -81,7 +81,11 @@ def _index(locked):
         raise ContextError("private context packet index is invalid")
     handles, keys = set(), set()
     for entry in value["entries"]:
-        _object(entry, {"key", "handle", "reference", "generation", "usage"}, {"deliveries"})
+        _object(entry, {"key", "handle", "reference", "generation", "usage"}, {"deliveries", "failure_reason"})
+        if "failure_reason" in entry:
+            ContextRetrievalError(entry["failure_reason"])
+            if entry["reference"] is not None:
+                raise ContextError("completed context packet cannot contain a failure reason")
         deliveries = entry.get("deliveries", [])
         if not isinstance(deliveries, list) or len(deliveries) > 8:
             raise ContextError("context packet delivery count exceeds its bound")
@@ -146,6 +150,8 @@ def _load(store, entry, policy, request, envelope, *, bound_revision=None):
     commit, and requiring one would refuse every organization packet.
     """
     if entry["reference"] is None:
+        if "failure_reason" in entry:
+            raise ContextRetrievalError(entry["failure_reason"])
         raise ContextError("context retrieval did not complete; use an explicit refresh to try again")
     packet = load_packet(private_root=store.root, reference=entry["reference"], policy=policy,
                          request=request, authorize=lambda: envelope)
@@ -213,17 +219,25 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revis
         if left <= 0:
             raise ContextError("context retrieval deadline exceeded; no search was sent")
         state = graph_connection.saved_state(locked.read(), name) if local else _state(locked.read(), name)
+        credentials = None if local else locked.vault.get(state["credential_id"])
         try:
-            if local:
-                # The local graph mints its own packet: it decides what the
-                # evidence is, and the envelope above decides who may read it.
-                packet_data = graph_connection.retrieve(
-                    state, spec, envelope=envelope, root=store.root, revision=revision,
-                )
-                usage = None
-            else:
-                credentials = locked.vault.get(state["credential_id"])
-                result = backend.retrieve(credentials, spec["query"], spec["source"], policy, timeout_seconds=left)
+            try:
+                if local:
+                    # The local graph mints its own packet: it decides what the
+                    # evidence is, and the envelope above decides who may read it.
+                    packet_data = graph_connection.retrieve(
+                        state, spec, envelope=envelope, root=store.root, revision=revision,
+                    )
+                else:
+                    result = backend.retrieve(credentials, spec["query"], spec["source"], policy, timeout_seconds=left)
+            except Exception as exc:
+                # Either provider failing to produce evidence is a retrieval
+                # failure, told apart below from storage and packet validation.
+                raise ContextRetrievalError(
+                    exc.reason if isinstance(exc, ContextRetrievalError) else "retrieval_failed"
+                ) from None
+            usage = None
+            if not local:
                 now = datetime.now(timezone.utc)
                 expiry = min(_timestamp(envelope["expires_at"]), now + timedelta(seconds=policy["max_age_seconds"]))
                 packet_data = {"schema": PACKET_SCHEMA, "capability_version": CAPABILITY_VERSION,
@@ -243,14 +257,29 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revis
             _index(locked)
             if not local:
                 locked.write({**state, "capability_status": {"search": "available", "memory": "available"}})
-        except Exception:
+        except Exception as exc:
+            # Storage and local packet validation are not provider failures.
+            failure = ContextRetrievalError(
+                exc.reason if isinstance(exc, ContextRetrievalError)
+                else "storage_unavailable" if isinstance(exc, OSError) else "packet_invalid"
+            )
             entry["reference"] = None
             entry["usage"] = None
-            index_file.write(index)
-            locked.artifact("p-" + entry["handle"]).delete()
-            if not local:
-                locked.write({**state, "capability_status": {"search": "unavailable", "memory": "unavailable"}})
-            raise ContextError("context search unavailable; no automatic retry; verify access or explicitly refresh") from None
+            entry["failure_reason"] = failure.reason
+            try:
+                index_file.write(index)
+                locked.artifact("p-" + entry["handle"]).delete()
+                if not local:
+                    # A local graph connection keeps no provider capability state.
+                    locked.write({**state, "capability_status": {"search": "unavailable", "memory": "unavailable"}})
+            except (OSError, ContextError):
+                entry["failure_reason"] = "storage_unavailable"
+                try:
+                    index_file.write(index)
+                except (OSError, ContextError):
+                    pass
+                raise ContextRetrievalError("storage_unavailable") from None
+            raise failure from None
         return {**packet.shareable_summary(), "status": "available", "packet_handle": entry["handle"],
                 "reused": False, "usage": entry["usage"]}
 
@@ -310,9 +339,11 @@ def main(argv=None):
         required = spec["policy"]["required"]
         result = fetch(ContextStore(args.state_dir), args.connection, spec, refresh=args.refresh)
         code = 0
-    except (ContextError, OSError, ValueError):
+    except (ContextError, OSError, ValueError) as exc:
         result = {"status": "required_unavailable" if required else "optional_unavailable",
                   "next_action": "verify the selected connection or explicitly refresh; no automatic retry"}
+        if isinstance(exc, ContextRetrievalError):
+            result.update(exc.shareable_summary())
         code = 1 if required else 0
     print(json.dumps(result, sort_keys=True) if args.json else "\n".join(f"{k}: {v}" for k, v in result.items()))
     return code

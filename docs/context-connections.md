@@ -109,10 +109,24 @@ checks the qualified input schema. Tool descriptions and annotations cannot
 authorize a different operation. Sampling, elicitation, generic agent calls,
 resource URLs, and writes are not supported by this retrieval path.
 
-Each record retains its source-row citation and title. A provider `date` is kept
-as `source_date`, without assuming it means modification time. The qualified
-`Attribute` and `SemanticUnit` record types are retained as `source_kind` and
-both have `unknown` confidence: similarity scores do not establish truth. Unresolved
+Each record retains its `source_row_id`, or `source_id` when the former is absent
+or null, verbatim as its citation. No URL is constructed from these locators.
+A missing/null `doc_title` becomes the explicit label `Source title unavailable`,
+with a `source_title_unavailable` omission and partial completeness. Invalid
+present metadata still fails validation; identifiers remain bounded single-line
+text. A provider `date` is kept as `source_date`, without assuming it means
+modification time. The qualified `Attribute`, `SemanticUnit`, and `Text` record
+types are retained as `source_kind` and all have `unknown` confidence: similarity
+scores do not establish truth. `Text` can appear in the fast response even with
+`include_raw_documents=false`; accepting it does not request a raw-document tool.
+Records without either source locator, or with an unknown kind, are omitted with
+`missing_citation` or `unsupported_record_kind` metadata. A nonempty batch with
+no citable qualified records fails rather than reporting successful empty evidence.
+The observed `no_data` status is accepted only with zero records and `has_more=false`;
+it produces empty, partial evidence with `provider_no_data`. Retrieval succeeded,
+but there is no supporting evidence for the query. Refine the query or report the
+context gap; do not infer that access failed or that the question was answered.
+Unresolved
 entities, warnings, additional unreturned results, and text truncation produce
 explicit partial evidence. No source URL or revision is invented.
 
@@ -122,6 +136,22 @@ citations, query, hashes, and account bindings stay in the private store. Option
 failure returns `optional_unavailable`; required failure returns
 `required_unavailable` and a nonzero exit status. Neither outcome silently selects
 another account.
+
+Retrieval failures also return a fixed `reason`, `message`, and `next_action` in
+both expert fetch and guided prepare output. `response_invalid` means response
+normalization failed, not authentication: check the provider result contract and
+repair/update the adapter before explicitly refreshing. Signing in again cannot
+repair that format error. `access_denied`, `rate_limited`, `timeout`, and
+`retrieval_failed` distinguish access, throttling, deadline, and other retrieval
+failures without exposing provider error bodies. Nested SDK task-group failures
+retain a known reason only when their leaves agree; unknown/mixed failures do not
+claim that authorization failed. Failed attempts save only the closed reason,
+so repeating the same request reports it without sending another search.
+Local packet validation and storage failures use `packet_invalid` and
+`storage_unavailable`, respectively, rather than claiming the provider failed.
+If the text budget would truncate every result to nothing, `budget_exceeded`
+requires a deliberate bounded-budget or query adjustment. A nonempty result set
+never silently becomes an available packet containing no usable text.
 
 Repeating a successful request reauthorizes online and reuses the same packet.
 Changing only an approved participant role does not retrieve different evidence.

@@ -163,20 +163,22 @@ def _report(
     }
 
 
-def _unavailable(required: bool) -> tuple[dict[str, Any], int]:
+def _unavailable(required: bool, error: ContextError | None = None) -> tuple[dict[str, Any], int]:
+    from .context_contract import ContextRetrievalError
+
     status = "required_unavailable" if required else "optional_unavailable"
-    return (
-        _report(
-            status,
-            stage="preparing",
-            dependent_work="paused" if required else "usable",
-            next_action=(
-                "Verify the selected connection, then rerun prepare with --refresh; "
-                "no search retries automatically."
-            ),
+    report = _report(
+        status,
+        stage="preparing",
+        dependent_work="paused" if required else "usable",
+        next_action=(
+            "Verify the selected connection, then rerun prepare with --refresh; "
+            "no search retries automatically."
         ),
-        1 if required else 0,
     )
+    if isinstance(error, ContextRetrievalError):
+        report.update(error.shareable_summary())
+    return report, 1 if required else 0
 
 
 def prepare(
@@ -305,7 +307,7 @@ def prepare(
                     "context_state": context_session.failure_state(exc),
                 },
             )
-            return _unavailable(record["policy"]["required"])
+            return _unavailable(record["policy"]["required"], exc)
         if record["context_state"] != "ready":
             record = context_session.update(
                 association_store,
@@ -389,7 +391,7 @@ def prepare(
             )
         except ContextError as exc:
             context_session.record_failure(association_store, record, exc)
-            return _unavailable(record["policy"]["required"])
+            return _unavailable(record["policy"]["required"], exc)
         if record["context_state"] != "ready":
             record = context_session.update(
                 association_store,
@@ -416,7 +418,7 @@ def prepare(
             )
         except ContextError as exc:
             context_session.record_failure(association_store, record, exc)
-            return _unavailable(record["policy"]["required"])
+            return _unavailable(record["policy"]["required"], exc)
         packet_handle = result["packet_handle"]
         reused = bool(result["reused"])
         record = context_session.update(
