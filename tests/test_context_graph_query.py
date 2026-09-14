@@ -828,6 +828,139 @@ class RetainedRelationshipPacketTests(GraphWorkspace):
         self.assertNotIn("provider_has_more", self.context().summary["omissions"])
 
 
+def missing_endpoint_document() -> dict:
+    """The shared fixture, plus a relationship onto an id it never declares.
+
+    ``parse_config`` calls something the provider named ``n-ghost`` and then
+    described nowhere. The relationship is real and unreadable, which is not
+    the same fact as a relationship onto a corpus this module has stated it
+    does not query.
+    """
+    return graph_document(edges=[*graph_edges(), edge("n-config", "n-ghost", "calls")])
+
+
+class MissingEndpointTests(unittest.TestCase):
+    """A dropped edge is two different facts, and must not be reported as one.
+
+    The provider's node list can be missing an endpoint for two reasons. It
+    declared the endpoint as a document, paper, image, rationale or concept,
+    and this module has stated in its own contract that it does not query those
+    -- a scope, readable in the rules. Or it declared the endpoint nowhere at
+    all, which is evidence its own document does not carry. Pruning both
+    silently let a query over a neighbourhood the provider could not state in
+    full come back marked ``complete``.
+    """
+
+    def load(self, *nodes, edges=()) -> query.CodeGraph:
+        document = graph_document(nodes=list(nodes), edges=list(edges))
+        return query.load_graph(document, generation="a" * 32, commit="b" * 40)
+
+    def test_a_declared_exclusion_leaves_no_node_incomplete(self) -> None:
+        """The stated scope stays silent, exactly as before."""
+        document = graph_document()
+        document["nodes"].append(
+            {**node("n-doc", "design.md", "docs/design.md", 1), "file_type": "document"}
+        )
+        document["edges"].append(edge("n-config", "n-doc", "references"))
+        graph = query.load_graph(document, generation="a" * 32, commit="b" * 40)
+        self.assertNotIn("n-doc", graph.nodes)
+        self.assertEqual(graph.incomplete, frozenset())
+
+    def test_an_undeclared_endpoint_marks_the_surviving_node(self) -> None:
+        graph = query.load_graph(
+            missing_endpoint_document(), generation="a" * 32, commit="b" * 40
+        )
+        self.assertEqual(graph.incomplete, frozenset({"n-config"}))
+        # Still pruned: a relationship with one end unstated is not citable.
+        self.assertNotIn("n-ghost", {edge_.target for edge_ in graph.edges})
+
+    def test_both_ends_of_an_undeclared_relationship_are_marked(self) -> None:
+        """Direction is not what decides it; being in the graph is."""
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[edge("n-ghost", "n-a", "calls"), edge("n-b", "n-ghost", "calls")],
+        )
+        self.assertEqual(graph.incomplete, frozenset({"n-a", "n-b"}))
+
+    def test_a_relationship_with_no_surviving_endpoint_marks_nothing(self) -> None:
+        """No node any traversal can reach is narrowed by it, so nothing claims it."""
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            edges=[edge("n-ghost", "n-other-ghost", "calls")],
+        )
+        self.assertEqual(graph.incomplete, frozenset())
+        self.assertEqual(graph.edges, ())
+
+    def test_a_mixed_relationship_counts_as_missing_evidence(self) -> None:
+        """One declared exclusion does not excuse the end that was never declared."""
+        document = graph_document()
+        document["nodes"].append(
+            {**node("n-doc", "design.md", "docs/design.md", 1), "file_type": "document"}
+        )
+        document["edges"].append(edge("n-config", "n-ghost", "calls"))
+        document["edges"].append(edge("n-load", "n-doc", "references"))
+        graph = query.load_graph(document, generation="a" * 32, commit="b" * 40)
+        self.assertEqual(graph.incomplete, frozenset({"n-config"}))
+
+    def test_a_traversal_that_reaches_the_node_reports_partial(self) -> None:
+        graph = query.load_graph(
+            missing_endpoint_document(), generation="a" * 32, commit="b" * 40
+        )
+        result = query.run_query(graph, question="symbol", target="parse_config")
+        self.assertIn("provider_partial", result.omissions)
+        # Not truncation: no budget and no depth limit cut this. The evidence
+        # was never in the artifact.
+        self.assertFalse(result.truncated)
+        self.assertNotIn("provider_has_more", result.omissions)
+
+    def test_a_traversal_that_reaches_the_node_indirectly_reports_partial(self) -> None:
+        """Touched by the walk, not just seeded: the answer still spans that node."""
+        graph = query.load_graph(
+            missing_endpoint_document(), generation="a" * 32, commit="b" * 40
+        )
+        result = query.run_query(graph, question="dependency", target="load")
+        self.assertTrue(any(item.node.id == "n-config" for item in result.relations))
+        self.assertIn("provider_partial", result.omissions)
+
+    def test_a_traversal_elsewhere_in_the_graph_stays_complete(self) -> None:
+        """A hole somewhere else is not a hole in this answer.
+
+        Marking every query partial because one node in the repository lost an
+        endpoint would make the flag say nothing about the answer carrying it.
+        """
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            node("n-c", "gamma", "example_pkg/report.py", 5),
+            edges=[edge("n-a", "n-b", "calls"), edge("n-c", "n-ghost", "calls")],
+        )
+        result = query.run_query(graph, question="symbol", target="alpha")
+        self.assertNotIn("provider_partial", result.omissions)
+        self.assertFalse(result.truncated)
+
+
+class MissingEndpointPacketTests(GraphWorkspace):
+    """What the recipient reads when the provider could not state a neighbourhood."""
+
+    document = missing_endpoint_document()
+
+    def test_the_packet_is_partial_and_says_why(self) -> None:
+        context = self.context()
+        self.assertIn("provider_partial", context.packet["omissions"])
+        self.assertEqual(context.packet["completeness"], "partial")
+        # A packet may be partial without being truncated; the delivery contract
+        # only forbids the other pairing.
+        self.assertFalse(context.packet["truncated"])
+        self.assertIn("provider_partial", context.summary["omissions"])
+        self.assertEqual(context.summary["completeness"], "partial")
+
+    def test_the_relationships_it_could_state_are_still_stated(self) -> None:
+        """Partial is not empty: what the document did carry is still evidence."""
+        texts = [item["text"] for item in self.context().packet["documents"]]
+        self.assertTrue(any("load calls parse_config" in text for text in texts))
+
+
 class CallableLabelSeedTests(unittest.TestCase):
     """Bare names against the labels the pinned extractor actually writes.
 

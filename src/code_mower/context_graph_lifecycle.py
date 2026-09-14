@@ -1769,6 +1769,77 @@ def _macho_slice_dylib_names(stream: io.BufferedReader, offset: int) -> tuple[st
     return tuple(names)
 
 
+#: The Mach-O file types dyld will open for an ``LC_LOAD_DYLIB``-family command:
+#: ``MH_DYLIB``, and the ``MH_DYLIB_STUB`` a stripped SDK ships in its place.
+#: Not ``MH_BUNDLE``, which is reached through ``dlopen`` rather than through
+#: the load commands this derivation reads, and not an executable, an object
+#: file, a core dump or a kernel extension -- none of which is a dependency an
+#: image's load command can legitimately name.
+_MACHO_DYLIB_FILETYPES = frozenset({0x6, 0x9})
+
+
+def _macho_slice_filetype(stream: io.BufferedReader, offset: int) -> int | None:
+    """The ``filetype`` field of one Mach-O image beginning at ``offset``."""
+    stream.seek(offset)
+    magic = stream.read(4)
+    order_and_header = _MACHO_MAGICS.get(magic)
+    if order_and_header is None:
+        return None
+    order, header_size = order_and_header
+    header = stream.read(header_size - 4)
+    if len(header) != header_size - 4:
+        return None
+    # cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags[, reserved]
+    return int(struct.unpack(f"{order}6I", header[:24])[2])
+
+
+def _macho_filetypes(path: Path) -> tuple[int, ...] | None:
+    """Every slice's declared Mach-O ``filetype``, or ``None`` for a non-Mach-O.
+
+    The two answers are different refusals for the caller, so they are kept
+    apart rather than collapsed into a falsehood. ``None`` is a file whose
+    container this module could not read at all -- not a Mach-O, truncated, a
+    universal header declaring slices it does not carry. A tuple is a file it
+    did read, and whose own declaration of what it is the caller then holds to
+    the shared-library rule.
+
+    Every slice of a universal archive is read and every slice must parse: the
+    child is the provider's interpreter, whose architecture is not necessarily
+    this one, so a fat file admitted on the strength of a single readable slice
+    would be admitting whatever the other slices are.
+    """
+    try:
+        with path.open("rb") as stream:
+            magic = stream.read(4)
+            if magic in _MACHO_FAT_MAGICS:
+                raw = stream.read(4)
+                if len(raw) != 4:
+                    return None
+                count = struct.unpack(">I", raw)[0]
+                if not 1 <= count <= _MAX_MACHO_ARCHITECTURES:
+                    return None
+                offsets = []
+                for _ in range(count):
+                    record = stream.read(20)
+                    if len(record) != 20:
+                        return None
+                    # cputype, cpusubtype, offset, size, align
+                    offsets.append(struct.unpack(">5I", record)[2])
+                filetypes = []
+                for offset in offsets:
+                    filetype = _macho_slice_filetype(stream, offset)
+                    if filetype is None:
+                        return None
+                    filetypes.append(filetype)
+                return tuple(filetypes)
+            if magic not in _MACHO_MAGICS:
+                return None
+            filetype = _macho_slice_filetype(stream, 0)
+            return None if filetype is None else (filetype,)
+    except (OSError, ValueError, struct.error):
+        return None
+
+
 def _scan_images(root: Path, *, budget: list[int]) -> Iterator[Path]:
     """Regular files under ``root`` that could be Mach-O images, within a budget.
 
@@ -1843,8 +1914,11 @@ def _linked_runtime_libraries(
     exposing the manager's ``etc`` or ``var`` beside it is the operator data
     this boundary exists to withhold. Every added path is put through the same
     ownership and broad-exposure refusals as any other exposure, and a path that
-    is not a bounded regular file is refused rather than exposed on the strength
-    of an image having named it.
+    is not a bounded regular file -- or that does not declare itself a shared
+    library in its own Mach-O header -- is refused rather than exposed on the
+    strength of an image having named it. That last check is what keeps the
+    dependency *names*, which come out of somebody else's image, from choosing
+    which of the operator's files this boundary exposes.
 
     Linux is unchanged: an ELF runtime's libraries live under the ``/lib`` and
     ``/usr/lib`` directories the read-only runtime already names, and this
@@ -1920,6 +1994,23 @@ def _refuse_linked_library(resolved: Path, *, repository: Path) -> None:
             "a shared library the local graph provider's runtime links to is writable by "
             "an account other than yours or root, so what the provider would load inside "
             "the sandbox is not what this host installed; no generation was published"
+        )
+    # Last, and the only check that reads the candidate's contents rather than
+    # its metadata. Ownership and size say who wrote a file and how big it is,
+    # not what it is, and the name comes out of a load command in somebody
+    # else's image -- so without this the provider chooses which of the
+    # operator's files the boundary exposes by writing its own linker input.
+    # The candidate must say it is a shared library in its own header.
+    filetypes = _macho_filetypes(resolved)
+    if filetypes is None:
+        raise ContextError(
+            "the local graph provider's runtime names a dependency that is not a readable "
+            "Mach-O image; refusing to expose it to the sandbox"
+        )
+    if any(filetype not in _MACHO_DYLIB_FILETYPES for filetype in filetypes):
+        raise ContextError(
+            "the local graph provider's runtime names a dependency that is a Mach-O image "
+            "but not a shared library; refusing to expose it to the sandbox"
         )
 
 

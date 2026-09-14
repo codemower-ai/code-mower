@@ -360,6 +360,13 @@ class CodeGraph:
     edges: tuple[GraphEdge, ...]
     outgoing: Mapping[str, tuple[GraphEdge, ...]]
     incoming: Mapping[str, tuple[GraphEdge, ...]]
+    #: Code nodes that lost at least one relationship because its other endpoint
+    #: is an id the provider's node list never declared at all. Distinct from a
+    #: relationship onto a corpus this module deliberately does not query: that
+    #: endpoint *was* declared, and dropping it is a stated scope rather than
+    #: missing evidence. A traversal that touches one of these nodes is reporting
+    #: a neighbourhood the document itself could not state in full, and says so.
+    incomplete: frozenset[str] = frozenset()
 
     def seed_matches(self, target: str) -> tuple[tuple[GraphNode, ...], bool]:
         """The seeds a target names, and whether the seed bound dropped any.
@@ -500,8 +507,24 @@ def _node_kind(path: str, label: str, node_type: Any) -> str:
     return "symbol"
 
 
-def _node(value: Any) -> GraphNode | None:
-    """One pinned-export node, or ``None`` for a corpus this module does not query.
+@dataclass(frozen=True)
+class _ParsedNode:
+    """One provider node record: its declared id, and the code node it is or is not.
+
+    The id survives the ``code``-only filter on purpose. An edge onto an id the
+    document *declared* as a document, paper, image, rationale or concept is a
+    relationship this module has stated it does not query; an edge onto an id
+    the document never declared at all is evidence the provider itself could
+    not state. Without keeping the declared ids those two are the same dangling
+    edge, and ``_edge`` cannot tell a scope decision from missing evidence.
+    """
+
+    id: str
+    node: GraphNode | None
+
+
+def _node(value: Any) -> _ParsedNode:
+    """One pinned-export node: a queryable code node, or a declared exclusion.
 
     A non-``code`` node is dropped rather than refused. The provider indexes
     documents, papers, images, rationales and concepts into the same graph, and
@@ -510,7 +533,9 @@ def _node(value: Any) -> GraphNode | None:
     every edge that named one becomes a dangling edge, which ``load_graph``
     prunes. No count of the dropped records is kept or reported: what a packet
     states about its own incompleteness is the traversal's truncation and
-    omission fields, not a tally of corpora this module never queries.
+    omission fields, not a tally of corpora this module never queries. Their
+    *ids* are kept, and only so that ``_edge`` can tell this stated exclusion
+    apart from an endpoint the document never carried.
     """
     record = _required(value, GRAPH_NODE_FIELDS, what="node")
     # Bounded text before membership: a vocabulary field is looked up in a set,
@@ -519,12 +544,13 @@ def _node(value: Any) -> GraphNode | None:
     file_type = _text(record["file_type"], maximum=64)
     if file_type not in GRAPH_FILE_TYPES:
         raise ContextError("unsupported local graph node file type")
+    identifier = _text(record["id"], maximum=512)
     if file_type != CODE_FILE_TYPE:
-        return None
+        return _ParsedNode(id=identifier, node=None)
     path = _maybe_text(record["source_file"], maximum=1024)
     label = _text(record["label"], maximum=512)
     node = GraphNode(
-        id=_text(record["id"], maximum=512),
+        id=identifier,
         kind=_node_kind(path, label, record.get("type")),
         name=label,
         path=path,
@@ -537,20 +563,49 @@ def _node(value: Any) -> GraphNode | None:
     # sourceless stub has nothing to hold to the rules and is exempt.
     if node.citation is not None:
         parse_graph_citation(node.citation)
-    return node
+    return _ParsedNode(id=identifier, node=node)
 
 
-def _edge(value: Any, nodes: Mapping[str, GraphNode]) -> GraphEdge | None:
-    """One pinned-export link, or ``None`` if either endpoint is not in the graph.
+@dataclass(frozen=True)
+class _ParsedEdge:
+    """One provider link: the relationship it is, or the evidence it costs.
+
+    ``incomplete`` names the endpoints that *are* in the graph on a link whose
+    other end the document never declared. Those are the nodes whose reported
+    neighbourhood is smaller than the provider's own, so a traversal reaching
+    one of them has to say the answer is partial rather than call it complete.
+    Both fields empty is the third case, and the only silent one: a link whose
+    missing endpoints were all declared exclusions.
+    """
+
+    edge: GraphEdge | None
+    incomplete: tuple[str, ...]
+
+
+def _edge(
+    value: Any, nodes: Mapping[str, GraphNode], excluded: frozenset[str]
+) -> _ParsedEdge:
+    """One pinned-export link, and what dropping it costs when it is dropped.
 
     Pruned rather than refused, which is the pinned exporter's own treatment:
     ``export.py::prune_dangling_edges`` drops links whose endpoints are not in
-    the node set and reports a count. Two things reach this path in a real
-    export -- a link onto a corpus ``_node`` dropped above, and a link the
-    provider emitted onto an id its node list does not carry -- and neither is
-    a relationship this module can cite, since a citation needs a node with a
-    location. Dropping the edge is what makes the relationship absent from the
-    answer instead of present with one end unstated.
+    the node set and reports a count. But the two links that reach that path
+    are not the same fact and must not be reported as one:
+
+    * A link onto a node ``_node`` dropped for its corpus. The document
+      declared that endpoint and this module has stated it does not query that
+      corpus, so the relationship is out of scope by a rule a recipient can
+      read. Dropped silently, as before.
+    * A link onto an id the node list never carries at all. The provider
+      emitted a relationship and then did not describe one of its ends, so this
+      is evidence the document is missing -- not a scope this module chose.
+      Reporting a complete answer over such a neighbourhood would state that
+      nothing was left out when something was. The surviving endpoint is named
+      so the traversal can raise ``provider_partial`` if it reaches it.
+
+    A link whose *every* endpoint is undeclared names no node any traversal can
+    start from or reach, so there is nothing to attribute it to and nothing to
+    report: no query's answer can be narrowed by it.
     """
     record = _required(value, GRAPH_EDGE_FIELDS, what="edge")
     # Bounded text first, for the same reason as a node's ``file_type``: the
@@ -562,14 +617,25 @@ def _edge(value: Any, nodes: Mapping[str, GraphNode]) -> GraphEdge | None:
     relation = _text(record["relation"], maximum=128)
     source = _text(record["source"], maximum=512)
     target = _text(record["target"], maximum=512)
-    if source not in nodes or target not in nodes:
-        return None
-    return GraphEdge(
-        source=source,
-        target=target,
-        relation=relation,
-        kind=GRAPH_RELATIONS.get(relation, OTHER_RELATION),
-        evidence=GRAPH_CONFIDENCES[confidence],
+    endpoints = ((source, source in nodes), (target, target in nodes))
+    if all(present for _, present in endpoints):
+        return _ParsedEdge(
+            edge=GraphEdge(
+                source=source,
+                target=target,
+                relation=relation,
+                kind=GRAPH_RELATIONS.get(relation, OTHER_RELATION),
+                evidence=GRAPH_CONFIDENCES[confidence],
+            ),
+            incomplete=(),
+        )
+    if all(present or endpoint in excluded for endpoint, present in endpoints):
+        # Every absent end was a node the document declared and this module
+        # deliberately does not query. A stated scope, not missing evidence.
+        return _ParsedEdge(edge=None, incomplete=())
+    return _ParsedEdge(
+        edge=None,
+        incomplete=tuple(endpoint for endpoint, present in endpoints if present),
     )
 
 
@@ -656,9 +722,12 @@ def load_graph(payload: Mapping[str, Any], *, generation: str, commit: str) -> C
     if stamped is not None and _text(stamped, maximum=64) != commit:
         raise ContextError("local graph was built from a different commit than its generation")
     nodes: dict[str, GraphNode] = {}
+    excluded: set[str] = set()
     for value in raw_nodes:
-        node = _node(value)
+        parsed = _node(value)
+        node = parsed.node
         if node is None:
+            excluded.add(parsed.id)
             continue
         if node.id in nodes:
             # The provider's own validator does not check this, but neither of
@@ -668,10 +737,18 @@ def load_graph(payload: Mapping[str, Any], *, generation: str, commit: str) -> C
             # that carries two was not written by the pinned provider.
             raise ContextError("local graph node identifiers must be unique")
         nodes[node.id] = node
+    frozen = frozenset(excluded)
+    parsed_edges = [_edge(value, nodes, frozen) for value in raw_edges]
     edges = tuple(sorted(
-        (parsed for value in raw_edges if (parsed := _edge(value, nodes)) is not None),
+        (item.edge for item in parsed_edges if item.edge is not None),
         key=lambda edge: (edge.kind, edge.source, edge.target),
     ))
+    # Attributed to the surviving endpoint rather than counted: a traversal that
+    # never reaches one of these nodes is not answering over missing evidence
+    # and must not claim it is, and one that does reach it has to say so.
+    incomplete = frozenset(
+        endpoint for item in parsed_edges for endpoint in item.incomplete
+    )
     return CodeGraph(
         generation=generation,
         commit=commit,
@@ -679,6 +756,7 @@ def load_graph(payload: Mapping[str, Any], *, generation: str, commit: str) -> C
         edges=edges,
         outgoing=_grouped(edges, by="source"),
         incoming=_grouped(edges, by="target"),
+        incomplete=incomplete,
     )
 
 
@@ -834,6 +912,12 @@ def run_query(
     # every relationship among a path's seeds disappeared because all of its
     # endpoints were seeds -- while the result still claimed to be complete.
     expanded = {node.id for node in seeds}
+    # Did this traversal read a neighbourhood the provider's own document could
+    # not state in full? Set from the nodes the walk actually touches, never
+    # from the graph as a whole: a dangling endpoint somewhere else in the
+    # repository is not a hole in *this* answer, and marking every query partial
+    # because of one would make the flag mean nothing.
+    incomplete = any(node.id in graph.incomplete for node in seeds)
     reported: set[tuple[str, str, str, str, str]] = set()
     relations: list[Relation] = []
     over_budget = False
@@ -855,6 +939,7 @@ def run_query(
                 break
             reported.add(identity)
             reached = graph.nodes[other_id]
+            incomplete = incomplete or other_id in graph.incomplete
             # ``node``, not ``seed``: the relationship being reported is the one
             # this edge carries, between the node the walk expanded and the node
             # it just reached. The seed travels alongside as provenance.
@@ -880,6 +965,12 @@ def run_query(
         omissions.append("provider_has_more")
     if ambiguous or any(item.via.evidence == "ambiguous" for item in relations):
         omissions.append("unresolved_entities")
+    if incomplete:
+        # The provider declared a relationship onto an end it never described,
+        # so the node this walk read has neighbours no reader of this document
+        # can name. Not ``truncated`` -- no budget and no depth limit cut this,
+        # the evidence was never in the artifact -- but still partial.
+        omissions.append("provider_partial")
     return QueryResult(
         question=question, target=target, generation=graph.generation, commit=graph.commit,
         seeds=seeds, relations=tuple(relations), truncated=truncated, ambiguous=ambiguous,
@@ -1145,7 +1236,11 @@ def build_packet(
         *(["provider_partial"] if completeness == lifecycle.PARTIAL else []),
     ]))
     truncated = result.truncated or "document_limit" in omissions
-    packet_completeness = "partial" if truncated or completeness == lifecycle.PARTIAL else "complete"
+    # ``provider_partial`` covers both of its sources -- the generation's own
+    # partial build, added just above, and a traversal that read a relationship
+    # whose far end the document never declared. Neither is truncation, and a
+    # packet carrying either must not call itself complete.
+    packet_completeness = "partial" if truncated or "provider_partial" in omissions else "complete"
     expiry = min(
         _timestamp(connection["expires_at"]),
         current + timedelta(seconds=limits["max_age_seconds"]),

@@ -234,6 +234,26 @@ at all is reported as `document_limit`.
 The scope rules are `context_graph`'s, applied twice: at parse time, so a node
 that could never be cited is not traversable either, and again at citation time.
 
+## A dropped relationship is two different facts
+
+The provider's node list can be missing an edge's endpoint for two reasons, and
+they are not reported the same way.
+
+The endpoint was **declared as a corpus this module does not query** — a
+document, paper, image, rationale or concept. That is a scope stated in these
+rules, the relationship is out of it, and the edge is pruned silently. No count
+of those is kept: what a packet says about its own incompleteness is its
+truncation and omission fields, not a tally of corpora never queried.
+
+The endpoint was **never declared at all**. The provider stated a relationship
+and then described one of its ends nowhere, so this is evidence its own document
+does not carry, not a scope this module chose. The surviving endpoint is
+recorded, and a traversal that seeds or reaches that node reports
+`provider_partial` and delivers a `partial` packet. It is not `truncated`: no
+budget or depth limit cut it. Only the nodes the walk actually touches count —
+a hole elsewhere in the repository is not a hole in this answer, and marking
+every query partial for it would make the flag say nothing.
+
 ## What the packet carries
 
 An ordinary `code_mower.contextPacket.v1` repository-kind packet — the same

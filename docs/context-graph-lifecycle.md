@@ -204,7 +204,20 @@ refusals as any other exposure — the filesystem root, the operator's home, the
 checkout, an ancestor of either — and is additionally refused unless it is a
 regular file within a size bound whose ancestry only this account or root may
 write, because a library the provider maps executable inside the boundary is
-code. A referenced path that this host does not have installed is skipped: if it
+code. It must also **say it is a shared library in its own header**: the name
+came out of a load command in somebody else's image, and ownership and size say
+who wrote a file and how big it is, not what it is — so without reading the
+container, a provider that writes its own linker input picks which of the
+operator's files this boundary exposes, and each one passes every check an
+operator-owned file passes. The candidate is read as a Mach-O and its
+`filetype` must be `MH_DYLIB` or the `MH_DYLIB_STUB` a stripped SDK ships in its
+place. Not an executable, an object file or an `MH_BUNDLE`, which is reached
+through `dlopen` rather than through the loader these commands drive. A
+universal archive is held to that on **every** slice — the child is the
+provider's interpreter, whose architecture is not necessarily this one, so the
+slice loaded inside the boundary is not the slice a single check would pick —
+and a file that is not a readable Mach-O at all is refused as such. A
+referenced path that this host does not have installed is skipped: if it
 turns out to have been required, the loader fails the build naming the library
 it could not find. The derivation reads Mach-O images, so **Linux is unchanged**
 — an ELF runtime's libraries are already under the `/lib` and `/usr/lib`

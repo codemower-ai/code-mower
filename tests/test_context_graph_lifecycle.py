@@ -2274,13 +2274,18 @@ class RuntimeExposureTests(ProviderExposureFixture):
                     )
 
 
-def macho(path: Path, *dependencies: str) -> Path:
+def macho(path: Path, *dependencies: str, filetype: int = 0x6) -> Path:
     """A real 64-bit Mach-O header whose load commands name ``dependencies``.
 
     A header, not a whole image: the derivation reads ``LC_LOAD_DYLIB`` out of
     the load-command block and nothing else, so a file with a real magic, a real
     command count and real commands exercises exactly the parse under test
     without needing a compiler on the machine running these tests.
+
+    ``filetype`` defaults to ``MH_DYLIB``, which is what every image these tests
+    write stands in for. It is a parameter because what a candidate *declares
+    itself to be* is now a check, and the refusals need images that declare
+    something else.
     """
     commands = b""
     for name in dependencies:
@@ -2290,10 +2295,24 @@ def macho(path: Path, *dependencies: str) -> Path:
         commands += struct.pack("<6I", 0x0C, 24 + len(raw), 24, 0, 0, 0) + raw
     # magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved
     header = struct.pack(
-        "<8I", 0xFEEDFACF, 0x0100_000C, 0, 6, len(dependencies), len(commands), 0, 0
+        "<8I", 0xFEEDFACF, 0x0100_000C, 0, filetype, len(dependencies), len(commands), 0, 0
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(header + commands)
+    return path
+
+
+def fat_macho(path: Path, *slices: bytes) -> Path:
+    """A universal archive carrying ``slices`` as real Mach-O images."""
+    header = struct.pack(">2I", 0xCAFEBABE, len(slices))
+    offset = len(header) + 20 * len(slices)
+    arches = b""
+    body = b""
+    for payload in slices:
+        arches += struct.pack(">5I", 0x0100_000C, 0, offset + len(body), len(payload), 0)
+        body += payload
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(header + arches + body)
     return path
 
 
@@ -2454,6 +2473,103 @@ class LinkedRuntimeLibraryTests(ProviderExposureFixture):
             self.derive(prefix)
         self.assertIn("writable by", str(raised.exception))
 
+    def test_a_dependency_that_is_not_a_binary_is_refused(self) -> None:
+        """The name comes out of somebody else's image, so the file must answer.
+
+        Ownership and size say who wrote a file and how big it is, not what it
+        is. Without reading the container, a provider that writes its own linker
+        input picks which of the operator's files this boundary exposes -- a
+        shell profile, a keychain database, a notes file -- and each one passes
+        every metadata check an operator-owned file passes.
+        """
+        secret = self.root / "documents" / "notes.txt"
+        secret.parent.mkdir(parents=True)
+        secret.write_text("an operator's file, owned by the operator\n")
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(secret))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a readable Mach-O image", str(raised.exception))
+
+    def test_a_truncated_dependency_is_refused(self) -> None:
+        """A magic is not a header. Nothing is admitted on four bytes."""
+        stub = self.root / "brew" / "lib" / "libcut.dylib"
+        stub.parent.mkdir(parents=True)
+        stub.write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 8)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(stub))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a readable Mach-O image", str(raised.exception))
+
+    def test_a_dependency_that_is_an_executable_is_refused(self) -> None:
+        """A Mach-O, and still not something a load command may name."""
+        binary = macho(self.root / "brew" / "bin" / "tool", filetype=0x2)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(binary))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a shared library", str(raised.exception))
+
+    def test_a_dependency_that_is_a_bundle_is_refused(self) -> None:
+        """``MH_BUNDLE`` is reached through ``dlopen``, not through dyld's loader."""
+        bundle = macho(self.root / "brew" / "lib" / "plugin.bundle", filetype=0x8)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(bundle))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a shared library", str(raised.exception))
+
+    def test_a_dylib_stub_is_admitted(self) -> None:
+        """``MH_DYLIB_STUB`` is what a stripped SDK ships in a library's place."""
+        stub = macho(self.root / "brew" / "lib" / "libstub.dylib", filetype=0x9)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(stub))
+        self.assertIn(str(stub), self.derive(prefix))
+
+    def test_a_universal_dependency_is_admitted_when_every_slice_is_a_library(self) -> None:
+        library = self.root / "brew" / "lib" / "libfat.dylib"
+        fat_macho(
+            library,
+            macho(self.root / "arm-slice").read_bytes(),
+            macho(self.root / "intel-slice").read_bytes(),
+        )
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(library))
+        self.assertIn(str(library), self.derive(prefix))
+
+    def test_a_universal_dependency_with_a_non_library_slice_is_refused(self) -> None:
+        """One readable library slice is not a licence for whatever the rest are.
+
+        The child is the provider's interpreter, whose architecture is not
+        necessarily this one, so the slice that gets loaded inside the boundary
+        is not the slice a check here would have picked.
+        """
+        mixed = self.root / "brew" / "lib" / "libmixed.dylib"
+        fat_macho(
+            mixed,
+            macho(self.root / "good-slice").read_bytes(),
+            macho(self.root / "bad-slice", filetype=0x2).read_bytes(),
+        )
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(mixed))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a shared library", str(raised.exception))
+
+    def test_a_universal_dependency_with_an_unreadable_slice_is_refused(self) -> None:
+        """A fat header may declare a slice the file does not carry."""
+        broken = self.root / "brew" / "lib" / "libbroken.dylib"
+        broken.parent.mkdir(parents=True)
+        header = struct.pack(">2I", 0xCAFEBABE, 1)
+        # An architecture record whose offset points past the end of the file.
+        broken.write_bytes(header + struct.pack(">5I", 0x0100_000C, 0, 4096, 32, 0))
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(broken))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a readable Mach-O image", str(raised.exception))
+
     def test_more_libraries_than_the_bound_are_refused(self) -> None:
         brew = self.root / "brew" / "lib"
         names = [str(self.library(brew / f"lib{index}.dylib")) for index in range(4)]
@@ -2567,6 +2683,16 @@ class LinkedRuntimeLibraryTests(ProviderExposureFixture):
             if not any(lifecycle._under(resolved, root) for root in covered)
         ]
         untrusted = [str(path) for path in external if not lifecycle._trusted_library(path)]
+        # The same question for the other refusal a real host can legitimately
+        # hit: a dependency that resolves to something which does not declare
+        # itself a shared library. Asked here so a refusal over a host whose
+        # dependencies *are* all libraries still fails the test.
+        malformed = [
+            str(path)
+            for path in external
+            if (types := lifecycle._macho_filetypes(path)) is None
+            or any(kind not in lifecycle._MACHO_DYLIB_FILETYPES for kind in types)
+        ]
         try:
             derived = lifecycle._linked_runtime_libraries(
                 [prefix], covered=[prefix], repository=self.repository
@@ -2577,15 +2703,22 @@ class LinkedRuntimeLibraryTests(ProviderExposureFixture):
             # refused through its own ancestry, before any single dependency.
             # Either is a correct refusal; neither being true is not.
             self.assertTrue(
-                untrusted or not lifecycle._trusted_library(Path(os.path.realpath(prefix))),
+                untrusted
+                or malformed
+                or not lifecycle._trusted_library(Path(os.path.realpath(prefix))),
                 "the boundary refused this host's runtime, but the runtime and "
-                f"every library _ssl links to are trusted: {refusal}",
+                f"every library _ssl links to are trusted shared libraries: {refusal}",
             )
             return
         self.assertEqual(
             untrusted,
             [],
             "the boundary admitted a runtime whose libraries are writable by another account",
+        )
+        self.assertEqual(
+            malformed,
+            [],
+            "the boundary admitted a dependency that is not a shared library",
         )
         for resolved in external:
             self.assertIn(
