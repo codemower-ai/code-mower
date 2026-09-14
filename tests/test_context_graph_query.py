@@ -821,6 +821,131 @@ class RetainedRelationshipTests(unittest.TestCase):
         self.assertEqual(self.stated(result), {("n-b", "calls", "n-a")})
 
 
+class DepthBoundaryTests(unittest.TestCase):
+    """What the requested depth left behind, said out loud.
+
+    Stopping at the requested depth is the contract. Stopping quietly is not:
+    for ``a -> b -> c -> d`` a default ``dependency`` question about ``a``
+    answers with ``c`` and used to call that answer complete, so a reader
+    concluded ``c`` depends on nothing -- the graph's own record of ``c -> d``
+    contradicting a packet that claimed to carry everything.
+
+    The flag is not "the walk reached its depth". It is "the walk reached its
+    depth *and* left an eligible relationship unreported", measured the way the
+    walk measures eligibility: this question's direction and relationship
+    filter, against relationship identities not already in the answer. So these
+    hold both directions of that -- what must be reported, and what must not
+    become a false omission.
+    """
+
+    def load(self, *nodes, edges=()) -> query.CodeGraph:
+        document = graph_document(nodes=list(nodes), edges=list(edges))
+        return query.load_graph(document, generation="a" * 32, commit="b" * 40)
+
+    def chain(self, *, tail=()) -> query.CodeGraph:
+        """``alpha -> beta -> gamma``, plus whatever a test hangs off it."""
+        return self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            node("n-c", "gamma", "example_pkg/report.py", 5),
+            node("n-d", "delta", "example_pkg/config.py", 30),
+            edges=[edge("n-a", "n-b", "calls"), edge("n-b", "n-c", "calls"), *tail],
+        )
+
+    def names(self, result: query.QueryResult) -> set:
+        return {item.node.name for item in result.relations}
+
+    def test_a_chain_past_the_requested_depth_is_reported_as_truncation(self) -> None:
+        """The finding's own case: A -> B -> C -> D answered at depth 2."""
+        graph = self.chain(tail=[edge("n-c", "n-d", "calls")])
+        result = query.run_query(graph, question="dependency", target="alpha")
+        # The answer itself is unchanged -- the depth limit still bounds it.
+        self.assertEqual(self.names(result), {"beta", "gamma"})
+        self.assertNotIn("delta", self.names(result))
+        # What changed is that it no longer claims to be everything.
+        self.assertTrue(result.truncated)
+        self.assertIn("provider_has_more", result.omissions)
+        # Still not ``provider_partial``: the artifact carried ``c -> d`` in
+        # full. A bound of ours cut it, which is a different fact.
+        self.assertNotIn("provider_partial", result.omissions)
+
+    def test_a_chain_that_ends_at_the_boundary_stays_complete(self) -> None:
+        """Exactly at the limit with nothing behind it: there is nothing to report."""
+        result = query.run_query(self.chain(), question="dependency", target="alpha")
+        self.assertEqual(self.names(result), {"beta", "gamma"})
+        self.assertFalse(result.truncated)
+        self.assertNotIn("provider_has_more", result.omissions)
+
+    def test_a_cycle_whose_boundary_edges_are_already_reported_stays_complete(self) -> None:
+        """Both records are in the answer, so the boundary omitted nothing."""
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[edge("n-a", "n-b", "calls"), edge("n-b", "n-a", "calls")],
+        )
+        result = query.run_query(graph, question="symbol", target="alpha")
+        self.assertEqual(len(result.relations), 2)
+        self.assertFalse(result.truncated)
+        self.assertNotIn("provider_has_more", result.omissions)
+
+    def test_an_already_reported_self_loop_and_parallel_pair_leave_it_complete(self) -> None:
+        """Identity, not endpoints: every record incident to the boundary is stated."""
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[edge("n-a", "n-a", "calls"),
+                   edge("n-a", "n-b", "calls"),
+                   edge("n-a", "n-b", "references")],
+        )
+        result = query.run_query(graph, question="symbol", target="alpha")
+        self.assertEqual(len(result.relations), 3)
+        self.assertFalse(result.truncated)
+        self.assertNotIn("provider_has_more", result.omissions)
+
+    def test_a_boundary_relationship_back_into_the_answer_is_still_an_omission(self) -> None:
+        """Both endpoints are already reported nodes; the relationship is not.
+
+        ``c -> a`` closes the cycle onto the seed, and its parallel twin says
+        something else about the same pair. Asking whether the boundary reaches
+        an *unseen node* would call this answer complete and drop two records
+        the graph carries, which is the identity confusion that produced the
+        earlier retained-relationship finding, one hop further out.
+        """
+        graph = self.chain(tail=[edge("n-c", "n-a", "calls"),
+                                 edge("n-c", "n-a", "references")])
+        result = query.run_query(graph, question="dependency", target="alpha")
+        self.assertEqual(len(result.relations), 2)
+        self.assertTrue(result.truncated)
+        self.assertIn("provider_has_more", result.omissions)
+
+    def test_direction_decides_what_the_boundary_counts(self) -> None:
+        """One graph, two questions: the boundary edge points the wrong way for one."""
+        graph = self.chain(tail=[edge("n-d", "n-c", "calls")])
+        along = query.run_query(graph, question="dependency", target="alpha")
+        self.assertFalse(along.truncated)
+        self.assertNotIn("provider_has_more", along.omissions)
+        both = query.run_query(graph, question="symbol", target="alpha", depth=2)
+        self.assertTrue(both.truncated)
+        self.assertIn("provider_has_more", both.omissions)
+
+    def test_the_relationship_filter_decides_what_the_boundary_counts(self) -> None:
+        """``contains`` normalizes to ``defines``, which ``dependency`` never walks."""
+        graph = self.chain(tail=[edge("n-c", "n-d", "contains")])
+        filtered = query.run_query(graph, question="dependency", target="alpha")
+        self.assertFalse(filtered.truncated)
+        self.assertNotIn("provider_has_more", filtered.omissions)
+        # ``symbol`` carries the whole vocabulary, so the same edge counts there.
+        neighbourhood = query.run_query(graph, question="symbol", target="alpha", depth=2)
+        self.assertTrue(neighbourhood.truncated)
+        self.assertIn("provider_has_more", neighbourhood.omissions)
+
+    def test_an_unresolved_target_reports_no_depth_omission(self) -> None:
+        """Nothing was traversed, so the depth limit cut nothing."""
+        result = query.run_query(self.chain(), question="dependency", target="no_such_symbol")
+        self.assertEqual(result.omissions, ("unresolved_entities",))
+        self.assertFalse(result.truncated)
+
+
 def cyclic_graph_document() -> dict:
     """The shared fixture, plus the back-edge that makes the pair mutual.
 
@@ -938,8 +1063,25 @@ class MissingEndpointTests(unittest.TestCase):
         )
         result = query.run_query(graph, question="symbol", target="parse_config")
         self.assertIn("provider_partial", result.omissions)
-        # Not truncation: no budget and no depth limit cut this. The evidence
-        # was never in the artifact.
+
+    def test_a_missing_endpoint_is_not_itself_reported_as_truncation(self) -> None:
+        """No budget and no depth limit cut this; the artifact never carried it.
+
+        The traversal is ``impact`` rather than the one-hop ``symbol``
+        neighbourhood above because the two facts must not be read through each
+        other. In this fixture a ``symbol`` walk stops one hop out at ``load``,
+        which really does still have ``render calls load`` behind it -- genuine
+        depth truncation, and now reported as such. That would make a
+        ``assertFalse(truncated)`` here prove nothing about missing endpoints.
+        ``impact`` ends at ``render``, which has no eligible relationship left,
+        so the only thing this answer has left out is the endpoint the provider
+        never declared -- and that is partial without being truncated.
+        """
+        graph = query.load_graph(
+            missing_endpoint_document(), generation="a" * 32, commit="b" * 40
+        )
+        result = query.run_query(graph, question="impact", target="parse_config")
+        self.assertIn("provider_partial", result.omissions)
         self.assertFalse(result.truncated)
         self.assertNotIn("provider_has_more", result.omissions)
 
@@ -1283,6 +1425,67 @@ class DocumentBudgetTests(GraphWorkspace):
         self.assertTrue(outcome.summary["truncated"])
         self.assertEqual(outcome.summary["completeness"], "partial")
         self.assertIn("document_limit", outcome.summary["omissions"])
+
+
+class DepthBoundaryPacketTests(GraphWorkspace):
+    """What a recipient reads when the depth limit left evidence behind.
+
+    The traversal flag is only worth anything if it survives into the packet
+    and the metadata-only summary, and if a reader can tell *which* bound
+    spoke. A document budget and a depth limit are both "there is more", and
+    they are both true here at different times, so these hold them apart: the
+    depth case carries ``provider_has_more`` with no ``document_limit``, and
+    the evidence it did deliver is still fully cited.
+    """
+
+    def test_a_depth_bounded_answer_says_so_in_the_packet_and_the_summary(self) -> None:
+        # ``symbol`` is a one-hop neighbourhood of ``parse_config``, and the
+        # fixture puts ``render calls load`` one hop further out.
+        outcome = self.context(question="symbol")
+        self.assertEqual(outcome.status, query.AVAILABLE)
+        self.assertTrue(outcome.packet["truncated"])
+        self.assertEqual(outcome.packet["completeness"], "partial")
+        self.assertIn("provider_has_more", outcome.packet["omissions"])
+        self.assertTrue(outcome.summary["truncated"])
+        self.assertEqual(outcome.summary["completeness"], "partial")
+        self.assertIn("provider_has_more", outcome.summary["omissions"])
+
+    def test_the_depth_omission_is_not_reported_as_a_document_budget(self) -> None:
+        """Three documents against a budget of five: nothing was dropped to fit."""
+        outcome = self.context(question="symbol")
+        self.assertEqual(len(outcome.packet["documents"]), 3)
+        self.assertLess(
+            len(outcome.packet["documents"]),
+            contract.normalize_policy(policy())["max_documents"],
+        )
+        for code in ("document_limit", "provider_warning", "provider_partial"):
+            with self.subTest(code=code):
+                self.assertNotIn(code, outcome.packet["omissions"])
+
+    def test_the_retained_evidence_is_still_fully_cited_and_deliverable(self) -> None:
+        """Truncated is a statement about what is missing, not about what is there."""
+        outcome = self.context(question="symbol")
+        report = context_graph.evaluate_graph_evidence(
+            outcome.packet, repository_root=self.repository, revision_state="matching",
+        )
+        self.assertEqual(report.resolution_rate, 1.0)
+        self.assertTrue(report.meets_gate())
+        validated = self.load(
+            outcome.packet, recipient="claude:builder", revision=self.manifest.commit)
+        self.assertEqual(validated.revision_state, "matching")
+
+    def test_a_question_whose_walk_runs_out_first_is_still_complete(self) -> None:
+        """The same generation, a question that reaches the end of its evidence.
+
+        ``impact`` stops at ``render``, which nothing calls, so its boundary
+        has no eligible relationship behind it. Without this the depth flag
+        could be satisfied by marking every answer partial, which would say
+        nothing at all.
+        """
+        outcome = self.context()
+        self.assertFalse(outcome.packet["truncated"])
+        self.assertEqual(outcome.packet["completeness"], "complete")
+        self.assertNotIn("provider_has_more", outcome.packet["omissions"])
 
 
 class RecipientNeutralityTests(GraphWorkspace):

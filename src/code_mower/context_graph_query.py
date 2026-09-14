@@ -23,8 +23,10 @@ are load-bearing here and are therefore not configurable:
 * **Queries are symbol-first, relationship-filtered and budgeted.** Default
   traversals in the evaluated provider returned 700-900 nodes and truncated
   silently. Every traversal here starts from named seeds, follows one filtered
-  relationship set, and stops at an explicit budget that is reported as
-  truncation rather than presented as a complete answer.
+  relationship set, and stops at an explicit budget or depth that is reported
+  as truncation rather than presented as a complete answer -- including when
+  what stopped it was the requested depth and the node it stopped on still had
+  eligible relationships behind it.
 * **Stale or unknown graph state is never answered from.** A required context
   request blocks; an optional one degrades to ordinary repository tools. There
   is no third outcome where a consumer is handed an older graph that looks
@@ -884,7 +886,11 @@ def run_query(
     Node expansion and relationship reporting are bounded separately. A node is
     walked through once; a distinct directed relationship is reported once,
     including when both of its endpoints have already been seen. Anything left
-    out is left out by the budget or the depth limit, and says so.
+    out is left out by the budget or the depth limit, and says so: a depth
+    boundary that still has eligible, unreported relationships behind it sets
+    ``truncated`` exactly as the budget does, and one that has none -- a chain
+    that ends there, or a cycle whose boundary edges are already in the answer
+    -- leaves the result complete.
     """
     if question not in QUESTIONS:
         raise ContextError("unsupported local graph question")
@@ -926,9 +932,37 @@ def run_query(
     relations: list[Relation] = []
     over_budget = False
     frontier: list[tuple[GraphNode, GraphNode, int]] = [(node, node, 0) for node in seeds]
+    beyond_depth = False
     while frontier:
         node, seed, level = frontier.pop(0)
         if level >= limit:
+            # The requested depth stops the walk here, and stopping is allowed.
+            # Stopping *quietly* is not: for A -> B -> C -> D at depth 2 the
+            # answer ends at C, and a reader told the answer is complete would
+            # conclude C depends on nothing. So ask what this node would have
+            # contributed, and say so if the answer is anything.
+            #
+            # "Anything" is measured the same way the walk measures it: an
+            # eligible relationship under this question's direction and
+            # relationship filter whose identity is not already reported. That
+            # is what keeps the flag honest in both directions. A chain that
+            # genuinely ends at the boundary contributes nothing and stays
+            # complete; a cycle or a ``symbol`` neighbourhood whose boundary
+            # edges were already stated from the other side contributes
+            # nothing either, because those identities are already in the
+            # answer; and a parallel edge the provider worded differently is a
+            # different identity, so it counts. Reading adjacency costs no
+            # budget and reports nothing -- it only decides the flag.
+            #
+            # Ordering makes this exact rather than approximate: the frontier
+            # is FIFO and levels never decrease, so every node below the
+            # boundary has already been expanded by the time the first
+            # boundary node is popped. ``reported`` is final here.
+            if not beyond_depth and any(
+                (edge.source, edge.target, edge.relation, edge.kind, edge.evidence) not in reported
+                for edge, _ in _neighbours(graph, node.id, direction, kinds)
+            ):
+                beyond_depth = True
             continue
         for edge, other_id in _neighbours(graph, node.id, direction, kinds):
             # The provider's own record, endpoints and wording together: two
@@ -961,10 +995,16 @@ def run_query(
         # reaches callers so that a test two hops away is found, but only the
         # tests are the answer.
         relations = [item for item in relations if item.node.kind == "test"]
-    # Two different ways to have left something out, reported as one state: a
-    # relationship budget that stopped the walk, and a seed bound that stopped
-    # it from ever starting at some of the target's definitions.
-    truncated = over_budget or seed_overflow
+    # Three different ways to have left something out, reported as one state: a
+    # relationship budget that stopped the walk, a seed bound that stopped it
+    # from ever starting at some of the target's definitions, and a depth limit
+    # that stopped it at a node with relationships nobody asked it to drop
+    # silently. All three are the same claim to a recipient -- this question has
+    # more evidence than this answer carries -- so all three raise
+    # ``provider_has_more`` rather than inventing a fourth code the packet
+    # contract does not define. ``provider_partial`` stays what it was: evidence
+    # the provider's document never carried at all, which no bound of ours cut.
+    truncated = over_budget or seed_overflow or beyond_depth
     if truncated:
         omissions.append("provider_has_more")
     if ambiguous or any(item.via.evidence == "ambiguous" for item in relations):

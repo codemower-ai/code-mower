@@ -193,6 +193,20 @@ than the seed bound allows does the same: seeds the bound drops take their whole
 reachable neighbourhood out of the answer, so that is truncation too, not a
 complete result over the seeds that happened to sort first.
 
+The depth limit is the third. A walk that stops at its requested depth on a node
+that still has eligible relationships behind it has left evidence out, and
+saying so is the whole point of the limit being explicit: for `a -> b -> c -> d`
+a default `dependency` question about `a` ends at `c`, and a reader told that
+answer is complete would conclude `c` depends on nothing. So the boundary sets
+`truncated` and raises `provider_has_more`, exactly as the node budget does.
+
+It is not raised for reaching the boundary as such. Eligibility is measured the
+way the walk measures it — this question's direction and relationship filter,
+against relationships not already reported — so a chain that genuinely ends at
+the boundary stays `complete`, and so does a cycle or a `symbol` neighbourhood
+whose boundary edges were already stated from their other side. A parallel edge
+the provider worded differently is a different relationship and does count.
+
 Every reported relationship is the one edge the walk crossed, between that
 edge's own two endpoints. A second-hop result names the intermediate node and
 cites it — `render calls load (inferred, hop 2, reached from parse_config, …)` —
@@ -210,7 +224,8 @@ reconverges keeps both edges into the node it reached twice; and a self-loop
 reached from both sides of a `symbol` neighbourhood, or an edge the provider
 recorded twice, is one relationship. Nothing about the bound changes: a
 relationship that does not fit the node budget still sets `truncated` and raises
-`provider_has_more`, and the depth limit still applies.
+`provider_has_more`, and the depth limit still applies and still reports what it
+stopped.
 
 ## Citations are validated against the bound commit
 
