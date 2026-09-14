@@ -716,11 +716,19 @@ exit 0
             fake_gh.write_text(
                 _FAKE_GH_DELIVERY_HEADER
                 + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
-  printf '%s\\n' '[{"number":77,"labels":[{"name":"builder:devin"}],"updatedAt":"2026-01-01T00:00:00Z","headRepository":{"nameWithOwner":"owner/repo"},"headRefName":"devin/issue-12","author":{"login":"devin-ai-integration[bot]"}}]'
+  printf '%s\\n' '[{"number":77,"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}],"updatedAt":"2026-01-01T00:00:00Z","headRepository":{"nameWithOwner":"owner/repo"},"headRefName":"devin/issue-12","author":{"login":"devin-ai-integration[bot]"}}]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
   printf '%s\\n' '[]'
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"headRepository"* ]]; then
+  printf '%s\\n' '{"headRefName":"devin/issue-12","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}],"author":{"login":"devin-ai-integration[bot]"}}'
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"title,body"* ]]; then
+  printf '%s\\n' '{"title":"Fix round","body":"Body","headRefName":"devin/issue-12","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","url":"https://github.com/owner/repo/pull/77","labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}],"author":{"login":"devin-ai-integration[bot]"}}'
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json comments"* ]]; then
+  printf '%s\\n' '{"comments":[{"author":{"login":"owner"},"createdAt":"2026-01-01T00:00:00Z","body":"## Codex audit (merge-authority lane)\\n\\nHead SHA: `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`\\n\\nCodex Audit: BLOCKED\\n"}]}'
+elif [ "$cmd" = "pr diff" ]; then
+  printf 'diff --git a/x b/x\\n'
 elif [ "$cmd" = "repo view" ]; then
   printf 'main\\n'
 elif [ "$cmd" = "pr edit" ]; then
@@ -767,18 +775,10 @@ fi
             )
             invoked = (root / _GH_INVOCATION_LOG).read_text(encoding="utf-8")
 
-        if "nothing to do" in completed.stdout:
-            # INCOMPLETE: this fixture selects no pull-request unit, so the run
-            # never reaches the reconciliation block and this case proves
-            # nothing about ordering. The PR-selection path needs the fix-round
-            # inputs (audit verdict labels and a matching runner comment) that
-            # the issue-kind fixtures above do not provide. Left in place, and
-            # reported as unfinished, rather than passing on a run that never
-            # exercised the boundary.
-            self.skipTest(
-                "fixture does not yet reach a pull-request unit; the ordering "
-                "boundary is unproven by this case"
-            )
+        # The run must actually have reached the boundary, not stopped short
+        # of it: a fixture that selects nothing would otherwise "prove" the
+        # ordering by never exercising it.
+        self.assertIn("selected fix pr #77", completed.stdout.lower(), completed.stdout)
         self.assertNotEqual(completed.returncode, 0, completed.stdout)
         self.assertIn(
             "refusing to publish builder lineage", completed.stderr, completed.stderr

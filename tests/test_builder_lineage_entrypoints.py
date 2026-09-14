@@ -661,9 +661,9 @@ class ASuccessfulButInvalidCommentReadIsNotAnEmptyHistory(unittest.TestCase):
             with self.subTest(response=response):
                 applied.clear()
 
-                def api(method, path, **_kwargs):
+                def api(method, path, _response=response, **_kwargs):
                     if "/comments" in path:
-                        return response
+                        return _response
                     if re.search(r"/pulls/\d+$", path):
                         return _pull_request()
                     if "/commits/" in path:
@@ -717,9 +717,97 @@ class ASuccessfulButInvalidCommentReadIsNotAnEmptyHistory(unittest.TestCase):
                     reviewer_lineage.reviewer_evidence(
                         REPO, PR,
                         authorities=(AUTHORITY,),
-                        fetch_comments=lambda: response,
+                        fetch_comments=lambda _response=response: _response,
                         state_dir=git_free_tempdir(self, "code-mower-invalid-"),
                     )
+
+    def _gh_pages(self, *pages):
+        """A lowest-level GitHub transport that answers page by page."""
+
+        seen = []
+
+        def request(method, path, **_kwargs):
+            if "/comments" not in path:
+                return []
+            index = int(re.search(r"[?&]page=(\d+)", path).group(1))
+            seen.append(index)
+            return pages[index - 1] if index - 1 < len(pages) else []
+
+        return request, seen
+
+    def test_the_lowest_transport_refuses_every_malformed_page(self):
+        """The wrapper's own `fetch_issue_comments`, not a stubbed return."""
+
+        from code_mower.provider_runners import github_pr
+
+        for response in INVALID_COMMENT_RESPONSES:
+            with self.subTest(response=response):
+                request, _ = self._gh_pages(response)
+                with mock.patch.object(github_pr, "_gh_request", request):
+                    with self.assertRaises(ValueError):
+                        github_pr.fetch_issue_comments(REPO, PR, token="t")
+
+    def test_a_malformed_page_after_a_valid_one_is_still_refused(self):
+        from code_mower.provider_runners import github_pr
+
+        first = [marker_comment() for _ in range(100)]
+        for response in INVALID_COMMENT_RESPONSES:
+            with self.subTest(response=response):
+                request, seen = self._gh_pages(first, response)
+                with mock.patch.object(github_pr, "_gh_request", request):
+                    with self.assertRaises(ValueError):
+                        github_pr.fetch_issue_comments(REPO, PR, token="t")
+                self.assertEqual(seen, [1, 2], "it read on and then refused")
+
+    def test_the_transport_still_returns_a_complete_valid_history(self):
+        from code_mower.provider_runners import github_pr
+
+        pages = ([marker_comment()] * 100, [marker_comment()] * 7)
+        request, seen = self._gh_pages(*pages)
+        with mock.patch.object(github_pr, "_gh_request", request):
+            comments = github_pr.fetch_issue_comments(REPO, PR, token="t")
+        self.assertEqual(len(comments), 107)
+        self.assertEqual(seen, [1, 2])
+
+    def test_a_genuinely_empty_first_page_stays_ordinary(self):
+        from code_mower.provider_runners import github_pr
+
+        request, seen = self._gh_pages([])
+        with mock.patch.object(github_pr, "_gh_request", request):
+            self.assertEqual(github_pr.fetch_issue_comments(REPO, PR, token="t"), [])
+        self.assertEqual(seen, [1])
+
+    def test_the_transport_keeps_its_pagination_cap(self):
+        from code_mower.provider_runners import github_pr
+
+        request, _ = self._gh_pages(*([[marker_comment()] * 100] * 12))
+        with mock.patch.object(github_pr, "_gh_request", request):
+            with self.assertRaises(RuntimeError):
+                github_pr.fetch_issue_comments(REPO, PR, token="t", page_cap=3)
+
+    def test_the_claude_wrapper_refuses_a_malformed_page_and_launches_nothing(self):
+        """End to end: the real wrapper, over the real transport."""
+
+        from code_mower import claude_audit_pr
+        from code_mower.provider_runners import github_pr
+
+        for response in INVALID_COMMENT_RESPONSES:
+            with self.subTest(response=response):
+                request, _ = self._gh_pages(response)
+                with mock.patch.object(github_pr, "_gh_request", request):
+                    with self.assertRaises(RuntimeError) as raised:
+                        claude_audit_pr._require_independent_review(
+                            "claude", REPO, PR,
+                            {"user": {"login": "a-human"},
+                             "head": {"ref": BRANCH, "sha": TAKEN},
+                             "labels": []},
+                            TAKEN,
+                            authorities=(AUTHORITY,),
+                            fetch_comments=lambda: github_pr.fetch_issue_comments(
+                                REPO, PR, token="t"
+                            ),
+                        )
+                self.assertIn("lineage_unreadable", str(raised.exception))
 
     def test_the_direct_wrapper_accepts_a_genuinely_empty_history(self):
         episodes = reviewer_lineage.reviewer_evidence(
