@@ -133,6 +133,7 @@ def build_session(
             review["eligibility"] = decide_role(
                 name, "reviewer", transport=transports.get(name), config=config,
                 merge_authority=review["merge_authority"],
+                qualification=lane.get("role_qualification"),
             )
             require_role(review["eligibility"])
         coordinator_role = decide_role(
@@ -341,12 +342,20 @@ def _private_query(selected: bool) -> str | None:
 
 def _run_context_command(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     saved = context_session.load_session(args.session_file)
-    store = context_session.association_store(args.context_state_dir)
-    record = context_session.read(store, saved["id"])
     config_path = Path(args.config) if args.config else Path(args.repo_path) / "code-mower.yml"
     source = load_config(config_path) if config_path.is_file() else {}
     if source and (issues := validate_config(source)):
         raise ConfigError("invalid repository configuration:\n" + _format_issues(issues))
+    if args.context_command != "status":
+        # Old briefs stay readable, but their saved identity is not a perpetual
+        # qualification grant for fresh context retrieval/delivery mutations.
+        for identity in ("host", "orchestrator"):
+            require_role(decide_role(
+                saved[identity], "orchestrator", config=source,
+                transport=saved.get(identity + "_transport"), runtime="ready",
+            ), execution=True)
+    store = context_session.association_store(args.context_state_dir)
+    record = context_session.read(store, saved["id"])
     trusted_policy = normalize_policy(source.get("context")) if source.get("context") is not None else None
     if record is not None:
         if record["policy"] != trusted_policy:

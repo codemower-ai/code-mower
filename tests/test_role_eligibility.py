@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import copy
 import io
 import json
@@ -73,6 +74,14 @@ class RoleDecisionTests(unittest.TestCase):
                     runtime="ready", merge_authority=True, qualification=reference)
                 self.assertEqual(decision["status"], expected)
 
+    def test_explicit_lane_record_cannot_override_narrowing_repository_policy(self):
+        decision = roles.decide_role(
+            "devin", "builder", transport="devin_api_v3", bounded=True, runtime="ready",
+            qualification="devin-hosted-builder-v140",
+            config=policy("builder", qualification="revoked-reference"),
+        )
+        self.assertEqual(decision["reason"], "qualification_missing")
+
     def test_expired_revoked_or_changed_capability_evidence_is_stale(self):
         now = datetime(2026, 9, 14, tzinfo=timezone.utc)
         key = "devin-hosted-builder-v140"
@@ -128,6 +137,25 @@ class SessionRoleAdmissionTests(unittest.TestCase):
                     self.assertIn("cannot act as orchestrator", errors.getvalue())
                 finally:
                     os.chdir(previous)
+
+    def test_historical_devin_brief_cannot_resume_context_mutations(self):
+        brief = session.build_session(repo="owner/repo", host="codex", selected=("codex",), config={})
+        brief.update(id="a" * 32, host="devin", orchestrator="devin",
+                     lease={"state": "absent", "mutating": False})
+        brief.pop("role_eligibility")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "old-brief.json"
+            path.write_text(json.dumps(brief))
+            args = argparse.Namespace(session_file=path, context_state_dir=Path(tmp) / "private",
+                                      config=None, repo_path=Path(tmp), context_command="fetch")
+            with mock.patch.object(session.context_session, "association_store", side_effect=AssertionError("state access")):
+                with self.assertRaisesRegex(config.ConfigError, "cannot act as orchestrator"):
+                    session._run_context_command(args)
+            args.context_command = "status"
+            with mock.patch.object(session.context_session, "read", return_value=None), \
+                    mock.patch.object(session.session_lease, "verify_live_lease", return_value={"mutating": False}):
+                _payload, code = session._run_context_command(args)
+                self.assertEqual(code, 0)
 
     def test_human_start_lists_exact_identity_safe_lease_lifecycle(self):
         with tempfile.TemporaryDirectory() as tmp:

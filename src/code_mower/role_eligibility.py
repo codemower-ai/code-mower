@@ -123,6 +123,11 @@ def decide_role(
             reference = qualification if qualification is not None else settings.get(
                 "qualification", DEFAULT_QUALIFICATIONS.get((product, role, selected_transport))
             )
+            # A lane's explicit reference cannot override a narrower repository
+            # reference. Both declarations must select the same maintained record.
+            policy_reference = settings.get("qualification")
+            if qualification is not None and policy_reference is not None and qualification != policy_reference:
+                reference = None
             record = QUALIFICATIONS.get(reference) if isinstance(reference, str) else None
             if record is not None and (record.product, record.role, record.transport, record.scope) == (
                 product, role, selected_transport, scope,

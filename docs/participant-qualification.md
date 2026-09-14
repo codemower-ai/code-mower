@@ -45,7 +45,10 @@ admission token. A denial provides one actionable diagnostic and does not
 substitute another participant.
 
 `session start` evaluates host/orchestrator and reviewer roles before acquiring
-a lease or saving state, including `--dry-run` and `--no-lease` paths. An eligible
+a lease or saving state, including `--dry-run` and `--no-lease` paths. Fresh
+context mutations recheck saved host/orchestrator admission; an old brief cannot
+resume a now-ineligible role. Historical brief reads and context status remain
+available. An eligible
 mutating start prints the exact lease inspection and release commands; see
 [session lifecycle](sessions.md#single-orchestrator-lease).
 The hosted work-order library checks dispatch, clarification, and fix admission
