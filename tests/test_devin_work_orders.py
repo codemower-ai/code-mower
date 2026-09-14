@@ -26,6 +26,7 @@ from code_mower.work_orders import WORK_ORDER_SCHEMA
 import test_context_delivery as fixtures
 
 CANARY = "PRIVATE_PROSE_SOURCE_DIFF_CREDENTIAL_RESULT"
+UNCONFIGURED = {"repositories": [{"slug": "owner/repo", "default_branch": "main"}]}
 HEAD = "a" * 40
 
 
@@ -60,7 +61,7 @@ class WorkOrderCase(unittest.TestCase):
              "source": {"repo": "owner/repo", "issue_number": "907"},
              "output_path": CANARY, "context_manifest": CANARY}, CANARY,
             repository="owner/repo", issue=907, branch="devin/907", base="main",
-            author_id=123, author_login="builder[bot]", acu_limit=5)
+            author_id=123, author_login="builder[bot]", acu_limit=5, config=UNCONFIGURED)
         self.key = self.service._key(self.order)
 
     def run_order(self, command, **kwargs):
@@ -87,7 +88,7 @@ class DeliveryTests(WorkOrderCase):
         with self.assertRaisesRegex(RemoteError, "work_order_binding"):
             WorkOrder.from_manifest({}, CANARY, repository="owner/repo", issue=907,
                                     branch="devin/907", base="main", author_id=123,
-                                    author_login="builder[bot]")
+                                    author_login="builder[bot]", config=UNCONFIGURED)
         for changes in ({"branch": "main"}, {"branch": "bad/../ref"}, {"acu_limit": True},
                         {"issue": True}, {"author_login": CANARY + "\n"}):
             with self.subTest(changes=changes), self.assertRaises(RemoteError):
@@ -861,7 +862,8 @@ class ContextInjectionTests(WorkOrderCase):
         manifest = {"schema": WORK_ORDER_SCHEMA, "repo": "owner/repo", "source": {"repo": "owner/repo"},
                     "output_path": CANARY, "context_manifest": CANARY}
         common = dict(repository="owner/repo", issue=907, branch="devin/907", base="main",
-                      author_id=123, author_login="builder[bot]", acu_limit=5, context_policy="required")
+                      author_id=123, author_login="builder[bot]", acu_limit=5, context_policy="required",
+                      config=UNCONFIGURED)
         with self.assertRaisesRegex(RemoteError, "work_order_binding_mismatch"):  # No key: the issue is required.
             WorkOrder.from_manifest(manifest, CANARY, **common)
         for present in ("908", 908, 0, False, "", None, True, 907.0, [907]):  # A present issue must still match.
@@ -939,7 +941,8 @@ class ContextInjectionTests(WorkOrderCase):
 
     def test_context_free_orders_keep_their_pre_context_binding_and_input(self):
         legacy = replace(self.order, context_policy="none")
-        legacy_fields = {k: v for k, v in asdict(legacy).items() if k not in ("context_policy", "context_work_item")}
+        legacy_fields = {k: v for k, v in asdict(legacy).items()
+                         if k not in ("context_policy", "context_work_item", "branch_pattern", "branch_example")}
         self.assertEqual(self.service._binding(legacy),
                          _hash([legacy_fields, self.provider.name, self.provider.account]))
         self.assertIn(json.dumps({k: v for k, v in legacy_fields.items() if k != "body"}, sort_keys=True)[1:-1],

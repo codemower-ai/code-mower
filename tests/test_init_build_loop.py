@@ -60,18 +60,25 @@ _FAKE_GH_DELIVERY_HEADER = """#!/usr/bin/env bash
 set -euo pipefail
 cmd="${1:-} ${2:-}"
 args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
+if [ -n "${GH_CALL_LOG:-}" ]; then
+  printf '%s\\n' "$*" >> "$GH_CALL_LOG"
+fi
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author"* ]]; then
   if [ -f "$HOME/lane-delivered" ]; then
-    printf '%s\\n' '[{"number":77,"headRefName":"codex/issue-12","closingIssuesReferences":[{"number":12}]}]'
+    printf '%s\\n' '[{"number":77,"headRefName":"codex/issue-12","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:codex"}],"author":{"login":"chatgpt-codex-connector[bot]"},"closingIssuesReferences":[{"number":12,"repository":{"nameWithOwner":"owner/repo"},"url":"https://github.com/owner/repo/issues/12"}]}]'
   else
-    printf '%s\\n' '[]'
+    printf '%s\\n' "${EXISTING_OPEN_PRS_JSON:-[]}"
   fi
   exit 0
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
   printf '%s\\n' '["tier:R","builder:codex","dispatched:codex"]'
   exit 0
 elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefOid,state,labels"* ]]; then
-  printf '%s\\n' '{"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"OPEN","labels":[]}'
+  if [ -f "$HOME/lane-delivered" ]; then
+    printf '%s\\n' '{"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"OPEN","labels":[]}'
+  else
+    printf '%s\\n' '{"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","labels":[]}'
+  fi
   exit 0
 elif [ "$cmd" = "issue comment" ] || [ "$cmd" = "pr comment" ]; then
   printf 'https://github.com/owner/repo/issues/12#issuecomment-1\\n'
@@ -268,8 +275,18 @@ class InitBuildLoopTests(unittest.TestCase):
                 "configured_trusted_authors=${LANE_TRUSTED_AUTHORS:-''}",
                 runner_text,
             )
-            self.assertNotIn("grok-bot[bot]", runner_text)
-            self.assertNotIn("cursor[bot]", runner_text)
+            # cursor has no local runner, so it is neither a runnable lane nor
+            # in builder_labels_json, but its provenance still takes part in
+            # cross-builder conflict detection.
+            self.assertNotIn("cursor/", runner_text)
+            self.assertIn(
+                """provenance_labels_json='{"builder:claude":"claude","builder:codex":"codex","builder:cursor":"cursor","builder:grok-bot":"cursor"}'""",
+                runner_text,
+            )
+            self.assertIn(
+                """builder_authors_json='{"chatgpt-codex-connector[bot]":"codex","claude[bot]":"claude","cursor[bot]":"cursor","grok-bot[bot]":"cursor"}'""",
+                runner_text,
+            )
             self.assertIn("remote_repo_slug()", runner_text)
             self.assertIn('install_pre_push_guard "$target_pr_branch" "$mode"', runner_text)
             self.assertIn(
@@ -278,7 +295,7 @@ class InitBuildLoopTests(unittest.TestCase):
             # headRefOid joins the target-PR read: an explicit recovery handoff
             # is validated against the head it was authorized for.
             self.assertIn(
-                "--json headRefName,headRefOid,headRepository,labels", runner_text
+                "--json headRefName,headRefOid,headRepository,labels,author", runner_text
             )
             self.assertNotIn("def has_builder_label", runner_text)
             self.assertIn("def has_lane_prefix", runner_text)
@@ -820,12 +837,6 @@ fi
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Issue 12","labels":[{"name":"tier:R"},{"name":"builder:codex"},{"name":"dispatched:codex"}],"assignees":[],"author":{"login":"owner"}}]'
-elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
-  if [[ "$args" == *"--json number"* ]]; then
-    printf '1\\n'
-  else
-    printf '%s\\n' '[{"number":99,"body":"Discusses #12 but closes #123","closingIssuesReferences":[{"number":123}]}]'
-  fi
 elif [ "$cmd" = "repo view" ]; then
   printf 'main\\n'
 elif [ "$cmd" = "issue view" ]; then
@@ -890,6 +901,20 @@ printf 'fake codex completed\\n'
                     "LANE_CODEX_EXTRA_FLAGS": "--fake-extra",
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "EXISTING_OPEN_PRS_JSON": json.dumps([{
+                        "number": 99,
+                        "body": "Discusses #12 but closes #123",
+                        "headRefName": "codex/other-work",
+                        "headRefOid": "a" * 40,
+                        "headRepository": {"nameWithOwner": "owner/repo"},
+                        "labels": [{"name": "builder:codex"}],
+                        "author": {"login": "chatgpt-codex-connector[bot]"},
+                        "closingIssuesReferences": [{
+                            "number": 123,
+                            "repository": {"nameWithOwner": "owner/repo"},
+                            "url": "https://github.com/owner/repo/issues/123",
+                        }],
+                    }]),
                     **_LANE_DELIVERY_ENV,
                 },
                 text=True,
@@ -934,7 +959,11 @@ printf 'fake codex completed\\n'
         # transition stays "none" and the run is undelivered rather than
         # repaired by orchestrator metadata. The wrong-issue variant closes a
         # different issue and fails the same way.
-        for refs in ('[]', '[{"number":123}]'):
+        for refs in (
+            '[]',
+            '[{"number":123,"repository":{"nameWithOwner":"owner/repo"},'
+            '"url":"https://github.com/owner/repo/issues/123"}]',
+        ):
             with self.subTest(closing_refs=refs):
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
@@ -950,8 +979,8 @@ printf 'fake codex completed\\n'
 set -euo pipefail
 cmd="${{1:-}} ${{2:-}}"
 args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
-  printf '%s\n' '[{{"number":77,"headRefName":"codex/issue-12","closingIssuesReferences":{refs}}}]'
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 1001"* ]] && [[ "$args" == *"--json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author"* ]]; then
+  printf '%s\n' '[{{"number":77,"headRefName":"codex/issue-12","headRefOid":"{'a' * 40}","headRepository":{{"nameWithOwner":"owner/repo"}},"labels":[{{"name":"builder:codex"}}],"author":{{"login":"chatgpt-codex-connector[bot]"}},"closingIssuesReferences":{refs}}}]'
   exit 0
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
   printf '%s\n' '["tier:R","builder:codex","dispatched:codex"]'
@@ -963,8 +992,6 @@ elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
   printf '%s\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\n' '[{{"number":12,"title":"Issue 12","labels":[{{"name":"tier:R"}},{{"name":"builder:codex"}},{{"name":"dispatched:codex"}}],"assignees":[],"author":{{"login":"owner"}}}}]'
-elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
-  printf '%s\n' '[{{"number":77,"closingIssuesReferences":{refs}}}]'
 elif [ "$cmd" = "repo view" ]; then
   printf 'main\n'
 elif [ "$cmd" = "issue view" ]; then
@@ -1055,8 +1082,6 @@ printf 'fake codex completed\n'
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{"number":12,"title":"Untrusted title injection","labels":[{"name":"tier:R"},{"name":"builder:codex"},{"name":"dispatched:codex"}],"assignees":[],"author":{"login":"drive-by"}}]'
-elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
-  printf '%s\\n' '[]'
 elif [ "$cmd" = "repo view" ]; then
   printf 'main\\n'
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json author,comments"* ]]; then
@@ -1163,9 +1188,9 @@ printf 'fake codex completed\\n'
 set -euo pipefail
 cmd="${{1:-}} ${{2:-}}"
 args=" $* "
-if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 30"* ]]; then
+if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 1001"* ]] && [[ "$args" == *"--json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author"* ]]; then
   if [ -f "$HOME/lane-delivered" ]; then
-    printf '%s\\n' '[{{"number":77,"headRefName":"{lane}/issue-12","closingIssuesReferences":[{{"number":12}}]}}]'
+    printf '%s\\n' '[{{"number":77,"headRefName":"{lane}/issue-12","headRefOid":"{head_oid}","headRepository":{{"nameWithOwner":"owner/repo"}},"labels":[{{"name":"builder:{lane}"}}],"closingIssuesReferences":[{{"number":12,"repository":{{"nameWithOwner":"owner/repo"}},"url":"https://github.com/owner/repo/issues/12"}}]}}]'
   else
     printf '%s\\n' '[]'
   fi
@@ -1181,9 +1206,6 @@ elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:{lane}"* ]]; then
   exit 0
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[{{"number":12,"title":"Issue 12","labels":[{{"name":"tier:R"}},{{"name":"builder:{lane}"}},{{"name":"dispatched:{lane}"}}],"assignees":[],"author":{{"login":"owner"}}}}]'
-  exit 0
-elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
-  printf '%s\\n' '[]'
   exit 0
 elif [ "$cmd" = "repo view" ]; then
   printf 'main\\n'
@@ -1334,6 +1356,8 @@ cmd="${1:-} ${2:-}"
 args=" $* "
 if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
   printf '%s\\n' '[{"number":21,"labels":[{"name":"builder:codex"},{"name":"codex-audit-blocked"}],"updatedAt":"2026-01-01T00:00:00Z","headRepository":{"nameWithOwner":"fork/repo"}}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 1001"* ]] && [[ "$args" == *"--json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author"* ]]; then
+  printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[]'
 else

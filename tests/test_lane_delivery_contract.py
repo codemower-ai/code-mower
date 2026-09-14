@@ -52,6 +52,14 @@ def _pre_push_hook(path: Path) -> str:
     return text[opened : text.index("\nHOOK\n", opened) + 1]
 
 
+def _pre_push_installer(path: Path) -> str:
+    """Return the runner function that installs a fresh guard and ledger."""
+
+    text = path.read_text(encoding="utf-8")
+    opened = text.index("install_pre_push_guard() {")
+    return text[opened : text.index("\n}\n\ntarget_pr_branch=", opened) + 3]
+
+
 def _broker_block(path: Path) -> str:
     """The runner's bounded-outcome brokering block, read out of the runner.
 
@@ -1918,6 +1926,59 @@ class PrePushGuardTests(unittest.TestCase):
         self.assertEqual(_pre_push_hook(RUNNER_TEMPLATE), packaged)
         self.assertEqual(self.hook, packaged)
 
+    def test_guard_installation_discards_heads_recorded_by_a_prior_run(self) -> None:
+        branch = "fix/MB-9506-nv-accessible-label"
+        stale_head = "e" * 40
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+        subprocess.run([str(self.git), "init", "-q", str(repo)], check=True,
+                       capture_output=True)
+        ledger = repo / ".git" / "code-mower-lane-guard-pushed"
+        symlink_target = repo / "must-not-be-truncated"
+        symlink_target.write_text("private data\n", encoding="utf-8")
+        ledger.symlink_to(symlink_target)
+        harness = (
+            _pre_push_installer(REPO_RUNNER)
+            + "\n"
+              'work="$1"\n'
+              'LANE="claude"\n'
+              'branch_prefixes_json='"'"'{"claude":["claude/"]}'"'"'\n'
+              f'resolved_branch="{branch}"\n'
+              f'policy_branch_expected_head="{PINNED_HEAD}"\n'
+              'install_pre_push_guard "" "build"\n'
+        )
+        installed = subprocess.run(
+            ["bash", "-c", harness, "install-guard", str(repo)], text=True,
+            capture_output=True, check=False)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertFalse(ledger.is_symlink())
+        self.assertEqual(symlink_target.read_text(encoding="utf-8"), "private data\n")
+        self.assertEqual(ledger.read_text(encoding="utf-8"), "")
+        self.assertEqual(ledger.stat().st_mode & 0o777, 0o600)
+
+        # A second installation replaces the first run's ordinary ledger too.
+        ledger.write_text(f"{branch} {stale_head}\n", encoding="utf-8")
+        installed_again = subprocess.run(
+            ["bash", "-c", harness, "install-guard", str(repo)], text=True,
+            capture_output=True, check=False)
+        self.assertEqual(installed_again.returncode, 0, installed_again.stderr)
+        self.assertEqual(ledger.read_text(encoding="utf-8"), "")
+        self.assertEqual(ledger.stat().st_mode & 0o777, 0o600)
+
+        pushed = subprocess.run(
+            ["bash", str(repo / ".git" / "hooks" / "pre-push"), "origin",
+             "git@github.com:owner/repo.git"],
+            input=f"refs/heads/{branch} {SHA_B} refs/heads/{branch} {stale_head}\n",
+            cwd=str(repo), text=True, capture_output=True, check=False)
+        self.assertEqual(pushed.returncode, 1)
+        self.assertIn("does not match the inspected head", pushed.stderr)
+
+        for path in (RUNNER_TEMPLATE, PACKAGED_RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path):
+                installer = _pre_push_installer(path)
+                self.assertIn('mktemp "${guard_ledger}.new.XXXXXX"', installer)
+                self.assertIn('mv -f "$guard_ledger_tmp" "$guard_ledger"', installer)
+
     def test_a_handoff_push_at_the_pinned_head_is_authorized(self) -> None:
         repo = self._repo(self._config())
         pushed = self._push(repo, branch=HANDED_BRANCH, local=SHA_B, remote=PINNED_HEAD)
@@ -2000,6 +2061,86 @@ class PrePushGuardTests(unittest.TestCase):
         repo = self._repo(self._config(handoff=None, target_pr_branch="codex/other"))
         pushed = self._push(repo, branch="codex/other", local=SHA_B, remote=SHA_A)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
+
+    def test_only_the_exact_resolved_policy_branch_is_writable_without_a_lane_prefix(self) -> None:
+        # The target repository accepts fix/<key>-<slug>. Write authority is the
+        # one branch this unit resolved for its issue, not every name the policy
+        # accepts: another builder's (or a human's) policy branch stays foreign.
+        repo = self._repo(
+            self._config(handoff=None, allowed_branch="fix/MB-9506-nv-accessible-label",
+                         allowed_branch_expected_head=PINNED_HEAD)
+        )
+        pushed = self._push(
+            repo, branch="fix/MB-9506-nv-accessible-label", local=SHA_B, remote=SHA_A
+        )
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        # The resolved branch is the whole allowance: the lane's own prefixes
+        # grant nothing while a policy branch is set (even if a stale config
+        # still lists them), and neither do other branches matching the policy.
+        for foreign in ("claude/751-work", "fix/MB-9506-nv-accessible-labels",
+                        "fix/MB-9507-nv-accessible-label", "fix/MB-9506", "muse/MB-9506-x"):
+            with self.subTest(branch=foreign):
+                pushed = self._push(repo, branch=foreign, local=SHA_B, remote=SHA_A)
+                self.assertEqual(pushed.returncode, 1)
+                self.assertIn(f"refusing claude push to branch {foreign}", pushed.stderr)
+                self.assertIn("policy_branch=fix/MB-9506-nv-accessible-label", pushed.stderr)
+
+    def test_an_existing_policy_branch_is_pinned_to_the_inspected_remote_head(self) -> None:
+        branch = "fix/MB-9506-nv-accessible-label"
+        repo = self._repo(
+            self._config(handoff=None, allowed_branch=branch,
+                         allowed_branch_expected_head=PINNED_HEAD)
+        )
+        exact = self._push(repo, branch=branch, local=SHA_B, remote=PINNED_HEAD)
+        self.assertEqual(exact.returncode, 0, exact.stderr)
+        own_followup = self._push(repo, branch=branch, local="c" * 40, remote=SHA_B)
+        self.assertEqual(own_followup.returncode, 0, own_followup.stderr)
+
+        advanced = self._push(repo, branch=branch, local="d" * 40, remote="e" * 40)
+        self.assertEqual(advanced.returncode, 1)
+        self.assertIn("does not match the inspected head", advanced.stderr)
+
+    def test_an_absent_policy_branch_is_pinned_against_concurrent_recreation(self) -> None:
+        branch = "fix/MB-9506-nv-accessible-label"
+        repo = self._repo(
+            self._config(handoff=None, allowed_branch=branch,
+                         allowed_branch_expected_head="absent")
+        )
+        created = self._push(repo, branch=branch, local=SHA_B, remote="0" * 40)
+        self.assertEqual(created.returncode, 0, created.stderr)
+        own_followup = self._push(repo, branch=branch, local="c" * 40, remote=SHA_B)
+        self.assertEqual(own_followup.returncode, 0, own_followup.stderr)
+
+        raced = self._repo(
+            self._config(handoff=None, allowed_branch=branch,
+                         allowed_branch_expected_head="absent")
+        )
+        recreated = self._push(raced, branch=branch, local=SHA_B, remote=PINNED_HEAD)
+        self.assertEqual(recreated.returncode, 1)
+        self.assertIn("inspected head absent", recreated.stderr)
+
+    def test_a_policy_branch_without_an_observed_head_pin_is_refused(self) -> None:
+        branch = "fix/MB-9506-nv-accessible-label"
+        repo = self._repo(self._config(handoff=None, allowed_branch=branch))
+        pushed = self._push(repo, branch=branch, local=SHA_B, remote=PINNED_HEAD)
+        self.assertEqual(pushed.returncode, 1)
+        self.assertIn("records no observed remote head", pushed.stderr)
+
+    def test_a_policy_pattern_in_the_guard_config_grants_nothing(self) -> None:
+        # A general regex is a description of acceptable names, never authority.
+        pattern = r"fix/[A-Za-z0-9][A-Za-z0-9_-]*(?:-[a-z0-9][a-z0-9-]*)?"
+        repo = self._repo(self._config(handoff=None, allowed_pattern=pattern))
+        pushed = self._push(
+            repo, branch="fix/MB-9506-nv-accessible-label", local=SHA_B, remote=SHA_A
+        )
+        self.assertEqual(pushed.returncode, 1)
+        self.assertNotIn("allowed_pattern", self.hook)
+        self.assertNotIn('test("^(?:" + $pattern', self.hook)
+
+    def test_without_a_policy_only_lane_prefixes_authorize(self) -> None:
+        repo = self._repo(self._config(handoff=None))
+        pushed = self._push(repo, branch="fix/MB-9506-x", local=SHA_B, remote=SHA_A)
+        self.assertEqual(pushed.returncode, 1)
 
     def test_a_non_branch_ref_is_refused(self) -> None:
         repo = self._repo(self._config())
