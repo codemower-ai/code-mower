@@ -1156,10 +1156,10 @@ class ProviderLaunchTests(TemporaryWorkspace):
             return ("/sandbox",)
 
         def fake_popen(argv, **kwargs):
-            written = request.source_root / ".graphify"
+            written = request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY
             written.mkdir(exist_ok=True)
-            (written / "graph.bin").write_bytes(b"graph-bytes")
-            (written / "manifest.json").write_text(json.dumps(FINISHED_REPORT), encoding="utf-8")
+            (written / "graph.json").write_text("{}", encoding="utf-8")
+            (written / "manifest.json").write_text(json.dumps(FINISHED_MANIFEST), encoding="utf-8")
             return FakeChild()
 
         with stand_in_containment(("/sandbox",)):
