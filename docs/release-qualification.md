@@ -796,3 +796,22 @@ Token, endpoint, and identity resolution are the shared cloud ones:
 including `code-mower cloud setup` profiles. Uploading one result file at a time
 with `code-mower cloud dogfood --event adoption_run=path/to/result.json`
 still works and produces the same event ids.
+
+## Independent operational acceptance observations
+
+Use the [local operational evidence record](operational-evidence.md) to keep
+implementation completion, actual provider exit/quiescence, exact-head eligible
+review/CI/gate, published-artifact inclusion, usage settlement, metadata storage,
+and fresh aggregate visibility separate. `code-mower release evidence --input
+acceptance.json --json` reports the explicit local observations without polling,
+retrying, uploading, or granting authority. Use repeated `--require` flags for the
+current acceptance conditions; a valid diagnostic report alone is not release
+approval. `code-mower doctor --operational-evidence acceptance.json` includes the
+same checks in doctor output.
+
+A logical completed session is not provider exit, an unsettled usage snapshot is
+not settled cost, and accepted metadata is not a fresh hosted view. Keep unavailable
+settlement explicit rather than waiting indefinitely or recording zero. Verify
+source freshness and actual published-package inclusion before closing the
+corresponding release checks; preserve a user-cancelled-before-delivery outcome as
+such. This record remains local and introduces no cloud event fields.
