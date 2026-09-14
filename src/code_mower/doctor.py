@@ -41,6 +41,7 @@ _auth_probe_output_detail = _doctor_checks.auth_probe_output_detail
 _check_cloud_token_surface = _doctor_checks.check_cloud_token_surface
 _evaluate_json_probe = _doctor_checks.evaluate_json_probe
 _local_cli_probe_remediation = _doctor_checks.local_cli_probe_remediation
+render_doctor_summary = _doctor_checks.render_doctor_summary
 render_doctor_text = _doctor_checks.render_doctor_text
 resolve_doctor_config_path = _doctor_checks.resolve_doctor_config_path
 resolve_doctor_config_path_for_script = _doctor_checks.resolve_doctor_config_path_for_script
@@ -301,6 +302,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--operational-evidence", type=Path,
         help="Include closed local acceptance observations; never polls, retries or uploads",
     )
+    detail_group = parser.add_mutually_exclusive_group()
+    detail_group.add_argument(
+        "--concise",
+        action="store_true",
+        help=(
+            "render a posture-scoped summary: every check still runs, but text "
+            "output leads with active failures and owner actions and counts the "
+            "remaining warnings by group"
+        ),
+    )
+    detail_group.add_argument(
+        "--advanced",
+        action="store_true",
+        help="render every check in the text output (the default detail level)",
+    )
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -385,8 +401,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),)
         report = replace(report, checks=report.checks + evidence_checks)
 
+    # JSON keeps the complete report, and the explicit advanced and campaign
+    # modes keep the full text view: a concise run only changes what a default
+    # text run reads first.
+    concise = args.concise and not args.advanced and not args.campaign
     if args.json:
         print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
+    elif concise:
+        print(render_doctor_summary(report), end="")
     else:
         print(render_doctor_text(report), end="")
     if report.failures:

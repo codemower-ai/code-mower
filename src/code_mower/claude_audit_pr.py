@@ -1943,7 +1943,14 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         or _env_flag("CLAUDE_AUDIT_NO_SPEND_CAPTURE"),
         help="do not append this audit run to reviewer-spend.json",
     )
-    posture_default = _env_flag_default("CLAUDE_AUDIT_MERGE_AUTHORITY", True)
+    # Unset means "render the posture this repository actually configures".
+    # An explicit flag or env override stays authoritative, so an operator can
+    # still state a posture for a checkout that configures no lanes.
+    posture_default = (
+        _env_flag_default("CLAUDE_AUDIT_MERGE_AUTHORITY", True)
+        if os.environ.get("CLAUDE_AUDIT_MERGE_AUTHORITY") is not None
+        else None
+    )
     ap.add_argument(
         "--merge-authority",
         dest="merge_authority",
@@ -1956,6 +1963,14 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         dest="merge_authority",
         action="store_false",
         help="Render audit comments as informational-only lane comments.",
+    )
+    ap.add_argument(
+        "--code-mower-config",
+        default=os.environ.get("CODE_MOWER_CONFIG") or None,
+        help=(
+            "repository configuration whose review lane decides the rendered "
+            "posture; defaults to code-mower.yml in the audited checkout"
+        ),
     )
     ap.add_argument(
         "--calibration-badge",
@@ -2019,6 +2034,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         repo_paths = _parse_repo_paths(args.repo_paths)
         _validate_repo_path_for_wrapper(repo_paths, args.repo)
+        from code_mower import review_authority as code_mower_review_authority
+
+        posture = code_mower_review_authority.effective_merge_authority(
+            "claude",
+            config_path=args.code_mower_config,
+            repo_root=repo_paths.get(args.repo),
+            override=args.merge_authority,
+        )
+        print(
+            "  review authority: "
+            f"{posture['label']} ({posture['policy_source']}/{posture['reason']})",
+            file=sys.stderr,
+            flush=True,
+        )
         config = ClaudeAuditConfig(
             github_token=token,
             repo_paths=repo_paths,
@@ -2041,7 +2070,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             max_plan_context_bytes=args.max_plan_context_bytes,
             max_plan_context_file_bytes=args.max_plan_context_file_bytes,
             include_decision_context=not args.no_decision_context,
-            merge_authority=args.merge_authority,
+            merge_authority=posture["merge_authority"],
             calibration_badge=args.calibration_badge,
         )
         result = audit_pr(config, args.repo, args.pr)
