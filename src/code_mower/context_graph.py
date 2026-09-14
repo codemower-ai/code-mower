@@ -31,7 +31,7 @@ MAX_GRAPH_CITATIONS = 200
 #: these means the graph escaped the immutable checkout it was asked to index.
 #: Compared case-folded: on a case-insensitive filesystem (APFS and NTFS by
 #: default) ``.GIT/config`` names the same directory as ``.git/config``.
-_EXCLUDED_ROOTS = frozenset({".git", ".graph", ".graphify", ".code-mower"})
+_EXCLUDED_ROOTS = frozenset({".git", ".graph", ".graphify", "graphify-out", ".code-mower"})
 
 
 def _names_private_state(parts: Iterable[str]) -> bool:

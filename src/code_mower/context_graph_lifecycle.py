@@ -68,10 +68,11 @@ import sys
 import tarfile
 import tempfile
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from .context_contract import ContextError, _identifier, _text, _timestamp
@@ -114,15 +115,32 @@ MAX_SKIPPED_PATHS = MAX_TRACKED_FILES
 _REGULAR_MODES = frozenset({"100644", "100755"})
 _SKIPPED_MODES = {"120000": "symlink", "160000": "submodule"}
 
-#: Where the provider keeps its own index state. Both names are on the
-#: excluded-roots list in ``context_graph``, and a repository is free to track
-#: either of them -- a committed ``.graph/`` is somebody else's graph, or an
-#: earlier incremental cache of this one. Neither may be materialized: the
+#: Where the pinned provider actually writes. Read off ``graphify/paths.py`` at
+#: the evaluated pin rather than assumed: ``GRAPHIFY_OUT`` defaults to the
+#: literal ``graphify-out`` and every output path is built from it, so an
+#: unmodified ``extract`` run in the materialized copy leaves
+#: ``graphify-out/graph.json`` and ``graphify-out/manifest.json`` beneath the
+#: scan target. The environment override that constant reads is deliberately
+#: *not* honoured here: the child is given a fixed environment, and an output
+#: root this adapter did not choose is a root it cannot bound to the copy.
+_PROVIDER_OUTPUT_DIRECTORY = "graphify-out"
+
+#: The document the ``--no-cluster`` branch dumps, and the provider's own record
+#: of which inputs it processed. Exactly these two names are read; a run that
+#: leaves something else has not produced the evidence this adapter classifies.
+_PROVIDER_GRAPH_NAME = "graph.json"
+_PROVIDER_MANIFEST_NAME = "manifest.json"
+
+#: Where the provider keeps its own index state or output. All three names are
+#: on the excluded-roots list in ``context_graph``, and a repository is free to
+#: track any of them -- a committed ``.graph/`` is somebody else's graph, a
+#: committed ``graphify-out/`` is an earlier build's published output, and
+#: ``.graphify/`` is an incremental cache. None may be materialized: the
 #: provider would then resume from a cache built over content this build never
 #: saw, and the adapter would collect tracked repository bytes as if the
 #: provider had just produced them, binding stale contents to a fresh commit.
 #: Matched at any depth and case-folded, for the same reasons ``.git`` is.
-_PROVIDER_STATE_DIRECTORIES = (".graphify", ".graph")
+_PROVIDER_STATE_DIRECTORIES = (_PROVIDER_OUTPUT_DIRECTORY, ".graphify", ".graph")
 _PROVIDER_STATE_ROOTS = frozenset(name.casefold() for name in _PROVIDER_STATE_DIRECTORIES)
 
 #: The evidence contract's excluded roots, bound rather than copied. One module
@@ -1330,6 +1348,13 @@ class IndexRequest:
     #: directory the environment points at but the sandbox does not expose is a
     #: provider that cannot start.
     writable: tuple[Path, ...] = ()
+    #: The census the copy was materialized from -- the denominator completeness
+    #: is measured against. Carried on the request rather than re-read from the
+    #: copy after the run, because by then the provider has written into that
+    #: tree: the question is what this build *gave* the provider, and only the
+    #: census is immutable evidence of that. A request without one cannot be
+    #: classified as complete, which is the safe direction.
+    census: TrackedCensus | None = None
 
 
 @dataclass(frozen=True)
@@ -2203,31 +2228,39 @@ _PROVIDER_EXTRACT = "extract"
 #: could.
 _PROVIDER_SCAN_TARGET = "."
 
-#: The provider's own record of what it processed. Completeness is read from
-#: here, never inferred from an exit status: the clean-room run recorded 54
-#: manifest entries requeued by a repeat that exited zero in 1.63 s.
-_PROVIDER_REPORT_NAMES = ("manifest.json", "index.json", "report.json")
+#: The extensions the pinned provider's own ``detect.CODE_EXTENSIONS`` treats as
+#: code, transcribed from the hash-verified 0.9.58 wheel. This is the
+#: denominator's definition and it has to be the provider's, not a plausible
+#: one: a build is complete when every input the provider itself would dispatch
+#: was processed, and holding it to every tracked documentation file instead
+#: would make a correct run permanently partial. Nothing outside this set is
+#: counted against the run -- those inputs are deterministically not code to
+#: this pin, so they are skipped rather than missing.
+_PROVIDER_CODE_EXTENSIONS = frozenset({
+    ".py", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".ejs",
+    ".ets", ".go", ".rs", ".java", ".groovy", ".gradle", ".cpp", ".cc", ".cxx",
+    ".c", ".h", ".hpp", ".cu", ".cuh", ".metal", ".rb", ".rake", ".swift",
+    ".kt", ".kts", ".cs", ".scala", ".php", ".lua", ".luau", ".toc", ".zig",
+    ".ps1", ".psm1", ".psd1", ".ex", ".exs", ".m", ".mm", ".ml", ".mli", ".jl",
+    ".vue", ".svelte", ".astro", ".dart", ".v", ".sv", ".svh", ".sql", ".r",
+    ".f", ".F", ".f90", ".F90", ".f95", ".F95", ".f03", ".F03", ".f08", ".F08",
+    ".pas", ".pp", ".dpr", ".dpk", ".lpr", ".inc", ".dfm", ".lfm", ".lpk",
+    ".sh", ".bash", ".json", ".tf", ".tfvars", ".hcl", ".dm", ".dme", ".dmi",
+    ".dmm", ".dmf", ".sln", ".slnx", ".csproj", ".fsproj", ".vbproj", ".xaml",
+    ".razor", ".cshtml", ".cls", ".trigger", ".lisp", ".cl", ".lsp", ".asd",
+    ".robot", ".resource",
+})
 
-#: Counters whose presence above zero means the provider did not finish. Any
-#: one of them, not all: a report that admits requeued entries is a partial
-#: build however healthy the rest of it looks.
-_INCOMPLETE_COUNTERS = ("requeued", "pending", "failed", "errors", "incomplete")
+#: A manifest row's content hash, as the pin computes it: ``_md5_file`` streams
+#: the file and returns a hex digest, or the empty string when the read failed.
+#: So a well-formed 32-character digest is the provider's own statement that it
+#: read those bytes, and anything else -- blank, short, uppercase, non-string --
+#: is a row that proves nothing about the file it names.
+_MANIFEST_HASH = re.compile(r"[0-9a-f]{32}\Z")
 
-#: Where the provider reports how many files it actually indexed.
-_INDEXED_COUNTERS = ("indexed_files", "code_files", "files", "entries")
-
-#: An affirmative claim that the run finished, in either shape a report can
-#: carry one. Nothing else counts: an empty object, or one whose schema this
-#: adapter does not recognize, says nothing about completion and is therefore
-#: not evidence of it.
-_COMPLETION_FLAGS = ("complete", "completed", "finished")
-#: Narrow on purpose: a field that names the run's state, not one that might
-#: carry a path or a message, so an unrecognized value here is a real
-#: non-completion rather than an adapter that read the wrong field.
-_COMPLETION_STATUS_FIELDS = ("status", "state")
-_COMPLETION_STATUS_VALUES = frozenset(
-    {"complete", "completed", "success", "succeeded", "ok", "finished", "done"}
-)
+#: The row fields the pinned ``save_manifest`` writes. Read as a shape check
+#: only: a mapping missing them is not the document this adapter can classify.
+_MANIFEST_ROW_FIELDS = ("mtime", "seen", "ast_hash", "semantic_hash")
 
 
 def _refuse_pre_existing_provider_state(source_root: Path) -> None:
@@ -2249,111 +2282,166 @@ def _refuse_pre_existing_provider_state(source_root: Path) -> None:
             )
 
 
-def _provider_state_directory(source_root: Path) -> Path:
-    """The state directory the provider wrote during this run.
+def _provider_output_directory(source_root: Path) -> Path:
+    """The output root the provider wrote during this run.
 
-    Only reachable after ``_refuse_pre_existing_provider_state``, so whichever
-    of the two names is present was created by the run that just finished.
+    Exactly one name is collected -- the pin's own ``graphify-out`` -- and it is
+    resolved beneath the materialized copy, never from a path or an environment
+    variable a caller could supply. Only reachable after
+    ``_refuse_pre_existing_provider_state``, so what is found here was created
+    by the run that just finished.
+
+    A second provider root beside it is refused rather than ignored. This
+    adapter cannot tell which of two roots a generation should be cut from, and
+    picking one would publish an artifact whose provenance is a guess; a
+    ``.graphify/`` that appeared next to ``graphify-out/`` also says the run did
+    something other than the single contained extraction that was launched.
     """
-    for name in _PROVIDER_STATE_DIRECTORIES:
-        candidate = source_root / name
-        if candidate.is_dir() and not candidate.is_symlink():
-            return candidate
-    raise ContextError("local graph provider wrote no index state; no generation was published")
+    directory = source_root / _PROVIDER_OUTPUT_DIRECTORY
+    competing = [
+        name
+        for name in _PROVIDER_STATE_DIRECTORIES
+        if name != _PROVIDER_OUTPUT_DIRECTORY
+        and ((source_root / name).exists() or (source_root / name).is_symlink())
+    ]
+    if competing:
+        raise ContextError(
+            "local graph provider wrote more than one output root; no generation was published"
+        )
+    if directory.is_symlink() or not directory.is_dir():
+        raise ContextError("local graph provider wrote no output; no generation was published")
+    graph = directory / _PROVIDER_GRAPH_NAME
+    if graph.is_symlink() or not graph.is_file():
+        raise ContextError(
+            "local graph provider left no graph document; no generation was published"
+        )
+    return directory
 
 
-def _provider_report(state_directory: Path) -> Mapping[str, Any] | None:
-    """The provider's completion evidence, or ``None`` if it left none.
+def _provider_manifest(output_directory: Path) -> Mapping[str, Any] | None:
+    """The provider's own record of what it processed, or ``None`` if unreadable.
 
-    Bounded at the stream, not after the fact: the report is provider output of
-    unknown size, and reading it whole to slice it afterwards would let it
+    Bounded at the stream, not after the fact: the manifest is provider output
+    of unknown size, and reading it whole to slice it afterwards would let it
     exhaust this process before any budget was consulted. Anything longer than
     a manifest is rejected outright rather than parsed from a prefix, which
     would be a different document than the one the provider wrote.
     """
-    for name in _PROVIDER_REPORT_NAMES:
-        path = state_directory / name
-        if not path.is_file() or path.is_symlink():
-            continue
-        try:
-            with path.open("rb") as stream:
-                raw = stream.read(MAX_MANIFEST_BYTES + 1)
-        except OSError:
-            return None
-        if len(raw) > MAX_MANIFEST_BYTES:
-            return None
-        try:
-            payload = json.loads(raw)
-        except ValueError:
-            return None
-        return payload if isinstance(payload, Mapping) else None
-    return None
+    path = output_directory / _PROVIDER_MANIFEST_NAME
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_MANIFEST_BYTES + 1)
+    except OSError:
+        return None
+    if len(raw) > MAX_MANIFEST_BYTES:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, Mapping) else None
 
 
-def _completion_claim(report: Mapping[str, Any]) -> bool | None:
-    """``True`` finished, ``False`` denied it, ``None`` said nothing either way."""
-    claim: bool | None = None
-    for name in _COMPLETION_FLAGS:
-        value = report.get(name)
-        if value is True:
-            claim = True
-        elif value is False:
-            return False
-    for field in _COMPLETION_STATUS_FIELDS:
-        value = report.get(field)
-        if not isinstance(value, str):
-            continue
-        if value.strip().casefold() in _COMPLETION_STATUS_VALUES:
-            claim = True
-        else:
-            # A status the adapter does not recognize is not a completion.
-            return False
-    return claim
+def _eligible_code_inputs(census: TrackedCensus) -> tuple[str, ...]:
+    """The census paths this pin would dispatch, in census order.
+
+    Case is tried both ways because the pin's set carries both ``.f90`` and
+    ``.F90``: matching the spelling first and the lower-cased suffix second can
+    only widen the denominator, which is the direction that refuses rather than
+    over-claims.
+    """
+    eligible: list[str] = []
+    for entry in census.entries:
+        suffix = PurePosixPath(entry.path).suffix
+        if suffix in _PROVIDER_CODE_EXTENSIONS or suffix.lower() in _PROVIDER_CODE_EXTENSIONS:
+            eligible.append(entry.path)
+    return tuple(eligible)
 
 
-def _indexed_count(report: Mapping[str, Any]) -> int | None:
-    """How many files the provider says it indexed, if it says at all."""
-    for counter in _INDEXED_COUNTERS:
-        value = report.get(counter)
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            return value
-    return None
+def _read_completeness(
+    manifest: Mapping[str, Any] | None, census: TrackedCensus | None
+) -> IndexResult:
+    """Classify a provider run against its own manifest, defaulting to partial.
 
+    The pinned ``save_manifest`` writes a flat mapping of repository-relative
+    POSIX path to ``{mtime, seen, ast_hash, semantic_hash}``. It is not a
+    completion report and carries no flag or count, so completeness is a
+    coverage question: did every input this pin would dispatch come back with a
+    hash proving the provider read its bytes?
 
-def _read_completeness(report: Mapping[str, Any] | None) -> IndexResult:
-    """Classify a provider run from its own report, defaulting to partial.
+    The denominator is the immutable materialized census narrowed to the pin's
+    own code extensions. Inputs outside that set are deterministically not code
+    to this pin and are skipped, not missing. Everything else is counted, and a
+    file is processed only when its row carries a well-formed ``ast_hash``. The
+    pin blanks that field on exactly the cases an operator needs to hear about:
+    ``clear_ast`` zeroes both hashes for an extractor error or an anomalous
+    zero-node extract, so a requeued file is a blank row rather than an absent
+    one. The clean-room run's 54 requeued entries -- from a repeat that exited
+    zero in 1.63 s -- are that shape, and they stay partial here.
 
-    Absent or unreadable evidence is *not* evidence of a complete build, and
-    neither is a readable report that says nothing. ``complete`` is reached
-    only by a report shaped the way this adapter understands one: an
-    affirmative completion claim, a count of what was indexed, and no counter
-    admitting work left over. An empty object, an unrecognized schema, and a
-    document that happens to parse all stay ``partial``, which
+    Nothing upgrades a run: the exit status, a non-empty graph, and the raw
+    extraction's ``extracted_sources`` are all statements about what was
+    *dispatched*, failures included, so none of them is success evidence. A
+    hash proves processed bytes, not that anything was understood; zero nodes
+    for a file whose row is stamped is still a complete read of that file, and
+    an unstamped one is partial however large the graph is. Missing evidence,
+    an unparseable manifest, a shape this adapter does not recognize, and a row
+    that cannot be told apart from a failure all stay ``partial``, which
     ``graph_status`` refuses by default. The provider owns no provenance (the
     evaluation records this as the first product constraint), so that refusal
     is the failure an operator can act on; silently calling it complete is the
     one they cannot.
     """
-    if report is None:
-        return IndexResult(completeness=PARTIAL, notes=("provider left no readable completion report",))
+    if census is None:
+        return IndexResult(
+            completeness=PARTIAL,
+            notes=("build recorded no census to check the provider's manifest against",),
+        )
+    if manifest is None:
+        return IndexResult(
+            completeness=PARTIAL,
+            notes=("provider left no readable manifest of what it processed",),
+        )
+    eligible = _eligible_code_inputs(census)
+    rows: dict[str, Any] = {}
+    malformed_rows = 0
+    for key, row in manifest.items():
+        if not isinstance(key, str):
+            malformed_rows += 1
+            continue
+        if not isinstance(row, Mapping) or any(
+            field not in row for field in _MANIFEST_ROW_FIELDS
+        ):
+            malformed_rows += 1
+            continue
+        rows[unicodedata.normalize("NFC", key)] = row
+    missing = 0
+    unstamped = 0
+    processed = 0
+    for path in eligible:
+        row = rows.get(unicodedata.normalize("NFC", path))
+        if row is None:
+            missing += 1
+            continue
+        digest = row.get("ast_hash")
+        if isinstance(digest, str) and _MANIFEST_HASH.fullmatch(digest):
+            processed += 1
+        else:
+            unstamped += 1
     notes: list[str] = []
-    for counter in _INCOMPLETE_COUNTERS:
-        value = report.get(counter)
-        if value is True:
-            notes.append(f"provider reported {counter}")
-        elif isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            notes.append(f"provider reported {value} {counter}")
-    claim = _completion_claim(report)
-    if claim is False:
-        notes.append("provider did not report the extraction as complete")
-    elif claim is None:
-        notes.append("provider report carried no completion claim")
-    indexed = _indexed_count(report)
-    if indexed is None:
-        notes.append("provider report did not say how many files it indexed")
+    if malformed_rows:
+        notes.append(f"provider manifest carried {malformed_rows} unreadable records")
+    if missing:
+        notes.append(f"provider manifest does not account for {missing} code files")
+    if unstamped:
+        notes.append(f"provider left {unstamped} code files unprocessed or requeued")
+    if not eligible:
+        notes.append("the census carried no code files this provider would index")
     if notes:
-        return IndexResult(completeness=PARTIAL, indexed_files=indexed or 0, notes=tuple(notes))
-    return IndexResult(completeness=COMPLETE, indexed_files=indexed)
+        return IndexResult(completeness=PARTIAL, indexed_files=processed, notes=tuple(notes))
+    return IndexResult(completeness=COMPLETE, indexed_files=processed)
 
 
 class _BoundedBuffer(io.BytesIO):
@@ -2695,9 +2783,9 @@ def subprocess_indexer(
             raise ContextError("local graph provider could not be run from its pinned install") from None
         if returncode != 0:
             raise ContextError("local graph provider failed; no generation was published")
-        state_directory = _provider_state_directory(request.source_root)
-        result = _read_completeness(_provider_report(state_directory))
-        _write_private_file(request.output_path, _pack_state(state_directory))
+        output_directory = _provider_output_directory(request.source_root)
+        result = _read_completeness(_provider_manifest(output_directory), request.census)
+        _write_private_file(request.output_path, _pack_state(output_directory))
         return result
 
     return run
@@ -3558,6 +3646,9 @@ def build_graph(
                     # at, so what the provider is told to use and what it is
                     # allowed to write are one decision rather than two.
                     writable=(home, temporary),
+                    # The very census those bytes were written from, so the
+                    # indexer measures coverage against what it was given.
+                    census=census,
                 )
             )
             if not isinstance(result, IndexResult) or result.completeness not in (COMPLETE, PARTIAL):

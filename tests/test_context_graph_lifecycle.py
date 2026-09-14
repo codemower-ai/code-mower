@@ -1015,9 +1015,31 @@ class NetworkIsolationTests(unittest.TestCase):
         self.assertEqual(calls, [()])
 
 
-#: What a provider that finished leaves behind: a completion claim and counts
-#: that admit nothing outstanding.
-FINISHED_REPORT = {"complete": True, "code_files": 3, "requeued": 0}
+#: The census a launch fixture indexes: one Python file, one Markdown file.
+#: Only the first is a code input to the pin, so only the first is the
+#: denominator completeness is measured against.
+CODE_INPUT = "src/app.py"
+DOC_INPUT = "docs/guide.md"
+
+
+def census_of(*paths: str) -> lifecycle.TrackedCensus:
+    """A census naming ``paths``, shaped the way ``read_tracked_census`` does."""
+    entries = tuple(
+        lifecycle.TrackedEntry(path=path, mode="100644", blob="0" * 40, size=1)
+        for path in paths
+    )
+    return lifecycle.TrackedCensus(entries=entries, skipped=(), digest="0" * 64)
+
+
+def manifest_row(digest: str = "a" * 32) -> dict:
+    """One ``save_manifest`` row, in the pin's own shape."""
+    return {"mtime": 1.0, "seen": 2.0, "ast_hash": digest, "semantic_hash": digest}
+
+
+#: What a provider that processed every code input leaves behind: a row per
+#: dispatched file, each carrying the content hash that proves its bytes were
+#: read. No completion flag and no count -- the pinned manifest has neither.
+FINISHED_MANIFEST = {CODE_INPUT: manifest_row()}
 
 
 class ProviderLaunchTests(TemporaryWorkspace):
@@ -1061,6 +1083,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             pin=pin,
             commit="a" * 40,
             tree="b" * 40,
+            census=census_of(CODE_INPUT, DOC_INPUT),
         )
 
     def run_indexer(
@@ -1068,15 +1091,15 @@ class ProviderLaunchTests(TemporaryWorkspace):
         executable: str,
         *,
         sandbox=("/sandbox", "--deny"),
-        report: object = FINISHED_REPORT,
-        state_directory: str = ".graphify",
+        report: object = FINISHED_MANIFEST,
+        state_directory: str = lifecycle._PROVIDER_OUTPUT_DIRECTORY,
         pin: lifecycle.GraphifyPin = PIN,
     ) -> tuple[list[str], lifecycle.IndexResult]:
         """Launch the adapter with the provider's side of the contract faked.
 
-        ``extract`` writes its state beside the sources it was run over, so the
-        stand-in has to leave that state behind for the adapter to collect --
-        an exit status alone is not a finished build.
+        ``extract`` writes ``graphify-out/`` beneath the tree it was run over,
+        so the stand-in has to leave that output behind for the adapter to
+        collect -- an exit status alone is not a finished build.
         """
         request = self.request(pin)
         recorded: list[list[str]] = []
@@ -1090,7 +1113,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             if state_directory:
                 written = request.source_root / state_directory
                 written.mkdir(exist_ok=True)
-                (written / "graph.bin").write_bytes(b"graph-bytes")
+                (written / "graph.json").write_text("{}", encoding="utf-8")
                 if report is not None:
                     (written / "manifest.json").write_text(json.dumps(report), encoding="utf-8")
             return FakeChild()
@@ -1262,9 +1285,11 @@ class ProviderLaunchTests(TemporaryWorkspace):
     def test_the_collected_artifact_holds_the_state_the_provider_wrote(self) -> None:
         _, result = self.run_indexer("graphify")
         self.assertEqual(result.completeness, lifecycle.COMPLETE)
-        self.assertEqual(result.indexed_files, 3)
+        # One of the two census files is a code input to this pin; the Markdown
+        # file is not, so it is skipped rather than counted against the run.
+        self.assertEqual(result.indexed_files, 1)
         names = self.archived_names(self.artifacts[-1].read_bytes())
-        self.assertIn("graph.bin", names)
+        self.assertIn("graph.json", names)
 
     def archived_names(self, artifact: bytes) -> list[str]:
         with tarfile.open(fileobj=io.BytesIO(artifact), mode="r") as archive:
@@ -1309,30 +1334,145 @@ class ProviderLaunchTests(TemporaryWorkspace):
         with self.assertRaises(ContextError):
             self.run_indexer("graphify", state_directory="")
 
+    def test_the_output_is_collected_from_the_root_the_pin_actually_writes(self) -> None:
+        """``graphify-out/``, not a name this adapter would have preferred.
+
+        The pin builds every output path from ``GRAPHIFY_OUT``, whose default is
+        the literal ``graphify-out``, so a collector that only accepted
+        ``.graphify``/``.graph`` found nothing after a real run and refused
+        every generation the adopted path can produce.
+        """
+        _, result = self.run_indexer("graphify")
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        with self.assertRaises(ContextError):
+            self.run_indexer("graphify", state_directory=".graphify")
+
+    def test_a_second_output_root_beside_the_real_one_publishes_nothing(self) -> None:
+        """Two roots means the provenance of a generation would be a guess."""
+        request = self.request()
+
+        def fake_popen(argv, **kwargs):
+            for name in (lifecycle._PROVIDER_OUTPUT_DIRECTORY, ".graphify"):
+                written = request.source_root / name
+                written.mkdir(exist_ok=True)
+                (written / "graph.json").write_text("{}", encoding="utf-8")
+            return FakeChild()
+
+        with stand_in_containment(("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                with self.assertRaises(ContextError):
+                    indexer(request)
+
+    def test_a_symlinked_output_root_publishes_nothing(self) -> None:
+        """A link names a directory outside the copy; the boundary is the copy."""
+        request = self.request()
+        elsewhere = Path(tempfile.mkdtemp(dir=self.root))
+        (elsewhere / "graph.json").write_text("{}", encoding="utf-8")
+
+        def fake_popen(argv, **kwargs):
+            (request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY).symlink_to(elsewhere)
+            return FakeChild()
+
+        with stand_in_containment(("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                with self.assertRaises(ContextError):
+                    indexer(request)
+
+    def test_an_output_root_without_a_graph_document_publishes_nothing(self) -> None:
+        request = self.request()
+
+        def fake_popen(argv, **kwargs):
+            written = request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY
+            written.mkdir(exist_ok=True)
+            (written / "manifest.json").write_text("{}", encoding="utf-8")
+            return FakeChild()
+
+        with stand_in_containment(("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                with self.assertRaises(ContextError):
+                    indexer(request)
+
     def test_a_successful_run_with_requeued_entries_is_partial(self) -> None:
-        # The defect the clean-room run recorded: a repeat that exits zero in
-        # 1.63 s having requeued 54 entries has not built a complete graph.
-        _, result = self.run_indexer("graphify", report={"complete": True, "files": 429, "requeued": 54})
-        self.assertEqual(result.completeness, lifecycle.PARTIAL)
-        self.assertIn("54 requeued", " ".join(result.notes))
+        """The defect the clean-room run recorded, in the shape the pin writes it.
 
-    def test_a_provider_that_denies_completion_is_partial(self) -> None:
-        _, result = self.run_indexer("graphify", report={"complete": False, "files": 10})
+        A repeat that exits zero in 1.63 s having requeued 54 entries has not
+        built a complete graph. The pin records a requeue by blanking the row's
+        hashes -- ``clear_ast`` does exactly that for an extractor error or an
+        anomalous zero-node extract -- so a blank ``ast_hash`` is the evidence,
+        not a ``requeued`` counter the pinned manifest has never carried.
+        """
+        requeued = {CODE_INPUT: {"mtime": 1.0, "seen": 2.0, "ast_hash": "", "semantic_hash": ""}}
+        _, result = self.run_indexer("graphify", report=requeued)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("1 code files unprocessed or requeued", " ".join(result.notes))
+        self.assertEqual(result.indexed_files, 0)
 
-    def test_a_run_that_left_no_report_is_partial_rather_than_complete(self) -> None:
+    def test_a_code_input_the_manifest_never_names_is_partial(self) -> None:
+        """Silence about a file is not a claim that it was indexed."""
+        _, result = self.run_indexer("graphify", report={})
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("does not account for 1 code files", " ".join(result.notes))
+
+    def test_a_non_code_input_is_skipped_rather_than_counted_against_the_run(self) -> None:
+        """The denominator is the pin's own code set, not every tracked file.
+
+        ``docs/guide.md`` is deterministically not code to this pin, so a run
+        that never touches it is still complete. Holding a correct run to every
+        tracked documentation file would make it permanently partial.
+        """
+        _, result = self.run_indexer("graphify")
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertNotIn(DOC_INPUT, json.dumps(FINISHED_MANIFEST))
+
+    def test_a_malformed_manifest_record_is_partial_rather_than_complete(self) -> None:
+        """A row this adapter cannot read is indistinguishable from a failure."""
+        malformed = (
+            {CODE_INPUT: "not a row"},
+            {CODE_INPUT: {"ast_hash": "a" * 32}},
+            {CODE_INPUT: manifest_row("A" * 32)},
+            {CODE_INPUT: manifest_row("short")},
+            {CODE_INPUT: dict(manifest_row(), ast_hash=None)},
+        )
+        for report in malformed:
+            with self.subTest(report=report):
+                _, result = self.run_indexer("graphify", report=report)
+                self.assertEqual(result.completeness, lifecycle.PARTIAL)
+                self.assertTrue(result.notes)
+
+    def test_a_manifest_listing_every_code_input_with_a_hash_is_complete(self) -> None:
+        """Hashes prove processed bytes, which is what completeness claims.
+
+        Nothing else upgrades a run: the exit status is zero in every case here,
+        and the graph document is ``{}`` -- an empty graph with every input
+        stamped is a complete read, and a full graph with one input unstamped is
+        not.
+        """
+        _, result = self.run_indexer("graphify", report={CODE_INPUT: manifest_row("b" * 32)})
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, 1)
+
+    def test_a_request_without_a_census_cannot_be_complete(self) -> None:
+        """There is no denominator, so there is no coverage claim to make."""
+        self.assertEqual(
+            lifecycle._read_completeness(FINISHED_MANIFEST, None).completeness, lifecycle.PARTIAL
+        )
+
+    def test_a_run_that_left_no_manifest_is_partial_rather_than_complete(self) -> None:
         # Exit status zero is not completion evidence. Absent evidence resolves
         # to the state ``graph_status`` refuses, not the one it accepts.
         _, result = self.run_indexer("graphify", report=None)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
 
-    def test_an_unparseable_report_is_partial_rather_than_complete(self) -> None:
+    def test_an_unparseable_manifest_is_partial_rather_than_complete(self) -> None:
         request = self.request()
 
         def fake_popen(argv, **kwargs):
-            written = request.source_root / ".graph"
+            written = request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY
             written.mkdir(exist_ok=True)
-            (written / "graph.bin").write_bytes(b"graph-bytes")
+            (written / "graph.json").write_text("{}", encoding="utf-8")
             (written / "manifest.json").write_bytes(b"{not json")
             return FakeChild()
 
@@ -1342,40 +1482,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
                 result = indexer(request)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
 
-    def test_a_report_without_affirmative_completion_evidence_is_partial(self) -> None:
-        """A document that parses is not a document that claims completion.
-
-        ``{}`` and a report in some schema this adapter does not understand
-        both say nothing about whether the extraction finished, and nothing is
-        not a claim. Treating them as complete would hand ``graph_status`` a
-        usable generation built from an unknown run.
-        """
-        silent = (
-            {},
-            {"schema": "unexpected"},
-            {"code_files": 3},
-            {"complete": True},
-            {"status": "running", "code_files": 3},
-            {"status": "partial", "complete": True, "code_files": 3},
-        )
-        for report in silent:
-            with self.subTest(report=report):
-                _, result = self.run_indexer("graphify", report=report)
-                self.assertEqual(result.completeness, lifecycle.PARTIAL)
-                self.assertTrue(result.notes)
-
-    def test_a_report_that_claims_completion_and_counts_its_work_is_complete(self) -> None:
-        claimed = (
-            {"complete": True, "code_files": 3},
-            {"status": "success", "indexed_files": 3},
-            {"completed": True, "entries": 0, "requeued": 0},
-        )
-        for report in claimed:
-            with self.subTest(report=report):
-                _, result = self.run_indexer("graphify", report=report)
-                self.assertEqual(result.completeness, lifecycle.COMPLETE)
-
-    def test_an_oversized_report_is_refused_without_being_read_whole(self) -> None:
+    def test_an_oversized_manifest_is_refused_without_being_read_whole(self) -> None:
         """Provider output is unbounded input; the read is bounded at the stream.
 
         Slicing after ``read_bytes()`` would have allocated the whole document
@@ -1383,12 +1490,12 @@ class ProviderLaunchTests(TemporaryWorkspace):
         nothing in the collection path may read a provider file whole.
         """
         request = self.request()
-        oversized = b'{"complete": true, "code_files": 3, "pad": "' + b"x" * lifecycle.MAX_MANIFEST_BYTES + b'"}'
+        oversized = b'{"' + CODE_INPUT.encode() + b'": "' + b"x" * lifecycle.MAX_MANIFEST_BYTES + b'"}'
 
         def fake_popen(argv, **kwargs):
-            written = request.source_root / ".graphify"
+            written = request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY
             written.mkdir(exist_ok=True)
-            (written / "graph.bin").write_bytes(b"graph-bytes")
+            (written / "graph.json").write_text("{}", encoding="utf-8")
             (written / "manifest.json").write_bytes(oversized)
             return FakeChild()
 
@@ -2164,6 +2271,17 @@ class LinkedRuntimeLibraryTests(ProviderExposureFixture):
         really links against end up inside the boundary. Every absolute
         dependency that extension names must be either under the read-only
         runtime every child gets or in the derived set.
+
+        Not every host runtime can be admitted, and this test must not assume
+        it. An interpreter installed under a shared package-manager prefix whose
+        ancestry is group-writable is a runtime another account may rewrite, and
+        the trust rule refuses it on purpose: the derivation raises rather than
+        exposing code somebody else chooses the contents of. So a refusal is
+        checked here rather than swallowed -- this host is asked, independently
+        of the derivation, whether one of ``_ssl``'s own dependencies really is
+        untrusted, and the refusal is only accepted when it is. A refusal over a
+        runtime this host does trust would be the regression this test exists to
+        catch, and any other exception is not caught at all.
         """
         import _ssl  # noqa: PLC0415 - the point is this host's real extension
 
@@ -2171,18 +2289,46 @@ class LinkedRuntimeLibraryTests(ProviderExposureFixture):
         if not extension.is_file():  # pragma: no cover - a statically linked build
             self.skipTest("this interpreter's _ssl is not a separate extension module")
         prefix = Path(sys.base_prefix)
-        derived = lifecycle._linked_runtime_libraries(
-            [prefix], covered=[prefix], repository=self.repository
-        )
         system = [Path(os.path.realpath(path)) for path in lifecycle._SYSTEM_READ_PATHS]
         covered = [*system, Path(os.path.realpath(prefix))]
-        for name in lifecycle._macho_dylib_names(extension):
-            if not name.startswith("/"):
-                continue
-            resolved = Path(os.path.realpath(name))
-            if any(lifecycle._under(resolved, root) for root in covered):
-                continue
-            self.assertIn(str(resolved), derived, f"{name} is outside the provider's boundary")
+        # The extension's own out-of-runtime dependencies, resolved the way the
+        # derivation resolves them. Computed before the derivation runs so the
+        # expectation does not come from the code under test.
+        external = [
+            Path(os.path.realpath(name))
+            for name in lifecycle._macho_dylib_names(extension)
+            if name.startswith("/")
+        ]
+        external = [
+            resolved
+            for resolved in external
+            if not any(lifecycle._under(resolved, root) for root in covered)
+        ]
+        untrusted = [str(path) for path in external if not lifecycle._trusted_library(path)]
+        try:
+            derived = lifecycle._linked_runtime_libraries(
+                [prefix], covered=[prefix], repository=self.repository
+            )
+        except lifecycle.ContextError as refusal:
+            # The derivation walks the whole runtime, so the library it refused
+            # need not be one of ``_ssl``'s: a shared package-manager prefix is
+            # refused through its own ancestry, before any single dependency.
+            # Either is a correct refusal; neither being true is not.
+            self.assertTrue(
+                untrusted or not lifecycle._trusted_library(Path(os.path.realpath(prefix))),
+                "the boundary refused this host's runtime, but the runtime and "
+                f"every library _ssl links to are trusted: {refusal}",
+            )
+            return
+        self.assertEqual(
+            untrusted,
+            [],
+            "the boundary admitted a runtime whose libraries are writable by another account",
+        )
+        for resolved in external:
+            self.assertIn(
+                str(resolved), derived, f"{resolved} is outside the provider's boundary"
+            )
 
 
 class ProviderIdentityTests(TemporaryWorkspace):
@@ -3385,10 +3531,26 @@ class CommandTests(TemporaryWorkspace):
                 '[ -n "$2" ] || exit 65\n'
                 'case "$2" in -*) exit 65 ;; esac\n'
                 '[ -d "$2" ] || exit 65\n'
-                "mkdir -p .graphify\n"
-                "printf graph-bytes > .graphify/graph.bin\n"
-                'printf \'{"complete": %s, "code_files": 1, "requeued": 0}\' '
-                f"'{'true' if complete else 'false'}' > .graphify/manifest.json\n"
+                # The real output root, with the two documents the pinned
+                # ``--no-cluster`` branch writes there.
+                "mkdir -p graphify-out\n"
+                'printf \'{"nodes": [], "edges": []}\' > graphify-out/graph.json\n'
+                # A complete run stamps every input it was shown; a partial one
+                # leaves the manifest empty, which is what an unprocessed code
+                # file looks like to the collector.
+                + (
+                    (
+                        "{ printf '{'; sep=''; "
+                        "find . -path ./graphify-out -prune -o -type f -print | "
+                        "sed 's|^\\./||' | while read -r f; do "
+                        'printf \'%s"%s":{"mtime":1,"seen":2,'
+                        '"ast_hash":"0123456789abcdef0123456789abcdef",'
+                        "\"semantic_hash\":\"0123456789abcdef0123456789abcdef\"}' \"$sep\" \"$f\"; "
+                        "sep=','; done; printf '}'; } > graphify-out/manifest.json\n"
+                    )
+                    if complete
+                    else "printf '{}' > graphify-out/manifest.json\n"
+                )
             ),
             **installed,
         )
