@@ -1811,7 +1811,7 @@ def _macho_fat_slices(
             return None
         extents.append((offset, length))
     ordered = sorted(extents)
-    for (offset, length), (next_offset, _) in zip(ordered, ordered[1:]):
+    for (offset, length), (next_offset, _) in zip(ordered, ordered[1:], strict=False):
         if offset + length > next_offset:
             # Overlapping slices make "which image is this" ambiguous, and an
             # ambiguous container is not one to answer a trust question from.
