@@ -154,72 +154,106 @@ effective-authority rendering
 ([#955](https://github.com/codemower-ai/code-mower/issues/955)) are planned
 runtime work, not shipped behavior.
 
-The next three capabilities should ship as independently gated epics rather
-than one cross-cutting implementation PR.
+Each step below is an independently gated epic rather than one cross-cutting
+implementation PR.
 
-### 1. Devin Peer Support
+### 1. Complete `v1.4.0` Stabilization ([#979](https://github.com/codemower-ai/code-mower/issues/979))
 
-Make Devin implement the same user-facing participant lifecycle as Claude and
-Codex while keeping local CLI and hosted API mechanics inside separate
-transports. The target includes:
+Seven main-only implementation PRs plus one evidence verification:
 
-- session dispatch, progress, messaging, cancellation, result collection, and
-  recovery;
-- qualification as a host/orchestrator;
-- Coworker and later Graphify context delivery;
-- structured current-head reviewer output; and
-- a clean/blocked calibration campaign before any reviewer promotion.
+- accurate advertised commands and live roadmap docs
+  ([#965](https://github.com/codemower-ai/code-mower/issues/965));
+- optional review defaults
+  ([#967](https://github.com/codemower-ai/code-mower/issues/967));
+- role-specific qualification and admission
+  ([#975](https://github.com/codemower-ai/code-mower/issues/975));
+- effective-authority and migration reporting
+  ([#955](https://github.com/codemower-ai/code-mower/issues/955)), after #975;
+- quiescent, capable, consistent takeover
+  ([#962](https://github.com/codemower-ai/code-mower/issues/962));
+- contributor lineage and reviewer exclusion
+  ([#963](https://github.com/codemower-ai/code-mower/issues/963)), after #962
+  and #975; and
+- independent operational acceptance evidence
+  ([#976](https://github.com/codemower-ai/code-mower/issues/976)).
 
-The maintained local builder and hosted Sessions API work are the starting
-point. Reviewer authority remains evidence-based.
+#962 runs before #963 where handoff and provenance files overlap. #974 is
+evidence-only verification of existing hosted aggregate freshness; a confirmed
+hosted defect becomes a separately recorded implementation child and its own
+hosted PR rather than an assumed fix.
 
-### 2. Graphify Repository Context
+### 2. Graphify Repository Context — `v1.4.1` ([#902](https://github.com/codemower-ai/code-mower/issues/902) / release [#915](https://github.com/codemower-ai/code-mower/issues/915))
 
-Treat Graphify as a repository-context provider beside Coworker, not as a
-participant. Start local and code-only:
+Graphify is a repository-context provider beside Coworker, not a participant.
+It is adopted and partly delivered: the
+[evaluation record](graphify-evaluation.md) closed
+[#876](https://github.com/codemower-ai/code-mower/issues/876) with an adopt
+decision, and `code-mower context-graph`, described in the
+[lifecycle record](context-graph-lifecycle.md), closed
+[#913](https://github.com/codemower-ai/code-mower/issues/913). Remaining work
+is the query/packet PR
+([#914](https://github.com/codemower-ai/code-mower/issues/914)), which consumes
+a pinned structured JSON contract and generates bounded impact, dependency,
+symbol, and related-test packets in one shape for Claude, Codex, and Devin.
+Release #915 also carries the stabilization docs, review-default, and
+operational-evidence work plus explicit freshness evidence.
 
-- build the optional local provider against the conditions in the
-  [evaluation record](graphify-evaluation.md), which closes
-  [issue #876](https://github.com/codemower-ai/code-mower/issues/876) with an
-  adopt decision;
-- add a provider registry and multiple context attachments per session;
-- build and refresh graphs with commit/freshness validation — delivered by
-  `code-mower context-graph`, described in the
-  [lifecycle record](context-graph-lifecycle.md), which closes
-  [issue #913](https://github.com/codemower-ai/code-mower/issues/913);
-- consume a pinned structured JSON contract;
-- generate bounded impact, dependency, symbol, and related-test packets; and
-- deliver the same packet shape to Claude, Codex, and Devin.
+Installation stays opt-in, no command requires an index to exist, and Code
+Mower owns refresh policy rather than parsing human-oriented MCP prose.
 
-Code Mower should own refresh policy and should not rely permanently on parsing
-human-oriented MCP prose.
+### 3. Board Clarity And Session Visibility — `v1.4.2` ([#945](https://github.com/codemower-ai/code-mower/issues/945) / release [#952](https://github.com/codemower-ai/code-mower/issues/952))
 
-### 3. Slack Task And Status Interaction
+Board implementation is underway rather than unstarted.
+[#935](https://github.com/codemower-ai/code-mower/issues/935) is complete and
+merged with [#973](https://github.com/codemower-ai/code-mower/issues/973);
+[#956](https://github.com/codemower-ai/code-mower/issues/956) and
+[#957](https://github.com/codemower-ai/code-mower/issues/957) are drafts behind
+main that need refreshing before review. Remaining work is presentation and
+producers, persistent Board services
+([#961](https://github.com/codemower-ai/code-mower/issues/961)), and integrated
+qualification ([#951](https://github.com/codemower-ai/code-mower/issues/951)),
+then the release PR #952. #961 is required before #951 and #952, and #951
+consumes #975, #955, #962, #963, and #976 through its integration dependencies.
 
-Treat Slack as an interaction channel, not an orchestrator. A Slack-started
-session uses the project or channel's configured default orchestrator unless the
-request supplies an explicit one. The first local integration should use Socket
-Mode and provide:
+Board is a read model over one closed local observation model. Missing or stale
+evidence stays explicitly unknown or last-observed; Board never infers runtime
+activity from a label, provider name, PID, PR author, lease, or command-line
+prose.
 
-- allowlisted workspace, channel, user, and repository mappings;
-- idempotent task creation and Slack-thread-to-session binding;
-- redacted progress and completion updates;
-- clarification questions with reply-to-resume behavior;
-- cancellation and restart reconciliation; and
-- no raw private context or private reviewer findings in Slack.
+### 4. Supervised Slack Task And Status Interaction — `v1.5.0` ([#903](https://github.com/codemower-ai/code-mower/issues/903) / release [#923](https://github.com/codemower-ai/code-mower/issues/923))
 
-Slack should consume the durable session lifecycle and event surface introduced
-for Devin rather than scrape terminal or Board output.
+Slack is an interaction channel, not an orchestrator. A real qualified Codex or
+Claude supervisor controls bounded hosted work: missing supervisor readiness
+blocks dispatch, and selecting a provider never promotes its role. Ingress
+foundations [#916](https://github.com/codemower-ai/code-mower/issues/916) and
+[#917](https://github.com/codemower-ai/code-mower/issues/917) are merged.
+Remaining work is OAuth, the qualified-supervisor adapter
+([#977](https://github.com/codemower-ai/code-mower/issues/977)), durable
+interactions, the bridge, paired telemetry, setup
+([#922](https://github.com/codemower-ai/code-mower/issues/922)), and release
+acceptance #923. Slack consumes the durable session lifecycle and event surface
+rather than scraping terminal or Board output, and carries no raw private
+context or private reviewer findings.
+
+This runtime work is deferred until the sequence above is complete. Board
+readiness gates only Slack's end-to-end canary and final acceptance in #923; it
+does not block independent Slack OAuth, inbox, interaction, bridge, setup, or
+documentation work.
 
 ## Delivery Order
 
-1. Ship Devin lifecycle, host, context-recipient, and reviewer parity first.
-2. The bounded Graphify evaluation is complete and adopted; ship the optional
-   local context provider after the shared context registry is stable, against
-   the conditions in the evaluation record. Installation stays opt-in and no
-   command requires an index to exist.
-3. Define Slack's command and identity contract in parallel, but merge its
-   worker only after session lifecycle and recovery are stable.
+1. Complete `v1.4.0` stabilization on main: the seven #979 implementation PRs
+   plus the #974 evidence verification.
+2. Ship those main-only fixes together with Graphify as `v1.4.1` through #915,
+   after #914.
+3. Ship Board as `v1.4.2` through #952, after #961 and #951.
+4. Merge the supervised Slack runtime last, accepted in #923 for `v1.5.0`.
+
+Elapsed time, implementation difficulty, or an open draft PR never changes this
+release order. An explicit evidence-backed Graphify deferral recorded in
+#915/#902 may satisfy that one dependency. Merged post-`v1.4.0` fixes, including
+#935/#973, count as on main until a later published package is verified to
+contain them.
 
 Each child issue should produce one reviewable PR with one branch writer,
 independent current-head review, the normal gate, and package-level validation.

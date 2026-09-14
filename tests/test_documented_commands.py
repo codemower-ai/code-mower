@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import sys
+import textwrap
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -24,11 +25,23 @@ from code_mower import cli
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# `code-mower <command>` where the command is command-shaped, is not a slash
-# command (`/code-mower start`), and is not part of a longer token such as
-# `code-mower code-mower==1.4.0`.
-INVOCATION_RE = re.compile(r"(?<![\w/-])code-mower[ \t]+([a-z][a-z0-9-]*)(?![\w.=-])")
-FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
+# `code-mower <command>` at a shell command position: the start of a line or
+# code span, after a prompt marker, or after an operator that begins a new
+# command. Prose that merely names the product mid-sentence -- "report
+# command -v code-mower and code-mower --version" -- is not an invocation, so
+# the following word is not a command. The command itself must be
+# command-shaped and not part of a longer token such as `code-mower==1.4.0`.
+COMMAND_POSITION = r"(?:^|\$\(|[;&|(])[ \t]*(?:[$>#][ \t]+)?"
+INVOCATION_RE = re.compile(
+    COMMAND_POSITION + r"code-mower[ \t]+([a-z][a-z0-9-]*)(?![\w.=-])"
+)
+# Only a fence with no info string or a shell info string holds executable
+# examples. `text` carries agent prompts, and `json`/`yaml`/`python` carry
+# data, so a product name inside them is prose or payload, not a command.
+FENCE_RE = re.compile(r"^ {0,3}(```|~~~)[ \t]*([^\s`]*)")
+SHELL_FENCE_INFO = frozenset(
+    {"", "sh", "bash", "shell", "zsh", "console", "shell-session", "terminal"}
+)
 INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 
 HISTORICAL_RE = re.compile(r"(^|/)(CHANGELOG\.md|release-history\.md|v[\d]+-release-notes\.md)$")
@@ -45,23 +58,42 @@ def _current_guidance_files() -> list[Path]:
 
 
 def _code_segments(text: str) -> list[str]:
-    """Return fenced-block lines and inline code spans, ignoring prose."""
+    """Return shell-block lines and inline code spans, ignoring prose.
+
+    Two kinds of text name the product without running it: prose outside code
+    spans, and prompt or data blocks fenced as something other than a shell.
+    Neither contributes segments. Inside a fence, backticks are literal text
+    rather than markdown inline code, so no spans are read from one.
+    """
     segments: list[str] = []
     fence = ""
+    shell_block = False
     for line in text.splitlines():
         match = FENCE_RE.match(line)
         if match:
-            marker = match.group(1)
+            marker, info = match.group(1), match.group(2).lower()
             if not fence:
                 fence = marker
+                shell_block = info in SHELL_FENCE_INFO
             elif marker == fence:
                 fence = ""
+                shell_block = False
             continue
         if fence:
-            segments.append(line)
-        else:
-            segments.extend(INLINE_CODE_RE.findall(line))
+            if shell_block:
+                segments.append(line)
+            continue
+        segments.extend(INLINE_CODE_RE.findall(line))
     return segments
+
+
+def _commands_in(text: str) -> set[str]:
+    """Return the top-level commands one document advertises as runnable."""
+    return {
+        command
+        for segment in _code_segments(text)
+        for command in INVOCATION_RE.findall(segment)
+    }
 
 
 def _advertised_commands() -> dict[str, set[str]]:
@@ -69,9 +101,8 @@ def _advertised_commands() -> dict[str, set[str]]:
     advertised: dict[str, set[str]] = {}
     for path in _current_guidance_files():
         relative = path.relative_to(ROOT).as_posix()
-        for segment in _code_segments(path.read_text(encoding="utf-8")):
-            for command in INVOCATION_RE.findall(segment):
-                advertised.setdefault(command, set()).add(relative)
+        for command in _commands_in(path.read_text(encoding="utf-8")):
+            advertised.setdefault(command, set()).add(relative)
     return advertised
 
 
@@ -82,6 +113,42 @@ class DocumentedCommandTests(unittest.TestCase):
         advertised = set(_advertised_commands())
         expected = {"init", "doctor", "session", "lanes", "board", "productivity"}
         self.assertTrue(expected.issubset(advertised), msg=sorted(advertised))
+
+    def test_extractor_reads_invocations_and_not_prose(self) -> None:
+        # Prose that names the product mid-sentence, and prompt blocks fenced
+        # as `text`, are not invocations: the word after the product name is
+        # English, not a command. The rule is positional rather than a list of
+        # excluded words, so an unseen prose word cannot slip through and an
+        # unseen command is still caught.
+        document = textwrap.dedent(
+            """\
+            Run `code-mower inline-fabricated --json` first, and before and
+            after the install report command -v code-mower and code-mower
+            --version.
+
+            ```text
+            Before and after the install, report command -v code-mower and
+            code-mower --version. Then run code-mower prompt-fabricated.
+            ```
+
+            ```bash
+            code-mower shell-fabricated --repo OWNER/REPO
+            cd repo && code-mower chained-fabricated
+            ```
+            """
+        )
+        self.assertEqual(
+            _commands_in(document),
+            {"inline-fabricated", "shell-fabricated", "chained-fabricated"},
+        )
+
+    def test_prose_in_the_prompt_pack_is_not_read_as_a_command(self) -> None:
+        # Regression for the shipped corpus: docs/orchestrator-prompt-pack.md
+        # tells an agent to "report command -v code-mower and code-mower
+        # --version" inside a `text` prompt block.
+        advertised = _advertised_commands()
+        self.assertNotIn("and", advertised)
+        self.assertIn("doctor", advertised)
 
     def test_every_advertised_command_parses_under_the_packaged_cli(self) -> None:
         advertised = _advertised_commands()
