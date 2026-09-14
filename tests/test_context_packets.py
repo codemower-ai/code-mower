@@ -13,12 +13,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from code_mower.context_connections import connect, disconnect
-from code_mower.context_contract import ContextError, ContextRequest, normalize_policy
+from code_mower.context_contract import ContextError, ContextRequest, ContextRetrievalError, normalize_policy
 from code_mower.context_packets import MAX_SAVED_PACKETS, fetch, load_authorized, main
-from code_mower.context_store import ContextStore
+from code_mower.context_store import ContextStore, LockedConnection
 from code_mower.coworker_retrieval import normalize_search
 from test_context_connections import FakeBackend, MemoryVault
-from test_coworker_retrieval import FIXTURE, POLICY
+from test_coworker_retrieval import FIXTURE, POLICY, SPARSE
 
 
 class RetrievalBackend(FakeBackend):
@@ -73,6 +73,92 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(self.backend.searches, 1)
         self.assertEqual(self.backend.calls.count("refresh"), 4)
         self.assertIsNone(first["usage"]["cost_usd"])
+
+    def test_sparse_citations_survive_packet_validation_and_authorized_replay(self):
+        self.backend.result = copy.deepcopy(SPARSE)
+        result = self.fetch()
+        packet = self.load(result["packet_handle"]).private_payload()
+        self.assertEqual(len(packet["documents"]), 5)
+        self.assertEqual(packet["completeness"], "partial")
+        self.assertEqual(packet["omissions"], ["source_title_unavailable"])
+        self.assertEqual(packet["documents"][1]["citations"][0]["source"], "example:source:b")
+        self.assertEqual(self.backend.searches, 1)
+
+    def test_no_data_survives_delivery_as_explicitly_incomplete_empty_evidence(self):
+        self.backend.result["result"].update(status="no_data", results=[])
+        self.backend.result["result"]["retrieval"].update(returned=0, has_more=False)
+        result = self.fetch()
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["documents"], 0)
+        packet = self.load(result["packet_handle"]).private_payload()
+        self.assertEqual(packet["documents"], [])
+        self.assertEqual(packet["completeness"], "partial")
+        self.assertIn("provider_no_data", packet["omissions"])
+        self.assertTrue(self.fetch()["reused"])
+        self.assertEqual(self.backend.searches, 1)
+
+    def test_response_failure_is_saved_without_private_values_and_requires_explicit_refresh(self):
+        self.backend.result["result"]["results"][0]["source_row_id"] = "private\nlocator"
+        for _attempt in range(2):
+            with self.assertRaises(ContextRetrievalError) as raised:
+                self.fetch()
+            self.assertEqual(raised.exception.reason, "response_invalid")
+            self.assertNotIn("private", str(raised.exception))
+        self.assertEqual(self.backend.searches, 1)
+        self.assertEqual(list(self.root.glob(".p-*.json")), [])
+        self.backend.result = copy.deepcopy(SPARSE)
+        result = self.fetch(refresh=True)
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(self.backend.searches, 2)
+        self.assertEqual(len(self.load(result["packet_handle"]).private_payload()["documents"]), 5)
+
+    def test_local_packet_failures_are_not_mislabeled_as_provider_failures(self):
+        for error, reason in ((OSError("private disk path"), "storage_unavailable"),
+                              (ContextError("private integrity diagnostic"), "packet_invalid")):
+            with patch("code_mower.context_packets._load", side_effect=error):
+                with self.assertRaises(ContextRetrievalError) as raised:
+                    self.fetch(refresh=True)
+            self.assertEqual(raised.exception.reason, reason)
+            self.assertNotIn("private disk", str(raised.exception))
+            self.assertEqual(list(self.root.glob(".p-*.json")), [])
+            with self.assertRaises(ContextRetrievalError) as replay:
+                self.fetch()
+            self.assertEqual(replay.exception.reason, reason)
+        self.assertEqual(self.backend.searches, 2)
+
+    def test_cleanup_error_stays_redacted_and_the_reserved_attempt_cannot_be_retried(self):
+        self.backend.fail_search = True
+        # The reserved entry already exists when packet cleanup fails.
+        with patch.object(LockedConnection, "delete", side_effect=OSError("private cleanup path")):
+            with self.assertRaises(ContextRetrievalError) as raised:
+                self.fetch()
+        self.assertEqual(raised.exception.reason, "storage_unavailable")
+        self.assertNotIn("private cleanup", str(raised.exception))
+        with self.assertRaises(ContextRetrievalError) as replay:
+            self.fetch()
+        self.assertEqual(replay.exception.reason, "storage_unavailable")
+        self.assertEqual(self.backend.searches, 1)
+
+    def test_cli_emits_closed_failure_reason_for_required_and_optional_context(self):
+        for required in (True, False):
+            for reason in ContextRetrievalError.REASONS:
+                with self.subTest(required=required, reason=reason):
+                    spec = {**self.spec, "policy": {**POLICY, "required": required}}
+                    output = io.StringIO()
+                    with patch("code_mower.context_packets.ContextStore", return_value=self.store), \
+                            patch("code_mower.context_packets._backend", return_value=self.backend), \
+                            patch.object(self.backend, "retrieve", side_effect=ContextRetrievalError(reason)), \
+                            patch("sys.stdin", SimpleNamespace(buffer=io.BytesIO(json.dumps(spec).encode()))), redirect_stdout(output):
+                        code = main(["--connection", "example", "--request-stdin", "--refresh", "--json"])
+                    report = json.loads(output.getvalue())
+                    self.assertEqual(report["reason"], reason)
+                    self.assertEqual(code, 1 if required else 0)
+                    self.assertEqual(report["status"], "required_unavailable" if required else "optional_unavailable")
+                    for private in ("one@example.invalid", "owner/repo", "bug triage", str(self.root)):
+                        self.assertNotIn(private, output.getvalue())
+        for invalid in ("private provider message", {"private": "message"}, None):
+            with self.assertRaises(ContextError):
+                ContextRetrievalError(invalid)
 
     def test_wrong_account_and_unapproved_destinations_fail_before_search(self):
         for spec in ({**self.spec, "repository": "owner/other-repo"}, {**self.spec, "recipient": "unknown:builder"}):

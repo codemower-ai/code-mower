@@ -43,6 +43,57 @@ class ContextError(ValueError):
     """Fixed diagnostics intentionally omit private values and paths."""
 
 
+class ContextRetrievalError(ContextError):
+    """Only closed, provider-body-free reasons may cross the retrieval boundary."""
+
+    REASONS = {
+        "response_invalid": (
+            "Context search returned an unsupported or uncitable response.",
+            "Update or repair the response adapter, then explicitly refresh; "
+            "signing in again does not repair response-format failures.",
+        ),
+        "access_denied": (
+            "Context search access was denied.",
+            "Verify the selected connection and its access, then explicitly refresh.",
+        ),
+        "rate_limited": (
+            "Context search was rate limited.",
+            "Wait for the provider rate limit to clear, then explicitly refresh.",
+        ),
+        "timeout": (
+            "Context search exceeded its deadline.",
+            "Check provider availability or the bounded timeout, then explicitly refresh.",
+        ),
+        "retrieval_failed": (
+            "Context search could not complete.",
+            "Check provider availability and retrieval compatibility, then explicitly refresh.",
+        ),
+        "packet_invalid": (
+            "Retrieved context could not pass local packet validation.",
+            "Check the packet adapter and private packet integrity, then explicitly refresh.",
+        ),
+        "storage_unavailable": (
+            "Private context storage could not be read, written, or cleaned up.",
+            "Check local storage availability and permissions, then explicitly refresh.",
+        ),
+        "budget_exceeded": (
+            "The context text budget could not retain usable evidence.",
+            "Increase the text budget within policy limits or narrow the query, then explicitly refresh.",
+        ),
+    }
+
+    def __init__(self, reason: str):
+        if not isinstance(reason, str) or reason not in self.REASONS:
+            raise ContextError("unsupported context retrieval failure reason")
+        self.reason = reason
+        super().__init__(self.REASONS[reason][0])
+
+    def shareable_summary(self):
+        message, action = self.REASONS[self.reason]
+        return {"reason": self.reason, "message": message,
+                "next_action": action + " No search retries automatically."}
+
+
 def _object(
     value: Any, required: set[str], optional: set[str] | frozenset[str] = frozenset()
 ) -> Mapping[str, Any]:
@@ -418,9 +469,11 @@ def load_packet(
         raise ContextError("context completeness and truncation are inconsistent")
     documents = packet["documents"]
     omissions = packet.get("omissions", [])
-    if (not isinstance(omissions, list) or len(omissions) > 8
+    if (not isinstance(omissions, list) or len(omissions) > 11
             or any(item not in ("provider_partial", "provider_has_more", "unresolved_entities",
-                                "provider_warning", "provider_compaction", "text_limit", "document_limit")
+                                "provider_warning", "provider_compaction", "text_limit", "document_limit",
+                                "source_title_unavailable", "missing_citation", "unsupported_record_kind",
+                                "provider_no_data")
                    for item in omissions)):
         raise ContextError("context omissions must use bounded metadata codes")
     if not isinstance(documents, list) or len(documents) > limits["max_documents"]:
