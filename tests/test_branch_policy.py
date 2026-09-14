@@ -683,6 +683,7 @@ printf 'fake codex completed\\n'
         self.assertEqual(guard, {})
 
     def _run_codex_fix_round(self, pr_json: dict, *, template: str | None = JIRA_TEMPLATE,
+                             handoff_source: str | None = None,
                              ) -> tuple[subprocess.CompletedProcess, dict]:
         """Run the generated codex runner with ``--target pr:21`` against ``pr_json``."""
         runner, _text = self._generate(_config_with_policy(template))
@@ -735,9 +736,13 @@ exit 0
             fake_codex.write_text("#!/usr/bin/env bash\ncat >/dev/null\nprintf 'fake codex completed\\n'\n",
                                   encoding="utf-8")
             fake_codex.chmod(0o755)
+            argv = [str(runner), "--lane", "codex", "--repo", "owner/repo",
+                    "--max-minutes", "1", "--target", "pr:21"]
+            if handoff_source is not None:
+                argv.extend(["--handoff-source-lane", handoff_source,
+                             "--handoff-expected-head", pr_view["headRefOid"]])
             completed = subprocess.run(
-                [str(runner), "--lane", "codex", "--repo", "owner/repo", "--max-minutes", "1",
-                 "--target", "pr:21"],
+                argv,
                 cwd=ROOT,
                 env={
                     **os.environ,
@@ -787,6 +792,21 @@ exit 0
                 self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
                 self.assertIn(f"head branch {branch} is not owned by this lane", completed.stderr)
                 self.assertEqual(guard, {})
+
+    def test_policy_compliant_handoff_withholds_destination_lane_prefixes(self) -> None:
+        branch = "claude/12-accessible-label"
+        source_owned = self._pr(21, branch, labels=("builder:claude",),
+                                author="claude[bot]")
+        completed, guard = self._run_codex_fix_round(
+            source_owned, template="claude/{issue_key}-{slug}", handoff_source="claude")
+        self.assertIn("accepted explicit handoff claude -> codex", completed.stdout)
+        self.assertNotIn("refusing", completed.stderr)
+        self.assertEqual(guard["target_pr_branch"], branch)
+        self.assertEqual(guard["allowed_branch"], branch)
+        self.assertEqual(guard["allowed_branch_expected_head"], "c" * 40)
+        self.assertEqual(guard["allowed_prefixes"], [])
+        self.assertEqual(guard["handoff"]["target_branch"], branch)
+        self.assertEqual(guard["handoff"]["expected_head"], "c" * 40)
 
     def test_fix_round_without_a_policy_keeps_the_lane_prefix_target(self) -> None:
         own = self._pr(21, "codex/issue-12", labels=("builder:codex",),

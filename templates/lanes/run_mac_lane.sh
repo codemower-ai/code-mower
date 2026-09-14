@@ -820,10 +820,12 @@ if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
         ;;
     esac
   fi
-elif [ "$kind" = "pr" ] && [ "$mode" != "audit" ] && [ -n "$repo_branch_pattern" ] && [ -z "$HANDOFF_SOURCE_LANE" ]; then
+elif [ "$kind" = "pr" ] && [ "$mode" != "audit" ] && [ -n "$repo_branch_pattern" ]; then
   # A policy-bound fix round writes exactly the validated target branch: the
-  # ownership gate above already required it to match the policy, and the
-  # guard withholds the lane prefixes so no other name is writable.
+  # ownership or handoff gate above already required it to match the policy,
+  # and the guard withholds the destination lane prefixes so no other name is
+  # writable. A validated handoff remains pinned in the guard config, while
+  # this policy binding independently restricts it to the one conforming head.
   if ! is_valid_ref "$target_pr_branch"; then
     echo "${LANE}: refusing ${mode} PR #${num}; head branch ${target_pr_branch:-missing} is not a valid git branch name" >&2
     exit 1
