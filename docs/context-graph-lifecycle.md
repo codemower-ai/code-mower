@@ -216,7 +216,28 @@ through `dlopen` rather than through the loader these commands drive. A
 universal archive is held to that on **every** slice — the child is the
 provider's interpreter, whose architecture is not necessarily this one, so the
 slice loaded inside the boundary is not the slice a single check would pick —
-and a file that is not a readable Mach-O at all is refused as such. A
+and a file that is not a readable Mach-O at all is refused as such.
+
+A magic and a `filetype` field are not that reading. Those four bytes and that
+one integer are the cheapest thing in the file to reproduce over arbitrary
+operator-owned bytes, so the **structure behind them** is what is checked. The
+universal header is decoded in the byte order its own magic declares —
+`FAT_MAGIC` big-endian, `FAT_CIGAM` little — because reading the swapped
+spelling as big-endian turns a count of two into 33 million and every slice
+offset into a number with no relation to the file. The architecture table is
+bounded and must fit in the file; each slice must begin after the table
+describing it, end within the file, and not overlap another slice, because
+overlapping slices make "which image is this" ambiguous. Within each admitted
+slice the thin header must be complete and its declared load-command region
+must fit inside **that slice** rather than merely inside the file, so one slice
+cannot reach into the next one's bytes to satisfy its header. The commands then
+have to walk: each `cmdsize` at least a command header, a multiple of the
+image's pointer width, and within the region — and the chain must consume the
+region exactly, since `sizeofcmds` is the size of *all* the commands and a
+chain that stops short leaves unexamined bytes where only commands belong. A
+64-bit universal header (`FAT_MAGIC_64`) has wider records and is refused as
+unrecognized rather than guessed at. Anything malformed is refused whole rather
+than read as far as it parses. A
 referenced path that this host does not have installed is skipped: if it
 turns out to have been required, the loader fails the build naming the library
 it could not find. The derivation reads Mach-O images, so **Linux is unchanged**

@@ -2726,6 +2726,270 @@ class LinkedRuntimeLibraryTests(ProviderExposureFixture):
             )
 
 
+def fat_container(
+    path: Path,
+    *slices: bytes,
+    order: str = ">",
+    magic: int = 0xCAFEBABE,
+    count: int | None = None,
+    extents: list[tuple[int, int]] | None = None,
+) -> Path:
+    """A universal archive with every field of its header under the test's hand.
+
+    :func:`fat_macho` writes a well-formed one. This writes whatever a malformed
+    or hostile one would say: a count that disagrees with the records, an offset
+    inside the header being read, a slice running off the end of the file, two
+    slices claiming the same bytes, or the whole header in the other byte order.
+    ``extents`` replaces the computed ``(offset, size)`` of each record; the
+    payloads are still laid out end to end after the table, so a record can
+    describe a region the file does or does not carry.
+    """
+    declared = len(slices) if count is None else count
+    header = struct.pack(f"{order}2I", magic, declared)
+    start = len(header) + 20 * len(slices)
+    body = b""
+    placed = []
+    for payload in slices:
+        placed.append((start + len(body), len(payload)))
+        body += payload
+    records = extents if extents is not None else placed
+    arches = b""
+    for offset, size in records:
+        arches += struct.pack(f"{order}5I", 0x0100_000C, 0, offset, size, 0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(header + arches + body)
+    return path
+
+
+class MachoContainerStructureTests(unittest.TestCase):
+    """What a candidate's own container has to establish before it is exposed.
+
+    Ownership, size and regular-file status say who wrote a file and how big it
+    is. A magic and a ``filetype`` field say what four bytes and one integer
+    claim -- and the name being checked came out of an ``LC_LOAD_DYLIB`` in the
+    provider's own image, so those are the cheapest thing in the file for a
+    provider that writes its own linker input to reproduce over arbitrary
+    operator-owned bytes.
+
+    These hold the parse to the structure behind the claim: the container is
+    decoded in the byte order its magic declares, every declared region is
+    checked against the length of the file that carries it, slices may not
+    overlap each other or the table describing them, and each image's
+    load-command region must be present and walk to exactly the size its header
+    declared. A container that fails any of it is refused rather than read as
+    far as it parses.
+    """
+
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.root = Path(self._directory.name).resolve()
+
+    def thin(self, *dependencies: str, filetype: int = 0x6) -> bytes:
+        return macho(self.root / "payload", *dependencies, filetype=filetype).read_bytes()
+
+    # -- containers that are read ------------------------------------------
+
+    def test_a_thin_library_reads_as_its_filetype_and_dependencies(self) -> None:
+        library = macho(self.root / "libthin.dylib", "/usr/lib/libz.dylib")
+        self.assertEqual(lifecycle._macho_filetypes(library), (0x6,))
+        self.assertEqual(lifecycle._macho_dylib_names(library), ("/usr/lib/libz.dylib",))
+
+    def test_a_universal_library_reads_as_every_slice(self) -> None:
+        library = fat_container(self.root / "libfat.dylib", self.thin(), self.thin(filetype=0x9))
+        self.assertEqual(lifecycle._macho_filetypes(library), (0x6, 0x9))
+
+    def test_a_swapped_universal_header_is_decoded_in_its_own_order(self) -> None:
+        """``FAT_CIGAM`` is the same header written the other way round.
+
+        Read big-endian -- which is what this did -- a count of two reads as
+        33_554_432 and every slice offset is a number with no relation to the
+        file, so a legitimate archive was refused as malformed and the fields
+        that were supposed to bound the parse were never the fields on disk.
+        """
+        library = fat_container(
+            self.root / "libswapped.dylib",
+            self.thin(),
+            self.thin(filetype=0x9),
+            order="<",
+        )
+        # The same header value, written the other way: ``FAT_CIGAM`` on disk.
+        self.assertEqual(library.read_bytes()[:4], b"\xbe\xba\xfe\xca")
+        self.assertEqual(lifecycle._macho_filetypes(library), (0x6, 0x9))
+
+    def test_a_swapped_universal_header_carries_its_dependencies(self) -> None:
+        """The same decode, through the derivation that reads load commands."""
+        library = fat_container(
+            self.root / "libswapped.dylib",
+            self.thin("/usr/lib/libz.dylib"),
+            order="<",
+        )
+        self.assertEqual(lifecycle._macho_dylib_names(library), ("/usr/lib/libz.dylib",))
+
+    def test_an_image_with_no_load_commands_is_read(self) -> None:
+        """Zero commands and a zero-length region agree with each other."""
+        library = macho(self.root / "libbare.dylib")
+        self.assertEqual(lifecycle._macho_filetypes(library), (0x6,))
+
+    # -- containers that are refused ---------------------------------------
+
+    def refused(self, path: Path) -> None:
+        self.assertIsNone(lifecycle._macho_filetypes(path))
+        self.assertEqual(lifecycle._macho_dylib_names(path), ())
+
+    def test_a_file_that_is_not_a_macho_is_refused(self) -> None:
+        other = self.root / "notes.txt"
+        other.write_bytes(b"not a mach-o at all")
+        self.refused(other)
+
+    def test_a_sixty_four_bit_universal_header_is_refused_as_unrecognized(self) -> None:
+        """``FAT_MAGIC_64`` has wider records; guessing at them is not reading them."""
+        container = self.root / "lib64fat.dylib"
+        container.write_bytes(struct.pack(">2I", 0xCAFEBABF, 1) + b"\0" * 32)
+        self.refused(container)
+
+    def test_a_slice_running_past_the_end_of_the_file_is_refused(self) -> None:
+        payload = self.thin()
+        container = fat_container(
+            self.root / "libpast.dylib", payload, extents=[(28, len(payload) + 4096)]
+        )
+        self.refused(container)
+
+    def test_a_slice_beginning_past_the_end_of_the_file_is_refused(self) -> None:
+        container = fat_container(
+            self.root / "libgone.dylib", self.thin(), extents=[(0x10_0000, 32)]
+        )
+        self.refused(container)
+
+    def test_a_slice_inside_the_architecture_table_is_refused(self) -> None:
+        """A slice may not start in the header that is describing it."""
+        payload = self.thin()
+        container = fat_container(
+            self.root / "liboverlap.dylib", payload, extents=[(4, len(payload))]
+        )
+        self.refused(container)
+
+    def test_a_zero_length_slice_is_refused(self) -> None:
+        container = fat_container(self.root / "libempty.dylib", self.thin(), extents=[(28, 0)])
+        self.refused(container)
+
+    def test_overlapping_slices_are_refused(self) -> None:
+        """Two records claiming the same bytes make "which image is this" ambiguous."""
+        payload = self.thin()
+        container = fat_container(
+            self.root / "libambiguous.dylib",
+            payload,
+            payload,
+            extents=[(48, len(payload)), (48 + len(payload) // 2, len(payload))],
+        )
+        self.refused(container)
+
+    def test_an_architecture_table_larger_than_the_file_is_refused(self) -> None:
+        """A count is a promise about bytes the file has to carry."""
+        container = fat_container(self.root / "libclaims.dylib", self.thin(), count=8)
+        self.refused(container)
+
+    def test_more_architectures_than_the_bound_are_refused(self) -> None:
+        container = self.root / "libmany.dylib"
+        count = lifecycle._MAX_MACHO_ARCHITECTURES + 1
+        container.write_bytes(struct.pack(">2I", 0xCAFEBABE, count) + b"\0" * (20 * count))
+        self.refused(container)
+
+    def test_a_zero_architecture_universal_header_is_refused(self) -> None:
+        container = self.root / "libnone.dylib"
+        container.write_bytes(struct.pack(">2I", 0xCAFEBABE, 0))
+        self.refused(container)
+
+    def test_a_truncated_thin_header_is_refused(self) -> None:
+        container = self.root / "libcut.dylib"
+        container.write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 8)
+        self.refused(container)
+
+    def test_a_truncated_load_command_region_is_refused(self) -> None:
+        """The header declares a region; the file has to carry all of it."""
+        whole = self.thin("/usr/lib/libz.dylib")
+        container = self.root / "libshort.dylib"
+        container.write_bytes(whole[:-8])
+        self.refused(container)
+
+    def test_a_load_command_region_declared_past_the_slice_is_refused(self) -> None:
+        """A slice may not reach into the next slice's bytes to satisfy its header.
+
+        The bytes that follow are a real, complete image, so a parse bounded by
+        the file rather than by the slice would read them and admit this.
+        """
+        payload = self.thin()
+        stretched = bytearray(payload)
+        struct.pack_into("<I", stretched, 20, len(payload))  # sizeofcmds
+        struct.pack_into("<I", stretched, 16, 1)  # ncmds
+        container = fat_container(
+            self.root / "libreach.dylib", bytes(stretched), self.thin()
+        )
+        self.refused(container)
+
+    def test_a_command_count_too_large_for_its_region_is_refused(self) -> None:
+        """Every command carries at least its own command and size."""
+        image = bytearray(self.thin("/usr/lib/libz.dylib"))
+        struct.pack_into("<I", image, 16, 64)  # ncmds, against a region of one
+        container = self.root / "libcount.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_command_chain_that_stops_short_is_refused(self) -> None:
+        """``sizeofcmds`` is the size of *all* the commands, not of a prefix.
+
+        A chain that leaves bytes over means the region holds something other
+        than the commands it was declared to hold, and reading the prefix as if
+        it were the whole truth is how a trailing record goes unexamined.
+        """
+        image = bytearray(self.thin("/usr/lib/libz.dylib", "/usr/lib/libiconv.dylib"))
+        struct.pack_into("<I", image, 16, 1)  # ncmds, against two real commands
+        container = self.root / "libshortchain.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_command_larger_than_its_region_is_refused(self) -> None:
+        image = bytearray(self.thin("/usr/lib/libz.dylib"))
+        struct.pack_into("<I", image, 36, 4096)  # the first command's cmdsize
+        container = self.root / "libbig.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_misaligned_command_size_is_refused(self) -> None:
+        """dyld requires each ``cmdsize`` to be a multiple of the pointer width."""
+        image = bytearray(self.thin("/usr/lib/libz.dylib"))
+        declared = struct.unpack_from("<I", image, 36)[0]
+        struct.pack_into("<I", image, 36, declared - 4)
+        struct.pack_into("<I", image, 20, declared - 4)  # sizeofcmds, so it still walks
+        container = self.root / "libodd.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_zero_sized_command_is_refused(self) -> None:
+        """A command of no size is an unbounded walk, not a record."""
+        image = bytearray(self.thin("/usr/lib/libz.dylib"))
+        struct.pack_into("<I", image, 36, 0)
+        container = self.root / "libzero.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_load_command_region_larger_than_the_bound_is_refused(self) -> None:
+        image = bytearray(self.thin())
+        struct.pack_into("<I", image, 20, lifecycle._MAX_MACHO_COMMAND_BYTES + 8)
+        container = self.root / "libhuge.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_malformed_slice_refuses_the_whole_universal_archive(self) -> None:
+        """One readable slice is not a licence for whatever the rest are."""
+        broken = bytearray(self.thin("/usr/lib/libz.dylib"))
+        struct.pack_into("<I", broken, 36, 0)
+        container = fat_container(
+            self.root / "libmixed.dylib", self.thin(), bytes(broken)
+        )
+        self.refused(container)
+
+
 class ProviderIdentityTests(TemporaryWorkspace):
     """The pin is checked against the install, before the install is run.
 

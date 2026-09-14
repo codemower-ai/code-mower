@@ -1637,10 +1637,36 @@ _MACHO_MAGICS: Mapping[bytes, tuple[str, int]] = {
     b"\xfe\xed\xfa\xce": (">", 28),  # 32-bit, big endian
 }
 
-#: A universal ("fat") archive: a big-endian count of architecture records, each
-#: naming the offset of a real Mach-O image inside the same file. A python.org
+#: The 64-bit thin header's width, which is also what says an image's pointers
+#: -- and so the multiple its load-command sizes must be -- are eight bytes.
+_MACHO_HEADER_BYTES_64 = 32
+
+#: A load command's own header: the command and its size.
+_MACHO_COMMAND_HEADER_BYTES = 8
+
+#: A universal ("fat") archive: a count of architecture records, each naming the
+#: offset and size of a real Mach-O image inside the same file. A python.org
 #: interpreter ships these; a Homebrew one does not.
-_MACHO_FAT_MAGICS = frozenset({b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"})
+#:
+#: The two spellings are the same header written in the two byte orders, and the
+#: magic is what says which: ``FAT_MAGIC`` reads as ``0xCAFEBABE`` big-endian, so
+#: the count and the architecture records that follow it are big-endian too;
+#: ``FAT_CIGAM`` is those four bytes reversed, and its fields are reversed with
+#: them. Reading a ``FAT_CIGAM`` header as big-endian -- which is what this did
+#: -- turns a count of 2 into 33_554_432 and a slice offset into a number with
+#: no relation to the file, so the container was not being decoded at all.
+_MACHO_FAT_ORDERS: Mapping[bytes, str] = {
+    b"\xca\xfe\xba\xbe": ">",  # FAT_MAGIC
+    b"\xbe\xba\xfe\xca": "<",  # FAT_CIGAM
+}
+
+#: One architecture record: cputype, cpusubtype, offset, size, align.
+_MACHO_FAT_ARCH_BYTES = 20
+
+#: The 64-bit universal header (``FAT_MAGIC_64``) is deliberately absent. Its
+#: records are a different width with 64-bit offsets, so admitting it would mean
+#: a second parse; an unrecognized container is refused rather than guessed at,
+#: and no runtime this boundary has had to derive ships one.
 
 #: The load commands that name a library the image will make dyld find. Weak,
 #: re-exported and upward links are included: a weak dependency that *is*
@@ -1684,6 +1710,194 @@ _NOT_MACHO_SUFFIXES = frozenset(
 _NOT_MACHO_DIRECTORIES = frozenset({"__pycache__", ".git", "include", "man", "doc", "docs"})
 
 
+@dataclass(frozen=True)
+class _MachoSlice:
+    """One structurally validated Mach-O image inside a file.
+
+    Produced only by :func:`_macho_slices`, and only after that function has
+    established that every field below names a region the file actually carries.
+    Holding the located load-command region rather than its bytes keeps the peak
+    cost of reading a universal archive one slice's block rather than all of
+    them at once.
+    """
+
+    order: str
+    """The byte order this image declared in its own magic."""
+
+    filetype: int
+    """What the image says it is: ``MH_DYLIB``, ``MH_EXECUTE``, and so on."""
+
+    ncmds: int
+    """How many load commands the region carries. Validated to walk exactly."""
+
+    commands_offset: int
+    """Absolute offset in the file of the first load command."""
+
+    sizeofcmds: int
+    """Size of the whole load-command region, bounded and known to be present."""
+
+
+def _macho_slices(path: Path) -> tuple[_MachoSlice, ...] | None:
+    """Every Mach-O image in ``path``, or ``None`` if it is not a Mach-O file.
+
+    The one structural parse: what a container *is* is decided here, and both
+    the dependency derivation and the exposure refusal read its answer rather
+    than each re-deriving a weaker version of it. ``None`` means this module
+    could not read the file as a Mach-O at all, which covers a file that is not
+    one, a truncated one, and a malformed one -- a universal header declaring
+    slices the file does not carry, slices that overlap each other or the
+    architecture table, a load-command region that runs past its slice, or a
+    command chain that does not walk to exactly the size the header declared.
+
+    Nothing here is inferred from a name, a size or a suffix. Every bound is
+    checked against the file's own length, taken from the open descriptor so
+    that what is measured is what is read. The whole parse is bounded before it
+    allocates: at most :data:`_MAX_MACHO_ARCHITECTURES` slices, each with at
+    most :data:`_MAX_MACHO_COMMAND_BYTES` of load commands, read one at a time.
+
+    A header alone is not enough to make this judgement, which is why it is made
+    here rather than at a magic and a ``filetype`` field. Those four bytes and
+    that one integer are the cheapest thing in the file for a provider that
+    writes its own linker input to reproduce over arbitrary operator-owned
+    bytes; the structure behind them is not.
+    """
+    try:
+        with path.open("rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            magic = stream.read(4)
+            order = _MACHO_FAT_ORDERS.get(magic)
+            if order is not None:
+                return _macho_fat_slices(stream, order=order, size=size)
+            if magic not in _MACHO_MAGICS:
+                return None
+            located = _macho_slice(stream, offset=0, limit=size)
+            return None if located is None else (located,)
+    except (OSError, ValueError, struct.error):
+        return None
+
+
+def _macho_fat_slices(
+    stream: io.BufferedReader, *, order: str, size: int
+) -> tuple[_MachoSlice, ...] | None:
+    """The validated slices of a universal archive, or ``None`` if malformed.
+
+    Every slice must parse, not merely one: the child is the provider's
+    interpreter, whose architecture is not necessarily this one, so a fat file
+    admitted on the strength of a readable first slice would be admitting
+    whatever the rest of it holds.
+    """
+    raw = stream.read(4)
+    if len(raw) != 4:
+        return None
+    count = struct.unpack(f"{order}I", raw)[0]
+    if not 1 <= count <= _MAX_MACHO_ARCHITECTURES:
+        return None
+    table_end = 8 + _MACHO_FAT_ARCH_BYTES * count
+    if table_end > size:
+        # The header promises more architecture records than the file carries.
+        return None
+    extents: list[tuple[int, int]] = []
+    for _ in range(count):
+        record = stream.read(_MACHO_FAT_ARCH_BYTES)
+        if len(record) != _MACHO_FAT_ARCH_BYTES:
+            return None
+        # cputype, cpusubtype, offset, size, align
+        _, _, offset, length, _ = struct.unpack(f"{order}5I", record)
+        if length <= 0 or offset < table_end or offset + length > size:
+            # A slice that starts inside the header this is reading, or that
+            # runs off the end of the file, describes a file other than this
+            # one. Both fields came out of the file, so both are bounded
+            # 32-bit values and the sum cannot overflow a Python int.
+            return None
+        extents.append((offset, length))
+    ordered = sorted(extents)
+    for (offset, length), (next_offset, _) in zip(ordered, ordered[1:]):
+        if offset + length > next_offset:
+            # Overlapping slices make "which image is this" ambiguous, and an
+            # ambiguous container is not one to answer a trust question from.
+            return None
+    slices = []
+    for offset, length in extents:
+        located = _macho_slice(stream, offset=offset, limit=length)
+        if located is None:
+            return None
+        slices.append(located)
+    return tuple(slices)
+
+
+def _macho_slice(stream: io.BufferedReader, *, offset: int, limit: int) -> _MachoSlice | None:
+    """One Mach-O image of ``limit`` bytes at ``offset``, fully validated.
+
+    ``limit`` is the slice's own extent -- the whole file for a thin image, the
+    architecture record's declared size for a fat one -- and every read is held
+    inside it. A slice may not reach past itself into another slice's bytes to
+    satisfy its header.
+    """
+    stream.seek(offset)
+    magic = stream.read(4)
+    order_and_header = _MACHO_MAGICS.get(magic)
+    if order_and_header is None:
+        return None
+    order, header_size = order_and_header
+    if limit < header_size:
+        return None
+    header = stream.read(header_size - 4)
+    if len(header) != header_size - 4:
+        return None
+    # cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags[, reserved]
+    _, _, filetype, ncmds, sizeofcmds, _ = struct.unpack(f"{order}6I", header[:24])
+    if sizeofcmds > _MAX_MACHO_COMMAND_BYTES:
+        return None
+    if header_size + sizeofcmds > limit:
+        # The declared load-command region does not fit in the image that
+        # declared it.
+        return None
+    if ncmds * _MACHO_COMMAND_HEADER_BYTES > sizeofcmds:
+        # Every load command carries at least its own command and size, so a
+        # region this small cannot hold the count claimed over it.
+        return None
+    block = stream.read(sizeofcmds)
+    if len(block) != sizeofcmds:
+        return None
+    pointer = 8 if header_size == _MACHO_HEADER_BYTES_64 else 4
+    if not _macho_commands_walk(block, order=order, ncmds=ncmds, pointer=pointer):
+        return None
+    return _MachoSlice(
+        order=order,
+        filetype=int(filetype),
+        ncmds=int(ncmds),
+        commands_offset=offset + header_size,
+        sizeofcmds=int(sizeofcmds),
+    )
+
+
+def _macho_commands_walk(block: bytes, *, order: str, ncmds: int, pointer: int) -> bool:
+    """Whether ``block`` is exactly ``ncmds`` well-formed load commands.
+
+    Exactly: the chain must consume the region the header declared, with nothing
+    left over and nothing missing. ``sizeofcmds`` is defined as the total size
+    of all the load commands, so a chain that stops short leaves bytes in a
+    region that is supposed to be nothing but commands, and a chain that would
+    run past has already lied about one command's size. Either way the image is
+    not describing itself, and this refuses rather than reading as far as it can
+    and treating the prefix as the truth.
+
+    ``pointer`` is the image's pointer width, which is the multiple dyld
+    requires each ``cmdsize`` to be: 8 for a 64-bit image, 4 for a 32-bit one.
+    """
+    position = 0
+    for _ in range(ncmds):
+        if position + _MACHO_COMMAND_HEADER_BYTES > len(block):
+            return False
+        _, size = struct.unpack_from(f"{order}2I", block, position)
+        if size < _MACHO_COMMAND_HEADER_BYTES or size % pointer:
+            return False
+        if position + size > len(block):
+            return False
+        position += size
+    return position == len(block)
+
+
 def _macho_dylib_names(path: Path) -> tuple[str, ...]:
     """Every library path a Mach-O image at ``path`` asks dyld to load.
 
@@ -1692,81 +1906,49 @@ def _macho_dylib_names(path: Path) -> tuple[str, ...]:
     installed, and a parse that reads a bounded header is a smaller thing to
     trust than a subprocess. A file that is not a Mach-O -- which is almost
     everything under an install prefix -- costs four bytes and returns nothing.
+
+    The union over a universal archive's slices rather than the slice matching
+    this process: the child is the provider's interpreter, whose architecture is
+    not necessarily this one, and every slice's dependencies are paths on the
+    same host.
+
+    A file this cannot read structurally contributes nothing. An unreadable or
+    malformed image says nothing about what the runtime needs; the build still
+    fails if it was a library the provider loads, and it fails as dyld naming
+    the image rather than as this module guessing at one.
     """
+    slices = _macho_slices(path)
+    if not slices:
+        return ()
+    names: dict[str, None] = {}
     try:
         with path.open("rb") as stream:
-            magic = stream.read(4)
-            if magic in _MACHO_FAT_MAGICS:
-                return _macho_fat_dylib_names(stream)
-            if magic not in _MACHO_MAGICS:
-                return ()
-            stream.seek(0)
-            return _macho_slice_dylib_names(stream, 0)
+            for located in slices:
+                stream.seek(located.commands_offset)
+                block = stream.read(located.sizeofcmds)
+                if len(block) != located.sizeofcmds:
+                    return ()
+                _collect_dylib_names(block, order=located.order, ncmds=located.ncmds, into=names)
     except (OSError, ValueError, struct.error):
-        # An unreadable or truncated image says nothing about what the runtime
-        # needs. The build still fails if it was a library the provider loads,
-        # and it fails as dyld naming the image rather than as this module
-        # guessing at one.
         return ()
-
-
-def _macho_fat_dylib_names(stream: io.BufferedReader) -> tuple[str, ...]:
-    """The union over a universal archive's slices.
-
-    The union rather than the slice matching this process: the child is the
-    provider's interpreter, whose architecture is not necessarily this one, and
-    every slice's dependencies are paths on the same host.
-    """
-    count = struct.unpack(">I", stream.read(4))[0]
-    if count > _MAX_MACHO_ARCHITECTURES:
-        return ()
-    offsets = []
-    for _ in range(count):
-        record = stream.read(20)
-        if len(record) != 20:
-            return ()
-        # cputype, cpusubtype, offset, size, align
-        offsets.append(struct.unpack(">5I", record)[2])
-    names: dict[str, None] = {}
-    for offset in offsets:
-        for name in _macho_slice_dylib_names(stream, offset):
-            names.setdefault(name, None)
     return tuple(names)
 
 
-def _macho_slice_dylib_names(stream: io.BufferedReader, offset: int) -> tuple[str, ...]:
-    """The ``LC_LOAD_DYLIB`` family of one Mach-O image beginning at ``offset``."""
-    stream.seek(offset)
-    magic = stream.read(4)
-    order_and_header = _MACHO_MAGICS.get(magic)
-    if order_and_header is None:
-        return ()
-    order, header_size = order_and_header
-    header = stream.read(header_size - 4)
-    if len(header) != header_size - 4:
-        return ()
-    # cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags[, reserved]
-    ncmds, sizeofcmds = struct.unpack(f"{order}6I", header[:24])[3:5]
-    if sizeofcmds > _MAX_MACHO_COMMAND_BYTES:
-        return ()
-    block = stream.read(sizeofcmds)
-    names: dict[str, None] = {}
+def _collect_dylib_names(
+    block: bytes, *, order: str, ncmds: int, into: dict[str, None]
+) -> None:
+    """The ``LC_LOAD_DYLIB`` family in an already-validated command region."""
     position = 0
     for _ in range(ncmds):
-        if position + 8 > len(block):
-            break
         command, size = struct.unpack_from(f"{order}2I", block, position)
-        if size < 8 or position + size > len(block):
-            break
         if command in _MACHO_DYLIB_COMMANDS and size >= 24:
             name_offset = struct.unpack_from(f"{order}I", block, position + 8)[0]
             if 8 <= name_offset < size:
                 raw = block[position + name_offset : position + size]
                 name = raw.split(b"\0", 1)[0].decode("utf-8", "replace")
                 if name:
-                    names.setdefault(name, None)
+                    into.setdefault(name, None)
         position += size
-    return tuple(names)
 
 
 #: The Mach-O file types dyld will open for an ``LC_LOAD_DYLIB``-family command:
@@ -1778,66 +1960,18 @@ def _macho_slice_dylib_names(stream: io.BufferedReader, offset: int) -> tuple[st
 _MACHO_DYLIB_FILETYPES = frozenset({0x6, 0x9})
 
 
-def _macho_slice_filetype(stream: io.BufferedReader, offset: int) -> int | None:
-    """The ``filetype`` field of one Mach-O image beginning at ``offset``."""
-    stream.seek(offset)
-    magic = stream.read(4)
-    order_and_header = _MACHO_MAGICS.get(magic)
-    if order_and_header is None:
-        return None
-    order, header_size = order_and_header
-    header = stream.read(header_size - 4)
-    if len(header) != header_size - 4:
-        return None
-    # cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags[, reserved]
-    return int(struct.unpack(f"{order}6I", header[:24])[2])
-
-
 def _macho_filetypes(path: Path) -> tuple[int, ...] | None:
     """Every slice's declared Mach-O ``filetype``, or ``None`` for a non-Mach-O.
 
     The two answers are different refusals for the caller, so they are kept
     apart rather than collapsed into a falsehood. ``None`` is a file whose
-    container this module could not read at all -- not a Mach-O, truncated, a
-    universal header declaring slices it does not carry. A tuple is a file it
-    did read, and whose own declaration of what it is the caller then holds to
-    the shared-library rule.
-
-    Every slice of a universal archive is read and every slice must parse: the
-    child is the provider's interpreter, whose architecture is not necessarily
-    this one, so a fat file admitted on the strength of a single readable slice
-    would be admitting whatever the other slices are.
+    container this module could not read as a Mach-O -- not one at all,
+    truncated, or structurally malformed. A tuple is a file whose structure it
+    did validate, and whose own declaration of what it is the caller then holds
+    to the shared-library rule.
     """
-    try:
-        with path.open("rb") as stream:
-            magic = stream.read(4)
-            if magic in _MACHO_FAT_MAGICS:
-                raw = stream.read(4)
-                if len(raw) != 4:
-                    return None
-                count = struct.unpack(">I", raw)[0]
-                if not 1 <= count <= _MAX_MACHO_ARCHITECTURES:
-                    return None
-                offsets = []
-                for _ in range(count):
-                    record = stream.read(20)
-                    if len(record) != 20:
-                        return None
-                    # cputype, cpusubtype, offset, size, align
-                    offsets.append(struct.unpack(">5I", record)[2])
-                filetypes = []
-                for offset in offsets:
-                    filetype = _macho_slice_filetype(stream, offset)
-                    if filetype is None:
-                        return None
-                    filetypes.append(filetype)
-                return tuple(filetypes)
-            if magic not in _MACHO_MAGICS:
-                return None
-            filetype = _macho_slice_filetype(stream, 0)
-            return None if filetype is None else (filetype,)
-    except (OSError, ValueError, struct.error):
-        return None
+    slices = _macho_slices(path)
+    return None if slices is None else tuple(located.filetype for located in slices)
 
 
 def _scan_images(root: Path, *, budget: list[int]) -> Iterator[Path]:
@@ -1914,11 +2048,13 @@ def _linked_runtime_libraries(
     exposing the manager's ``etc`` or ``var`` beside it is the operator data
     this boundary exists to withhold. Every added path is put through the same
     ownership and broad-exposure refusals as any other exposure, and a path that
-    is not a bounded regular file -- or that does not declare itself a shared
-    library in its own Mach-O header -- is refused rather than exposed on the
+    is not a bounded regular file -- or that is not a structurally valid Mach-O
+    declaring itself a shared library -- is refused rather than exposed on the
     strength of an image having named it. That last check is what keeps the
     dependency *names*, which come out of somebody else's image, from choosing
-    which of the operator's files this boundary exposes.
+    which of the operator's files this boundary exposes, and it is the whole
+    container rather than a magic and a ``filetype`` field that has to hold up:
+    see :func:`_macho_slices`.
 
     Linux is unchanged: an ELF runtime's libraries live under the ``/lib`` and
     ``/usr/lib`` directories the read-only runtime already names, and this
