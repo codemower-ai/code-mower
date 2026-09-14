@@ -516,6 +516,7 @@ def _init_main(argv: list[str]) -> int:
     if (
         argv[:1] == ["auth"]
         or _has_flag(argv, "--easy")
+        or _has_flag(argv, "--packaged-starter")
         or _has_positional_config(argv, options_with_values)
     ):
         return code_mower_init.main(argv)

@@ -41,6 +41,7 @@ _auth_probe_output_detail = _doctor_checks.auth_probe_output_detail
 _check_cloud_token_surface = _doctor_checks.check_cloud_token_surface
 _evaluate_json_probe = _doctor_checks.evaluate_json_probe
 _local_cli_probe_remediation = _doctor_checks.local_cli_probe_remediation
+render_doctor_summary = _doctor_checks.render_doctor_summary
 render_doctor_text = _doctor_checks.render_doctor_text
 resolve_doctor_config_path = _doctor_checks.resolve_doctor_config_path
 resolve_doctor_config_path_for_script = _doctor_checks.resolve_doctor_config_path_for_script
@@ -73,10 +74,19 @@ def _doctor_config_source_label(
     config_path: Path,
     easy: bool,
     cwd: Path | None = None,
+    packaged_starter: bool = False,
 ) -> str:
-    """Classify the config source for adoption-facing doctor output."""
+    """Classify the config source for adoption-facing doctor output.
+
+    ``--packaged-starter`` names the maintained package resource directly, so it
+    classifies as the starter without consulting cwd-local files. ``--easy`` is
+    only a first-run profile alias whose starter fallback depends on what the
+    working directory happens to contain, so it stays a separate question.
+    """
 
     cwd = cwd or Path.cwd()
+    if packaged_starter:
+        return "packaged_starter"
     if config_arg != "code-mower.yml":
         return "explicit_config"
     if config_path.name == "code-mower.example.yml" and easy:
@@ -132,7 +142,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--context-online', action='store_true', help='Deliberately verify selected context authorization; never searches')
     parser.add_argument('--context-state-dir', type=Path, help='Private context store outside repositories')
-    parser.add_argument("config", nargs="?", default="code-mower.yml")
+    # Defaulted after parsing so that an explicit positional selection stays
+    # distinguishable from the default even when it names the same file.
+    parser.add_argument("config", nargs="?", default=None)
     parser.add_argument(
         "--provider-templates",
         default=code_mower_package.DEFAULT_PROVIDER_TEMPLATES,
@@ -144,6 +156,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "first-run alias for --profile recommended; if code-mower.yml is "
             "absent, use the packaged example config"
+        ),
+    )
+    parser.add_argument(
+        "--packaged-starter",
+        action="store_true",
+        help=(
+            "check the maintained packaged starter config, wherever this "
+            "installation keeps it; keeps the selected --profile and ignores "
+            "cwd-local config files"
         ),
     )
     parser.add_argument(
@@ -301,6 +322,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--operational-evidence", type=Path,
         help="Include closed local acceptance observations; never polls, retries or uploads",
     )
+    detail_group = parser.add_mutually_exclusive_group()
+    detail_group.add_argument(
+        "--concise",
+        action="store_true",
+        help=(
+            "render a posture-scoped summary: every check still runs, but text "
+            "output leads with active failures and owner actions and counts the "
+            "remaining warnings by group"
+        ),
+    )
+    detail_group.add_argument(
+        "--advanced",
+        action="store_true",
+        help="render every check in the text output (the default detail level)",
+    )
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -316,6 +352,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     _apply_first_run_defaults(args)
     if args.easy and args.profile is None:
         args.profile = "recommended"
+    explicit_config = args.config is not None
+    if args.config is None:
+        args.config = "code-mower.yml"
+    if args.packaged_starter and explicit_config:
+        # Two contradictory explicit selections. Ignoring either one would check a
+        # configuration the caller did not ask for, so neither is guessed at.
+        print(
+            "error: --packaged-starter selects the maintained packaged starter; "
+            f"remove it or the explicit config {args.config!r}",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         repo_slug = ""
@@ -327,7 +375,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             repo_slug = detect_repo_slug(Path.cwd())
             repo_source = "git_remote" if repo_slug else ""
         provider_templates_path = resolve_doctor_provider_templates_path(args.provider_templates)
-        config_path = resolve_doctor_config_path(args.config, easy=args.easy)
+        config_path = (
+            code_mower_package.packaged_starter_config_path()
+            if args.packaged_starter
+            else resolve_doctor_config_path(args.config, easy=args.easy)
+        )
         report = run_doctor(
             config_path=config_path,
             provider_templates_path=provider_templates_path,
@@ -338,6 +390,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config_arg=args.config,
                 config_path=config_path,
                 easy=args.easy,
+                packaged_starter=args.packaged_starter,
             ),
             adoption=args.adoption,
             adoption_posture=args.adoption_posture,
@@ -385,8 +438,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),)
         report = replace(report, checks=report.checks + evidence_checks)
 
+    # JSON keeps the complete report, and the explicit advanced and campaign
+    # modes keep the full text view: a concise run only changes what a default
+    # text run reads first.
+    concise = args.concise and not args.advanced and not args.campaign
     if args.json:
         print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
+    elif concise:
+        print(render_doctor_summary(report), end="")
     else:
         print(render_doctor_text(report), end="")
     if report.failures:

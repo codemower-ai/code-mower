@@ -63,7 +63,7 @@ from .models import (
     DoctorReport,
     is_promotion_todo_check,
 )
-from .output import doctor_output_group, render_doctor_text
+from .output import doctor_output_group, render_doctor_summary, render_doctor_text
 from .presets import (
     apply_first_run_defaults,
     resolve_doctor_config_path,
@@ -190,6 +190,7 @@ __all__ = [
     "local_cli_probe_remediation",
     "normalize_repo_slug",
     "provider_template_coverage",
+    "render_doctor_summary",
     "render_doctor_text",
     "resolve_doctor_config_path",
     "resolve_doctor_config_path_for_script",
