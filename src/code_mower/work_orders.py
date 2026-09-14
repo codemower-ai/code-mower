@@ -169,7 +169,7 @@ DEFAULT_ROLE_LENSES = (
     "operability",
     "devils-advocate",
 )
-DEFAULT_REVIEW_LANES = ("codex-audit", "claude-audit", "gitar")
+DEFAULT_REVIEW_LANES = ("codex-audit", "claude-audit")
 DEFAULT_MAX_WORK_ORDER_BATCH_ITEMS = 10
 REVIEWER_CHECK_KEYWORDS = (
     "audit",
