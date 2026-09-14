@@ -29,7 +29,10 @@ import sys
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, Mapping
 from unittest import mock
+
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -426,53 +429,99 @@ class SaaSEntrypointsCarryExactHeadLineage(unittest.TestCase):
 
 
 class GeneratedProvenanceJobCarriesTheAuthorityContract(unittest.TestCase):
-    """The generated job must hand auto-record a usable trust rule."""
+    """The generated job's own inputs must decide marker trust.
+
+    This job runs on ``pull_request``, so where the authority list comes from
+    is the whole question. It is rendered into the workflow from the reviewed
+    configuration the repository installed, through the same replacement map
+    the gate and the labelers go through. Nothing is read from the proposed
+    head at job time: a contributor who can edit a checked-out configuration
+    must not be able to name themselves an authority and have their own
+    lineage marker believed.
+    """
 
     TEMPLATES = (
         ROOT / "templates/workflows/builder-provenance.yml.j2",
         ROOT / "src/code_mower/templates/workflows/builder-provenance.yml.j2",
     )
 
-    def _rendered(self, path: Path) -> str:
-        return (
-            path.read_text(encoding="utf-8")
-            .replace("{% raw %}", "")
-            .replace("{% endraw %}", "")
+    def _render(self, path: Path, *, authorities: str) -> str:
+        """The workflow `init` actually generates for a configured repository."""
+
+        from code_mower import init
+
+        return init._render_workflow_template(
+            path.read_text(encoding="utf-8"),
+            {"decision_authorities": authorities},
         )
 
-    def test_both_maintained_templates_render_the_same_contract(self):
-        first, second = (self._rendered(path) for path in self.TEMPLATES)
+    def _job_env(self, rendered: str) -> dict:
+        workflow = yaml.safe_load(rendered)
+        return dict(workflow.get("env") or {})
+
+    def test_both_maintained_templates_generate_the_same_workflow(self):
+        first, second = (
+            self._render(path, authorities=AUTHORITY) for path in self.TEMPLATES
+        )
         self.assertEqual(first, second)
-        for text in (first, second):
-            self.assertIn("CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE:", text)
-            self.assertIn("vars.CODE_MOWER_DECISION_AUTHORITIES", text)
-            self.assertIn("decision_authorities_from_config", text)
-            self.assertIn("CODE_MOWER_DECISION_AUTHORITIES=", text)
+        self.assertEqual(
+            self.TEMPLATES[0].read_text(encoding="utf-8"),
+            self.TEMPLATES[1].read_text(encoding="utf-8"),
+        )
 
-    def _authority_step_source(self) -> str:
-        text = self._rendered(self.TEMPLATES[0])
-        body = text.split("python - <<'PY'", 1)[1].split("PY\n", 1)[0]
-        return "\n".join(line[10:] for line in body.splitlines()[1:])
+    def test_the_configured_authority_list_is_rendered_as_a_literal(self):
+        for path in self.TEMPLATES:
+            with self.subTest(template=path.name):
+                env = self._job_env(self._render(path, authorities=AUTHORITY))
+                self.assertEqual(env["CODE_MOWER_DECISION_AUTHORITIES"], AUTHORITY)
+                # The repository variable still overrides it, unrendered.
+                self.assertIn(
+                    "vars.CODE_MOWER_DECISION_AUTHORITIES",
+                    env["CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE"],
+                )
 
-    def _authorities_from_generated_step(self, config_text: str) -> str:
-        """Run the generated job's own authority step over a repo config."""
+    def test_a_multi_authority_list_survives_rendering_intact(self):
+        env = self._job_env(
+            self._render(self.TEMPLATES[0], authorities=f"{AUTHORITY},second-owner")
+        )
+        self.assertEqual(
+            env["CODE_MOWER_DECISION_AUTHORITIES"], f"{AUTHORITY},second-owner"
+        )
 
-        with _private_root(self) as root:
-            (Path(root) / "code-mower.yml").write_text(config_text, encoding="utf-8")
-            captured = _Capture()
-            cwd = os.getcwd()
-            os.chdir(root)
-            try:
-                with mock.patch("sys.stdout", captured):
-                    exec(compile(self._authority_step_source(), "<job>", "exec"), {})
-            finally:
-                os.chdir(cwd)
-        line = captured.text().strip()
-        self.assertTrue(line.startswith("CODE_MOWER_DECISION_AUTHORITIES="))
-        self.assertEqual(len(line.splitlines()), 1, "one GITHUB_ENV assignment")
-        return line.split("=", 1)[1]
+    def test_the_generated_job_reads_no_configuration_from_the_proposed_head(self):
+        """The defect this replaced: authority resolved from the PR checkout."""
 
-    def _auto_record(self, *, authorities: str, comments) -> dict:
+        for path in self.TEMPLATES:
+            with self.subTest(template=path.name):
+                rendered = self._render(path, authorities=AUTHORITY)
+                self.assertNotIn("actions/checkout", rendered)
+                self.assertNotIn("code-mower.yml", rendered)
+                self.assertNotIn("decision_authorities_from_config", rendered)
+                # No step may add to the job environment after it is rendered:
+                # that is the only way the proposed head could reach trust.
+                self.assertNotIn("GITHUB_ENV", rendered)
+                steps = yaml.safe_load(rendered)["jobs"]["auto-record"]["steps"]
+                self.assertEqual(
+                    [
+                        step["uses"].split("@")[0]
+                        for step in steps
+                        if "uses" in step
+                    ],
+                    [
+                        "actions/setup-python",
+                        "actions/upload-artifact",
+                        "actions/upload-artifact",
+                    ],
+                )
+                for step in steps:
+                    if "run" not in step:
+                        continue
+                    self.assertNotIn("load_config", step["run"])
+                    self.assertNotIn("import ", step["run"])
+
+    def _auto_record(self, *, env: Mapping[str, Any], comments, cwd=None) -> dict:
+        """Run auto-record exactly as the generated job's inputs configure it."""
+
         from code_mower import builder_runs
 
         with _private_root(self) as root:
@@ -483,60 +532,90 @@ class GeneratedProvenanceJobCarriesTheAuthorityContract(unittest.TestCase):
             comments_json = Path(root) / "comments.json"
             comments_json.write_text(json.dumps(comments), encoding="utf-8")
             output = Path(root) / "run.json"
-            env = {
-                "CODE_MOWER_DECISION_AUTHORITIES": authorities,
+            job_env = {
+                "CODE_MOWER_DECISION_AUTHORITIES": "",
                 "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+                **{str(key): str(value) for key, value in env.items()},
             }
             captured = _Capture()
-            with mock.patch.dict(os.environ, env, clear=False), \
-                    mock.patch("sys.stdout", captured):
-                code = builder_runs.main([
-                    "auto-record",
-                    "--pr-json", str(pr_json),
-                    "--repo", REPO,
-                    "--comments-json", str(comments_json),
-                    "--output", str(output),
-                    "--force",
-                    "--json",
-                ])
+            previous = os.getcwd()
+            os.chdir(cwd or previous)
+            try:
+                with mock.patch.dict(os.environ, job_env, clear=False), \
+                        mock.patch("sys.stdout", captured):
+                    code = builder_runs.main([
+                        "auto-record",
+                        "--pr-json", str(pr_json),
+                        "--repo", REPO,
+                        "--comments-json", str(comments_json),
+                        "--output", str(output),
+                        "--force",
+                        "--json",
+                    ])
+            finally:
+                os.chdir(previous)
             self.assertEqual(code, 0)
-            payload = json.loads(captured.text())
-            payload["_event"] = (
-                json.loads(output.read_text(encoding="utf-8"))
-                if output.is_file()
-                else {}
-            )
-            return payload
+            return json.loads(captured.text())
 
-    def test_the_generated_step_resolves_configured_authorities(self):
-        resolved = self._authorities_from_generated_step(
-            "decisions:\n  authorities:\n    - codemower-ai\n"
-        )
-        self.assertEqual(resolved, AUTHORITY)
+    def _generated_env(self, *, authorities: str, variable: str = "") -> dict:
+        """The job environment GitHub Actions would compose for this workflow.
+
+        The rendered literal is the workflow's `env`; the repository variable
+        expands into the override field, which is empty when it is unset.
+        """
+
+        env = self._job_env(self._render(self.TEMPLATES[0], authorities=authorities))
+        env["CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE"] = variable
+        env.pop("CODE_MOWER_PACKAGE_SPEC", None)
+        return env
 
     def test_a_generated_run_attributes_the_takeover_to_its_current_writer(self):
-        authorities = self._authorities_from_generated_step(
-            "decisions:\n  authorities:\n    - codemower-ai\n"
-        )
         payload = self._auto_record(
-            authorities=authorities, comments=[marker_comment()]
+            env=self._generated_env(authorities=AUTHORITY),
+            comments=[marker_comment()],
         )
         self.assertEqual(payload["status"], "recorded")
         # The verified current writer, not the Devin account that opened it.
         self.assertEqual(payload["executor"], "chatgpt-codex-connector")
 
+    def test_a_pull_request_provided_configuration_cannot_grant_trust(self):
+        """A hostile `code-mower.yml` on the proposed head buys nothing.
+
+        The rendered job reaches no configuration at all -- asserted above --
+        and auto-record itself resolves trust only from the environment the
+        job was rendered with, never from the tree it is run in.
+        """
+
+        hostile = git_free_tempdir(self)
+        (hostile / "code-mower.yml").write_text(
+            f"decisions:\n  authorities:\n    - {OUTSIDER}\n", encoding="utf-8"
+        )
+        payload = self._auto_record(
+            env=self._generated_env(authorities=""),
+            comments=[marker_comment(OUTSIDER)],
+            cwd=hostile,
+        )
+        self.assertNotEqual(payload.get("executor"), "chatgpt-codex-connector")
+
+    def test_the_repository_variable_still_overrides_the_rendered_list(self):
+        # Rendered authority alone would refuse this marker; the variable is
+        # the reviewed escape hatch and still wins, as it does for the gate.
+        payload = self._auto_record(
+            env=self._generated_env(authorities="someone-else", variable=AUTHORITY),
+            comments=[marker_comment()],
+        )
+        self.assertEqual(payload["executor"], "chatgpt-codex-connector")
+
     def test_empty_authorities_trust_no_marker(self):
-        resolved = self._authorities_from_generated_step("owner_surface: {}\n")
-        self.assertEqual(resolved, "")
-        payload = self._auto_record(authorities=resolved, comments=[marker_comment()])
+        env = self._generated_env(authorities="")
+        self.assertEqual(env["CODE_MOWER_DECISION_AUTHORITIES"], "")
+        payload = self._auto_record(env=env, comments=[marker_comment()])
         self.assertNotEqual(payload.get("executor"), "chatgpt-codex-connector")
 
     def test_an_untrusted_marker_is_discarded(self):
-        authorities = self._authorities_from_generated_step(
-            "decisions:\n  authorities:\n    - codemower-ai\n"
-        )
         payload = self._auto_record(
-            authorities=authorities, comments=[marker_comment(OUTSIDER)]
+            env=self._generated_env(authorities=AUTHORITY),
+            comments=[marker_comment(OUTSIDER)],
         )
         self.assertNotEqual(payload.get("executor"), "chatgpt-codex-connector")
 
