@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import sys
 from pathlib import Path
@@ -296,6 +297,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="directory with provider credential profiles (defaults to ~/.config/code-mower)",
     )
+    parser.add_argument(
+        "--operational-evidence", type=Path,
+        help="Include closed local acceptance observations; never polls, retries or uploads",
+    )
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -358,6 +363,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (code_mower_config.ConfigError, ValueError) as exc:
         print(_doctor_config_error_message(exc, config_arg=args.config), file=sys.stderr)
         return 1
+
+    if args.operational_evidence is not None:
+        from code_mower import operational_evidence
+        try:
+            evidence = operational_evidence.acceptance_report(
+                operational_evidence.read_record(args.operational_evidence)
+            )
+            evidence_checks = tuple(
+                DoctorCheck(
+                    name="operational." + item["id"], status=item["status"],
+                    message=item["message"],
+                    detail={key: item[key] for key in ("reason", "source", "observed_at", "coverage")},
+                )
+                for item in evidence["checks"]
+            )
+        except operational_evidence.EvidenceError:
+            evidence_checks = (DoctorCheck(
+                name="operational.input", status=STATUS_FAIL,
+                message="operational_evidence_invalid",
+            ),)
+        report = replace(report, checks=report.checks + evidence_checks)
 
     if args.json:
         print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
