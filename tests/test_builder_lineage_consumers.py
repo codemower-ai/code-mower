@@ -701,5 +701,143 @@ class RoleEligibilityIsSeparate(unittest.TestCase):
         self.assertNotIn("role", json.dumps(decision))
 
 
+VENDORED_MIRRORS = ("audit_labeler_lib.py", "builder_lineage.py", "decisions.py")
+
+#: Exactly what a generated gate runner executes: the repository's own
+#: ``tools/`` copies, imported as the ``tools`` package, with no Code Mower
+#: package and nothing from ``src/`` reachable. Asserting against the package
+#: source would pass while the vendored copy raises ``NameError``.
+VENDORED_PROBE = '''
+import json
+
+import tools.audit_labeler_lib as labeler
+import tools.builder_lineage as lineage
+
+REPO = "codemower-ai/code-mower"
+PR = 959
+BRANCH = "devin/959-thing"
+OPENED = "a" * 40
+TAKEN = "b" * 40
+FIXED = "c" * 40
+
+handoff = lineage.ContributionEpisode(
+    sequence=1, kind=lineage.HANDOFF_KIND, repo=REPO, pr_number=PR, branch=BRANCH,
+    source_lane="devin", destination_lane="codex", expected_head=OPENED,
+    resulting_head=TAKEN, writer_state="terminated",
+)
+continued = lineage.continuation_episode(handoff, lane="codex", resulting_head=FIXED)
+marker = lineage.lineage_comment_marker([handoff, continued])
+
+# The vendored decisions copy decides who may publish lineage at all.
+authorities = labeler.lineage_decision_authorities()
+trusted = labeler.lineage_marker_author_trust(authorities=authorities)
+
+# One authorised republication per round, exactly as the producer posts it.
+published = labeler.published_lineage_episodes(
+    [{"user": {"login": "codemower-ai"}, "body": marker}] * 20
+    + [{"user": {"login": "codex[bot]"}, "body": marker}],
+    trusted_author=trusted,
+)
+resolved = lineage.resolve_lineage(
+    repo=REPO, pr_number=PR, branch=BRANCH, head_sha=FIXED, episodes=published,
+    opener_lane="devin", label_lanes=["codex"],
+)
+print(json.dumps({
+    "authorities": list(authorities),
+    "arrivals": len(published),
+    "status": resolved.status,
+    "reason": resolved.reason,
+    "writer": resolved.current_writer,
+    "contributors": list(resolved.contributors),
+    "episodes": resolved.episodes,
+}))
+'''
+
+
+class VendoredToolMirrors(unittest.TestCase):
+    """The shipped ``tools/`` copies must be the canonical implementations.
+
+    CI lints and a generated product gate imports the vendored files, not the
+    package ones. Drift here is invisible to every assertion that reaches into
+    ``src/code_mower``, and it has already produced an F821 plus a runtime
+    ``NameError`` in published-lineage parsing.
+    """
+
+    def test_vendored_copies_match_their_canonical_sources(self):
+        for name in VENDORED_MIRRORS:
+            with self.subTest(module=name):
+                canonical = Path("src/code_mower") / name
+                vendored = Path("tools") / name
+                self.assertEqual(
+                    vendored.read_text(encoding="utf-8"),
+                    canonical.read_text(encoding="utf-8"),
+                    f"tools/{name} has drifted from src/code_mower/{name}",
+                )
+
+    def test_vendored_labeler_imports_every_name_it_uses(self):
+        """The F821: LINEAGE_MARKER was used but never imported here."""
+
+        source = Path("tools/audit_labeler_lib.py").read_text(encoding="utf-8")
+        self.assertIn("LINEAGE_MARKER not in body", source)
+        # One import per branch: packaged relative, copied-tools fallback and
+        # direct helper execution. Any of the three missing is an F821.
+        self.assertEqual(3, source.count("LINEAGE_MARKER,"))
+
+    def _run_vendored_probe(self, environment_extra):
+        root = git_free_tempdir(self)
+        tools = root / "tools"
+        tools.mkdir()
+        (tools / "__init__.py").write_text("", encoding="utf-8")
+        for target, package_copy_from, _, _ in init.PRODUCT_SUPPORT_FILES:
+            if not (target.startswith("tools/") and target.endswith(".py")):
+                continue
+            vendored = Path(target)
+            if not vendored.exists():  # templated wrappers, not vendored modules
+                continue
+            (root / target).write_bytes(vendored.read_bytes())
+        (root / "probe.py").write_text(VENDORED_PROBE, encoding="utf-8")
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {"PYTHONPATH", "PYTHONHOME"}
+            and not key.startswith("CODE_MOWER_DECISION_AUTHORITIES")
+        }
+        environment.update(environment_extra)
+        result = subprocess.run(
+            [sys.executable, "probe.py"],
+            cwd=root, capture_output=True, text=True, timeout=120, env=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout.strip().splitlines()[-1])
+
+    def test_vendored_modules_parse_markers_and_replay_at_the_exact_head(self):
+        """Marker parsing, authority override and idempotent replay, vendored."""
+
+        payload = self._run_vendored_probe({
+            # The override the canonical decisions module honours. The stale
+            # vendored copy read only the base variable, so it would trust the
+            # wrong account and read no published episodes at all.
+            "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "codemower-ai",
+            "CODE_MOWER_DECISION_AUTHORITIES": "someone-else",
+        })
+        self.assertEqual(payload["authorities"], ["codemower-ai"])
+        # Twenty authorised republications of a two-episode chain; the audit
+        # bot's byte-identical marker is not an authority and is not read.
+        self.assertEqual(payload["arrivals"], 40)
+        self.assertEqual(payload["status"], "resolved", payload["reason"])
+        self.assertEqual(payload["episodes"], 2)
+        self.assertEqual(payload["writer"], "codex")
+        self.assertEqual(payload["contributors"], ["devin", "codex"])
+
+    def test_vendored_authority_override_is_the_only_marker_trust(self):
+        """No override configured, no authority: nothing is read or resolved."""
+
+        payload = self._run_vendored_probe({"CODE_MOWER_DECISION_AUTHORITIES": ""})
+        self.assertEqual(payload["authorities"], [])
+        self.assertEqual(payload["arrivals"], 0)
+        # No episodes at all is the ordinary single-builder answer, not a guess.
+        self.assertEqual(payload["episodes"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

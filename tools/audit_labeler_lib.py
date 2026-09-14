@@ -27,6 +27,7 @@ if __package__:
         from . import decisions as code_mower_decisions
         from . import context_review as code_mower_context_review
         from .builder_lineage import (
+            LINEAGE_MARKER,
             Lineage,
             LineageError,
             episodes_from_comment_body,
@@ -38,6 +39,7 @@ if __package__:
         import decisions as code_mower_decisions  # type: ignore
         import context_review as code_mower_context_review  # type: ignore
         from builder_lineage import (  # type: ignore
+            LINEAGE_MARKER,
             Lineage,
             LineageError,
             episodes_from_comment_body,
@@ -49,6 +51,7 @@ else:  # pragma: no cover - direct helper execution
     import decisions as code_mower_decisions  # type: ignore
     import context_review as code_mower_context_review  # type: ignore
     from builder_lineage import (  # type: ignore
+        LINEAGE_MARKER,
         Lineage,
         LineageError,
         episodes_from_comment_body,
