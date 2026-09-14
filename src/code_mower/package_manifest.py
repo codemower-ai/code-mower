@@ -318,6 +318,8 @@ PACKAGE_FILES = (
     ("src/code_mower/migration_rehearsal.py", "src/code_mower/migration_rehearsal.py", "core"),
     ("tools/code_mower_next_steps.py", "src/code_mower/next_steps.py", "core"),
     ("src/code_mower/lane_delivery.py", "src/code_mower/lane_delivery.py", "core"),
+    ("src/code_mower/lane_handoff.py", "src/code_mower/lane_handoff.py", "core"),
+    ("src/code_mower/lane_runtime.py", "src/code_mower/lane_runtime.py", "core"),
     ("src/code_mower/participants.py", "src/code_mower/participants.py", "core"),
     ("src/code_mower/provider_capabilities.py", "src/code_mower/provider_capabilities.py", "core"),
     ("src/code_mower/provider_capabilities.schema.json", "src/code_mower/provider_capabilities.schema.json", "schema"),

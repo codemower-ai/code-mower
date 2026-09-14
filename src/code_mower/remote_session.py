@@ -103,7 +103,10 @@ class FakeProvider:
             value = locked.read()
             if value is None:
                 raise RemoteError("provider_unavailable")
-            return Session(binding, value["state"], value["reason"], value["result"])
+            writer = value.get("writer_state", {
+                "complete": "terminated", "terminated": "terminated", "suspended": "suspended",
+            }.get(value["state"], "running"))
+            return Session(binding, value["state"], value["reason"], value["result"], writer)
 
     def set_state(self, binding, state, *, reason="", result=None):
         """Local simulation control for embedding/tests; no public result channel."""
@@ -181,6 +184,48 @@ class RemoteSessions:
     def __init__(self, root: Path, provider: Provider):
         self.store = ContextStore(root)
         self.provider = provider
+
+    def writer_state(self, session: str, *, repo: str) -> str:
+        """Observe the bound writer, never infer exit from collected results."""
+        with self.store.locked(_key(session)) as locked:
+            record = locked.read()
+            self._writer_binding(record, repo)
+            if any(op["state"] == "pending" for op in record["operations"].values()):
+                return "unknown"
+            return self._writer_observation(record)
+
+    def _writer_binding(self, record: dict | None, repo: str) -> None:
+        if (not record or record.get("schema") != SCHEMA
+                or record.get("provider") != self.provider.name
+                or record.get("account") != self.provider.account
+                or record.get("repo", "").lower() != repo.lower()
+                or not repo or not record.get("binding")):
+            raise RemoteError("binding_mismatch")
+
+    def _writer_observation(self, record: dict) -> str:
+        state = _call(self.provider.get, record["binding"]).writer_state
+        return state if state in {"running", "suspended", "terminated"} else "unknown"
+
+    def retire_writer(self, session: str, *, repo: str, request: str) -> str:
+        """Cancel through the existing durable lifecycle and prevent later resumes.
+
+        Cancellation acceptance is insufficient: a fresh provider read must prove
+        quiescence. Pending/uncertain writes remain owner work, never paid retries.
+        """
+        state = self.writer_state(session, repo=repo)
+        if state not in {"suspended", "terminated"}:
+            self.run("cancel", session, request=request, apply=True)
+        with self.store.locked(_key(session)) as locked:
+            record = locked.read()
+            self._writer_binding(record, repo)
+            if any(op["state"] == "pending" for op in record["operations"].values()):
+                raise RemoteError("writer_quiescence_unverified")
+            state = self._writer_observation(record)
+            if state not in {"suspended", "terminated"}:
+                raise RemoteError("writer_quiescence_unverified")
+            record["writer_retired"] = True
+            locked.write(record)
+            return state
 
     def observed_acu(self, session: str) -> float | None:
         """Read billing metadata for the durable binding, never completion assertions."""
@@ -264,6 +309,7 @@ class RemoteSessions:
                     raise RemoteError("session_not_found")
                 record = dict(schema=SCHEMA, provider=self.provider.name,
                               account=self.provider.account, binding=None, checkpoint=None,
+                              repo=repo,
                               fingerprint=_digest([prose, repo, limit]), state="uncertain",
                               reason="reconcile_dispatch", next_action="status", operations={},
                               counts=dict(dispatch=0, message=0, cancel=0, collect=0))
@@ -281,6 +327,8 @@ class RemoteSessions:
                     raise RemoteError("reconcile_dispatch: run session status; never redispatch") from None
             if command == "dispatch" and record["fingerprint"] != _digest([prose, repo, limit]):
                 raise RemoteError("request_conflict: reuse the original dispatch input")
+            if command == "message" and record.get("writer_retired"):
+                raise RemoteError("writer_retired: start a separately authorized work item")
             try:
                 if not record["binding"]:
                     if record["checkpoint"]:

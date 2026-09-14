@@ -1154,7 +1154,8 @@ class RecoveryHandoffTests(unittest.TestCase):
             run(argv())
         self.assertEqual(missing.exception.code, 2)
 
-        self.assertEqual(run([*argv(), "--source-branch-prefix", "codex/"]), 0)
+        # Prefix/head validation alone no longer authorizes a live takeover.
+        self.assertEqual(run([*argv(), "--source-branch-prefix", "codex/"]), 2)
         self.assertEqual(
             run(
                 [
@@ -1647,9 +1648,7 @@ class RunnerScriptContractTests(unittest.TestCase):
                 self.assertLess(lookup, derive)
                 self.assertLess(derive, guard)
                 self.assertLess(guard, call)
-                self.assertIn(
-                    '"${handoff_source_prefix_args[@]}" \\', text[call : call + 600]
-                )
+                self.assertIn('"${handoff_source_prefix_args[@]}"', text[guard:call])
                 self.assertIn("$branch_prefixes_json", text[lookup - 300 : lookup])
 
     def test_runner_scripts_require_a_summary_for_a_bounded_outcome(self) -> None:
@@ -1683,7 +1682,7 @@ class RunnerScriptContractTests(unittest.TestCase):
                 capture = text.index('capture_target_state "$after_state"\n')
                 gate = text.index('"${lane_delivery[@]}" transition')
                 broker = text.index('gh "$outcome_subcommand" comment')
-                label = text.index('--add-label "$owner_label"')
+                label = text.index('--add-label "$owner_label"', broker)
                 recapture = text.index(
                     'capture_target_state "$after_state" "$runner_comment_id"'
                 )

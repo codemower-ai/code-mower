@@ -31,6 +31,7 @@ owner_surface:
     - macOS
     - code-mower-lane
   lane_runner_enabled_var: LANE_MAC_RUNNER_ENABLED
+  lane_runner_builders: [codex, claude]
   lane_runner_cron: "*/15 * * * *"
   lane_runner_max_minutes: "90"
   lane_runner_trusted_authors: []
