@@ -56,15 +56,77 @@ from .context_contract import (
 )
 from .context_graph import MAX_GRAPH_CITATIONS, parse_graph_citation
 
-#: The graph document Code Mower reads, by name and by schema. Pinned on both:
-#: the artifact is whatever the pinned provider release wrote, and a member
-#: that is merely *shaped* like a graph is not the schema this adapter was
-#: reviewed against. An artifact without it is unreadable rather than
-#: best-effort -- see ``read_graph``.
+#: The graph document Code Mower reads. This is the pinned provider's own
+#: ``graph.json`` -- the file ``graphify/export.py::to_json`` writes at commit
+#: ``23f2ffa`` (release 0.9.58), which is the release the lifecycle (#913) pins
+#: and archives. There is no Code Mower graph schema and no normalization step
+#: between the two: an adapter that required a shape the build never produces
+#: would reject every real generation, so this module reads the provider's
+#: actual export and does the narrowing itself.
 GRAPH_MEMBER = "graph.json"
-GRAPH_SCHEMA = "code_mower.contextGraph.v1"
 
 QUERY_SCHEMA = "code_mower.contextGraphQuery.v1"
+
+#: The provider's export is a NetworkX ``node_link_data`` document: ``nodes``
+#: plus ``links``. ``edges`` is the same list under the name NetworkX used
+#: before 3.2, and the pinned validator accepts either, so this reader does
+#: too. Other top-level keys the pinned exporter writes -- ``directed``,
+#: ``multigraph``, ``graph``, ``hyperedges``, ``built_at_commit`` -- are
+#: provider bookkeeping; only ``built_at_commit`` carries a claim this module
+#: acts on, and it is checked against the generation rather than trusted.
+GRAPH_EDGE_KEYS = ("links", "edges")
+
+#: Required node and edge fields, taken from the pinned validator's
+#: ``REQUIRED_NODE_FIELDS`` and ``REQUIRED_EDGE_FIELDS``. A record missing one
+#: of these is a refusal: the provider's own validator would not have passed
+#: it, so a graph carrying it was not produced by the build this adapter was
+#: reviewed against.
+GRAPH_NODE_FIELDS = ("id", "label", "file_type", "source_file")
+GRAPH_EDGE_FIELDS = ("source", "target", "relation", "confidence", "source_file")
+
+#: The pinned validator's ``VALID_FILE_TYPES``. Only ``code`` is traversable
+#: here -- the others are the provider's document/paper/image/rationale/concept
+#: corpora, which are not the repository relationships #914 is about and carry
+#: no line-checkable location in the bound commit.
+GRAPH_FILE_TYPES = frozenset({"code", "document", "paper", "image", "rationale", "concept"})
+CODE_FILE_TYPE = "code"
+
+#: The pinned validator's ``VALID_CONFIDENCES``, lowercased. The provider
+#: writes these uppercase; the packet contract's vocabulary is lowercase, and
+#: this is the whole of the difference.
+GRAPH_CONFIDENCES = {"EXTRACTED": "extracted", "INFERRED": "inferred", "AMBIGUOUS": "ambiguous"}
+
+#: A node's location in the pinned export is ``source_location``, a string of
+#: the form ``L<line>`` written by the extractor's ``add_node``/``add_edge``.
+#: Cross-file stubs carry ``""`` -- a real node with no location, which this
+#: module keeps traversable and refuses to cite.
+_LOCATION_MAX_LINE = 10_000_000
+
+#: The pinned extractor's relation vocabulary, normalized onto the
+#: relationships a query filters by. ``contains`` is the extractor's
+#: file-to-definition and class-to-member edge, which is what ``defines``
+#: means here; ``implements`` is inheritance by another name. The provider's
+#: own word is kept on the edge and is what a packet sentence states -- this
+#: mapping only decides which traversals an edge participates in.
+#:
+#: Relations outside this table are *not* a refusal. The pinned validator does
+#: not constrain ``relation`` at all, and the provider's LLM extraction emits
+#: relations beyond the extractor's fixed set. An unmapped relation is grouped
+#: as ``related``: it is carried, it is citable, and it is reachable by the
+#: ``symbol`` neighbourhood, but it never stands in for a ``calls`` or an
+#: ``imports`` claim it was not.
+GRAPH_RELATIONS = {
+    "calls": "calls",
+    "imports": "imports",
+    "defines": "defines",
+    "contains": "defines",
+    "references": "references",
+    "inherits": "inherits",
+    "implements": "inherits",
+    "tests": "tests",
+}
+OTHER_RELATION = "related"
+RELATION_KINDS = frozenset({*GRAPH_RELATIONS.values(), OTHER_RELATION})
 
 #: The questions a code graph answers better than ``rg`` and an ordinary
 #: reading of the tree, from the comparison set in the adoption record. Each
@@ -73,12 +135,14 @@ QUERY_SCHEMA = "code_mower.contextGraphQuery.v1"
 #: cannot be bounded or reproduced.
 QUESTIONS = ("impact", "dependency", "symbol", "related_tests")
 
-#: Node kinds and edge kinds of the pinned schema. An unrecognized kind is a
-#: refusal, not a node this adapter quietly ignores: a graph that carries
-#: relationships this code does not model would have its traversals silently
-#: truncated by the model rather than by a budget anyone reported.
+#: The node kinds a *query* is expressed in. The pinned export does not carry
+#: them: a Graphify node declares ``file_type`` (its corpus) and, for a
+#: handful of constructs, ``type`` (e.g. ``namespace``) -- never whether it is
+#: a file, a definition, or a test. So these are derived, in ``_node_kind``,
+#: from the shape the pinned extractor actually emits, and the derivation is
+#: named here rather than hidden because it is the one place this adapter
+#: infers something the provider did not say.
 NODE_KINDS = frozenset({"file", "symbol", "test"})
-EDGE_KINDS = frozenset({"calls", "imports", "defines", "references", "tests"})
 
 #: How the provider's own qualification of a relationship maps onto the packet
 #: contract's confidence vocabulary. ``ambiguous`` is the important one: the
@@ -88,13 +152,22 @@ EDGE_KINDS = frozenset({"calls", "imports", "defines", "references", "tests"})
 #: and also raises the ``unresolved_entities`` omission on the packet.
 EVIDENCE_CONFIDENCE = {"extracted": "extracted", "inferred": "inferred", "ambiguous": "unknown"}
 
+#: Path segments that make a code file a test in this repository's own layout.
+#: A derivation, like ``_node_kind`` itself, and deliberately conservative:
+#: naming a non-test file a test would put it in a ``related_tests`` answer.
+_TEST_PREFIXES = ("tests/", "test/")
+_TEST_STEMS = ("test_", "_test", ".test", "_spec", ".spec")
+
 #: Relationship filters per question, and whether the traversal runs along
 #: edges or against them. ``impact`` asks who is affected by a change, which is
-#: the reverse of ``dependency`` over the same relationships.
+#: the reverse of ``dependency`` over the same relationships. The filters are
+#: written in the normalized vocabulary of ``GRAPH_RELATIONS``, so an
+#: ``implements`` edge participates wherever ``inherits`` does and an unmapped
+#: relation participates only in the ``symbol`` neighbourhood.
 _TRAVERSALS: dict[str, tuple[str, frozenset[str]]] = {
-    "impact": ("incoming", frozenset({"calls", "imports", "references", "tests"})),
-    "dependency": ("outgoing", frozenset({"calls", "imports", "references"})),
-    "symbol": ("both", frozenset({"defines", "calls", "imports", "references", "tests"})),
+    "impact": ("incoming", frozenset({"calls", "imports", "references", "tests", "inherits"})),
+    "dependency": ("outgoing", frozenset({"calls", "imports", "references", "inherits"})),
+    "symbol": ("both", RELATION_KINDS),
     "related_tests": ("incoming", frozenset({"tests", "calls", "references"})),
 }
 
@@ -128,31 +201,51 @@ _BLOB_CHUNK_BYTES = 256 * 1024
 
 @dataclass(frozen=True)
 class GraphNode:
-    """One node of the pinned schema, already held to the citation scope rules."""
+    """One node of the pinned export, narrowed and held to the citation rules.
+
+    ``path`` is the export's ``source_file`` and ``line`` is its
+    ``source_location``. Both may be absent: the pinned extractor emits
+    *sourceless stubs* for cross-file references it could not resolve locally
+    (``source_file`` and ``source_location`` set to ``""``), so that a
+    corpus-level pass can collapse them onto a real definition. Those nodes are
+    real relationships and stay traversable; they are simply not citable, and
+    ``citation`` is ``None`` for them rather than a path that points nowhere.
+    """
 
     id: str
     kind: str
     name: str
     path: str
-    start_line: int | None
-    end_line: int | None
+    line: int | None
 
     @property
-    def citation(self) -> str:
-        """The node's location as a citation string, with its line span if it has one."""
-        if self.start_line is None:
+    def citation(self) -> str | None:
+        """The node's location as a citation, or ``None`` if it has no location.
+
+        The pinned export records a single line per node, not a span, so a
+        located node cites one line. Claiming a span the provider never stated
+        would be this adapter inventing the extent of a definition.
+        """
+        if not self.path:
+            return None
+        if self.line is None:
             return self.path
-        if self.end_line is None or self.end_line == self.start_line:
-            return f"{self.path}#L{self.start_line}"
-        return f"{self.path}#L{self.start_line}-L{self.end_line}"
+        return f"{self.path}#L{self.line}"
 
 
 @dataclass(frozen=True)
 class GraphEdge:
-    """One relationship, with the provider's own qualification of it."""
+    """One relationship, with the provider's own word for it and its own caveat.
+
+    ``relation`` is what the provider wrote; ``kind`` is that relation
+    normalized onto ``GRAPH_RELATIONS`` for filtering. A packet sentence states
+    ``relation``, so a recipient reads the provider's claim and not this
+    module's grouping of it.
+    """
 
     source: str
     target: str
+    relation: str
     kind: str
     evidence: str
 
@@ -195,58 +288,160 @@ class CodeGraph:
         return self.seed_matches(target)[0]
 
 
-def _member(value: Any, keys: set[str], *, what: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != keys:
-        raise ContextError(f"local graph {what} fields are missing or unrecognized")
+def _required(value: Any, fields: Sequence[str], *, what: str) -> Mapping[str, Any]:
+    """A provider record with every field its own validator requires.
+
+    Required fields only. Unrecognized *extra* keys are not a refusal here,
+    which is a deliberate change from reading an invented schema: the pinned
+    exporter already annotates nodes with ``community``, ``community_name`` and
+    ``norm_label``, edges with ``confidence_score`` and ``weight``, and either
+    with a free-form ``metadata`` dict whose contents come from an LLM
+    extraction. None of those change a traversal. Refusing them would reject
+    every real generation -- which is exactly what a strict reader of a
+    hand-written schema did.
+
+    What *is* strict: every field this module reads is read by name, bounded,
+    and validated against the pinned vocabulary. Nothing else is looked at.
+    """
+    if not isinstance(value, Mapping):
+        raise ContextError(f"local graph {what} must be an object")
+    missing = [field_name for field_name in fields if field_name not in value]
+    if missing:
+        raise ContextError(f"local graph {what} is missing required provider fields")
     return value
 
 
-def _line(value: Any) -> int | None:
-    if value is None:
+def _maybe_text(value: Any, *, maximum: int) -> str:
+    """Bounded single-line text, or ``""`` for a field the provider left empty.
+
+    ``_text`` rejects the empty string, which is correct for every identifier
+    in the packet contract and wrong for exactly one field here: a sourceless
+    stub's ``source_file``. Everything non-empty goes through ``_text``
+    unchanged, so the bound and the control-character rules are the same ones.
+    """
+    if value is None or value == "":
+        return ""
+    return _text(value, maximum=maximum)
+
+
+def _location(value: Any) -> int | None:
+    """Parse the pinned export's ``source_location``: ``L<line>``, or nothing.
+
+    The extractor writes ``f"L{line}"``; a sourceless stub writes ``""``. A
+    value in any other shape is a refusal rather than a node with an unknown
+    location, because a location this module cannot read is one it cannot
+    check against the bound commit.
+    """
+    if value is None or value == "":
         return None
-    if type(value) is not int or not 1 <= value <= 10_000_000:
+    text = _text(value, maximum=32)
+    if not text.startswith("L") or not text[1:].isdigit():
+        raise ContextError("local graph source location is not a supported provider location")
+    line = int(text[1:])
+    if not 1 <= line <= _LOCATION_MAX_LINE:
         raise ContextError("local graph line number is out of range")
-    return value
+    return line
 
 
-def _node(value: Any) -> GraphNode:
-    record = _member(value, {"id", "kind", "name", "path", "start_line", "end_line"}, what="node")
-    kind = record["kind"]
-    if kind not in NODE_KINDS:
-        raise ContextError("unsupported local graph node kind")
-    start = _line(record["start_line"])
-    end = _line(record["end_line"])
-    if start is None and end is not None:
-        raise ContextError("local graph line span must start before it ends")
-    if start is not None and end is not None and end < start:
-        raise ContextError("local graph line span must start before it ends")
+def _node_kind(path: str, label: str, node_type: Any) -> str:
+    """Derive a query-level node kind from what the pinned export does carry.
+
+    The provider states no such kind, so this reads the shape its extractor
+    emits:
+
+    * A **file** node is the one the extractor creates per file, whose label is
+      that file's base name at ``L1`` (``add_node(_make_id(str(path)),
+      path.name, 1)``). Matching on the base name is what distinguishes it from
+      a definition inside the same file.
+    * A **test** is a code node whose file sits in this repository's test
+      layout. A path convention, not a provider claim -- ``related_tests``
+      answers from it, so it is kept narrow.
+    * Everything else is a **symbol**: a definition, a member, a namespace, or
+      an unresolved cross-file stub.
+    """
+    if node_type == "namespace":
+        return "symbol"
+    if path:
+        base = path.rsplit("/", 1)[-1]
+        lowered = path.lower()
+        stem = base.lower().rsplit(".", 1)[0]
+        is_test = (
+            lowered.startswith(_TEST_PREFIXES)
+            or "/tests/" in lowered
+            or "/test/" in lowered
+            or stem.startswith("test_")
+            or stem.endswith(("_test", "_spec"))
+        )
+        if is_test:
+            return "test"
+        if base == label:
+            return "file"
+    return "symbol"
+
+
+def _node(value: Any) -> GraphNode | None:
+    """One pinned-export node, or ``None`` for a corpus this module does not query.
+
+    A non-``code`` node is dropped rather than refused. The provider indexes
+    documents, papers, images, rationales and concepts into the same graph, and
+    those are not repository relationships: they carry no location in the bound
+    commit, so no traversal here could cite one. Dropping them is bounded and
+    visible -- every edge that named one becomes a dangling edge, which
+    ``load_graph`` prunes and counts.
+    """
+    record = _required(value, GRAPH_NODE_FIELDS, what="node")
+    file_type = record["file_type"]
+    if file_type not in GRAPH_FILE_TYPES:
+        raise ContextError("unsupported local graph node file type")
+    if file_type != CODE_FILE_TYPE:
+        return None
+    path = _maybe_text(record["source_file"], maximum=1024)
+    label = _text(record["label"], maximum=512)
+    node = GraphNode(
+        id=_text(record["id"], maximum=512),
+        kind=_node_kind(path, label, record.get("type")),
+        name=label,
+        path=path,
+        line=_location(record.get("source_location")),
+    )
     # Held to the citation rules here, at parse time, rather than when a packet
     # is written: a node that could never be cited inside the indexed checkout
     # must not be traversable either, or an out-of-scope path reaches a
-    # recipient as a relationship whose citation was quietly dropped.
-    node = GraphNode(
-        id=_text(record["id"], maximum=512),
-        kind=kind,
-        name=_text(record["name"], maximum=512),
-        path=_text(record["path"], maximum=1024),
-        start_line=start,
-        end_line=end,
-    )
-    parse_graph_citation(node.citation)
+    # recipient as a relationship whose citation was quietly dropped. A
+    # sourceless stub has nothing to hold to the rules and is exempt.
+    if node.citation is not None:
+        parse_graph_citation(node.citation)
     return node
 
 
-def _edge(value: Any, nodes: Mapping[str, GraphNode]) -> GraphEdge:
-    record = _member(value, {"source", "target", "kind", "evidence"}, what="edge")
-    if record["kind"] not in EDGE_KINDS:
-        raise ContextError("unsupported local graph edge kind")
-    if record["evidence"] not in EVIDENCE_CONFIDENCE:
-        raise ContextError("unsupported local graph edge evidence")
+def _edge(value: Any, nodes: Mapping[str, GraphNode]) -> GraphEdge | None:
+    """One pinned-export link, or ``None`` if either endpoint is not in the graph.
+
+    Pruned rather than refused, which is the pinned exporter's own treatment:
+    ``export.py::prune_dangling_edges`` drops links whose endpoints are not in
+    the node set and reports a count. Two things reach this path in a real
+    export -- a link onto a corpus ``_node`` dropped above, and a link the
+    provider emitted onto an id its node list does not carry -- and neither is
+    a relationship this module can cite, since a citation needs a node with a
+    location. Dropping the edge is what makes the relationship absent from the
+    answer instead of present with one end unstated.
+    """
+    record = _required(value, GRAPH_EDGE_FIELDS, what="edge")
+    confidence = record["confidence"]
+    if confidence not in GRAPH_CONFIDENCES:
+        raise ContextError("unsupported local graph edge confidence")
+    relation = _text(record["relation"], maximum=128)
     source = _text(record["source"], maximum=512)
     target = _text(record["target"], maximum=512)
     if source not in nodes or target not in nodes:
-        raise ContextError("local graph edge names a node the graph does not carry")
-    return GraphEdge(source=source, target=target, kind=record["kind"], evidence=record["evidence"])
+        return None
+    return GraphEdge(
+        source=source,
+        target=target,
+        relation=relation,
+        kind=GRAPH_RELATIONS.get(relation, OTHER_RELATION),
+        evidence=GRAPH_CONFIDENCES[confidence],
+    )
 
 
 def _grouped(edges: Iterable[GraphEdge], *, by: str) -> dict[str, tuple[GraphEdge, ...]]:
@@ -261,29 +456,50 @@ def _grouped(edges: Iterable[GraphEdge], *, by: str) -> dict[str, tuple[GraphEdg
 
 
 def load_graph(payload: Mapping[str, Any], *, generation: str, commit: str) -> CodeGraph:
-    """Validate the pinned graph schema. Every unreadable shape is a refusal.
+    """Read the pinned provider's ``graph.json`` into a bounded queryable graph.
 
-    Read strictly for the same reason the manifest is: this document is
-    provider output, and an adapter that repairs what it does not understand
-    reports a traversal over a graph nobody reviewed.
+    The document is the pinned exporter's output, so what is validated here is
+    the provider's own contract -- the required fields of its validator, its
+    ``file_type`` and ``confidence`` vocabularies, its ``L<line>`` locations --
+    and not a shape Code Mower invented. Every value this module reads is read
+    by name and bounded; every value it does not read is left alone.
+
+    Two provenance checks are worth more than any field check. The first is
+    ``built_at_commit``: the exporter stamps the commit the graph was built
+    from, and if that disagrees with the commit the generation is bound to then
+    the artifact and the manifest describe different revisions, which is a
+    refusal no traversal should be run past. The second is the census check
+    every citation goes through later.
     """
-    document = _member(payload, {"schema", "nodes", "edges"}, what="document")
-    if document["schema"] != GRAPH_SCHEMA:
-        raise ContextError("unsupported local graph schema")
-    raw_nodes = document["nodes"]
-    raw_edges = document["edges"]
+    if not isinstance(payload, Mapping):
+        raise ContextError("local graph document must be an object")
+    raw_nodes = payload.get("nodes")
+    raw_edges = next(
+        (payload[key] for key in GRAPH_EDGE_KEYS if key in payload),
+        None,
+    )
+    if raw_edges is None or raw_nodes is None:
+        raise ContextError("local graph document carries no provider nodes and links")
     if not isinstance(raw_nodes, list) or len(raw_nodes) > MAX_NODES:
         raise ContextError("local graph node count exceeds its budget")
     if not isinstance(raw_edges, list) or len(raw_edges) > MAX_EDGES:
         raise ContextError("local graph edge count exceeds its budget")
+    stamped = payload.get("built_at_commit")
+    if stamped is not None and _text(stamped, maximum=64) != commit:
+        raise ContextError("local graph was built from a different commit than its generation")
     nodes: dict[str, GraphNode] = {}
     for value in raw_nodes:
         node = _node(value)
+        if node is None:
+            continue
         if node.id in nodes:
+            # The provider's own validator does not check this, but its graph
+            # is a NetworkX node set and cannot hold two nodes under one id. A
+            # document that does was not written by the pinned exporter.
             raise ContextError("local graph node identifiers must be unique")
         nodes[node.id] = node
     edges = tuple(sorted(
-        (_edge(value, nodes) for value in raw_edges),
+        (parsed for value in raw_edges if (parsed := _edge(value, nodes)) is not None),
         key=lambda edge: (edge.kind, edge.source, edge.target),
     ))
     return CodeGraph(
@@ -582,10 +798,11 @@ def _relation_text(question: str, item: Relation) -> str:
     ``reached from``, so a recipient reads a transitive result as a path and
     never as a direct relationship the graph does not assert.
     """
-    verb = {
-        "calls": "calls", "imports": "imports", "defines": "defines",
-        "references": "references", "tests": "tests",
-    }[item.via.kind]
+    # The provider's own word for the relationship, not this module's grouping
+    # of it: an ``implements`` edge is filtered as ``inherits`` but must read as
+    # "implements", and an LLM-extracted relation outside the mapped set must
+    # read as itself rather than as the ``related`` bucket it was filed under.
+    verb = item.via.relation
     if item.via.source == item.node.id:
         subject, object_ = item.node.name, item.origin.name
     else:
@@ -629,12 +846,22 @@ def _documents(
         # claim, and the claim is about these two nodes. Keyed by citation and
         # first-write-wins, so a self-referential relationship cites one
         # location once, in a fixed order.
+        # A sourceless stub contributes no citation at all -- it is an
+        # unresolved cross-file reference, which is the one endpoint shape the
+        # pinned extractor emits with no location to point at. It counts as an
+        # endpoint the bound commit does not confirm, same as a path the census
+        # does not carry.
         endpoints: dict[str, GraphNode] = {}
+        located = 0
         for endpoint in (item.node, item.origin):
-            endpoints.setdefault(endpoint.citation, endpoint)
+            citation = endpoint.citation
+            if citation is None:
+                continue
+            located += 1
+            endpoints.setdefault(citation, endpoint)
         cited = [(citation, endpoint) for citation, endpoint in endpoints.items()
                  if validator.validate(citation)]
-        if len(cited) != len(endpoints):
+        if len(cited) != len(endpoints) or located < 2:
             # The graph claimed a location the bound commit does not carry.
             # That is the provider disagreeing with the immutable tree, which
             # a recipient must be told about even when the relationship keeps
@@ -868,8 +1095,10 @@ __all__: Sequence[str] = (
     "CodeGraph",
     "DEFAULT_NODE_BUDGET",
     "EVIDENCE_CONFIDENCE",
+    "GRAPH_CONFIDENCES",
+    "GRAPH_FILE_TYPES",
     "GRAPH_MEMBER",
-    "GRAPH_SCHEMA",
+    "GRAPH_RELATIONS",
     "GraphContext",
     "GraphEdge",
     "GraphNode",

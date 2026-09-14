@@ -18,32 +18,78 @@ Nothing here installs, downloads, or runs a provider, and nothing here is on a
 default path. The only subprocess is Git, reading blobs of the commit the
 generation is already bound to.
 
-## Reading the pinned schema directly
+## Reading the pinned provider's own export
 
 A generation's artifact is the provider's own state, packed reproducibly. This
-adapter reads one member of it, `graph.json`, and requires it to declare
-`code_mower.contextGraph.v1`:
+adapter reads one member of it, `graph.json` — the file the pinned Graphify
+release writes from `graphify/export.py::to_json`. There is no Code Mower graph
+schema and no normalization pass between the build and the query: the lifecycle
+archives what the provider wrote, so this is what gets read.
 
 ```json
 {
-  "schema": "code_mower.contextGraph.v1",
+  "directed": false, "multigraph": false, "graph": {},
   "nodes": [
-    {"id": "n-config", "kind": "symbol", "name": "parse_config",
-     "path": "example_pkg/config.py", "start_line": 12, "end_line": 30}
+    {"id": "n-config", "label": "parse_config", "file_type": "code",
+     "source_file": "example_pkg/config.py", "source_location": "L12",
+     "community": 0, "norm_label": "parse_config"}
   ],
-  "edges": [
-    {"source": "n-load", "target": "n-config", "kind": "calls",
-     "evidence": "extracted"}
-  ]
+  "links": [
+    {"source": "n-load", "target": "n-config", "relation": "calls",
+     "confidence": "EXTRACTED", "source_file": "example_pkg/loader.py",
+     "source_location": "L41", "weight": 1.0, "confidence_score": 1.0}
+  ],
+  "hyperedges": [],
+  "built_at_commit": "…"
 }
 ```
 
-Node kinds are `file`, `symbol`, `test`. Edge kinds are `calls`, `imports`,
-`defines`, `references`, `tests`. Every other shape is a refusal, not a
-best-effort read: an adapter that repairs what it does not understand reports a
-traversal over a graph nobody reviewed. The refusals are exhaustive on purpose —
-an unknown kind, a dangling edge, a duplicate identifier, an inverted line span,
-an unrecognized field, a node path that escapes the indexed checkout.
+What is validated is the *provider's* contract, not one of ours:
+
+- The required node and edge fields of `graphify/validate.py` — `id`, `label`,
+  `file_type`, `source_file` on a node; `source`, `target`, `relation`,
+  `confidence`, `source_file` on a link. A record missing one would not have
+  passed the provider's own validator, so it is a refusal here.
+- Its vocabularies. `file_type` must be one of the six it defines, and
+  `confidence` must be uppercase `EXTRACTED`/`INFERRED`/`AMBIGUOUS`. Lowercase
+  is the *packet* vocabulary, and a graph using it was not written by the
+  pinned exporter.
+- Its locations. `source_location` is `L<line>` or empty; anything else is a
+  location this module could not check against the bound commit, so it refuses
+  rather than traversing past it. One line per node, never a span: the export
+  records no extent, and claiming one would be this adapter inventing it.
+- `built_at_commit`, when the exporter stamped it, must equal the commit the
+  generation is bound to. Otherwise the artifact and the manifest describe
+  different revisions.
+
+Three things are deliberately *not* refusals, because the real export carries
+them and rejecting them would reject every ordinary generation:
+
+- **Extra annotations.** The exporter adds `community`, `community_name` and
+  `norm_label` to nodes and `confidence_score` to links; the extractor adds
+  `weight`, `context`, `type` and a free-form `metadata` dict from an LLM
+  extraction. None of them changes a traversal, so none is read. Everything
+  this module *does* read is read by name and bounded.
+- **Relations outside the mapped set.** The provider's validator does not
+  constrain `relation` at all. Mapped relations (`calls`, `imports`, `defines`,
+  `contains`, `references`, `inherits`, `implements`, `tests`) decide which
+  traversals an edge participates in; anything else is grouped as `related`,
+  reachable only from the `symbol` neighbourhood. Either way the sentence in
+  the packet states the provider's own word, so an `implements` edge reads as
+  "implements" and a `supersedes` edge reads as "supersedes".
+- **Sourceless stubs and non-code corpora.** The extractor emits nodes with an
+  empty `source_file` for cross-file references it could not resolve; those
+  stay traversable and are never cited. Nodes whose `file_type` is not `code`
+  are dropped, and links onto a dropped node are pruned — which is the pinned
+  exporter's own treatment in `prune_dangling_edges`.
+
+Node kinds — `file`, `symbol`, `test` — are **derived**, not read: a Graphify
+node declares its corpus and, rarely, a `type`, but never whether it is a file,
+a definition, or a test. A file node is the one the extractor emits per file,
+whose label is that file's base name; a test is a code node whose path sits in
+this repository's test layout; everything else is a symbol. That derivation is
+the one place this adapter infers something the provider did not state, and it
+is named in `_node_kind` for that reason.
 
 Reading the member directly, rather than through provider query tooling, is what
 makes the traversal reproducible and the bounds ours. It also means a recipient

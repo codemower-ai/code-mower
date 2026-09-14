@@ -74,32 +74,82 @@ def make_repository(root: Path) -> Path:
     return repository
 
 
-def node(identifier: str, kind: str, name: str, path: str, start=None, end=None) -> dict:
-    return {"id": identifier, "kind": kind, "name": name, "path": path,
-            "start_line": start, "end_line": end}
+def node(identifier: str, label: str, path: str, line=None, **extra) -> dict:
+    """One node in the pinned exporter's own shape.
 
-
-def edge(source: str, target: str, kind: str, evidence: str = "extracted") -> dict:
-    return {"source": source, "target": target, "kind": kind, "evidence": evidence}
-
-
-def graph_document() -> dict:
-    """A small synthetic graph: a symbol, its caller, its caller's caller, a test."""
+    The field names and the annotations are the ones Graphify writes at the
+    pinned commit: the four required fields of ``graphify/validate.py``
+    (``id``, ``label``, ``file_type``, ``source_file``), the extractor's
+    ``source_location`` of the form ``L<line>``, and the ``community`` /
+    ``community_name`` / ``norm_label`` annotations ``export.py::to_json``
+    adds to every node on the way out. No Code Mower node ``kind`` and no
+    line span: neither exists in the real export.
+    """
     return {
-        "schema": query.GRAPH_SCHEMA,
+        "id": identifier,
+        "label": label,
+        "file_type": "code",
+        "source_file": path,
+        "source_location": "" if line is None else f"L{line}",
+        "community": 0,
+        "community_name": "Community 0",
+        "norm_label": label.lower(),
+        **extra,
+    }
+
+
+def edge(source: str, target: str, relation: str, confidence: str = "EXTRACTED", **extra) -> dict:
+    """One link in the pinned exporter's own shape.
+
+    The five required edge fields, the uppercase ``confidence`` vocabulary of
+    the pinned validator, and the ``weight`` / ``confidence_score`` the
+    extractor and exporter attach. ``confidence_score`` uses the exporter's
+    own ``_CONFIDENCE_SCORE_DEFAULTS``.
+    """
+    scores = {"EXTRACTED": 1.0, "INFERRED": 0.55, "AMBIGUOUS": 0.2}
+    return {
+        "source": source,
+        "target": target,
+        "relation": relation,
+        "confidence": confidence,
+        "source_file": "example_pkg/config.py",
+        "source_location": "L12",
+        "weight": 1.0,
+        "confidence_score": scores[confidence],
+        **extra,
+    }
+
+
+def graph_document(**extra) -> dict:
+    """A small graph in the pinned provider's export format.
+
+    Top-level shape is ``networkx.json_graph.node_link_data(G, edges="links")``
+    as ``export.py::to_json`` writes it: ``directed``, ``multigraph``,
+    ``graph``, ``nodes``, ``links``, plus the ``hyperedges`` list and the
+    ``built_at_commit`` stamp the exporter appends. Contents are a symbol, its
+    caller, its caller's caller, a test, and the file node the extractor emits
+    for each indexed file.
+    """
+    return {
+        "directed": False,
+        "multigraph": False,
+        "graph": {},
         "nodes": [
-            node("n-config", "symbol", "parse_config", "example_pkg/config.py", 12, 30),
-            node("n-load", "symbol", "load", "example_pkg/loader.py", 40, 44),
-            node("n-report", "symbol", "render", "example_pkg/report.py", 5, 12),
-            node("n-test", "test", "test_parse_config", "tests/test_config.py", 8, 26),
-            node("n-config-file", "file", "config.py", "example_pkg/config.py"),
+            node("n-config", "parse_config", "example_pkg/config.py", 12),
+            node("n-load", "load", "example_pkg/loader.py", 40),
+            node("n-report", "render", "example_pkg/report.py", 5),
+            node("n-test", "test_parse_config", "tests/test_config.py", 8),
+            # The extractor's per-file node: label is the file's base name at L1.
+            node("n-config-file", "config.py", "example_pkg/config.py", 1),
         ],
-        "edges": [
+        "links": [
             edge("n-load", "n-config", "calls"),
-            edge("n-report", "n-load", "calls", "inferred"),
+            edge("n-report", "n-load", "calls", "INFERRED"),
             edge("n-test", "n-config", "tests"),
-            edge("n-config-file", "n-config", "defines"),
+            edge("n-config-file", "n-config", "contains"),
         ],
+        "hyperedges": [],
+        **extra,
     }
 
 
@@ -214,28 +264,108 @@ class GraphWorkspace(unittest.TestCase):
 
 
 class GraphSchemaTests(unittest.TestCase):
-    """The pinned schema is read strictly: an unreadable shape is a refusal."""
+    """The pinned provider's own export is what gets read, and read bounded.
+
+    Every fixture in here is the shape ``graphify/export.py::to_json`` writes
+    at the pinned commit. The tests split into two halves on purpose: what the
+    real export carries must load, and what the provider's own validator would
+    reject must refuse.
+    """
 
     def load(self, document: dict) -> query.CodeGraph:
         return query.load_graph(document, generation="a" * 32, commit="b" * 40)
 
-    def test_reads_the_pinned_schema(self) -> None:
+    def test_reads_the_pinned_provider_export(self) -> None:
         graph = self.load(graph_document())
         self.assertEqual(len(graph.nodes), 5)
-        self.assertEqual(graph.nodes["n-config"].citation, "example_pkg/config.py#L12-L30")
-        self.assertEqual(graph.nodes["n-config-file"].citation, "example_pkg/config.py")
+        # One line per node, because ``source_location`` records one line.
+        self.assertEqual(graph.nodes["n-config"].citation, "example_pkg/config.py#L12")
+        self.assertEqual(
+            {node.id: node.kind for node in graph.nodes.values()},
+            {
+                "n-config": "symbol", "n-load": "symbol", "n-report": "symbol",
+                # Derived: label equals the file's base name.
+                "n-config-file": "file",
+                # Derived: the repository's test layout.
+                "n-test": "test",
+            },
+        )
 
-    def test_rejects_another_schema(self) -> None:
+    def test_keeps_the_providers_own_relation_and_lowercases_confidence(self) -> None:
+        """``contains`` filters as ``defines`` but still reads as ``contains``."""
+        graph = self.load(graph_document())
+        by_pair = {(edge.source, edge.target): edge for edge in graph.edges}
+        contains = by_pair[("n-config-file", "n-config")]
+        self.assertEqual((contains.relation, contains.kind), ("contains", "defines"))
+        self.assertEqual(by_pair[("n-report", "n-load")].evidence, "inferred")
+
+    def test_reads_the_pre_3_2_edges_key(self) -> None:
+        """The pinned validator accepts ``edges`` for ``links``; so does this."""
         document = graph_document()
-        document["schema"] = "graphify.native.v1"
-        with self.assertRaises(ContextError):
-            self.load(document)
+        document["edges"] = document.pop("links")
+        self.assertEqual(len(self.load(document).edges), 4)
 
-    def test_rejects_unknown_node_and_edge_kinds(self) -> None:
+    def test_maps_an_unlisted_relation_without_asserting_a_listed_one(self) -> None:
+        """An LLM-extracted relation is carried, grouped as ``related``, never renamed."""
+        document = graph_document()
+        document["links"].append(edge("n-config", "n-report", "supersedes"))
+        graph = self.load(document)
+        extra = next(edge for edge in graph.edges if edge.relation == "supersedes")
+        self.assertEqual(extra.kind, query.OTHER_RELATION)
+        # ``related`` is not in the impact filter, so it cannot stand in for a call.
+        self.assertNotIn(query.OTHER_RELATION, query._TRAVERSALS["impact"][1])
+
+    def test_keeps_a_sourceless_stub_traversable_and_uncitable(self) -> None:
+        """The extractor's cross-file stub: a real node with no location."""
+        document = graph_document()
+        document["nodes"].append({
+            "id": "n-stub", "label": "Thing", "file_type": "code",
+            "source_file": "", "source_location": "", "origin_file": "example_pkg/config.py",
+        })
+        document["links"].append(edge("n-config", "n-stub", "references"))
+        graph = self.load(document)
+        self.assertIsNone(graph.nodes["n-stub"].citation)
+        self.assertEqual(len(graph.edges), 5)
+
+    def test_drops_non_code_corpora_and_prunes_their_edges(self) -> None:
+        """Documents and concepts are not repository relationships."""
+        document = graph_document()
+        document["nodes"].append(
+            {**node("n-doc", "design.md", "docs/design.md", 1), "file_type": "document"}
+        )
+        document["links"].append(edge("n-config", "n-doc", "references"))
+        graph = self.load(document)
+        self.assertNotIn("n-doc", graph.nodes)
+        self.assertEqual(len(graph.edges), 4)
+
+    def test_tolerates_provider_annotations_it_does_not_read(self) -> None:
+        """Extra exporter and LLM metadata must not reject a real generation."""
+        document = graph_document()
+        document["nodes"][0]["metadata"] = {"namespace": "example_pkg", "scope_chain": ["mod"]}
+        document["nodes"][0]["type"] = "namespace"
+        document["links"][0]["context"] = "call site"
+        self.assertEqual(len(self.load(document).nodes), 5)
+
+    def test_refuses_a_document_with_no_provider_nodes_and_links(self) -> None:
+        for document in ({"nodes": []}, {"links": []}, {"schema": "something.else"}, []):
+            with self.subTest(document=document):
+                with self.assertRaises(ContextError):
+                    self.load(document)
+
+    def test_refuses_a_graph_built_from_another_commit(self) -> None:
+        """``built_at_commit`` disagreeing with the generation is a refusal."""
+        with self.assertRaises(ContextError):
+            self.load(graph_document(built_at_commit="c" * 40))
+        # Agreeing is fine, and is the ordinary case.
+        self.assertEqual(len(self.load(graph_document(built_at_commit="b" * 40)).nodes), 5)
+
+    def test_refuses_records_missing_the_providers_required_fields(self) -> None:
         for mutate in (
-            lambda doc: doc["nodes"][0].update(kind="cluster"),
-            lambda doc: doc["edges"][0].update(kind="resembles"),
-            lambda doc: doc["edges"][0].update(evidence="guessed"),
+            lambda doc: doc["nodes"][0].pop("label"),
+            lambda doc: doc["nodes"][0].pop("source_file"),
+            lambda doc: doc["nodes"][0].pop("file_type"),
+            lambda doc: doc["links"][0].pop("relation"),
+            lambda doc: doc["links"][0].pop("confidence"),
         ):
             with self.subTest(mutate=mutate):
                 document = graph_document()
@@ -243,36 +373,39 @@ class GraphSchemaTests(unittest.TestCase):
                 with self.assertRaises(ContextError):
                     self.load(document)
 
-    def test_rejects_a_node_outside_the_indexed_checkout(self) -> None:
+    def test_refuses_vocabularies_the_providers_validator_rejects(self) -> None:
+        for mutate in (
+            lambda doc: doc["nodes"][0].update(file_type="diagram"),
+            lambda doc: doc["links"][0].update(confidence="GUESSED"),
+            # Lowercase is the packet contract's vocabulary, not the provider's.
+            lambda doc: doc["links"][0].update(confidence="extracted"),
+        ):
+            with self.subTest(mutate=mutate):
+                document = graph_document()
+                mutate(document)
+                with self.assertRaises(ContextError):
+                    self.load(document)
+
+    def test_refuses_an_unreadable_source_location(self) -> None:
+        for location in ("12", "line 12", "L", "L0", "L-4", "L99999999999"):
+            with self.subTest(location=location):
+                document = graph_document()
+                document["nodes"][0]["source_location"] = location
+                with self.assertRaises(ContextError):
+                    self.load(document)
+
+    def test_refuses_a_node_outside_the_indexed_checkout(self) -> None:
         """A node that could never be cited must not be traversable either."""
         for path in ("/etc/passwd", "../sibling/config.py", ".git/config", ".graphify/nodes.bin"):
             with self.subTest(path=path):
                 document = graph_document()
-                document["nodes"][0]["path"] = path
+                document["nodes"][0]["source_file"] = path
                 with self.assertRaises(ContextError):
                     self.load(document)
 
-    def test_rejects_a_dangling_edge(self) -> None:
-        document = graph_document()
-        document["edges"].append(edge("n-config", "n-missing", "calls"))
-        with self.assertRaises(ContextError):
-            self.load(document)
-
-    def test_rejects_duplicate_node_identifiers(self) -> None:
+    def test_refuses_duplicate_node_identifiers(self) -> None:
         document = graph_document()
         document["nodes"].append(dict(document["nodes"][0]))
-        with self.assertRaises(ContextError):
-            self.load(document)
-
-    def test_rejects_an_inverted_line_span(self) -> None:
-        document = graph_document()
-        document["nodes"][0].update(start_line=30, end_line=12)
-        with self.assertRaises(ContextError):
-            self.load(document)
-
-    def test_rejects_unrecognized_fields(self) -> None:
-        document = graph_document()
-        document["nodes"][0]["cluster"] = "semantic"
         with self.assertRaises(ContextError):
             self.load(document)
 
@@ -332,7 +465,7 @@ class TraversalTests(GraphWorkspace):
         document = graph_document()
         for index in range(query.MAX_SEEDS + 1):
             document["nodes"].append(
-                node(f"n-extra-{index}", "symbol", "parse_config", "example_pkg/loader.py", 1, 2))
+                node(f"n-extra-{index}", "parse_config", "example_pkg/loader.py", 2))
         graph = query.load_graph(document, generation="a" * 32, commit="b" * 40)
         result = query.run_query(graph, question="impact", target="parse_config")
         self.assertEqual(len(result.seeds), query.MAX_SEEDS)
@@ -368,7 +501,7 @@ class CitationValidationTests(GraphWorkspace):
 
     def test_validates_line_claims_against_the_bound_commit(self) -> None:
         validator = self.validator()
-        self.assertTrue(validator.validate("example_pkg/config.py#L12-L30"))
+        self.assertTrue(validator.validate("example_pkg/config.py#L12"))
         self.assertTrue(validator.validate("example_pkg/config.py#L40"))
         self.assertFalse(validator.validate("example_pkg/config.py#L41"))
 
@@ -410,17 +543,17 @@ class PacketTests(GraphWorkspace):
     def test_a_citation_past_the_end_of_a_file_is_dropped_not_delivered(self) -> None:
         """Evidence that cannot be pointed at is not weaker evidence; it is none."""
         document = graph_document()
-        document["nodes"][1].update(start_line=400, end_line=440)
+        document["nodes"][1]["source_location"] = "L400"
         self.publish(document)
         outcome = self.context()
         cited = {citation["source"]
                  for item in outcome.packet["documents"] for citation in item["citations"]}
-        self.assertNotIn("example_pkg/loader.py#L400-L440", cited)
+        self.assertNotIn("example_pkg/loader.py#L400", cited)
         self.assertIn("provider_warning", outcome.packet["omissions"])
 
     def test_confidence_maps_extracted_inferred_and_ambiguous(self) -> None:
         document = graph_document()
-        document["edges"][2]["evidence"] = "ambiguous"
+        document["links"][2]["confidence"] = "AMBIGUOUS"
         self.publish(document)
         outcome = self.context()
         confidences = {item["confidence"] for item in outcome.packet["documents"]}
@@ -450,7 +583,7 @@ class PacketTests(GraphWorkspace):
         self.assertIn("reached from parse_config", text)
         self.assertEqual(
             {citation["source"] for citation in documents[text]["citations"]},
-            {"example_pkg/report.py#L5-L12", "example_pkg/loader.py#L40-L44"},
+            {"example_pkg/report.py#L5", "example_pkg/loader.py#L40"},
         )
         # Each citation is titled with the node it points at, not with the node
         # the relationship happened to reach.
@@ -525,8 +658,9 @@ class AvailabilityTests(GraphWorkspace):
                          query.OPTIONAL_UNAVAILABLE)
         self.assertEqual(self.context().status, query.REQUIRED_UNAVAILABLE)
 
-    def test_a_generation_without_the_pinned_document_is_unreadable(self) -> None:
-        self.publish({"schema": "graphify.native.v1", "nodes": [], "edges": []})
+    def test_a_generation_without_a_provider_export_is_unreadable(self) -> None:
+        """A member that is not the pinned exporter's document at all."""
+        self.publish({"schema": "graphify.native.v1", "entities": [], "relations": []})
         outcome = self.context()
         self.assertEqual(outcome.status, query.REQUIRED_UNAVAILABLE)
         self.assertEqual(outcome.summary["reason"], "unreadable")
