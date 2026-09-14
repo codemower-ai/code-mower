@@ -308,6 +308,8 @@ class GeneratedRunnerTests(unittest.TestCase):
                         existing_branch_head: str = "c" * 40,
                         existing_branch_prs: str = "[]",
                         explicit_issue_target: bool = False,
+                        candidate_issues: str | None = None,
+                        gh_call_log: Path | None = None,
                         ) -> tuple[subprocess.CompletedProcess, str, dict]:
         """Run the generated codex runner against a fake provider that opens a PR.
 
@@ -351,7 +353,7 @@ class GeneratedRunnerTests(unittest.TestCase):
                 + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:codex"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
-  printf '%s\\n' '[{"number":12,"title":"NV: Accessible label","labels":[{"name":"tier:R"},{"name":"builder:codex"},{"name":"dispatched:codex"}],"assignees":[],"author":{"login":"owner"}}]'
+  printf '%s\\n' '__CANDIDATE_ISSUES__'
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
   printf '%s\\n' '[]'
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--state all --head "* ]]; then
@@ -371,6 +373,12 @@ else
   exit 2
 fi
 """.replace("owner/repo", repo).replace("__TITLE_LOOKUP__", title_lookup)
+                .replace("__CANDIDATE_ISSUES__", candidate_issues or json.dumps([{
+                    "number": 12, "title": "NV: Accessible label",
+                    "labels": [{"name": "tier:R"}, {"name": "builder:codex"},
+                               {"name": "dispatched:codex"}],
+                    "assignees": [], "author": {"login": "owner"},
+                }]))
                 .replace("__EXISTING_BRANCH_PRS__", existing_branch_prs),
                 encoding="utf-8",
             )
@@ -419,6 +427,7 @@ printf 'fake codex completed\\n'
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                     "PROMPT_LOG": str(prompt_log),
                     "EXISTING_OPEN_PRS_JSON": existing_issue_prs,
+                    "GH_CALL_LOG": str(gh_call_log) if gh_call_log else "",
                     **_LANE_DELIVERY_ENV,
                 },
                 text=True,
@@ -433,16 +442,16 @@ printf 'fake codex completed\\n'
     @staticmethod
     def _pr(number: int, branch: str, *, labels=(), author: str = "owner",
             repo: str = "owner/repo", head: str | None = "c" * 40,
-            closing_repo: str = "owner/repo") -> dict:
+            closing_repo: str = "owner/repo", closing_issue: int = 12) -> dict:
         return {"number": number, "headRefName": branch,
                 **({"headRefOid": head} if head is not None else {}),
                 "headRepository": {"nameWithOwner": repo},
                 "labels": [{"name": name} for name in labels],
                 "author": {"login": author},
                 "closingIssuesReferences": [{
-                    "number": 12,
+                    "number": closing_issue,
                     "repository": {"nameWithOwner": closing_repo},
-                    "url": f"https://github.com/{closing_repo}/issues/12",
+                    "url": f"https://github.com/{closing_repo}/issues/{closing_issue}",
                 }]}
 
     def test_runner_resolves_the_policy_branch_before_the_provider_runs(self) -> None:
@@ -574,6 +583,38 @@ printf 'fake codex completed\\n'
         self.assertIn("could not completely enumerate existing pull requests",
                       completed.stderr)
         self.assertNotIn("fake codex completed", completed.stdout)
+        self.assertEqual(prompt, "")
+        self.assertEqual(guard, {})
+
+    def test_issue_selection_reuses_one_open_pr_listing_for_many_candidates(self) -> None:
+        existing = [
+            self._pr(70 + issue, f"fix/{issue}-existing", labels=("builder:codex",),
+                     author="chatgpt-codex-connector[bot]", closing_issue=issue)
+            for issue in (12, 13, 14)
+        ]
+        candidates = json.dumps([
+            {
+                "number": issue,
+                "labels": [{"name": "tier:R"}, {"name": "builder:codex"},
+                           {"name": "dispatched:codex"}],
+                "assignees": [], "author": {"login": "owner"},
+            }
+            for issue in (12, 13, 14)
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            call_log = Path(tmp) / "gh-calls"
+            completed, prompt, guard = self._run_codex_lane(
+                "[]", existing_issue_prs=json.dumps(existing),
+                candidate_issues=candidates, gh_call_log=call_log)
+            calls = call_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("codex: nothing to do", completed.stdout)
+        complete_listings = [
+            call for call in calls
+            if "--limit 1001" in call
+            and "--json number,closingIssuesReferences,headRefName,headRefOid" in call
+        ]
+        self.assertEqual(len(complete_listings), 1, calls)
         self.assertEqual(prompt, "")
         self.assertEqual(guard, {})
 

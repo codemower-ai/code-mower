@@ -806,6 +806,8 @@ cmd="${1:-} ${2:-}"
 args=" $* "
 if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
   printf '%s\\n' '[{"number":21,"labels":[{"name":"builder:devin"},{"name":"codex-audit-blocked"}],"updatedAt":"2026-01-01T00:00:00Z","headRepository":{"nameWithOwner":"owner/repo"},"headRefName":"devin-hosted/fix-1"}]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author"* ]]; then
+  printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[]'
 else
@@ -993,6 +995,8 @@ cmd="${{1:-}} ${{2:-}}"
 args=" $* "
 if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
   printf '%s\\n' '{listing}'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author"* ]]; then
+  printf '%s\\n' '[]'
 elif [ "$cmd" = "issue list" ]; then
   printf '%s\\n' '[]'
 else

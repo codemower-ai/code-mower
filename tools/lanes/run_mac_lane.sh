@@ -302,9 +302,7 @@ fi
 
 has_open_pr_for_issue() {
   local issue="$1"
-  local listing=""
-  listing="$(list_open_prs_with_closing_issues)" || return 1
-  printf '%s\n' "$listing" \
+  printf '%s\n' "$selection_open_prs" \
     | jq -r "${lane_provenance_args[@]}" --arg issue "$issue" \
         "${lane_provenance_jq}"' any(.[]; closes_issue($issue))'
 }
@@ -332,6 +330,14 @@ issue_work_order_gate() {
 }
 
 if [ -z "$kind" ]; then
+  # This is one point-in-time selection pass. Reuse one complete bounded PR
+  # enumeration across every candidate issue instead of repaging the same open
+  # PR set once per candidate. Ownership and delivery checkpoints below fetch
+  # their own fresh listings because those decisions occur later in the run.
+  if ! selection_open_prs="$(list_open_prs_with_closing_issues)"; then
+    echo "${LANE}: refusing issue selection; open pull requests could not be completely enumerated" >&2
+    exit 1
+  fi
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
     if ! candidate_has_open_pr="$(has_open_pr_for_issue "$candidate")"; then

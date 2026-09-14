@@ -60,6 +60,9 @@ _FAKE_GH_DELIVERY_HEADER = """#!/usr/bin/env bash
 set -euo pipefail
 cmd="${1:-} ${2:-}"
 args=" $* "
+if [ -n "${GH_CALL_LOG:-}" ]; then
+  printf '%s\\n' "$*" >> "$GH_CALL_LOG"
+fi
 if [ "$cmd" = "pr list" ] && [[ "$args" == *"--json number,closingIssuesReferences,headRefName,headRefOid,headRepository,labels,author"* ]]; then
   if [ -f "$HOME/lane-delivered" ]; then
     printf '%s\\n' '[{"number":77,"headRefName":"codex/issue-12","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","headRepository":{"nameWithOwner":"owner/repo"},"labels":[{"name":"builder:codex"}],"author":{"login":"chatgpt-codex-connector[bot]"},"closingIssuesReferences":[{"number":12,"repository":{"nameWithOwner":"owner/repo"},"url":"https://github.com/owner/repo/issues/12"}]}]'
