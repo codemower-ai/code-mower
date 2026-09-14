@@ -179,6 +179,29 @@ def _read_brief_without_following(path: Path, *, state_dir: Path) -> tuple[str, 
             os.close(descriptor)
 
 
+_PARTICIPANT_FIELDS = ("name", "builder", "reviewer", "note")
+
+
+def _renderable(brief: dict[str, Any]) -> bool:
+    """A brief is current only if every field ``session show`` renders is present and shaped."""
+    if not isinstance(brief.get("status"), str) or not brief["status"]:
+        return False
+    instructions = brief.get("instructions")
+    if not isinstance(instructions, list) or not all(isinstance(line, str) for line in instructions):
+        return False
+    for member in brief["participants"]:
+        if not isinstance(member, dict) or any(field not in member for field in _PARTICIPANT_FIELDS):
+            return False
+        if not isinstance(member["name"], str):
+            return False
+        if member["builder"] is not None and not isinstance(member["builder"], dict):
+            return False
+        reviewer = member["reviewer"]
+        if reviewer is not None and (not isinstance(reviewer, dict) or not {"lane", "merge_authority"} <= set(reviewer)):
+            return False
+    return True
+
+
 def _same_lease(first: dict[str, Any], second: dict[str, Any]) -> bool:
     """The owner renewing in place is still the same lease; anything else is not."""
     return all(first[field] == second[field] for field in ("repo", "orchestrator", "session_id", "acquired_at"))
@@ -221,6 +244,8 @@ def resolve_current_session(
     try:
         brief = context_session.parse_session(raw)
     except ContextError:
+        return _result(STATE_BRIEF_INVALID, lease=active_lease)
+    if not _renderable(brief):
         return _result(STATE_BRIEF_INVALID, lease=active_lease)
     if (
         brief["id"] != session_id

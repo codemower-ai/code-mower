@@ -78,6 +78,46 @@ class ResolveCurrentSessionTests(unittest.TestCase):
                     self.assertTrue(result["session"]["lease"]["mutating"])
                     self.assertEqual(result["session"]["lease"]["session_id"], saved["id"])
 
+    def test_a_session_started_from_a_subdirectory_saves_under_the_root_and_is_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_git_repo(tmp)
+            nested = Path(tmp) / "pkg" / "inner"
+            nested.mkdir(parents=True)
+            with working_directory(nested):
+                saved = start_session()
+                self.assertEqual(
+                    Path(saved["session_file"]),
+                    (Path(tmp) / session_current.DEFAULT_STATE_DIR / f"{saved['id']}.json").resolve(),
+                )
+                self.assertFalse((nested / ".code-mower").exists())
+                code, out, _ = show_current("--json")
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(out)["id"], saved["id"])
+            with working_directory(tmp):
+                explicit = start_session("--state-dir", "briefs", "--force-lease")
+                self.assertEqual(Path(explicit["session_file"]), (Path(tmp) / "briefs" / f"{explicit['id']}.json").resolve())
+
+    def test_a_brief_missing_rendered_fields_is_invalid_not_current(self):
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
+            saved = start_session()
+            path = Path(session_current.DEFAULT_STATE_DIR) / f"{saved['id']}.json"
+            for missing in ("status", "instructions"):
+                with self.subTest(missing=missing):
+                    brief = json.loads(path.read_text(encoding="utf-8"))
+                    del brief[missing]
+                    path.write_text(json.dumps(brief), encoding="utf-8")
+                    result = session_current.resolve_current_session()
+                    self.assertEqual(result["state"], "brief_invalid")
+                    self.assertFalse(result["current"])
+                    code, out, err = show_current()
+                    self.assertEqual((code, out), (1, ""))
+                    self.assertIn("unavailable or invalid", err)
+            brief = json.loads(path.read_text(encoding="utf-8"))
+            brief["participants"] = [{"name": "Claude"}]
+            path.write_text(json.dumps(brief), encoding="utf-8")
+            self.assertEqual(session_current.resolve_current_session()["state"], "brief_invalid")
+
     def test_cli_shows_the_current_brief_from_a_subdirectory_with_exit_zero(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
             _init_git_repo(tmp)

@@ -264,6 +264,16 @@ def _mark_read_only(payload: dict[str, Any]) -> None:
     payload["instructions"].append(READ_ONLY_LEASE_INSTRUCTION)
 
 
+def _startup_state_dir(explicit: str | None) -> Path:
+    """Default briefs live under the checkout root, where ``session show --current`` looks."""
+    if explicit is not None:
+        return Path(explicit)
+    try:
+        return session_lease.find_working_copy_root() / DEFAULT_STATE_DIR
+    except session_lease.SessionLeaseError:
+        return Path(DEFAULT_STATE_DIR)
+
+
 def _acquire_startup_lease(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, Any] | None:
     """Take the single mutating lease for this session, before anything is saved.
 
@@ -394,7 +404,10 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("--host", help="calling agent identity; normally supplied by the agent or CODE_MOWER_HOST")
     start.add_argument("--orchestrator", help="explicit coordinator override; otherwise the calling agent")
     start.add_argument("--config", help="repository configuration; defaults to code-mower.yml when present")
-    start.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
+    start.add_argument(
+        "--state-dir",
+        help=f"where to save the brief (default {DEFAULT_STATE_DIR} under the Git checkout root)",
+    )
     start.add_argument("--work-item", help="authoritative work-item identity for a guided context session")
     start.add_argument("--context-state-dir", type=Path, help="private session-context directory outside repositories")
     start.add_argument("--dry-run", action="store_true", help="preview without saving a session")
@@ -586,7 +599,7 @@ def main(argv: list[str] | None = None) -> int:
                 payload["id"] = uuid.uuid4().hex
                 payload["created_at"] = datetime.now(timezone.utc).isoformat()
                 record = _acquire_startup_lease(args, payload)
-                destination = Path(args.state_dir) / f"{payload['id']}.json"
+                destination = _startup_state_dir(args.state_dir) / f"{payload['id']}.json"
                 payload["session_file"] = str(destination.resolve())
                 association = None
                 store = None
