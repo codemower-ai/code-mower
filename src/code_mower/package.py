@@ -152,6 +152,32 @@ def _running_code_mower_version(repo_root: Path | None = None) -> str:
     return "0.0.0"
 
 
+PACKAGED_STARTER_CONFIG_NAME = "code-mower.example.yml"
+
+
+def packaged_starter_config_path() -> Path:
+    """Return the maintained packaged starter configuration.
+
+    The starter is a package resource, so it is located relative to the installed
+    module and never relative to the working directory: a cwd-local file named
+    like the starter must not be able to redirect an explicit packaged-starter
+    selection into a different configuration. A source checkout keeps its
+    repository copy next to the package, which is the same maintained file.
+    """
+    module_dir = Path(__file__).resolve().parent
+    candidates = (
+        module_dir / "templates" / PACKAGED_STARTER_CONFIG_NAME,
+        module_dir.parents[1] / PACKAGED_STARTER_CONFIG_NAME,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise ConfigError(
+        "packaged starter configuration is missing from this installation; "
+        "reinstall code-mower or pass an explicit config path"
+    )
+
+
 def resolve_package_config_path(path_text: str, *, explicit: bool = False) -> Path:
     path = Path(path_text)
     if explicit or path_text != DEFAULT_PACKAGE_CONFIG or path.is_absolute():

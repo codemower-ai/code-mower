@@ -132,6 +132,7 @@ def check_devin_readiness(
     provider_config_dir: Path | None = None,
     config_profile: str | None = "recommended",
     config_path: str = "",
+    config_source: str = "",
     effective_lanes: Iterable[tuple[str, Mapping[str, Any]]] = (),
     adoption_posture: str = "reviewer-gate",
 ) -> list[DoctorCheck]:
@@ -160,6 +161,7 @@ def check_devin_readiness(
             config_profile=config_profile,
             config_dir=provider_config_dir,
             config_path=config_path,
+            config_source=config_source,
             lane_configs=selected_lanes,
             adoption_posture=adoption_posture,
             include_unselected=include_unselected,

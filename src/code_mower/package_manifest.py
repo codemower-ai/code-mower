@@ -313,6 +313,7 @@ PACKAGE_FILES = (
     ("src/code_mower/participants.py", "src/code_mower/participants.py", "core"),
     ("src/code_mower/role_eligibility.py", "src/code_mower/role_eligibility.py", "core"),
     ("src/code_mower/role_eligibility.schema.json", "src/code_mower/role_eligibility.schema.json", "schema"),
+    ("src/code_mower/review_authority.py", "src/code_mower/review_authority.py", "core"),
     ("src/code_mower/provider_capabilities.py", "src/code_mower/provider_capabilities.py", "core"),
     ("src/code_mower/provider_capabilities.schema.json", "src/code_mower/provider_capabilities.schema.json", "schema"),
     ("src/code_mower/session.py", "src/code_mower/session.py", "core"),

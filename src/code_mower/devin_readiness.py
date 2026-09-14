@@ -70,6 +70,14 @@ DEFAULT_ADOPTION_POSTURE = "reviewer-gate"
 # transport. Rewriting the participant list instead would delete every unrelated
 # participant and profile lane the repository selected.
 TRANSPORT_OPTION = "--set-transport"
+# The packaged starter configuration is selected by its own explicit selector,
+# not by a path: the path it resolves to lives inside the installation that ran
+# the check. `--easy` is not that selector -- it is a first-run profile alias
+# whose starter fallback depends on what the working directory contains, and
+# doctor and init fall back to different files -- so the supported selector that
+# names the maintained package resource directly is rendered instead.
+PACKAGED_STARTER_SOURCE = "packaged_starter"
+PACKAGED_STARTER_OPTION = "--packaged-starter"
 SELECTABLE_TRANSPORTS = (LOCAL_TRANSPORT, HOSTED_TRANSPORT)
 CANONICAL_LANES = frozenset(
     entry.review_lane
@@ -81,6 +89,13 @@ CANONICAL_LANES = frozenset(
 # read, so a switch is only active once the generated configuration is installed
 # through the normal setup PR. A test pins this directory to init's own default.
 GENERATED_OUTPUT_DIR = ".code-mower.generated"
+
+# Installing the reviewed tree writes the repository's own configuration, and
+# that installed file -- not the package resource a starter finding was read
+# from -- is what the run afterwards uses. Verification therefore selects this
+# path, because the packaged starter is never rewritten by an install and would
+# keep reporting its unchanged transport. A test pins it to init's own default.
+INSTALLED_CONFIG_PATH = "code-mower.yml"
 
 # The public declaration fields a lane names for each transport. A repository that
 # named its own Devin lanes edits these fields itself: no generated command can
@@ -247,6 +262,10 @@ class _Pin:
     config_path: str = ""
     profile: str = ""
     repo_slug: str = ""
+    # How the caller selected that configuration. The packaged starter is
+    # resolved to an installation-specific path at runtime, so a command pinned
+    # to it would only run on the machine that generated the finding.
+    config_source: str = ""
     # A generated transport switch can only replace canonical Devin lanes; a
     # custom-named lane is edited by its owner instead of rewritten.
     targeted_switch: bool = True
@@ -256,6 +275,7 @@ class _Pin:
         return doctor_command(
             config_path=self.config_path,
             profile=self.profile,
+            config_source=self.config_source,
             devin=devin,
             flags=flags,
         )
@@ -264,6 +284,7 @@ class _Pin:
         return readiness_command(
             config_path=self.config_path,
             profile=self.profile,
+            config_source=self.config_source,
             repo_slug=self.repo_slug if repo_slug is None else repo_slug,
         )
 
@@ -272,6 +293,7 @@ class _Pin:
             transport,
             config_path=self.config_path,
             profile=self.profile,
+            config_source=self.config_source,
             targeted=self.targeted_switch,
             lanes=self.custom_lanes,
         )
@@ -748,13 +770,32 @@ def _unselected_findings(pin: _Pin) -> tuple[ReadinessFinding, ...]:
     )
 
 
-def _pinned(command: str, *, config_path: str, profile: str) -> str:
+def _portable_starter(config_source: str, profile: str) -> bool:
+    """Return true when the starter selector names this posture without a path.
+
+    The packaged starter has no repository path: it is resolved inside whichever
+    installation ran the check, so pinning it renders a command only that machine
+    can run. ``--packaged-starter`` selects exactly that maintained resource and
+    keeps whichever ``--profile`` the finding describes, so it stands in for the
+    path at every profile rather than only the recommended one.
+    """
+    return config_source == PACKAGED_STARTER_SOURCE
+
+
+def _pinned(
+    command: str, *, config_path: str, profile: str, config_source: str = ""
+) -> str:
     """Return `command` scoped to exactly one configuration and profile.
 
     Both inputs are shell-quoted because a configuration path and a profile name
-    may contain spaces, and an unquoted command would inspect something else.
+    may contain spaces, and an unquoted command would inspect something else. The
+    packaged starter is named by its supported selector instead of a path,
+    because its resolved path belongs to one installation; the profile is still
+    pinned, because the selector does not choose one.
     """
-    if config_path:
+    if _portable_starter(config_source, profile):
+        command += f" {PACKAGED_STARTER_OPTION}"
+    elif config_path:
         command += f" {shlex.quote(config_path)}"
     if profile:
         command += f" --profile {shlex.quote(profile)}"
@@ -773,6 +814,7 @@ def doctor_command(
     *,
     config_path: str = "",
     profile: str = "",
+    config_source: str = "",
     repo_slug: str = "",
     devin: bool = False,
     flags: tuple[str, ...] = (),
@@ -783,13 +825,20 @@ def doctor_command(
     because an unpinned check can read another profile's Devin lane, and a bare
     rerun can report a different posture than the finding that asked for it. A
     caller without those inputs gets guidance to reuse its own instead of a
-    command that silently inspects something else.
+    command that silently inspects something else. `config_source` distinguishes
+    a repository configuration, whose path is portable, from the packaged
+    starter, whose path is not.
     """
     shown = "code-mower doctor" + (" --devin" if devin else "")
     shown += "".join(f" {flag}" for flag in flags)
     if not profile:
         return _unpinned_guidance(shown)
-    command = _pinned("code-mower doctor", config_path=config_path, profile=profile)
+    command = _pinned(
+        "code-mower doctor",
+        config_path=config_path,
+        profile=profile,
+        config_source=config_source,
+    )
     if devin:
         command += " --devin"
     command += "".join(f" {flag}" for flag in flags)
@@ -802,11 +851,37 @@ def readiness_command(
     *,
     config_path: str = "",
     profile: str = "",
+    config_source: str = "",
     repo_slug: str = "",
 ) -> str:
     """Return the `--devin` doctor command that inspects exactly this posture."""
     return doctor_command(
-        config_path=config_path, profile=profile, repo_slug=repo_slug, devin=True
+        config_path=config_path,
+        profile=profile,
+        config_source=config_source,
+        repo_slug=repo_slug,
+        devin=True,
+    )
+
+
+def _installed_readiness_command(
+    *, config_path: str, profile: str, config_source: str
+) -> str:
+    """Return the readiness command that confirms an installed switch took effect.
+
+    Preview and staging select the configuration the finding was read from, but
+    the check that confirms the transport actually changed has to read the
+    configuration the repository runs afterwards. An install never rewrites the
+    packaged starter, so keeping its selector here would re-report the unchanged
+    starter transport rather than the installed one; the installed repository
+    configuration is named instead, at the same profile the finding describes. A
+    finding already sourced from a repository configuration is installed over
+    that same file, so its own path stays the right thing to verify.
+    """
+    if _portable_starter(config_source, profile):
+        return readiness_command(config_path=INSTALLED_CONFIG_PATH, profile=profile)
+    return readiness_command(
+        config_path=config_path, profile=profile, config_source=config_source
     )
 
 
@@ -815,6 +890,7 @@ def select_transport_command(
     *,
     config_path: str = "",
     profile: str = "",
+    config_source: str = "",
     targeted: bool = True,
     lanes: tuple[str, ...] = (),
 ) -> str:
@@ -826,11 +902,23 @@ def select_transport_command(
     nothing else, so it names the product's transport rather than a participant
     list, which would drop every unrelated participant and profile lane.
 
+    A finding against the packaged starter has no repository path to pin, so the
+    steps name that posture with its supported `--packaged-starter` selector
+    instead of the path it happened to resolve to inside this installation, and
+    still pin the profile the finding describes. A repository configuration is
+    never replaced by the starter to shorten a command.
+
     `init` never rewrites the configuration it read: `--apply` stages a reviewable
     generated tree, so the steps are a dry-run preview, an apply into an explicit
     output directory, an install of the reviewed output through the normal setup
     PR, and only then a rerun of readiness. Claiming the posture switched because
     files were staged would misreport the active configuration.
+
+    That final check reads the *installed* configuration at the same profile. A
+    starter-sourced finding selects the package resource to preview and stage
+    from, but an install writes the repository's own configuration and leaves the
+    starter untouched, so verifying through the starter selector would report the
+    unchanged starter transport instead of the switch.
 
     When the profile's Devin lanes are custom-named, no generated command can
     retarget them, so bounded manual guidance names those lanes instead. The Code
@@ -841,18 +929,30 @@ def select_transport_command(
         raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
     if not targeted:
         return custom_lane_guidance(
-            transport, config_path=config_path, profile=profile, lanes=lanes
+            transport,
+            config_path=config_path,
+            profile=profile,
+            config_source=config_source,
+            lanes=lanes,
         )
     selection = f"{TRANSPORT_OPTION} devin={transport}"
     if not profile:
         return _unpinned_guidance(f"code-mower init {selection}")
-    pinned = _pinned("code-mower init", config_path=config_path, profile=profile)
+    pinned = _pinned(
+        "code-mower init",
+        config_path=config_path,
+        profile=profile,
+        config_source=config_source,
+    )
     staged = shlex.quote(GENERATED_OUTPUT_DIR)
+    verify = _installed_readiness_command(
+        config_path=config_path, profile=profile, config_source=config_source
+    )
     return (
         f"preview it with `{pinned} {selection} --dry-run`, stage it with `{pinned} "
         f"{selection} --apply --output-dir {staged}`, then review the generated "
         "configuration and support files and install them through the normal setup PR "
-        f"before rerunning {doctor_command(config_path=config_path, profile=profile, devin=True)}"
+        f"before confirming the installed configuration with {verify}"
         "; staging writes only that review tree, so the active posture keeps reporting "
         "the installed configuration until the generated one replaces it, and the "
         "saved selection is repository-wide, so every profile selecting Devin moves "
@@ -865,6 +965,7 @@ def custom_lane_guidance(
     *,
     config_path: str = "",
     profile: str = "",
+    config_source: str = "",
     lanes: tuple[str, ...] = (),
 ) -> str:
     """Return bounded manual guidance for retargeting custom-named Devin lanes.
@@ -899,7 +1000,11 @@ def custom_lane_guidance(
         if lanes
         else "this profile's custom-named Devin lanes"
     )
-    where = f" in {shlex.quote(config_path)}" if config_path else ""
+    if _portable_starter(config_source, profile):
+        # The starter has no repository path to edit; name the posture instead.
+        where = f" in the packaged starter configuration ({PACKAGED_STARTER_OPTION})"
+    else:
+        where = f" in {shlex.quote(config_path)}" if config_path else ""
     if profile:
         where += f" under profile {shlex.quote(profile)}"
     action = (
@@ -922,8 +1027,8 @@ def custom_lane_guidance(
         return f"{action}, then rerun {_unpinned_guidance('code-mower doctor --devin')}"
     return (
         f"{action}, then rerun "
-        f"{doctor_command(config_path=config_path, profile=profile, devin=True)}; no "
-        "generated command can retarget a lane this repository named"
+        f"{doctor_command(config_path=config_path, profile=profile, config_source=config_source, devin=True)}"
+        "; no generated command can retarget a lane this repository named"
     )
 
 
@@ -932,13 +1037,16 @@ def setup_instructions(
     *,
     config_path: str = "",
     profile: str = "",
+    config_source: str = "",
     repo_slug: str = "",
 ) -> tuple[str, ...]:
     """Return host guidance for the selected optional Devin posture."""
     if transport not in TRANSPORTS:
         raise ConfigError("Devin transport must be devin_cli or devin_api_v3")
     if transport == LOCAL_TRANSPORT:
-        check = readiness_command(config_path=config_path, profile=profile)
+        check = readiness_command(
+            config_path=config_path, profile=profile, config_source=config_source
+        )
         authentication = (
             "Devin executes locally through devin_cli: its ambient Devin Desktop/CLI "
             "login is the only authentication, and hosted service-user credentials do "
@@ -946,7 +1054,10 @@ def setup_instructions(
         )
     else:
         check = readiness_command(
-            config_path=config_path, profile=profile, repo_slug=repo_slug or "OWNER/REPO"
+            config_path=config_path,
+            profile=profile,
+            config_source=config_source,
+            repo_slug=repo_slug or "OWNER/REPO",
         )
         authentication = (
             "Devin executes hosted through devin_api_v3: it needs dedicated service-user "
@@ -974,6 +1085,7 @@ def devin_readiness(
     config_profile: str | None = "recommended",
     config_dir: Path | None = None,
     config_path: str = "",
+    config_source: str = "",
     lane_config: Mapping[str, Any] | None = None,
     lane_id: str = "",
     lane_configs: tuple[tuple[str, Mapping[str, Any] | None], ...] = (),
@@ -1011,6 +1123,7 @@ def devin_readiness(
     pin = _Pin(
         config_path=config_path,
         profile=config_profile or "",
+        config_source=config_source,
         repo_slug=repo_slug,
         targeted_switch=not custom_lanes,
         custom_lanes=custom_lanes,
