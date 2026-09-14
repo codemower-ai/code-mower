@@ -96,13 +96,15 @@ class GuidedGraphSessionTests(unittest.TestCase):
             "policy": {**POLICY, "required": required},
         }
 
-    def fetch(self, **overrides):
-        return context_packets.fetch(self.store, "local-graph", self.spec(**overrides))
+    def fetch(self, *, revision: str = "HEAD", **overrides):
+        return context_packets.fetch(
+            self.store, "local-graph", self.spec(**overrides), revision=revision,
+        )
 
-    def load(self, handle: str, recipient: str):
+    def load(self, handle: str, recipient: str, revision: str = "HEAD"):
         return context_packets.load_authorized(
             self.store, "local-graph", handle, POLICY,
-            ContextRequest("owner/repo", "WORK-1", recipient),
+            ContextRequest("owner/repo", "WORK-1", recipient, revision),
         )
 
     # -- retrieval through the shared store ------------------------------
@@ -191,6 +193,48 @@ class GuidedGraphSessionTests(unittest.TestCase):
             revision=self.manifest.commit,
         )
         self.assertEqual(packet.private_payload()["source_revision"], self.manifest.commit)
+
+    def _second_commit_the_checkout_is_not_on(self) -> str:
+        """Make a commit, then leave the registered checkout back on the first.
+
+        This is the arrangement the consuming-revision rule exists for: the
+        connected checkout still sits at the commit its graph was built from,
+        while the work consuming the evidence is at another commit entirely --
+        a builder's branch, a PR head, a worktree. Both commits are real and
+        resolvable, so nothing here fails for want of an object.
+        """
+        first = lifecycle.resolve_revision(self.repository)[0]
+        (self.repository / "example_pkg" / "config.py").write_text("changed\n", encoding="utf-8")
+        git(self.repository, "add", ".")
+        git(self.repository, "commit", "-q", "-m", "consuming work")
+        second = lifecycle.resolve_revision(self.repository)[0]
+        git(self.repository, "reset", "-q", "--hard", first)
+        self.assertEqual(lifecycle.resolve_revision(self.repository)[0], self.manifest.commit)
+        self.assertNotEqual(second, self.manifest.commit)
+        return second
+
+    def test_retrieval_refuses_a_graph_that_is_not_the_consuming_revisions(self) -> None:
+        """The registered checkout's ``HEAD`` is not the revision being worked on."""
+        consuming = self._second_commit_the_checkout_is_not_on()
+        with self.assertRaises(ContextError):
+            self.fetch(revision=consuming)
+
+    def test_replay_refuses_a_packet_for_another_revisions_code(self) -> None:
+        handle = self.fetch()["packet_handle"]
+        consuming = self._second_commit_the_checkout_is_not_on()
+        # The checkout's own HEAD still authorizes, which is exactly why the
+        # consuming revision has to be the one asked about.
+        self.assertEqual(self.load(handle, "claude:builder").revision_state, "matching")
+        with self.assertRaises(ContextError):
+            self.load(handle, "claude:builder", revision=consuming)
+
+    def test_a_load_that_cannot_name_its_consuming_revision_is_refused(self) -> None:
+        handle = self.fetch()["packet_handle"]
+        with self.assertRaises(ContextError):
+            context_packets.load_authorized(
+                self.store, "local-graph", handle, POLICY,
+                ContextRequest("owner/repo", "WORK-1", "claude:builder"),
+            )
 
     def test_removing_the_graph_makes_the_connection_unavailable(self) -> None:
         handle = self.fetch()["packet_handle"]
@@ -287,15 +331,27 @@ class GuidedGraphSessionTests(unittest.TestCase):
         report, code = self.prepare(saved)
         self.assertEqual((code, report["status"]), (1, "required_unavailable"))
 
+    def _attach(self, handle: str, head: str):
+        return context_delivery.reserve_attachment(
+            self.store, "local-graph", handle, POLICY,
+            ContextRequest("owner/repo", "WORK-1", "codex:orchestrator"),
+            pr=1, head=head,
+        )
+
     def test_attachment_refuses_a_packet_whose_graph_was_rebuilt(self) -> None:
         handle = self.fetch()["packet_handle"]
         self.publish()
         with self.assertRaises(ContextError):
-            context_delivery.reserve_attachment(
-                self.store, "local-graph", handle, POLICY,
-                ContextRequest("owner/repo", "WORK-1", "codex:orchestrator"),
-                pr=1, head="c" * 40,
-            )
+            self._attach(handle, self.manifest.commit)
+
+    def test_attachment_binds_the_pull_requests_head_not_the_checkouts(self) -> None:
+        """A PR at another commit cannot carry this commit's graph evidence."""
+        handle = self.fetch()["packet_handle"]
+        # The head the graph *is* for attaches.
+        self.assertEqual(self._attach(handle, self.manifest.commit)["head"], self.manifest.commit)
+        consuming = self._second_commit_the_checkout_is_not_on()
+        with self.assertRaises(ContextError):
+            self._attach(handle, consuming)
 
 
 @unittest.skipUnless(os.name == "posix", "private context needs POSIX protections")

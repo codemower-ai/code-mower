@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import context_graph_connection as graph_connection
+from . import context_graph_lifecycle as lifecycle
 from .context_connections import _backend, _state, authorize_locked
 from .context_contract import (
     CAPABILITY_VERSION, PACKET_SCHEMA, ContextError, ContextRequest, _object,
@@ -40,6 +41,26 @@ def request_spec(value, name):
             "query": _text(value["query"], maximum=2000),
             "source": _text(value["source"], maximum=80) if value.get("source") is not None else None,
             "policy": policy}
+
+
+def consuming_revision(repo_root) -> str | None:
+    """The commit the *consuming* checkout is at, or ``None`` if it has none.
+
+    This is the revision prepared evidence is for, and it is read from the
+    checkout doing the work rather than from whichever checkout a connection was
+    registered against: the two are routinely different commits, and a local
+    repository graph describing the other one does not describe this work.
+
+    ``None`` rather than a raise, so a connection that has no use for a code
+    revision -- an organization search, whose sources are documents with their
+    own versions -- still prepares from a directory that is not a Git checkout.
+    A repository-kind connection refuses instead of falling back.
+    """
+    try:
+        commit, _tree = lifecycle.resolve_revision(Path(repo_root))
+    except (ContextError, OSError, ValueError):
+        return None
+    return commit
 
 
 def _handle(value):
@@ -104,15 +125,33 @@ def _delete_entry(locked, entry):
     locked.artifact("p-" + entry["handle"]).delete()
 
 
-def _request(spec, recipient=None):
-    return ContextRequest(spec["repository"], spec["work_item"], recipient or spec["recipient"])
+def _request(spec, recipient=None, revision=None):
+    return ContextRequest(spec["repository"], spec["work_item"], recipient or spec["recipient"],
+                          revision)
 
 
-def _load(store, entry, policy, request, envelope):
+def _load(store, entry, policy, request, envelope, *, bound_revision=None):
+    """Load one saved packet, and for a local graph require the consuming revision.
+
+    ``bound_revision`` is the commit the *consuming* work is at, resolved by the
+    same authorization that produced ``envelope``. The shared contract already
+    computes ``revision_state`` from it; what is decided here is what a
+    mismatch means. For a local repository graph it is a refusal: the evidence
+    describes one commit's code, so evidence for commit A handed to work on
+    commit B is wrong rather than merely old, and the caller's own required or
+    optional policy then decides whether that pauses or degrades the work.
+
+    An organization connection passes ``None`` and is unaffected. Its source
+    revision is an external document version that has no reason to equal a code
+    commit, and requiring one would refuse every organization packet.
+    """
     if entry["reference"] is None:
         raise ContextError("context retrieval did not complete; use an explicit refresh to try again")
-    return load_packet(private_root=store.root, reference=entry["reference"], policy=policy,
-                       request=request, authorize=lambda: envelope)
+    packet = load_packet(private_root=store.root, reference=entry["reference"], policy=policy,
+                         request=request, authorize=lambda: envelope)
+    if bound_revision is not None and packet.revision_state != "matching":
+        raise ContextError("local graph evidence is not bound to the consuming revision")
+    return packet
 
 
 def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revision="HEAD"):
@@ -133,8 +172,14 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revis
         left = policy["timeout_seconds"] - (time.monotonic() - started)
         if left <= 0:
             raise ContextError("context retrieval deadline exceeded before authorization")
+        bound = None
         if local:
-            envelope = graph_connection.authorize_locked(
+            if revision is None:
+                # Default-deny rather than fall back to the registered
+                # checkout's ``HEAD``: that fallback is exactly how evidence for
+                # one commit reaches work on another.
+                raise ContextError("local graph context requires the consuming checkout revision")
+            envelope, bound = graph_connection.authorized_revision(
                 locked, name, root=store.root, revision=revision,
             )
         else:
@@ -148,7 +193,8 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revis
         index_file, index = _index(locked)
         old = next((entry for entry in index["entries"] if entry["key"] == fingerprint), None)
         if old is not None and not refresh:
-            packet = _load(store, old, policy, _request(spec), envelope)
+            packet = _load(store, old, policy, _request(spec, revision=bound), envelope,
+                           bound_revision=bound)
             return {**packet.shareable_summary(), "status": "available", "packet_handle": old["handle"],
                     "reused": True, "usage": old["usage"]}
         # Reserve before any paid/read tool call. Restarting a failed attempt
@@ -190,7 +236,8 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revis
             locked.artifact("p-" + entry["handle"]).write(packet_data)
             raw = json.dumps(packet_data, allow_nan=False, separators=(",", ":")).encode()
             entry["reference"] = {"path": ".p-" + entry["handle"] + ".json", "sha256": hashlib.sha256(raw).hexdigest()}
-            packet = _load(store, entry, policy, _request(spec), envelope)
+            packet = _load(store, entry, policy, _request(spec, revision=bound), envelope,
+                           bound_revision=bound)
             entry["usage"] = usage
             index_file.write(index)
             _index(locked)
@@ -209,28 +256,43 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revis
 
 
 def load_authorized(store, name, handle, policy, request: ContextRequest, *, backend=None,
-                    revision="HEAD"):
+                    revision=None):
     """Every participant replay obtains a new authorization under lock.
 
     For an organization connection that is a fresh online check. For a local
     repository graph it is a fresh read of current local state: the published
-    generation for ``revision``. Either way the envelope is minted here and
-    now, so a packet whose graph was rebuilt or whose revision has moved on is
-    refused by the shared contract rather than replayed.
+    generation for the *consuming* revision. Either way the envelope is minted
+    here and now, so a packet whose graph was rebuilt or whose revision has
+    moved on is refused by the shared contract rather than replayed.
+
+    The consuming revision travels on the request the caller already builds --
+    ``ContextRequest.revision`` -- and ``revision`` is the same value for the
+    callers that hold it without holding a request, such as an attachment that
+    knows only the trusted current PR head. Neither is defaulted to ``HEAD``
+    for a graph: a replay that cannot name the revision it is for is refused,
+    because the checkout the graph was registered from moves independently of
+    the work consuming the evidence.
     """
     _handle(handle)
     with store.locked(name) as locked:
+        bound = None
         if graph_connection.is_graph(locked.read()):
-            envelope = graph_connection.authorize_locked(
-                locked, name, root=store.root, revision=revision,
+            consuming = request.revision or revision
+            if consuming is None:
+                raise ContextError("local graph context requires the consuming checkout revision")
+            envelope, bound = graph_connection.authorized_revision(
+                locked, name, root=store.root, revision=consuming,
             )
+            # Resolved, so a symbolic consuming revision is compared as the
+            # commit it names rather than as the word the caller typed.
+            request = ContextRequest(request.repository, request.work_item, request.recipient, bound)
         else:
             envelope = authorize_locked(locked, name, backend or _backend())
         _file, index = _index(locked)
         entry = next((entry for entry in index["entries"] if entry["handle"] == handle), None)
         if entry is None:
             raise ContextError("context packet is missing or was invalidated")
-        return _load(store, entry, policy, request, envelope)
+        return _load(store, entry, policy, request, envelope, bound_revision=bound)
 
 
 def main(argv=None):

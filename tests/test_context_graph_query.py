@@ -131,7 +131,9 @@ def graph_document(**extra) -> dict:
     for each indexed file.
     """
     return {
-        "directed": False,
+        # Directed, because every question this module answers is an oriented
+        # claim and an undirected export's endpoint order is storage order.
+        "directed": True,
         "multigraph": False,
         "graph": {},
         "nodes": [
@@ -370,6 +372,27 @@ class GraphSchemaTests(unittest.TestCase):
             self.load(graph_document(built_at_commit="c" * 40))
         # Agreeing is fine, and is the ordinary case.
         self.assertEqual(len(self.load(graph_document(built_at_commit="b" * 40)).nodes), 5)
+
+    def test_refuses_an_export_that_does_not_preserve_direction(self) -> None:
+        """An undirected export states an endpoint pair, not a caller and callee.
+
+        The provider's undirected storage canonicalizes endpoint order and its
+        export's repair leaves no mark a reader can check, so every oriented
+        answer here -- ``impact``, ``dependency``, and the ``calls`` sentence a
+        ``symbol`` neighbourhood states -- would be asserting an orientation the
+        document never established. The refusal names direction, so an operator
+        reads it as "rebuild directed" rather than as a corrupt graph.
+        """
+        for flag in (False, None, "true", 1):
+            with self.subTest(directed=flag):
+                document = graph_document()
+                if flag is None:
+                    document.pop("directed")
+                else:
+                    document["directed"] = flag
+                with self.assertRaises(ContextError) as caught:
+                    self.load(document)
+                self.assertIn("direction", str(caught.exception))
 
     def test_refuses_records_missing_the_providers_required_fields(self) -> None:
         for mutate in (

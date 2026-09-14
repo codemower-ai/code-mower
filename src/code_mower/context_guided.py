@@ -21,7 +21,7 @@ from .context_delivery import (
     reserve_attachment,
     retire_attachment,
 )
-from .context_packets import load_authorized
+from .context_packets import consuming_revision, load_authorized
 from .context_store import ContextStore
 from .participants import PARTICIPANTS, participant_id
 from .provider_runners import fetch_issue_comments, fetch_pull_request, post_pr_comment
@@ -371,7 +371,12 @@ def deliver_session(
                 record["connection"],
                 record["packet"],
                 record["policy"],
-                ContextRequest(record["repo"], record["work_item"], recipient),
+                ContextRequest(
+                    record["repo"], record["work_item"], recipient,
+                    # Before attachment the consuming revision is this
+                    # checkout's, which is what the builder is about to work on.
+                    consuming_revision(repo_path),
+                ),
                 backend=backend,
             )
             text = render_evidence(packet, record["packet"])

@@ -172,6 +172,28 @@ def current_generation(state: Mapping[str, Any], *, root: Path | None = None,
     return manifest.generation
 
 
+def authorized_revision(locked, name: str, *, root: Path | None = None, revision: str = "HEAD",
+                        now: datetime | None = None) -> tuple[dict[str, Any], str]:
+    """One envelope, and the commit the graph is bound to for ``revision``.
+
+    The commit is returned rather than re-derived by the caller because it is
+    the same ``graph_status`` read that authorized the load: asking twice would
+    rehash the artifact and, worse, could answer differently across a rebuild,
+    so the envelope and the revision a packet is checked against would then come
+    from two different observations of the graph.
+
+    ``revision`` is the *consuming* revision -- the commit whose work the
+    evidence is for -- and not merely the registered checkout's ``HEAD``. A
+    graph that was not built from exactly that commit resolves ``stale`` in
+    ``_published`` and never reaches a recipient.
+    """
+    current = now or datetime.now(timezone.utc)
+    state = saved_state(locked.read(), name)
+    manifest = _published(state, root=root, revision=revision).manifest
+    assert manifest is not None
+    return _envelope(state, name, manifest, current), manifest.commit
+
+
 def authorize_locked(locked, name: str, *, root: Path | None = None, revision: str = "HEAD",
                      now: datetime | None = None) -> dict[str, Any]:
     """Mint one envelope from current local state, under the caller's lock.
@@ -183,10 +205,11 @@ def authorize_locked(locked, name: str, *, root: Path | None = None, revision: s
     requested revision -- and what it publishes as ``generation`` is the
     graph's, so the shared packet contract does the rest.
     """
-    current = now or datetime.now(timezone.utc)
-    state = saved_state(locked.read(), name)
-    manifest = _published(state, root=root, revision=revision).manifest
-    assert manifest is not None
+    return authorized_revision(locked, name, root=root, revision=revision, now=now)[0]
+
+
+def _envelope(state: Mapping[str, Any], name: str, manifest: Any,
+              current: datetime) -> dict[str, Any]:
     envelope = {
         "schema": CONNECTION_SCHEMA, "capability_version": CAPABILITY_VERSION,
         "connection": name, "provider": PROVIDER, "kind": CONNECTION_KIND,
@@ -261,6 +284,7 @@ __all__ = (
     "GRAPH_SCHEMA",
     "PROVIDER",
     "authorize_locked",
+    "authorized_revision",
     "connect",
     "connection_spec",
     "current_generation",

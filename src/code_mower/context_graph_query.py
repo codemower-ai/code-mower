@@ -76,6 +76,29 @@ QUERY_SCHEMA = "code_mower.contextGraphQuery.v1"
 #: acts on, and it is checked against the generation rather than trusted.
 GRAPH_EDGE_KEYS = ("links", "edges")
 
+#: Whether the export preserves the direction of its relationships, which every
+#: question here depends on and no question here can recover.
+#:
+#: The pinned build writes a NetworkX graph that is undirected by default
+#: (``build.py::build_from_json(directed=False)``). Undirected storage
+#: canonicalizes endpoint order, so ``source``/``target`` in an undirected
+#: export are an endpoint *pair*, not a caller and a callee. The exporter does
+#: try to repair that -- it stashes the true endpoints in ``_src``/``_tgt`` and
+#: restores them before writing -- but the restored link carries no record that
+#: the repair happened, so a reader cannot tell a restored edge from one whose
+#: order came out of node iteration, and an undirected build additionally
+#: collapses a pair related in both directions onto whichever it saw first.
+#:
+#: Every answer this module produces is an oriented claim: ``impact`` and
+#: ``dependency`` are the same relationships walked in opposite directions, and
+#: even a ``symbol`` neighbourhood states "A calls B" rather than "A and B are
+#: adjacent". Reading orientation out of a document that does not establish it
+#: is how a packet comes to assert the reverse of what the code does, so a
+#: generation that does not declare itself directed is refused here rather than
+#: answered from. ``directed: true`` is the provider's own statement that the
+#: graph was stored as a ``DiGraph``, where source and target *are* the edge.
+GRAPH_DIRECTED_KEY = "directed"
+
 #: Required node and edge fields, taken from the pinned validator's
 #: ``REQUIRED_NODE_FIELDS`` and ``REQUIRED_EDGE_FIELDS``. A record missing one
 #: of these is a refusal: the provider's own validator would not have passed
@@ -490,6 +513,15 @@ def load_graph(payload: Mapping[str, Any], *, generation: str, commit: str) -> C
         raise ContextError("local graph node count exceeds its budget")
     if not isinstance(raw_edges, list) or len(raw_edges) > MAX_EDGES:
         raise ContextError("local graph edge count exceeds its budget")
+    # Before a single edge is read, because direction is not a property of any
+    # one link: an undirected export's endpoints are a pair the storage ordered,
+    # and no traversal, filter or sentence below can be honest about a
+    # relationship whose orientation the document never stated.
+    if payload.get(GRAPH_DIRECTED_KEY) is not True:
+        raise ContextError(
+            "local graph export does not preserve relationship direction; rebuild the "
+            "generation as a directed graph"
+        )
     stamped = payload.get("built_at_commit")
     if stamped is not None and _text(stamped, maximum=64) != commit:
         raise ContextError("local graph was built from a different commit than its generation")

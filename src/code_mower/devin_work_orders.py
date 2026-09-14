@@ -251,6 +251,10 @@ class PacketContext:
     handle: str = field(repr=False)
     policy: dict = field(repr=False)
     backend: object = field(default=None, repr=False)
+    #: The commit this order's work consumes. Repository-kind evidence is
+    #: authorized against it and refuses when it is absent, because a graph
+    #: describing another commit does not describe this order.
+    revision: str | None = field(default=None, repr=False)
 
 
 def packet_context(store: ContextStore, name: str, handle: str, policy, *, order: WorkOrder,
@@ -362,7 +366,8 @@ class DevinWorkOrders:
         if (order.context_policy == "none" or type(context) is not PacketContext
                 or type(context.store) is not ContextStore):
             raise RemoteError("context_binding_mismatch")
-        request = ContextRequest(order.repository, order.work_item, CONTEXT_RECIPIENT)
+        request = ContextRequest(order.repository, order.work_item, CONTEXT_RECIPIENT,
+                                 context.revision)
         try:
             packet = load_authorized(context.store, context.name, context.handle, context.policy,
                                      request, backend=context.backend)
