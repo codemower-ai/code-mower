@@ -680,6 +680,206 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
         self.assertEqual(tuple(context), ("stat", "diff", False))
 
 
+    # Every consumer below the fetch reads the revision the audit fetched.
+    #
+    # Resolving the posture against the fetched revision is not enough on its
+    # own: `base_ref` stays a mutable name, so the trusted-ref lookups, the
+    # review context and the review itself could still resolve it again later
+    # and read a different commit. The tests below advance `origin/main` *after*
+    # the fetch -- the way an upstream merge landing mid-review would -- and
+    # prove the rendered posture and the downstream review and context all stay
+    # on the one fetched snapshot.
+
+    def _advance_the_tracking_ref(self) -> str:
+        """Land a re-promotion on `origin/main` after the audit fetched it."""
+
+        self._commit(self.AUTHORITATIVE, "re-promote the review lane upstream")
+        self._git("update-ref", "refs/remotes/origin/main", "main")
+        return self._git("rev-parse", "main")
+
+    def test_codex_review_and_context_stay_on_the_fetched_revision(self):
+        from code_mower import codex_audit_pr as cap
+
+        self._stale_demotion()
+        observed: dict[str, str] = {}
+        worktree = self.tmp / "worktree"
+        worktree.mkdir(exist_ok=True)
+        head = "d" * 40
+        pr_payload = {"head": {"sha": head, "ref": "human/fix"}, "title": "Fix"}
+        parsed = cap.CodexVerdict(verdict="PASS", prose="Summary:\n\nNone.")
+
+        def prepare(**kwargs):
+            observed["context"] = kwargs["base_ref"]
+            # Upstream moves on while this review runs. Anything that resolves
+            # the name again from here reads the re-promotion, not the fetch.
+            observed["moved_to"] = self._advance_the_tracking_ref()
+            return None
+
+        def diagnostics(local_repo, **kwargs):
+            observed["diagnostics"] = kwargs["base_ref"]
+            return cap.ReviewContextDiagnostics(
+                base_ref=kwargs["base_ref"],
+                head_sha=head,
+                changed_file_count=1,
+                diff_bytes=128,
+                included_diff_bytes=128,
+            )
+
+        def review(config, *args, **kwargs):
+            observed["review"] = config.base_ref
+            return ("review", "")
+
+        config = self._codex_config(
+            merge_authority=True, authority_request=self._request("codex")
+        )
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {
+                    "PYTEST_CURRENT_TEST": "",
+                    "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(self.tmp / "verdicts"),
+                    "GITHUB_RUN_ID": "",
+                },
+            ),
+            mock.patch.object(cap, "fetch_pull_request", side_effect=[pr_payload] * 2),
+            mock.patch.object(cap, "preflight_codex_cli", return_value="codex-test"),
+            mock.patch.object(cap, "_discover_venv", return_value=None),
+            mock.patch.object(cap, "_fetch_pr_head"),
+            mock.patch.object(cap, "_fetch_base_ref", side_effect=self._fetch_effect()),
+            mock.patch.object(cap.context_audit, "prepare", side_effect=prepare),
+            mock.patch.object(
+                cap, "_build_review_context_diagnostics", side_effect=diagnostics
+            ),
+            mock.patch.object(cap, "_create_temp_worktree", return_value=worktree),
+            mock.patch.object(cap, "_remove_worktree"),
+            mock.patch.object(cap, "run_codex_review", side_effect=review),
+            mock.patch.object(
+                cap,
+                "run_codex_verdict_structuring",
+                return_value=(parsed, '{"structured_output":"pass"}', ""),
+            ),
+            mock.patch.object(cap, "post_pr_comment", return_value={"html_url": "u"}),
+        ):
+            result = cap.audit_pr(config, "owner/repo", 42)
+
+        fetched = self._git("rev-parse", "refs/remotes/origin/main~1")
+        self.assertNotEqual(observed["moved_to"], fetched)
+        for consumer in ("context", "diagnostics", "review"):
+            self.assertEqual(observed[consumer], fetched, consumer)
+        # The named ref would have read the re-promotion instead.
+        self.assertNotIn("origin/main", observed.values())
+        self.assertIn(review_authority.INFORMATIONAL_LABEL, result.comment_body)
+
+    def test_claude_review_and_context_stay_on_the_fetched_revision(self):
+        from code_mower import claude_audit_pr as cap
+
+        self._stale_demotion()
+        observed: dict[str, str] = {}
+        head = "d" * 40
+        pr_payload = {"head": {"sha": head, "ref": "human/fix"}, "title": "Fix"}
+        parsed = cap.ClaudeVerdict(verdict="PASS", prose="Summary:\n\nNone.")
+        advance = self._fetch_effect()
+
+        def build_diff_context(*args, **kwargs):
+            return cap.DiffContext(
+                "stat", "diff", ("src/app.py",), False, 1000, 1000, 40, 40,
+                fetched_base_ref=advance(),
+            )
+
+        def prepare(**kwargs):
+            observed["context"] = kwargs["base_ref"]
+            observed["moved_to"] = self._advance_the_tracking_ref()
+            return None
+
+        def load_review_prompt(*args, **kwargs):
+            observed["doctrine"] = kwargs["trusted_git_ref"]
+            return ""
+
+        def audit(config, prompt):
+            observed["review"] = config.base_ref
+            observed["prompt_names"] = config.base_ref in prompt
+            return (parsed, '{"structured_output":"pass"}', "")
+
+        config = self._claude_config(
+            merge_authority=True, authority_request=self._request("claude")
+        )
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {
+                    "PYTEST_CURRENT_TEST": "",
+                    "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(self.tmp / "verdicts"),
+                    "GITHUB_RUN_ID": "",
+                },
+            ),
+            mock.patch.object(cap, "fetch_pull_request", side_effect=[pr_payload] * 2),
+            mock.patch.object(cap, "_build_diff_context", side_effect=build_diff_context),
+            mock.patch.object(cap.context_audit, "prepare", side_effect=prepare),
+            mock.patch.object(
+                cap.code_mower_prompts,
+                "load_review_prompt",
+                side_effect=load_review_prompt,
+            ),
+            mock.patch.object(cap, "run_claude_audit", side_effect=audit),
+            mock.patch.object(cap, "post_pr_comment", return_value={"html_url": "u"}),
+        ):
+            result = cap.audit_pr(config, "owner/repo", 42)
+
+        fetched = self._git("rev-parse", "refs/remotes/origin/main~1")
+        self.assertNotEqual(observed["moved_to"], fetched)
+        for consumer in ("context", "doctrine", "review"):
+            self.assertEqual(observed[consumer], fetched, consumer)
+        self.assertTrue(observed["prompt_names"])
+        self.assertIn(review_authority.INFORMATIONAL_LABEL, result.comment_body)
+
+    def test_a_force_push_race_still_renders_the_fetched_base(self):
+        from code_mower import claude_audit_pr as cap
+
+        self._stale_demotion()
+        fetched = self._git("rev-parse", "main")
+        head = "d" * 40
+        pr_payload = {"head": {"sha": head, "ref": "human/fix"}, "title": "Fix"}
+        advance = self._fetch_effect()
+
+        def build_diff_context(*args, **kwargs):
+            # The base is fetched before the head mismatch is detected, so the
+            # stale notice knows which revision the audit had already taken.
+            raise cap._FetchedHeadMismatchWithBase(head, "e" * 40, advance())
+
+        config = self._claude_config(
+            merge_authority=True, authority_request=self._request("claude")
+        )
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {
+                    "PYTEST_CURRENT_TEST": "",
+                    "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(self.tmp / "verdicts"),
+                    "GITHUB_RUN_ID": "",
+                },
+            ),
+            mock.patch.object(cap, "fetch_pull_request", side_effect=[pr_payload] * 2),
+            mock.patch.object(cap, "_build_diff_context", side_effect=build_diff_context),
+            mock.patch.object(cap, "post_pr_comment", return_value={"html_url": "u"}),
+        ):
+            result = cap.audit_pr(config, "owner/repo", 42)
+
+        self.assertEqual(result.verdict, "STALE")
+        self.assertIn(review_authority.INFORMATIONAL_LABEL, result.comment_body)
+        self.assertNotIn(review_authority.MERGE_AUTHORITY_LABEL, result.comment_body)
+        self.assertTrue(fetched)
+
+    def test_the_mismatch_stays_catchable_as_the_shared_exception(self):
+        from code_mower import claude_audit_pr as cap
+        from code_mower.provider_runners import FetchedHeadMismatch
+
+        error = cap._FetchedHeadMismatchWithBase("a" * 40, "b" * 40, "c" * 40)
+        self.assertIsInstance(error, FetchedHeadMismatch)
+        self.assertEqual(error.expected_sha, "a" * 40)
+        self.assertEqual(error.actual_sha, "b" * 40)
+        self.assertEqual(error.fetched_base_ref, "c" * 40)
+
+
 class PortableStarterCommandTests(unittest.TestCase):
     """The packaged starter has no repository path a rendered command can pin."""
 

@@ -916,6 +916,22 @@ def _resolve_fetched_authority(
     return replace(config, merge_authority=posture["merge_authority"])
 
 
+class _FetchedHeadMismatchWithBase(FetchedHeadMismatch):
+    """A force-push race that still knows which base revision was fetched.
+
+    The base is fetched before the head mismatch is detected, so the stale
+    notice can be rendered against that same revision. Subclassing keeps every
+    existing `except FetchedHeadMismatch` handler and the shared exception
+    contract unchanged.
+    """
+
+    def __init__(
+        self, expected_sha: str, actual_sha: str, fetched_base_ref: str
+    ) -> None:
+        super().__init__(expected_sha, actual_sha)
+        self.fetched_base_ref = fetched_base_ref
+
+
 def _build_diff_context(
     local_repo: Path,
     pr_number: int,
@@ -945,7 +961,9 @@ def _build_diff_context(
         expected_head_sha=expected_head_sha,
     )
     if fetched_head_ref.lower() != expected_head_sha.lower():
-        raise FetchedHeadMismatch(expected_head_sha, fetched_head_ref)
+        raise _FetchedHeadMismatchWithBase(
+            expected_head_sha, fetched_head_ref, fetched_base_ref
+        )
     diff_range = f"{fetched_base_ref}...{fetched_head_ref}"
     stat = _run_git(local_repo, ["diff", "--stat", "--find-renames", diff_range])
     changed_files_text = _run_git(
@@ -1392,6 +1410,10 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     except FetchedHeadMismatch as exc:
         # The base was fetched before the head mismatch was detected, so the
         # stale notice still renders the posture of the refreshed base.
+        config = replace(
+            config,
+            base_ref=getattr(exc, "fetched_base_ref", "") or config.base_ref,
+        )
         config = _resolve_fetched_authority(config, local_repo, config.base_ref)
         actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
         print(
@@ -1492,10 +1514,16 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
         return result
 
     # The diff was taken against the revision the base ref resolved to once
-    # fetched, so the comment's posture is resolved against that same revision.
-    config = _resolve_fetched_authority(
-        config, local_repo, diff_context.fetched_base_ref
+    # fetched. Pin it onto the config, because `base_ref` was a mutable name
+    # until here and everything below reads it -- the rendered posture, the
+    # trusted-ref lookups, the review doctrine load and the review prompt's own
+    # base. Carrying the SHA means the comment and the diff describe the one
+    # revision this audit fetched even if the tracking ref moves afterwards. A
+    # context that recorded no revision keeps the name it was given.
+    config = replace(
+        config, base_ref=diff_context.fetched_base_ref or config.base_ref
     )
+    config = _resolve_fetched_authority(config, local_repo, config.base_ref)
     print(
         f"  diff budget: {diff_context.diagnostics()}",
         file=sys.stderr,

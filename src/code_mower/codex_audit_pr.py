@@ -1923,11 +1923,19 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     # before running the review. Stale base = wrong diff = wrong review.
     _fetch_pr_head(local_repo, pr_number, head_sha_start)
     _fetch_base_ref(local_repo, config.base_ref)
+    # Pin the fetched snapshot onto the config itself. `base_ref` was a mutable
+    # name until here, and everything below reads it -- the rendered posture, the
+    # trusted-ref lookups, the review context diagnostics and the review's own
+    # `--base`. Carrying the SHA instead means they all describe the one revision
+    # this audit fetched, even if the tracking ref moves later in the run. A ref
+    # that will not resolve keeps its name, so an unavailable base stays
+    # unavailable rather than being quietly replaced by something that resolves.
+    config = replace(
+        config, base_ref=_pinned_base_revision(local_repo, config.base_ref)
+    )
     # The base is now the revision this review compares against, so the posture
     # the comment renders is resolved here rather than before the fetch.
-    config = _resolve_fetched_authority(
-        config, local_repo, _pinned_base_revision(local_repo, config.base_ref)
-    )
+    config = _resolve_fetched_authority(config, local_repo, config.base_ref)
     decision_authorities = _decision_authorities_for_repo(
         local_repo,
         config.decision_authorities,
