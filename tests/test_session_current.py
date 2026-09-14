@@ -118,6 +118,74 @@ class ResolveCurrentSessionTests(unittest.TestCase):
             path.write_text(json.dumps(brief), encoding="utf-8")
             self.assertEqual(session_current.resolve_current_session()["state"], "brief_invalid")
 
+    def test_malformed_optional_brief_sections_are_invalid_in_json_and_text(self):
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
+            saved = start_session()
+            path = Path(saved["session_file"])
+            participant = saved["participants"][0]
+            broken = {
+                "empty execution": {**saved, "participants": [{**participant, "execution": {}}]},
+                "execution without capabilities": {
+                    **saved, "participants": [{**participant, "execution": {
+                        "product": "p", "transport": "t", "readiness": "r", "capability_gaps": [],
+                    }}],
+                },
+                "execution gaps not text": {
+                    **saved, "participants": [{**participant, "execution": {
+                        "product": "p", "transport": "t", "readiness": "r", "capabilities": {}, "capability_gaps": [1],
+                    }}],
+                },
+                "builder mode not text": {
+                    **saved, "participants": [{**participant, "builder": {"execution_mode": 3}}],
+                },
+                "reviewer lane not text": {
+                    **saved, "participants": [{**participant, "reviewer": {"lane": None, "merge_authority": False}}],
+                },
+                "reviewer authority not boolean": {
+                    **saved, "participants": [{**participant, "reviewer": {"lane": "x", "merge_authority": "no"}}],
+                },
+                "note not text": {**saved, "participants": [{**participant, "note": 5}]},
+                "no participants": {**saved, "participants": []},
+                "context without next action": {**saved, "context": {"readiness": "ok", "dependent_work": "go"}},
+                "guided context without stage": {**saved, "guided_context": {"next_action": "wait"}},
+                "tracker not an object": {**saved, "tracker": "jira"},
+                "tracker instructions not text": {
+                    **saved, "tracker": {"kind": "jira_cloud", "project": "X", "instructions": [None]},
+                },
+            }
+            for label, brief in broken.items():
+                with self.subTest(label=label):
+                    path.write_text(json.dumps(brief), encoding="utf-8")
+                    result = session_current.resolve_current_session()
+                    self.assertEqual(result["state"], "brief_invalid")
+                    self.assertIsNone(result["session"])
+                    code, out, err = show_current("--json")
+                    self.assertEqual((code, json.loads(out)["state"]), (1, "brief_invalid"))
+                    code, out, err = show_current()
+                    self.assertEqual((code, out), (1, ""))
+                    self.assertIn("unavailable or invalid", err)
+                    self.assertNotIn("Traceback", err)
+            path.write_text(json.dumps(saved), encoding="utf-8")
+            code, out, err = show_current()
+            self.assertEqual((code, err), (0, ""))
+            self.assertIn("Status: prepared", out)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFOs are required")
+    def test_a_fifo_at_the_brief_path_is_refused_without_blocking(self):
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
+            saved = start_session()
+            path = Path(saved["session_file"])
+            path.unlink()
+            os.mkfifo(path)
+            result = session_current.resolve_current_session()
+            self.assertEqual(result["state"], "brief_refused")
+            self.assertIsNone(result["session"])
+            code, out, err = show_current()
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn("refusing to follow it", err)
+
     def test_cli_shows_the_current_brief_from_a_subdirectory_with_exit_zero(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
             _init_git_repo(tmp)

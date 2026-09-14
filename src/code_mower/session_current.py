@@ -145,13 +145,20 @@ def _read_brief_without_following(path: Path, *, state_dir: Path) -> tuple[str, 
     ``O_NOFOLLOW`` makes a symlinked brief fail at open time rather than being
     checked and then swapped. The parent must be a real directory (not a
     symlink) whose resolved location contains the opened file, so neither the
-    state directory nor the filename can redirect the read elsewhere.
+    state directory nor the filename can redirect the read elsewhere. The open
+    is nonblocking so a FIFO at the brief's path is refused at the regular-file
+    check instead of stalling the read waiting for a writer.
     """
     if state_dir.is_symlink() or not state_dir.is_dir():
         return (STATE_BRIEF_REFUSED if state_dir.is_symlink() else STATE_BRIEF_MISSING), None
     if path.is_symlink():
         return STATE_BRIEF_REFUSED, None
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except FileNotFoundError:
@@ -169,6 +176,8 @@ def _read_brief_without_following(path: Path, *, state_dir: Path) -> tuple[str, 
                 return STATE_BRIEF_REFUSED, None
         except OSError:
             return STATE_BRIEF_REFUSED, None
+        if hasattr(os, "set_blocking"):
+            os.set_blocking(descriptor, True)
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = -1
             return "read", handle.read()
@@ -180,24 +189,72 @@ def _read_brief_without_following(path: Path, *, state_dir: Path) -> tuple[str, 
 
 
 _PARTICIPANT_FIELDS = ("name", "builder", "reviewer", "note")
+_EXECUTION_TEXT_FIELDS = ("product", "transport", "readiness")
+_CONTEXT_TEXT_FIELDS = ("readiness", "dependent_work", "next_action")
+
+
+def _string_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _text_fields(value: Any, fields: tuple[str, ...]) -> bool:
+    return isinstance(value, dict) and all(isinstance(value.get(field), str) for field in fields)
+
+
+def _renderable_participant(member: Any) -> bool:
+    if not isinstance(member, dict) or any(field not in member for field in _PARTICIPANT_FIELDS):
+        return False
+    if not isinstance(member["name"], str):
+        return False
+    builder = member["builder"]
+    if builder is not None:
+        if not isinstance(builder, dict):
+            return False
+        if "execution_mode" in builder and not isinstance(builder["execution_mode"], str):
+            return False
+    reviewer = member["reviewer"]
+    if reviewer is not None and (
+        not isinstance(reviewer, dict)
+        or not isinstance(reviewer.get("lane"), str)
+        or not isinstance(reviewer.get("merge_authority"), bool)
+    ):
+        return False
+    if member["note"] is not None and not isinstance(member["note"], str):
+        return False
+    execution = member.get("execution")
+    if execution is not None and (
+        not _text_fields(execution, _EXECUTION_TEXT_FIELDS)
+        or not isinstance(execution.get("capabilities"), dict)
+        or not _string_list(execution.get("capability_gaps"))
+    ):
+        return False
+    return True
 
 
 def _renderable(brief: dict[str, Any]) -> bool:
-    """A brief is current only if every field ``session show`` renders is present and shaped."""
+    """A brief is current only if every field ``session show`` renders is present and shaped.
+
+    This covers the optional sections too (participant execution summaries,
+    context and guided-context progress, tracker instructions) so JSON and
+    text output agree: a brief either is current and renders, or is invalid.
+    """
     if not isinstance(brief.get("status"), str) or not brief["status"]:
         return False
-    instructions = brief.get("instructions")
-    if not isinstance(instructions, list) or not all(isinstance(line, str) for line in instructions):
+    if not _string_list(brief.get("instructions")):
         return False
-    for member in brief["participants"]:
-        if not isinstance(member, dict) or any(field not in member for field in _PARTICIPANT_FIELDS):
+    if not brief["participants"] or not all(_renderable_participant(member) for member in brief["participants"]):
+        return False
+    context = brief.get("context")
+    if context is not None and not _text_fields(context, _CONTEXT_TEXT_FIELDS):
+        return False
+    guided = brief.get("guided_context")
+    if guided is not None and (not _text_fields(guided, ("stage",)) or "next_action" not in guided):
+        return False
+    tracker = brief.get("tracker")
+    if tracker is not None:
+        if not isinstance(tracker, dict):
             return False
-        if not isinstance(member["name"], str):
-            return False
-        if member["builder"] is not None and not isinstance(member["builder"], dict):
-            return False
-        reviewer = member["reviewer"]
-        if reviewer is not None and (not isinstance(reviewer, dict) or not {"lane", "merge_authority"} <= set(reviewer)):
+        if tracker.get("kind") == "jira_cloud" and not _string_list(tracker.get("instructions", [])):
             return False
     return True
 
