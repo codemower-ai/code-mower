@@ -267,15 +267,30 @@ def _comments_from_pr_payload(
     caller may hand the list in alongside. Both are normalised to the one shape
     every lineage reader consumes, so auto-record applies the same marker-trust
     rule as the gate rather than a transport-specific one.
+
+    The source actually used is validated *before* it is normalised. This is
+    the direct CLI's own input boundary: normalising first skipped entries that
+    were not objects and ran `_text()` over whatever was there, so a list-valued
+    body or an object login became a plausible-looking record, and the
+    already-clean tuple handed on afterwards had nothing left to detect. An
+    unreadable comments source is refused here, before any attribution exists.
     """
 
-    raw = pr.get("comments")
-    if not isinstance(raw, list):
-        raw = payload.get("comments")
+    from .builder_lineage import require_comment_list
+
+    if "comments" in pr:
+        raw, source = pr["comments"], "pull request comments"
+    elif "comments" in payload:
+        raw, source = payload["comments"], "supplied comments"
+    else:
+        return ()
+    # A source that is present but null carries no history to read; that is
+    # the ordinary "this payload has no comments" shape, not a malformed one.
+    if raw is None:
+        return ()
+    validated = require_comment_list(raw, what=source)
     normalised: list[Mapping[str, Any]] = []
-    for item in raw or ():
-        if not isinstance(item, Mapping):
-            continue
+    for item in validated:
         user = _record(item.get("user")) or _record(item.get("author")) or {}
         normalised.append(
             {"user": {"login": _text(user.get("login"))}, "body": _text(item.get("body"))}

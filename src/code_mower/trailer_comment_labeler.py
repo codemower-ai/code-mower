@@ -425,6 +425,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     f"warning: {exc}; skipping label update because latest verdict cannot be established",
                     file=sys.stderr,
                 )
+            except RuntimeError as exc:
+                # A successful page that is not a readable comment history is
+                # the same problem as a truncated one, and is handled the same
+                # way: the latest verdict cannot be established, so no label
+                # moves. Reporting it as an absent history would let the run
+                # label on a history nobody could read.
+                comment_history_complete = False
+                print(
+                    f"warning: {exc}; skipping label update because latest verdict cannot be established",
+                    file=sys.stderr,
+                )
 
     github_actions_workflows = tuple(
         parse_csv_set(os.environ.get("CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS") or "")

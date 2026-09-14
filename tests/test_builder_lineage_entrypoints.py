@@ -640,6 +640,14 @@ MALFORMED_COMMENT_RECORDS = (
     {"user": {"login": {"name": AUTHORITY}}, "body": "hi"},
     {"user": {"login": 7}, "body": "hi"},
     {"user": {"login": [AUTHORITY]}, "body": "hi"},
+    # Present and null is not the same as omitted. A whole author object may
+    # be null -- the account was deleted -- but a null login inside a present
+    # author object, or a null body, is a field that lost its value.
+    {"user": {"login": None}, "body": "hi"},
+    {"user": {"login": AUTHORITY}, "body": None},
+    {"author": {"login": None}, "body": "hi"},
+    {"author": "codemower-ai", "body": "hi"},
+    {"author": {"login": 7}, "body": "hi"},
 )
 
 #: GitHub's own schema, which must keep working: a comment from a deleted
@@ -649,7 +657,10 @@ MALFORMED_COMMENT_RECORDS = (
 VALID_COMMENT_RECORDS = (
     {"user": None, "body": "a deleted account said this"},
     {"user": {"login": AUTHORITY}},
-    {"user": {"login": None}, "body": "hi"},
+    {"user": {}, "body": "an author object naming nobody"},
+    {"body": "a record with no author field at all"},
+    {"author": None, "body": "the gh/GraphQL transport, deleted account"},
+    {"author": {"login": AUTHORITY}, "body": "the gh/GraphQL transport"},
     {"user": {"login": AUTHORITY}, "body": "ordinary comment"},
 )
 
@@ -1027,6 +1038,134 @@ class ASuccessfulButInvalidCommentReadIsNotAnEmptyHistory(unittest.TestCase):
                 fetch_comments=lambda: {},
             )
         self.assertIn("lineage_unreadable", str(raised.exception))
+
+
+class TheDirectAutoRecordCliValidatesItsRawInput(unittest.TestCase):
+    """`builder auto-record` normalised before it validated.
+
+    Its own input boundary skipped entries that were not objects and ran
+    `_text()` over whatever was there, so a list-valued body or an object login
+    became a plausible record -- and the clean tuple handed on afterwards had
+    nothing left to detect. The raw source is now checked first, and an
+    unreadable one produces no attribution artifact at all.
+    """
+
+    def _cli(self, *, comments=None, in_pr=False, omit=False):
+        """Run the real CLI over raw, un-normalised comment fixtures."""
+
+        from code_mower import builder_runs
+
+        root = git_free_tempdir(self, "code-mower-auto-record-cli-")
+        pull_request = _pull_request()
+        pull_request["user"] = {"login": OPENER}
+        pull_request["labels"] = [{"name": "builder:codex"}]
+        if in_pr and not omit:
+            pull_request["comments"] = comments
+        pr_json = root / "event.json"
+        pr_json.write_text(
+            json.dumps({"pull_request": pull_request}), encoding="utf-8"
+        )
+        argv = [
+            "auto-record",
+            "--pr-json", str(pr_json),
+            "--repo", REPO,
+            "--output", str(root / "run.json"),
+            "--force",
+            "--json",
+        ]
+        if not in_pr and not omit:
+            comments_json = root / "comments.json"
+            comments_json.write_text(json.dumps(comments), encoding="utf-8")
+            argv[7:7] = ["--comments-json", str(comments_json)]
+        env = {
+            "CODE_MOWER_DECISION_AUTHORITIES": AUTHORITY,
+            "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+        }
+        captured = _Capture()
+        errors = _Capture()
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch("sys.stdout", captured), \
+                mock.patch("sys.stderr", errors):
+            code = builder_runs.main(argv)
+        artifact = root / "run.json"
+        return (
+            code,
+            captured.text(),
+            errors.text(),
+            json.loads(artifact.read_text(encoding="utf-8"))
+            if artifact.is_file()
+            else None,
+        )
+
+    def _assert_refused(self, code, artifact, errors):
+        self.assertEqual(code, 1, errors)
+        self.assertIsNone(artifact, "an unreadable source may leave no artifact")
+        self.assertIn("comment", errors.lower())
+
+    def test_a_malformed_record_in_the_supplied_source_leaves_no_artifact(self):
+        for record in MALFORMED_COMMENT_RECORDS:
+            with self.subTest(record=record):
+                code, _, errors, artifact = self._cli(comments=[record])
+                self._assert_refused(code, artifact, errors)
+
+    def test_a_malformed_record_in_the_pull_request_source_leaves_no_artifact(self):
+        for record in MALFORMED_COMMENT_RECORDS:
+            with self.subTest(record=record):
+                code, _, errors, artifact = self._cli(
+                    comments=[record], in_pr=True
+                )
+                self._assert_refused(code, artifact, errors)
+
+    def test_a_malformed_record_after_valid_data_leaves_no_artifact(self):
+        code, _, errors, artifact = self._cli(
+            comments=[marker_comment(), {"user": {"login": 7}, "body": "hi"}]
+        )
+        self._assert_refused(code, artifact, errors)
+
+    def test_a_non_list_source_leaves_no_artifact(self):
+        for source in ({}, False, "comments", 7, [marker_comment(), "text"]):
+            with self.subTest(source=source):
+                code, _, errors, artifact = self._cli(comments=source)
+                self._assert_refused(code, artifact, errors)
+
+    def test_a_malformed_pull_request_source_is_not_skipped_for_the_other(self):
+        """The source actually present is the one validated."""
+
+        code, _, errors, artifact = self._cli(comments={}, in_pr=True)
+        self._assert_refused(code, artifact, errors)
+
+    def test_githubs_own_schema_still_records(self):
+        code, out, errors, artifact = self._cli(
+            comments=list(VALID_COMMENT_RECORDS) + [marker_comment()]
+        )
+        self.assertEqual(code, 0, errors)
+        self.assertIsNotNone(artifact)
+        self.assertEqual(
+            json.loads(out)["executor"], "chatgpt-codex-connector",
+            "a valid authority comment is still believed",
+        )
+
+    def test_the_gh_author_transport_still_records(self):
+        marker = {
+            "author": {"login": AUTHORITY},
+            "body": MARKER_BODY
+            + builder_lineage.lineage_comment_marker((takeover_episode(),)),
+        }
+        code, out, errors, artifact = self._cli(comments=[marker], in_pr=True)
+        self.assertEqual(code, 0, errors)
+        self.assertIsNotNone(artifact)
+        self.assertEqual(json.loads(out)["executor"], "chatgpt-codex-connector")
+
+    def test_a_genuinely_empty_history_still_records_the_opener(self):
+        code, out, errors, artifact = self._cli(comments=[])
+        self.assertEqual(code, 0, errors)
+        self.assertIsNotNone(artifact)
+        self.assertEqual(json.loads(out)["executor"], "devin")
+
+    def test_no_comments_source_at_all_still_records_the_opener(self):
+        code, out, errors, artifact = self._cli(omit=True)
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(json.loads(out)["executor"], "devin")
 
 
 class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):

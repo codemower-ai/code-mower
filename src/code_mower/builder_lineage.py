@@ -708,6 +708,12 @@ def lanes_from_identity(
     return _lane(lowered.get(_text(author).lower())), label_lanes
 
 
+#: The author field, by transport. GitHub REST names the commenter ``user``;
+#: ``gh ... --json comments`` names it ``author``. Both are nullable for a
+#: deleted account, and whichever one a payload carries is validated.
+COMMENT_AUTHOR_FIELDS = ("user", "author")
+
+
 def require_comment_list(value: Any, *, what: str) -> tuple[Mapping[str, Any], ...]:
     """A successful comment read must be a complete list of comment objects.
 
@@ -745,17 +751,27 @@ def _require_comment_record(comment: Mapping[str, Any], *, what: str) -> None:
     simply name no author and no marker.
     """
 
-    body = comment.get("body")
-    if body is not None and not isinstance(body, str):
+    # Presence and value are different questions. An omitted optional field
+    # says nothing and is ordinary; a field that is *there* and holds null or
+    # the wrong type is a record whose meaning cannot be recovered. Only one
+    # null is meaningful in GitHub's schema -- a whole author object, for a
+    # comment whose account was deleted -- and that one stays valid.
+    if "body" in comment and not isinstance(comment["body"], str):
         raise LineageError(f"{what} contains a comment whose body is not text")
-    user = comment.get("user")
-    if user is None:
-        return
-    if not isinstance(user, Mapping):
-        raise LineageError(f"{what} contains a comment whose author is not an object")
-    login = user.get("login")
-    if login is not None and not isinstance(login, str):
-        raise LineageError(f"{what} contains a comment whose author login is not text")
+    for field in COMMENT_AUTHOR_FIELDS:
+        if field not in comment:
+            continue
+        author = comment[field]
+        if author is None:
+            continue
+        if not isinstance(author, Mapping):
+            raise LineageError(
+                f"{what} contains a comment whose author is not an object"
+            )
+        if "login" in author and not isinstance(author["login"], str):
+            raise LineageError(
+                f"{what} contains a comment whose author login is not text"
+            )
 
 
 def branch_lane_from_identity(

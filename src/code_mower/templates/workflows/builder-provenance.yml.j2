@@ -145,19 +145,24 @@ jobs:
                   # recovered -- and coercing it invents an author or a body
                   # GitHub never sent. `user: null` and an absent `body` are
                   # GitHub's own schema and stay ordinary.
+                  # Presence and value are different questions: an omitted
+                  # optional field is ordinary, a present one holding null or
+                  # the wrong type is unreadable. The one meaningful null is a
+                  # whole author object, for a deleted account.
                   if not isinstance(entry, dict):
                       refuse(f"page {index} of the comment history holds a non-object")
-                  body = entry.get("body")
-                  if body is not None and not isinstance(body, str):
+                  if "body" in entry and not isinstance(entry["body"], str):
                       refuse(f"page {index} holds a comment whose body is not text")
-                  user = entry.get("user")
-                  if user is None:
-                      continue
-                  if not isinstance(user, dict):
-                      refuse(f"page {index} holds a comment whose author is not an object")
-                  login = user.get("login")
-                  if login is not None and not isinstance(login, str):
-                      refuse(f"page {index} holds a comment whose author login is not text")
+                  for field in ("user", "author"):
+                      if field not in entry:
+                          continue
+                      author = entry[field]
+                      if author is None:
+                          continue
+                      if not isinstance(author, dict):
+                          refuse(f"page {index} holds a comment whose author is not an object")
+                      if "login" in author and not isinstance(author["login"], str):
+                          refuse(f"page {index} holds a comment whose author login is not text")
               return payload
 
           comments = []
