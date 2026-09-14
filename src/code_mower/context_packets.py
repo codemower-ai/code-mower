@@ -160,7 +160,7 @@ def _load(store, entry, policy, request, envelope, *, bound_revision=None):
     return packet
 
 
-def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revision="HEAD"):
+def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revision=None):
     """Retrieve once, or reauthorize and reuse; never redispatch automatically.
 
     Which provider answers is the connection's own saved state, read here under
@@ -169,6 +169,12 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revis
     organization connection; what differs is only where authorization and
     evidence come from, and neither kind can be mistaken for the other because
     the saved schema is checked before either path is taken.
+
+    ``revision`` is the commit the *consuming* work is at, and it has no
+    default: a caller that cannot name it gets a refusal from a repository
+    graph rather than the registered checkout's ``HEAD``, which is a different
+    checkout that moves independently. An organization connection never reads
+    it, so the same default costs it nothing.
     """
     spec = request_spec(spec, name)
     policy = spec["policy"]
@@ -337,7 +343,16 @@ def main(argv=None):
     try:
         spec = request_spec(strict_json(sys.stdin.buffer.read(262_145)), args.connection)
         required = spec["policy"]["required"]
-        result = fetch(ContextStore(args.state_dir), args.connection, spec, refresh=args.refresh)
+        # The consuming checkout is the one this command was run from, not the
+        # one a connection was registered against. Leaving ``fetch`` to default
+        # to ``HEAD`` resolves that word in the *registered* graph checkout, so a
+        # graph for commit A could answer work at commit B -- the exact fallback
+        # the guided route already refuses. ``None`` when the caller is not a Git
+        # checkout at all: that refuses a repository graph here (it cannot name
+        # the revision its evidence would be for) and is ignored by an
+        # organization connection, whose sources version independently of code.
+        result = fetch(ContextStore(args.state_dir), args.connection, spec, refresh=args.refresh,
+                       revision=consuming_revision(Path.cwd()))
         code = 0
     except (ContextError, OSError, ValueError) as exc:
         result = {"status": "required_unavailable" if required else "optional_unavailable",

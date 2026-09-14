@@ -16,11 +16,16 @@ provider was installed.
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import tempfile
 import unittest
+from contextlib import chdir, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from code_mower import context_delivery, context_packets, context_prepare, context_session
 from code_mower import context_graph_connection as connection
@@ -352,6 +357,120 @@ class GuidedGraphSessionTests(unittest.TestCase):
         consuming = self._second_commit_the_checkout_is_not_on()
         with self.assertRaises(ContextError):
             self._attach(handle, consuming)
+
+
+@unittest.skipUnless(os.name == "posix", "private context needs POSIX protections")
+class StandaloneGraphFetchCommandTests(unittest.TestCase):
+    """``code-mower context fetch`` run outside a guided session (issue #914).
+
+    The guided route reads the consuming checkout's revision itself, from the
+    directory the session is preparing work in. The standalone command has no
+    session record to read it from, so what is proven here is that it reads that
+    revision from the checkout it was *run in*, rather than leaving ``fetch`` to
+    resolve the word ``HEAD`` in whichever checkout the connection happens to
+    have been registered against. Those are two directories that move
+    independently, and the second reading is exactly how evidence describing one
+    commit's code reaches work on another.
+
+    The real entrypoint runs. Only the store root is injected -- the command
+    otherwise builds its own -- so the packet these tests read back came through
+    the same protected file, the same index, and the same authorization a
+    guided delivery goes through.
+    """
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.repository = make_repository(self.root)
+        self.private = self.root / "private"
+        self.private.mkdir(mode=0o700)
+        self.manifest = lifecycle.build_graph(
+            self.repository, pin=PIN, indexer=indexer(graph_document()), root=self.private,
+        )
+        self.store = ContextStore(self.private, vault=MemoryVault())
+        connection.connect(self.store, "local-graph", {
+            "repository_root": str(self.repository),
+            "repositories": ["owner/repo"],
+            "recipients": RECIPIENTS,
+        })
+
+    def run_command(self, cwd: Path, *, required: bool = True) -> tuple[int, dict]:
+        """Drive the real command from ``cwd``. No provider backend may load."""
+        spec = {
+            "repository": "owner/repo", "work_item": "WORK-1", "recipient": "claude:builder",
+            "query": "parse_config", "source": "impact",
+            "policy": {**POLICY, "required": required},
+        }
+        output = io.StringIO()
+        with patch("code_mower.context_packets.ContextStore", return_value=self.store), \
+                patch("code_mower.context_packets._backend",
+                      side_effect=AssertionError("a local graph must not reach the provider SDK")), \
+                patch("sys.stdin", SimpleNamespace(buffer=io.BytesIO(json.dumps(spec).encode()))), \
+                chdir(cwd), redirect_stdout(output):
+            code = context_packets.main(["--connection", "local-graph", "--request-stdin", "--json"])
+        return code, json.loads(output.getvalue())
+
+    def _another_checkout_at_a_commit_this_one_is_not_on(self) -> Path:
+        """A second checkout at a commit the registered one has moved off.
+
+        The clone is taken while the second commit is current, so that checkout
+        keeps it; the registered checkout is then put back on the commit its
+        graph was built from. The object stays reachable there, so the refusal
+        under test is a real comparison of two resolvable commits rather than a
+        name the graph's repository could not look up at all.
+        """
+        first = lifecycle.resolve_revision(self.repository)[0]
+        (self.repository / "example_pkg" / "config.py").write_text("changed\n", encoding="utf-8")
+        git(self.repository, "add", ".")
+        git(self.repository, "commit", "-q", "-m", "consuming work")
+        second = lifecycle.resolve_revision(self.repository)[0]
+        consuming = self.root / "consuming"
+        git(self.root, "clone", "-q", str(self.repository), str(consuming))
+        git(self.repository, "reset", "-q", "--hard", first)
+        self.assertEqual(lifecycle.resolve_revision(self.repository)[0], self.manifest.commit)
+        self.assertEqual(lifecycle.resolve_revision(consuming)[0], second)
+        self.assertNotEqual(second, self.manifest.commit)
+        return consuming
+
+    def test_running_in_the_graphs_own_checkout_delivers_its_packet(self) -> None:
+        code, report = self.run_command(self.repository)
+        self.assertEqual((code, report["status"]), (0, "available"))
+        packet = context_packets.load_authorized(
+            self.store, "local-graph", report["packet_handle"], POLICY,
+            ContextRequest("owner/repo", "WORK-1", "claude:builder", self.manifest.commit),
+        )
+        self.assertEqual(packet.private_payload()["source_revision"], self.manifest.commit)
+        self.assertEqual(packet.private_payload()["binding"]["generation"], self.manifest.generation)
+
+    def test_a_consumer_at_another_revision_is_refused_rather_than_answered(self) -> None:
+        consuming = self._another_checkout_at_a_commit_this_one_is_not_on()
+        code, report = self.run_command(consuming)
+        self.assertEqual((code, report["status"]), (1, "required_unavailable"))
+        # Refused at authorization, before anything is reserved: no packet of
+        # the wrong commit's evidence exists to be replayed later.
+        self.assertEqual(list(self.private.glob(".p-*.json")), [])
+        # And the discrimination is the consuming revision alone. The registered
+        # checkout still sits at the graph's commit, so a command that resolved
+        # ``HEAD`` there would have answered the request above as it answers
+        # this one.
+        self.assertEqual(self.run_command(self.repository)[1]["status"], "available")
+
+    def test_an_optional_consumer_at_another_revision_degrades_instead_of_pausing(self) -> None:
+        consuming = self._another_checkout_at_a_commit_this_one_is_not_on()
+        code, report = self.run_command(consuming, required=False)
+        self.assertEqual((code, report["status"]), (0, "optional_unavailable"))
+        self.assertEqual(list(self.private.glob(".p-*.json")), [])
+
+    def test_a_consumer_that_is_not_a_checkout_is_refused_rather_than_defaulted(self) -> None:
+        """No revision at all is a refusal, not a fall back to the graph's."""
+        elsewhere = self.root / "not-a-checkout"
+        elsewhere.mkdir()
+        code, report = self.run_command(elsewhere)
+        self.assertEqual((code, report["status"]), (1, "required_unavailable"))
+        self.assertEqual(list(self.private.glob(".p-*.json")), [])
+        code, report = self.run_command(elsewhere, required=False)
+        self.assertEqual((code, report["status"]), (0, "optional_unavailable"))
 
 
 @unittest.skipUnless(os.name == "posix", "private context needs POSIX protections")

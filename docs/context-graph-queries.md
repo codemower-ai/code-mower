@@ -343,6 +343,17 @@ then fall out of the shared packet contract rather than out of new checks:
 - A **moved `HEAD`** makes the published generation stale for that revision, so
   authorization fails outright and nothing is delivered.
 
+The revision both rules are evaluated against is the **consuming** one — the
+commit the checkout doing the work is at — and it is never defaulted. A guided
+session reads it from the directory it is preparing work in; `context fetch`
+reads it from the directory it was run in. Neither falls back to resolving
+`HEAD` in the checkout the connection was registered against, because that is a
+different directory that moves on its own: a graph built for commit A would
+otherwise answer work at commit B. A caller that is not in a Git checkout at all
+names no revision, and a repository graph refuses rather than guessing one.
+Organization context is unaffected: its sources carry document versions that
+have no reason to equal a code commit.
+
 Required context that is refused pauses the dependent work; optional context
 degrades and the session continues with ordinary repository tools. Claude,
 Codex and Devin receive byte-identical approved evidence, and no recipient
