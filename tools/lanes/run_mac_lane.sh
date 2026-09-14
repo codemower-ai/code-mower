@@ -1004,7 +1004,7 @@ snapshot_is_complete() {
   [ "$(jq -r '.snapshot_complete // false' "$1" 2>/dev/null || printf 'false')" = "true" ]
 }
 
-prompt_file="$(mktemp)"
+prompt_file="$(mktemp "${TMPDIR}/code-mower-prompt.XXXXXXXX")"
 chmod 600 "$prompt_file"
 trap 'rm -f "$prompt_file"' EXIT
 {
