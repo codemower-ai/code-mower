@@ -63,7 +63,11 @@ lane_python_candidates=("${LANE_PYTHON:-}" python3.14 python3.13 python3.12 pyth
 lane_python=""
 for candidate in "${lane_python_candidates[@]}"; do
   [ -n "$candidate" ] || continue
-  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 12))' >/dev/null 2>&1; then
+  if ! command -v "$candidate" >/dev/null 2>&1; then
+    [ -z "${LANE_PYTHON:-}" ] || { echo "configured LANE_PYTHON executable is unavailable" >&2; exit 2; }
+    continue
+  fi
+  if "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 12))' >/dev/null 2>&1; then
     lane_python="$(command -v "$candidate")"
     break
   fi

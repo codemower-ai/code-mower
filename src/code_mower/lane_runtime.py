@@ -69,15 +69,23 @@ def preflight(checkout: Path, codex: str, config: list[str], python: str) -> Non
     root = checkout.resolve(strict=True)
     # The probe never touches user files: its own marker is removed in finally.
     marker = root / ".git" / ("code-mower-capability-" + os.urandom(8).hex())
+    protected = [root / ".git/hooks" / marker.name, root / ".git/hooks/pre-push",
+                 root / ".git/config", root / ".git/code-mower-lane-guard.json"]
+    # O_WRONLY without O_TRUNC tests write-open permission without altering an
+    # existing hook/policy/config. Any disposable file created by a broken
+    # profile is cleaned by the trusted runner after rejecting the capability.
+    created_candidates = [path for path in protected if not path.exists()]
     with tempfile.TemporaryDirectory(prefix="code-mower-boundary-", dir=root.parent) as outside:
         forbidden = Path(outside).resolve() / "must-not-write"
         script = (
             "from pathlib import Path\n"
             f"Path({str(marker)!r}).write_text('probe')\n"
-            f"outside = Path({str(forbidden)!r})\n"
-            "try:\n    outside.write_text('unexpected')\n"
-            "except PermissionError:\n    pass\n"
-            "else:\n    raise SystemExit(1)\n"
+            "import os\n"
+            f"denied = {[str(path) for path in [forbidden, *protected]]!r}\n"
+            "for path in denied:\n"
+            "    try:\n        fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)\n"
+            "    except PermissionError:\n        continue\n"
+            "    else:\n        os.close(fd)\n        raise SystemExit(1)\n"
         )
         argv = [codex, "sandbox", "-P", PROFILE, "-C", str(root)]
         for setting in config:
@@ -85,7 +93,10 @@ def preflight(checkout: Path, codex: str, config: list[str], python: str) -> Non
         try:
             result = subprocess.run([*argv, python, "-c", script],
                                     capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
-            if result.returncode or not marker.exists() or forbidden.exists():
-                raise LaneDeliveryError("Codex Git capability or checkout boundary unverified; update the configured CLI")
+            if (result.returncode or not marker.exists() or forbidden.exists()
+                    or any(path.exists() for path in created_candidates)):
+                raise LaneDeliveryError("Codex Git capability, protected guard, or checkout boundary unverified; update the configured CLI")
         finally:
             marker.unlink(missing_ok=True)
+            for path in created_candidates:
+                path.unlink(missing_ok=True)

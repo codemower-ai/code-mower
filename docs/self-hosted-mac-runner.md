@@ -351,8 +351,10 @@ worktrees and linked runtime directories are refused. Codex receives a
 per-invocation permission profile that allows writes inside that checkout and
 its Git metadata, while protecting Git configuration, the pre-push hook and its
 policy, and agent configuration. The OS sandbox stays enabled. Before a model
-run, a disposable installed-Codex probe must prove both Git metadata writes and
-outside-checkout write denial; an incompatible CLI stops before model spend.
+run, a disposable installed-Codex probe must prove Git metadata writes and
+write denial for the pre-push hook, Git/guard configuration, and paths outside
+the checkout. Existing protected files are opened without truncation or data
+writes; an incompatible CLI stops before model spend.
 `LANE_CODEX_EXTRA_FLAGS` cannot replace this permission profile.
 
 Set `LANE_PYTHON` to the supported Python environment with the repository's test

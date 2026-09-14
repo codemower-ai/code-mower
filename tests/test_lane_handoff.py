@@ -5,6 +5,7 @@ import concurrent.futures
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -238,6 +239,34 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(lane_delivery.LaneDeliveryError):
                 lane_runtime.prepare(work)
 
+    def test_preflight_rejects_a_profile_that_only_denies_outside_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            work = checkout(root / "checkout")
+            prepared = lane_runtime.prepare(work, sys.executable)
+            before = (work / ".git/config").read_bytes()
+            # Offline faulty-platform adapter: confinement works, child read-only
+            # rules do not. The real preflight script must reject it before spend.
+            program = """import os, sys
+from pathlib import Path
+original = os.open
+def open_with_broken_children(path, flags, mode=0o777):
+    if Path(path).name == 'must-not-write':
+        raise PermissionError('simulated outside denial')
+    return original(path, flags, mode)
+os.open = open_with_broken_children
+exec(sys.argv[-1])
+"""
+            cli = root / "fake-codex"
+            cli.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " -c "
+                           + shlex.quote(program) + ' "$@"\n')
+            cli.chmod(0o755)
+            with self.assertRaisesRegex(lane_delivery.LaneDeliveryError, "protected guard"):
+                lane_runtime.preflight(work, str(cli), prepared["codex_config"], sys.executable)
+            self.assertEqual((work / ".git/config").read_bytes(), before)
+            self.assertFalse(list((work / ".git/hooks").glob("code-mower-capability-*")))
+            self.assertFalse((work / ".git/code-mower-lane-guard.json").exists())
+
     def test_python_shims_use_exact_selected_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -274,6 +303,15 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(diagnostic, result.stderr)
                 self.assertNotIn("unbound variable", result.stderr)
+
+    def test_runner_reports_unavailable_configured_python(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(["bash", str(ROOT / "tools/lanes/run_mac_lane.sh"),
+                "--lane", "codex", "--repo", "owner/repo", "--target", "issue:12"],
+                env={**os.environ, "LANE_PYTHON": str(Path(tmp) / "missing-python")},
+                text=True, capture_output=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("configured LANE_PYTHON executable is unavailable", result.stderr)
 
     def test_canonical_execution_selection_is_explicit_and_validated(self):
         cfg = config.load_config(ROOT / "code-mower.yml")
