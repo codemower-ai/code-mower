@@ -258,7 +258,7 @@ class PacketContext:
 
 
 def packet_context(store: ContextStore, name: str, handle: str, policy, *, order: WorkOrder,
-                   backend=None) -> PacketContext:
+                   backend=None, revision: str | None = None) -> PacketContext:
     """Bind one authorized packet to the hosted builder before its PR exists.
 
     The packet request is derived from the work order (repository and its
@@ -266,17 +266,27 @@ def packet_context(store: ContextStore, name: str, handle: str, policy, *, order
     trusted policy's ``required`` flag must agree with the order's declared
     context policy. Each render performs a new online authorization for
     ``devin:builder``; nothing is cached or written.
+
+    ``revision`` is the commit this order's work consumes. It is the one input
+    here a caller does supply, because there is nothing else to derive it from:
+    a hosted order has no PR head yet and this process is not the checkout doing
+    the work. Repository-kind evidence -- the local graph route among it -- is
+    authorized against that commit on every render, so without it such evidence
+    refuses rather than answering for whichever commit the connection happens to
+    be registered at. Organization-kind evidence, whose sources version
+    themselves, is unaffected and still prepares with ``None``.
     """
     try:
         normalized = normalize_policy(policy)
         _handle(handle)
+        bound = _text(revision, maximum=200) if revision is not None else None
     except ContextError:
         raise RemoteError("invalid_request") from None
     if (normalized is None or order.context_policy == "none"
             or normalized["required"] != (order.context_policy == "required")
             or type(store) is not ContextStore or not isinstance(name, str)):
         raise RemoteError("invalid_request")
-    return PacketContext(store, name, handle, normalized, backend)
+    return PacketContext(store, name, handle, normalized, backend, bound)
 
 
 def _github_call(method, *args, **kwargs):

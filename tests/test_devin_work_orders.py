@@ -621,7 +621,10 @@ class ContextInjectionTests(WorkOrderCase):
         self.assertNotIn("session", output)
 
     def test_packet_context_carries_no_identity_and_policy_must_agree_with_the_order(self):
-        self.assertEqual(tuple(self.context.__dataclass_fields__), ("store", "name", "handle", "policy", "backend"))
+        self.assertEqual(
+            tuple(self.context.__dataclass_fields__),
+            ("store", "name", "handle", "policy", "backend", "revision"),
+        )
         self.assertNotIn(CONTEXT_CANARY, repr(self.context))
         self.assertNotIn(self.result["packet_handle"], repr(self.context))
         for handle in ("", "not-a-handle", self.result["packet_handle"].upper(), None):
@@ -640,6 +643,43 @@ class ContextInjectionTests(WorkOrderCase):
             with self.subTest(policy=order.context_policy), self.assertRaisesRegex(RemoteError, "invalid_request"):
                 packet_context(self.fixture.store, "example", self.result["packet_handle"], policy,
                                order=order, backend=self.backend)
+
+    def test_the_factory_can_supply_the_consuming_revision(self):
+        """A repository-kind route needs the consuming commit, so a caller can name it.
+
+        The hosted order has no PR head yet and this process is not the checkout
+        doing the work, so the revision is the one thing the factory cannot
+        derive. It reaches ``ContextRequest.revision`` on every render, which is
+        what a local repository graph is authorized against; leaving it unset
+        stays the organization-context default.
+        """
+        commit = "c" * 40
+        bound = packet_context(self.fixture.store, "example", self.result["packet_handle"],
+                               self.policy, order=self.order, backend=self.backend, revision=commit)
+        self.assertEqual(bound.revision, commit)
+        self.assertNotIn(commit, repr(bound))
+        # Unset is still valid, and is what organization context prepares with.
+        self.assertIsNone(self.context.revision)
+        for value in ("", "a\nb", "a" * 201, 40):
+            with self.subTest(revision=value), self.assertRaisesRegex(RemoteError, "invalid_request"):
+                packet_context(self.fixture.store, "example", self.result["packet_handle"],
+                               self.policy, order=self.order, backend=self.backend, revision=value)
+
+    def test_the_consuming_revision_reaches_the_context_request(self):
+        """Whatever the load then decides, the request it decides on names the commit."""
+        commit = "d" * 40
+        bound = packet_context(self.fixture.store, "example", self.result["packet_handle"],
+                               self.policy, order=self.order, backend=self.backend, revision=commit)
+        with patch("code_mower.devin_work_orders.load_authorized", wraps=load_authorized) as load:
+            try:
+                self.service.run("dispatch", self.order, context=bound, apply=True)
+            except RemoteError:
+                pass
+        self.assertTrue(load.call_args_list)
+        request = load.call_args_list[0].args[4]
+        self.assertEqual(request.revision, commit)
+        self.assertEqual((request.repository, request.work_item),
+                         (self.order.repository, self.order.work_item))
 
     def test_preview_never_retrieves_context(self):
         with patch("code_mower.devin_work_orders.load_authorized", wraps=load_authorized) as load:

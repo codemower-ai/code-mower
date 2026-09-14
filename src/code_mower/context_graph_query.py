@@ -57,29 +57,53 @@ from .context_contract import (
 from .context_graph import MAX_GRAPH_CITATIONS, parse_graph_citation
 
 #: The graph document Code Mower reads. This is the pinned provider's own
-#: ``graph.json`` -- the file ``graphify/export.py::to_json`` writes at commit
-#: ``23f2ffa`` (release 0.9.58), which is the release the lifecycle (#913) pins
-#: and archives. There is no Code Mower graph schema and no normalization step
-#: between the two: an adapter that required a shape the build never produces
-#: would reject every real generation, so this module reads the provider's
-#: actual export and does the narrowing itself.
+#: ``graph.json`` at commit ``23f2ffa`` (release 0.9.58), which is the release
+#: the lifecycle (#913) pins and archives. There is no Code Mower graph schema
+#: and no normalization step between the two: an adapter that required a shape
+#: the build never produces would reject every real generation, so this module
+#: reads the provider's actual output and does the narrowing itself.
 GRAPH_MEMBER = "graph.json"
 
 QUERY_SCHEMA = "code_mower.contextGraphQuery.v1"
 
-#: The provider's export is a NetworkX ``node_link_data`` document: ``nodes``
-#: plus ``links``. ``edges`` is the same list under the name NetworkX used
-#: before 3.2, and the pinned validator accepts either, so this reader does
-#: too. Other top-level keys the pinned exporter writes -- ``directed``,
-#: ``multigraph``, ``graph``, ``hyperedges``, ``built_at_commit`` -- are
-#: provider bookkeeping; only ``built_at_commit`` carries a claim this module
-#: acts on, and it is checked against the generation rather than trusted.
-GRAPH_EDGE_KEYS = ("links", "edges")
-
-#: Whether the export preserves the direction of its relationships, which every
-#: question here depends on and no question here can recover.
+#: The two documents that can appear under ``graph.json``, which are *not* the
+#: same file in two dialects and are not read as though they were.
 #:
-#: The pinned build writes a NetworkX graph that is undirected by default
+#: ``raw_extraction`` is what the lifecycle's own pinned invocation writes.
+#: ``context_graph_lifecycle`` requires ``extract --code-only --no-cluster``
+#: (``_REQUIRED_EXTRACT_OPTIONS``), and the pinned CLI's ``--no-cluster`` branch
+#: dumps the merged extractor result directly -- ``nodes``, ``edges``,
+#: ``hyperedges``, token counts, ``extracted_sources`` -- through
+#: ``write_json_atomic``. It never builds a NetworkX graph, never calls
+#: ``to_json``, and therefore writes no ``directed``, ``multigraph``, ``graph``
+#: or ``built_at_commit`` key. Its ``source``/``target`` are the endpoints the
+#: extractor's own ``add_edge`` recorded at the call site, so the orientation is
+#: the provider's semantic claim and is preserved by reading the edge record.
+#:
+#: ``node_link`` is ``graphify/export.py::to_json``: a NetworkX
+#: ``node_link_data`` document, which always carries ``directed``,
+#: ``multigraph``, ``graph`` and ``links``. Its direction is *not* self-evident
+#: and is handled separately, below.
+GRAPH_FORMAT_RAW = "raw_extraction"
+GRAPH_FORMAT_NODE_LINK = "node_link"
+
+#: Top-level keys only a NetworkX ``node_link_data`` document carries. Any one
+#: of them means the file came through ``to_json`` rather than the raw
+#: ``--no-cluster`` dump, and it is then read under the node-link rules --
+#: including the direction requirement -- whichever key names its edge list.
+NODE_LINK_MARKERS = ("links", "directed", "multigraph", "graph")
+
+#: The edge list, per format. The raw dump writes ``edges``. ``node_link_data``
+#: writes ``links`` at the pinned commit (``to_json`` passes ``edges="links"``)
+#: but NetworkX renamed the key, and the pinned validator accepts either, so a
+#: node-link document is read under both names.
+RAW_EDGE_KEY = "edges"
+NODE_LINK_EDGE_KEYS = ("links", "edges")
+
+#: Whether a **node-link** export preserves the direction of its relationships,
+#: which every question here depends on and no question here can recover.
+#:
+#: The clustered build writes a NetworkX graph that is undirected by default
 #: (``build.py::build_from_json(directed=False)``). Undirected storage
 #: canonicalizes endpoint order, so ``source``/``target`` in an undirected
 #: export are an endpoint *pair*, not a caller and a callee. The exporter does
@@ -92,11 +116,16 @@ GRAPH_EDGE_KEYS = ("links", "edges")
 #: Every answer this module produces is an oriented claim: ``impact`` and
 #: ``dependency`` are the same relationships walked in opposite directions, and
 #: even a ``symbol`` neighbourhood states "A calls B" rather than "A and B are
-#: adjacent". Reading orientation out of a document that does not establish it
-#: is how a packet comes to assert the reverse of what the code does, so a
-#: generation that does not declare itself directed is refused here rather than
-#: answered from. ``directed: true`` is the provider's own statement that the
-#: graph was stored as a ``DiGraph``, where source and target *are* the edge.
+#: adjacent". Reading orientation out of a *node-link* document that does not
+#: establish it is how a packet comes to assert the reverse of what the code
+#: does, so such a document is refused rather than answered from.
+#: ``directed: true`` is the provider's own statement that the graph was stored
+#: as a ``DiGraph``, where source and target *are* the edge.
+#:
+#: This check belongs to the node-link format alone. Demanding the marker of a
+#: raw extraction would refuse every generation the lifecycle's own pinned
+#: options actually produce, since that path emits no marker and has no
+#: undirected container to have lost direction in.
 GRAPH_DIRECTED_KEY = "directed"
 
 #: Required node and edge fields, taken from the pinned validator's
@@ -408,9 +437,11 @@ def _node(value: Any) -> GraphNode | None:
     A non-``code`` node is dropped rather than refused. The provider indexes
     documents, papers, images, rationales and concepts into the same graph, and
     those are not repository relationships: they carry no location in the bound
-    commit, so no traversal here could cite one. Dropping them is bounded and
-    visible -- every edge that named one becomes a dangling edge, which
-    ``load_graph`` prunes and counts.
+    commit, so no traversal here could cite one. Dropping them is bounded --
+    every edge that named one becomes a dangling edge, which ``load_graph``
+    prunes. No count of the dropped records is kept or reported: what a packet
+    states about its own incompleteness is the traversal's truncation and
+    omission fields, not a tally of corpora this module never queries.
     """
     record = _required(value, GRAPH_NODE_FIELDS, what="node")
     # Bounded text before membership: a vocabulary field is looked up in a set,
@@ -473,6 +504,23 @@ def _edge(value: Any, nodes: Mapping[str, GraphNode]) -> GraphEdge | None:
     )
 
 
+def _graph_format(payload: Mapping[str, Any]) -> str:
+    """Which of the provider's two ``graph.json`` documents this is.
+
+    The discriminator is the presence of a NetworkX node-link marker, not the
+    name of the edge list. ``node_link_data`` always writes ``directed``,
+    ``multigraph`` and ``graph`` alongside its links, and the raw
+    ``--no-cluster`` dump writes none of them -- it writes the extractor's own
+    merged result, whose only structural keys are ``nodes`` and ``edges``.
+    Keying off ``edges`` instead would misread a newer NetworkX node-link
+    document, which names its links ``edges``, as a raw extraction and so skip
+    the direction requirement the node-link format needs.
+    """
+    if any(key in payload for key in NODE_LINK_MARKERS):
+        return GRAPH_FORMAT_NODE_LINK
+    return GRAPH_FORMAT_RAW
+
+
 def _grouped(edges: Iterable[GraphEdge], *, by: str) -> dict[str, tuple[GraphEdge, ...]]:
     """Adjacency in one fixed order, so a traversal cannot depend on input order."""
     buckets: dict[str, list[GraphEdge]] = {}
@@ -487,40 +535,53 @@ def _grouped(edges: Iterable[GraphEdge], *, by: str) -> dict[str, tuple[GraphEdg
 def load_graph(payload: Mapping[str, Any], *, generation: str, commit: str) -> CodeGraph:
     """Read the pinned provider's ``graph.json`` into a bounded queryable graph.
 
-    The document is the pinned exporter's output, so what is validated here is
-    the provider's own contract -- the required fields of its validator, its
+    The document is the pinned provider's own output, so what is validated here
+    is the provider's own contract -- the required fields of its validator, its
     ``file_type`` and ``confidence`` vocabularies, its ``L<line>`` locations --
     and not a shape Code Mower invented. Every value this module reads is read
     by name and bounded; every value it does not read is left alone.
 
+    The *supported* document is the raw extraction the lifecycle's pinned
+    ``extract --code-only --no-cluster`` writes. A NetworkX node-link export is
+    also read, because a generation may have been produced by the clustered
+    path, but its provenance differs and it is held to the extra direction
+    requirement that path needs. The two are told apart structurally in
+    ``_graph_format``, never by guessing from an edge key.
+
     Two provenance checks are worth more than any field check. The first is
-    ``built_at_commit``: the exporter stamps the commit the graph was built
+    ``built_at_commit``: the *exporter* stamps the commit the graph was built
     from, and if that disagrees with the commit the generation is bound to then
     the artifact and the manifest describe different revisions, which is a
-    refusal no traversal should be run past. The second is the census check
-    every citation goes through later.
+    refusal no traversal should be run past. The raw path writes no such stamp
+    -- it bypasses ``to_json`` entirely -- so for it this check is vacuous and
+    the binding rests on the lifecycle's own commit binding and on the second
+    check: the census every citation goes through later.
     """
     if not isinstance(payload, Mapping):
         raise ContextError("local graph document must be an object")
+    graph_format = _graph_format(payload)
     raw_nodes = payload.get("nodes")
-    raw_edges = next(
-        (payload[key] for key in GRAPH_EDGE_KEYS if key in payload),
-        None,
-    )
+    if graph_format == GRAPH_FORMAT_RAW:
+        raw_edges = payload.get(RAW_EDGE_KEY)
+    else:
+        raw_edges = next((payload[key] for key in NODE_LINK_EDGE_KEYS if key in payload), None)
     if raw_edges is None or raw_nodes is None:
-        raise ContextError("local graph document carries no provider nodes and links")
+        raise ContextError("local graph document carries no provider nodes and edges")
     if not isinstance(raw_nodes, list) or len(raw_nodes) > MAX_NODES:
         raise ContextError("local graph node count exceeds its budget")
     if not isinstance(raw_edges, list) or len(raw_edges) > MAX_EDGES:
         raise ContextError("local graph edge count exceeds its budget")
     # Before a single edge is read, because direction is not a property of any
-    # one link: an undirected export's endpoints are a pair the storage ordered,
-    # and no traversal, filter or sentence below can be honest about a
-    # relationship whose orientation the document never stated.
-    if payload.get(GRAPH_DIRECTED_KEY) is not True:
+    # one link: an undirected node-link export's endpoints are a pair the
+    # storage ordered, and no traversal, filter or sentence below can be honest
+    # about a relationship whose orientation the document never stated. A raw
+    # extraction is exempt because its endpoints never passed through a NetworkX
+    # container at all -- see ``GRAPH_DIRECTED_KEY``.
+    if graph_format == GRAPH_FORMAT_NODE_LINK and payload.get(GRAPH_DIRECTED_KEY) is not True:
         raise ContextError(
-            "local graph export does not preserve relationship direction; rebuild the "
-            "generation as a directed graph"
+            "local graph node-link export does not preserve relationship direction; "
+            "rebuild the generation with the pinned --no-cluster extraction or as a "
+            "directed graph"
         )
     stamped = payload.get("built_at_commit")
     if stamped is not None and _text(stamped, maximum=64) != commit:
@@ -531,9 +592,11 @@ def load_graph(payload: Mapping[str, Any], *, generation: str, commit: str) -> C
         if node is None:
             continue
         if node.id in nodes:
-            # The provider's own validator does not check this, but its graph
-            # is a NetworkX node set and cannot hold two nodes under one id. A
-            # document that does was not written by the pinned exporter.
+            # The provider's own validator does not check this, but neither of
+            # its write paths can produce it: the raw dump runs its node list
+            # through ``build.dedupe_nodes`` and the clustered one through a
+            # NetworkX node set, and both collapse same-id nodes. A document
+            # that carries two was not written by the pinned provider.
             raise ContextError("local graph node identifiers must be unique")
         nodes[node.id] = node
     edges = tuple(sorted(

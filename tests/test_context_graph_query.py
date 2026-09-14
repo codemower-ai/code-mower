@@ -120,36 +120,67 @@ def edge(source: str, target: str, relation: str, confidence: str = "EXTRACTED",
     }
 
 
-def graph_document(**extra) -> dict:
-    """A small graph in the pinned provider's export format.
+def graph_nodes() -> list:
+    """A symbol, its caller, its caller's caller, a test, and a file node."""
+    return [
+        node("n-config", "parse_config", "example_pkg/config.py", 12),
+        node("n-load", "load", "example_pkg/loader.py", 40),
+        node("n-report", "render", "example_pkg/report.py", 5),
+        node("n-test", "test_parse_config", "tests/test_config.py", 8),
+        # The extractor's per-file node: label is the file's base name at L1.
+        node("n-config-file", "config.py", "example_pkg/config.py", 1),
+    ]
 
-    Top-level shape is ``networkx.json_graph.node_link_data(G, edges="links")``
-    as ``export.py::to_json`` writes it: ``directed``, ``multigraph``,
-    ``graph``, ``nodes``, ``links``, plus the ``hyperedges`` list and the
-    ``built_at_commit`` stamp the exporter appends. Contents are a symbol, its
-    caller, its caller's caller, a test, and the file node the extractor emits
-    for each indexed file.
+
+def graph_edges() -> list:
+    return [
+        edge("n-load", "n-config", "calls"),
+        edge("n-report", "n-load", "calls", "INFERRED"),
+        edge("n-test", "n-config", "tests"),
+        edge("n-config-file", "n-config", "contains"),
+    ]
+
+
+def graph_document(**extra) -> dict:
+    """A small graph in the format the lifecycle's pinned invocation writes.
+
+    ``context_graph_lifecycle`` requires ``extract --code-only --no-cluster``,
+    and the pinned CLI's ``--no-cluster`` branch dumps the merged extractor
+    result straight to ``graph.json`` through ``write_json_atomic``. So the
+    top-level shape is the raw extraction: ``nodes``, ``edges``, ``hyperedges``,
+    the token counters and ``extracted_sources``.
+
+    What it deliberately does **not** carry is a ``directed`` marker, or
+    ``multigraph``, ``graph``, ``links`` or ``built_at_commit``. That path never
+    constructs a NetworkX graph and never calls ``export.py::to_json``, so none
+    of those keys exist in a real generation, and a fixture that added one to
+    satisfy the reader would be testing a file the provider never writes.
     """
     return {
-        # Directed, because every question this module answers is an oriented
-        # claim and an undirected export's endpoint order is storage order.
+        "nodes": graph_nodes(),
+        "edges": graph_edges(),
+        "hyperedges": [],
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "extracted_sources": sorted(SOURCES),
+        **extra,
+    }
+
+
+def node_link_document(**extra) -> dict:
+    """The same graph as ``export.py::to_json`` writes it, for the clustered path.
+
+    ``networkx.json_graph.node_link_data(G, edges="links")`` plus the
+    ``hyperedges`` list and the ``built_at_commit`` stamp the exporter appends.
+    Directed, because this format's endpoint order is only a caller/callee claim
+    when the graph was stored as a ``DiGraph``.
+    """
+    return {
         "directed": True,
         "multigraph": False,
         "graph": {},
-        "nodes": [
-            node("n-config", "parse_config", "example_pkg/config.py", 12),
-            node("n-load", "load", "example_pkg/loader.py", 40),
-            node("n-report", "render", "example_pkg/report.py", 5),
-            node("n-test", "test_parse_config", "tests/test_config.py", 8),
-            # The extractor's per-file node: label is the file's base name at L1.
-            node("n-config-file", "config.py", "example_pkg/config.py", 1),
-        ],
-        "links": [
-            edge("n-load", "n-config", "calls"),
-            edge("n-report", "n-load", "calls", "INFERRED"),
-            edge("n-test", "n-config", "tests"),
-            edge("n-config-file", "n-config", "contains"),
-        ],
+        "nodes": graph_nodes(),
+        "links": graph_edges(),
         "hyperedges": [],
         **extra,
     }
@@ -278,12 +309,15 @@ class GraphWorkspace(unittest.TestCase):
 
 
 class GraphSchemaTests(unittest.TestCase):
-    """The pinned provider's own export is what gets read, and read bounded.
+    """The pinned provider's own output is what gets read, and read bounded.
 
-    Every fixture in here is the shape ``graphify/export.py::to_json`` writes
-    at the pinned commit. The tests split into two halves on purpose: what the
-    real export carries must load, and what the provider's own validator would
-    reject must refuse.
+    The default fixture is the raw extraction the lifecycle's own pinned
+    ``extract --code-only --no-cluster`` writes. The node-link export the
+    clustered path writes is covered separately in ``NodeLinkFormatTests``,
+    because its provenance and its direction guarantee are different and must
+    not be tested by editing this fixture into that shape. The tests split into
+    two halves on purpose: what a real generation carries must load, and what
+    the provider's own validator would reject must refuse.
     """
 
     def load(self, document: dict) -> query.CodeGraph:
@@ -313,16 +347,52 @@ class GraphSchemaTests(unittest.TestCase):
         self.assertEqual((contains.relation, contains.kind), ("contains", "defines"))
         self.assertEqual(by_pair[("n-report", "n-load")].evidence, "inferred")
 
-    def test_reads_the_pre_3_2_edges_key(self) -> None:
-        """The pinned validator accepts ``edges`` for ``links``; so does this."""
+    def test_reads_the_raw_extraction_without_a_directed_marker(self) -> None:
+        """The supported document declares no direction, and must not be asked to.
+
+        The pinned ``--no-cluster`` branch writes the merged extractor result
+        directly: no NetworkX graph is built, ``to_json`` is never called, and
+        so ``directed``, ``multigraph``, ``graph`` and ``built_at_commit`` are
+        absent from every real generation. A reader that demanded the marker
+        would refuse the only path the lifecycle actually runs.
+        """
         document = graph_document()
-        document["edges"] = document.pop("links")
-        self.assertEqual(len(self.load(document).edges), 4)
+        for absent in ("directed", "multigraph", "graph", "links", "built_at_commit"):
+            self.assertNotIn(absent, document)
+        graph = self.load(document)
+        self.assertEqual(len(graph.edges), 4)
+        # The orientation is the extractor's, and it is the one queried.
+        self.assertEqual(
+            {(item.source, item.target) for item in graph.edges if item.relation == "calls"},
+            {("n-load", "n-config"), ("n-report", "n-load")},
+        )
+
+    def test_reversed_node_iteration_does_not_reverse_a_raw_edge(self) -> None:
+        """A raw edge's endpoints come off the edge record, not from node order.
+
+        This is the property the ``--no-cluster`` path has and an undirected
+        NetworkX container does not. ``add_edge`` writes the call site's own
+        source and target, so permuting the node list -- the only thing an
+        undirected container's endpoint order would follow -- cannot change
+        which way a relationship points.
+        """
+        forward = self.load(graph_document())
+        reversed_nodes = graph_document()
+        reversed_nodes["nodes"] = list(reversed(reversed_nodes["nodes"]))
+        permuted = self.load(reversed_nodes)
+        self.assertEqual(
+            [(item.source, item.target, item.relation) for item in forward.edges],
+            [(item.source, item.target, item.relation) for item in permuted.edges],
+        )
+        # And the claim itself, stated the way a packet states it.
+        calls = next(item for item in permuted.edges if item.target == "n-config"
+                     and item.relation == "calls")
+        self.assertEqual((calls.source, calls.target), ("n-load", "n-config"))
 
     def test_maps_an_unlisted_relation_without_asserting_a_listed_one(self) -> None:
         """An LLM-extracted relation is carried, grouped as ``related``, never renamed."""
         document = graph_document()
-        document["links"].append(edge("n-config", "n-report", "supersedes"))
+        document["edges"].append(edge("n-config", "n-report", "supersedes"))
         graph = self.load(document)
         extra = next(edge for edge in graph.edges if edge.relation == "supersedes")
         self.assertEqual(extra.kind, query.OTHER_RELATION)
@@ -336,7 +406,7 @@ class GraphSchemaTests(unittest.TestCase):
             "id": "n-stub", "label": "Thing", "file_type": "code",
             "source_file": "", "source_location": "", "origin_file": "example_pkg/config.py",
         })
-        document["links"].append(edge("n-config", "n-stub", "references"))
+        document["edges"].append(edge("n-config", "n-stub", "references"))
         graph = self.load(document)
         self.assertIsNone(graph.nodes["n-stub"].citation)
         self.assertEqual(len(graph.edges), 5)
@@ -347,7 +417,7 @@ class GraphSchemaTests(unittest.TestCase):
         document["nodes"].append(
             {**node("n-doc", "design.md", "docs/design.md", 1), "file_type": "document"}
         )
-        document["links"].append(edge("n-config", "n-doc", "references"))
+        document["edges"].append(edge("n-config", "n-doc", "references"))
         graph = self.load(document)
         self.assertNotIn("n-doc", graph.nodes)
         self.assertEqual(len(graph.edges), 4)
@@ -357,50 +427,37 @@ class GraphSchemaTests(unittest.TestCase):
         document = graph_document()
         document["nodes"][0]["metadata"] = {"namespace": "example_pkg", "scope_chain": ["mod"]}
         document["nodes"][0]["type"] = "namespace"
-        document["links"][0]["context"] = "call site"
+        document["edges"][0]["context"] = "call site"
         self.assertEqual(len(self.load(document).nodes), 5)
 
-    def test_refuses_a_document_with_no_provider_nodes_and_links(self) -> None:
-        for document in ({"nodes": []}, {"links": []}, {"schema": "something.else"}, []):
+    def test_refuses_a_document_with_no_provider_nodes_and_edges(self) -> None:
+        for document in (
+            {"nodes": []}, {"edges": []}, {"links": []}, {"schema": "something.else"}, [],
+        ):
             with self.subTest(document=document):
                 with self.assertRaises(ContextError):
                     self.load(document)
 
     def test_refuses_a_graph_built_from_another_commit(self) -> None:
-        """``built_at_commit`` disagreeing with the generation is a refusal."""
+        """``built_at_commit`` disagreeing with the generation is a refusal.
+
+        The stamp is ``to_json``'s, so the raw path never writes one and for a
+        real ``--no-cluster`` generation this check is vacuous -- the binding
+        rests on the lifecycle's commit binding and the citation census. It is
+        still honoured wherever it appears, which is what this covers.
+        """
         with self.assertRaises(ContextError):
             self.load(graph_document(built_at_commit="c" * 40))
         # Agreeing is fine, and is the ordinary case.
         self.assertEqual(len(self.load(graph_document(built_at_commit="b" * 40)).nodes), 5)
-
-    def test_refuses_an_export_that_does_not_preserve_direction(self) -> None:
-        """An undirected export states an endpoint pair, not a caller and callee.
-
-        The provider's undirected storage canonicalizes endpoint order and its
-        export's repair leaves no mark a reader can check, so every oriented
-        answer here -- ``impact``, ``dependency``, and the ``calls`` sentence a
-        ``symbol`` neighbourhood states -- would be asserting an orientation the
-        document never established. The refusal names direction, so an operator
-        reads it as "rebuild directed" rather than as a corrupt graph.
-        """
-        for flag in (False, None, "true", 1):
-            with self.subTest(directed=flag):
-                document = graph_document()
-                if flag is None:
-                    document.pop("directed")
-                else:
-                    document["directed"] = flag
-                with self.assertRaises(ContextError) as caught:
-                    self.load(document)
-                self.assertIn("direction", str(caught.exception))
 
     def test_refuses_records_missing_the_providers_required_fields(self) -> None:
         for mutate in (
             lambda doc: doc["nodes"][0].pop("label"),
             lambda doc: doc["nodes"][0].pop("source_file"),
             lambda doc: doc["nodes"][0].pop("file_type"),
-            lambda doc: doc["links"][0].pop("relation"),
-            lambda doc: doc["links"][0].pop("confidence"),
+            lambda doc: doc["edges"][0].pop("relation"),
+            lambda doc: doc["edges"][0].pop("confidence"),
         ):
             with self.subTest(mutate=mutate):
                 document = graph_document()
@@ -411,9 +468,9 @@ class GraphSchemaTests(unittest.TestCase):
     def test_refuses_vocabularies_the_providers_validator_rejects(self) -> None:
         for mutate in (
             lambda doc: doc["nodes"][0].update(file_type="diagram"),
-            lambda doc: doc["links"][0].update(confidence="GUESSED"),
+            lambda doc: doc["edges"][0].update(confidence="GUESSED"),
             # Lowercase is the packet contract's vocabulary, not the provider's.
-            lambda doc: doc["links"][0].update(confidence="extracted"),
+            lambda doc: doc["edges"][0].update(confidence="extracted"),
         ):
             with self.subTest(mutate=mutate):
                 document = graph_document()
@@ -429,7 +486,7 @@ class GraphSchemaTests(unittest.TestCase):
         callers only ever catch ``ContextError``, so the graph-context path
         would propagate it instead of reporting the graph unreadable.
         """
-        for field_name, record in (("file_type", "nodes"), ("confidence", "links")):
+        for field_name, record in (("file_type", "nodes"), ("confidence", "edges")):
             for value in ([], {}, ["code"], {"value": "EXTRACTED"}, 3, None, True):
                 with self.subTest(field=field_name, value=value):
                     document = graph_document()
@@ -459,6 +516,80 @@ class GraphSchemaTests(unittest.TestCase):
         document["nodes"].append(dict(document["nodes"][0]))
         with self.assertRaises(ContextError):
             self.load(document)
+
+
+class NodeLinkFormatTests(unittest.TestCase):
+    """The other document that can appear under ``graph.json``, read on its own terms.
+
+    ``export.py::to_json`` is the clustered path's writer, and its provenance is
+    not the extractor's: the endpoints it writes came out of a NetworkX
+    container that may have been undirected. So it is read, but only when it
+    says it preserved direction -- and a raw extraction is never held to that,
+    because its producer writes no such marker.
+    """
+
+    def load(self, document: dict) -> query.CodeGraph:
+        return query.load_graph(document, generation="a" * 32, commit="b" * 40)
+
+    def test_reads_a_directed_node_link_export(self) -> None:
+        graph = self.load(node_link_document())
+        self.assertEqual(len(graph.nodes), 5)
+        self.assertEqual(len(graph.edges), 4)
+
+    def test_reads_the_renamed_edges_key_of_a_node_link_export(self) -> None:
+        """NetworkX renamed ``links`` to ``edges``; the pinned validator takes either.
+
+        The marker keys are what identify the format, so the renamed document is
+        still node-link and is still held to the direction requirement.
+        """
+        document = node_link_document()
+        document["edges"] = document.pop("links")
+        self.assertEqual(len(self.load(document).edges), 4)
+        undirected = node_link_document(directed=False)
+        undirected["edges"] = undirected.pop("links")
+        with self.assertRaises(ContextError):
+            self.load(undirected)
+
+    def test_refuses_a_node_link_export_that_does_not_preserve_direction(self) -> None:
+        """An undirected export states an endpoint pair, not a caller and callee.
+
+        The provider's undirected storage canonicalizes endpoint order and its
+        export's repair leaves no mark a reader can check, so every oriented
+        answer here -- ``impact``, ``dependency``, and the ``calls`` sentence a
+        ``symbol`` neighbourhood states -- would be asserting an orientation the
+        document never established. The refusal names direction, so an operator
+        reads it as "rebuild" rather than as a corrupt graph.
+        """
+        for flag in (False, None, "true", 1):
+            with self.subTest(directed=flag):
+                document = node_link_document()
+                if flag is None:
+                    # Still node-link: ``multigraph``, ``graph`` and ``links``
+                    # are markers of their own, so dropping one key does not
+                    # make this document pass as a raw extraction.
+                    document.pop("directed")
+                else:
+                    document["directed"] = flag
+                with self.assertRaises(ContextError) as caught:
+                    self.load(document)
+                self.assertIn("direction", str(caught.exception))
+
+    def test_each_marker_alone_identifies_the_node_link_format(self) -> None:
+        for marker in query.NODE_LINK_MARKERS:
+            with self.subTest(marker=marker):
+                document = graph_document()
+                document[marker] = {} if marker == "graph" else False
+                if marker == "links":
+                    document["links"] = document.pop("edges")
+                with self.assertRaises(ContextError) as caught:
+                    self.load(document)
+                self.assertIn("direction", str(caught.exception))
+
+    def test_the_raw_format_is_what_the_reader_reports_for_the_pinned_options(self) -> None:
+        self.assertEqual(query._graph_format(graph_document()), query.GRAPH_FORMAT_RAW)
+        self.assertEqual(
+            query._graph_format(node_link_document()), query.GRAPH_FORMAT_NODE_LINK
+        )
 
 
 class TraversalTests(GraphWorkspace):
@@ -622,7 +753,7 @@ class PacketTests(GraphWorkspace):
 
     def test_confidence_maps_extracted_inferred_and_ambiguous(self) -> None:
         document = graph_document()
-        document["links"][2]["confidence"] = "AMBIGUOUS"
+        document["edges"][2]["confidence"] = "AMBIGUOUS"
         self.publish(document)
         outcome = self.context()
         confidences = {item["confidence"] for item in outcome.packet["documents"]}

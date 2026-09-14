@@ -18,58 +18,101 @@ Nothing here installs, downloads, or runs a provider, and nothing here is on a
 default path. The only subprocess is Git, reading blobs of the commit the
 generation is already bound to.
 
-## Reading the pinned provider's own export
+## Reading the pinned provider's own output
 
 A generation's artifact is the provider's own state, packed reproducibly. This
-adapter reads one member of it, `graph.json` — the file the pinned Graphify
-release writes from `graphify/export.py::to_json`. There is no Code Mower graph
+adapter reads one member of it, `graph.json`. There is no Code Mower graph
 schema and no normalization pass between the build and the query: the lifecycle
 archives what the provider wrote, so this is what gets read.
 
+### The supported document: the raw `--no-cluster` extraction
+
+`context_graph_lifecycle` runs the pinned release as
+`extract --code-only --no-cluster` and accepts no other options
+(`_REQUIRED_EXTRACT_OPTIONS`). At the pinned commit that branch of
+`graphify/cli.py` dumps the merged extractor result straight to `graph.json`
+through `write_json_atomic`. It never builds a NetworkX graph and never calls
+`export.py::to_json`, so the document carries **no** `directed`, `multigraph`,
+`graph`, `links` or `built_at_commit` key:
+
 ```json
 {
-  "directed": false, "multigraph": false, "graph": {},
   "nodes": [
     {"id": "n-config", "label": "parse_config", "file_type": "code",
      "source_file": "example_pkg/config.py", "source_location": "L12",
-     "community": 0, "norm_label": "parse_config"}
+     "type": "function", "metadata": {"namespace": "example_pkg"}}
   ],
-  "links": [
+  "edges": [
     {"source": "n-load", "target": "n-config", "relation": "calls",
      "confidence": "EXTRACTED", "source_file": "example_pkg/loader.py",
-     "source_location": "L41", "weight": 1.0, "confidence_score": 1.0}
+     "source_location": "L41", "weight": 1.0}
   ],
   "hyperedges": [],
-  "built_at_commit": "…"
+  "input_tokens": 0, "output_tokens": 0,
+  "extracted_sources": ["example_pkg/config.py", "example_pkg/loader.py"]
 }
 ```
 
-What is validated is the *provider's* contract, not one of ours:
+Direction here is the extractor's own claim. `engine.py::add_edge` writes the
+call site's `source` and `target`, and the raw dump carries that record through
+unchanged, so reading the edge record reads the provider's semantics. Permuting
+the node list cannot reverse a relationship, because nothing about the endpoint
+order is derived from node order.
+
+### The other document: a NetworkX node-link export
+
+A generation built through the clustered path instead carries
+`export.py::to_json`'s output — `networkx.json_graph.node_link_data`, which
+always writes `directed`, `multigraph`, `graph` and a `links` list (NetworkX
+later renamed that key to `edges`; the pinned validator accepts either). That
+document is read too, but it is held to one extra requirement the raw format
+does not need and does not get:
+
+> **`directed` must be `true`.** The clustered build stores an `nx.Graph` by
+> default, and undirected storage canonicalizes endpoint order. `to_json` tries
+> to repair this — the build stashes the true endpoints in `_src`/`_tgt` and the
+> exporter restores them — but the written link carries no record that the
+> repair happened, so a reader cannot distinguish a restored edge from one
+> ordered by node iteration, and an undirected build additionally collapses a
+> pair related in both directions onto whichever it saw first. Every answer this
+> module produces is an oriented claim, so an undirected node-link export is
+> refused rather than answered from.
+
+The two are told apart structurally, by the presence of a node-link marker key,
+never by guessing from the name of the edge list — otherwise a newer NetworkX
+export that names its links `edges` would be misread as a raw extraction and
+skip the direction requirement it needs.
+
+`built_at_commit` is likewise a node-link-only stamp. Where it is present it
+must equal the commit the generation is bound to; the raw path writes none, and
+there the binding rests on the lifecycle's own commit binding and on the census
+check every citation goes through.
+
+What is validated is the *provider's* contract, not one of ours, and it is the
+same for both documents:
 
 - The required node and edge fields of `graphify/validate.py` — `id`, `label`,
   `file_type`, `source_file` on a node; `source`, `target`, `relation`,
-  `confidence`, `source_file` on a link. A record missing one would not have
+  `confidence`, `source_file` on an edge. A record missing one would not have
   passed the provider's own validator, so it is a refusal here.
 - Its vocabularies. `file_type` must be one of the six it defines, and
   `confidence` must be uppercase `EXTRACTED`/`INFERRED`/`AMBIGUOUS`. Lowercase
   is the *packet* vocabulary, and a graph using it was not written by the
-  pinned exporter.
+  pinned provider.
 - Its locations. `source_location` is `L<line>` or empty; anything else is a
   location this module could not check against the bound commit, so it refuses
-  rather than traversing past it. One line per node, never a span: the export
-  records no extent, and claiming one would be this adapter inventing it.
-- `built_at_commit`, when the exporter stamped it, must equal the commit the
-  generation is bound to. Otherwise the artifact and the manifest describe
-  different revisions.
+  rather than traversing past it. One line per node, never a span: neither
+  document records an extent, and claiming one would be this adapter inventing
+  it.
 
-Three things are deliberately *not* refusals, because the real export carries
-them and rejecting them would reject every ordinary generation:
+Three things are deliberately *not* refusals, because a real generation carries
+them and rejecting them would reject every ordinary one:
 
-- **Extra annotations.** The exporter adds `community`, `community_name` and
-  `norm_label` to nodes and `confidence_score` to links; the extractor adds
-  `weight`, `context`, `type` and a free-form `metadata` dict from an LLM
-  extraction. None of them changes a traversal, so none is read. Everything
-  this module *does* read is read by name and bounded.
+- **Extra annotations.** The extractor adds `weight`, `context`, `type` and a
+  free-form `metadata` dict from an LLM extraction; a node-link export adds
+  `community`, `community_name` and `norm_label` to nodes and
+  `confidence_score` to links. None of them changes a traversal, so none is
+  read. Everything this module *does* read is read by name and bounded.
 - **Relations outside the mapped set.** The provider's validator does not
   constrain `relation` at all. Mapped relations (`calls`, `imports`, `defines`,
   `contains`, `references`, `inherits`, `implements`, `tests`) decide which
@@ -80,8 +123,11 @@ them and rejecting them would reject every ordinary generation:
 - **Sourceless stubs and non-code corpora.** The extractor emits nodes with an
   empty `source_file` for cross-file references it could not resolve; those
   stay traversable and are never cited. Nodes whose `file_type` is not `code`
-  are dropped, and links onto a dropped node are pruned — which is the pinned
-  exporter's own treatment in `prune_dangling_edges`.
+  are dropped, and edges onto a dropped node are pruned — which is the pinned
+  exporter's own treatment in `prune_dangling_edges`. No count of the dropped
+  records is kept or reported: what a packet says about its own incompleteness
+  is the traversal's truncation and omission fields, not a tally of corpora
+  this module never queries.
 
 Node kinds — `file`, `symbol`, `test` — are **derived**, not read: a Graphify
 node declares its corpus and, rarely, a `type`, but never whether it is a file,
