@@ -164,6 +164,11 @@
     },
     {
       "kind": "doc",
+      "source": "docs/operational-evidence.md",
+      "target": "docs/operational-evidence.md"
+    },
+    {
+      "kind": "doc",
       "source": "docs/oss-v1-checklist.md",
       "target": "docs/oss-v1-checklist.md"
     },
@@ -1246,6 +1251,11 @@
       "kind": "core",
       "source": "src/code_mower/next_steps.py",
       "target": "src/code_mower/next_steps.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/operational_evidence.py",
+      "target": "src/code_mower/operational_evidence.py"
     },
     {
       "kind": "core",

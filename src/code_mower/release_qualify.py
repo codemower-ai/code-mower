@@ -964,6 +964,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    from code_mower import operational_evidence
+
+    evidence = subparsers.add_parser(
+        "evidence", help="Inspect local operational acceptance evidence without remote actions"
+    )
+    operational_evidence.add_arguments(evidence)
+
     qualify = subparsers.add_parser(
         "qualify",
         help="Run release qualification for one provider/environment",
@@ -1367,6 +1374,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     campaign.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
+
+    if args.command == "evidence":
+        return operational_evidence.report_file(
+            args.input, json_output=args.json, required=args.require,
+        )
 
     if args.command == "qualify":
         try:
