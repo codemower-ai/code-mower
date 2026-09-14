@@ -45,6 +45,8 @@ def normalize_search(value, *, limits, maximum_results):
     """Keep source IDs and dates; similarity is not evidence confidence."""
     try:
         return _normalize_search(value, limits=limits, maximum_results=maximum_results)
+    except ContextRetrievalError:
+        raise
     except (ContextError, UnicodeError, TypeError, ValueError):
         # Never turn provider fields or parser messages into public diagnostics.
         raise ContextRetrievalError("response_invalid") from None
@@ -130,9 +132,9 @@ def _normalize_search(value, *, limits, maximum_results):
         documents.append({"text": text, "citations": [{"source": source, "title": title}],
                           "confidence": "unknown", "source_date": updated, "source_kind": record["kind"]})
         used_bytes += len(text.encode("utf-8"))
-    if records and not documents and any(code in omissions for code in (
-        "missing_citation", "unsupported_record_kind",
-    )):
+    if records and not documents:
+        if "text_limit" in omissions or "document_limit" in omissions:
+            raise ContextRetrievalError("budget_exceeded")
         raise ContextError("Coworker search returned no citable qualified evidence")
     return {"documents": documents, "completeness": "partial" if partial or truncated else "complete",
             "truncated": truncated, "source_revision": None, "source_built_at": None,

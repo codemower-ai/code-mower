@@ -15,7 +15,7 @@ from unittest.mock import patch
 from code_mower.context_connections import connect, disconnect
 from code_mower.context_contract import ContextError, ContextRequest, ContextRetrievalError, normalize_policy
 from code_mower.context_packets import MAX_SAVED_PACKETS, fetch, load_authorized, main
-from code_mower.context_store import ContextStore
+from code_mower.context_store import ContextStore, LockedConnection
 from code_mower.coworker_retrieval import normalize_search
 from test_context_connections import FakeBackend, MemoryVault
 from test_coworker_retrieval import FIXTURE, POLICY, SPARSE
@@ -111,6 +111,32 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(result["status"], "available")
         self.assertEqual(self.backend.searches, 2)
         self.assertEqual(len(self.load(result["packet_handle"]).private_payload()["documents"]), 5)
+
+    def test_local_packet_failures_are_not_mislabeled_as_provider_failures(self):
+        for error, reason in ((OSError("private disk path"), "storage_unavailable"),
+                              (ContextError("private integrity diagnostic"), "packet_invalid")):
+            with patch("code_mower.context_packets._load", side_effect=error):
+                with self.assertRaises(ContextRetrievalError) as raised:
+                    self.fetch(refresh=True)
+            self.assertEqual(raised.exception.reason, reason)
+            self.assertNotIn("private disk", str(raised.exception))
+            self.assertEqual(list(self.root.glob(".p-*.json")), [])
+            with self.assertRaises(ContextRetrievalError) as replay:
+                self.fetch()
+            self.assertEqual(replay.exception.reason, reason)
+        self.assertEqual(self.backend.searches, 2)
+
+    def test_cleanup_error_stays_redacted_and_the_reserved_attempt_cannot_be_retried(self):
+        self.backend.fail_search = True
+        # The reserved entry already exists when packet cleanup fails.
+        with patch.object(LockedConnection, "delete", side_effect=OSError("private cleanup path")):
+            with self.assertRaises(ContextRetrievalError) as raised:
+                self.fetch()
+        self.assertEqual(raised.exception.reason, "storage_unavailable")
+        self.assertNotIn("private cleanup", str(raised.exception))
+        with self.assertRaises(ContextError):
+            self.fetch()
+        self.assertEqual(self.backend.searches, 1)
 
     def test_cli_emits_closed_failure_reason_for_required_and_optional_context(self):
         for required in (True, False):

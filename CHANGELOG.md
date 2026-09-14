@@ -17,6 +17,8 @@ later entries are regular releases.
   and preserve the explicit-refresh requirement.
 - Coworker's `no_data` response now yields explicitly incomplete empty evidence
   instead of a format or access failure.
+- Local packet/storage failures and text budgets too small to retain evidence
+  have separate redacted diagnostics instead of blaming provider access.
 
 ## v1.4.0
 

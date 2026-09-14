@@ -109,6 +109,14 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(result["documents"][0]["text"], "é" * 4)
         self.assertTrue(result["truncated"])
 
+    def test_truncating_all_text_to_nothing_fails_with_a_budget_diagnostic(self):
+        for text in ("é", " first nonspace after the byte budget"):
+            value = copy.deepcopy(FIXTURE["search_response"])
+            value["result"]["results"][0]["text"] = text
+            with self.assertRaises(ContextRetrievalError) as raised:
+                normalize_search(value, limits=normalize_policy({**POLICY, "max_document_bytes": 1}), maximum_results=5)
+            self.assertEqual(raised.exception.reason, "budget_exceeded")
+
     def test_malformed_citations_types_and_counts_are_not_silent_success(self):
         for mutation in (lambda v: v["result"]["results"][0].pop("source_row_id"),
                          lambda v: v["result"]["results"][0].update(kind="UnknownRecord"),

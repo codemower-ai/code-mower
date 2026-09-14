@@ -68,6 +68,18 @@ class ContextRetrievalError(ContextError):
             "Context search could not complete.",
             "Check provider availability and retrieval compatibility, then explicitly refresh.",
         ),
+        "packet_invalid": (
+            "Retrieved context could not pass local packet validation.",
+            "Check the packet adapter and private packet integrity, then explicitly refresh.",
+        ),
+        "storage_unavailable": (
+            "Private context storage could not be read, written, or cleaned up.",
+            "Check local storage availability and permissions, then explicitly refresh.",
+        ),
+        "budget_exceeded": (
+            "The context text budget could not retain usable evidence.",
+            "Increase the text budget within policy limits or narrow the query, then explicitly refresh.",
+        ),
     }
 
     def __init__(self, reason: str):

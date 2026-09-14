@@ -158,7 +158,12 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False):
         state = _state(locked.read(), name)
         credentials = locked.vault.get(state["credential_id"])
         try:
-            result = backend.retrieve(credentials, spec["query"], spec["source"], policy, timeout_seconds=left)
+            try:
+                result = backend.retrieve(credentials, spec["query"], spec["source"], policy, timeout_seconds=left)
+            except Exception as exc:
+                raise ContextRetrievalError(
+                    exc.reason if isinstance(exc, ContextRetrievalError) else "retrieval_failed"
+                ) from None
             now = datetime.now(timezone.utc)
             expiry = min(_timestamp(envelope["expires_at"]), now + timedelta(seconds=policy["max_age_seconds"]))
             packet_data = {"schema": PACKET_SCHEMA, "capability_version": CAPABILITY_VERSION,
@@ -176,15 +181,20 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False):
             _index(locked)
             locked.write({**state, "capability_status": {"search": "available", "memory": "available"}})
         except Exception as exc:
+            # Storage and local packet validation are not provider failures.
             failure = ContextRetrievalError(
-                exc.reason if isinstance(exc, ContextRetrievalError) else "retrieval_failed"
+                exc.reason if isinstance(exc, ContextRetrievalError)
+                else "storage_unavailable" if isinstance(exc, OSError) else "packet_invalid"
             )
             entry["reference"] = None
             entry["usage"] = None
             entry["failure_reason"] = failure.reason
-            index_file.write(index)
-            locked.artifact("p-" + entry["handle"]).delete()
-            locked.write({**state, "capability_status": {"search": "unavailable", "memory": "unavailable"}})
+            try:
+                index_file.write(index)
+                locked.artifact("p-" + entry["handle"]).delete()
+                locked.write({**state, "capability_status": {"search": "unavailable", "memory": "unavailable"}})
+            except (OSError, ContextError):
+                raise ContextRetrievalError("storage_unavailable") from None
             raise failure from None
         return {**packet.shareable_summary(), "status": "available", "packet_handle": entry["handle"],
                 "reused": False, "usage": entry["usage"]}

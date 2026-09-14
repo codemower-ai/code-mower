@@ -147,6 +147,11 @@ failures without exposing provider error bodies. Nested SDK task-group failures
 retain a known reason only when their leaves agree; unknown/mixed failures do not
 claim that authorization failed. Failed attempts save only the closed reason,
 so repeating the same request reports it without sending another search.
+Local packet validation and storage failures use `packet_invalid` and
+`storage_unavailable`, respectively, rather than claiming the provider failed.
+If the text budget would truncate every result to nothing, `budget_exceeded`
+requires a deliberate bounded-budget or query adjustment. A nonempty result set
+never silently becomes an available packet containing no usable text.
 
 Repeating a successful request reauthorizes online and reuses the same packet.
 Changing only an approved participant role does not retrieve different evidence.
