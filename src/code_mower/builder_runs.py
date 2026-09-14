@@ -11,10 +11,15 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
 from code_mower import __version__
+from code_mower.builder_lineage import (
+    Lineage,
+    resolve_identity_only,
+    resolve_lineage,
+)
 from code_mower.work_orders import parse_github_issue_ref, parse_github_pr_ref
 
 
@@ -54,6 +59,27 @@ BRANCH_PREFIX_INFERENCE_RULES = (
     ("devin/", "devin_cli", "devin_cli"),
     ("devin-", "devin_cli", "devin_cli"),
 )
+
+
+#: Provider/executor identities map onto the lane names lineage speaks in.
+#: Inference names a candidate lane; it never names a contribution.
+_INFERENCE_LANES = {
+    "codex": "codex",
+    "claude": "claude",
+    "cursor_cloud_agent": "cursor",
+    "devin": "devin",
+    "devin_cli": "devin",
+}
+_LABEL_LANES = {
+    "builder:codex": "codex",
+    "builder:claude": "claude",
+    "builder:cursor": "cursor",
+    "builder:devin": "devin",
+}
+
+
+def _lane_from_inference(inference: "BuilderInference | None") -> str:
+    return "" if inference is None else _INFERENCE_LANES.get(inference.provider, "")
 
 
 @dataclass(frozen=True)
@@ -242,16 +268,58 @@ def infer_builder_from_pr(metadata: PullRequestMetadata) -> BuilderInference | N
     )
 
 
+def resolve_builder_lineage(
+    metadata: PullRequestMetadata,
+    *,
+    head_sha: str = "",
+    episodes: Sequence[Any] = (),
+    labels: Sequence[str] = (),
+) -> Lineage:
+    """Resolve the same exact-head lineage the gate and reviewers resolve.
+
+    Auto-record used to describe a pull request from its author, its branch
+    prefix and provider prose. Those still bootstrap the lane name, but they
+    cannot describe a handoff, so verified contribution episodes decide the
+    contributor list and the current writer whenever they exist.
+    """
+
+    lane = _lane_from_inference(infer_builder_from_pr(metadata))
+    label_lanes = tuple(
+        lane_name
+        for lane_name in (
+            _LABEL_LANES.get(str(label).strip().lower()) for label in labels
+        )
+        if lane_name
+    )
+    if not (head_sha and metadata.repo and metadata.number):
+        return resolve_identity_only(opener_lane=lane, label_lanes=label_lanes)
+    return resolve_lineage(
+        repo=metadata.repo,
+        pr_number=metadata.number,
+        branch=metadata.branch,
+        head_sha=head_sha,
+        episodes=episodes,
+        opener_lane=lane,
+        label_lanes=label_lanes,
+    )
+
+
 def build_auto_builder_run_event(
     metadata: PullRequestMetadata,
     *,
     created_at: str = "",
     lens: str = "implementation",
     status: str = "pr-opened",
+    head_sha: str = "",
+    episodes: Sequence[Any] = (),
+    labels: Sequence[str] = (),
 ) -> tuple[dict[str, Any] | None, BuilderInference | None]:
     inference = infer_builder_from_pr(metadata)
     if inference is None:
         return None, None
+    lineage = resolve_builder_lineage(
+        metadata, head_sha=head_sha, episodes=episodes, labels=labels
+    )
     pr_ref = metadata.url or (
         f"{metadata.repo}#{metadata.number}" if metadata.repo and metadata.number else ""
     )
@@ -274,6 +342,12 @@ def build_auto_builder_run_event(
     event["dimensions"]["builder_inference_confidence"] = inference.confidence
     event["dimensions"]["builder_inference_signals"] = list(inference.signals)
     event["dimensions"]["pr_author"] = metadata.author
+    # Bounded metadata only: lane names, a status and a head prefix. The full
+    # lineage record stays private; what a recorded run needs to say publicly
+    # is who contributed, who is writing now, and whether that is settled.
+    event["dimensions"]["builder_lineage_status"] = lineage.status
+    event["dimensions"]["builder_contributors"] = list(lineage.contributors)
+    event["dimensions"]["builder_current_writer"] = lineage.current_writer
     return event, inference
 
 

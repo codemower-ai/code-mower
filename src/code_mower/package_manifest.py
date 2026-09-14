@@ -17,6 +17,7 @@ PACKAGE_FILES = (
     ("src/code_mower/branch_policy.py", "src/code_mower/branch_policy.py", "core"),
     ("src/code_mower/board_store.py", "src/code_mower/board_store.py", "core"),
     ("src/code_mower/file_locks.py", "src/code_mower/file_locks.py", "core"),
+    ("src/code_mower/builder_lineage.py", "src/code_mower/builder_lineage.py", "core"),
     ("src/code_mower/builder_runs.py", "src/code_mower/builder_runs.py", "core"),
     ("tools/code_mower_builder_experiment.py", "src/code_mower/builder_experiment.py", "core"),
     ("src/code_mower/work_orders.py", "src/code_mower/work_orders.py", "core"),
@@ -391,6 +392,11 @@ PACKAGE_FILES = (
     (
         "src/code_mower/provider_runners/github_pr.py",
         "src/code_mower/provider_runners/github_pr.py",
+        "reviewer",
+    ),
+    (
+        "src/code_mower/provider_runners/lineage.py",
+        "src/code_mower/provider_runners/lineage.py",
         "reviewer",
     ),
     (

@@ -1298,6 +1298,20 @@ def format_comment(
     return limit_comment_body(body, trailer, provider_name="Claude")
 
 
+def _require_independent_review(lane, repo, pr_number, pr_meta, head_sha):
+    """Admit ``lane`` against verified contribution lineage, or raise.
+
+    Imported lazily so the direct-script execution fallback this module
+    supports does not have to resolve the package layout at import time.
+    """
+
+    try:
+        from code_mower.provider_runners.lineage import require_reviewer_lane
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        from provider_runners.lineage import require_reviewer_lane  # type: ignore
+    return require_reviewer_lane(lane, repo, pr_number, pr_meta, head_sha)
+
+
 def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAuditResult:
     audit_started = time.monotonic()
     local_repo = config.repo_paths.get(repo)
@@ -1321,6 +1335,10 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             "refusing Claude self-audit for claude/* branch. "
             "Use --allow-claude-owned only for explicitly informational dogfood."
         )
+    # The branch-prefix check above only sees where the PR started. Contribution
+    # lineage at the exact head sees who actually wrote the diff, including a
+    # Claude takeover of another lane's branch.
+    _require_independent_review("claude", repo, pr_number, pr_meta, head_sha_start)
 
     config.progress.emit(
         "audit",

@@ -560,6 +560,68 @@ def _is_excluded_author(author: str) -> bool:
     return author.strip().lower() in default_authors
 
 
+DEVIN_REVIEWER_LANE = "devin"
+
+
+def _require_independent_devin_review(
+    config, pr_meta, head_sha: str, pr_author: str
+) -> dict:
+    """Admit the Devin reviewer lane against verified lineage for this head.
+
+    Raises :class:`AuthorExcludedError` so existing callers keep their exit
+    handling; the message carries only bounded metadata and one owner action.
+    """
+
+    from .provider_runners.lineage import (
+        ReviewerNotIndependent,
+        load_identity,
+        require_independent_reviewer,
+    )
+
+    if pr_author and _is_excluded_author(pr_author):
+        # Kept as a floor, not as the decision: the configured Devin account
+        # list can only add exclusion, never admit a lane the lineage excludes.
+        raise AuthorExcludedError(
+            f"PR author {pr_author!r} is excluded from the Devin CLI reviewer lane"
+        )
+    identity = load_identity()
+    if not identity.get("enabled"):
+        # An unconfigured checkout must not become more permissive than the
+        # deny list this wrapper shipped with. Name Devin's own accounts and
+        # label so the shared resolver still sees Devin as a contributor.
+        identity = {
+            "enabled": True,
+            "labels": {"builder:devin": DEVIN_REVIEWER_LANE},
+            "authors": {
+                login: DEVIN_REVIEWER_LANE
+                for login in (
+                    "devin-cli-audit-bot",
+                    "devin-cli-audit-bot[bot]",
+                    "devin-ai-integration",
+                    "devin-ai-integration[bot]",
+                )
+            },
+        }
+    try:
+        return require_independent_reviewer(
+            DEVIN_REVIEWER_LANE,
+            repo=config.repo,
+            pr_number=config.pr_number,
+            pr_meta=pr_meta,
+            head_sha=head_sha,
+            identity=identity,
+        )
+    except ReviewerNotIndependent as exc:
+        if exc.reason == "lineage_conflict" and pr_author and _is_excluded_author(pr_author):
+            raise AuthorExcludedError(
+                f"PR author {pr_author!r} is excluded from the Devin CLI reviewer lane"
+            ) from None
+        raise AuthorExcludedError(
+            f"Devin CLI reviewer lane is not admitted for {config.repo}"
+            f"#{config.pr_number} at {head_sha[:12]}: {exc.reason}; {exc.owner_action}"
+        ) from None
+
+
 @dataclass
 class DevinCliVerdict:
     verdict: str  # PASS, BLOCKED, or UNKNOWN
@@ -1157,11 +1219,14 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
     if not pr_head_sha:
         raise ValueError("GitHub pull request response did not include head.sha")
 
+    # Independence is decided from verified contribution lineage at this exact
+    # head, not from who opened the PR. The historical author deny list stays as
+    # one input so a Devin-authored PR with no lineage evidence still fails
+    # closed, but a Devin PR taken over by another lane no longer excludes the
+    # lane that actually wrote the diff -- and no longer admits Devin when Devin
+    # contributed under a different opener.
     pr_author = str(((pr_meta.get("user") or {}).get("login")) or "").strip()
-    if pr_author and _is_excluded_author(pr_author):
-        raise AuthorExcludedError(
-            f"PR author {pr_author!r} is excluded from the Devin CLI reviewer lane"
-        )
+    _require_independent_devin_review(config, pr_meta, pr_head_sha, pr_author)
 
     if str(pr_meta.get("head", {}).get("repo", {}).get("full_name") or "") != config.repo:
         raise ValueError("PR head repository does not match the target repository")

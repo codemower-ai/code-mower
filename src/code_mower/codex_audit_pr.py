@@ -1807,6 +1807,20 @@ def _codex_context_omission_notice_from_diagnostics(diagnostics: str) -> str:
 # ----- Orchestration -----
 
 
+def _require_independent_review(lane, repo, pr_number, pr_meta, head_sha):
+    """Admit ``lane`` against verified contribution lineage, or raise.
+
+    Imported lazily so the direct-script execution fallback this module
+    supports does not have to resolve the package layout at import time.
+    """
+
+    try:
+        from code_mower.provider_runners.lineage import require_reviewer_lane
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        from provider_runners.lineage import require_reviewer_lane  # type: ignore
+    return require_reviewer_lane(lane, repo, pr_number, pr_meta, head_sha)
+
+
 def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     """End-to-end audit of one PR. Creates a temporary worktree at the PR
     head, runs Codex review, structures its verdict, formats + posts a
@@ -1826,6 +1840,10 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         config = replace(config, progress=AuditProgress("codex-audit"))
     pr_meta = fetch_pull_request(repo, pr_number, token=config.github_token)
     head_sha_start = pr_meta["head"]["sha"]
+    # Admission runs on trusted metadata at the exact head, before the provider
+    # is launched, so a contributing lane never spends a run reviewing its own
+    # diff and never produces a verdict it is not independent enough to give.
+    _require_independent_review("codex", repo, pr_number, pr_meta, head_sha_start)
 
     config.progress.emit(
         "audit",

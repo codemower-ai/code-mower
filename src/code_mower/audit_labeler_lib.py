@@ -26,12 +26,33 @@ if __package__:
     try:
         from . import decisions as code_mower_decisions
         from . import context_review as code_mower_context_review
+        from .builder_lineage import (
+            Lineage,
+            LineageError,
+            lanes_from_identity,
+            resolve_identity_only,
+            resolve_lineage,
+        )
     except ImportError:  # pragma: no cover - copied tools fallback
         import decisions as code_mower_decisions  # type: ignore
         import context_review as code_mower_context_review  # type: ignore
+        from builder_lineage import (  # type: ignore
+            Lineage,
+            LineageError,
+            lanes_from_identity,
+            resolve_identity_only,
+            resolve_lineage,
+        )
 else:  # pragma: no cover - direct helper execution
     import decisions as code_mower_decisions  # type: ignore
     import context_review as code_mower_context_review  # type: ignore
+    from builder_lineage import (  # type: ignore
+        Lineage,
+        LineageError,
+        lanes_from_identity,
+        resolve_identity_only,
+        resolve_lineage,
+    )
 
 MIN_ABBREVIATED_SHA_LENGTH = 7
 AUTHOR_EXCLUSION_ENV = "CODE_MOWER_AUTHOR_EXCLUSION_JSON"
@@ -196,32 +217,83 @@ def load_author_exclusion_config(raw: str | None = None) -> Mapping[str, Any]:
     return parsed if isinstance(parsed, Mapping) else {"enabled": False}
 
 
+def resolve_builder_lineage(
+    *,
+    labels: Sequence[str],
+    author: str,
+    config: Mapping[str, Any],
+    repo: str = "",
+    pr_number: Any = 0,
+    branch: str = "",
+    head_sha: str = "",
+    episodes: Sequence[Any] = (),
+) -> Lineage:
+    """Resolve the shared builder lineage from labeler-side evidence.
+
+    Labelers see labels and an author for certain, and may or may not have the
+    exact head plus published contribution episodes to hand. Without exact-head
+    evidence there is no takeover to resolve, so the result is the ordinary
+    single-builder decision; with it, the same resolver the gate, the runner
+    and the reviewer wrappers use answers the question.
+    """
+
+    opener_lane, label_lanes = lanes_from_identity(
+        identity=config, labels=labels, author=author
+    )
+    if not (head_sha and repo and pr_number):
+        return resolve_identity_only(opener_lane=opener_lane, label_lanes=label_lanes)
+    return resolve_lineage(
+        repo=repo,
+        pr_number=pr_number,
+        branch=branch,
+        head_sha=head_sha,
+        episodes=episodes,
+        opener_lane=opener_lane,
+        label_lanes=label_lanes,
+    )
+
+
 def builder_identity_matches(
     *,
     labels: Sequence[str],
     author: str,
     text: str,
     config: Mapping[str, Any],
+    repo: str = "",
+    pr_number: Any = 0,
+    branch: str = "",
+    head_sha: str = "",
+    episodes: Sequence[Any] = (),
 ) -> tuple[str, ...]:
+    """Ordered verified builder lanes for this pull request.
+
+    ``text`` is retained for call compatibility and is deliberately unused:
+    freeform prose is not contribution evidence.
+    """
+
     if not bool(config.get("enabled")):
         return ()
-    label_map = _string_mapping(config.get("labels"))
-    author_map = {
-        key.lower(): value
-        for key, value in _string_mapping(config.get("authors")).items()
-    }
-    matches: list[str] = []
-
-    for label in labels:
-        lane = label_map.get(str(label))
-        if lane:
-            matches.append(lane)
-
-    lane = author_map.get(author.lower())
-    if lane:
-        matches.append(lane)
-
-    return tuple(dict.fromkeys(matches))
+    lineage = resolve_builder_lineage(
+        labels=labels,
+        author=author,
+        config=config,
+        repo=repo,
+        pr_number=pr_number,
+        branch=branch,
+        head_sha=head_sha,
+        episodes=episodes,
+    )
+    if lineage.status != "resolved":
+        # Preserve the historical "more than one identity" shape so a caller
+        # inspecting matches can still tell a conflict from a clean match.
+        opener_lane, label_lanes = lanes_from_identity(
+            identity=config, labels=labels, author=author
+        )
+        candidates = tuple(
+            dict.fromkeys(list(label_lanes) + ([opener_lane] if opener_lane else []))
+        )
+        return candidates if len(candidates) > 1 else lineage.contributors
+    return lineage.contributors
 
 
 def author_exclusion_reason(
@@ -231,20 +303,40 @@ def author_exclusion_reason(
     author: str,
     text: str,
     config: Mapping[str, Any] | None = None,
+    repo: str = "",
+    pr_number: Any = 0,
+    branch: str = "",
+    head_sha: str = "",
+    episodes: Sequence[Any] = (),
 ) -> str | None:
+    """Why ``lane_name`` may not label its own work, or ``None``.
+
+    Exclusion follows verified contribution, not authorship: every contributing
+    lane is excluded, and a lane that merely opened the PR before handing it
+    over is excluded too because its commits are still in the diff.
+    """
+
     exclusion_config = config or load_author_exclusion_config()
-    matches = builder_identity_matches(
-        labels=labels,
-        author=author,
-        text=text,
-        config=exclusion_config,
-    )
-    if not matches:
+    if not bool(exclusion_config.get("enabled")):
         return None
-    if len(set(matches)) > 1:
+    try:
+        lineage = resolve_builder_lineage(
+            labels=labels,
+            author=author,
+            config=exclusion_config,
+            repo=repo,
+            pr_number=pr_number,
+            branch=branch,
+            head_sha=head_sha,
+            episodes=episodes,
+        )
+    except LineageError:
+        return "builder contribution evidence is unreadable; skipping author-excluded label update"
+    if lineage.status == "conflict":
         return "conflicting builder identity; skipping author-excluded label update"
-    builder_lane = matches[0]
-    if builder_lane == lane_name:
+    if lineage.status == "waiting":
+        return "builder contribution lineage is behind the current head; skipping author-excluded label update"
+    if lineage.contributed(lane_name):
         return f"{lane_name} lane excluded for builder-authored PR"
     return None
 
