@@ -1140,6 +1140,14 @@ def _add_classify_parser(subparsers: Any) -> None:
     classify.add_argument("--elapsed-seconds", type=float)
     classify.add_argument("--user-interventions", type=int)
     classify.add_argument("--handoff", default="", help="Validated handoff JSON path.")
+    classify.add_argument(
+        "--handoff-state-dir",
+        type=Path,
+        help=(
+            "Private handoff intent store. With --handoff, a delivered unit "
+            "records its contribution episode here."
+        ),
+    )
     classify.add_argument("--output", type=Path, help="Write the outcome event here.")
     classify.add_argument("--force", action="store_true")
     classify.add_argument("--json", action="store_true")
@@ -1186,6 +1194,110 @@ def _add_handoff_parser(subparsers: Any) -> None:
     handoff.add_argument("--reserve-launch", action="store_true", help="Claim the verified destination launch once")
 
 
+def _add_lineage_parser(subparsers: Any) -> None:
+    lineage = subparsers.add_parser(
+        "lineage",
+        help="Resolve recorded builder lineage and reconcile the active builder label.",
+    )
+    lineage.add_argument("--repo", required=True)
+    lineage.add_argument("--pr", required=True)
+    lineage.add_argument("--branch", default="")
+    lineage.add_argument("--head", required=True, help="The exact head the caller pinned.")
+    lineage.add_argument("--label", dest="labels", action="append", default=[])
+    lineage.add_argument("--author", default="", help="Pull request opener login.")
+    lineage.add_argument("--state-dir", type=Path, help="Private handoff intent store.")
+    lineage.add_argument(
+        "--identity-json",
+        default="",
+        help="Author-exclusion identity contract; defaults to the runner environment.",
+    )
+    lineage.add_argument(
+        "--reconcile-labels",
+        action="store_true",
+        help="Move the active builder label to the verified current writer.",
+    )
+    lineage.add_argument("--json", action="store_true")
+
+
+def _gh_head(repo: str, number: str) -> str:
+    result = subprocess.check_output(
+        ["gh", "pr", "view", number, "--repo", repo, "--json", "headRefOid"],
+        timeout=30, text=True, stderr=subprocess.DEVNULL,
+    )
+    return _text(json.loads(result).get("headRefOid"))
+
+
+def _gh_apply_labels(repo: str, number: str, add: Iterable[str], remove: Iterable[str]) -> None:
+    command = ["gh", "pr", "edit", number, "--repo", repo]
+    for label in add:
+        command += ["--add-label", label]
+    for label in remove:
+        command += ["--remove-label", label]
+    subprocess.run(command, timeout=60, check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+
+
+def _lineage_main(args: argparse.Namespace, *,
+                  head: Callable[[str, str], str] = _gh_head,
+                  labels: Callable[..., None] = _gh_apply_labels) -> int:
+    """Report the resolved lineage, and optionally reconcile the active label.
+
+    Reading is always safe; the mutation happens only when it is asked for, and
+    only when the resolver named one current writer at the exact head the caller
+    pinned. Unresolved lineage prints its owner action and changes nothing.
+    """
+
+    from . import builder_lineage, lane_handoff
+    from .provider_runners.lineage import load_identity
+
+    repo = _text(args.repo)
+    number = _text(args.pr)
+    identity = load_identity(args.identity_json or None)
+    episodes: tuple[Any, ...] = ()
+    root = args.state_dir or lane_handoff.default_root()
+    try:
+        episodes = builder_lineage.load_episodes(
+            lane_handoff.lineage_root(root), repo, number
+        )
+    except builder_lineage.LineageError as exc:
+        raise LaneDeliveryError(str(exc)) from None
+    opener_lane, _ = builder_lineage.lanes_from_identity(
+        identity=identity, labels=args.labels, author=args.author
+    )
+    if args.reconcile_labels:
+        payload = builder_lineage.reconcile_active_builder_label(
+            repo=repo,
+            pr_number=number,
+            branch=args.branch,
+            head_sha=args.head,
+            current_labels=args.labels,
+            episodes=episodes,
+            identity=identity,
+            opener_lane=opener_lane,
+            observe_head=lambda: head(repo, number),
+            apply_labels=lambda add, remove: labels(repo, number, add, remove),
+        )
+    else:
+        _, label_lanes = builder_lineage.lanes_from_identity(
+            identity=identity, labels=args.labels, author=args.author
+        )
+        payload = builder_lineage.resolve_lineage(
+            repo=repo,
+            pr_number=number,
+            branch=args.branch,
+            head_sha=args.head,
+            episodes=episodes,
+            opener_lane=opener_lane,
+            label_lanes=label_lanes,
+        ).as_dict()
+    _assert_safe_metadata(payload, path="lineage")
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"lineage {payload.get('status')}: {payload.get('reason')}")
+    return 0 if payload.get("status") in {"resolved", "current", "reconcile"} else 3
+
+
 def _add_scan_prompt_parser(subparsers: Any) -> None:
     scan = subparsers.add_parser(
         "scan-prompt",
@@ -1226,6 +1338,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_classify_parser(subparsers)
     _add_transition_parser(subparsers)
     _add_handoff_parser(subparsers)
+    _add_lineage_parser(subparsers)
     _add_scan_prompt_parser(subparsers)
     _add_supervise_parser(subparsers)
     admit = subparsers.add_parser("admit-builder", help="Check role admission against the trusted fresh-base checkout")
@@ -1245,6 +1358,8 @@ def main(argv: list[str] | None = None) -> int:
             return _transition_main(args)
         if args.command == "handoff":
             return _handoff_main(args)
+        if args.command == "lineage":
+            return _lineage_main(args)
         if args.command == "scan-prompt":
             return _scan_prompt_main(args)
         if args.command == "supervise":
@@ -1329,6 +1444,21 @@ def _classify_main(args: argparse.Namespace) -> int:
             target_branch=_text(payload.get("target_branch")),
         )
 
+    # Provenance is recorded from the delivery that actually happened, not from
+    # the handoff that authorized it. An undelivered or unvalidated round adds
+    # no episode, so a lane that was launched and wrote nothing never appears as
+    # a contributor to the diff.
+    lineage_result = None
+    if handoff is not None and args.handoff_state_dir is not None:
+        from . import lane_handoff
+
+        lineage_result = lane_handoff.record_contribution(
+            handoff,
+            args.handoff_state_dir,
+            resulting_head=after.head_sha,
+            delivered=outcome.delivered,
+        )
+
     event = None
     if args.lane and args.repo:
         event = build_delivery_outcome_event(
@@ -1349,12 +1479,17 @@ def _classify_main(args: argparse.Namespace) -> int:
         write_delivery_outcome_event(event, output, force=args.force)
 
     if args.json:
-        print(json.dumps(event or outcome.as_dict(), indent=2, sort_keys=True))
+        payload = dict(event or outcome.as_dict())
+        if lineage_result is not None:
+            payload["lineage"] = lineage_result
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(
             f"delivery {'ok' if outcome.delivered else 'missing'}: "
             f"transition={outcome.transition} reason={outcome.reason}"
         )
+        if lineage_result is not None:
+            print(f"lineage {lineage_result['reason']}")
     return 0 if outcome.delivered else 3
 
 

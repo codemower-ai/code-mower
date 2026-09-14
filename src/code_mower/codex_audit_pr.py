@@ -1815,10 +1815,30 @@ def _require_independent_review(lane, repo, pr_number, pr_meta, head_sha):
     """
 
     try:
-        from code_mower.provider_runners.lineage import require_reviewer_lane
+        from code_mower.builder_lineage import LineageError
+        from code_mower.provider_runners.lineage import (
+            identity_with_lane_floor, load_identity, require_reviewer_lane, trusted_episodes,
+        )
     except ImportError:  # pragma: no cover - direct script execution fallback
-        from provider_runners.lineage import require_reviewer_lane  # type: ignore
-    return require_reviewer_lane(lane, repo, pr_number, pr_meta, head_sha)
+        from builder_lineage import LineageError  # type: ignore
+        from provider_runners.lineage import (  # type: ignore
+            identity_with_lane_floor, load_identity, require_reviewer_lane, trusted_episodes,
+        )
+    # Real recorded evidence, not the resolver's empty default: an admission
+    # decided on no episodes cannot see a takeover, which is the whole point.
+    # Unreadable evidence refuses rather than reviewing on a guess.
+    try:
+        episodes = trusted_episodes(repo, pr_number)
+    except LineageError as exc:
+        raise RuntimeError(
+            f"{lane} reviewer lane is not admitted for {repo}#{pr_number} at "
+            f"{str(head_sha)[:12]}: lineage_unreadable; {exc}"
+        ) from None
+    return require_reviewer_lane(
+        lane, repo, pr_number, pr_meta, head_sha,
+        episodes=episodes,
+        identity=identity_with_lane_floor(load_identity(), lane),
+    )
 
 
 def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:

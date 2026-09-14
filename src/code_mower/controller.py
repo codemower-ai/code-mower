@@ -266,38 +266,121 @@ def _has_pending(pr: Mapping[str, Any]) -> bool:
     )
 
 
+def _reviewer_eligibility(
+    config: Mapping[str, Any], reviewer: Mapping[str, str]
+) -> dict[str, str]:
+    """Effective role eligibility for one reviewer lane, decided separately.
+
+    Independence and eligibility answer different questions and neither implies
+    the other: a qualified reviewer that wrote part of this diff still may not
+    gate it, and a lane that touched nothing is not made eligible by that. They
+    are consulted as two decisions so a lane dropped for one reason is never
+    reported as dropped for the other.
+    """
+
+    from .role_eligibility import PRODUCTS, ConfigError, decide_role
+
+    lanes = config.get("lanes") if isinstance(config.get("lanes"), Mapping) else {}
+    raw_lane = lanes.get(reviewer["lane_id"]) if isinstance(lanes, Mapping) else None
+    lane = raw_lane if isinstance(raw_lane, Mapping) else {}
+    product = _text(lane.get("provider")) or _text(reviewer["author_lane"])
+    if product not in PRODUCTS:
+        # Lanes outside the role-eligibility products keep their existing
+        # repository authority; this seam does not newly restrict them.
+        return {"status": "eligible", "reason": "repository_policy"}
+    try:
+        decision = decide_role(
+            product,
+            "reviewer",
+            transport=_text(lane.get("transport")) or None,
+            config=config,
+            merge_authority=True,
+        )
+    except ConfigError:
+        return {"status": "ineligible", "reason": "role_request_invalid"}
+    return {"status": _text(decision.get("status")), "reason": _text(decision.get("reason"))}
+
+
 def _reviewer_outcomes(
     pr: Mapping[str, Any],
     config: Mapping[str, Any],
-) -> tuple[list[dict[str, Any]], bool, bool, str]:
+) -> tuple[list[dict[str, Any]], bool, bool, str, dict[str, Any]]:
+    """Select reviewers from verified exact-head lineage, not one active label.
+
+    Every lane that contributed to the current diff is excluded, not just the
+    one the newest ``builder:*`` label names. Lineage that does not resolve at
+    this head selects nobody and blocks with the resolver's owner action: a
+    reviewer admitted on unresolved lineage may be reviewing its own work.
+    """
+
     labels = pr.get("labels") if isinstance(pr.get("labels"), Mapping) else {}
     done = set(labels.get("done") or [])
     blocked = set(labels.get("blocked") or [])
     builder_lane = _builder_lane_from_labels(labels.get("builder") or [], config)
+
+    raw_lineage = pr.get("builder_lineage")
+    lineage = raw_lineage if isinstance(raw_lineage, Mapping) else None
+    contributors: tuple[str, ...] = ()
+    lineage_block = ""
+    lineage_status = "absent"
+    if lineage is not None:
+        lineage_status = _text(lineage.get("status"))
+        if lineage_status == "resolved":
+            contributors = tuple(
+                lane for lane in (_text(item) for item in (lineage.get("contributors") or [])) if lane
+            )
+            builder_lane = _text(lineage.get("current_writer")) or builder_lane
+        else:
+            lineage_block = _text(lineage.get("owner_action")) or (
+                "resolve the builder contribution lineage for this head"
+            )
+
     excluded_author_lane = ""
-    outcomes = []
-    for reviewer in _merge_reviewers(config):
-        excluded = (
-            _author_never_gates(config)
-            and builder_lane
-            and reviewer["author_lane"] == builder_lane
+    outcomes: list[dict[str, Any]] = []
+    ineligible: list[str] = []
+    if not lineage_block:
+        for reviewer in _merge_reviewers(config):
+            lane = reviewer["author_lane"]
+            contributed = lane in contributors if contributors else bool(
+                builder_lane and lane == builder_lane
+            )
+            if _author_never_gates(config) and contributed:
+                excluded_author_lane = lane
+                continue
+            eligibility = _reviewer_eligibility(config, reviewer)
+            if eligibility["status"] == "ineligible":
+                ineligible.append(lane)
+                continue
+            verdict = "PASS" if reviewer["done_label"] in done else "MISSING"
+            if reviewer["blocked_label"] and reviewer["blocked_label"] in blocked:
+                verdict = "BLOCKED"
+            outcomes.append(
+                {
+                    "lane_id": lane,
+                    "config_lane_id": reviewer["lane_id"],
+                    "verdict": verdict,
+                    "promoted": True,
+                }
+            )
+
+    if not lineage_block and not outcomes and (excluded_author_lane or ineligible):
+        lineage_block = (
+            "no qualified independent reviewer lane remains for this head; "
+            "configure one that did not contribute to this diff"
         )
-        if excluded:
-            excluded_author_lane = reviewer["author_lane"]
-            continue
-        verdict = "PASS" if reviewer["done_label"] in done else "MISSING"
-        if reviewer["blocked_label"] and reviewer["blocked_label"] in blocked:
-            verdict = "BLOCKED"
-        outcomes.append(
-            {
-                "lane_id": reviewer["author_lane"],
-                "config_lane_id": reviewer["lane_id"],
-                "verdict": verdict,
-                "promoted": True,
-            }
-        )
-    passed = bool(outcomes) and all(outcome["verdict"] == "PASS" for outcome in outcomes)
-    return outcomes, bool(excluded_author_lane), passed, builder_lane
+    passed = (
+        not lineage_block
+        and bool(outcomes)
+        and all(outcome["verdict"] == "PASS" for outcome in outcomes)
+    )
+    projection = {
+        "status": lineage_status,
+        "contributors": list(contributors),
+        "current_writer": builder_lane,
+        "ineligible_reviewers": ineligible,
+        "owner_action": lineage_block,
+    }
+    return outcomes, bool(excluded_author_lane), passed, builder_lane, projection
 
 
 def _pr_priority(pr: Mapping[str, Any]) -> tuple[int, int]:
@@ -365,7 +448,13 @@ def _pr_decision(
     owner_label = _owner_label(config)
     configured_reviewers = _merge_reviewers(config)
     gate_state = _gate_state(pr)
-    reviewer_outcomes, author_lane_excluded, reviewers_passed, builder_lane = _reviewer_outcomes(pr, config)
+    (
+        reviewer_outcomes,
+        author_lane_excluded,
+        reviewers_passed,
+        builder_lane,
+        lineage,
+    ) = _reviewer_outcomes(pr, config)
     base = {
         "pr_number": pr.get("number"),
         "pr_url": pr.get("url", ""),
@@ -376,9 +465,24 @@ def _pr_decision(
         "gate_status": gate_state,
         "reviewer_outcomes": reviewer_outcomes,
         "author_lane_excluded": author_lane_excluded,
+        "builder_lineage_status": lineage["status"],
+        "builder_contributors": lineage["contributors"],
         "promoted_reviewers_passed": reviewers_passed,
         "would_mutate": False,
     }
+    # Unresolved lineage, or no qualified independent reviewer left after
+    # excluding every contributor, is one owner action -- not a merge decision
+    # taken on a reviewer that may have written the diff.
+    if lineage["owner_action"]:
+        return {
+            **base,
+            "decision_state": "owner_action",
+            "next_action": "resolve builder contribution lineage",
+            "next_detail": lineage["owner_action"],
+            "stop_condition": "builder_lineage_unresolved",
+            "owner_action_kind": "builder_lineage",
+            "merge_method": "",
+        }
     if labels.get("blocked"):
         return {
             **base,

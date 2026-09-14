@@ -34,7 +34,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 SCHEMA = "code_mower.builderLineage.v1"
@@ -633,6 +633,175 @@ def load_episodes(root: Path, repo: str, pr_number: Any) -> tuple[ContributionEp
     return tuple(
         episode_from_mapping(item) for item in (record.get("episodes") or [])
     )
+
+
+# --- active builder label reconciliation -------------------------------------
+
+
+def builder_label_for(lane: str, identity: Mapping[str, Any] | None = None) -> str:
+    """The one active label that names ``lane`` as the current writer."""
+
+    writer = _lane(lane)
+    if not writer:
+        return ""
+    label_map = (identity or {}).get("labels") if isinstance(identity, Mapping) else None
+    if isinstance(label_map, Mapping):
+        for label in sorted(_text(item) for item in label_map):
+            if _lane(label_map.get(label)) == writer and label.startswith("builder:"):
+                return label
+    return f"builder:{writer}"
+
+
+def builder_label_plan(
+    lineage: Lineage,
+    *,
+    current_labels: Sequence[str] = (),
+    identity: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Plan reconciliation to exactly one active builder label.
+
+    The label set says who may write next, and after a verified takeover that
+    is exactly one lane. Historical contributions are not deleted by this: they
+    live in the recorded lineage, which is what reviewer exclusion and the
+    Board projection read. Unresolved lineage plans no mutation at all -- a
+    label moved on a guess is the failure this issue exists to stop.
+    """
+
+    label_map = (identity or {}).get("labels") if isinstance(identity, Mapping) else None
+    known = (
+        {_text(label): _lane(lane) for label, lane in label_map.items()}
+        if isinstance(label_map, Mapping)
+        else {}
+    )
+    present = tuple(
+        dict.fromkeys(
+            label
+            for label in (_text(item) for item in current_labels)
+            if label and (label.startswith("builder:") or known.get(label))
+        )
+    )
+    if not lineage.resolved or not lineage.current_writer:
+        return {
+            "schema": SCHEMA,
+            "status": "blocked",
+            "reason": lineage.reason if not lineage.resolved else "no_builder_identity",
+            "head_sha": lineage.head_sha,
+            "current_writer": lineage.current_writer,
+            "add": [],
+            "remove": [],
+            "owner_action": lineage.owner_action or _OWNER_ACTIONS["label_outside_lineage"],
+        }
+
+    writer = lineage.current_writer
+    target = next(
+        (
+            label
+            for label in present
+            if known.get(label) == writer or label == f"builder:{writer}"
+        ),
+        "",
+    ) or builder_label_for(writer, identity)
+    remove = [label for label in present if label != target]
+    add = [] if target in present else [target]
+    return {
+        "schema": SCHEMA,
+        "status": "reconcile" if (add or remove) else "current",
+        "reason": lineage.reason,
+        "head_sha": lineage.head_sha,
+        "current_writer": writer,
+        "add": add,
+        "remove": remove,
+        "owner_action": "",
+    }
+
+
+def reconcile_active_builder_label(
+    *,
+    repo: str,
+    pr_number: Any,
+    branch: str,
+    head_sha: str,
+    current_labels: Sequence[str] = (),
+    episodes: Sequence[Mapping[str, Any] | ContributionEpisode] = (),
+    identity: Mapping[str, Any] | None = None,
+    opener_lane: str = "",
+    observe_head: Callable[[], str] | None = None,
+    apply_labels: Callable[[Sequence[str], Sequence[str]], None] | None = None,
+) -> dict[str, Any]:
+    """Move the active builder label to the verified current writer.
+
+    The head is rechecked on both sides of the mutation. A head that moved
+    before the resolution makes the lineage describe a different diff, and a
+    head that moved after it makes the label this call just applied a claim
+    about a diff nobody verified; both report ``blocked`` with one owner action
+    rather than leaving a confident but unfounded label behind.
+    """
+
+    pinned = _sha(head_sha)
+    if not pinned:
+        return {
+            "schema": SCHEMA,
+            "status": "blocked",
+            "reason": "target_invalid",
+            "head_sha": "",
+            "current_writer": "",
+            "add": [],
+            "remove": [],
+            "applied": False,
+            "owner_action": _OWNER_ACTIONS["target_invalid"],
+        }
+    if observe_head is not None and _sha(observe_head()) != pinned:
+        return {
+            "schema": SCHEMA,
+            "status": "blocked",
+            "reason": "head_moved_before_reconcile",
+            "head_sha": pinned,
+            "current_writer": "",
+            "add": [],
+            "remove": [],
+            "applied": False,
+            "owner_action": (
+                "the pull request head moved while reconciling the active builder "
+                "label; re-run reconciliation against the current head"
+            ),
+        }
+
+    label_lanes = tuple(
+        dict.fromkeys(
+            lane
+            for lane in (
+                _lane(((identity or {}).get("labels") or {}).get(_text(label)))
+                if isinstance(identity, Mapping)
+                else ""
+                for label in current_labels
+            )
+            if lane
+        )
+    )
+    lineage = resolve_lineage(
+        repo=repo,
+        pr_number=pr_number,
+        branch=branch,
+        head_sha=pinned,
+        episodes=episodes,
+        opener_lane=opener_lane,
+        label_lanes=label_lanes,
+    )
+    plan = builder_label_plan(lineage, current_labels=current_labels, identity=identity)
+    plan["applied"] = False
+    if plan["status"] != "reconcile":
+        return plan
+    if apply_labels is not None:
+        apply_labels(tuple(plan["add"]), tuple(plan["remove"]))
+        plan["applied"] = True
+    if observe_head is not None and _sha(observe_head()) != pinned:
+        plan["status"] = "blocked"
+        plan["reason"] = "head_moved_during_reconcile"
+        plan["owner_action"] = (
+            "the pull request head moved while the active builder label was being "
+            "reconciled; re-record the contribution episode and reconcile again"
+        )
+    return plan
 
 
 # --- bounded public transport ------------------------------------------------

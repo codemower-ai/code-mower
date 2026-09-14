@@ -91,6 +91,90 @@ def published_episodes(
     return tuple(collected)
 
 
+#: Accounts a reviewer lane writes under. Used only as a floor, so an
+#: unconfigured or malformed identity file cannot make a contributing reviewer
+#: admissible; it never widens who may review.
+LANE_ACCOUNT_FLOOR: Mapping[str, tuple[str, ...]] = {
+    "devin": (
+        "devin-ai-integration",
+        "devin-ai-integration[bot]",
+        "devin-cli-audit-bot",
+        "devin-cli-audit-bot[bot]",
+    ),
+    "codex": ("chatgpt-codex-connector[bot]", "codex[bot]"),
+    "claude": ("claude[bot]", "claude-bot"),
+}
+
+
+def identity_with_lane_floor(identity: Mapping[str, Any] | None, lane: str) -> Mapping[str, Any]:
+    """Guarantee the reviewer lane can be named, whatever the configuration says.
+
+    Reviewer independence is decided by naming lanes. A missing, disabled or
+    malformed identity contract would name none of them, and an unnameable lane
+    cannot be recognised as a contributor -- which would silently admit exactly
+    the reviewer this seam exists to exclude. So the lane's own label and
+    accounts are always present. Only the reviewer's own lane is synthesized:
+    this adds exclusion and never admission.
+    """
+
+    reviewer = str(lane or "").strip().lower()
+    base = dict(identity) if isinstance(identity, Mapping) else {}
+    labels = base.get("labels")
+    authors = base.get("authors")
+    merged_labels = dict(labels) if isinstance(labels, Mapping) else {}
+    merged_authors = dict(authors) if isinstance(authors, Mapping) else {}
+    if reviewer:
+        merged_labels.setdefault(f"builder:{reviewer}", reviewer)
+        for login in LANE_ACCOUNT_FLOOR.get(reviewer, ()):
+            merged_authors.setdefault(login, reviewer)
+    return {"enabled": True, "labels": merged_labels, "authors": merged_authors}
+
+
+def recorded_episodes(repo: str, pr_number: Any, state_dir: Any = None) -> tuple:
+    """Load contribution episodes the verified delivery boundary persisted.
+
+    This is the wrapper-side counterpart of the runner's record. An unreadable
+    record raises :class:`~code_mower.builder_lineage.LineageError` so the
+    caller fails closed; a checkout with no record at all simply has no
+    episodes, which is the ordinary single-builder case.
+    """
+
+    from pathlib import Path
+
+    from ..builder_lineage import load_episodes
+    from ..lane_handoff import default_root, lineage_root
+
+    root = lineage_root(Path(state_dir) if state_dir is not None else default_root())
+    return load_episodes(root, repo, pr_number)
+
+
+def trusted_episodes(
+    repo: str,
+    pr_number: Any,
+    *,
+    comments: Sequence[Mapping[str, Any]] = (),
+    trusted_author: Callable[[str], bool] | None = None,
+    state_dir: Any = None,
+) -> tuple:
+    """All contribution evidence this reviewer is allowed to read, in order.
+
+    The durable record is the runner's own; published markers are the transport
+    for a reviewer running somewhere the record does not exist. Both are parsed
+    strictly and merged by sequence, and a marker that contradicts the record is
+    left in place for the resolver to fail closed on rather than reconciled here.
+    """
+
+    collected = list(recorded_episodes(repo, pr_number, state_dir))
+    if comments and trusted_author is not None:
+        seen = {episode.sequence: episode for episode in collected}
+        for episode in published_episodes(comments, trusted_author=trusted_author):
+            if seen.get(episode.sequence) is None:
+                collected.append(episode)
+            elif seen[episode.sequence].as_dict() != episode.as_dict():
+                collected.append(episode)
+    return tuple(collected)
+
+
 def pr_lineage(
     *,
     repo: str,

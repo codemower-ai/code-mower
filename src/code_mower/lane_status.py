@@ -262,6 +262,62 @@ def _author(pr: Mapping[str, Any]) -> str:
     return _text(author.get("login")) if isinstance(author, Mapping) else _text(author)
 
 
+def builder_lineage_for(
+    repo: str,
+    *,
+    pr_number: int,
+    branch: str,
+    head_sha: str,
+    labels: Sequence[str],
+    author: str,
+    state_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Resolve recorded contribution lineage for one pull request at its head.
+
+    Episodes come from the runner's own durable record, which only the verified
+    handoff/delivery boundary writes. Unreadable evidence resolves to a conflict
+    carrying one owner action rather than degrading to the label-derived guess
+    this issue exists to remove.
+    """
+
+    from . import builder_lineage as lineage_module
+    from . import lane_handoff
+    from .provider_runners.lineage import load_identity
+
+    identity = load_identity()
+    root = lane_handoff.lineage_root(state_dir or lane_handoff.default_root())
+    try:
+        episodes = lineage_module.load_episodes(root, repo, pr_number)
+    except (lineage_module.LineageError, OSError, ValueError):
+        return lineage_module.Lineage(
+            status="conflict",
+            reason="episode_malformed",
+            head_sha=_text(head_sha),
+            contributors=(),
+            current_writer="",
+            builder_label="",
+            stale_builder_labels=(),
+            evidence="handoff_episodes",
+            episodes=0,
+            owner_action=(
+                "recorded builder contribution evidence for this pull request "
+                "could not be read; re-record it from the verified handoff"
+            ),
+        ).as_dict()
+    opener_lane, label_lanes = lineage_module.lanes_from_identity(
+        identity=identity, labels=labels, author=author
+    )
+    return lineage_module.resolve_lineage(
+        repo=repo,
+        pr_number=pr_number,
+        branch=branch,
+        head_sha=head_sha,
+        episodes=episodes,
+        opener_lane=opener_lane,
+        label_lanes=label_lanes,
+    ).as_dict()
+
+
 def _summarize_pr(
     repo: str,
     pr: Mapping[str, Any],
@@ -294,6 +350,14 @@ def _summarize_pr(
         "next_action": next_action,
         "next_detail": next_detail,
         "gate_rerun_command": _gate_rerun_command(repo, number, head_sha),
+        "builder_lineage": builder_lineage_for(
+            repo,
+            pr_number=number,
+            branch=_text(pr.get("headRefName")),
+            head_sha=head_sha,
+            labels=[name for names in labels.values() for name in names],
+            author=_author(pr),
+        ),
     }
 
 

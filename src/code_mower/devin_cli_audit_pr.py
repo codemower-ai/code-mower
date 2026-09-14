@@ -572,10 +572,13 @@ def _require_independent_devin_review(
     handling; the message carries only bounded metadata and one owner action.
     """
 
+    from .builder_lineage import LineageError
     from .provider_runners.lineage import (
         ReviewerNotIndependent,
+        identity_with_lane_floor,
         load_identity,
         require_independent_reviewer,
+        trusted_episodes,
     )
 
     if pr_author and _is_excluded_author(pr_author):
@@ -584,24 +587,18 @@ def _require_independent_devin_review(
         raise AuthorExcludedError(
             f"PR author {pr_author!r} is excluded from the Devin CLI reviewer lane"
         )
-    identity = load_identity()
-    if not identity.get("enabled"):
-        # An unconfigured checkout must not become more permissive than the
-        # deny list this wrapper shipped with. Name Devin's own accounts and
-        # label so the shared resolver still sees Devin as a contributor.
-        identity = {
-            "enabled": True,
-            "labels": {"builder:devin": DEVIN_REVIEWER_LANE},
-            "authors": {
-                login: DEVIN_REVIEWER_LANE
-                for login in (
-                    "devin-cli-audit-bot",
-                    "devin-cli-audit-bot[bot]",
-                    "devin-ai-integration",
-                    "devin-ai-integration[bot]",
-                )
-            },
-        }
+    # An unconfigured or malformed checkout must not become more permissive than
+    # the deny list this wrapper shipped with: Devin's own accounts and label
+    # are named whatever the identity file says, so the shared resolver can
+    # still see Devin as a contributor.
+    identity = identity_with_lane_floor(load_identity(), DEVIN_REVIEWER_LANE)
+    try:
+        episodes = trusted_episodes(config.repo, config.pr_number)
+    except LineageError as exc:
+        raise AuthorExcludedError(
+            f"Devin CLI reviewer lane is not admitted for {config.repo}"
+            f"#{config.pr_number} at {head_sha[:12]}: lineage_unreadable; {exc}"
+        ) from None
     try:
         return require_independent_reviewer(
             DEVIN_REVIEWER_LANE,
@@ -609,6 +606,7 @@ def _require_independent_devin_review(
             pr_number=config.pr_number,
             pr_meta=pr_meta,
             head_sha=head_sha,
+            episodes=episodes,
             identity=identity,
         )
     except ReviewerNotIndependent as exc:

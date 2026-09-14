@@ -729,6 +729,19 @@ def _safe_bool(value: object) -> bool:
     return bool(value)
 
 
+def _safe_lane_names(value: object, *, limit: int = 8) -> list[str]:
+    """Bound a lineage contributor list to short lane names."""
+
+    if not isinstance(value, list):
+        return []
+    names = []
+    for item in value[:limit]:
+        name = _safe_text(item, limit=40)
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def _safe_reviewer_outcomes(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -764,6 +777,11 @@ def _supervised_decision_payload(decision: Mapping[str, Any]) -> dict[str, Any]:
         "promoted_reviewers_passed": _safe_bool(decision.get("promoted_reviewers_passed")),
         "would_mutate": _safe_bool(decision.get("would_mutate")),
         "reviewer_outcomes": _safe_reviewer_outcomes(decision.get("reviewer_outcomes")),
+        # Lane names only. The contributor list is what makes an exclusion
+        # legible on the Board; nothing about the diff, the source or the
+        # private handoff binding crosses this boundary.
+        "builder_lineage_status": _safe_text(decision.get("builder_lineage_status"), limit=40),
+        "builder_contributors": _safe_lane_names(decision.get("builder_contributors")),
     }
     if pr_number := _int(decision.get("pr_number")):
         payload["pr_number"] = pr_number

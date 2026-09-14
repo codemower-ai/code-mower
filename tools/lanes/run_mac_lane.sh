@@ -1565,11 +1565,35 @@ if [ "${#lane_delivery[@]}" -gt 0 ] && [ "$mode" != "audit" ]; then
     --output "${log%.log}.delivery.json"
     --force
   )
-  [ -n "$handoff_file" ] && classify_args+=(--handoff "$handoff_file")
+  # A delivered handoff round records its ordered contribution episode against
+  # the accepted private intent. The episode is written from the acceptance
+  # record and a fresh head observation, never from anything declared here, so
+  # a runner that merely names a handoff records nothing.
+  [ -n "$handoff_file" ] && classify_args+=(--handoff "$handoff_file" --handoff-state-dir "$HANDOFF_STATE_DIR")
   set +e
   "${lane_delivery[@]}" "${classify_args[@]}"
   delivery_rc=$?
   set -e
+  # Reconcile to exactly one active builder label from the verified current
+  # writer. Historical contributions stay in the lineage record; the label only
+  # says who may write next. Unresolved lineage changes no label.
+  if [ -n "$handoff_file" ] && [ "$kind" = "pr" ] && [ "$delivery_rc" -eq 0 ]; then
+    reconcile_head="$(jq -r '.head_sha // ""' "$after_state" 2>/dev/null || printf '')"
+    reconcile_branch="$(jq -r '.branch // ""' "$after_state" 2>/dev/null || printf '')"
+    if [ -n "$reconcile_head" ]; then
+      reconcile_args=(
+        lineage --repo "$REPO" --pr "$num" --head "$reconcile_head"
+        --branch "$reconcile_branch" --state-dir "$HANDOFF_STATE_DIR"
+        --reconcile-labels --json
+      )
+      while IFS= read -r reconcile_label; do
+        [ -n "$reconcile_label" ] || continue
+        reconcile_args+=(--label "$reconcile_label")
+      done < <(gh pr view "$num" -R "$REPO" --json labels -q '.labels[].name' 2>/dev/null || true)
+      "${lane_delivery[@]}" "${reconcile_args[@]}" > "${log%.log}.lineage.json" 2>/dev/null \
+        || echo "${LANE}: builder label reconciliation did not resolve at ${reconcile_head}" >&2
+    fi
+  fi
   observed_transition="$(jq -r '.delivery.transition // "unknown"' \
     "${log%.log}.delivery.json" 2>/dev/null || printf 'unknown')"
   delivery_reason="$(jq -r '.delivery.reason // "unknown"' \

@@ -190,6 +190,70 @@ def prepare(handoff: Handoff, source: dict, root: Path, *,
                 "notify": True, "launch_allowed": True, "handoff": handoff.as_dict()}
 
 
+def lineage_root(root: Path) -> Path:
+    """Where contribution episodes are recorded, beside the intent store.
+
+    The intent record holds the private source binding; the lineage record must
+    not, because it is the thing reviewer admission, the label reconciler and
+    the public projection read. They are separate stores so that a reader of one
+    never sees the other's fields.
+    """
+
+    return Path(root) / "lineage"
+
+
+def record_contribution(handoff: Handoff, root: Path, *, resulting_head: str,
+                        delivered: bool, head: Callable = observe_head) -> dict:
+    """Persist the ordered episode for a validated delivery. Fails closed.
+
+    This is the only writer of contribution lineage. Every field of the episode
+    comes from evidence this boundary already verified: repository, PR, branch,
+    lanes and expected head from the accepted handoff, the source writer state
+    from the acceptance record rather than the caller, and the resulting head
+    from a fresh observation checked against what the runner reported. A caller
+    that merely asserts a takeover, or hands in a ``writer_state`` string of its
+    own, records nothing.
+    """
+    from .builder_lineage import LineageError, episode_from_handoff, load_episodes, record_episode
+
+    observed = str(resulting_head or "").strip().lower()
+    if not delivered:
+        return {"recorded": False, "reason": "delivery_unvalidated"}
+    identity = key([handoff.target_pr.lower(), handoff.expected_head])
+    with ContextStore(root).locked(identity) as locked:
+        record = locked.read()
+        if (record is None or record.get("accepted") is not True
+                or record.get("handoff") != handoff.as_dict()):
+            return {"recorded": False, "reason": "acceptance_unverified"}
+        if record.get("launch_reserved") is not True:
+            return {"recorded": False, "reason": "launch_unreserved"}
+        writer_state = str(record.get("writer_state") or "")
+        # The destination lane wrote while this ran, so the head observed here is
+        # the one the episode binds to. A head the runner reported but GitHub
+        # does not show is not a resulting head.
+        if observed != str(head(handoff) or "").strip().lower():
+            return {"recorded": False, "reason": "resulting_head_unverified"}
+        store = lineage_root(root)
+        repo = handoff.target_pr.split("#")[0]
+        number = handoff.target_pr.split("#")[1]
+        try:
+            sequence = record.get("lineage_sequence")
+            if not isinstance(sequence, int) or isinstance(sequence, bool):
+                sequence = len(load_episodes(store, repo, number)) + 1
+            episode = episode_from_handoff(
+                handoff, resulting_head=observed, writer_state=writer_state,
+                sequence=sequence, repo=repo,
+            )
+            outcome = record_episode(store, episode)
+        except LineageError as exc:
+            raise LaneDeliveryError(str(exc)) from None
+        record["lineage_sequence"] = sequence
+        locked.write(record)
+        return {"recorded": outcome["recorded"], "duplicate": outcome["duplicate"],
+                "reason": "recorded" if outcome["recorded"] else "already_recorded",
+                "sequence": sequence, "episodes": outcome["episodes"]}
+
+
 def reserve_launch(handoff: Handoff, root: Path, *, head: Callable = observe_head,
                    stop: Callable = quiesce) -> bool:
     identity = key([handoff.target_pr.lower(), handoff.expected_head])

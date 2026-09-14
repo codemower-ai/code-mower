@@ -75,6 +75,36 @@ class ReviewInput:
     context: dict
     changed_files: tuple[str, ...]
 
+    def lineage_admits(self) -> bool:
+        """Whether verified lineage admits the Devin reviewer lane at this head.
+
+        The author deny list below stays as a floor, but it only ever sees the
+        opener. This consults the same shared seam the direct wrappers use, so a
+        PR another lane opened and Devin later took over is refused too.
+        Unreadable or unresolved evidence is not admission.
+        """
+
+        from .builder_lineage import LineageError
+        from .provider_runners.lineage import (
+            identity_with_lane_floor, load_identity, reviewer_admission, trusted_episodes,
+        )
+
+        try:
+            episodes = trusted_episodes(self.repository, self.pr)
+        except (LineageError, OSError):
+            return False
+        return bool(
+            reviewer_admission(
+                'devin',
+                repo=self.repository,
+                pr_number=self.pr,
+                pr_meta={'user': {'login': self.author}},
+                head_sha=self.head,
+                episodes=episodes,
+                identity=identity_with_lane_floor(load_identity(), 'devin'),
+            )['admitted']
+        )
+
     def check(self, current: ReviewInput) -> None:
         try:
             valid = (
@@ -83,6 +113,7 @@ class ReviewInput:
                 and LOGIN.fullmatch(self.author) and not _is_excluded_author(self.author)
                 and self.author.lower() not in {'devin-ai-integration', 'devin-ai-integration[bot]',
                                                'devin-cli-audit-bot', 'devin-cli-audit-bot[bot]'}
+                and self.lineage_admits()
                 and isinstance(self.changed_files, tuple)
                 and all(isinstance(p, str) and p and not p.startswith(('/', '\\'))
                         and '\\' not in p and '..' not in p.split('/') for p in self.changed_files)
