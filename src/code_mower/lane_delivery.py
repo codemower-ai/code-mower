@@ -114,6 +114,10 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PR_REF_RE = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>[0-9]+)$")
 LANE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+#: Head branch name as GitHub reports it. Kept identical to the lineage
+#: episode contract's own branch rule, because a snapshot branch that the
+#: episode would refuse is not evidence this layer should carry forward.
+STATE_BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
 
 #: Prompt text that would push a provider into discovering or reading auth
 #: material. Rules are matched by name so a report never echoes the match.
@@ -198,12 +202,22 @@ class TargetState:
     otherwise indistinguishable from real absence and would fabricate a
     transition. Snapshots loaded from a file must state it explicitly; see
     :func:`_load_state`.
+
+    ``branch`` is the pull request's head branch as the same authenticated read
+    that produced ``head_sha`` reported it. It travels with the head rather than
+    being re-resolved later because the two have to describe one observation:
+    recording provenance against a branch resolved from anywhere else would bind
+    an episode to something the snapshot never saw. It is empty when there is no
+    PR, and also when an older producer wrote the snapshot before this field
+    existed -- those snapshots stay loadable, and every consumer that needs the
+    binding refuses rather than substituting a branch of its own.
     """
 
     kind: str
     number: str
     pr_number: str = ""
     head_sha: str = ""
+    branch: str = ""
     pr_state: str = ""
     labels: tuple[str, ...] = ()
     runner_comment_id: str = ""
@@ -223,6 +237,9 @@ class TargetState:
         head_sha = _text(payload.get("head_sha")).lower()
         if head_sha and not SHA_RE.match(head_sha):
             raise LaneDeliveryError("state head_sha must be a 40-character sha")
+        branch = _text(payload.get("branch"))
+        if branch and not STATE_BRANCH_RE.match(branch):
+            raise LaneDeliveryError("state branch must be a plain head branch name")
         labels = tuple(
             sorted({_text(label) for label in payload.get("labels") or () if _text(label)})
         )
@@ -234,6 +251,7 @@ class TargetState:
             number=number,
             pr_number=pr_number,
             head_sha=head_sha,
+            branch=branch,
             pr_state=_text(payload.get("pr_state")).upper(),
             labels=labels,
             runner_comment_id=_text(payload.get("runner_comment_id")),
@@ -246,6 +264,7 @@ class TargetState:
             "number": self.number,
             "pr_number": self.pr_number,
             "head_sha": self.head_sha,
+            "branch": self.branch,
             "pr_state": self.pr_state,
             "labels": list(self.labels),
             "runner_comment_id": self.runner_comment_id,

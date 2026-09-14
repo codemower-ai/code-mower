@@ -949,6 +949,11 @@ snapshot_lookup() {
 # from "no PR yet" or "no head yet", so a transient failure on one side of the
 # comparison would fabricate a pr_opened or head_advanced transition for a
 # target that never moved.
+#
+# The head branch comes out of the same authenticated pull request read as the
+# head sha, so the two describe one observation. Contribution lineage binds an
+# episode to repository, PR, branch and head together; re-resolving the branch
+# from anywhere else later would bind it to something this snapshot never saw.
 capture_target_state() {
   local out="$1"
   local runner_comment_id="${2:-}"
@@ -971,7 +976,7 @@ capture_target_state() {
   fi
   if [ -n "$pr_number" ]; then
     if ! pr_json="$(snapshot_lookup gh pr view "$pr_number" -R "$REPO" \
-      --json headRefOid,state,labels 2>/dev/null)"; then
+      --json headRefName,headRefOid,state,labels 2>/dev/null)"; then
       pr_json='{}'
       complete=false
     fi
@@ -993,6 +998,7 @@ capture_target_state() {
         number: $number,
         pr_number: $pr,
         head_sha: ((.headRefOid // "") | ascii_downcase),
+        branch: (.headRefName // ""),
         pr_state: (.state // ""),
         labels: $labels,
         runner_comment_id: $comment,

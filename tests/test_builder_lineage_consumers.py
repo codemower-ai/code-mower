@@ -10,6 +10,8 @@ Claude -- because that is the case every single-signal answer got wrong.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -342,6 +344,213 @@ class ClassifyRecordsContinuations(unittest.TestCase):
         self.assertEqual(recorded["expected_head"], TAKEN)
         self.assertEqual(recorded["resulting_head"], FIXED)
         self.assertTrue(recorded["delivered"])
+
+
+class SnapshotCarriesTheValidatedBranch(unittest.TestCase):
+    """The snapshot/classification contract the continuation recorder consumes.
+
+    ``_classify_main`` reads the head branch off the after-snapshot. The
+    snapshot producer is the only place that already holds an authenticated
+    pull request read, so the branch travels with the head it was read beside
+    rather than being resolved again later against a name that can move.
+
+    These drive the real ``classify`` command end to end -- real snapshot files
+    in the producer's own format, the real recorder, the real store -- because
+    a ``SimpleNamespace`` standing in for :class:`TargetState` is exactly what
+    hid the missing field.
+    """
+
+    def setUp(self):
+        self.root = git_free_tempdir(self) / "handoffs"
+        self.store = lane_handoff.lineage_root(self.root)
+
+    def snapshot(self, path: Path, head: str, **overrides) -> str:
+        payload = {
+            "kind": "pr",
+            "number": str(PR),
+            "pr_number": str(PR),
+            "head_sha": head,
+            "branch": BRANCH,
+            "pr_state": "OPEN",
+            "labels": ["builder:codex"],
+            "runner_comment_id": "",
+            "snapshot_complete": True,
+        }
+        payload.update(overrides)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return str(path)
+
+    def classify(self, before_path: str, after_path: str) -> dict:
+        outcomes = git_free_tempdir(self, "code-mower-outcomes-")
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            code = lane_delivery.main([
+                "classify", "--before", before_path, "--after", after_path,
+                "--provider-exit", "0", "--declared-outcome", "",
+                "--supervision", "completed", "--handoff-state-dir", str(self.root),
+                "--lane", "codex", "--repo", REPO, "--elapsed-seconds", "1",
+                "--user-interventions", "0", "--output", str(outcomes / "event.json"),
+                "--force", "--json",
+            ])
+        self.assertEqual(code, 0)
+        self.assertTrue((outcomes / "event.json").exists())
+        return json.loads(printed.getvalue())
+
+    def episodes(self):
+        return builder_lineage.load_episodes(self.store, REPO, PR)
+
+    def test_target_state_round_trips_the_branch(self):
+        state = lane_delivery.TargetState.from_mapping({
+            "kind": "pr", "number": str(PR), "pr_number": str(PR),
+            "head_sha": FIXED, "branch": BRANCH, "snapshot_complete": True,
+        })
+        self.assertEqual(state.branch, BRANCH)
+        self.assertEqual(state.as_dict()["branch"], BRANCH)
+        self.assertEqual(
+            lane_delivery.TargetState.from_mapping(state.as_dict()).branch, BRANCH
+        )
+
+    def test_an_older_snapshot_without_a_branch_still_loads(self):
+        """Compatibility: the field is absent, not wrong."""
+
+        state = lane_delivery.TargetState.from_mapping({
+            "kind": "pr", "number": str(PR), "pr_number": str(PR),
+            "head_sha": FIXED, "snapshot_complete": True,
+        })
+        self.assertEqual(state.branch, "")
+        self.assertIn("branch", state.as_dict())
+
+    def test_a_branch_the_episode_contract_would_refuse_is_refused_here(self):
+        for bad in ("two words", "a\nb", "x" * 201):
+            with self.subTest(branch=bad):
+                with self.assertRaises(lane_delivery.LaneDeliveryError):
+                    lane_delivery.TargetState.from_mapping({
+                        "kind": "pr", "number": str(PR), "pr_number": str(PR),
+                        "head_sha": FIXED, "branch": bad, "snapshot_complete": True,
+                    })
+
+    def test_an_accepted_takeover_then_an_ordinary_fix_round_is_recorded(self):
+        builder_lineage.record_episode(self.store, takeover_episode())
+        tmp = git_free_tempdir(self, "code-mower-states-")
+        payload = self.classify(
+            self.snapshot(tmp / "before.json", TAKEN),
+            self.snapshot(tmp / "after.json", FIXED),
+        )
+        self.assertEqual(payload["lineage"]["reason"], "recorded")
+        episodes = self.episodes()
+        self.assertEqual(len(episodes), 2)
+        self.assertEqual(episodes[1].kind, builder_lineage.CONTINUATION_KIND)
+        self.assertEqual(episodes[1].branch, BRANCH)
+        self.assertEqual(episodes[1].repo, REPO)
+        self.assertEqual(episodes[1].pr_number, PR)
+        self.assertEqual(episodes[1].expected_head, TAKEN)
+        self.assertEqual(episodes[1].resulting_head, FIXED)
+        lineage = builder_lineage.resolve_lineage(
+            repo=REPO, pr_number=PR, branch=BRANCH, head_sha=FIXED,
+            episodes=episodes, opener_lane="devin", label_lanes=("codex",),
+        )
+        self.assertEqual(lineage.status, "resolved")
+        self.assertEqual(lineage.current_writer, "codex")
+
+    def test_an_ordinary_pr_with_no_lineage_records_nothing_and_still_delivers(self):
+        tmp = git_free_tempdir(self, "code-mower-states-")
+        payload = self.classify(
+            self.snapshot(tmp / "before.json", TAKEN),
+            self.snapshot(tmp / "after.json", FIXED),
+        )
+        self.assertEqual(payload["lineage"]["reason"], "no_recorded_lineage")
+        self.assertEqual(self.episodes(), ())
+
+    def test_a_snapshot_with_no_branch_refuses_rather_than_inheriting_one(self):
+        """Fail closed: no branch observed is not licence to reuse the tip's."""
+
+        builder_lineage.record_episode(self.store, takeover_episode())
+        tmp = git_free_tempdir(self, "code-mower-states-")
+        payload = self.classify(
+            self.snapshot(tmp / "before.json", TAKEN, branch=""),
+            self.snapshot(tmp / "after.json", FIXED, branch=""),
+        )
+        self.assertEqual(payload["lineage"]["reason"], "branch_unobserved")
+        self.assertFalse(payload["lineage"]["recorded"])
+        self.assertEqual(len(self.episodes()), 1)
+
+    def test_a_branch_that_disagrees_with_the_lineage_fails_closed(self):
+        builder_lineage.record_episode(self.store, takeover_episode())
+        tmp = git_free_tempdir(self, "code-mower-states-")
+        before = self.snapshot(tmp / "before.json", TAKEN)
+        after = self.snapshot(tmp / "after.json", FIXED, branch="codex/other-branch")
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            lane_delivery._classify_main(SimpleNamespace(
+                before=before, after=after, provider_exit=0,
+                declared_outcome="", supervision="completed", handoff=None,
+                handoff_state_dir=self.root, lane="codex", repo=REPO, signal=[],
+                elapsed_seconds=1, user_interventions=0, output=None,
+                force=True, json=True,
+            ))
+        self.assertEqual(len(self.episodes()), 1)
+
+
+class SnapshotProducerReadsTheBranch(unittest.TestCase):
+    """Every runner mirror asks for the head branch and carries it through.
+
+    The maintained template, the packaged template and the vendored rendered
+    runner are separate files. A producer that still asks GitHub only for
+    ``headRefOid,state,labels`` writes a snapshot with no branch, and the
+    recorder above then refuses every continuation.
+    """
+
+    MIRRORS = (
+        "templates/lanes/run_mac_lane.sh",
+        "src/code_mower/templates/lanes/run_mac_lane.sh",
+        "tools/lanes/run_mac_lane.sh",
+    )
+
+    def test_each_mirror_requests_and_emits_the_head_branch(self):
+        root = Path(__file__).resolve().parents[1]
+        for relative in self.MIRRORS:
+            with self.subTest(mirror=relative):
+                text = root.joinpath(relative).read_text(encoding="utf-8")
+                self.assertIn("--json headRefName,headRefOid,state,labels", text)
+                self.assertIn('branch: (.headRefName // ""),', text)
+                self.assertNotIn("--json headRefOid,state,labels", text)
+
+    def test_the_producers_jq_program_emits_a_loadable_snapshot(self):
+        """Run the producer's own transform, then load it as the CLI would."""
+
+        program = """
+      {
+        kind: $kind,
+        number: $number,
+        pr_number: $pr,
+        head_sha: ((.headRefOid // "") | ascii_downcase),
+        branch: (.headRefName // ""),
+        pr_state: (.state // ""),
+        labels: $labels,
+        runner_comment_id: $comment,
+        snapshot_complete: $complete
+      }"""
+        for relative in self.MIRRORS:
+            with self.subTest(mirror=relative):
+                self.assertIn(
+                    program,
+                    Path(__file__).resolve().parents[1]
+                    .joinpath(relative).read_text(encoding="utf-8"),
+                )
+        completed = subprocess.run(
+            ["jq", "--arg", "kind", "pr", "--arg", "number", str(PR),
+             "--arg", "pr", str(PR), "--arg", "comment", "",
+             "--argjson", "labels", '["builder:codex"]',
+             "--argjson", "complete", "true", program],
+            input=json.dumps({
+                "headRefName": BRANCH, "headRefOid": FIXED.upper(),
+                "state": "OPEN", "labels": [{"name": "builder:codex"}],
+            }),
+            text=True, capture_output=True, check=True,
+        )
+        state = lane_delivery.TargetState.from_mapping(json.loads(completed.stdout))
+        self.assertEqual(state.branch, BRANCH)
+        self.assertEqual(state.head_sha, FIXED)
+        self.assertTrue(state.snapshot_complete)
 
 
 class PublishBeforeReconcile(unittest.TestCase):

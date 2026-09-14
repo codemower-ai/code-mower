@@ -296,6 +296,11 @@ def record_continuation(root: Path, *, repo: str, pr_number: object, branch: str
     source writer to quiesce and no launch to reserve, because no other lane is
     being displaced -- the writer that went quiescent is this lane's own
     supervised round, which the caller has already terminated and reaped.
+
+    ``branch`` is the head branch the caller observed in the same authenticated
+    read as ``resulting_head``. It is required whenever lineage exists and must
+    be the branch that lineage already names, so the episode stays bound to one
+    repository, pull request, branch and head.
     """
     from .builder_lineage import (
         CONTINUATION_KIND, LineageError, continuation_episode, load_episodes, record_episode,
@@ -315,6 +320,16 @@ def record_continuation(root: Path, *, repo: str, pr_number: object, branch: str
     observed = str(resulting_head or "").strip().lower()
     started = str(expected_head or "").strip().lower()
     writer = str(lane or "").strip().lower()
+    target_branch = str(branch or "").strip()
+    if not target_branch:
+        # Lineage exists, so this round has to bind to a branch -- and the only
+        # branch that binds is the one the caller actually observed. Letting an
+        # absent value fall through to the recorded tip's branch would record
+        # provenance against a branch nothing verified this round, which is the
+        # inference the exact-head contract exists to refuse. A snapshot from a
+        # producer predating the field lands here and refuses, rather than
+        # having a branch chosen for it.
+        return {"recorded": False, "reason": "branch_unobserved"}
     for episode in episodes:
         if (episode.kind == CONTINUATION_KIND and episode.expected_head == started
                 and episode.resulting_head == observed
@@ -334,7 +349,7 @@ def record_continuation(root: Path, *, repo: str, pr_number: object, branch: str
         return {"recorded": False, "reason": "head_unchanged"}
     try:
         episode = continuation_episode(
-            tip, lane=writer, resulting_head=observed, branch=str(branch or ""),
+            tip, lane=writer, resulting_head=observed, branch=target_branch,
         )
         outcome = record_episode(store, episode)
     except LineageError as exc:

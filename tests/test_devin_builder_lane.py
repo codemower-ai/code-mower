@@ -97,6 +97,9 @@ def _lane_delivery_env() -> dict[str, str]:
 _DELIVERY_MARKER_NAME = "lane-delivered"
 _HEAD_BEFORE = "a" * 40
 _HEAD_AFTER = "b" * 40
+# The snapshot carries the head branch from the same authenticated PR read as
+# the head sha, so the fixture has to answer with both.
+_HEAD_BRANCH = "devin/issue-12"
 _FAKE_GH_DELIVERY_HEADER = f"""#!/usr/bin/env bash
 set -euo pipefail
 cmd="${{1:-}} ${{2:-}}"
@@ -111,11 +114,11 @@ if [ "$cmd" = "pr list" ] && [[ "$args" == *"--json number,closingIssuesReferenc
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
   printf '%s\\n' '["tier:R","builder:devin","dispatched:devin"]'
   exit 0
-elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefOid,state,labels"* ]]; then
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefName,headRefOid,state,labels"* ]]; then
   if [ -f "$HOME/{_DELIVERY_MARKER_NAME}" ]; then
-    printf '%s\\n' '{{"headRefOid":"{_HEAD_AFTER}","state":"OPEN","labels":[]}}'
+    printf '%s\\n' '{{"headRefName":"{_HEAD_BRANCH}","headRefOid":"{_HEAD_AFTER}","state":"OPEN","labels":[]}}'
   else
-    printf '%s\\n' '{{"headRefOid":"{_HEAD_BEFORE}","state":"OPEN","labels":[]}}'
+    printf '%s\\n' '{{"headRefName":"{_HEAD_BRANCH}","headRefOid":"{_HEAD_BEFORE}","state":"OPEN","labels":[]}}'
   fi
   exit 0
 elif [ "$cmd" = "issue comment" ] || [ "$cmd" = "pr comment" ]; then
