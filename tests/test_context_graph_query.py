@@ -22,7 +22,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from code_mower import context_contract as contract
@@ -291,8 +291,8 @@ class TraversalTests(GraphWorkspace):
 
     def test_dependency_walks_along_them(self) -> None:
         """``load`` depends on ``parse_config``; ``parse_config`` depends on nothing."""
-        self.assertEqual({item.node.name for item in self.query(target="load", question="dependency")},
-                         {"parse_config"})
+        reached = self.query(target="load", question="dependency").relations
+        self.assertEqual({item.node.name for item in reached}, {"parse_config"})
         self.assertEqual(self.query(question="dependency").relations, ())
 
     def test_related_tests_answers_with_tests_only(self) -> None:
@@ -308,7 +308,7 @@ class TraversalTests(GraphWorkspace):
     def test_traversal_is_deterministic(self) -> None:
         first = [item.node.id for item in self.query().relations]
         second = [item.node.id for item in query.run_query(
-            self.graph(), question="impact", target="parse_config")]
+            self.graph(), question="impact", target="parse_config").relations]
         self.assertEqual(first, second)
 
     def test_budget_truncates_and_says_so(self) -> None:
@@ -505,8 +505,12 @@ class AvailabilityTests(GraphWorkspace):
 
 class CommandTests(GraphWorkspace):
     def authorization(self, **overrides) -> Path:
+        # The command has no injected clock: it authorizes against the real one,
+        # exactly as an operator's run does. So the envelope has to be live now
+        # rather than at the fixed ``NOW`` the library-level tests use.
+        live = datetime.now(timezone.utc) + timedelta(minutes=30)
         payload = {
-            "connection": envelope(),
+            "connection": envelope(expires_at=live.isoformat()),
             "policy": policy(),
             "repository": "owner/repo",
             "work_item": "work-item-one",
