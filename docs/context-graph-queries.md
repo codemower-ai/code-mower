@@ -199,6 +199,19 @@ cites it — `render calls load (inferred, hop 2, reached from parse_config, …
 rather than asserting a direct relationship between the seed and the node two
 hops away, which the graph does not carry.
 
+What bounds the walk and what bounds the answer are two different things. A node
+is stepped through once, which is what keeps a traversal linear and terminating.
+A *relationship* is reported once per distinct provider edge record — its two
+endpoints and its own wording together — including when both endpoints have
+already been seen. So if `a` calls `b` and `b` calls `a`, both directions are
+reported; relationships among the definitions a path target selects as seeds are
+reported rather than dropped for having no unseen endpoint; a walk that
+reconverges keeps both edges into the node it reached twice; and a self-loop
+reached from both sides of a `symbol` neighbourhood, or an edge the provider
+recorded twice, is one relationship. Nothing about the bound changes: a
+relationship that does not fit the node budget still sets `truncated` and raises
+`provider_has_more`, and the depth limit still applies.
+
 ## Citations are validated against the bound commit
 
 Not against the working tree, which is the point. The generation binds one

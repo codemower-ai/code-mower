@@ -798,6 +798,11 @@ def run_query(
     the same question produce the same answer every time and a budget cut
     removes the *furthest* relationships rather than arbitrary ones. Reaching
     the budget sets ``truncated``; it never silently shortens the answer.
+
+    Node expansion and relationship reporting are bounded separately. A node is
+    walked through once; a distinct directed relationship is reported once,
+    including when both of its endpoints have already been seen. Anything left
+    out is left out by the budget or the depth limit, and says so.
     """
     if question not in QUESTIONS:
         raise ContextError("unsupported local graph question")
@@ -820,7 +825,16 @@ def run_query(
     # and a name with more definitions than the seed bound allows is the same
     # uncertainty, only worse.
     ambiguous = len(seeds) > 1 or seed_overflow
-    seen = {node.id for node in seeds}
+    # Two separate identities, because they answer two separate questions.
+    # ``expanded`` bounds the *walk*: a node is stepped through once, which is
+    # what keeps the traversal linear and terminating. ``reported`` bounds the
+    # *answer*: a distinct directed relationship is stated once. Sharing one
+    # set between them silently deleted evidence -- if A calls B and B calls A,
+    # the second edge was suppressed because its endpoint had been walked, and
+    # every relationship among a path's seeds disappeared because all of its
+    # endpoints were seeds -- while the result still claimed to be complete.
+    expanded = {node.id for node in seeds}
+    reported: set[tuple[str, str, str, str, str]] = set()
     relations: list[Relation] = []
     over_budget = False
     frontier: list[tuple[GraphNode, GraphNode, int]] = [(node, node, 0) for node in seeds]
@@ -829,18 +843,28 @@ def run_query(
         if level >= limit:
             continue
         for edge, other_id in _neighbours(graph, node.id, direction, kinds):
-            if other_id in seen:
+            # The provider's own record, endpoints and wording together: two
+            # parallel edges that say different things about the same pair are
+            # two relationships, a self-loop reached from both sides is one,
+            # and a byte-identical duplicate record is one.
+            identity = (edge.source, edge.target, edge.relation, edge.kind, edge.evidence)
+            if identity in reported:
                 continue
             if len(relations) >= node_budget:
                 over_budget = True
                 break
-            seen.add(other_id)
+            reported.add(identity)
             reached = graph.nodes[other_id]
             # ``node``, not ``seed``: the relationship being reported is the one
             # this edge carries, between the node the walk expanded and the node
             # it just reached. The seed travels alongside as provenance.
             relations.append(Relation(node=reached, via=edge, origin=node, seed=seed, depth=level + 1))
-            frontier.append((reached, seed, level + 1))
+            # Reporting the edge never re-queues an endpoint the walk has
+            # already stepped through, so retaining these relationships costs
+            # the bound nothing: the frontier still holds each node once.
+            if other_id not in expanded:
+                expanded.add(other_id)
+                frontier.append((reached, seed, level + 1))
         if over_budget:
             break
     if question == "related_tests":

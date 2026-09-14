@@ -676,6 +676,158 @@ class TraversalTests(GraphWorkspace):
             self.query(question="everything")
 
 
+class RetainedRelationshipTests(unittest.TestCase):
+    """A relationship between two already-seen nodes is still evidence.
+
+    Expansion and reporting were once bounded by one set of node ids, so a
+    graph that says two things about a pair had one of them deleted while the
+    result still reported itself complete. These build their own graphs because
+    the shapes that expose it -- a cycle, a seed set that is already connected,
+    a walk that reconverges -- are not in the shared fixture.
+
+    The bound is unchanged: each node is still walked through once, and what a
+    budget or a depth limit removes is still reported as truncation.
+    """
+
+    def load(self, *nodes, edges=()) -> query.CodeGraph:
+        document = graph_document(nodes=list(nodes), edges=list(edges))
+        return query.load_graph(document, generation="a" * 32, commit="b" * 40)
+
+    def stated(self, result: query.QueryResult) -> set:
+        """Every reported relationship as the provider's own edge record."""
+        return {(item.via.source, item.via.relation, item.via.target) for item in result.relations}
+
+    def test_a_two_way_cycle_reports_both_directions(self) -> None:
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[edge("n-a", "n-b", "calls"), edge("n-b", "n-a", "calls")],
+        )
+        result = query.run_query(graph, question="impact", target="alpha")
+        self.assertEqual(self.stated(result),
+                         {("n-b", "calls", "n-a"), ("n-a", "calls", "n-b")})
+        # The second direction is the edge it says it is, between its own two
+        # endpoints -- not the seed relabelled.
+        self.assertEqual([(item.origin.name, item.node.name)
+                          for item in result.relations if item.depth == 2],
+                         [("beta", "alpha")])
+        self.assertFalse(result.truncated)
+        self.assertNotIn("provider_has_more", result.omissions)
+
+    def test_relationships_among_path_seeds_are_still_reported(self) -> None:
+        """Every endpoint is a seed, so the old reader answered with nothing."""
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/config.py", 20),
+            edges=[edge("n-a", "n-b", "calls")],
+        )
+        result = query.run_query(graph, question="dependency", target="example_pkg/config.py")
+        self.assertEqual({item.id for item in result.seeds}, {"n-a", "n-b"})
+        self.assertEqual(self.stated(result), {("n-a", "calls", "n-b")})
+
+    def test_a_reconvergent_walk_keeps_both_paths_into_one_node(self) -> None:
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            node("n-c", "gamma", "example_pkg/report.py", 5),
+            node("n-d", "delta", "example_pkg/config.py", 30),
+            edges=[edge("n-a", "n-b", "calls"), edge("n-a", "n-c", "calls"),
+                   edge("n-b", "n-d", "calls"), edge("n-c", "n-d", "calls")],
+        )
+        result = query.run_query(graph, question="dependency", target="alpha")
+        self.assertEqual(self.stated(result), {
+            ("n-a", "calls", "n-b"), ("n-a", "calls", "n-c"),
+            ("n-b", "calls", "n-d"), ("n-c", "calls", "n-d"),
+        })
+        self.assertEqual({(item.origin.name, item.node.name)
+                          for item in result.relations if item.depth == 2},
+                         {("beta", "delta"), ("gamma", "delta")})
+        self.assertFalse(result.truncated)
+
+    def test_a_self_loop_is_reported_once_and_parallel_relations_stay_distinct(self) -> None:
+        """Endpoints alone are not the identity; the provider's wording is part of it."""
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[edge("n-a", "n-a", "calls"),
+                   edge("n-a", "n-b", "calls"),
+                   edge("n-a", "n-b", "references")],
+        )
+        result = query.run_query(graph, question="symbol", target="alpha")
+        self.assertEqual(len(result.relations), 3)
+        self.assertEqual(sorted(self.stated(result)), [
+            ("n-a", "calls", "n-a"), ("n-a", "calls", "n-b"), ("n-a", "references", "n-b"),
+        ])
+
+    def test_a_duplicated_edge_record_is_reported_once(self) -> None:
+        """Reached from both sides of a ``both`` walk, or written twice: one relationship."""
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[edge("n-a", "n-b", "calls"), edge("n-a", "n-b", "calls")],
+        )
+        result = query.run_query(graph, question="dependency", target="alpha")
+        self.assertEqual(len(result.relations), 1)
+        self.assertFalse(result.truncated)
+
+    def test_a_retained_relationship_the_budget_cuts_is_reported_as_truncation(self) -> None:
+        """The budget still bounds the answer, and still says what it removed."""
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[edge("n-a", "n-b", "calls"), edge("n-b", "n-a", "calls")],
+        )
+        result = query.run_query(graph, question="impact", target="alpha", node_budget=1)
+        self.assertEqual(self.stated(result), {("n-b", "calls", "n-a")})
+        self.assertTrue(result.truncated)
+        self.assertIn("provider_has_more", result.omissions)
+
+    def test_depth_still_bounds_a_walk_that_retains_relationships(self) -> None:
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[edge("n-a", "n-b", "calls"), edge("n-b", "n-a", "calls")],
+        )
+        result = query.run_query(graph, question="impact", target="alpha", depth=1)
+        self.assertEqual(self.stated(result), {("n-b", "calls", "n-a")})
+
+
+def cyclic_graph_document() -> dict:
+    """The shared fixture, plus the back-edge that makes the pair mutual.
+
+    ``load`` already calls ``parse_config``; this adds the provider's own
+    record that ``parse_config`` also calls ``load``.
+    """
+    return graph_document(edges=[*graph_edges(), edge("n-config", "n-load", "calls")])
+
+
+class RetainedRelationshipPacketTests(GraphWorkspace):
+    """What a recipient actually reads for a retained relationship."""
+
+    document = cyclic_graph_document()
+
+    def documents(self) -> dict:
+        return {item["text"]: item for item in self.context().packet["documents"]}
+
+    def test_a_retained_back_edge_states_and_cites_its_own_endpoints(self) -> None:
+        documents = self.documents()
+        [text] = [item for item in documents if "parse_config calls load" in item]
+        self.assertIn("hop 2", text)
+        self.assertEqual(
+            {citation["source"] for citation in documents[text]["citations"]},
+            {"example_pkg/config.py#L12", "example_pkg/loader.py#L40"},
+        )
+        # The other direction between the same pair is still its own document,
+        # stated the way the provider recorded it.
+        self.assertTrue(any("load calls parse_config" in item for item in documents))
+
+    def test_the_rest_of_the_walk_is_unchanged(self) -> None:
+        documents = self.documents()
+        self.assertTrue(any("render calls load" in item and "reached from parse_config" in item
+                            for item in documents))
+        self.assertNotIn("provider_has_more", self.context().summary["omissions"])
+
+
 class CallableLabelSeedTests(unittest.TestCase):
     """Bare names against the labels the pinned extractor actually writes.
 
