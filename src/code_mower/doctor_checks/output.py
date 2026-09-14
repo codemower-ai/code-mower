@@ -74,6 +74,80 @@ def _adoption_posture_hint(check: DoctorCheck) -> bool:
     return check.name == "doctor.adoption.posture_hint"
 
 
+def render_doctor_summary(report: DoctorReport) -> str:
+    """Render a posture-scoped summary of a doctor report.
+
+    Every check still ran and every check is still in the JSON report: this view
+    only chooses what a first run reads first. Active failures and owner actions
+    are shown in full, because they are the only entries that ask for an action;
+    remaining warnings are counted by group so an intended posture's optional
+    providers do not bury them. The full text view stays one flag away and is
+    named here rather than assumed.
+    """
+    lines = [
+        "Code Mower doctor (concise)",
+        f"Status: {report.status}",
+        f"Config: {report.config_path}",
+    ]
+    if report.profile:
+        lines.append(f"Profile: {report.profile}")
+    lines.append(f"Checks: {_format_status_summary(report)}")
+    lines.append("")
+    for check in report.checks:
+        if _adoption_posture_hint(check):
+            lines.append(
+                f"Adoption posture: {check.status.upper()} {check.name}: {check.message}"
+            )
+            if check.remediation:
+                lines.append(f"  remediation: {check.remediation}")
+            lines.append("")
+            break
+    if not report.checks:
+        lines.append("No checks ran.")
+        return "\n".join(lines) + "\n"
+
+    prioritized = [
+        check
+        for check in report.checks
+        if not _adoption_posture_hint(check)
+        and (check.status == STATUS_FAIL or is_owner_action_check(check))
+    ]
+    if prioritized:
+        lines.append("Active failures and owner actions")
+        for check in prioritized:
+            lines.extend(_format_check(check))
+        lines.append("")
+    else:
+        lines.append("No active failures or owner actions.")
+        lines.append("")
+
+    remaining: list[str] = []
+    for group_id, checks in _group_checks(report.checks).items():
+        counts = []
+        promotion_todos = sum(1 for check in checks if is_promotion_todo_check(check))
+        warnings = (
+            sum(1 for check in checks if check.status == STATUS_WARN)
+            - sum(1 for check in checks if is_owner_action_check(check))
+            - promotion_todos
+        )
+        if promotion_todos:
+            counts.append(f"{promotion_todos} promotion todos")
+        if warnings:
+            counts.append(f"{warnings} warnings")
+        if counts:
+            label = GROUP_LABELS.get(group_id, group_id.title())
+            remaining.append(f"- {label}: {', '.join(counts)}")
+    if remaining:
+        lines.append("Remaining detail by group")
+        lines.extend(remaining)
+        lines.append("")
+    lines.append(
+        "Full detail: rerun the same command with --advanced for every check, or "
+        "with --json for the complete report."
+    )
+    return "\n".join(lines) + "\n"
+
+
 def render_doctor_text(report: DoctorReport) -> str:
     """Render a doctor report for terminal output."""
     lines = [

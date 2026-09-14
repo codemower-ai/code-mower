@@ -1449,6 +1449,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/review_authority.py",
+      "target": "src/code_mower/review_authority.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/reviewer_metrics.py",
       "target": "src/code_mower/reviewer_metrics.py"
     },

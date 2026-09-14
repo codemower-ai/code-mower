@@ -94,8 +94,13 @@ class AuditCommentPostureTests(unittest.TestCase):
             self.assertTrue(parse_codex_args(["--merge-authority"]).merge_authority)
 
         with patch.dict("os.environ", {}, clear=True):
-            self.assertTrue(parse_claude_args([]).merge_authority)
+            # Unset is not a posture claim: the wrapper resolves the effective
+            # posture from the repository configuration this run uses, and only
+            # an explicit flag or env override states one here.
+            self.assertIsNone(parse_claude_args([]).merge_authority)
+            self.assertIsNone(parse_codex_args([]).merge_authority)
             self.assertFalse(parse_claude_args(["--informational"]).merge_authority)
+            self.assertTrue(parse_claude_args(["--merge-authority"]).merge_authority)
 
 
 if __name__ == "__main__":

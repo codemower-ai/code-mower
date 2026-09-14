@@ -232,7 +232,11 @@ def render_session(payload: Mapping[str, Any]) -> str:
             roles.append("builder via " + mode.replace("_", " "))
         if member["reviewer"]:
             review = member["reviewer"]
-            policy = "merge-authority lane" if review["merge_authority"] else "informational lane"
+            # Single-sourced wording: the session payload already carries the
+            # effective lane posture and its role decision, so rendering reuses
+            # the shared label instead of restating the policy here.
+            from .review_authority import authority_label
+            policy = authority_label(review, session=True)
             roles.append(f"reviewer: {review['lane']} ({policy})")
         lines.append(f"- {member['name']}: {', '.join(roles)}")
         execution = member.get("execution")

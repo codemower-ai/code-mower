@@ -269,6 +269,23 @@ SETUP_DRIFT_REVIEWER_PATHS = frozenset(
         "tools/run_codex_audit_pr.sh",
     }
 )
+# The legacy Devin issue-comment bridge: a workflow that watched issue comments,
+# its labeler, and the script they dispatched. The maintained Devin transport is
+# the Sessions API v3 transport selected in the repository configuration, so
+# these files are superseded rather than drifted. They are named exactly, never
+# matched by glob, and never removed automatically: they are repository-owned
+# workflow files whose deletion belongs in a reviewed PR.
+SUPERSEDED_DEVIN_BRIDGE_PATHS = (
+    ".github/workflows/devin-audit-bridge.yml",
+    ".github/workflows/devin-audit-labeler.yml",
+    "tools/devin_audit_bridge.py",
+)
+SUPERSEDED_DEVIN_BRIDGE_TRANSPORT = "devin_api_v3"
+# The supported selection option. A test pins this to the option that
+# devin_readiness owns, so the reported migration command cannot drift from the
+# real flag while this module keeps its standalone-importable shape.
+DEVIN_TRANSPORT_OPTION = "--set-transport"
+
 STANDALONE_PIN_RELATIVE_PATH = "tools/code_mower_standalone_pin.env"
 STANDALONE_PIN_REF_KEY = "CODE_MOWER_STANDALONE_REF"
 STANDALONE_PIN_PLACEHOLDER_FRAGMENT = "pin-a-reviewed-code-mower"
@@ -366,12 +383,70 @@ def _standalone_pin_drift_summary(
     }
 
 
+def _superseded_devin_bridge_summary(
+    repo_path: Path, *, files: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Report legacy Devin issue-comment bridge files as a superseded transport.
+
+    These files are not drift against the generated output: they are an earlier
+    transport that the maintained Sessions API v3 transport replaced. Reporting
+    them as ordinary `repo-only` entries invites deleting whatever the generator
+    no longer writes, so the finding names the migration instead and bounds it to
+    the exact files it observed. Nothing is deleted or rewritten here.
+    """
+    classifications = {
+        str(item.get("path")): item for item in files if item.get("path") is not None
+    }
+    present: list[dict[str, Any]] = []
+    for path in SUPERSEDED_DEVIN_BRIDGE_PATHS:
+        if not (repo_path / path).is_file():
+            continue
+        item = classifications.get(path) or {}
+        present.append({"path": path, "tracked": bool(item.get("tracked"))})
+    summary: dict[str, Any] = {
+        "transport": SUPERSEDED_DEVIN_BRIDGE_TRANSPORT,
+        "paths": [item["path"] for item in present],
+        "files": present,
+    }
+    if not present:
+        return {
+            **summary,
+            "status": "skip",
+            "reason": "no_superseded_bridge_files",
+            "next_action": "no legacy Devin issue-comment bridge files found",
+        }
+    pair = {
+        ".github/workflows/devin-audit-bridge.yml",
+        ".github/workflows/devin-audit-labeler.yml",
+    }
+    named = ", ".join(item["path"] for item in present)
+    return {
+        **summary,
+        "status": "warn",
+        "reason": (
+            "superseded_bridge_pair"
+            if pair <= set(summary["paths"])
+            else "superseded_bridge_files"
+        ),
+        "next_action": (
+            "the legacy Devin issue-comment bridge and labeler are superseded by the "
+            f"maintained {SUPERSEDED_DEVIN_BRIDGE_TRANSPORT} Sessions API transport: "
+            "preview the transport selection for this configuration and profile with "
+            f"`code-mower init <config> --profile <profile> {DEVIN_TRANSPORT_OPTION} "
+            f"devin={SUPERSEDED_DEVIN_BRIDGE_TRANSPORT} --dry-run`, then remove exactly "
+            f"{named} in the same reviewed PR; setup-drift never deletes or rewrites "
+            "repository-owned workflow files"
+        ),
+    }
+
+
 def _setup_drift_next_action(
     *,
     changed_count: int,
     standalone_pin: Mapping[str, Any],
     builder_hint: Mapping[str, Any],
     repo_path_hint: Mapping[str, Any] | None = None,
+    superseded_bridge: Mapping[str, Any] | None = None,
 ) -> str:
     file_action = "review differs, new, repo-only, and missing-from-output entries before copying generated setup"
     pin_warn = standalone_pin.get("status") == "warn"
@@ -380,6 +455,8 @@ def _setup_drift_next_action(
     extras: list[str] = []
     if repo_path_warn:
         extras.append(str(repo_path_hint["next_action"]))
+    if superseded_bridge and superseded_bridge.get("status") == "warn":
+        extras.append(str(superseded_bridge["next_action"]))
     if pin_warn:
         extras.append(str(standalone_pin["next_action"]))
     if builder_warn:
@@ -617,6 +694,8 @@ def _is_setup_candidate_path(path: str) -> bool:
         return True
     if normalized in SETUP_DRIFT_BUILDER_PATHS:
         return True
+    if normalized in SUPERSEDED_DEVIN_BRIDGE_PATHS:
+        return True
     if normalized.startswith("docs/lanes/"):
         return True
     if normalized.startswith("tools/lane_configs/"):
@@ -779,6 +858,8 @@ def render_setup_drift_report(
     changed_count = sum(counts[name] for name in SETUP_DRIFT_CLASSIFICATIONS if name != "same")
     standalone_pin = _standalone_pin_drift_summary(repo_path)
     standalone_pin_warn = standalone_pin["status"] == "warn"
+    superseded_bridge = _superseded_devin_bridge_summary(repo_path, files=files)
+    superseded_bridge_warn = superseded_bridge["status"] == "warn"
     builder_hint = _setup_drift_builder_hint(
         files=files,
         builders_supplied=bool(builders),
@@ -799,6 +880,7 @@ def render_setup_drift_report(
                 and not standalone_pin_warn
                 and not builder_hint_warn
                 and not repo_path_warn
+                and not superseded_bridge_warn
             )
             else "warn"
         ),
@@ -814,6 +896,7 @@ def render_setup_drift_report(
         "changed_count": changed_count,
         "repo_path_hint": repo_path_hint,
         "standalone_pin": standalone_pin,
+        "superseded_bridge": superseded_bridge,
         "builder_hint": builder_hint,
         "files": files,
         "next_action": _setup_drift_next_action(
@@ -821,6 +904,7 @@ def render_setup_drift_report(
             standalone_pin=standalone_pin,
             builder_hint=builder_hint,
             repo_path_hint=repo_path_hint,
+            superseded_bridge=superseded_bridge,
         ),
     }
 
@@ -869,6 +953,17 @@ def render_setup_drift_text(payload: dict[str, Any], *, limit: int = 50) -> str:
             [
                 f"Standalone pin: {str(standalone_pin['status']).upper()} "
                 f"{standalone_pin['reason']} expected={standalone_pin['expected_ref']}{current}",
+                "",
+            ]
+        )
+    superseded_bridge = payload.get("superseded_bridge") or {}
+    if superseded_bridge and superseded_bridge.get("status") == "warn":
+        lines.extend(
+            [
+                f"Superseded transport: WARN {superseded_bridge['reason']} "
+                f"superseded_by={superseded_bridge['transport']} "
+                f"files={', '.join(superseded_bridge['paths'])}",
+                f"Superseded transport next: {superseded_bridge['next_action']}",
                 "",
             ]
         )

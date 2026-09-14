@@ -20,6 +20,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from code_mower import branch_policy
+from code_mower import package as code_mower_package
 from code_mower import participants as code_mower_participants
 from code_mower.package_rendering import _render_provider_catalog
 
@@ -3311,7 +3312,9 @@ def main(argv: list[str] | None = None) -> int:
         return _auth_main(argv[1:])
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("config", nargs="?", default="code-mower.example.yml")
+    # Defaulted after parsing so that an explicit positional selection stays
+    # distinguishable from the default even when it names the same file.
+    parser.add_argument("config", nargs="?", default=None)
     parser.add_argument("--profile", default="recommended")
     parser.add_argument(
         "--with", dest="participants", metavar="PARTICIPANTS",
@@ -3353,6 +3356,15 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "safe first-run alias for --profile recommended --dry-run; combine "
             "with --apply to write generated output instead"
+        ),
+    )
+    parser.add_argument(
+        "--packaged-starter",
+        action="store_true",
+        help=(
+            "render from the maintained packaged starter config, wherever this "
+            "installation keeps it; keeps the selected --profile and ignores "
+            "cwd-local config files"
         ),
     )
     parser.add_argument("--dry-run", action="store_true", help="render the init plan")
@@ -3416,10 +3428,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit dry-run plan as JSON")
     args = parser.parse_args(argv)
 
+    explicit_config = args.config is not None
+    if args.config is None:
+        args.config = PACKAGED_STARTER_CONFIG_NAME
+
     if args.easy:
         args.profile = "recommended"
         if not args.dry_run and not args.apply:
             args.dry_run = True
+    if args.packaged_starter and explicit_config:
+        # Two contradictory explicit selections. Ignoring either one would render
+        # from a configuration the caller did not ask for, so neither is guessed.
+        print(
+            "error: --packaged-starter selects the maintained packaged starter; "
+            f"remove it or the explicit config {args.config!r}",
+            file=sys.stderr,
+        )
+        return 1
     if args.builders and not args.dry_run and not args.apply:
         args.dry_run = True
     if (args.interactive or args.participants is not None or args.set_transport is not None
@@ -3443,11 +3468,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        config_source = _resolve_config_path(args.config)
-        # An explicitly supplied local file keeps its identity even when its
-        # basename matches the starter; only a resolved packaged fallback
-        # counts as the packaged starter.
-        packaged_fallback = config_source != Path(args.config)
+        if args.packaged_starter:
+            # The explicit selector names the maintained package resource, so no
+            # cwd-local file named like the starter can stand in for it.
+            config_source = code_mower_package.packaged_starter_config_path()
+            packaged_fallback = True
+        else:
+            config_source = _resolve_config_path(args.config)
+            # An explicitly supplied local file keeps its identity even when its
+            # basename matches the starter; only a resolved packaged fallback
+            # counts as the packaged starter.
+            packaged_fallback = config_source != Path(args.config)
         rendered_config_path = (
             str(config_source) if packaged_fallback else args.config
         )
