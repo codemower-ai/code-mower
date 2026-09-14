@@ -194,6 +194,11 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False):
                 locked.artifact("p-" + entry["handle"]).delete()
                 locked.write({**state, "capability_status": {"search": "unavailable", "memory": "unavailable"}})
             except (OSError, ContextError):
+                entry["failure_reason"] = "storage_unavailable"
+                try:
+                    index_file.write(index)
+                except (OSError, ContextError):
+                    pass
                 raise ContextRetrievalError("storage_unavailable") from None
             raise failure from None
         return {**packet.shareable_summary(), "status": "available", "packet_handle": entry["handle"],

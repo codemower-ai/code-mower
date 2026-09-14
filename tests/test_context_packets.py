@@ -134,8 +134,9 @@ class PacketTests(unittest.TestCase):
                 self.fetch()
         self.assertEqual(raised.exception.reason, "storage_unavailable")
         self.assertNotIn("private cleanup", str(raised.exception))
-        with self.assertRaises(ContextError):
+        with self.assertRaises(ContextRetrievalError) as replay:
             self.fetch()
+        self.assertEqual(replay.exception.reason, "storage_unavailable")
         self.assertEqual(self.backend.searches, 1)
 
     def test_cli_emits_closed_failure_reason_for_required_and_optional_context(self):
