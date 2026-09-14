@@ -878,7 +878,9 @@ fi
         argv = [str(runner), "--lane", "devin", "--repo", "owner/repo", "--max-minutes", "1",
                 "--target", "pr:21"]
         if handoff:
-            argv.extend(["--handoff-source-lane", "codex", "--handoff-expected-head", "a" * 40])
+            # Off-policy refusal must happen before this binding is opened.
+            argv.extend(["--handoff-source-lane", "codex", "--handoff-expected-head", "a" * 40,
+                         "--handoff-source-file", str(root / "private-binding.json")])
         return subprocess.run(
             argv,
             cwd=output_dir,
