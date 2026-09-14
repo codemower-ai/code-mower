@@ -9,8 +9,8 @@
 #
 # Delivery is decided from a validated issue/PR/head transition, never from the
 # provider exit code alone. An explicit orchestrator recovery handoff needs
-# --target pr:<n> --handoff-source-lane <lane> --handoff-expected-head <sha>;
-# without it a lane may only write branches carrying its own prefixes.
+# --target pr:<n> --handoff-source-lane <lane> --handoff-expected-head <sha>
+# --handoff-source-file <private binding>; without it, cross-lane writes fail.
 #
 # The CLIs run sandboxed by default. The runner owner can append extra CLI flags
 # by exporting LANE_CODEX_EXTRA_FLAGS, LANE_CLAUDE_EXTRA_FLAGS, or
@@ -33,6 +33,8 @@ AUDIT_TARGET=""
 ENABLE_AUDIT_DUTY="false"
 HANDOFF_SOURCE_LANE=""
 HANDOFF_EXPECTED_HEAD=""
+HANDOFF_SOURCE_FILE=""
+HANDOFF_STATE_DIR="${LANE_HANDOFF_STATE_DIR:-${HOME}/.local/share/code-mower/lane-handoffs}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --lane) LANE="$2"; shift 2 ;;
@@ -43,6 +45,7 @@ while [ "$#" -gt 0 ]; do
     --enable-audit-duty) ENABLE_AUDIT_DUTY="true"; shift ;;
     --handoff-source-lane) HANDOFF_SOURCE_LANE="$2"; shift 2 ;;
     --handoff-expected-head) HANDOFF_EXPECTED_HEAD="$2"; shift 2 ;;
+    --handoff-source-file) HANDOFF_SOURCE_FILE="$2"; shift 2 ;;
     -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "unknown arg $1" >&2; exit 2 ;;
   esac
@@ -52,6 +55,25 @@ done
 case "$LANE" in __LANE_MAC_RUNNER_ALLOWED_CASE__) ;; *) echo "unsupported lane: $LANE" >&2; exit 2 ;; esac
 case "$MAX_MINUTES" in ''|*[!0-9]*) echo "--max-minutes must be an integer" >&2; exit 2 ;; esac
 [ "$MAX_MINUTES" -gt 0 ] || { echo "--max-minutes must be greater than zero" >&2; exit 2; }
+
+# Resolve one supported runtime before importing the delivery contract. Providers
+# receive shims for this same executable, so shell startup files cannot select a
+# stale Python while validation uses another interpreter.
+lane_python_candidates=("${LANE_PYTHON:-}" python3.14 python3.13 python3.12 python3)
+lane_python=""
+for candidate in "${lane_python_candidates[@]}"; do
+  [ -n "$candidate" ] || continue
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 12))' >/dev/null 2>&1; then
+    lane_python="$(command -v "$candidate")"
+    break
+  fi
+  [ -z "${LANE_PYTHON:-}" ] || { echo "configured LANE_PYTHON must be Python 3.12 or newer" >&2; exit 2; }
+done
+[ -n "$lane_python" ] || { echo "builder runtime requires Python 3.12 or newer" >&2; exit 2; }
+LANE_PYTHON="$lane_python"
+# macOS may expose HOME through /var aliases. Resolve runner-owned private
+# roots before handing them to the strict private store; do not relax its checks.
+HANDOFF_STATE_DIR="$("$LANE_PYTHON" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$HANDOFF_STATE_DIR")"
 
 here="$(CDPATH=; cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(CDPATH=; cd -- "${here}/../.." && pwd -P)"
@@ -64,9 +86,9 @@ repo_root="$(CDPATH=; cd -- "${here}/../.." && pwd -P)"
 #   1. CODE_MOWER_LANE_DELIVERY_CMD, when the runner owner pins one.
 #   2. this source checkout, when the runner ships beside src/code_mower.
 #   3. an installed code-mower that actually implements lane-delivery.
-# An installed CLI that predates the command leaves the contract inactive
-# instead of failing every unit; the runner says so once and keeps the older
-# behavior for that run.
+# An old installed CLI may still perform read-only selection. A selected builder
+# unit requires the current runtime/supervision contract and stops before provider
+# launch if it is unavailable.
 #
 # The pin is one executable path or name, like every other command override in
 # this runner -- never a command line. Splitting an environment string into argv
@@ -541,6 +563,20 @@ HOOK
 target_pr_branch=""
 target_pr_head=""
 policy_branch_expected_head=""
+# This bounded owner action contains no source binding or provider diagnostics.
+# Its exact-head marker also deduplicates invalid/missing private source input.
+handoff_owner_action() {
+  local marker="CODE_MOWER_HANDOFF_BLOCKED:${HANDOFF_EXPECTED_HEAD}" comments="" body=""
+  comments="$(gh pr view "$num" -R "$REPO" --json comments 2>/dev/null)" || return 1
+  if printf '%s' "$comments" | jq -e --arg marker "$marker" 'any(.comments[]?; .body | contains($marker))' >/dev/null; then return 0; fi
+  body="$(mktemp)"
+  printf 'Builder takeover paused; no destination writer started.\n\n1. Verify the private source binding, source-writer quiescence, and current PR head before issuing a new handoff.\n\n<!-- %s -->\n' "$marker" > "$body"
+  if gh pr comment "$num" -R "$REPO" --body-file "$body" >/dev/null; then
+    gh pr edit "$num" -R "$REPO" --add-label "$owner_label" >/dev/null
+  fi
+  rm -f "$body"
+}
+
 handoff_json=""
 handoff_file=""
 if [ "$kind" = "pr" ]; then
@@ -599,31 +635,35 @@ if [ "$kind" = "pr" ]; then
         echo "${LANE}: refusing handoff for PR #${num}; source lane ${HANDOFF_SOURCE_LANE} has no configured branch prefixes" >&2
         exit 2
       fi
+      handoff_result="${log_dir}/handoff-pr-${num}.result.json"
       handoff_file="${log_dir}/handoff-pr-${num}.json"
-      if ! "${lane_delivery[@]}" handoff \
-        --lane "$LANE" --repo "$REPO" \
-        --source-lane "$HANDOFF_SOURCE_LANE" --destination-lane "$LANE" \
-        --target-pr "${REPO}#${num}" \
-        --expected-head "$HANDOFF_EXPECTED_HEAD" \
-        --observed-head "$target_pr_head" \
-        --target-branch "$target_pr_branch" \
-        "${handoff_source_prefix_args[@]}" \
-        --output "$handoff_file" >/dev/null; then
-        # A policy-named branch carries no source-lane prefix, so the prefix
-        # ownership proof cannot validate it. Provenance-aware handoff for
-        # such branches is owned by issue #962; until then it stays refused.
-        if [ -n "$repo_branch_pattern" ] && jq -n --arg branch "$target_pr_branch" --arg pattern "$repo_branch_pattern" \
-            '$branch | test("^(?:" + $pattern + ")$")' | grep -qx true; then
-          echo "${LANE}: refusing ${mode} PR #${num}; explicit handoff did not validate for policy-named branch ${target_pr_branch}; recovery handoffs for repository-policy branches are not supported yet (see codemower-ai/code-mower#962)" >&2
-        else
-          echo "${LANE}: refusing ${mode} PR #${num}; explicit handoff did not validate" >&2
-        fi
-        exit 1
+      handoff_args=(
+        --lane "$LANE" --repo "$REPO"
+        --source-lane "$HANDOFF_SOURCE_LANE" --destination-lane "$LANE"
+        --target-pr "${REPO}#${num}"
+        --expected-head "$HANDOFF_EXPECTED_HEAD" --observed-head "$target_pr_head"
+        --target-branch "$target_pr_branch"
+        "${handoff_source_prefix_args[@]}"
+        --source-file "$HANDOFF_SOURCE_FILE" --state-dir "$HANDOFF_STATE_DIR"
+      )
+      if ! "${lane_delivery[@]}" handoff "${handoff_args[@]}" --json > "$handoff_result"; then
+        handoff_owner_action
+        exit 2
       fi
+      if ! jq -e '.accepted == true' "$handoff_result" >/dev/null; then
+        if jq -e '.notify == true' "$handoff_result" >/dev/null; then handoff_owner_action; fi
+        echo "${LANE}: source quiescence or head unverified; destination not started" >&2
+        exit 2
+      fi
+      if jq -e '.duplicate == true' "$handoff_result" >/dev/null; then
+        echo "${LANE}: handoff already reserved; no repeated acceptance or writer launch"
+        exit 0
+      fi
+      jq '.handoff' "$handoff_result" > "$handoff_file"
       handoff_json="$(cat "$handoff_file")"
       echo "${LANE}: accepted explicit handoff ${HANDOFF_SOURCE_LANE} -> ${LANE} on PR #${num} at ${HANDOFF_EXPECTED_HEAD}"
       handoff_body_file="$(mktemp)"
-      printf 'Mac lane runner: accepted an explicit recovery handoff.\n\n- source lane: %s\n- destination lane: %s\n- target PR: %s#%s\n- expected head: %s\n\nSingle-writer enforcement is otherwise unchanged.\n' \
+      printf 'Mac lane runner: accepted an explicit recovery handoff after verified source writer quiescence.\n\n- source lane: %s\n- destination lane: %s\n- target PR: %s#%s\n- expected head: %s\n\nSingle-writer enforcement is otherwise unchanged.\n' \
         "$HANDOFF_SOURCE_LANE" "$LANE" "$REPO" "$num" "$HANDOFF_EXPECTED_HEAD" > "$handoff_body_file"
       gh pr comment "$num" -R "$REPO" --body-file "$handoff_body_file" >/dev/null || true
       rm -f "$handoff_body_file"
@@ -838,6 +878,19 @@ elif [ "$kind" = "pr" ] && [ "$mode" != "audit" ] && [ -n "$repo_branch_pattern"
   fi
 fi
 install_pre_push_guard "$target_pr_branch" "$mode"
+if [ "${#lane_delivery[@]}" -eq 0 ]; then
+  echo "builder capabilities require the current Code Mower delivery contract" >&2
+  exit 2
+fi
+runtime_args=(--checkout "$work" --python "$LANE_PYTHON")
+[ "$LANE" != "codex" ] || runtime_args+=(--codex "$(command -v codex)")
+runtime_file="${log_dir}/runtime.json"
+"${lane_delivery[@]}" runtime "${runtime_args[@]}" > "$runtime_file"
+export PATH="$(jq -r '.bin_dir' "$runtime_file"):$PATH"
+export TMPDIR="$(jq -r '.tmp_dir' "$runtime_file")"
+codex_config_args=()
+while IFS= read -r setting; do codex_config_args+=(-c "$setting"); done < <(jq -r '.codex_config[]' "$runtime_file")
+
 
 # A failed lookup is not an empty result. `gh pr list` piping into jq hides a
 # transport failure behind an exit-0 empty match, so the listing is captured
@@ -957,6 +1010,7 @@ trap 'rm -f "$prompt_file"' EXIT
   echo
   echo "## Hard rules for this run"
   echo "- Working copy: ${work}, fresh at origin/${default_branch}. Create or checkout your branch there."
+  echo "- Run Python tests with python or python3 from the runner PATH; both select the same verified Python 3.12+ runtime. Do not replace it with a shell startup default."
   echo "- Open exactly one PR per issue. Label it ${builder_label} plus the audit labels named in the standing file."
   echo "- Single-writer rule: only the owning builder pushes to its PR branch. Other lanes comment or audit."
   echo "- A pre-push hook enforces the single-writer rule by rejecting pushes outside this lane's allowed branch prefixes or the exact targeted PR branch."
@@ -1095,6 +1149,12 @@ echo "${LANE}: prompt $(wc -c < "$prompt_file" | tr -d ' ') bytes; log ${log}"
 before_state="${log%.log}.before.json"
 after_state="${log%.log}.after.json"
 status_file="${log%.log}.status.json"
+writer_state_dir="$("$LANE_PYTHON" -c 'from pathlib import Path; print((Path.home() / ".local/share/code-mower/local-writers").resolve())')"
+writer_alias="${LANE}-${repo_key}-${stamp}-$$"
+writer_source="${log%.log}.source.json"
+( umask 077; jq -n --arg writer "$writer_alias" --arg state_dir "$writer_state_dir" \
+  '{transport:"local_process",writer:$writer,state_dir:$state_dir}' > "$writer_source" )
+
 capture_target_state "$before_state"
 # Delivery is judged by comparing this snapshot with the one taken afterwards.
 # If the before snapshot is already incomplete the comparison can never be
@@ -1127,6 +1187,8 @@ run_provider() {
       --max-log-bytes "$lane_max_log_bytes"
       --cwd "$work"
       --status-file "$status_file"
+      --writer "$writer_alias" --writer-state-dir "$writer_state_dir"
+      --writer-repo "$REPO" --writer-lane "$LANE"
     )
     [ -n "$provider_stdin" ] && supervise_args+=(--stdin-file "$provider_stdin")
     "${lane_delivery[@]}" supervise "${supervise_args[@]}" -- "$@"
@@ -1177,6 +1239,8 @@ claude_allow=(
   'Bash(git *)'
   'Bash(gh *)'
   'Bash(python3 *)'
+  'Bash(python *)'
+  'Bash(scripts/dev-python *)'
   'Bash(pytest *)'
   'Bash(actionlint *)'
   'Bash(shellcheck *)'
@@ -1203,13 +1267,31 @@ claude_allow=(
   Grep
 )
 
+# A caller may choose model/output options, never a different filesystem boundary.
+for codex_extra_flag in "${codex_extra[@]+"${codex_extra[@]}"}"; do
+  case "$codex_extra_flag" in
+    --sandbox*|-s|-s?*|--config*|-c|-c?*|--profile*|-p|-p?*|--add-dir*|--cd*|-C|-C?*|--dangerously*|--approve-for-me|--enable*|--permission-profile*)
+      echo "LANE_CODEX_EXTRA_FLAGS cannot override the bounded builder capability profile" >&2; exit 2 ;;
+  esac
+done
+if [ -n "$HANDOFF_SOURCE_LANE" ]; then
+  # Re-observe after workspace setup and atomically reserve the only launch.
+  if ! "${lane_delivery[@]}" handoff "${handoff_args[@]}" --reserve-launch --json > "$handoff_result"; then
+    handoff_owner_action
+    exit 2
+  fi
+  if ! jq -e '.launch_allowed == true' "$handoff_result" >/dev/null; then
+    echo "handoff destination launch already reserved; no duplicate writer"
+    exit 0
+  fi
+fi
 set +e
 case "$LANE" in
   codex)
     command -v codex >/dev/null 2>&1 || { echo "codex CLI not on PATH" >&2; exit 1; }
     provider_stdin="$prompt_file"
     run_provider codex exec --cd "$work" --skip-git-repo-check \
-      --sandbox workspace-write -c 'sandbox_workspace_write.network_access=true' \
+      "${codex_config_args[@]}" \
       "${codex_extra[@]+"${codex_extra[@]}"}" \
       --output-last-message "${log%.log}.last.md" \
       -
