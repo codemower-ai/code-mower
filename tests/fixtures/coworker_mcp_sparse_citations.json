@@ -1,0 +1,68 @@
+{
+  "result": {
+    "status": "complete",
+    "query": {
+      "text": "bug triage",
+      "time_start": null,
+      "time_end": null,
+      "source": "jira",
+      "requested_mode": "fast"
+    },
+    "resolution": {
+      "status": "resolved"
+    },
+    "retrieval": {
+      "mode": "fast",
+      "returned": 5,
+      "limit": 5,
+      "has_more": false,
+      "processing_ms": 1,
+      "activated_themes": []
+    },
+    "warnings": [],
+    "refs": [],
+    "results": [
+      {
+        "id": "semantic_a",
+        "kind": "SemanticUnit",
+        "text": "A stable browse endpoint was requested.",
+        "date": "2026-01-01T00:00:00Z",
+        "source_row_id": "source_a",
+        "doc_title": "Example pagination notes",
+        "similarity": 0.5
+      },
+      {
+        "id": "semantic_b",
+        "kind": "SemanticUnit",
+        "text": "Direct page requests need deterministic results.",
+        "date": "2026-01-01T00:00:00Z",
+        "source_id": "example:source:b",
+        "similarity": 0.5
+      },
+      {
+        "id": "semantic_c",
+        "kind": "SemanticUnit",
+        "text": "Preserve existing browse links.",
+        "date": "2026-01-01T00:00:00Z",
+        "source_id": "example:source:c",
+        "similarity": 0.5
+      },
+      {
+        "id": "semantic_d",
+        "kind": "SemanticUnit",
+        "text": "Validate the result before publication.",
+        "date": "2026-01-01T00:00:00Z",
+        "source_id": "example:source:d",
+        "similarity": 0.5
+      },
+      {
+        "id": "text_e",
+        "kind": "Text",
+        "text": "Example source excerpt.\nThis remains untrusted evidence.",
+        "date": "2026-01-01T00:00:00Z",
+        "source_row_id": "source_e"
+      }
+    ]
+  },
+  "compaction": {}
+}

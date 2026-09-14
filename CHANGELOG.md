@@ -5,6 +5,17 @@ project used alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop were hardening; v1.0 and
 later entries are regular releases.
 
+## Unreleased
+
+### Fixed
+
+- Coworker fast-search responses with `source_id`, missing titles, or `Text`
+  records now retain cited evidence with explicit uncertainty. Records without
+  provenance are never given invented citations. Response-format failures,
+  including nested SDK task-group errors, no longer masquerade as access
+  failures; fetch and guided prepare return closed, redacted failure reasons
+  and preserve the explicit-refresh requirement.
+
 ## v1.4.0
 
 Devin can act as an optional peer participant with a durable remote work-order

@@ -65,8 +65,22 @@ The initial search returned only Attributes. A subsequent bounded C4 work-item
 search returned one `SemanticUnit` and two `Attribute` records, each with the
 same seven fields listed above. The adapter accepts these two observed record
 kinds, preserves the kind as `source_kind`, and keeps confidence unknown for
-both. Other result kinds and `om2_source_trace` remain unqualified. Never pass
+both. `om2_source_trace` remains unqualified. Never pass
 an Attribute ID to a SemanticUnit-only tool.
+
+A further bounded fast-search qualification on 2026-09-14 observed a five-record
+response containing four `SemanticUnit` records and one `Text` record. Some
+summaries provided only `source_id`; the `Text` result provided `source_row_id`;
+several records omitted `doc_title`. The request still used
+`include_raw_documents=false` and no extra source tool. The synthetic
+`coworker_mcp_sparse_citations.json` fixture reproduces these field shapes with
+invented content and locators. The adapter now accepts these three record kinds
+and either source locator, explicitly labels missing titles, and reports partial
+coverage. It never fabricates a source from the record ID or another record.
+Unknown kinds and records without locators are explicitly omitted; a nonempty
+batch with no usable cited evidence fails. Present but malformed citation fields
+still fail closed. Neither these response variants nor an SDK exception group
+may be reported as evidence of an account authorization failure.
 
 The [synthetic contract fixture](../tests/fixtures/coworker_mcp_contract.json)
 records stripped input schemas and an invented response with the observed
