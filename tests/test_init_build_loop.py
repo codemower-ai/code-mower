@@ -12,6 +12,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from runner_fixture_support import enable_fake_codex_sandbox
 from unittest import mock
 
 import yaml
@@ -261,30 +263,29 @@ class InitBuildLoopTests(unittest.TestCase):
             runner_text = runner.read_text(encoding="utf-8")
             self.assertIn("case \"$LANE\" in codex|claude)", runner_text)
             self.assertIn(
-                """builder_labels_json='{"claude":"builder:claude","codex":"builder:codex"}'""",
+                """builder_labels_json='{"claude":"builder:claude","codex":"builder:codex","cursor":"builder:cursor","devin":"builder:devin"}'""",
                 runner_text,
             )
             self.assertNotIn('builder_label="builder:${LANE}"', runner_text)
             self.assertIn('repo_owner="${REPO%%/*}"', runner_text)
             self.assertIn('repo_key="${repo_owner}__${repo_name}"', runner_text)
             self.assertIn(
-                """branch_prefixes_json='{"claude":["claude/"],"codex":["codex/"]}'""",
+                """branch_prefixes_json='{"claude":["claude/"],"codex":["codex/"],"cursor":["cursor/"],"devin":["devin/"]}'""",
                 runner_text,
             )
             self.assertIn(
                 "configured_trusted_authors=${LANE_TRUSTED_AUTHORS:-''}",
                 runner_text,
             )
-            # cursor has no local runner, so it is neither a runnable lane nor
-            # in builder_labels_json, but its provenance still takes part in
-            # cross-builder conflict detection.
-            self.assertNotIn("cursor/", runner_text)
+            # Inactive source builders keep canonical handoff identities while
+            # the execution allowlist remains codex|claude.
+            self.assertIn("cursor/", runner_text)
             self.assertIn(
-                """provenance_labels_json='{"builder:claude":"claude","builder:codex":"codex","builder:cursor":"cursor","builder:grok-bot":"cursor"}'""",
+                """provenance_labels_json='{"builder:claude":"claude","builder:codex":"codex","builder:cursor":"cursor","builder:devin":"devin","builder:grok-bot":"cursor"}'""",
                 runner_text,
             )
             self.assertIn(
-                """builder_authors_json='{"chatgpt-codex-connector[bot]":"codex","claude[bot]":"claude","cursor[bot]":"cursor","grok-bot[bot]":"cursor"}'""",
+                """builder_authors_json='{"chatgpt-codex-connector[bot]":"codex","claude[bot]":"claude","cursor[bot]":"cursor","devin-ai-integration":"devin","devin-ai-integration[bot]":"devin","grok-bot[bot]":"cursor"}'""",
                 runner_text,
             )
             self.assertIn("remote_repo_slug()", runner_text)
@@ -882,7 +883,7 @@ printf 'fake codex completed\\n'
 """,
                 encoding="utf-8",
             )
-            fake_codex.chmod(0o755)
+            enable_fake_codex_sandbox(fake_codex)
 
             completed = subprocess.run(
                 [
@@ -1032,7 +1033,7 @@ printf 'fake codex completed\n'
 """,
                         encoding="utf-8",
                     )
-                    fake_codex.chmod(0o755)
+                    enable_fake_codex_sandbox(fake_codex)
 
                     completed = subprocess.run(
                         [
@@ -1127,7 +1128,7 @@ printf 'fake codex completed\\n'
 """,
                 encoding="utf-8",
             )
-            fake_codex.chmod(0o755)
+            enable_fake_codex_sandbox(fake_codex)
 
             completed = subprocess.run(
                 [
@@ -1254,6 +1255,8 @@ printf 'fake {lane} completed\\n'
                             encoding="utf-8",
                         )
                         fake_provider.chmod(0o755)
+                        if lane == "codex":
+                            enable_fake_codex_sandbox(fake_provider)
 
                         env = {
                             **os.environ,
@@ -1585,11 +1588,11 @@ fi
             runner,
         )
         self.assertIn(
-            """builder_labels_json='{"claude":"builder:claude","codex":"builder:code-mower-codex"}'""",
+            """builder_labels_json='{"claude":"builder:claude","codex":"builder:code-mower-codex","cursor":"builder:cursor","devin":"builder:devin"}'""",
             runner,
         )
         self.assertIn(
-            """branch_prefixes_json='{"claude":["claude/"],"codex":["codex/","code-mower-codex/"]}'""",
+            """branch_prefixes_json='{"claude":["claude/"],"codex":["codex/","code-mower-codex/"],"cursor":["cursor/"],"devin":["devin/"]}'""",
             runner,
         )
         self.assertIn('--label "$builder_label"', runner)
