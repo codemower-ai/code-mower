@@ -52,12 +52,12 @@ and feedback retain explicit authorization, expiry, and refresh checks.
 | Participant selection | `init --interactive` or `init --with` |
 | Session orchestration | Host-led operating brief and local lease; the command does not launch every provider |
 | Qualified session hosts | Codex, Claude Code, and Cursor |
-| Recognized session hosts | Devin, Grok Bot, Antigravity, Muse, and custom identities; explicit handoff/provider transport required |
+| Other recognized participants | Grok Bot, Antigravity, and Muse retain existing host policy; Devin orchestration is ineligible under source role admission |
 | First-class local builders | Codex and Claude; maintained Devin builder lane is opt-in |
 | Hosted builders | Explicit provider-specific dispatch and provenance; no implicit trust or merge authority |
 | Merge-eligible reviewers | Codex and Claude after repository setup and calibration |
 | Informational reviewers | Devin CLI and other optional providers until their evidence supports promotion |
-| Organizational context | Optional Coworker packets for approved Claude/Codex/Devin orchestrator, builder, and reviewer roles |
+| Organizational context | Optional Coworker packets for approved Claude/Codex/Devin roles, subject to role admission |
 | Repository context graph | Provider-neutral packet extension, offline scope/freshness checks, and a revision-bound local graph lifecycle; Graphify is an optional bounded provider with no default dependency |
 | Work tracking | GitHub Issues by default; Jira Cloud optional, bounded, and dry-run-first for writes |
 | Team interaction | CLI, GitHub, local Board, and optional CodeMower.com metadata views; Slack has an authenticated bounded ingress foundation with no worker delivery |
@@ -148,11 +148,15 @@ builder lane and the exact PR-bound hosted work-order library seam. Hosted
 dispatch has no packaged CLI command. Devin review stays informational and
 Devin is not a qualified peer orchestrator.
 
-Role-policy enforcement
-([#975](https://github.com/codemower-ai/code-mower/issues/975)) and
-effective-authority rendering
-([#955](https://github.com/codemower-ai/code-mower/issues/955)) are planned
-runtime work, not shipped behavior.
+Source role-policy enforcement
+([#975](https://github.com/codemower-ai/code-mower/issues/975)) separates role
+qualification, transport capability, repository policy, and runtime readiness.
+It rejects an unqualified Devin orchestrator before lease or session writes and
+checks bounded hosted builder admission before new work. See
+[Participant Qualification](participant-qualification.md). These are main-line
+stabilization changes awaiting the next package. Effective-authority rendering
+([#955](https://github.com/codemower-ai/code-mower/issues/955)) remains planned;
+neither is part of the immutable `v1.4.0` artifact.
 
 Each step below is an independently gated epic rather than one cross-cutting
 implementation PR.

@@ -1282,6 +1282,22 @@ for codex_extra_flag in "${codex_extra[@]+"${codex_extra[@]}"}"; do
       echo "LANE_CODEX_EXTRA_FLAGS cannot override the bounded builder capability profile" >&2; exit 2 ;;
   esac
 done
+if [ "$mode" != "audit" ]; then
+  # Fresh-base role policy is checked before consuming a handoff launch or
+  # registering a writer. A present CLI establishes availability, not qualification.
+  admission_runtime="unavailable"
+  case "$LANE" in
+    codex) admission_command="$codex_command" ;;
+    claude) admission_command="claude" ;;
+    devin) admission_command="${CODE_MOWER_DEVIN_CLI_COMMAND:-devin}" ;;
+    *) admission_command="" ;;
+  esac
+  if [ -n "$admission_command" ] && command -v "$admission_command" >/dev/null 2>&1; then
+    admission_runtime="ready"
+  fi
+  "${lane_delivery[@]}" admit-builder --checkout "$work" --lane "$LANE" \
+    --runtime-readiness "$admission_runtime" > "${log_dir}/role-eligibility.json"
+fi
 if [ -n "$HANDOFF_SOURCE_LANE" ]; then
   # Re-observe after workspace setup and atomically reserve the only launch.
   if ! "${lane_delivery[@]}" handoff "${handoff_args[@]}" --reserve-launch --json > "$handoff_result"; then

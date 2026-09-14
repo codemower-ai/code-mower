@@ -4700,10 +4700,10 @@ fi
                     "type": "audit",
                     "driver": "hosted_bridge",
                     "provider": "devin",
-                    # Explicit repository promotion; the starter stays informational.
+                    # Informational hosted review still needs label lifecycle hygiene.
                     "product": "devin",
                     "transport": "devin_api_v3",
-                    "merge_authority": True,
+                    "merge_authority": False,
                     "trigger_policy": "manual",
                     "labels": {
                         "needs": "needs-devin-audit",
@@ -4870,10 +4870,10 @@ fi
                         "type": "audit",
                         "driver": "hosted_bridge",
                         "provider": "devin",
-                        # Explicit repository promotion exercises stale-label hygiene.
+                        # Informational hosted review still exercises stale-label hygiene.
                         "product": "devin",
                         "transport": "devin_api_v3",
-                        "merge_authority": True,
+                        "merge_authority": False,
                         "trigger_policy": "manual",
                         "labels": {
                             "needs": "needs-devin-audit",

@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Code Mower role eligibility decision",
+  "description": "Output of a trusted local role decision; never an authorization token or accepted provider evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "product",
+    "role",
+    "transport",
+    "scope",
+    "capability",
+    "qualification",
+    "policy",
+    "runtime",
+    "status",
+    "reason"
+  ],
+  "properties": {
+    "schema": {
+      "const": "code_mower.roleEligibility.v1",
+      "type": "string"
+    },
+    "product": {
+      "enum": [
+        "claude",
+        "codex",
+        "devin",
+        "cursor",
+        "grok-bot",
+        "antigravity",
+        "muse",
+        "gitar",
+        "cursor-bugbot",
+        "qodo",
+        "greptile"
+      ],
+      "type": "string"
+    },
+    "role": {
+      "enum": [
+        "builder",
+        "orchestrator",
+        "reviewer"
+      ],
+      "type": "string"
+    },
+    "transport": {
+      "enum": [
+        "agent_handoff",
+        "devin_cli",
+        "devin_api_v3"
+      ],
+      "type": "string"
+    },
+    "scope": {
+      "enum": [
+        "bounded",
+        "unrestricted",
+        "informational"
+      ],
+      "type": "string"
+    },
+    "capability": {
+      "enum": [
+        "supported",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "qualification": {
+      "enum": [
+        "repository_policy",
+        "qualified",
+        "not_required",
+        "missing",
+        "stale"
+      ],
+      "type": "string"
+    },
+    "policy": {
+      "enum": [
+        "allowed",
+        "denied"
+      ],
+      "type": "string"
+    },
+    "runtime": {
+      "enum": [
+        "ready",
+        "unchecked",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "eligible",
+        "pending",
+        "ineligible"
+      ],
+      "type": "string"
+    },
+    "reason": {
+      "enum": [
+        "ready",
+        "runtime_unchecked",
+        "runtime_unavailable",
+        "policy_denied",
+        "capability_unavailable",
+        "qualification_missing",
+        "qualification_stale",
+        "bounded_work_required"
+      ],
+      "type": "string"
+    }
+  }
+}

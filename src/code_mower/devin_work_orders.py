@@ -29,6 +29,8 @@ from .context_store import ContextStore
 from .devin_sessions import REPO, DevinClient
 from .provider_capabilities import resolve_transport
 from .remote_session import DevinProvider, RemoteError, RemoteSessions, public_projection
+from .role_eligibility import require_builder
+from .yaml_subset import ConfigError
 from .work_orders import WORK_ORDER_SCHEMA
 
 COMPLETION_SCHEMA = "code_mower.builderCompletion.v1"
@@ -298,16 +300,23 @@ def _github_call(method, *args, **kwargs):
 
 class DevinWorkOrders:
     """One durable repo/issue binding; caller must share this root across dispatchers."""
-    def __init__(self, root: Path, remote: RemoteSessions, github: GitHub):
+    def __init__(self, root: Path, remote: RemoteSessions, github: GitHub, *,
+                 config: Mapping | None = None, runtime: str = "unchecked"):
         if remote.provider.name not in {"devin", "fake"}:
             raise RemoteError("unsupported_builder")
         self.transport = resolve_transport("devin_api_v3")
         self.store, self.remote, self.github = ContextStore(root), remote, github
+        # Policy/readiness belong to this trusted dispatcher invocation, not to
+        # the durable work-order identity. Re-evaluate them before new work; a
+        # later denial must not prevent inspection or cancellation of old work.
+        self.role_config, self.runtime = config, runtime
 
     @classmethod
-    def hosted(cls, root: Path, client: DevinClient, github: GitHub) -> DevinWorkOrders:
+    def hosted(cls, root: Path, client: DevinClient, github: GitHub, *,
+               config: Mapping | None = None, runtime: str = "unchecked") -> DevinWorkOrders:
         return cls(root / "builders", RemoteSessions(
-            root / "sessions", DevinProvider(client, completion_schema=COMPLETION_JSON_SCHEMA)), github)
+            root / "sessions", DevinProvider(client, completion_schema=COMPLETION_JSON_SCHEMA)), github,
+            config=config, runtime=runtime)
 
     @staticmethod
     def _key(order):
@@ -499,6 +508,14 @@ class DevinWorkOrders:
              acknowledge_delivered, context):
         if command not in {"dispatch", "status", "collect", "clarify", "fix", "cancel"}:
             raise RemoteError("invalid_request")
+        if command in {"dispatch", "clarify", "fix"}:
+            try:
+                require_builder(
+                    transport=self.transport.transport, config=self.role_config,
+                    runtime=self.runtime, execution=apply,
+                )
+            except ConfigError as exc:
+                raise RemoteError(f"role_not_eligible: {exc}") from None
         # Library equivalent of --apply: no reads, writes or provider calls in preview.
         if command != "status" and not apply:
             return {"schema": EVIDENCE_SCHEMA, "mode": "dry_run", "apply_required": True}

@@ -55,7 +55,7 @@ class WorkOrderCase(unittest.TestCase):
         self.provider = FakeProvider(self.root / "provider")
         self.remote = RemoteSessions(self.root / "remote", self.provider)
         self.github = GitHubFixture()
-        self.service = DevinWorkOrders(self.root / "builder", self.remote, self.github)
+        self.service = DevinWorkOrders(self.root / "builder", self.remote, self.github, config=UNCONFIGURED, runtime="ready")
         self.order = WorkOrder.from_manifest(
             {"schema": WORK_ORDER_SCHEMA, "repo": "owner/repo",
              "source": {"repo": "owner/repo", "issue_number": "907"},
@@ -258,14 +258,14 @@ class DeliveryTests(WorkOrderCase):
                                   for sid in matches], "has_next_page": False}
             return {"session_id": "devin-one", "status": "running"}
         client = DevinClient("org-example", "test-key", api_runner=runner)
-        self.service = DevinWorkOrders.hosted(self.root / "hosted", client, self.github)
+        self.service = DevinWorkOrders.hosted(self.root / "hosted", client, self.github, config=UNCONFIGURED, runtime="ready")
         with self.assertRaisesRegex(RemoteError, "reconcile_dispatch"):
             self.run_order("dispatch")
         self.assertEqual(self.run_order("dispatch")["session"]["state"], "uncertain")
         matches[:] = ["devin-one", "devin-two"]
         self.assertEqual(self.run_order("status")["session"]["next_action"], "inspect_provider")
         matches[:] = ["devin-one"]
-        self.service = DevinWorkOrders.hosted(self.root / "hosted", client, self.github)
+        self.service = DevinWorkOrders.hosted(self.root / "hosted", client, self.github, config=UNCONFIGURED, runtime="ready")
         self.assertEqual(self.run_order("status")["session"]["state"], "running")
         self.assertEqual(sum(m == "POST" for m, _ in calls), 1)
         self.assertRegex(tags[-1], r"^cm-[0-9a-f]{32}$")
@@ -392,7 +392,7 @@ class DeliveryTests(WorkOrderCase):
             with self.assertRaises(KeyboardInterrupt):
                 self.run_order("collect")
 
-        self.service = DevinWorkOrders(self.root / "builder", self.remote, self.github)
+        self.service = DevinWorkOrders(self.root / "builder", self.remote, self.github, config=UNCONFIGURED, runtime="ready")
         self.assertIsNone(self.remote.private_result(self.key))
         self.assert_rejected_projection(self.run_order("status"), "stale_completion")
         with self.assertRaisesRegex(RemoteError, "^stale_completion"):
@@ -471,7 +471,7 @@ class DeliveryTests(WorkOrderCase):
                 status["status"] = "running"
             return {"session_id": "devin-one", **status}
         client = DevinClient("org-example", "test-key", api_runner=runner)
-        self.service = DevinWorkOrders.hosted(self.root / "hosted", client, self.github)
+        self.service = DevinWorkOrders.hosted(self.root / "hosted", client, self.github, config=UNCONFIGURED, runtime="ready")
         self.run_order("dispatch")
         status.update(status="running", status_detail="waiting_for_approval",
                       structured_output=self.claim())
