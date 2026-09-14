@@ -1449,6 +1449,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/session_current.py",
+      "target": "src/code_mower/session_current.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/session_lease.py",
       "target": "src/code_mower/session_lease.py"
     },

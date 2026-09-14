@@ -104,7 +104,9 @@ code-mower session start \
 `session start` saves an operating brief and takes the local single-orchestrator
 lease. It does not launch every selected product. The host uses the execution
 paths available for each participant and records explicit handoffs where Code
-Mower has no automatic transport.
+Mower has no automatic transport. Later, from anywhere in the checkout,
+`code-mower session show --current` finds the brief the live lease names and
+`code-mower session lease show` reports the lease itself; neither changes state.
 
 Codex, Claude Code, and Cursor are qualified for the shared session, telemetry,
 lease, and Jira-authority contract in v1.4.0. Devin, Grok Bot, Antigravity,

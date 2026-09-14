@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from . import config as code_mower_config
-from . import tracker_queue
+from . import session_lease, tracker_queue
 
 
 LANE_STATUS_SCHEMA = "code_mower.laneStatus.v1"
@@ -642,6 +642,7 @@ def collect_status(
     tracker_config: Mapping[str, Any] | None = None,
     jira_reader: tracker_queue.JiraQueueReader | None = None,
     tracker_links: Mapping[tuple[str, str, str], int] | None = None,
+    checkout: str | Path | None = None,
 ) -> dict[str, Any]:
     observed_at = now or _now()
     report = {
@@ -651,6 +652,7 @@ def collect_status(
         "remote": _remote(repo, gh_json_runner, observed_at, pr_limit, workflow_limit, stale_minutes),
         "local_boards": collect_local_boards(command_runner),
         "local_processes": collect_lane_processes(command_runner),
+        "orchestrator_lease": session_lease.observe_lease(start=checkout, now=observed_at, repo=repo),
     }
     if not show_local_paths:
         _redact_local_paths(report)
@@ -671,6 +673,25 @@ def _label_text(labels: Mapping[str, Sequence[str]]) -> str:
 
 def _check_text(checks: Sequence[Mapping[str, str]]) -> str:
     return ", ".join(f"{check['name']}={check['state']}" for check in checks) if checks else "none"
+
+
+LEASE_MESSAGES = {
+    "absent": "no orchestrator lease in this checkout",
+    "expired": "lease expired; the next session start takes it over",
+    "malformed": "local lease file is malformed",
+    "unavailable": "local lease is unavailable or no Git checkout was found",
+    "other_repository": "this checkout's lease belongs to a different repository",
+}
+
+
+def _lease_text(lease: Mapping[str, Any] | None) -> str:
+    state = str((lease or {}).get("state") or "unavailable")
+    if state == "active" and lease is not None:
+        return (
+            f"Orchestrator lease: active provider={lease.get('provider')} expires={lease.get('expires_at')}"
+            " (see: code-mower session show --current)"
+        )
+    return f"Orchestrator lease: {state} ({LEASE_MESSAGES.get(state, 'unknown state')})"
 
 
 def render_text(report: Mapping[str, Any]) -> str:
@@ -730,6 +751,7 @@ def render_text(report: Mapping[str, Any]) -> str:
     for process in processes[:8]:
         cwd = f" cwd={process['cwd']}" if process.get("cwd") else ""
         lines.append(f"- {process['provider']} pid={process['pid']} process={process['process']}{cwd}")
+    lines.extend(["", _lease_text(report.get("orchestrator_lease"))])
     lines.extend(["", f"Next: {report['next_action']}"])
     if "tracker" in report:
         lines.extend(tracker_queue.render_text(report["tracker"]))

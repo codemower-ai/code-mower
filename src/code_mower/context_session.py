@@ -255,9 +255,18 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
 def load_session(path: Path) -> dict[str, Any]:
     """Read the public operating brief needed to locate private state."""
     try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        raise ContextError("saved Code Mower session is unavailable or invalid") from None
+    return parse_session(raw)
+
+
+def parse_session(raw: bytes) -> dict[str, Any]:
+    """Validate already-read brief bytes; callers that open the file themselves use this."""
+    try:
         from .context_store import strict_json
-        value = strict_json(Path(path).read_bytes())
-    except (OSError, ContextError):
+        value = strict_json(raw)
+    except ContextError:
         raise ContextError("saved Code Mower session is unavailable or invalid") from None
     required = {"schema", "id", "repo", "host", "orchestrator", "participants", "lease"}
     if value.get("schema") != "code_mower.session.v1" or not required.issubset(value):

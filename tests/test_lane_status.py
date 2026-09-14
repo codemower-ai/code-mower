@@ -508,10 +508,12 @@ class LaneStatusTests(TestCase):
                 "remote",
                 "local_boards",
                 "local_processes",
+                "orchestrator_lease",
                 "next_action",
                 "next_detail",
             },
         )
+        self.assertEqual(set(payload["orchestrator_lease"]), {"state", "provider", "expires_at"})
         self.assertEqual(payload["next_action"], "no active lanes")
         self.assertEqual(payload["next_detail"], "")
 

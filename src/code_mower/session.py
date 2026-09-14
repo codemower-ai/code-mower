@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import context_guided, context_prepare, context_session, remote_session_cli, session_lease
+from . import context_guided, context_prepare, context_session, remote_session_cli, session_current, session_lease
 from .config import ConfigError, _format_issues, load_config, validate_config
 from .context_contract import ContextError, normalize_policy
 from .context_store import ContextStore
@@ -30,7 +30,7 @@ from .participants import (
 from .provider_capabilities import TRANSPORTS, normalize_lane
 
 
-DEFAULT_STATE_DIR = ".code-mower/sessions"
+DEFAULT_STATE_DIR = session_current.DEFAULT_STATE_DIR
 
 # Briefs that hold no lease are still useful for planning and review; the
 # instruction says so rather than leaving the absence to be inferred.
@@ -411,8 +411,24 @@ def main(argv: list[str] | None = None) -> int:
         help="how long the acquired lease stays live before it can be taken over",
     )
     start.add_argument("--json", action="store_true")
-    show = sub.add_parser("show", help="read a saved operating brief")
-    show.add_argument("session_file", type=Path)
+    show = sub.add_parser(
+        "show",
+        help="read a saved operating brief, or find the checkout's current one with --current",
+        description=(
+            "Read a saved operating brief. With --current, resolve the working copy's live "
+            "orchestrator lease to its saved brief without changing any state; "
+            "`code-mower session lease show` reports the lease alone."
+        ),
+    )
+    show.add_argument("session_file", type=Path, nargs="?", help="a saved brief; omit only with --current")
+    show.add_argument(
+        "--current", action="store_true",
+        help="resolve the live lease in this Git checkout to its saved brief (read-only)",
+    )
+    show.add_argument(
+        "--state-dir",
+        help=f"where --current looks for the brief the lease names (default {DEFAULT_STATE_DIR} under the checkout root)",
+    )
     show.add_argument("--json", action="store_true")
     lease = sub.add_parser("lease", help="inspect, renew, or release the local mutating session lease")
     lease_sub = lease.add_subparsers(dest="lease_command", required=True)
@@ -502,7 +518,21 @@ def main(argv: list[str] | None = None) -> int:
     render = render_session
     exit_code = 0
     try:
-        if args.command == "show":
+        if args.command == "show" and (args.current or args.session_file is None):
+            if args.session_file is not None:
+                raise ConfigError("pass either SESSION_FILE or --current, not both")
+            if not args.current:
+                raise ConfigError("pass a SESSION_FILE, or --current to resolve this checkout's live session")
+            resolution = session_current.resolve_current_session(state_dir=args.state_dir)
+            if not resolution["current"]:
+                if args.json:
+                    print(json.dumps({**resolution, "session": None}, indent=2, sort_keys=True))
+                print(f"error: {resolution['guidance']}", file=sys.stderr)
+                return 1
+            payload = resolution["session"]
+        elif args.command == "show":
+            if args.state_dir is not None:
+                raise ConfigError("--state-dir applies only with --current")
             payload = json.loads(args.session_file.read_text(encoding="utf-8"))
             if not isinstance(payload, dict) or payload.get("schema") != "code_mower.session.v1":
                 raise ConfigError("not a Code Mower session file")
