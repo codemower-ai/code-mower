@@ -123,7 +123,7 @@ def build_session(
             lane = lanes.get(review_lane, reference_review_config(review_lane))
             if not isinstance(lane, Mapping):
                 raise ConfigError(f"lane {review_lane!r} must be a mapping")
-            lane = normalize_lane(review_lane, lane)
+            lane = normalize_lane(review_lane, lane, config=config)
             review = {
                 "lane": review_lane,
                 "merge_authority": bool(lane.get("merge_authority")),

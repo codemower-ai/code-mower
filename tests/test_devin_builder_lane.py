@@ -1425,7 +1425,7 @@ fi
             leftover = list(scratch_tmp.iterdir())
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("devin CLI not on PATH", completed.stderr)
+        self.assertIn("devin cannot act as builder: the selected runtime is unavailable", completed.stderr)
         # The prompt file (issue/PR context) must not survive a missing-CLI
         # exit: it is created and secured before the CLI is even probed.
         self.assertEqual(leftover, [])

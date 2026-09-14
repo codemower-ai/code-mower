@@ -117,7 +117,7 @@ def decide_role(
         if role == "builder":
             scope = "bounded"
     qualification_state = "repository_policy"
-    if product == "devin":
+    if product == "devin" or qualification is not None or settings.get("qualification") is not None:
         qualification_state = "not_required" if scope == "informational" else "missing"
         if scope != "informational":
             reference = qualification if qualification is not None else settings.get(
@@ -170,18 +170,24 @@ def require_role(decision: Mapping[str, Any], *, execution: bool = False) -> Non
     product, role, reason = decision["product"], decision["role"], decision["reason"]
     if reason in {"qualification_missing", "qualification_stale"}:
         detail = "missing or stale role-specific qualification"
+        action = "select a qualified participant or supply separately reviewed role qualification"
     elif reason == "policy_denied":
         detail = "the repository role policy disables this role"
+        action = "select a participant permitted by the repository policy"
     elif reason == "bounded_work_required":
         detail = "only explicitly bounded builder work is qualified"
+        action = "use an approved bounded work order"
     elif reason == "capability_unavailable":
         detail = "the selected transport does not support this role"
+        action = "select a supported transport and qualified participant"
+    elif reason == "runtime_unavailable":
+        detail = "the selected runtime is unavailable"
+        action = "restore the selected runtime before retrying"
     else:
         detail = "runtime readiness has not been verified"
-    raise ConfigError(
-        f"{product} cannot act as {role}: {detail}; select a qualified, ready participant "
-        "or supply separately reviewed role qualification. No participant was substituted."
-    )
+        action = "verify the selected runtime before executing work"
+    raise ConfigError(f"{product} cannot act as {role}: {detail}; {action}.")
+
 
 
 def require_builder(

@@ -104,7 +104,9 @@ def resolve_transport(value: Any) -> ProviderTransport:
     raise ConfigError("Devin transport must be devin_cli or devin_api_v3 (legacy devin/devin_cloud means hosted)")
 
 
-def lane_transport(lane_id: str, lane: Mapping[str, Any]) -> ProviderTransport | None:
+def lane_transport(
+    lane_id: str, lane: Mapping[str, Any], *, config: Mapping[str, Any] | None = None,
+) -> ProviderTransport | None:
     """Infer legacy lane identities, rejecting contradictory declarations."""
     provider = lane.get("provider")
     product = lane.get("product")
@@ -150,7 +152,7 @@ def lane_transport(lane_id: str, lane: Mapping[str, Any]) -> ProviderTransport |
         from .role_eligibility import decide_role, require_role
         require_role(decide_role(
             "devin", "reviewer", transport=transport.transport,
-            merge_authority=True, qualification=lane.get("role_qualification"),
+            merge_authority=True, qualification=lane.get("role_qualification"), config=config,
         ))
     return transport
 
@@ -175,9 +177,11 @@ def devin_lane_transport_name(
     return TRANSPORT_ALIASES.get(lane_id)
 
 
-def normalize_lane(lane_id: str, lane: Mapping[str, Any]) -> dict[str, Any]:
+def normalize_lane(
+    lane_id: str, lane: Mapping[str, Any], *, config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     result = dict(lane)
-    transport = lane_transport(lane_id, lane)
+    transport = lane_transport(lane_id, lane, config=config)
     if transport:
         result.update(transport.declaration())
         result.setdefault("merge_authority", False)
@@ -191,7 +195,7 @@ def normalize_config(config: Mapping[str, Any]) -> dict[str, Any]:
     lanes = config.get("lanes")
     if isinstance(lanes, Mapping):
         result["lanes"] = {
-            lane_id: normalize_lane(lane_id, lane) if isinstance(lane, Mapping) else lane
+            lane_id: normalize_lane(lane_id, lane, config=config) if isinstance(lane, Mapping) else lane
             for lane_id, lane in lanes.items()
         }
     return result

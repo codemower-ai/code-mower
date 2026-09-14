@@ -8,6 +8,7 @@ import io
 import json
 import os
 import tempfile
+import subprocess
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from code_mower import config, init, participants, remote_session_cli, role_eligibility as roles, session
+from code_mower import config, init, lane_delivery, participants, remote_session_cli, role_eligibility as roles, session
 from code_mower.devin_readiness import devin_readiness
 from code_mower.provider_capabilities import normalize_lane
 from code_mower.devin_work_orders import DevinWorkOrders
@@ -82,6 +83,18 @@ class RoleDecisionTests(unittest.TestCase):
         )
         self.assertEqual(decision["reason"], "qualification_missing")
 
+    def test_future_reviewer_record_still_respects_repository_narrowing(self):
+        key = "separate-reviewed-role"
+        record = roles.Qualification("devin", "reviewer", "devin_cli", "local_runner", "unrestricted",
+                                     "https://example.test/qualification")
+        lane = participants.reference_review_config("devin_cli")
+        lane.update(merge_authority=True, informational=False, role_qualification=key)
+        with mock.patch.object(roles, "QUALIFICATIONS", {key: record}):
+            self.assertTrue(normalize_lane("devin_cli", lane, config={})["merge_authority"])
+            for narrowing in (policy("reviewer", enabled=False), policy("reviewer", qualification="revoked")):
+                with self.assertRaises(config.ConfigError):
+                    normalize_lane("devin_cli", lane, config=narrowing)
+
     def test_expired_revoked_or_changed_capability_evidence_is_stale(self):
         now = datetime(2026, 9, 14, tzinfo=timezone.utc)
         key = "devin-hosted-builder-v140"
@@ -105,6 +118,12 @@ class RoleDecisionTests(unittest.TestCase):
         for transport in ("devin_cli", "devin_api_v3"):
             decision = roles.decide_role("devin", "reviewer", transport=transport, runtime="ready")
             self.assertEqual((decision["status"], decision["scope"]), ("eligible", "informational"))
+
+    def test_explicit_qualification_narrows_otherwise_preserved_provider_policy(self):
+        for product in ("codex", "claude", "cursor"):
+            decision = roles.decide_role(product, "builder", runtime="ready",
+                config={"role_policy": {product: {"builder": {"qualification": "missing"}}}})
+            self.assertEqual(decision["reason"], "qualification_missing")
 
     def test_policy_cannot_contain_self_attested_evidence(self):
         for value in (True, {"qualified": True}, {"verified": True}, {"qualification": "private value"}):
@@ -219,6 +238,90 @@ class SessionRoleAdmissionTests(unittest.TestCase):
         self.assertEqual(decisions["orchestrator"]["status"], "ineligible")
         self.assertEqual(decisions["merge_reviewer"]["status"], "ineligible")
         self.assertEqual(decisions["reviewer"]["scope"], "informational")
+
+
+class LocalBuilderRoleAdmissionTests(unittest.TestCase):
+    def test_local_admission_is_read_only_and_checks_runtime_policy_and_transport(self):
+        for content, runtime, expected in (
+            (None, "ready", 0), (None, "unchecked", 2), (None, "unavailable", 2),
+            ("role_policy:\n  devin:\n    builder:\n      enabled: false\n", "ready", 2),
+            ("role_policy:\n  devin:\n    builder:\n      qualification: missing\n", "ready", 2),
+            ("session_defaults:\n  transports:\n    devin: devin_api_v3\n", "ready", 2),
+        ):
+            with self.subTest(content=content, runtime=runtime), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                if content is not None:
+                    (root / "code-mower.yml").write_text(content)
+                before = sorted(root.rglob("*"))
+                with redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()):
+                    result = lane_delivery.main(["admit-builder", "--checkout", str(root), "--lane", "devin",
+                                                 "--runtime-readiness", runtime])
+                self.assertEqual(result, expected)
+                self.assertEqual(sorted(root.rglob("*")), before)
+                if result == 0:
+                    self.assertEqual(json.loads(output.getvalue())["qualification"], "qualified")
+
+    def test_local_admission_rejects_nonregular_or_unreadable_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "code-mower.yml"
+            path.mkdir()
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(lane_delivery.main(["admit-builder", "--checkout", str(root),
+                    "--lane", "devin", "--runtime-readiness", "ready"]), 2)
+            self.assertIn("regular trusted repository configuration", errors.getvalue())
+            path.rmdir()
+            path.write_text("private malformed config value")
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(lane_delivery.main(["admit-builder", "--checkout", str(root),
+                    "--lane", "devin", "--runtime-readiness", "ready"]), 2)
+            self.assertNotIn("private malformed", errors.getvalue())
+            self.assertEqual(len(errors.getvalue().splitlines()), 1)
+
+    def test_generated_runner_rejects_revoked_policy_before_provider_launch(self):
+        from test_devin_builder_lane import _generate, _FAKE_GIT, _lane_delivery_env
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            generated = root / "generated"
+            _generate(generated)
+            work_root = root / "work"
+            checkout = work_root / "devin/owner__repo"
+            (checkout / ".git/hooks").mkdir(parents=True)
+            (checkout / "code-mower.yml").write_text("role_policy:\n  devin:\n    builder:\n      enabled: false\n")
+            binaries = root / "bin"
+            binaries.mkdir()
+            gh_script = """#!/usr/bin/env bash
+set -eu
+case "$1 $2" in
+  "repo view") printf 'main\n' ;;
+  "pr list") printf '[]\n' ;;
+  "api user") printf 'owner\n' ;;
+  "issue view")
+    case " $* " in
+      *"--json labels"*) printf '["tier:R","builder:devin","dispatched:devin"]\n' ;;
+      *) printf '{"number":12,"title":"Bounded task","body":"Implement the assigned task.","labels":[{"name":"tier:R"}],"author":{"login":"owner"},"comments":[]}\n' ;;
+    esac ;;
+  *) exit 2 ;;
+esac
+"""
+            for name, body in (("git", _FAKE_GIT), ("gh", gh_script),
+                               ("devin", '#!/bin/sh\n: > "$PROVIDER_MARKER"\n')):
+                path = binaries / name
+                path.write_text(body)
+                path.chmod(0o755)
+            marker = root / "provider-ran"
+            result = subprocess.run([str(generated / "tools/lanes/run_mac_lane.sh"), "--lane", "devin",
+                                     "--repo", "owner/repo", "--target", "issue:12", "--max-minutes", "1"],
+                                    cwd=generated, env={**os.environ, **_lane_delivery_env(),
+                                        "LANE_WORK_ROOT": str(work_root), "LANE_TRUSTED_AUTHORS": "owner",
+                                        "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+                                        "PROVIDER_MARKER": str(marker)},
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("repository role policy disables", result.stderr)
+            self.assertFalse(marker.exists())
+            source = (ROOT / "templates/lanes/run_mac_lane.sh").read_text()
+            self.assertLess(source.index('"${lane_delivery[@]}" admit-builder'), source.index("--reserve-launch"))
 
 
 class RawRemoteRoleAdmissionTests(unittest.TestCase):

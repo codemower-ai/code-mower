@@ -38,6 +38,7 @@ import os
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -1227,6 +1228,10 @@ def main(argv: list[str] | None = None) -> int:
     _add_handoff_parser(subparsers)
     _add_scan_prompt_parser(subparsers)
     _add_supervise_parser(subparsers)
+    admit = subparsers.add_parser("admit-builder", help="Check role admission against the trusted fresh-base checkout")
+    admit.add_argument("--checkout", type=Path, required=True)
+    admit.add_argument("--lane", required=True)
+    admit.add_argument("--runtime-readiness", choices=("ready", "unchecked", "unavailable"), default="unchecked")
     runtime = subparsers.add_parser("runtime", help="Prepare bounded dedicated-checkout builder capabilities")
     runtime.add_argument("--checkout", type=Path, required=True)
     runtime.add_argument("--python", default="")
@@ -1244,6 +1249,8 @@ def main(argv: list[str] | None = None) -> int:
             return _scan_prompt_main(args)
         if args.command == "supervise":
             return _supervise_main(args)
+        if args.command == "admit-builder":
+            return _admit_builder_main(args)
         if args.command == "runtime":
             from . import lane_runtime
             payload = lane_runtime.prepare(args.checkout, args.python)
@@ -1258,6 +1265,47 @@ def main(argv: list[str] | None = None) -> int:
         print(f"lane-delivery: {type(exc).__name__}", file=sys.stderr)
         return 2
     raise AssertionError(f"unhandled lane-delivery command: {args.command}")
+
+
+def _admit_builder_main(args: argparse.Namespace) -> int:
+    # The maintained runner has reset this dedicated checkout to the trusted
+    # default branch, before any provider launch. Missing config means the
+    # maintained defaults; unreadable or non-regular config never means defaults.
+    from .config import load_config
+    from .participants import configured_transports
+    from .role_eligibility import decide_role, require_builder, require_role
+    from .yaml_subset import ConfigError
+
+    if not args.checkout.is_dir():
+        raise LaneDeliveryError("builder role admission requires an existing trusted checkout")
+    path = args.checkout / "code-mower.yml"
+    try:
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            configuration = {}
+        else:
+            if not stat.S_ISREG(mode):
+                raise ConfigError("builder role admission requires regular trusted repository configuration")
+            try:
+                configuration = load_config(path)
+            except (ConfigError, OSError, UnicodeError):
+                raise ConfigError("builder role admission requires valid trusted repository configuration") from None
+        if args.lane == "devin":
+            if configured_transports(configuration).get("devin", "devin_cli") != "devin_cli":
+                raise ConfigError("the local Devin runner cannot substitute for a selected hosted transport")
+            decision = require_builder(config=configuration, transport="devin_cli",
+                                       runtime=args.runtime_readiness)
+        else:
+            decision = decide_role(args.lane, "builder", config=configuration,
+                                   runtime=args.runtime_readiness, bounded=True)
+            require_role(decision, execution=True)
+    except (ConfigError, OSError, UnicodeError) as exc:
+        if isinstance(exc, ConfigError):
+            raise LaneDeliveryError(str(exc)) from None
+        raise LaneDeliveryError("trusted builder configuration is unavailable; inspect local permissions") from None
+    print(json.dumps(decision, sort_keys=True))
+    return 0
 
 
 def _classify_main(args: argparse.Namespace) -> int:
