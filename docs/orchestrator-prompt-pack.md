@@ -227,7 +227,11 @@ The owner selected Devin for OWNER/REPO.
 Report the current posture first: run code-mower doctor CONFIG --profile PROFILE
 --devin and read the selected transport, readiness, and next actions. Use the
 same CONFIG and PROFILE the repository actually uses; a bare run inspects the
-packaged starter instead.
+packaged starter instead. A checkout that has no code-mower.yml has no path to
+name: run code-mower doctor --easy --devin, which selects the packaged starter
+under the recommended profile, and use --easy in place of CONFIG --profile
+PROFILE in the commands below. Never substitute --easy for a repository
+configuration to shorten a command; it inspects a different posture.
 
 To change transports, preview the selection with code-mower init CONFIG
 --profile PROFILE --set-transport devin=devin_api_v3 --dry-run, then stage it

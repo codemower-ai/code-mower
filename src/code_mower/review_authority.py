@@ -34,6 +34,9 @@ SESSION_MERGE_AUTHORITY_LABEL = "merge-authority lane"
 SESSION_INFORMATIONAL_LABEL = "informational lane"
 
 REPOSITORY_CONFIG_FILENAME = "code-mower.yml"
+# Implicit discovery reads the repository's active policy, which lives on the
+# trusted base ref rather than in the PR-head checkout an audit runs against.
+DEFAULT_BASE_REF = "origin/main"
 
 
 def authority_label(payload: Mapping[str, Any], *, session: bool = False) -> str:
@@ -109,16 +112,58 @@ def review_authority(
     return payload
 
 
+def _trusted_base_config(repo_root: Path, base_ref: str) -> tuple[Mapping[str, Any] | None, str]:
+    """Read `code-mower.yml` as the trusted base ref has it, never the checkout.
+
+    An audit runs against a PR-head checkout, so the configuration sitting in the
+    working tree is the change under review. Reporting a posture from it would
+    let an unmerged promotion or demotion take effect in the comment header
+    before it is approved, so implicit discovery reads the base ref the same way
+    :func:`context_audit.required_for_repo` does.
+
+    A base ref that does not track the file configures no lane, which is the
+    maintained default. Discovery that cannot run at all falls back to the same
+    default rather than to the proposed configuration: the trusted answer is
+    unavailable, and the untrusted one is exactly what must not be read.
+    """
+    import subprocess
+
+    from .config import _YamlSubsetParser
+
+    try:
+        listing = subprocess.run(
+            ["git", "ls-tree", "--name-only", base_ref, "--", REPOSITORY_CONFIG_FILENAME],
+            cwd=repo_root, capture_output=True, text=True, check=True, timeout=10,
+        )
+        if not listing.stdout.strip():
+            return None, "packaged_default"
+        shown = subprocess.run(
+            ["git", "show", f"{base_ref}:{REPOSITORY_CONFIG_FILENAME}"],
+            cwd=repo_root, capture_output=True, text=True, check=True, timeout=10,
+        )
+        parsed = _YamlSubsetParser(shown.stdout).parse()
+        if not isinstance(parsed, Mapping):
+            raise ConfigError("top-level config must be a mapping")
+        return parsed, "trusted_base_config"
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError, ConfigError):
+        return None, "packaged_default"
+
+
 def resolve_repository_config(
-    *, config_path: str | Path | None = None, repo_root: str | Path | None = None
+    *,
+    config_path: str | Path | None = None,
+    repo_root: str | Path | None = None,
+    base_ref: str = DEFAULT_BASE_REF,
 ) -> tuple[Mapping[str, Any] | None, str]:
     """Load the repository configuration that decides this run's posture.
 
     An explicitly selected configuration is authoritative: it is never replaced
     by the packaged starter, and an unreadable one is an error rather than a
-    silent downgrade to a different posture. Without an explicit selection, a
-    repository configuration in the checkout is used when present, and only a
-    checkout that configures nothing falls back to the maintained lane defaults.
+    silent downgrade to a different posture. Without an explicit selection, a Git
+    checkout is read at its trusted base ref rather than at the head under
+    review, and only a base that configures nothing falls back to the maintained
+    lane defaults. A directory that is not a Git checkout has no base ref to
+    trust, so its own file is the configuration it runs under.
     """
     from . import config as code_mower_config
 
@@ -128,7 +173,10 @@ def resolve_repository_config(
             raise ConfigError(f"selected repository configuration not found: {path}")
         return code_mower_config.load_config(path), "explicit_repository_config"
     if repo_root is not None:
-        candidate = Path(repo_root).expanduser() / REPOSITORY_CONFIG_FILENAME
+        root = Path(repo_root).expanduser()
+        if base_ref and (root / ".git").exists():
+            return _trusted_base_config(root, base_ref)
+        candidate = root / REPOSITORY_CONFIG_FILENAME
         if candidate.is_file():
             return code_mower_config.load_config(candidate), "repository_config"
     return None, "packaged_default"
@@ -139,31 +187,42 @@ def effective_merge_authority(
     *,
     config_path: str | Path | None = None,
     repo_root: str | Path | None = None,
+    base_ref: str = DEFAULT_BASE_REF,
     lane: str | None = None,
     override: bool | None = None,
 ) -> dict[str, Any]:
     """Resolve the posture an audit wrapper should render for this run.
 
-    An explicit operator override is still honoured, and is reported as such so
-    the rendered posture always names where it came from.
+    The configured decision is computed first, and an operator override is read
+    against it rather than instead of it. An override can only narrow: a flag or
+    environment value asking for merge authority cannot grant it to an
+    informational lane, a denied role policy, an unavailable capability or an
+    unqualified role, and it never skips an explicitly selected configuration
+    that could not be read. An override asking for informational is always
+    honoured, and whichever source decided the rendered posture is named.
     """
-    if override is not None:
-        payload = {
-            "schema": SCHEMA,
-            "product": product,
-            "lane": lane or (PARTICIPANTS[product].review_lane if product in PARTICIPANTS else None),
-            "policy_source": "operator",
-            "config_source": "operator_override",
-            "configured_merge_authority": override,
-            "merge_authority": override,
-            "scope": "unrestricted" if override else "informational",
-            "reason": "operator_override",
-        }
-        payload["label"] = authority_label(payload)
-        return payload
     config, config_source = resolve_repository_config(
-        config_path=config_path, repo_root=repo_root
+        config_path=config_path, repo_root=repo_root, base_ref=base_ref
     )
-    return review_authority(
+    payload = review_authority(
         product, config=config, lane=lane, config_source=config_source
     )
+    if override is None:
+        return payload
+    payload["operator_override"] = override
+    if not override or payload["merge_authority"]:
+        # Narrowing to informational, or agreeing with the computed posture: the
+        # operator decided the rendered result either way.
+        payload["merge_authority"] = override
+        payload["policy_source"] = "operator"
+        payload["config_source"] = "operator_override"
+        payload["reason"] = "operator_override"
+        if not override:
+            payload["scope"] = "informational"
+    else:
+        # A positive override cannot widen what the configuration narrowed; the
+        # computed reason stays the rendered one so the header is not a claim the
+        # repository's policy does not support.
+        payload["override_ignored"] = True
+    payload["label"] = authority_label(payload)
+    return payload

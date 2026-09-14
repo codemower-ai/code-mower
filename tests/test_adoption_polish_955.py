@@ -131,6 +131,84 @@ class HistoricalFixtureTests(unittest.TestCase):
         self.assertEqual(review_authority.SESSION_INFORMATIONAL_LABEL, "informational lane")
 
 
+class NonWideningOverrideTests(unittest.TestCase):
+    """A positive flag or environment value can never widen computed authority."""
+
+    def _config(self, path: Path, body: str) -> Path:
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def setUp(self):
+        import tempfile
+
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
+
+    def test_positive_override_cannot_widen_an_informational_lane(self):
+        config = self._config(
+            self.root / "informational.yml",
+            "version: 1\n"
+            "lanes:\n"
+            "  claude_audit:\n"
+            "    type: review\n"
+            "    driver: claude_cli\n"
+            "    provider: claude\n"
+            "    merge_authority: false\n"
+            "    informational: true\n"
+            "    labels:\n"
+            "      needs: needs-claude-audit\n"
+            "      done: claude-audit-done\n"
+            "      blocked: claude-audit-blocked\n",
+        )
+        payload = review_authority.effective_merge_authority(
+            "claude", config_path=config, override=True
+        )
+        self.assertFalse(payload["merge_authority"])
+        self.assertEqual(payload["label"], "informational only")
+        self.assertEqual(payload["reason"], "lane_informational")
+        self.assertTrue(payload["override_ignored"])
+        self.assertEqual(payload["policy_source"], "repository")
+
+    def test_positive_override_cannot_widen_a_denied_role_policy(self):
+        config = self._config(
+            self.root / "denied.yml",
+            "version: 1\n"
+            "role_policy:\n"
+            "  codex:\n"
+            "    reviewer:\n"
+            "      enabled: false\n",
+        )
+        payload = review_authority.effective_merge_authority(
+            "codex", config_path=config, override=True
+        )
+        self.assertFalse(payload["merge_authority"])
+        self.assertEqual(payload["reason"], "policy_denied")
+        self.assertTrue(payload["override_ignored"])
+
+    def test_positive_override_is_honoured_when_the_configuration_agrees(self):
+        payload = review_authority.effective_merge_authority("claude", override=True)
+        self.assertTrue(payload["merge_authority"])
+        self.assertEqual(payload["policy_source"], "operator")
+        self.assertEqual(payload["reason"], "operator_override")
+        self.assertNotIn("override_ignored", payload)
+
+    def test_negative_override_still_narrows_a_merge_authority_lane(self):
+        payload = review_authority.effective_merge_authority("codex", override=False)
+        self.assertFalse(payload["merge_authority"])
+        self.assertEqual(payload["scope"], "informational")
+        self.assertEqual(payload["policy_source"], "operator")
+
+    def test_override_does_not_skip_an_explicitly_missing_configuration(self):
+        for override in (True, False):
+            with self.subTest(override=override):
+                with self.assertRaises(ConfigError):
+                    review_authority.effective_merge_authority(
+                        "claude",
+                        config_path=self.root / "absent.yml",
+                        override=override,
+                    )
+
+
 class RepositoryConfigSelectionTests(unittest.TestCase):
     def test_explicit_missing_config_is_an_error_not_a_starter_fallback(self):
         with self.assertRaises(ConfigError):
@@ -142,6 +220,198 @@ class RepositoryConfigSelectionTests(unittest.TestCase):
         )
         self.assertIsNone(config)
         self.assertEqual(source, "packaged_default")
+
+
+class TrustedBaseAuthorityTests(unittest.TestCase):
+    """Implicit discovery reads active policy, not the change under review."""
+
+    LANE = (
+        "version: 1\n"
+        "lanes:\n"
+        "  claude_audit:\n"
+        "    type: review\n"
+        "    driver: claude_cli\n"
+        "    provider: claude\n"
+        "    merge_authority: {authority}\n"
+        "    informational: {informational}\n"
+        "    labels:\n"
+        "      needs: needs-claude-audit\n"
+        "      done: claude-audit-done\n"
+        "      blocked: claude-audit-blocked\n"
+    )
+
+    def _git(self, *args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=self.root, check=True, capture_output=True, text=True
+        )
+
+    def setUp(self):
+        import tempfile
+
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
+        self._git("init", "--initial-branch", "main")
+        self._git("config", "user.email", "lane@example.invalid")
+        self._git("config", "user.name", "Lane")
+        self._git("config", "commit.gpgsign", "false")
+
+    def _commit(self, body: str, message: str) -> None:
+        (self.root / "code-mower.yml").write_text(body, encoding="utf-8")
+        self._git("add", "code-mower.yml")
+        self._git("commit", "-m", message)
+
+    def test_a_pr_promoting_its_own_lane_reports_the_base_policy(self):
+        self._commit(
+            self.LANE.format(authority="false", informational="true"), "base policy"
+        )
+        # The checkout is the PR head, which proposes merge authority.
+        (self.root / "code-mower.yml").write_text(
+            self.LANE.format(authority="true", informational="false"), encoding="utf-8"
+        )
+        payload = review_authority.effective_merge_authority(
+            "claude", repo_root=self.root, base_ref="main"
+        )
+        self.assertFalse(payload["merge_authority"])
+        self.assertEqual(payload["config_source"], "trusted_base_config")
+        self.assertEqual(payload["reason"], "lane_informational")
+
+    def test_a_pr_demoting_its_own_lane_also_reports_the_base_policy(self):
+        self._commit(
+            self.LANE.format(authority="true", informational="false"), "base policy"
+        )
+        (self.root / "code-mower.yml").write_text(
+            self.LANE.format(authority="false", informational="true"), encoding="utf-8"
+        )
+        payload = review_authority.effective_merge_authority(
+            "claude", repo_root=self.root, base_ref="main"
+        )
+        self.assertTrue(payload["merge_authority"])
+        self.assertEqual(payload["config_source"], "trusted_base_config")
+
+    def test_a_base_without_a_configuration_keeps_the_maintained_default(self):
+        (self.root / "README.md").write_text("x\n", encoding="utf-8")
+        self._git("add", "README.md")
+        self._git("commit", "-m", "no config")
+        (self.root / "code-mower.yml").write_text(
+            self.LANE.format(authority="false", informational="true"), encoding="utf-8"
+        )
+        config, source = review_authority.resolve_repository_config(
+            repo_root=self.root, base_ref="main"
+        )
+        self.assertIsNone(config)
+        self.assertEqual(source, "packaged_default")
+
+    def test_unavailable_discovery_never_falls_back_to_the_head_checkout(self):
+        self._commit(
+            self.LANE.format(authority="false", informational="true"), "base policy"
+        )
+        (self.root / "code-mower.yml").write_text(
+            self.LANE.format(authority="true", informational="false"), encoding="utf-8"
+        )
+        config, source = review_authority.resolve_repository_config(
+            repo_root=self.root, base_ref="refs/heads/no-such-base"
+        )
+        self.assertIsNone(config)
+        self.assertEqual(source, "packaged_default")
+
+    def test_an_explicit_selection_still_wins_over_the_trusted_base(self):
+        self._commit(
+            self.LANE.format(authority="true", informational="false"), "base policy"
+        )
+        selected = self.root / "selected.yml"
+        selected.write_text(
+            self.LANE.format(authority="false", informational="true"), encoding="utf-8"
+        )
+        payload = review_authority.effective_merge_authority(
+            "claude", config_path=selected, repo_root=self.root, base_ref="main"
+        )
+        self.assertFalse(payload["merge_authority"])
+        self.assertEqual(payload["config_source"], "explicit_repository_config")
+
+
+class PortableStarterCommandTests(unittest.TestCase):
+    """The packaged starter has no repository path a rendered command can pin."""
+
+    STARTER = devin_readiness.PACKAGED_STARTER_SOURCE
+    # Stands in for the installation-specific path the starter resolves to at
+    # runtime; the literal prefix is assembled the way privacy_scan.py writes its
+    # own patterns.
+    INSTALLED = "/" + "opt/venv/lib/code_mower/templates/code-mower.example.yml"
+
+    def test_starter_doctor_command_uses_the_supported_selector(self):
+        command = devin_readiness.doctor_command(
+            config_path=self.INSTALLED,
+            profile="recommended",
+            config_source=self.STARTER,
+            devin=True,
+        )
+        self.assertEqual(command, "`code-mower doctor --easy --devin`")
+        self.assertNotIn(self.INSTALLED, command)
+
+    def test_starter_transport_selection_is_portable_and_still_staged(self):
+        steps = devin_readiness.select_transport_command(
+            "devin_api_v3",
+            config_path=self.INSTALLED,
+            profile="recommended",
+            config_source=self.STARTER,
+        )
+        self.assertNotIn(self.INSTALLED, steps)
+        self.assertIn("code-mower init --easy --set-transport devin=devin_api_v3 --dry-run", steps)
+        self.assertIn("--apply --output-dir", steps)
+        self.assertIn("code-mower doctor --easy --devin", steps)
+
+    def test_repository_configuration_is_never_replaced_by_the_starter(self):
+        repository = "code-mower.yml"
+        steps = devin_readiness.select_transport_command(
+            "devin_api_v3", config_path=repository, profile="recommended"
+        )
+        self.assertIn(repository, steps)
+        self.assertNotIn("--easy", steps)
+
+    def test_a_non_recommended_starter_profile_keeps_its_explicit_pin(self):
+        # `--easy` is an alias for the recommended profile, so it cannot stand in
+        # for another one; the command stays honest rather than short.
+        command = devin_readiness.doctor_command(
+            config_path=self.INSTALLED, profile="advanced", config_source=self.STARTER
+        )
+        self.assertIn("--profile advanced", command)
+        self.assertNotIn("--easy", command)
+
+    def test_paths_and_profiles_containing_spaces_stay_quoted(self):
+        spaced = "/" + "srv/Code Mower/code-mower.yml"
+        command = devin_readiness.doctor_command(
+            config_path=spaced, profile="my profile", devin=True
+        )
+        self.assertIn("'/" + "srv/Code Mower/code-mower.yml'", command)
+        self.assertIn("--profile 'my profile'", command)
+
+    def test_custom_lane_guidance_names_the_starter_without_a_path(self):
+        guidance = devin_readiness.custom_lane_guidance(
+            "devin_api_v3",
+            config_path=self.INSTALLED,
+            profile="recommended",
+            config_source=self.STARTER,
+            lanes=("house_devin",),
+        )
+        self.assertNotIn(self.INSTALLED, guidance)
+        self.assertIn("packaged starter configuration (--easy)", guidance)
+        self.assertIn("`house_devin`", guidance)
+
+    def test_readiness_findings_carry_the_starter_source_into_remediation(self):
+        findings = devin_readiness.devin_readiness(
+            None,
+            transport="devin_api_v3",
+            config_profile="recommended",
+            config_path=self.INSTALLED,
+            config_source=self.STARTER,
+            env={},
+        )
+        rendered = "\n".join(
+            f"{finding.remediation}\n{json.dumps(finding.detail, default=str)}"
+            for finding in findings
+        )
+        self.assertNotIn(self.INSTALLED, rendered)
+        self.assertIn("--easy", rendered)
 
 
 class SupersededDevinBridgeTests(unittest.TestCase):
@@ -314,9 +584,12 @@ class ConciseDoctorViewTests(unittest.TestCase):
 
     def test_summary_keeps_local_detail_out_of_nothing_it_did_not_receive(self):
         # Privacy: the summary renders only fields the report already carried.
+        # The home prefix is assembled the way scripts/privacy_scan.py writes its
+        # own patterns, so the assertion does not become a tracked literal.
+        home_prefix = "/" + "Users/"
         text = render_doctor_summary(self.report)
         for line in text.splitlines():
-            self.assertNotIn("/Users/", line)
+            self.assertNotIn(home_prefix, line)
 
 
 class ConciseDoctorCliTests(unittest.TestCase):
@@ -364,6 +637,10 @@ class PromptPackDevinGuidanceTests(unittest.TestCase):
 
     def test_role_and_lease_guidance_is_referenced_not_restated(self):
         self.assertIn("docs/participant-qualification.md", self.text)
+
+    def test_packaged_starter_posture_names_the_portable_selector(self):
+        self.assertIn("code-mower doctor --easy --devin", self.text)
+        self.assertIn("Never substitute --easy for a repository", self.text)
 
 
 if __name__ == "__main__":

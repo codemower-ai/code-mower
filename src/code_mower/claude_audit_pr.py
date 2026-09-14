@@ -2040,6 +2040,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "claude",
             config_path=args.code_mower_config,
             repo_root=repo_paths.get(args.repo),
+            base_ref=args.base_ref,
             override=args.merge_authority,
         )
         print(

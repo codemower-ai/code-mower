@@ -320,6 +320,7 @@ def run_doctor(
                 provider_config_dir=provider_config_dir,
                 config_profile=profile,
                 config_path=str(config_path),
+                config_source=config_source,
                 effective_lanes=effective_lanes,
                 adoption_posture=adoption_posture,
             )
