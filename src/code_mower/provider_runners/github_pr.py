@@ -131,16 +131,19 @@ def fetch_issue_comments(
             f"/repos/{repo}/issues/{issue_number}/comments?per_page={per_page}&page={page}",
             token=token,
         )
-        if not isinstance(chunk, list):
-            raise ValueError(
-                f"GitHub issue comments page {page} for {repo}#{issue_number} "
-                f"was not a list"
+        # The same shared record contract every other authoritative read uses:
+        # a list of comments whose `body` and `user.login` are readable where
+        # present. A dict is not a comment -- a numeric body or an object login
+        # would be stringified into an author or a marker GitHub never sent.
+        from ..builder_lineage import LineageError, require_comment_list
+
+        try:
+            require_comment_list(
+                chunk,
+                what=f"GitHub issue comments page {page} for {repo}#{issue_number}",
             )
-        if any(not isinstance(comment, dict) for comment in chunk):
-            raise ValueError(
-                f"GitHub issue comments page {page} for {repo}#{issue_number} "
-                f"contains an entry that is not a comment"
-            )
+        except LineageError as exc:
+            raise ValueError(str(exc)) from None
         if not chunk:
             return all_comments
         all_comments.extend(chunk)

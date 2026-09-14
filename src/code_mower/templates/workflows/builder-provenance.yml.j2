@@ -139,8 +139,25 @@ jobs:
               if len(payload) > PER_PAGE:
                   refuse(f"page {index} of the comment history is over the page size")
               for entry in payload:
+                  # A dict is not a comment. The marker lives in `body` and
+                  # trust is decided from `user.login`, so a present field of
+                  # the wrong type is a record whose meaning cannot be
+                  # recovered -- and coercing it invents an author or a body
+                  # GitHub never sent. `user: null` and an absent `body` are
+                  # GitHub's own schema and stay ordinary.
                   if not isinstance(entry, dict):
                       refuse(f"page {index} of the comment history holds a non-object")
+                  body = entry.get("body")
+                  if body is not None and not isinstance(body, str):
+                      refuse(f"page {index} holds a comment whose body is not text")
+                  user = entry.get("user")
+                  if user is None:
+                      continue
+                  if not isinstance(user, dict):
+                      refuse(f"page {index} holds a comment whose author is not an object")
+                  login = user.get("login")
+                  if login is not None and not isinstance(login, str):
+                      refuse(f"page {index} holds a comment whose author login is not text")
               return payload
 
           comments = []

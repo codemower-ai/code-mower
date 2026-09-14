@@ -626,6 +626,33 @@ class GeneratedProvenanceJobCarriesTheAuthorityContract(unittest.TestCase):
         self.assertNotEqual(payload.get("executor"), "chatgpt-codex-connector")
 
 
+#: Records that are dicts but whose relevant fields cannot be read. A dict is
+#: not a comment: the marker lives in `body` and trust is decided from
+#: `user.login`, so a present field of the wrong type would be stringified into
+#: an author or a body GitHub never sent.
+MALFORMED_COMMENT_RECORDS = (
+    {"user": {"login": AUTHORITY}, "body": 12345},
+    {"user": {"login": AUTHORITY}, "body": {"text": "hi"}},
+    {"user": {"login": AUTHORITY}, "body": ["hi"]},
+    {"user": "codemower-ai", "body": "hi"},
+    {"user": 7, "body": "hi"},
+    {"user": ["codemower-ai"], "body": "hi"},
+    {"user": {"login": {"name": AUTHORITY}}, "body": "hi"},
+    {"user": {"login": 7}, "body": "hi"},
+    {"user": {"login": [AUTHORITY]}, "body": "hi"},
+)
+
+#: GitHub's own schema, which must keep working: a comment from a deleted
+#: account carries `user: null`, and `body` is optional on some
+#: representations. Neither names an author or a marker, and neither is an
+#: error.
+VALID_COMMENT_RECORDS = (
+    {"user": None, "body": "a deleted account said this"},
+    {"user": {"login": AUTHORITY}},
+    {"user": {"login": None}, "body": "hi"},
+    {"user": {"login": AUTHORITY}, "body": "ordinary comment"},
+)
+
 INVALID_COMMENT_RESPONSES = (
     None,
     False,
@@ -784,6 +811,124 @@ class ASuccessfulButInvalidCommentReadIsNotAnEmptyHistory(unittest.TestCase):
             return pages[index - 1] if index - 1 < len(pages) else []
 
         return request, seen
+
+    def test_the_lowest_transport_refuses_a_malformed_record(self):
+        from code_mower.provider_runners import github_pr
+
+        for record in MALFORMED_COMMENT_RECORDS:
+            with self.subTest(record=record):
+                request, _ = self._gh_pages([record])
+                with mock.patch.object(github_pr, "_gh_request", request):
+                    with self.assertRaises(ValueError):
+                        github_pr.fetch_issue_comments(REPO, PR, token="t")
+
+    def test_the_lowest_transport_refuses_a_malformed_record_after_a_valid_page(self):
+        from code_mower.provider_runners import github_pr
+
+        first = [marker_comment() for _ in range(100)]
+        for record in MALFORMED_COMMENT_RECORDS:
+            with self.subTest(record=record):
+                request, seen = self._gh_pages(first, [record])
+                with mock.patch.object(github_pr, "_gh_request", request):
+                    with self.assertRaises(ValueError):
+                        github_pr.fetch_issue_comments(REPO, PR, token="t")
+                self.assertEqual(seen, [1, 2])
+
+    def test_the_lowest_transport_keeps_githubs_own_schema(self):
+        from code_mower.provider_runners import github_pr
+
+        request, _ = self._gh_pages(list(VALID_COMMENT_RECORDS))
+        with mock.patch.object(github_pr, "_gh_request", request):
+            comments = github_pr.fetch_issue_comments(REPO, PR, token="t")
+        self.assertEqual(len(comments), len(VALID_COMMENT_RECORDS))
+
+    def test_the_wrapper_launches_nothing_on_a_malformed_record(self):
+        from code_mower import claude_audit_pr
+        from code_mower.provider_runners import github_pr
+
+        for record in MALFORMED_COMMENT_RECORDS:
+            with self.subTest(record=record):
+                request, _ = self._gh_pages([record])
+                with mock.patch.object(github_pr, "_gh_request", request):
+                    with self.assertRaises(RuntimeError) as raised:
+                        claude_audit_pr._require_independent_review(
+                            "claude", REPO, PR,
+                            {"user": {"login": "a-human"},
+                             "head": {"ref": BRANCH, "sha": TAKEN},
+                             "labels": []},
+                            TAKEN,
+                            authorities=(AUTHORITY,),
+                            fetch_comments=lambda: github_pr.fetch_issue_comments(
+                                REPO, PR, token="t"
+                            ),
+                        )
+                self.assertIn("lineage_unreadable", str(raised.exception))
+
+    def test_the_saas_labeler_mutates_no_label_on_a_malformed_record(self):
+        for record in MALFORMED_COMMENT_RECORDS:
+            with self.subTest(record=record):
+                self.assertEqual(
+                    self._labeler_applied(pages=[[record]]), [],
+                    "a malformed record may move no label",
+                )
+
+    def test_the_saas_labeler_reads_githubs_own_schema_whole(self):
+        """Positive control, on valid fixtures only: nothing is dropped."""
+
+        valid = list(VALID_COMMENT_RECORDS) + [marker_comment()]
+
+        def api(method, path, **_kwargs):
+            return valid if "page=1" in path else []
+
+        with mock.patch.object(labeler, "github_request_with_fallback", api):
+            comments = labeler.fetch_issue_comments(REPO, PR, tokens=(), page_cap=5)
+        self.assertEqual(len(comments), len(valid))
+        # And it still reaches a decision without refusing the run.
+        self.assertEqual(self._labeler_applied(pages=[valid]), [])
+
+    def _labeler_applied(self, *, pages):
+        applied = []
+
+        def api(method, path, **_kwargs):
+            if "/comments" in path:
+                index = int(re.search(r"[?&]page=(\d+)", path).group(1))
+                return pages[index - 1] if index - 1 < len(pages) else []
+            if re.search(r"/pulls/\d+$", path):
+                return _pull_request()
+            if "/commits/" in path:
+                return [{"number": PR}]
+            return []
+
+        root = git_free_tempdir(self, "code-mower-record-shape-")
+        event = {
+            "action": "completed",
+            "check_run": {
+                "status": "completed", "conclusion": "success",
+                "name": "greptile review", "app": {"slug": "greptile-apps"},
+                "head_sha": TAKEN, "pull_requests": [{"number": PR}],
+            },
+        }
+        event_path = Path(root) / "event.json"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        env = {
+            "GITHUB_EVENT_PATH": str(event_path),
+            "GITHUB_REPOSITORY": REPO,
+            "GITHUB_EVENT_NAME": "check_run",
+            "GREPTILE_LABEL_TOKEN": "t",
+            "GITHUB_TOKEN": "t",
+            "CODE_MOWER_DECISION_AUTHORITIES": AUTHORITY,
+            "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+            "DRY_RUN": "",
+        }
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(labeler, "github_request_with_fallback", api), \
+                mock.patch(
+                    "code_mower.audit_labeler_lib.github_request_with_fallback", api), \
+                mock.patch.object(
+                    labeler, "_apply_or_log", lambda *a, **k: applied.append(a)), \
+                mock.patch("sys.stdout", new_callable=_Capture):
+            self.assertEqual(labeler.main(["--adapter", "greptile"]), 0)
+        return applied
 
     def test_the_lowest_transport_refuses_every_malformed_page(self):
         """The wrapper's own `fetch_issue_comments`, not a stubbed return."""

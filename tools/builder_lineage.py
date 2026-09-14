@@ -724,7 +724,38 @@ def require_comment_list(value: Any, *, what: str) -> tuple[Mapping[str, Any], .
     for item in value:
         if not isinstance(item, Mapping):
             raise LineageError(f"{what} contains an entry that is not a comment")
+        _require_comment_record(item, what=what)
     return tuple(value)
+
+
+def _require_comment_record(comment: Mapping[str, Any], *, what: str) -> None:
+    """The two fields lineage actually reads must be readable, or nothing is.
+
+    Being a dict is not being a comment. The marker lives in ``body`` and trust
+    is decided from ``user.login``, so a present ``body`` that is a number, or
+    a ``user`` that is a string, or a ``login`` that is an object, is a record
+    whose meaning cannot be recovered. Coercing those with ``str()`` invents an
+    author or a body that GitHub never sent; skipping them drops the record.
+    Either way an unreadable history becomes an absent one -- and absence is
+    what admits a reviewer.
+
+    GitHub's own schema is the boundary, not a stricter invention of one: a
+    comment from a deleted account really does carry ``"user": null``, and
+    ``body`` really is optional on some representations. Both are accepted and
+    simply name no author and no marker.
+    """
+
+    body = comment.get("body")
+    if body is not None and not isinstance(body, str):
+        raise LineageError(f"{what} contains a comment whose body is not text")
+    user = comment.get("user")
+    if user is None:
+        return
+    if not isinstance(user, Mapping):
+        raise LineageError(f"{what} contains a comment whose author is not an object")
+    login = user.get("login")
+    if login is not None and not isinstance(login, str):
+        raise LineageError(f"{what} contains a comment whose author login is not text")
 
 
 def branch_lane_from_identity(

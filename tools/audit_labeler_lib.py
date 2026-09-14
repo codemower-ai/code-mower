@@ -33,6 +33,7 @@ if __package__:
             episodes_from_comment_body,
             branch_lane_from_identity,
             lanes_from_identity,
+            require_comment_list,
             resolve_identity_only,
             resolve_lineage,
         )
@@ -46,6 +47,7 @@ if __package__:
             episodes_from_comment_body,
             branch_lane_from_identity,
             lanes_from_identity,
+            require_comment_list,
             resolve_identity_only,
             resolve_lineage,
         )
@@ -59,6 +61,7 @@ else:  # pragma: no cover - direct helper execution
         episodes_from_comment_body,
         branch_lane_from_identity,
         lanes_from_identity,
+        require_comment_list,
         resolve_identity_only,
         resolve_lineage,
     )
@@ -1155,13 +1158,23 @@ def fetch_issue_comments(
             "GET",
             f"/repos/{repo}/issues/{issue_number}/comments?per_page=100&page={page}",
             tokens=tokens,
-        ) or []
-        if not isinstance(chunk, list):
-            raise RuntimeError("GitHub API issue comments returned a non-list response")
-        if not chunk:
+        )
+        # Shape and the fields lineage reads are settled before anything else
+        # looks at the page. `or []` made `None`, `False` and `{}` -- every
+        # falsey successful response -- end the read, and filtering by
+        # `isinstance` dropped malformed records silently. Both report "there
+        # is nothing here" for "this could not be read", and this page feeds
+        # the trailer labeler's own label decision.
+        try:
+            page_comments = require_comment_list(
+                chunk, what=f"issue comments page {page} for {repo}#{issue_number}"
+            )
+        except LineageError as exc:
+            raise RuntimeError(str(exc)) from None
+        if not page_comments:
             return comments
-        comments.extend(comment for comment in chunk if isinstance(comment, dict))
-        if len(chunk) < 100:
+        comments.extend(dict(comment) for comment in page_comments)
+        if len(page_comments) < 100:
             return comments
         page += 1
     raise IssueCommentPaginationLimitExceeded(

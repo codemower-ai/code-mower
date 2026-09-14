@@ -33,6 +33,7 @@ if __package__ and __package__.startswith("code_mower"):
         lineage_decision_authorities,
         lineage_marker_author_trust,
         load_json,
+        require_comment_list,
         sha_matches,
     )
 else:
@@ -53,6 +54,7 @@ else:
             lineage_decision_authorities,
             lineage_marker_author_trust,
             load_json,
+            require_comment_list,
             sha_matches,
         )
     except ImportError:  # pragma: no cover - direct `python tools/foo.py` execution
@@ -72,6 +74,7 @@ else:
             lineage_decision_authorities,
             lineage_marker_author_trust,
             load_json,
+            require_comment_list,
             sha_matches,
         )
 
@@ -200,15 +203,15 @@ def fetch_issue_comments(
             f"{path}?per_page=100&page={page}",
             tokens=tokens,
         )
-        if not isinstance(chunk, list) or any(
-            not isinstance(item, dict) for item in chunk
-        ):
+        # One shared record contract: the page is a list, every entry is a
+        # comment, and the fields lineage reads -- `body` and `user.login` --
+        # are readable where they are present.
+        try:
+            require_comment_list(chunk, what=f"comment page {page}")
+        except LineageError as exc:
             raise GitHubRequestError(
-                "GET",
-                f"{path}?per_page=100&page={page}",
-                0,
-                "comment page is not a list of comment objects",
-            )
+                "GET", f"{path}?per_page=100&page={page}", 0, str(exc)
+            ) from None
         if not chunk:
             return all_comments
         all_comments.extend(chunk)
