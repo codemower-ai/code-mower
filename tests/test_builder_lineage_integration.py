@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from code_mower import builder_lineage, lane_delivery, lane_handoff  # noqa: E402
 from code_mower.audit_labeler_lib import (  # noqa: E402
+    lineage_context,
     lineage_marker_author_trust,
     published_lineage_episodes,
     resolve_builder_lineage,
@@ -707,6 +708,124 @@ class BoundedIdenticalReplay(unittest.TestCase):
         )
         self.assertEqual(resolved.status, "conflict")
         self.assertEqual(resolved.reason, "episode_malformed")
+
+
+class ATrustedMarkerMustParseOrSaySo(unittest.TestCase):
+    """A broken marker is unreadable evidence, never absent evidence.
+
+    The payload regex matches only a complete, object-shaped, terminated
+    marker. Looking for evidence with it alone meant an unterminated or
+    non-object marker was not read as broken -- it was not seen at all, and a
+    trusted comment announcing lineage reported none. Absence and
+    unreadability are opposite answers: absence admits an independent reviewer
+    on the ordinary single-builder story, unreadability has to stop.
+    """
+
+    TRUST = ("codemower-ai",)
+
+    def _trusted(self, body, author=AUTHORITY):
+        return [{"user": {"login": author}, "body": body}]
+
+    def _gate(self, comments):
+        """What the gate and the labelers actually run over the comments."""
+
+        return published_lineage_episodes(
+            comments,
+            trusted_author=lineage_marker_author_trust(authorities=self.TRUST),
+        )
+
+    def _labeler(self, comments):
+        """The labeler entrypoint, which fails closed on LineageError."""
+
+        return lineage_context(
+            repo=REPO,
+            pr_number=PR,
+            branch=BRANCH,
+            head_sha=TAKEN,
+            comments=comments,
+            trusted_author=lineage_marker_author_trust(authorities=self.TRUST),
+        )
+
+    def _valid(self):
+        return builder_lineage.lineage_comment_marker((takeover_episode(),))
+
+    def _assert_unreadable(self, body):
+        comments = self._trusted(body)
+        for consumer in (self._gate, self._labeler):
+            with self.subTest(consumer=consumer.__name__):
+                with self.assertRaises(builder_lineage.LineageError):
+                    consumer(comments)
+
+    def test_a_well_formed_marker_still_reads(self):
+        episodes = self._gate(self._trusted(self._valid()))
+        self.assertEqual(len(episodes), 1)
+        self.assertEqual(self._labeler(self._trusted(self._valid())).episodes,
+                         episodes)
+
+    def test_an_unterminated_marker_is_unreadable_not_absent(self):
+        self._assert_unreadable(self._valid().replace("-->", ""))
+
+    def test_a_non_object_payload_is_unreadable(self):
+        self._assert_unreadable(
+            f"<!-- {builder_lineage.LINEAGE_MARKER} [1, 2, 3] -->"
+        )
+
+    def test_malformed_json_is_unreadable(self):
+        self._assert_unreadable(
+            f'<!-- {builder_lineage.LINEAGE_MARKER} {{"schema": -->'
+        )
+
+    def test_an_empty_payload_is_unreadable(self):
+        self._assert_unreadable(f"<!-- {builder_lineage.LINEAGE_MARKER} -->")
+
+    def test_two_markers_on_one_comment_are_ambiguous(self):
+        self._assert_unreadable(f"{self._valid()}\n\n{self._valid()}")
+
+    def test_a_valid_marker_beside_a_broken_one_is_still_ambiguous(self):
+        broken = f"<!-- {builder_lineage.LINEAGE_MARKER} [] -->"
+        self._assert_unreadable(f"{self._valid()}\n\n{broken}")
+
+    def test_a_marker_past_the_body_bound_is_unreadable_not_absent(self):
+        filler = "x" * builder_lineage.MAX_MARKER_BODY_CHARS
+        self._assert_unreadable(filler + "\n" + self._valid())
+
+    def test_an_untrusted_broken_marker_is_not_authoritative(self):
+        """Trust is decided before parsing, so an outsider cannot force a stop."""
+
+        body = self._valid().replace("-->", "")
+        comments = self._trusted(body, author=OUTSIDER)
+        self.assertEqual(self._gate(comments), ())
+        self.assertEqual(self._labeler(comments).episodes, ())
+
+    def test_unrelated_comments_are_ignored(self):
+        comments = self._trusted("Looks good to me. Shipping after CI.")
+        self.assertEqual(self._gate(comments), ())
+
+    def test_a_mixed_history_stops_on_the_broken_comment(self):
+        comments = self._trusted(self._valid()) + self._trusted(
+            self._valid().replace("-->", "")
+        )
+        with self.assertRaises(builder_lineage.LineageError):
+            self._gate(comments)
+
+    def test_a_valid_history_beside_unrelated_comments_still_resolves(self):
+        comments = (
+            self._trusted("first pass looks reasonable")
+            + self._trusted(self._valid())
+            + self._trusted("thanks!", author=OUTSIDER)
+        )
+        resolved = resolve_builder_lineage(
+            labels=["builder:codex"],
+            author="devin-ai-integration[bot]",
+            config=IDENTITY,
+            repo=REPO,
+            pr_number=PR,
+            branch=BRANCH,
+            head_sha=TAKEN,
+            episodes=self._gate(comments),
+        )
+        self.assertEqual(resolved.status, "resolved")
+        self.assertEqual(resolved.current_writer, "codex")
 
 
 class CumulativePublicationAtFullLength(unittest.TestCase):

@@ -50,6 +50,22 @@ LINEAGE_MARKER_RE = re.compile(
     re.DOTALL,
 )
 
+#: Marker *presence*, decided without looking at the payload at all.
+#:
+#: :data:`LINEAGE_MARKER_RE` only matches a complete, object-shaped, properly
+#: terminated marker. Looking for published evidence with it alone means an
+#: unterminated or non-object marker is not read as broken -- it is not seen,
+#: and a trusted comment that announces lineage reports none. Absence and
+#: unreadability are opposite answers: one admits an independent reviewer on
+#: the ordinary single-builder story, the other must stop. Presence is found
+#: first, and the payload is then required to parse.
+LINEAGE_MARKER_PRESENT_RE = re.compile(
+    r"<!--\s*" + LINEAGE_MARKER + r"(?![0-9A-Z_])"
+)
+
+#: How much of one comment body a published marker is parsed out of.
+MAX_MARKER_BODY_CHARS = 2048 * 32
+
 LANE_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}\Z")
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 REPO_RE = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}\Z")
@@ -944,16 +960,27 @@ def episodes_from_comment_body(body: str) -> tuple[ContributionEpisode, ...]:
     marker as evidence that its author was allowed to publish one.
     """
 
-    episodes: list[ContributionEpisode] = []
-    for match in LINEAGE_MARKER_RE.finditer(_text(body)[:MAX_EPISODES * 2048]):
-        try:
-            payload = json.loads(match.group("payload"))
-        except (ValueError, RecursionError):
-            raise LineageError("published builder lineage is unreadable") from None
-        if not isinstance(payload, Mapping) or payload.get("schema") != SCHEMA:
-            raise LineageError("published builder lineage schema is unsupported")
-        items = payload.get("episodes")
-        if not isinstance(items, list) or len(items) > MAX_EPISODES:
-            raise LineageError("published builder lineage is unreadable")
-        episodes.extend(episode_from_mapping(item) for item in items)
-    return tuple(episodes)
+    text = _text(body)
+    present = LINEAGE_MARKER_PRESENT_RE.findall(text)
+    if not present:
+        # An ordinary comment. Not evidence, and not a failure either.
+        return ()
+    if len(present) > 1:
+        # Two markers on one comment cannot both be "the" published lineage,
+        # and which one describes the head is exactly what may not be guessed.
+        raise LineageError("published builder lineage is ambiguous")
+    matches = LINEAGE_MARKER_RE.findall(text[:MAX_MARKER_BODY_CHARS])
+    if len(matches) != 1:
+        # The marker is there, but no single complete object payload parses out
+        # of it: unterminated, not an object, or cut off past the bound.
+        raise LineageError("published builder lineage is unreadable")
+    try:
+        payload = json.loads(matches[0])
+    except (ValueError, RecursionError):
+        raise LineageError("published builder lineage is unreadable") from None
+    if not isinstance(payload, Mapping) or payload.get("schema") != SCHEMA:
+        raise LineageError("published builder lineage schema is unsupported")
+    items = payload.get("episodes")
+    if not isinstance(items, list) or len(items) > MAX_EPISODES:
+        raise LineageError("published builder lineage is unreadable")
+    return tuple(episode_from_mapping(item) for item in items)

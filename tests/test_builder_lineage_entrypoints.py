@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import unittest
@@ -516,8 +517,12 @@ class GeneratedProvenanceJobCarriesTheAuthorityContract(unittest.TestCase):
                 for step in steps:
                     if "run" not in step:
                         continue
+                    # The job may run Python -- it validates the comment page
+                    # shape -- but nothing it runs may reach repository
+                    # configuration or its own decision-authority inputs.
                     self.assertNotIn("load_config", step["run"])
-                    self.assertNotIn("import ", step["run"])
+                    self.assertNotIn("code-mower.yml", step["run"])
+                    self.assertNotIn("DECISION_AUTHORITIES", step["run"])
 
     def _auto_record(self, *, env: Mapping[str, Any], comments, cwd=None) -> dict:
         """Run auto-record exactly as the generated job's inputs configure it."""
@@ -618,6 +623,182 @@ class GeneratedProvenanceJobCarriesTheAuthorityContract(unittest.TestCase):
             comments=[marker_comment(OUTSIDER)],
         )
         self.assertNotEqual(payload.get("executor"), "chatgpt-codex-connector")
+
+
+class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):
+    """Run the workflow's own recording step, with only `gh` replaced.
+
+    The marker that proves a takeover is posted when the takeover happens, so
+    on a long-running pull request it is among the *newest* comments. A job
+    that reads one page, or that substitutes an empty list for a failed read,
+    therefore does not fail -- it quietly attributes the run to whoever opened
+    the pull request. Partial history and absent history must be refusals, and
+    a refusal must leave no attribution artifact behind.
+    """
+
+    TEMPLATE = ROOT / "templates/workflows/builder-provenance.yml.j2"
+
+    def _step_script(self) -> str:
+        from code_mower import init
+
+        rendered = init._render_workflow_template(
+            self.TEMPLATE.read_text(encoding="utf-8"),
+            {"decision_authorities": AUTHORITY},
+        )
+        workflow = yaml.safe_load(rendered)
+        step = next(
+            item
+            for item in workflow["jobs"]["auto-record"]["steps"]
+            if item.get("id") == "record"
+        )
+        return (
+            step["run"]
+            .replace("${{ github.event.pull_request.number }}", str(PR))
+            .replace("${{ github.token }}", "unused-in-this-test")
+        )
+
+    def _run_job(self, *, gh_stdout=None, gh_exit_code=0, comments=None):
+        """Execute the generated step with a fake `gh` and a real auto-record."""
+
+        root = git_free_tempdir(self, "code-mower-generated-job-")
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        payload = (
+            json.dumps(comments) if gh_stdout is None else gh_stdout
+        )
+        (bin_dir / "payload.json").write_text(payload, encoding="utf-8")
+        (bin_dir / "gh").write_text(
+            "#!/bin/sh\n"
+            f"cat {shlex.quote(str(bin_dir / 'payload.json'))}\n"
+            f"exit {gh_exit_code}\n",
+            encoding="utf-8",
+        )
+        (bin_dir / "gh").chmod(0o755)
+
+        shim = bin_dir / "auto_record_shim.py"
+        shim.write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {str(ROOT / 'src')!r})\n"
+            "from code_mower import builder_runs\n"
+            "args = sys.argv[1:]\n"
+            "assert args[0] == 'builder', args\n"
+            "raise SystemExit(builder_runs.main(args[1:]))\n",
+            encoding="utf-8",
+        )
+        (bin_dir / "code-mower").write_text(
+            "#!/bin/sh\n"
+            f"exec {shlex.quote(sys.executable)} {shlex.quote(str(shim))} \"$@\"\n",
+            encoding="utf-8",
+        )
+        (bin_dir / "code-mower").chmod(0o755)
+
+        event_path = root / "event.json"
+        pull_request = _pull_request()
+        pull_request["user"] = {"login": OPENER}
+        pull_request["labels"] = [{"name": "builder:codex"}]
+        event_path.write_text(
+            json.dumps({"pull_request": pull_request}), encoding="utf-8"
+        )
+        script = root / "record.sh"
+        script.write_text(self._step_script(), encoding="utf-8")
+        completed = subprocess.run(
+            ["bash", str(script)],
+            cwd=str(root),
+            env={
+                "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+                "HOME": str(root),
+                "GITHUB_REPOSITORY": REPO,
+                "GITHUB_EVENT_PATH": str(event_path),
+                "GITHUB_OUTPUT": str(root / "github_output"),
+                "CODE_MOWER_DECISION_AUTHORITIES": AUTHORITY,
+                "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+            },
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        artifact = root / f".code-mower/builder-runs/pr-{PR}.cloud-event.json"
+        return completed, (
+            json.loads(artifact.read_text(encoding="utf-8"))
+            if artifact.is_file()
+            else None
+        )
+
+    def _filler(self, count):
+        return [
+            {"user": {"login": OUTSIDER}, "body": f"ordinary comment {index}"}
+            for index in range(count)
+        ]
+
+    def _assert_refused(self, completed, artifact):
+        self.assertNotEqual(completed.returncode, 0, completed.stdout)
+        self.assertIsNone(artifact, "a refusal may leave no attribution artifact")
+
+    def test_a_trusted_marker_beyond_the_first_page_is_still_read(self):
+        completed, artifact = self._run_job(
+            comments=[self._filler(100), [marker_comment()]]
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIsNotNone(artifact)
+        self.assertEqual(
+            artifact["dimensions"]["builder_current_writer"], "codex"
+        )
+        self.assertEqual(artifact["dimensions"]["builder_executor"],
+                         "chatgpt-codex-connector")
+
+    def test_an_empty_final_page_is_read_as_the_end_of_the_history(self):
+        completed, artifact = self._run_job(
+            comments=[self._filler(99) + [marker_comment()], []]
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            artifact["dimensions"]["builder_current_writer"], "codex"
+        )
+
+    def test_an_exact_page_boundary_is_read_whole(self):
+        completed, artifact = self._run_job(
+            comments=[self._filler(99) + [marker_comment()]]
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            artifact["dimensions"]["builder_current_writer"], "codex"
+        )
+
+    def test_a_failed_read_refuses_instead_of_attributing_the_opener(self):
+        completed, artifact = self._run_job(
+            gh_stdout="", gh_exit_code=1, comments=[]
+        )
+        self._assert_refused(completed, artifact)
+
+    def test_a_later_page_failure_refuses(self):
+        # `gh --paginate` fails as a whole when any page does; the partial
+        # body it already emitted must not be accepted as the history.
+        completed, artifact = self._run_job(
+            gh_stdout=json.dumps([self._filler(100)]), gh_exit_code=1
+        )
+        self._assert_refused(completed, artifact)
+
+    def test_a_malformed_api_shape_refuses(self):
+        for shape in ('{"comments": []}', '[{"user": {}}]', '[[ "text" ]]'):
+            with self.subTest(shape=shape):
+                completed, artifact = self._run_job(gh_stdout=shape)
+                self._assert_refused(completed, artifact)
+
+    def test_truncated_json_refuses(self):
+        completed, artifact = self._run_job(gh_stdout='[[{"user": {"login":')
+        self._assert_refused(completed, artifact)
+
+    def test_exceeding_the_explicit_page_cap_refuses(self):
+        completed, artifact = self._run_job(comments=[[] for _ in range(51)])
+        self._assert_refused(completed, artifact)
+        self.assertIn("page cap", completed.stderr + completed.stdout)
+
+    def test_an_empty_history_still_records_the_opener(self):
+        """Absence of evidence is not a failure -- only unreadability is."""
+
+        completed, artifact = self._run_job(comments=[[]])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(artifact["dimensions"]["builder_executor"], "devin")
 
 
 class AttributionMovesOnlyOnAVerifiedTransition(unittest.TestCase):
