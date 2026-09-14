@@ -564,22 +564,36 @@ DEVIN_REVIEWER_LANE = "devin"
 
 
 def _require_independent_devin_review(
-    config, pr_meta, head_sha: str, pr_author: str
+    config, pr_meta, head_sha: str, pr_author: str, *, fetch_comments=None
 ) -> dict:
     """Admit the Devin reviewer lane against verified lineage for this head.
+
+    Evidence is the host's configured private store *and* the bounded lineage
+    published on the pull request by a configured decision authority, because a
+    reviewer host that recorded no contribution has an empty store and would
+    otherwise conclude that no takeover ever happened.
 
     Raises :class:`AuthorExcludedError` so existing callers keep their exit
     handling; the message carries only bounded metadata and one owner action.
     """
 
+    from . import decisions as code_mower_decisions
     from .builder_lineage import LineageError
     from .provider_runners.lineage import (
         ReviewerNotIndependent,
         identity_with_lane_floor,
         load_identity,
         require_independent_reviewer,
-        trusted_episodes,
+        reviewer_evidence,
     )
+
+    if fetch_comments is None:
+        from .provider_runners.github_pr import fetch_issue_comments
+
+        def fetch_comments():
+            return fetch_issue_comments(
+                config.repo, config.pr_number, token=config.github_token
+            )
 
     if pr_author and _is_excluded_author(pr_author):
         # Kept as a floor, not as the decision: the configured Devin account
@@ -593,7 +607,12 @@ def _require_independent_devin_review(
     # still see Devin as a contributor.
     identity = identity_with_lane_floor(load_identity(), DEVIN_REVIEWER_LANE)
     try:
-        episodes = trusted_episodes(config.repo, config.pr_number)
+        episodes = reviewer_evidence(
+            config.repo,
+            config.pr_number,
+            authorities=code_mower_decisions.decision_authorities_from_env(),
+            fetch_comments=fetch_comments,
+        )
     except LineageError as exc:
         raise AuthorExcludedError(
             f"Devin CLI reviewer lane is not admitted for {config.repo}"

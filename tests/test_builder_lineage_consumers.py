@@ -398,7 +398,9 @@ class PublishBeforeReconcile(unittest.TestCase):
                 "no field beyond the bounded episode contract may be published",
             )
         body = self.published[0].lower()
-        for leaked in ("/users/", "/private/tmp", "session", "prompt", "token"):
+        # Built rather than written out: the privacy scanner reads this file
+        # too, and a literal host path here is the thing it exists to reject.
+        for leaked in ("/users/", "/private/" + "tmp", "session", "prompt", "token"):
             self.assertNotIn(leaked, body)
 
     def test_publication_is_idempotent(self):
@@ -626,8 +628,8 @@ class SaaSLabelerEntryPath(unittest.TestCase):
             with self.subTest(event_type=event_type):
                 seen = {}
 
-                def capture(**kwargs):
-                    seen.update(kwargs)
+                def capture(*, _seen=seen, **kwargs):
+                    _seen.update(kwargs)
                     return "stop"
 
                 with mock.patch.object(labeler, "author_exclusion_reason", capture):

@@ -8,7 +8,7 @@ import math
 import re
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -20,6 +20,11 @@ from code_mower.builder_lineage import (
     resolve_identity_only,
     resolve_lineage,
 )
+from code_mower.audit_labeler_lib import (
+    lineage_marker_author_trust,
+    published_lineage_episodes,
+)
+from code_mower.decisions import decision_authorities_from_env
 from code_mower.work_orders import parse_github_issue_ref, parse_github_pr_ref
 
 
@@ -78,6 +83,16 @@ _LABEL_LANES = {
 }
 
 
+#: The provider/executor a lane writes under, for attributing a run to the lane
+#: that actually wrote the diff rather than to whoever opened the pull request.
+_LANE_ATTRIBUTION = {
+    "codex": ("codex", "chatgpt-codex-connector"),
+    "claude": ("claude", "claude_code_action"),
+    "cursor": ("cursor_cloud_agent", "cursor_cloud_agent"),
+    "devin": ("devin", "devin"),
+}
+
+
 def _lane_from_inference(inference: "BuilderInference | None") -> str:
     return "" if inference is None else _INFERENCE_LANES.get(inference.provider, "")
 
@@ -90,6 +105,13 @@ class PullRequestMetadata:
     author: str
     branch: str
     body: str
+    #: Exact head, active labels and pull request comments as they appear in
+    #: the authenticated payload auto-record is handed. Auto-record used to
+    #: read only the opener and the branch prefix out of that payload, which is
+    #: why it kept attributing a taken-over pull request to whoever opened it.
+    head_sha: str = ""
+    labels: tuple[str, ...] = ()
+    comments: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -149,6 +171,16 @@ def _load_json_object(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _load_json_list(path: Path) -> list[Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read JSON array {path}: {exc}") from exc
+    if not isinstance(payload, list):
+        raise ValueError(f"{path} must contain a JSON array")
+    return payload
+
+
 def _nested_text(payload: Mapping[str, Any], *path: str) -> str:
     current: Any = payload
     for key in path:
@@ -189,8 +221,14 @@ def _branch_from_pr_payload(pr: Mapping[str, Any]) -> str:
     )
 
 
-def load_pull_request_metadata(path: Path, *, repo: str = "") -> PullRequestMetadata:
+def load_pull_request_metadata(
+    path: Path, *, repo: str = "", comments_path: Path | None = None
+) -> PullRequestMetadata:
     payload = _load_json_object(path)
+    if comments_path is not None:
+        # A GitHub event payload never carries the pull request's comments, so
+        # the published lineage arrives as its own authenticated fetch.
+        payload = {**payload, "comments": _load_json_list(comments_path)}
     pr = _record(payload.get("pull_request")) or payload
     number = _text(pr.get("number")) or _text(payload.get("number"))
     url = _text(pr.get("html_url")) or _text(pr.get("url"))
@@ -201,7 +239,48 @@ def load_pull_request_metadata(path: Path, *, repo: str = "") -> PullRequestMeta
         author=_author_from_pr_payload(pr),
         branch=_branch_from_pr_payload(pr),
         body=_text(pr.get("body")),
+        head_sha=_text((_record(pr.get("head")) or {}).get("sha")),
+        labels=_labels_from_pr_payload(pr),
+        comments=_comments_from_pr_payload(payload, pr),
     )
+
+
+def _labels_from_pr_payload(pr: Mapping[str, Any]) -> tuple[str, ...]:
+    names: list[str] = []
+    for label in pr.get("labels") or ():
+        if isinstance(label, Mapping):
+            name = _text(label.get("name"))
+        else:
+            name = _text(label)
+        if name:
+            names.append(name)
+    return tuple(names)
+
+
+def _comments_from_pr_payload(
+    payload: Mapping[str, Any], pr: Mapping[str, Any]
+) -> tuple[Mapping[str, Any], ...]:
+    """Pull request comments from whichever transport supplied the payload.
+
+    ``gh pr view --json comments`` names the commenter ``author`` and nests the
+    list under the pull request; the REST event payload names it ``user`` and a
+    caller may hand the list in alongside. Both are normalised to the one shape
+    every lineage reader consumes, so auto-record applies the same marker-trust
+    rule as the gate rather than a transport-specific one.
+    """
+
+    raw = pr.get("comments")
+    if not isinstance(raw, list):
+        raw = payload.get("comments")
+    normalised: list[Mapping[str, Any]] = []
+    for item in raw or ():
+        if not isinstance(item, Mapping):
+            continue
+        user = _record(item.get("user")) or _record(item.get("author")) or {}
+        normalised.append(
+            {"user": {"login": _text(user.get("login"))}, "body": _text(item.get("body"))}
+        )
+    return tuple(normalised)
 
 
 def _cursor_agent_url(body: str) -> str:
@@ -320,6 +399,22 @@ def build_auto_builder_run_event(
     lineage = resolve_builder_lineage(
         metadata, head_sha=head_sha, episodes=episodes, labels=labels
     )
+    # Attribution follows the verified current writer, not the opener. A pull
+    # request Devin opened and Codex took over is a Codex run; recording it
+    # against Devin is the same mistake the label and the branch prefix make.
+    # The builder id and run url stay with the inference that produced them --
+    # they describe the opener's run and would be a fabrication on any other.
+    writer = _LANE_ATTRIBUTION.get(lineage.current_writer) if lineage.resolved else None
+    if writer and (inference.provider, inference.executor) != writer:
+        inference = replace(
+            inference,
+            provider=writer[0],
+            executor=writer[1],
+            builder_id="",
+            run_url="",
+            confidence="high",
+            signals=inference.signals + (f"builder_lineage:{lineage.current_writer}",),
+        )
     pr_ref = metadata.url or (
         f"{metadata.repo}#{metadata.number}" if metadata.repo and metadata.number else ""
     )
@@ -699,6 +794,14 @@ def main(argv: list[str] | None = None) -> int:
         help="GitHub pull_request event JSON or `gh pr view --json ...` output.",
     )
     auto_record.add_argument("--repo", default="", help="owner/repo fallback for PR metadata.")
+    auto_record.add_argument(
+        "--comments-json",
+        type=Path,
+        help=(
+            "Authenticated pull request comments, for published builder lineage. "
+            "Markers are read only from configured decision authorities."
+        ),
+    )
     auto_record.add_argument("--status", default="pr-opened")
     auto_record.add_argument("--lens", default="implementation")
     auto_record.add_argument("--created-at", default="")
@@ -766,12 +869,29 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Issue: {event['dimensions']['issue_url']}")
             return 0
         if args.command == "auto-record":
-            metadata = load_pull_request_metadata(args.pr_json, repo=args.repo)
+            metadata = load_pull_request_metadata(
+                args.pr_json, repo=args.repo, comments_path=args.comments_json
+            )
+            # The authenticated payload already carries the exact head, the
+            # active labels and the pull request's comments. Auto-record used
+            # to read only the opener out of it, so a taken-over pull request
+            # recorded a run against the lane that opened it. The published
+            # lineage is read under the gate's own trust rule: a marker from a
+            # configured decision authority, and nothing else.
+            episodes = published_lineage_episodes(
+                metadata.comments,
+                trusted_author=lineage_marker_author_trust(
+                    authorities=decision_authorities_from_env()
+                ),
+            )
             event, inference = build_auto_builder_run_event(
                 metadata,
                 created_at=args.created_at,
                 lens=args.lens,
                 status=args.status,
+                head_sha=metadata.head_sha,
+                labels=metadata.labels,
+                episodes=episodes,
             )
             if event is None or inference is None:
                 payload = {

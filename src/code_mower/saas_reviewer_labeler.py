@@ -810,6 +810,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pr_body = str(pr_current.get("body") or "")
         current_head_sha = pr_current.get("head", {}).get("sha")
         head_branch = str((pr_current.get("head") or {}).get("ref") or "")
+        # The review path decides the same question about the same head as the
+        # issue-comment path, so it reads the same published lineage under the
+        # same trust rule. Only when authorities are configured: with none,
+        # there is nobody to trust and the fetch would buy nothing. With them,
+        # a fetch that fails leaves this path unable to tell a takeover from
+        # its absence, so it stops rather than labelling on identity alone.
+        if lineage_decision_authorities():
+            try:
+                lineage_comments = fetch_issue_comments(
+                    repo,
+                    pr_number,
+                    tokens=tokens,
+                    page_cap=adapter.review_comments_page_cap,
+                )
+            except (GitHubRequestError, ReviewCommentsTruncated) as exc:
+                print(f"skip: could not fetch published builder lineage: {exc}")
+                return 0
         if adapter.requires_review_comments:
             review = event.get("review") or {}
             review_id = review.get("id")

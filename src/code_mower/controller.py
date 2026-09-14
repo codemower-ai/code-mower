@@ -363,13 +363,21 @@ def _reviewer_outcomes(
                 }
             )
 
+    # Two different owner actions, deliberately not merged. Unresolved or
+    # contradictory lineage means the evidence itself cannot be trusted, and
+    # the fix is to re-record it. A lineage that resolved perfectly well but
+    # left no qualified independent reviewer is a *correct* decision about a
+    # configuration gap, and the fix is to configure another lane. Reporting
+    # the second as the first sends the owner to repair a record that is fine.
+    reviewer_block = ""
     if not lineage_block and not outcomes and (excluded_author_lane or ineligible):
-        lineage_block = (
+        reviewer_block = (
             "no qualified independent reviewer lane remains for this head; "
             "configure one that did not contribute to this diff"
         )
     passed = (
         not lineage_block
+        and not reviewer_block
         and bool(outcomes)
         and all(outcome["verdict"] == "PASS" for outcome in outcomes)
     )
@@ -379,6 +387,7 @@ def _reviewer_outcomes(
         "current_writer": builder_lane,
         "ineligible_reviewers": ineligible,
         "owner_action": lineage_block,
+        "reviewer_action": reviewer_block,
     }
     return outcomes, bool(excluded_author_lane), passed, builder_lane, projection
 
@@ -481,6 +490,16 @@ def _pr_decision(
             "next_detail": lineage["owner_action"],
             "stop_condition": "builder_lineage_unresolved",
             "owner_action_kind": "builder_lineage",
+            "merge_method": "",
+        }
+    if lineage["reviewer_action"]:
+        return {
+            **base,
+            "decision_state": "owner_action",
+            "next_action": "configure peer reviewer lanes",
+            "next_detail": lineage["reviewer_action"],
+            "stop_condition": "reviewer_lanes_missing",
+            "owner_action_kind": "reviewer_lanes_missing",
             "merge_method": "",
         }
     if labels.get("blocked"):

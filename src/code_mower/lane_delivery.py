@@ -1242,13 +1242,27 @@ def _gh_apply_labels(repo: str, number: str, add: Iterable[str], remove: Iterabl
                    stderr=subprocess.DEVNULL)
 
 
-def _gh_comment_bodies(repo: str, number: str) -> tuple[str, ...]:
+def _gh_comment_bodies(repo: str, number: str) -> tuple[dict[str, Any], ...]:
+    """Existing pull request comments, with the author each one was posted by.
+
+    The author travels with the body because publication idempotency is decided
+    under the consumers' trust rule: an identical marker from an account no
+    consumer reads is not a publication.
+    """
+
     result = subprocess.check_output(
         ["gh", "pr", "view", number, "--repo", repo, "--json", "comments"],
         timeout=60, text=True, stderr=subprocess.DEVNULL,
     )
     payload = json.loads(result).get("comments") or []
-    return tuple(str(item.get("body") or "") for item in payload if isinstance(item, dict))
+    return tuple(
+        {
+            "user": {"login": str(((item.get("author") or {}).get("login")) or "")},
+            "body": str(item.get("body") or ""),
+        }
+        for item in payload
+        if isinstance(item, dict)
+    )
 
 
 def _gh_publish_comment(repo: str, number: str, body: str) -> None:
@@ -1266,8 +1280,9 @@ def publish_lineage_evidence(
     episodes: Sequence[Any],
     opener_lane: str = "",
     label_lanes: Sequence[str] = (),
-    existing_bodies: Callable[[], Sequence[str]],
+    existing_bodies: Callable[[], Sequence[Any]],
     publish: Callable[[str], None],
+    trusted_author: Callable[[str], bool] | None = None,
 ) -> dict:
     """Put the evidence the GitHub gate reads where the gate can read it.
 
@@ -1283,6 +1298,16 @@ def publish_lineage_evidence(
     the bounded metadata contract: lane names, a repository slug, a PR number,
     a branch and commit shas. Publishing is idempotent -- an identical marker
     already present is left alone rather than repeated.
+
+    Idempotency is decided under the *consumers'* trust rule, not on the bare
+    text. The gate, the labelers and every reviewer read markers only from the
+    repository's configured decision authorities, so an identical body posted
+    by anyone else is evidence nobody will read: treating it as "already
+    published" would let an untrusted commenter suppress the publication this
+    path exists to guarantee. By the same rule a successful comment POST is not
+    by itself proof, so once ``trusted_author`` is supplied the comment is read
+    back and the publication only counts when a trusted author now carries the
+    marker.
     """
 
     from . import builder_lineage
@@ -1297,9 +1322,22 @@ def publish_lineage_evidence(
     marker = builder_lineage.lineage_comment_marker(tuple(episodes))
     _assert_safe_metadata(json.loads(marker.split(None, 2)[2].rsplit("-->", 1)[0].strip()),
                           path="lineage_marker")
-    for body in existing_bodies():
-        if marker in body:
-            return {"published": False, "duplicate": True, "reason": "already_published"}
+
+    def _readable_marker_present() -> bool:
+        for item in existing_bodies() or ():
+            if isinstance(item, Mapping):
+                login = str(((item.get("user") or {}).get("login")) or "")
+                body = str(item.get("body") or "")
+            else:
+                login, body = "", str(item)
+            if marker not in body:
+                continue
+            if trusted_author is None or trusted_author(login):
+                return True
+        return False
+
+    if _readable_marker_present():
+        return {"published": False, "duplicate": True, "reason": "already_published"}
     publish(
         "Builder contribution lineage for this head, published so the gate and "
         "every reviewer resolve the same verified evidence.\n\n"
@@ -1307,6 +1345,17 @@ def publish_lineage_evidence(
         f"- contributors: {', '.join('`' + lane + '`' for lane in lineage.contributors)}\n"
         f"- head: `{lineage.head_sha}`\n\n" + marker
     )
+    if trusted_author is not None and not _readable_marker_present():
+        # The comment went up under an account the consumers do not trust, so
+        # the evidence is unreadable to everyone who needs it. Reporting this
+        # as published would move the builder label onto lineage the gate
+        # cannot see -- the exact conflict this path prevents.
+        return {"published": False, "duplicate": False,
+                "reason": "publication_author_untrusted",
+                "owner_action": (
+                    "publish builder lineage from a configured decision "
+                    "authority, or add the publishing account to them"
+                )}
     return {"published": True, "duplicate": False, "reason": "published",
             "episodes": len(tuple(episodes))}
 
@@ -1345,12 +1394,25 @@ def _lineage_main(args: argparse.Namespace, *,
         _, publish_label_lanes = builder_lineage.lanes_from_identity(
             identity=identity, labels=args.labels, author=args.author
         )
+        # One trust contract, shared with the gate, the labelers and every
+        # reviewer: the repository's configured decision authorities and
+        # nobody else. With none configured there is nobody to verify against,
+        # and publication keeps its historical body-only idempotency.
+        from .audit_labeler_lib import lineage_marker_author_trust
+        from .decisions import decision_authorities_from_env
+
+        authorities = decision_authorities_from_env()
         published = publish_lineage_evidence(
             repo=repo, pr_number=number, branch=args.branch, head_sha=args.head,
             episodes=episodes, opener_lane=opener_lane,
             label_lanes=publish_label_lanes,
             existing_bodies=lambda: comment_bodies(repo, number),
             publish=lambda body: publish_comment(repo, number, body),
+            trusted_author=(
+                lineage_marker_author_trust(authorities=authorities)
+                if authorities
+                else None
+            ),
         )
         if not (published["published"] or published.get("duplicate")):
             # The label says who may write next; the published episodes are how

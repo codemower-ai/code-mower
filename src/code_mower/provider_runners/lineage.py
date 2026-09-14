@@ -166,25 +166,99 @@ def trusted_episodes(
     *,
     comments: Sequence[Mapping[str, Any]] = (),
     trusted_author: Callable[[str], bool] | None = None,
+    published: Sequence[Any] = (),
     state_dir: Any = None,
 ) -> tuple:
     """All contribution evidence this reviewer is allowed to read, in order.
 
     The durable record is the runner's own; published markers are the transport
-    for a reviewer running somewhere the record does not exist. Both are parsed
-    strictly and merged by sequence, and a marker that contradicts the record is
-    left in place for the resolver to fail closed on rather than reconciled here.
+    for a reviewer running somewhere the record does not exist -- which is the
+    ordinary case for an independent reviewer host, whose private store is
+    empty. Both are parsed strictly and merged by sequence.
+
+    An episode that merely repeats one already collected is dropped, so the
+    producer republishing the whole chain on every round does not inflate the
+    input. An episode that *contradicts* one already collected is kept, so the
+    resolver still sees the duplicate position and fails closed on it.
+
+    ``published`` accepts episodes an embedding caller already established as
+    trusted, for adapters that carry the transport rather than the comments.
     """
 
     collected = list(recorded_episodes(repo, pr_number, state_dir))
+    incoming: list[Any] = list(published)
     if comments and trusted_author is not None:
-        seen = {episode.sequence: episode for episode in collected}
-        for episode in published_episodes(comments, trusted_author=trusted_author):
-            if seen.get(episode.sequence) is None:
-                collected.append(episode)
-            elif seen[episode.sequence].as_dict() != episode.as_dict():
-                collected.append(episode)
+        incoming.extend(published_episodes(comments, trusted_author=trusted_author))
+    seen = {episode.sequence: episode.as_dict() for episode in collected}
+    for episode in incoming:
+        payload = episode.as_dict()
+        known = seen.get(episode.sequence)
+        if known == payload:
+            continue
+        collected.append(episode)
+        if known is None:
+            seen[episode.sequence] = payload
     return tuple(collected)
+
+
+def marker_author_trust(authorities: Sequence[str] = ()) -> Callable[[str], bool]:
+    """Who a reviewer may read published lineage markers from.
+
+    This is deliberately the *same* rule the gate and the labelers apply: the
+    repository's configured decision authorities, and nobody else. A lineage
+    marker is a transport for bounded metadata, so being able to post an audit
+    comment on a pull request is not being able to assert a takeover of it. An
+    unconfigured checkout trusts nobody and reads no published evidence, which
+    leaves it behaving exactly as it does without this seam.
+    """
+
+    from ..audit_labeler_lib import lineage_marker_author_trust
+
+    return lineage_marker_author_trust(authorities=authorities)
+
+
+def reviewer_evidence(
+    repo: str,
+    pr_number: Any,
+    *,
+    authorities: Sequence[str] = (),
+    fetch_comments: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
+    state_dir: Any = None,
+) -> tuple:
+    """Every contribution record a reviewer host may read, in order.
+
+    A reviewer usually runs somewhere that never recorded anything: its private
+    store is empty, and the only evidence of a takeover is what the producer
+    published on the pull request. Reading the private store alone therefore
+    answers "no takeover happened" on exactly the hosts where the question
+    matters, so this reads both.
+
+    Comments are fetched only when the repository names decision authorities;
+    with none configured there is nobody to trust and the fetch would be spent
+    on evidence that could not be used. A fetch that fails once authorities
+    *are* configured raises :class:`~code_mower.builder_lineage.LineageError`,
+    because silently continuing on the private store would be the empty-store
+    answer again, now indistinguishable from a real absence of lineage.
+    """
+
+    trusted = [str(item).strip() for item in authorities if str(item).strip()]
+    comments: Sequence[Mapping[str, Any]] = ()
+    if trusted and fetch_comments is not None:
+        try:
+            fetched = fetch_comments()
+        except Exception as exc:  # bounded: transport, auth and parse failures alike
+            raise LineageError(
+                f"published builder lineage for {repo}#{pr_number} could not be "
+                f"read: {type(exc).__name__}"
+            ) from None
+        comments = [item for item in (fetched or ()) if isinstance(item, Mapping)]
+    return trusted_episodes(
+        repo,
+        pr_number,
+        comments=comments,
+        trusted_author=marker_author_trust(trusted) if trusted else None,
+        state_dir=state_dir,
+    )
 
 
 def pr_lineage(

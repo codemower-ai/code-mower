@@ -262,6 +262,32 @@ def _author(pr: Mapping[str, Any]) -> str:
     return _text(author.get("login")) if isinstance(author, Mapping) else _text(author)
 
 
+def _lineage_comments(pr: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Pull request comments in the shape every other lineage reader expects.
+
+    ``gh`` reports the commenter under ``author``; the shared readers, which
+    were written against the REST payload, look under ``user``. Normalising
+    here keeps one marker-trust rule instead of one per transport.
+    """
+
+    return tuple(
+        {
+            "user": {"login": _text((item.get("author") or {}).get("login"))},
+            "body": _text(item.get("body")),
+        }
+        for item in (pr.get("comments") or [])
+        if isinstance(item, Mapping)
+    )
+
+
+def _lineage_marker_trust(authorities: Sequence[str]):
+    """The one marker-trust rule, shared with the gate and the labelers."""
+
+    from .audit_labeler_lib import lineage_marker_author_trust
+
+    return lineage_marker_author_trust(authorities=authorities)
+
+
 def builder_lineage_for(
     repo: str,
     *,
@@ -271,23 +297,38 @@ def builder_lineage_for(
     labels: Sequence[str],
     author: str,
     state_dir: Path | None = None,
+    comments: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Resolve recorded contribution lineage for one pull request at its head.
 
-    Episodes come from the runner's own durable record, which only the verified
-    handoff/delivery boundary writes. Unreadable evidence resolves to a conflict
-    carrying one owner action rather than degrading to the label-derived guess
-    this issue exists to remove.
+    Episodes come from the same two places every other reader consults: the
+    host's *configured* durable record, which only the verified handoff/delivery
+    boundary writes, and the bounded lineage published on the pull request by a
+    configured decision authority. Reading the packaged default directory would
+    consult an empty store on any deployment that configures one, and reading
+    no comments would make this projection disagree with the gate about the
+    same pull request. Unreadable evidence resolves to a conflict carrying one
+    owner action rather than degrading to the label-derived guess this issue
+    exists to remove.
     """
 
     from . import builder_lineage as lineage_module
     from . import lane_handoff
-    from .provider_runners.lineage import load_identity
+    from .decisions import decision_authorities_from_env
+    from .provider_runners.lineage import load_identity, trusted_episodes
 
     identity = load_identity()
-    root = lane_handoff.lineage_root(state_dir or lane_handoff.default_root())
+    authorities = decision_authorities_from_env()
     try:
-        episodes = lineage_module.load_episodes(root, repo, pr_number)
+        episodes = trusted_episodes(
+            repo,
+            pr_number,
+            comments=comments if authorities else (),
+            trusted_author=(
+                _lineage_marker_trust(authorities) if authorities else None
+            ),
+            state_dir=state_dir,
+        )
     except (lineage_module.LineageError, OSError, ValueError):
         return lineage_module.Lineage(
             status="conflict",
@@ -357,6 +398,7 @@ def _summarize_pr(
             head_sha=head_sha,
             labels=[name for names in labels.values() for name in names],
             author=_author(pr),
+            comments=_lineage_comments(pr),
         ),
     }
 
@@ -406,7 +448,10 @@ def _remote(
     try:
         raw_prs = gh_json_runner([
             "pr", "list", "--repo", repo, "--state", "open", "--limit", str(pr_limit),
-            "--json", "number,title,url,headRefName,headRefOid,author,isDraft,mergeStateStatus,updatedAt,labels,statusCheckRollup",
+            # `comments` carries the published lineage markers, so the Board
+            # and controller projection resolves the same exact-head evidence
+            # the gate and the reviewers do rather than the local store alone.
+            "--json", "number,title,url,headRefName,headRefOid,author,isDraft,mergeStateStatus,updatedAt,labels,statusCheckRollup,comments",
         ])
     except LaneStatusUnavailable as exc:
         raw_prs = []

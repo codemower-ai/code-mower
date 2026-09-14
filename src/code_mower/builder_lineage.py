@@ -78,6 +78,18 @@ EPISODE_KINDS = frozenset({HANDOFF_KIND, CONTINUATION_KIND})
 #: A lineage longer than this is treated as malformed rather than walked.
 MAX_EPISODES = 32
 
+#: How many raw entries a caller may hand the resolver before it refuses to
+#: parse them. A lineage is at most :data:`MAX_EPISODES` distinct episodes, but
+#: the same chain legitimately arrives several times over: the producer
+#: publishes the whole chain on every round, a reviewer merges its private
+#: record with every trusted published marker, and an eight-episode lineage
+#: published eight times is already thirty-six entries. Counting raw arrivals
+#: against the lineage bound would call an authorised idempotent replay
+#: malformed, so the input is bounded separately and the lineage bound is
+#: applied to the distinct episodes that survive deduplication. Entries that
+#: merely repeat are collapsed; entries that disagree still fail closed.
+MAX_EPISODE_ENTRIES = MAX_EPISODES * 16
+
 EPISODE_FIELDS = (
     "schema",
     "sequence",
@@ -487,6 +499,11 @@ def resolve_lineage(
     opener = _lane(opener_lane)
     labels = tuple(dict.fromkeys(lane for lane in (_lane(item) for item in label_lanes) if lane))
 
+    if len(episodes) > MAX_EPISODE_ENTRIES:
+        # Bounded input, not a bounded lineage: refuse to parse an unbounded
+        # arrival before looking at any of it.
+        return _lineage("conflict", "episode_malformed", head_sha=head)
+
     parsed: list[ContributionEpisode] = []
     for item in episodes:
         try:
@@ -507,8 +524,6 @@ def resolve_lineage(
         if episode.writer_state not in expected_state:
             return _lineage("conflict", "writer_state_unverified", head_sha=head)
         parsed.append(episode)
-    if len(parsed) > MAX_EPISODES:
-        return _lineage("conflict", "episode_malformed", head_sha=head)
 
     if not parsed:
         return resolve_identity_only(opener_lane=opener, label_lanes=labels, head_sha=head)

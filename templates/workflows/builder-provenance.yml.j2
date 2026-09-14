@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: read
+  # Read-only, for the published builder lineage the auto-record reads below.
+  pull-requests: read
 
 env:
   CODE_MOWER_PACKAGE_SPEC: code-mower==1.4.0
@@ -29,13 +31,25 @@ jobs:
       - name: Record inferred builder provenance
         id: record
         shell: bash
+        env:
+          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
         run: |
           set -euo pipefail
           mkdir -p .code-mower/builder-runs
           output=".code-mower/builder-runs/pr-{% raw %}${{ github.event.pull_request.number }}{% endraw %}.cloud-event.json"
+          comments=".code-mower/pr-comments.json"
+          # The event payload carries the opener, the head and the labels, but
+          # never the comments the verified lineage is published on. Without
+          # them a taken-over pull request records a run against whoever opened
+          # it. Markers are still only read from configured decision
+          # authorities, so this fetch grants no authority of its own.
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/issues/{% raw %}${{ github.event.pull_request.number }}{% endraw %}/comments?per_page=100" \
+            > "${comments}" || echo '[]' > "${comments}"
           code-mower builder auto-record \
             --pr-json "${GITHUB_EVENT_PATH}" \
             --repo "${GITHUB_REPOSITORY}" \
+            --comments-json "${comments}" \
             --output "${output}" \
             --force \
             --json | tee .code-mower/builder-auto-record.json
