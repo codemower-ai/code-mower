@@ -31,6 +31,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import unicodedata
 import unittest
 import uuid
 from datetime import datetime, timezone
@@ -1040,6 +1041,16 @@ FIXTURE_INPUTS = {
 #: the one digest a finished manifest can carry for ``src/app.py``.
 CODE_INPUT_DIGEST = hashlib.md5(FIXTURE_INPUTS[CODE_INPUT], usedforsecurity=False).hexdigest()
 
+#: The same rendered filename in its two canonically equivalent spellings:
+#: ``é`` as U+00E9, and ``e`` followed by the U+0301 combining acute. Git holds
+#: exact bytes, so these are two tracked entries with two blobs, and a Linux
+#: checkout carries both at once. They are meant to render identically -- that
+#: is the whole point -- so nothing here tells them apart by eye, and a census
+#: fixture rather than a real checkout is the platform-independent way to test
+#: the pair: macOS cannot hold both names at the same time.
+NFC_INPUT = "src/café.py"
+NFD_INPUT = "src/café.py"
+
 
 def census_of(*paths: str) -> lifecycle.TrackedCensus:
     """A census naming ``paths``, shaped the way ``read_tracked_census`` does."""
@@ -1709,6 +1720,189 @@ class ProviderLaunchTests(TemporaryWorkspace):
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
         self.assertIn("does not account for 1 code files", " ".join(result.notes))
         self.assertEqual(result.unsupported_inputs, 0)
+
+    def test_two_tracked_names_that_differ_only_by_normalization_stay_partial(self) -> None:
+        """One input's success must never stand in as proof for another's.
+
+        ``src/café.py`` spelled with U+00E9 and the same name spelled ``e`` plus
+        U+0301 are two Git entries, two blobs and two files, and a Linux
+        checkout carries both at once. Give them identical bytes -- so their
+        expected digests are identical too and only the name can tell the rows
+        apart -- then fail one extraction and stamp the other. Folded onto a
+        shared key, the stamped row overwrites the blank one and both inputs
+        read as processed; held apart, neither is counted and the run is what it
+        actually was. Both census orders and both manifest orders, because a
+        fix that merely preferred the first or the last colliding row would pass
+        one of them.
+        """
+        for census_order in ((NFC_INPUT, NFD_INPUT), (NFD_INPUT, NFC_INPUT)):
+            for rows_order in (census_order, census_order[::-1]):
+                with self.subTest(census=census_order, manifest=rows_order):
+                    census = census_of(*census_order)
+                    result = lifecycle._read_completeness(
+                        {
+                            rows_order[0]: manifest_row(""),
+                            rows_order[1]: manifest_row(CODE_INPUT_DIGEST),
+                        },
+                        census,
+                        dict.fromkeys(census_order, CODE_INPUT_DIGEST),
+                        lifecycle._provider_inputs(census),
+                    )
+                    self.assertEqual(result.completeness, lifecycle.PARTIAL)
+                    self.assertEqual(result.indexed_files, 0)
+                    self.assertIn("Unicode normalization", " ".join(result.notes))
+
+    def test_colliding_tracked_names_with_different_bytes_stay_partial(self) -> None:
+        """The digest map collapses the same way the rows do, so it is checked too.
+
+        Different content gives the two inputs different expected digests, and a
+        map keyed on their shared normal form holds one of them for both. The
+        row that survives then agrees with whichever digest survived, which is a
+        comparison between two statements about one file and no statement at all
+        about the other.
+        """
+        other = hashlib.md5(b"def other():\n    return 1\n", usedforsecurity=False).hexdigest()
+        census = census_of(NFC_INPUT, NFD_INPUT)
+        result = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(CODE_INPUT_DIGEST), NFD_INPUT: manifest_row(other)},
+            census,
+            {NFC_INPUT: CODE_INPUT_DIGEST, NFD_INPUT: other},
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertEqual(result.indexed_files, 0)
+        self.assertIn("Unicode normalization", " ".join(result.notes))
+
+    def test_a_collapsed_manifest_cannot_hide_a_collision_in_the_census(self) -> None:
+        """The census is the immutable evidence that there were two inputs.
+
+        A provider that wrote one row for the pair leaves nothing in its own
+        output to say a second file existed. The denominator is not its output:
+        it is the tracked census taken before the launch, so the missing input
+        is visible whether or not the manifest admits to it.
+        """
+        census = census_of(NFC_INPUT, NFD_INPUT)
+        result = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(CODE_INPUT_DIGEST)},
+            census,
+            dict.fromkeys((NFC_INPUT, NFD_INPUT), CODE_INPUT_DIGEST),
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertEqual(result.indexed_files, 0)
+
+    def test_one_tracked_name_still_matches_a_normalized_manifest_key(self) -> None:
+        """The macOS case normalization was for, which has to keep working.
+
+        A single tracked name whose copy hands the provider a canonically
+        equivalent spelling is one input and one row. There is nothing to
+        confuse it with, so it matches and the run is complete -- in both
+        directions, because which spelling Git holds and which the filesystem
+        returns are independent.
+        """
+        for tracked, written in ((NFD_INPUT, NFC_INPUT), (NFC_INPUT, NFD_INPUT)):
+            with self.subTest(tracked=tracked):
+                census = census_of(tracked)
+                result = lifecycle._read_completeness(
+                    {written: manifest_row(CODE_INPUT_DIGEST)},
+                    census,
+                    {tracked: CODE_INPUT_DIGEST},
+                    lifecycle._provider_inputs(census),
+                )
+                self.assertEqual(result.completeness, lifecycle.COMPLETE)
+                self.assertEqual(result.indexed_files, 1)
+
+    def test_a_manifest_key_spelled_exactly_is_that_input_s_own_record(self) -> None:
+        """Exact identity is never reached past for a folded near-match.
+
+        Both spellings are present as keys and only one of them is this input's
+        name. The blank row beside it is about some other file, and a build that
+        resolved by normal form could read either one as the answer.
+        """
+        census = census_of(NFD_INPUT)
+        digests = {NFD_INPUT: CODE_INPUT_DIGEST}
+        inputs = lifecycle._provider_inputs(census)
+        stamped = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(""), NFD_INPUT: manifest_row(CODE_INPUT_DIGEST)},
+            census, digests, inputs,
+        )
+        self.assertEqual(stamped.completeness, lifecycle.COMPLETE)
+        self.assertEqual(stamped.indexed_files, 1)
+        blank = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(CODE_INPUT_DIGEST), NFD_INPUT: manifest_row("")},
+            census, digests, inputs,
+        )
+        self.assertEqual(blank.completeness, lifecycle.PARTIAL)
+        self.assertEqual(blank.indexed_files, 0)
+        self.assertIn("unprocessed or requeued", " ".join(blank.notes))
+
+    def test_two_manifest_keys_folding_onto_one_input_are_not_resolved(self) -> None:
+        """A collision can be the provider's alone, and it is refused the same way.
+
+        ``U+212B`` (ANGSTROM SIGN) and ``A`` plus ``U+030A`` both fold onto the
+        ``U+00C5`` the census holds, and neither is spelled the way the tracked
+        path is. Two candidate records and no exact one is two statements this
+        build cannot attribute to its single input.
+        """
+        # Escaped, because all three names render identically and a reader
+        # cannot otherwise tell which line is which.
+        tracked = "src/Ångstrom.py"
+        legacy = "src/Ångstrom.py"
+        decomposed = "src/Ångstrom.py"
+        # The precondition this test is about, asserted rather than assumed.
+        self.assertEqual(
+            {unicodedata.normalize("NFC", key) for key in (legacy, decomposed)},
+            {unicodedata.normalize("NFC", tracked)},
+        )
+        self.assertNotIn(tracked, (legacy, decomposed))
+        census = census_of(tracked)
+        result = lifecycle._read_completeness(
+            {legacy: manifest_row(""), decomposed: manifest_row(CODE_INPUT_DIGEST)},
+            census,
+            {tracked: CODE_INPUT_DIGEST},
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertEqual(result.indexed_files, 0)
+        self.assertIn("more than one candidate record", " ".join(result.notes))
+
+    def test_distinct_unicode_names_that_do_not_fold_together_are_unaffected(self) -> None:
+        """The refusal is about canonical equivalence, not about non-ASCII names."""
+        naive = "src/naïve.py"
+        census = census_of(NFC_INPUT, naive)
+        result = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(CODE_INPUT_DIGEST), naive: manifest_row(CODE_INPUT_DIGEST)},
+            census,
+            dict.fromkeys((NFC_INPUT, naive), CODE_INPUT_DIGEST),
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, 2)
+
+    def test_input_digests_are_keyed_by_the_exact_tracked_path(self) -> None:
+        """What the copy was read for is recorded under the name Git holds.
+
+        One file, one spelling, so this runs on any filesystem: the point is the
+        key, not a dual-name checkout. A map keyed on the normal form would
+        answer to a different tracked path than the one it was read for, and the
+        pre-launch digest is the only thing a manifest row is checked against.
+        The normalized manifest key beside it still resolves, which is the macOS
+        compatibility this keeps.
+        """
+        root = self.root / "digests"
+        (root / "src").mkdir(parents=True)
+        (root / NFD_INPUT).write_bytes(FIXTURE_INPUTS[CODE_INPUT])
+        census = census_of(NFD_INPUT)
+        digests = lifecycle._materialized_digests(root, census)
+        self.assertEqual(digests, {NFD_INPUT: CODE_INPUT_DIGEST})
+        result = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(CODE_INPUT_DIGEST)},
+            census,
+            digests,
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, 1)
 
     def test_a_request_without_a_census_cannot_be_complete(self) -> None:
         """There is no denominator, so there is no coverage claim to make."""

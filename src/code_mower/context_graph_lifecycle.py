@@ -2621,6 +2621,13 @@ def _materialized_digests(
     -- that case is already the partial one. An input the copy cannot be read
     for is simply absent from the map, and ``_read_completeness`` keeps the run
     partial for it rather than accepting the row unchecked.
+
+    Keyed by the exact Git tree path, never by a folded spelling of it. Two
+    tracked names that differ only by Unicode normalization are two files with
+    two blobs, and a map keyed on their shared normal form holds one digest for
+    both -- so the expected bytes of one input would be read from the other's.
+    Normalization is a question about what the *provider* named its rows, and it
+    is asked once, in ``_read_completeness``, against this exact denominator.
     """
     if census is None:
         return None
@@ -2633,7 +2640,7 @@ def _materialized_digests(
             continue
         digest = _materialized_digest(host)
         if digest:
-            digests[unicodedata.normalize("NFC", path)] = digest
+            digests[path] = digest
     return digests
 
 
@@ -2891,6 +2898,51 @@ def _provider_inputs(
     return _ProviderInputs(tuple(dispatched), frozenset(unsupported), tuple(unclassified))
 
 
+def _census_normalization_collisions(census: TrackedCensus) -> frozenset[str]:
+    """Normal forms that more than one distinct tracked path folds onto.
+
+    Git's tree is a set of exact byte paths, and two of them can be canonically
+    equivalent without being equal: ``café.py`` spelled with U+00E9 and the same
+    name spelled ``e`` + U+0301 are two entries, two blobs and two files, and a
+    Linux checkout carries both at once. The manifest this build reads back is
+    keyed by name, so those two inputs are the one case where a name cannot
+    identify an input on its own.
+
+    Taken from the whole census rather than from the dispatched subset, because
+    the collapse this exists to catch is a property of the tracked names, and an
+    eligible input colliding with a tracked file the pin would not dispatch is
+    the same ambiguity. The census is immutable evidence taken before the launch,
+    so a provider that folded the pair into one manifest row cannot hide that
+    they were two. Bounded by the census, which ``read_tracked_census`` has
+    already bounded.
+    """
+    seen: dict[str, str] = {}
+    collided: set[str] = set()
+    for entry in census.entries:
+        folded = unicodedata.normalize("NFC", entry.path)
+        if seen.setdefault(folded, entry.path) != entry.path:
+            collided.add(folded)
+    return frozenset(collided)
+
+
+def _manifest_keys_for(
+    path: str, rows: Mapping[str, Any], folded: Mapping[str, Sequence[str]]
+) -> Sequence[str]:
+    """Which manifest keys could be a record of ``path``.
+
+    Exact identity first: a key spelled exactly as the tracked path names one
+    input and no other, whatever else the manifest carries, so it is never
+    reached past. The normalized fallback exists for the ordinary macOS case,
+    where the copy's filesystem hands the provider a canonically equivalent
+    spelling of the one name it was given, and it answers only when exactly one
+    key folds onto that name -- more than one is two records this build cannot
+    attribute, and the caller keeps the run partial rather than picking one.
+    """
+    if path in rows:
+        return (path,)
+    return folded.get(unicodedata.normalize("NFC", path), ())
+
+
 def _read_completeness(
     manifest: Mapping[str, Any] | None,
     census: TrackedCensus | None,
@@ -2954,6 +3006,22 @@ def _read_completeness(
     is unknown, one whose row disagrees with the bytes, and one whose zero-node
     result cannot be told apart from a failure.
 
+    Names, and the one place they are not identities. The denominator is keyed
+    by exact Git tree path, and so is the digest map: two tracked names that are
+    canonically equivalent without being equal are two entries with two blobs,
+    coexisting in any Linux checkout, and folding them together would let one
+    input's stamped row and expected digest answer for the other -- a blank row
+    for a failed extraction overwritten by a successful twin, reported as two
+    files indexed. Unicode normalization survives only as what it was for: the
+    macOS case where the copy's filesystem hands the provider a canonically
+    equivalent spelling of the single name it was given. So a manifest key that
+    matches an input exactly is that input's record, and the normalized fallback
+    answers only when exactly one key folds onto it and no other tracked name
+    shares its normal form (``_census_normalization_collisions``,
+    ``_manifest_keys_for``). Both ambiguities are counted and stay partial
+    rather than resolved by position, because picking the first or the last
+    colliding row is picking which failure to not report.
+
     Blank rows are the cases the pin's rule makes blank: an extractor error or
     an anomalous zero-node extract. They stay partial here. The clean-room
     repeat that exited zero in 1.63 s requeued 54 entries; the retained
@@ -2991,6 +3059,7 @@ def _read_completeness(
         inputs = _provider_inputs(census)
     eligible = inputs.dispatched
     rows: dict[str, Any] = {}
+    folded_keys: dict[str, list[str]] = {}
     malformed_rows = 0
     for key, row in manifest.items():
         if not isinstance(key, str):
@@ -3001,19 +3070,30 @@ def _read_completeness(
         ):
             malformed_rows += 1
             continue
-        rows[unicodedata.normalize("NFC", key)] = row
-    unsupported_keys = {
-        unicodedata.normalize("NFC", path) for path in inputs.unsupported
-    }
+        rows[key] = row
+        folded_keys.setdefault(unicodedata.normalize("NFC", key), []).append(key)
+    collisions = _census_normalization_collisions(census)
     missing = 0
     unstamped = 0
     unreadable = 0
     mismatched = 0
     processed = 0
     unsupported = 0
+    collided = 0
+    ambiguous = 0
     for path in eligible:
-        key = unicodedata.normalize("NFC", path)
-        row = rows.get(key)
+        if unicodedata.normalize("NFC", path) in collisions:
+            # Two tracked names this build cannot tell apart by name, and the
+            # manifest is keyed by name. Whichever row is found, one successful
+            # input would be standing in as proof for the other, so neither is
+            # counted and the run stays partial.
+            collided += 1
+            continue
+        keys = _manifest_keys_for(path, rows, folded_keys)
+        if len(keys) > 1:
+            ambiguous += 1
+            continue
+        row = rows[keys[0]] if keys else None
         if row is None:
             missing += 1
             continue
@@ -3021,7 +3101,7 @@ def _read_completeness(
         if not isinstance(digest, str) or not _MANIFEST_HASH.fullmatch(digest):
             unstamped += 1
             continue
-        expected = digests.get(key)
+        expected = digests.get(path)
         if expected is None:
             # The row is well formed and this build cannot say what it should
             # have contained. Counting it would be believing the row on its own
@@ -3029,7 +3109,7 @@ def _read_completeness(
             unreadable += 1
         elif digest != expected:
             mismatched += 1
-        elif key in unsupported_keys:
+        elif path in inputs.unsupported:
             # Read, not failed, and deterministically not extractable by this
             # pin. Counted on its own line rather than as a file this build
             # indexed, which it is not.
@@ -3047,6 +3127,15 @@ def _read_completeness(
         notes.append(f"build could not re-read {unreadable} code files to check their hashes")
     if mismatched:
         notes.append(f"provider hashed {mismatched} code files that are not the bytes it was given")
+    if collided:
+        notes.append(
+            f"the census carried {collided} code files whose tracked names differ from "
+            "another tracked name only by Unicode normalization"
+        )
+    if ambiguous:
+        notes.append(
+            f"provider manifest carried more than one candidate record for {ambiguous} code files"
+        )
     if inputs.unclassified:
         notes.append(
             f"build could not classify {len(inputs.unclassified)} tracked inputs "
