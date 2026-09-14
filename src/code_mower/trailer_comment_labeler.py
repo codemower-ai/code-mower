@@ -23,8 +23,11 @@ if __package__ and __package__.startswith("code_mower"):
         GitHubToken,
         LabelDecision,
         apply_label_decision,
+        LineageError,
         author_exclusion_reason,
         extract_reviewed_sha,
+        lineage_context,
+        lineage_marker_author_trust,
         fetch_pull_request,
         fetch_issue_comments,
         github_actions_comment_attested,
@@ -42,8 +45,11 @@ else:
             GitHubToken,
             LabelDecision,
             apply_label_decision,
+            LineageError,
             author_exclusion_reason,
             extract_reviewed_sha,
+            lineage_context,
+            lineage_marker_author_trust,
             fetch_pull_request,
             fetch_issue_comments,
             github_actions_comment_attested,
@@ -60,8 +66,11 @@ else:
             GitHubToken,
             LabelDecision,
             apply_label_decision,
+            LineageError,
             author_exclusion_reason,
             extract_reviewed_sha,
+            lineage_context,
+            lineage_marker_author_trust,
             fetch_pull_request,
             fetch_issue_comments,
             github_actions_comment_attested,
@@ -235,6 +244,7 @@ def resolve_label_decision(
     current_head_sha: Optional[str],
     config: LaneConfig,
     repo: str = "",
+    head_branch: str = "",
     tokens: Sequence[GitHubToken] = (),
     github_actions_workflows: Sequence[str] = (),
     actions_run_lookup: Optional[Callable[[str], Mapping[str, Any]]] = None,
@@ -298,11 +308,26 @@ def resolve_label_decision(
         if isinstance(label, dict) and str(label.get("name") or "")
     ]
     issue_author = str(((issue.get("user") or {}).get("login") or ""))
+    # Exact-head lineage, not identity alone. Without this the labeler cannot
+    # tell a reconciled takeover from a conflict, and an independent reviewer's
+    # successful verdict on a handed-over PR would never reach its done label.
+    try:
+        lineage = lineage_context(
+            repo=repo,
+            pr_number=issue_number,
+            branch=head_branch,
+            head_sha=current_head_sha,
+            comments=_comments_with_event_comment(issue_comments or (), comment),
+            trusted_author=lineage_marker_author_trust(authorities=decision_authorities),
+        )
+    except LineageError:
+        return None, "published builder lineage is unreadable; skipping label update"
     exclusion = author_exclusion_reason(
         lane_name=config.name,
         labels=issue_labels,
         author=issue_author,
         text=str(issue.get("body") or ""),
+        lineage=lineage,
     )
     if exclusion:
         return None, exclusion
@@ -371,6 +396,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     event = load_json(event_path)
 
     current_head_sha = os.environ.get("DRY_RUN_HEAD_SHA")
+    head_branch = os.environ.get("DRY_RUN_HEAD_BRANCH", "")
     issue_comments: Sequence[Mapping[str, Any]] | None = None
     comment_history_complete = True
     tokens = config.github_tokens_from_env()
@@ -382,7 +408,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         issue = event.get("issue") or {}
         issue_number = int(issue.get("number", 0))
         if issue_number and "pull_request" in issue:
-            current_head_sha = fetch_pull_request(repo, issue_number, tokens=tokens)["head"]["sha"]
+            pull_request = fetch_pull_request(repo, issue_number, tokens=tokens)
+            current_head_sha = pull_request["head"]["sha"]
+            head_branch = str((pull_request.get("head") or {}).get("ref") or "")
             page_cap = int(os.environ.get("CODE_MOWER_LABELER_COMMENT_PAGE_CAP", "10"))
             try:
                 issue_comments = fetch_issue_comments(
@@ -406,6 +434,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         current_head_sha=current_head_sha,
         config=config,
         repo=repo,
+        head_branch=head_branch,
         tokens=tokens,
         github_actions_workflows=github_actions_workflows,
         issue_comments=issue_comments,

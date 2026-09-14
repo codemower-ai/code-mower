@@ -55,9 +55,25 @@ SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 REPO_RE = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}\Z")
 BRANCH_RE = re.compile(r"[A-Za-z0-9._/-]{1,200}\Z")
 
-#: Verified writer states the handoff boundary is allowed to report. Anything
-#: else (including a missing or "unknown" state) is uncertainty.
-WRITER_STATES = frozenset({"suspended", "terminated"})
+#: Verified writer states the handoff boundary is allowed to report for a
+#: takeover. Anything else (including a missing or "unknown" state) is
+#: uncertainty.
+HANDOFF_WRITER_STATES = frozenset({"suspended", "terminated"})
+
+#: The only writer state a continuation may carry. A continuation is recorded
+#: after the destination lane's *own* supervised round ended and its process
+#: group was reaped, so the writer that went quiescent is the recording lane
+#: itself. Spelling that differently from the handoff states keeps a takeover
+#: episode from ever being mistaken for a continuation, or the reverse.
+CONTINUATION_WRITER_STATE = "self_quiescent"
+
+WRITER_STATES = HANDOFF_WRITER_STATES | {CONTINUATION_WRITER_STATE}
+
+#: A takeover moves the pen between two lanes; a continuation is the lane that
+#: already holds it advancing the same pull request in an ordinary fix round.
+HANDOFF_KIND = "handoff"
+CONTINUATION_KIND = "continuation"
+EPISODE_KINDS = frozenset({HANDOFF_KIND, CONTINUATION_KIND})
 
 #: A lineage longer than this is treated as malformed rather than walked.
 MAX_EPISODES = 32
@@ -65,6 +81,7 @@ MAX_EPISODES = 32
 EPISODE_FIELDS = (
     "schema",
     "sequence",
+    "kind",
     "repo",
     "pr_number",
     "branch",
@@ -112,6 +129,12 @@ class ContributionEpisode:
     destination lane was launched against; ``resulting_head`` is the head the
     destination lane actually produced. A destination that never moved the head
     is still the writer, but it contributed nothing to the current diff.
+
+    ``kind`` is ``handoff`` when the pen moved between two lanes and
+    ``continuation`` when the lane that already held it advanced the same pull
+    request again. A continuation is the only episode whose source and
+    destination lane are the same, and it must carry the self-quiescent writer
+    state, so neither shape can be forged into the other.
     """
 
     sequence: int
@@ -123,8 +146,16 @@ class ContributionEpisode:
     expected_head: str
     resulting_head: str
     writer_state: str
+    kind: str = HANDOFF_KIND
 
     def __post_init__(self) -> None:
+        same_lane = self.source_lane == self.destination_lane
+        if self.kind == CONTINUATION_KIND:
+            shape_ok = same_lane and self.writer_state == CONTINUATION_WRITER_STATE
+        elif self.kind == HANDOFF_KIND:
+            shape_ok = not same_lane and self.writer_state in HANDOFF_WRITER_STATES
+        else:
+            shape_ok = False
         if (
             isinstance(self.sequence, bool)
             or not isinstance(self.sequence, int)
@@ -134,10 +165,9 @@ class ContributionEpisode:
             or not BRANCH_RE.match(_text(self.branch))
             or not LANE_RE.match(_text(self.source_lane))
             or not LANE_RE.match(_text(self.destination_lane))
-            or self.source_lane == self.destination_lane
             or not SHA_RE.match(_text(self.expected_head))
             or not SHA_RE.match(_text(self.resulting_head))
-            or self.writer_state not in WRITER_STATES
+            or not shape_ok
         ):
             raise LineageError("contribution episode is malformed")
 
@@ -149,6 +179,7 @@ class ContributionEpisode:
         return {
             "schema": EPISODE_SCHEMA,
             "sequence": self.sequence,
+            "kind": self.kind,
             "repo": self.repo,
             "pr_number": self.pr_number,
             "branch": self.branch,
@@ -170,6 +201,7 @@ def episode_from_mapping(payload: Mapping[str, Any]) -> ContributionEpisode:
     repo = _text(payload.get("repo"))
     return ContributionEpisode(
         sequence=payload.get("sequence"),  # type: ignore[arg-type]
+        kind=_text(payload.get("kind")).lower(),
         repo=repo,
         pr_number=_pr_number(payload.get("pr_number")),
         branch=_text(payload.get("branch")),
@@ -208,6 +240,7 @@ def episode_from_handoff(
         raise LineageError("contribution episode does not bind to the repository under work")
     return ContributionEpisode(
         sequence=sequence,
+        kind=HANDOFF_KIND,
         repo=pr_repo,
         pr_number=_pr_number(pr_number),
         branch=_text(record.get("target_branch")),
@@ -216,6 +249,51 @@ def episode_from_handoff(
         expected_head=_sha(record.get("expected_head")),
         resulting_head=_sha(resulting_head),
         writer_state=_text(writer_state).lower(),
+    )
+
+
+def continuation_episode(
+    previous: ContributionEpisode,
+    *,
+    lane: str,
+    resulting_head: str,
+    branch: str = "",
+) -> ContributionEpisode:
+    """Build the next episode for an ordinary round by the current writer.
+
+    A continuation repairs the gap the takeover model would otherwise leave:
+    once a lane has taken a pull request over, its next fix round advances the
+    head without any new handoff to record, and exact-head resolution would
+    report ``lineage_behind_head`` forever.
+
+    It is not a handoff and must not be manufactured into one. ``previous`` is
+    the recorded tip, and only the lane that record already names as the
+    current writer may continue from it; every other field is inherited from
+    that verified episode rather than supplied by the caller.
+    """
+
+    writer = _lane(lane)
+    if not writer or writer != previous.destination_lane:
+        raise LineageError(
+            "only the lane the recorded lineage names as current writer may continue it"
+        )
+    observed = _sha(resulting_head)
+    if not observed or observed == previous.resulting_head:
+        raise LineageError("a continuation must record a head the writer actually moved")
+    target_branch = _text(branch) or previous.branch
+    if target_branch != previous.branch:
+        raise LineageError("a continuation must stay on the recorded branch")
+    return ContributionEpisode(
+        sequence=previous.sequence + 1,
+        kind=CONTINUATION_KIND,
+        repo=previous.repo,
+        pr_number=previous.pr_number,
+        branch=previous.branch,
+        source_lane=writer,
+        destination_lane=writer,
+        expected_head=previous.resulting_head,
+        resulting_head=observed,
+        writer_state=CONTINUATION_WRITER_STATE,
     )
 
 
@@ -421,7 +499,12 @@ def resolve_lineage(
             or (target_branch and episode.branch != target_branch)
         ):
             return _lineage("conflict", "episode_unbound", head_sha=head)
-        if episode.writer_state not in WRITER_STATES:
+        expected_state = (
+            {CONTINUATION_WRITER_STATE}
+            if episode.kind == CONTINUATION_KIND
+            else HANDOFF_WRITER_STATES
+        )
+        if episode.writer_state not in expected_state:
             return _lineage("conflict", "writer_state_unverified", head_sha=head)
         parsed.append(episode)
     if len(parsed) > MAX_EPISODES:
@@ -441,6 +524,12 @@ def resolve_lineage(
         seen[episode.sequence] = episode
     ordered = [seen[sequence] for sequence in sorted(seen)]
     if [episode.sequence for episode in ordered] != list(range(1, len(ordered) + 1)):
+        return _lineage("conflict", "episode_unchained", head_sha=head)
+
+    if ordered[0].kind != HANDOFF_KIND:
+        # Lineage begins when the pen moves. A continuation with nothing to
+        # continue describes an ordinary single-builder round, which needs no
+        # episode at all, so recorded evidence in that shape is not trustworthy.
         return _lineage("conflict", "episode_unchained", head_sha=head)
 
     contributors: list[str] = [ordered[0].source_lane]

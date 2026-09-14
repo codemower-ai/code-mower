@@ -133,19 +133,31 @@ def identity_with_lane_floor(identity: Mapping[str, Any] | None, lane: str) -> M
 def recorded_episodes(repo: str, pr_number: Any, state_dir: Any = None) -> tuple:
     """Load contribution episodes the verified delivery boundary persisted.
 
-    This is the wrapper-side counterpart of the runner's record. An unreadable
-    record raises :class:`~code_mower.builder_lineage.LineageError` so the
+    This is the wrapper-side counterpart of the runner's record, so it must
+    resolve the *same* directory the runner writes to. When the deployment
+    configures ``LANE_HANDOFF_STATE_DIR``, reading the packaged default instead
+    would consult an empty store and miss every verified contribution.
+
+    An unreadable record -- including a configured directory that cannot be
+    resolved -- raises :class:`~code_mower.builder_lineage.LineageError` so the
     caller fails closed; a checkout with no record at all simply has no
     episodes, which is the ordinary single-builder case.
     """
 
     from pathlib import Path
 
-    from ..builder_lineage import load_episodes
-    from ..lane_handoff import default_root, lineage_root
+    from ..builder_lineage import LineageError, load_episodes
+    from ..lane_delivery import LaneDeliveryError
+    from ..lane_handoff import configured_root, lineage_root
 
-    root = lineage_root(Path(state_dir) if state_dir is not None else default_root())
-    return load_episodes(root, repo, pr_number)
+    if state_dir is not None:
+        root = Path(state_dir)
+    else:
+        try:
+            root = configured_root()
+        except LaneDeliveryError as exc:
+            raise LineageError(str(exc)) from None
+    return load_episodes(lineage_root(root), repo, pr_number)
 
 
 def trusted_episodes(

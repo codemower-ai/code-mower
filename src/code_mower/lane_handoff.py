@@ -20,8 +20,32 @@ from .lane_delivery import Handoff, LaneDeliveryError
 from .remote_session import DevinProvider, FakeProvider, RemoteSessions
 
 
+#: The runner exports this before it writes anything, and every reader has to
+#: resolve the same directory or it will silently consult a different store.
+STATE_DIR_ENV = "LANE_HANDOFF_STATE_DIR"
+
+
 def default_root() -> Path:
     return (Path.home() / ".local/share/code-mower/lane-handoffs").resolve()
+
+
+def configured_root(environ: dict | None = None) -> Path:
+    """The handoff state directory this checkout is actually configured to use.
+
+    The shell runner honours ``LANE_HANDOFF_STATE_DIR`` when it records; a
+    reader that ignored it would answer from an empty or stale store and could
+    admit a contributor or refuse an independent reviewer. A configured but
+    non-absolute value is a misconfiguration rather than a second guess at the
+    location, so it fails closed instead of falling back to the default.
+    """
+
+    value = str((environ if environ is not None else os.environ).get(STATE_DIR_ENV, "")).strip()
+    if not value:
+        return default_root()
+    path = Path(value)
+    if not path.is_absolute():
+        raise LaneDeliveryError(f"{STATE_DIR_ENV} must be an absolute path")
+    return path.resolve()
 
 
 def key(value: object) -> str:
@@ -252,6 +276,72 @@ def record_contribution(handoff: Handoff, root: Path, *, resulting_head: str,
         return {"recorded": outcome["recorded"], "duplicate": outcome["duplicate"],
                 "reason": "recorded" if outcome["recorded"] else "already_recorded",
                 "sequence": sequence, "episodes": outcome["episodes"]}
+
+
+def record_continuation(root: Path, *, repo: str, pr_number: object, branch: str,
+                        lane: str, expected_head: str, resulting_head: str,
+                        delivered: bool) -> dict:
+    """Persist an ordinary same-writer round that advanced an existing lineage.
+
+    After a takeover, the destination lane keeps working: a normal fix round
+    moves the head with no new handoff to record, and exact-head resolution
+    would then report ``lineage_behind_head`` for good. Reusing the original
+    handoff cannot repair that -- its recorded sequence rejects a different
+    resulting head -- and a self-handoff is invalid by construction.
+
+    So this records the round that actually happened, and only that. It never
+    manufactures a takeover: it refuses unless the recorded tip already names
+    ``lane`` as the current writer, unless the round started from exactly the
+    head that tip left behind, and unless the head genuinely moved. There is no
+    source writer to quiesce and no launch to reserve, because no other lane is
+    being displaced -- the writer that went quiescent is this lane's own
+    supervised round, which the caller has already terminated and reaped.
+    """
+    from .builder_lineage import (
+        CONTINUATION_KIND, LineageError, continuation_episode, load_episodes, record_episode,
+    )
+
+    if not delivered:
+        return {"recorded": False, "reason": "delivery_unvalidated"}
+    store = lineage_root(root)
+    try:
+        episodes = load_episodes(store, repo, pr_number)
+    except LineageError as exc:
+        raise LaneDeliveryError(str(exc)) from None
+    if not episodes:
+        # No takeover has been recorded, so nothing is behind the head: this is
+        # the ordinary single-builder case, which needs no episode at all.
+        return {"recorded": False, "reason": "no_recorded_lineage"}
+    observed = str(resulting_head or "").strip().lower()
+    started = str(expected_head or "").strip().lower()
+    writer = str(lane or "").strip().lower()
+    for episode in episodes:
+        if (episode.kind == CONTINUATION_KIND and episode.expected_head == started
+                and episode.resulting_head == observed
+                and episode.destination_lane == writer):
+            # Replay of a round already recorded. Idempotent, never a duplicate.
+            return {"recorded": False, "duplicate": True, "reason": "already_recorded",
+                    "sequence": episode.sequence, "episodes": len(episodes)}
+    tip = episodes[-1]
+    if tip.destination_lane != writer:
+        return {"recorded": False, "reason": "not_current_writer"}
+    if tip.resulting_head != started:
+        # Either this round did not start where the lineage stopped, or the
+        # evidence is stale. Guessing across that gap is what exact-head
+        # resolution exists to refuse.
+        return {"recorded": False, "reason": "continuation_unchained"}
+    if observed == started:
+        return {"recorded": False, "reason": "head_unchanged"}
+    try:
+        episode = continuation_episode(
+            tip, lane=writer, resulting_head=observed, branch=str(branch or ""),
+        )
+        outcome = record_episode(store, episode)
+    except LineageError as exc:
+        raise LaneDeliveryError(str(exc)) from None
+    return {"recorded": outcome["recorded"], "duplicate": outcome["duplicate"],
+            "reason": "recorded" if outcome["recorded"] else "already_recorded",
+            "sequence": episode.sequence, "episodes": outcome["episodes"]}
 
 
 def reserve_launch(handoff: Handoff, root: Path, *, head: Callable = observe_head,

@@ -1569,22 +1569,30 @@ if [ "${#lane_delivery[@]}" -gt 0 ] && [ "$mode" != "audit" ]; then
   # the accepted private intent. The episode is written from the acceptance
   # record and a fresh head observation, never from anything declared here, so
   # a runner that merely names a handoff records nothing.
-  [ -n "$handoff_file" ] && classify_args+=(--handoff "$handoff_file" --handoff-state-dir "$HANDOFF_STATE_DIR")
+  # The state directory travels even without a handoff: an ordinary fix round
+  # after a takeover has no new handoff to record but still advances the head,
+  # and lineage that stops short of it refuses every reviewer.
+  classify_args+=(--handoff-state-dir "$HANDOFF_STATE_DIR")
+  [ -n "$handoff_file" ] && classify_args+=(--handoff "$handoff_file")
   set +e
   "${lane_delivery[@]}" "${classify_args[@]}"
   delivery_rc=$?
   set -e
-  # Reconcile to exactly one active builder label from the verified current
-  # writer. Historical contributions stay in the lineage record; the label only
-  # says who may write next. Unresolved lineage changes no label.
-  if [ -n "$handoff_file" ] && [ "$kind" = "pr" ] && [ "$delivery_rc" -eq 0 ]; then
+  # Publish the verified episodes, then reconcile to exactly one active builder
+  # label from the verified current writer. Publication comes first and the
+  # label move is abandoned without it: the GitHub gate reads episodes only
+  # from trusted comments, so a moved label with no published evidence is the
+  # conflict this whole path exists to prevent. Historical contributions stay
+  # in the record; the label only says who may write next. Unresolved lineage
+  # publishes nothing and changes no label.
+  if [ "$kind" = "pr" ] && [ "$delivery_rc" -eq 0 ]; then
     reconcile_head="$(jq -r '.head_sha // ""' "$after_state" 2>/dev/null || printf '')"
     reconcile_branch="$(jq -r '.branch // ""' "$after_state" 2>/dev/null || printf '')"
     if [ -n "$reconcile_head" ]; then
       reconcile_args=(
         lineage --repo "$REPO" --pr "$num" --head "$reconcile_head"
         --branch "$reconcile_branch" --state-dir "$HANDOFF_STATE_DIR"
-        --reconcile-labels --json
+        --publish --reconcile-labels --json
       )
       while IFS= read -r reconcile_label; do
         [ -n "$reconcile_label" ] || continue

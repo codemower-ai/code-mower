@@ -14,7 +14,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 if __package__ and __package__.startswith("code_mower"):
     from .adapters import load_adapter
@@ -23,10 +23,15 @@ if __package__ and __package__.startswith("code_mower"):
         GitHubToken,
         LabelDecision,
         GitHubRequestError,
+        LineageContext,
+        LineageError,
         apply_label_decision,
         author_exclusion_reason,
         fetch_pull_request,
         github_request_with_fallback,
+        lineage_context,
+        lineage_decision_authorities,
+        lineage_marker_author_trust,
         load_json,
         sha_matches,
     )
@@ -38,10 +43,15 @@ else:
             GitHubToken,
             LabelDecision,
             GitHubRequestError,
+            LineageContext,
+            LineageError,
             apply_label_decision,
             author_exclusion_reason,
             fetch_pull_request,
             github_request_with_fallback,
+            lineage_context,
+            lineage_decision_authorities,
+            lineage_marker_author_trust,
             load_json,
             sha_matches,
         )
@@ -52,10 +62,15 @@ else:
             GitHubToken,
             LabelDecision,
             GitHubRequestError,
+            LineageContext,
+            LineageError,
             apply_label_decision,
             author_exclusion_reason,
             fetch_pull_request,
             github_request_with_fallback,
+            lineage_context,
+            lineage_decision_authorities,
+            lineage_marker_author_trust,
             load_json,
             sha_matches,
         )
@@ -216,8 +231,32 @@ def resolve_label_decision(
     current_head_sha: Optional[str] = None,
     review_comments: Optional[list[dict[str, Any]]] = None,
     same_head_review_exists: bool = False,
+    repo: str = "",
+    head_branch: str = "",
+    issue_comments: Optional[Sequence[Mapping[str, Any]]] = None,
+    decision_authorities: Sequence[str] = (),
 ) -> tuple[Optional[LabelDecision], str]:
     event_type = event_type or adapter.event_type
+    # Exact-head lineage is resolved once, from trusted inputs this process
+    # fetched itself, and handed to whichever entry path decides. Without it
+    # every SaaS reviewer would fall back to identity-only resolution and treat
+    # a reconciled takeover as a conflict, skipping its own done-label update.
+    number = pr_number or int(
+        (event.get("issue") or {}).get("number")
+        or (event.get("pull_request") or {}).get("number")
+        or 0
+    )
+    try:
+        lineage = lineage_context(
+            repo=repo,
+            pr_number=number,
+            branch=head_branch,
+            head_sha=current_head_sha,
+            comments=issue_comments,
+            trusted_author=lineage_marker_author_trust(authorities=decision_authorities),
+        )
+    except LineageError:
+        return None, "published builder lineage is unreadable; skipping label update"
     if event_type == "pull_request_review":
         return _resolve_pull_request_review(
             event,
@@ -227,6 +266,7 @@ def resolve_label_decision(
             pr_body=pr_body,
             current_head_sha=current_head_sha,
             review_comments=review_comments or [],
+            lineage=lineage,
         )
     if event_type == "issue_comment":
         return _resolve_issue_comment(
@@ -235,6 +275,7 @@ def resolve_label_decision(
             pr_labels=pr_labels or [],
             pr_author=pr_author,
             pr_body=pr_body,
+            lineage=lineage,
         )
     if event_type == "check_run":
         return _resolve_check_run(
@@ -246,6 +287,7 @@ def resolve_label_decision(
             pr_body=pr_body,
             current_head_sha=current_head_sha,
             same_head_review_exists=same_head_review_exists,
+            lineage=lineage,
         )
     return None, f"unsupported adapter event type: {event_type}"
 
@@ -259,6 +301,7 @@ def _resolve_pull_request_review(
     pr_body: str,
     current_head_sha: Optional[str],
     review_comments: list[dict[str, Any]],
+    lineage: Optional[LineageContext] = None,
 ) -> tuple[Optional[LabelDecision], str]:
     if event.get("action") not in ("submitted", "edited"):
         return None, f"unsupported pull_request_review action: {event.get('action')}"
@@ -283,6 +326,7 @@ def _resolve_pull_request_review(
         labels=pr_labels,
         author=pr_author,
         text=pr_body,
+        lineage=lineage,
     )
     if exclusion:
         return None, exclusion
@@ -320,6 +364,7 @@ def _resolve_issue_comment(
     pr_labels: list[str],
     pr_author: str,
     pr_body: str,
+    lineage: Optional[LineageContext] = None,
 ) -> tuple[Optional[LabelDecision], str]:
     if event.get("action") not in ("created", "edited"):
         return None, f"unsupported issue_comment action: {event.get('action')}"
@@ -349,6 +394,7 @@ def _resolve_issue_comment(
         labels=pr_labels,
         author=issue_author,
         text=issue_body,
+        lineage=lineage,
     )
     if exclusion:
         return None, exclusion
@@ -374,6 +420,7 @@ def _resolve_check_run(
     pr_body: str,
     current_head_sha: Optional[str],
     same_head_review_exists: bool,
+    lineage: Optional[LineageContext] = None,
 ) -> tuple[Optional[LabelDecision], str]:
     if event.get("action") != "completed":
         return None, f"unsupported check_run action: {event.get('action')}"
@@ -399,6 +446,7 @@ def _resolve_check_run(
         labels=pr_labels,
         author=pr_author,
         text=pr_body,
+        lineage=lineage,
     )
     if exclusion:
         return None, exclusion
@@ -605,6 +653,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     pr_labels: list[str] = []
     current_head_sha = os.environ.get("DRY_RUN_HEAD_SHA")
+    head_branch = os.environ.get("DRY_RUN_HEAD_BRANCH", "")
+    lineage_comments: Optional[Sequence[Mapping[str, Any]]] = None
     review_comments: list[dict[str, Any]] = []
     same_head_review_exists = False
     pr_number = _event_pr_number(event, adapter, event_type)
@@ -697,6 +747,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     pr_author=candidate_author,
                     pr_body=candidate_body,
                     current_head_sha=candidate_head,
+                    repo=repo,
+                    head_branch=str((pr_current.get("head") or {}).get("ref") or ""),
+                    decision_authorities=lineage_decision_authorities(),
                 )
                 print(f"skip: {reason}")
                 continue
@@ -710,6 +763,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 pr_author=candidate_author,
                 pr_body=candidate_body,
                 current_head_sha=candidate_head,
+                repo=repo,
+                head_branch=str((pr_current.get("head") or {}).get("ref") or ""),
+                decision_authorities=lineage_decision_authorities(),
             )
             if decision is None:
                 print(f"skip: {reason}")
@@ -753,6 +809,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pr_author = str(((pr_current.get("user") or {}).get("login") or ""))
         pr_body = str(pr_current.get("body") or "")
         current_head_sha = pr_current.get("head", {}).get("sha")
+        head_branch = str((pr_current.get("head") or {}).get("ref") or "")
         if adapter.requires_review_comments:
             review = event.get("review") or {}
             review_id = review.get("id")
@@ -844,6 +901,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 pr_author=pr_author,
                 pr_body=pr_body,
                 current_head_sha=current_head_sha,
+                repo=repo,
+                head_branch=str((pr_current.get("head") or {}).get("ref") or ""),
+                issue_comments=comments,
+                decision_authorities=lineage_decision_authorities(),
             )
             if decision is None:
                 continue
@@ -863,6 +924,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         current_head_sha=current_head_sha,
         review_comments=review_comments,
         same_head_review_exists=same_head_review_exists,
+        repo=repo,
+        head_branch=head_branch,
+        issue_comments=lineage_comments,
+        decision_authorities=lineage_decision_authorities(),
     )
     if decision is None:
         print(f"skip: {reason}")

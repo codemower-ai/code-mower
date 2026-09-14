@@ -1212,6 +1212,11 @@ def _add_lineage_parser(subparsers: Any) -> None:
         help="Author-exclusion identity contract; defaults to the runner environment.",
     )
     lineage.add_argument(
+        "--publish",
+        action="store_true",
+        help="Publish gate-trusted episode metadata on the pull request first.",
+    )
+    lineage.add_argument(
         "--reconcile-labels",
         action="store_true",
         help="Move the active builder label to the verified current writer.",
@@ -1237,9 +1242,80 @@ def _gh_apply_labels(repo: str, number: str, add: Iterable[str], remove: Iterabl
                    stderr=subprocess.DEVNULL)
 
 
+def _gh_comment_bodies(repo: str, number: str) -> tuple[str, ...]:
+    result = subprocess.check_output(
+        ["gh", "pr", "view", number, "--repo", repo, "--json", "comments"],
+        timeout=60, text=True, stderr=subprocess.DEVNULL,
+    )
+    payload = json.loads(result).get("comments") or []
+    return tuple(str(item.get("body") or "") for item in payload if isinstance(item, dict))
+
+
+def _gh_publish_comment(repo: str, number: str, body: str) -> None:
+    subprocess.run(["gh", "pr", "comment", number, "--repo", repo, "--body", body],
+                   timeout=60, check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+
+
+def publish_lineage_evidence(
+    *,
+    repo: str,
+    pr_number: str,
+    branch: str,
+    head_sha: str,
+    episodes: Sequence[Any],
+    opener_lane: str = "",
+    label_lanes: Sequence[str] = (),
+    existing_bodies: Callable[[], Sequence[str]],
+    publish: Callable[[str], None],
+) -> dict:
+    """Put the evidence the GitHub gate reads where the gate can read it.
+
+    The runner's own store is private to the machine that recorded it, while
+    the gate resolves lineage exclusively from hidden markers on already
+    trusted comments. Recording a takeover without publishing it therefore
+    leaves the gate looking at a Devin author, a reconciled Codex label and no
+    episodes at all -- a conflict, when the truth is an admissible independent
+    reviewer.
+
+    Only lineage that resolves at the pinned head is published, so an
+    unverified or stale record never becomes public evidence. The payload is
+    the bounded metadata contract: lane names, a repository slug, a PR number,
+    a branch and commit shas. Publishing is idempotent -- an identical marker
+    already present is left alone rather than repeated.
+    """
+
+    from . import builder_lineage
+
+    lineage = builder_lineage.resolve_lineage(
+        repo=repo, pr_number=pr_number, branch=branch, head_sha=head_sha,
+        episodes=episodes, opener_lane=opener_lane, label_lanes=label_lanes,
+    )
+    if lineage.status != "resolved" or not episodes:
+        return {"published": False, "reason": f"lineage_{lineage.status}",
+                "owner_action": lineage.owner_action}
+    marker = builder_lineage.lineage_comment_marker(tuple(episodes))
+    _assert_safe_metadata(json.loads(marker.split(None, 2)[2].rsplit("-->", 1)[0].strip()),
+                          path="lineage_marker")
+    for body in existing_bodies():
+        if marker in body:
+            return {"published": False, "duplicate": True, "reason": "already_published"}
+    publish(
+        "Builder contribution lineage for this head, published so the gate and "
+        "every reviewer resolve the same verified evidence.\n\n"
+        f"- current writer: `{lineage.current_writer}`\n"
+        f"- contributors: {', '.join('`' + lane + '`' for lane in lineage.contributors)}\n"
+        f"- head: `{lineage.head_sha}`\n\n" + marker
+    )
+    return {"published": True, "duplicate": False, "reason": "published",
+            "episodes": len(tuple(episodes))}
+
+
 def _lineage_main(args: argparse.Namespace, *,
                   head: Callable[[str, str], str] = _gh_head,
-                  labels: Callable[..., None] = _gh_apply_labels) -> int:
+                  labels: Callable[..., None] = _gh_apply_labels,
+                  comment_bodies: Callable[[str, str], Sequence[str]] = _gh_comment_bodies,
+                  publish_comment: Callable[[str, str, str], None] = _gh_publish_comment) -> int:
     """Report the resolved lineage, and optionally reconcile the active label.
 
     Reading is always safe; the mutation happens only when it is asked for, and
@@ -1254,7 +1330,7 @@ def _lineage_main(args: argparse.Namespace, *,
     number = _text(args.pr)
     identity = load_identity(args.identity_json or None)
     episodes: tuple[Any, ...] = ()
-    root = args.state_dir or lane_handoff.default_root()
+    root = args.state_dir or lane_handoff.configured_root()
     try:
         episodes = builder_lineage.load_episodes(
             lane_handoff.lineage_root(root), repo, number
@@ -1264,6 +1340,35 @@ def _lineage_main(args: argparse.Namespace, *,
     opener_lane, _ = builder_lineage.lanes_from_identity(
         identity=identity, labels=args.labels, author=args.author
     )
+    published: dict | None = None
+    if args.publish:
+        _, publish_label_lanes = builder_lineage.lanes_from_identity(
+            identity=identity, labels=args.labels, author=args.author
+        )
+        published = publish_lineage_evidence(
+            repo=repo, pr_number=number, branch=args.branch, head_sha=args.head,
+            episodes=episodes, opener_lane=opener_lane,
+            label_lanes=publish_label_lanes,
+            existing_bodies=lambda: comment_bodies(repo, number),
+            publish=lambda body: publish_comment(repo, number, body),
+        )
+        if not (published["published"] or published.get("duplicate")):
+            # The label says who may write next; the published episodes are how
+            # everyone else verifies it. Moving the label without them is the
+            # exact state that produces a gate conflict, so stop here instead.
+            payload = {"schema": builder_lineage.SCHEMA, "status": "blocked",
+                       "reason": "lineage_unpublished", "head_sha": args.head,
+                       "current_writer": "", "add": [], "remove": [],
+                       "applied": False, "published": False,
+                       "owner_action": published.get("owner_action")
+                       or "publish verified builder lineage before reconciling the label"}
+            _assert_safe_metadata(payload, path="lineage")
+            if args.json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(f"lineage {payload['status']}: {payload['reason']}")
+            return 3
+
     if args.reconcile_labels:
         payload = builder_lineage.reconcile_active_builder_label(
             repo=repo,
@@ -1290,6 +1395,9 @@ def _lineage_main(args: argparse.Namespace, *,
             opener_lane=opener_lane,
             label_lanes=label_lanes,
         ).as_dict()
+    if published is not None:
+        payload = dict(payload)
+        payload["published"] = bool(published["published"] or published.get("duplicate"))
     _assert_safe_metadata(payload, path="lineage")
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1449,15 +1557,33 @@ def _classify_main(args: argparse.Namespace) -> int:
     # no episode, so a lane that was launched and wrote nothing never appears as
     # a contributor to the diff.
     lineage_result = None
-    if handoff is not None and args.handoff_state_dir is not None:
+    if args.handoff_state_dir is not None:
         from . import lane_handoff
 
-        lineage_result = lane_handoff.record_contribution(
-            handoff,
-            args.handoff_state_dir,
-            resulting_head=after.head_sha,
-            delivered=outcome.delivered,
-        )
+        if handoff is not None:
+            lineage_result = lane_handoff.record_contribution(
+                handoff,
+                args.handoff_state_dir,
+                resulting_head=after.head_sha,
+                delivered=outcome.delivered,
+            )
+        elif args.lane and args.repo and after.kind == "pr" and after.number:
+            # An ordinary fix round after a takeover carries no handoff, but it
+            # still advances the head. Without recording it the lineage would
+            # stay permanently behind and exact-head resolution would refuse
+            # every reviewer. This records only what happened: the same lane
+            # the record already names as current writer, continuing from the
+            # head that record left behind.
+            lineage_result = lane_handoff.record_continuation(
+                args.handoff_state_dir,
+                repo=args.repo,
+                pr_number=after.number,
+                branch=after.branch,
+                lane=args.lane,
+                expected_head=before.head_sha,
+                resulting_head=after.head_sha,
+                delivered=outcome.delivered,
+            )
 
     event = None
     if args.lane and args.repo:

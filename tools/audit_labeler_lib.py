@@ -256,17 +256,124 @@ def resolve_builder_lineage(
     )
 
 
+@dataclass(frozen=True)
+class LineageContext:
+    """The trusted exact-head evidence a labeler carries into resolution.
+
+    Every field has to come from something the labeler verified for itself: the
+    repository it is running in, the head it fetched from the pull request, and
+    episodes published by an author it already trusts. An empty context is not
+    a failure -- it is the honest statement that this call has no exact-head
+    evidence, and resolution falls back to the ordinary single-builder answer.
+    """
+
+    repo: str = ""
+    pr_number: Any = 0
+    branch: str = ""
+    head_sha: str = ""
+    episodes: tuple[Any, ...] = ()
+
+
+#: A labeler that has no exact-head evidence at all.
+NO_LINEAGE = LineageContext()
+
+
+def published_lineage_episodes(
+    comments: Sequence[Mapping[str, Any]] | None,
+    *,
+    trusted_author: Callable[[str], bool],
+) -> tuple[Any, ...]:
+    """Contribution episodes published by comment authors the caller trusts.
+
+    The hidden marker is a transport for bounded metadata, never an
+    authorization: trust is decided entirely by ``trusted_author``, so an
+    arbitrary commenter cannot assert a takeover into existence. Unreadable
+    published evidence raises :class:`LineageError` so the caller fails closed
+    rather than labelling from a partially parsed history.
+    """
+
+    collected: list[Any] = []
+    for comment in comments or ():
+        if not isinstance(comment, Mapping):
+            continue
+        login = str(((comment.get("user") or {}).get("login")) or "")
+        body = str(comment.get("body") or "")
+        if not login or LINEAGE_MARKER not in body or not trusted_author(login):
+            continue
+        collected.extend(episodes_from_comment_body(body))
+    return tuple(collected)
+
+
+def lineage_decision_authorities() -> tuple[str, ...]:
+    """The repository's configured decision authorities, for marker trust."""
+
+    return code_mower_decisions.decision_authorities_from_env()
+
+
+def lineage_marker_author_trust(
+    *,
+    authorities: Sequence[str] = (),
+) -> Callable[[str], bool]:
+    """Who this labeler may read published lineage markers from.
+
+    Trust is exactly the repository's configured decision authorities -- the
+    accounts it already treats as authoritative about its own state. Nothing
+    else is accepted, and in particular an audit bot able to post a verdict is
+    not thereby able to assert a takeover. An unconfigured checkout trusts
+    nobody, reads no episodes, and behaves exactly as it does today.
+    """
+
+    allowed = {
+        str(item).strip().lower().lstrip("@")
+        for item in authorities
+        if str(item).strip()
+    }
+
+    def trusted(login: str) -> bool:
+        return bool(allowed) and str(login).strip().lower().lstrip("@") in allowed
+
+    return trusted
+
+
+def lineage_context(
+    *,
+    repo: str,
+    pr_number: Any,
+    branch: str = "",
+    head_sha: str | None = "",
+    comments: Sequence[Mapping[str, Any]] | None = (),
+    trusted_author: Callable[[str], bool] | None = None,
+) -> LineageContext:
+    """Assemble exact-head lineage evidence for a labeler entry path.
+
+    Returns :data:`NO_LINEAGE` when the head could not be verified, because
+    lineage resolved against an unverified head would decide the wrong diff.
+    Unreadable published evidence is propagated as a
+    :class:`LineageError` for the caller's fail-closed handling.
+    """
+
+    head = str(head_sha or "")
+    if not head or not repo or not pr_number:
+        return NO_LINEAGE
+    episodes: tuple[Any, ...] = ()
+    if trusted_author is not None:
+        episodes = published_lineage_episodes(comments, trusted_author=trusted_author)
+    return LineageContext(
+        repo=str(repo),
+        pr_number=pr_number,
+        branch=str(branch or ""),
+        head_sha=head,
+        episodes=episodes,
+    )
+
+
 def builder_identity_matches(
     *,
     labels: Sequence[str],
     author: str,
     text: str,
     config: Mapping[str, Any],
-    repo: str = "",
-    pr_number: Any = 0,
-    branch: str = "",
-    head_sha: str = "",
-    episodes: Sequence[Any] = (),
+    lineage: LineageContext | None = None,
 ) -> tuple[str, ...]:
     """Ordered verified builder lanes for this pull request.
 
@@ -276,17 +383,18 @@ def builder_identity_matches(
 
     if not bool(config.get("enabled")):
         return ()
-    lineage = resolve_builder_lineage(
+    evidence = lineage or NO_LINEAGE
+    resolved = resolve_builder_lineage(
         labels=labels,
         author=author,
         config=config,
-        repo=repo,
-        pr_number=pr_number,
-        branch=branch,
-        head_sha=head_sha,
-        episodes=episodes,
+        repo=evidence.repo,
+        pr_number=evidence.pr_number,
+        branch=evidence.branch,
+        head_sha=evidence.head_sha,
+        episodes=evidence.episodes,
     )
-    if lineage.status != "resolved":
+    if resolved.status != "resolved":
         # Preserve the historical "more than one identity" shape so a caller
         # inspecting matches can still tell a conflict from a clean match.
         opener_lane, label_lanes = lanes_from_identity(
@@ -295,8 +403,8 @@ def builder_identity_matches(
         candidates = tuple(
             dict.fromkeys(list(label_lanes) + ([opener_lane] if opener_lane else []))
         )
-        return candidates if len(candidates) > 1 else lineage.contributors
-    return lineage.contributors
+        return candidates if len(candidates) > 1 else resolved.contributors
+    return resolved.contributors
 
 
 def author_exclusion_reason(
@@ -306,40 +414,40 @@ def author_exclusion_reason(
     author: str,
     text: str,
     config: Mapping[str, Any] | None = None,
-    repo: str = "",
-    pr_number: Any = 0,
-    branch: str = "",
-    head_sha: str = "",
-    episodes: Sequence[Any] = (),
+    lineage: LineageContext | None = None,
 ) -> str | None:
     """Why ``lane_name`` may not label its own work, or ``None``.
 
     Exclusion follows verified contribution, not authorship: every contributing
     lane is excluded, and a lane that merely opened the PR before handing it
-    over is excluded too because its commits are still in the diff.
+    over is excluded too because its commits are still in the diff. Conversely,
+    with exact-head evidence in ``lineage``, a lane that never touched this
+    head is *not* excluded even when a reconciled label names a different lane
+    than the opener -- which is the whole point of carrying the evidence here.
     """
 
     exclusion_config = config or load_author_exclusion_config()
     if not bool(exclusion_config.get("enabled")):
         return None
+    evidence = lineage or NO_LINEAGE
     try:
-        lineage = resolve_builder_lineage(
+        resolved = resolve_builder_lineage(
             labels=labels,
             author=author,
             config=exclusion_config,
-            repo=repo,
-            pr_number=pr_number,
-            branch=branch,
-            head_sha=head_sha,
-            episodes=episodes,
+            repo=evidence.repo,
+            pr_number=evidence.pr_number,
+            branch=evidence.branch,
+            head_sha=evidence.head_sha,
+            episodes=evidence.episodes,
         )
     except LineageError:
         return "builder contribution evidence is unreadable; skipping author-excluded label update"
-    if lineage.status == "conflict":
+    if resolved.status == "conflict":
         return "conflicting builder identity; skipping author-excluded label update"
-    if lineage.status == "waiting":
+    if resolved.status == "waiting":
         return "builder contribution lineage is behind the current head; skipping author-excluded label update"
-    if lineage.contributed(lane_name):
+    if resolved.contributed(lane_name):
         return f"{lane_name} lane excluded for builder-authored PR"
     return None
 
