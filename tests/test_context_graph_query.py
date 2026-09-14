@@ -167,6 +167,35 @@ def graph_document(**extra) -> dict:
     }
 
 
+def wide_graph_document(callers: int = 6, **extra) -> dict:
+    """``parse_config`` with ``callers`` distinct, separately citable callers.
+
+    Every caller is a real node at its own line of an indexed file, so each
+    relationship the impact query reports carries two citations the bound commit
+    confirms. Nothing here is uncitable, duplicated, or dangling: the only
+    reason a document can go missing from a packet built over this graph is a
+    budget, which is what the tests using it are about.
+    """
+    lines = SOURCES["example_pkg/loader.py"]
+    if callers + 1 > lines:  # pragma: no cover - guards the fixture, not the code
+        raise AssertionError("the fixture file has no line left to cite")
+    return {
+        "nodes": [
+            node("n-config", "parse_config", "example_pkg/config.py", 12),
+            *(
+                node(f"n-caller-{index}", f"caller_{index}", "example_pkg/loader.py", index + 1)
+                for index in range(1, callers + 1)
+            ),
+        ],
+        "edges": [edge(f"n-caller-{index}", "n-config", "calls") for index in range(1, callers + 1)],
+        "hyperedges": [],
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "extracted_sources": sorted(SOURCES),
+        **extra,
+    }
+
+
 def node_link_document(**extra) -> dict:
     """The same graph as ``export.py::to_json`` writes it, for the clustered path.
 
@@ -1182,6 +1211,78 @@ class PacketTests(GraphWorkspace):
         self.assertNotIn("line 12", prose)
         for name in ("parse_config", "impact"):
             self.assertIn(name, prose)
+
+
+class DocumentBudgetTests(GraphWorkspace):
+    """The selected policy's document budget is what the packet is built to.
+
+    ``MAX_DOCUMENTS`` is this adapter's own ceiling, and the shared contract
+    carries a separate, smaller default. A packet built to the ceiling alone is
+    not merely generous: ``context_contract`` refuses it at delivery, so the
+    answer a wide question deserves -- five documents and an honest
+    ``document_limit`` -- is instead no answer at all. These tests hold the two
+    budgets together and in the right direction: a policy may tighten what one
+    packet carries, never lift the ceiling.
+    """
+
+    def wide(self, callers: int = 6, **overrides) -> dict:
+        self.publish(wide_graph_document(callers))
+        outcome = self.context(**overrides)
+        self.assertEqual(outcome.status, query.AVAILABLE)
+        return outcome.packet
+
+    def test_the_default_policy_budget_bounds_a_wider_answer(self) -> None:
+        packet = self.wide()
+        self.assertEqual(len(packet["documents"]), 5)
+        self.assertLessEqual(len(packet["documents"]), contract.normalize_policy(policy())["max_documents"])
+        self.assertTrue(packet["truncated"])
+        self.assertEqual(packet["completeness"], "partial")
+        self.assertIn("document_limit", packet["omissions"])
+
+    def test_the_bounded_packet_is_the_deterministic_prefix_of_the_whole_answer(self) -> None:
+        """Nothing is reordered to fit: the budget cuts the tail, in place."""
+        whole = self.wide(policy=policy(max_documents=6))
+        bounded = self.wide(policy=policy(max_documents=5))
+        self.assertEqual(len(whole["documents"]), 6)
+        self.assertEqual(
+            [item["text"] for item in bounded["documents"]],
+            [item["text"] for item in whole["documents"]][:5],
+        )
+
+    def test_an_answer_that_exactly_fits_its_budget_is_not_called_truncated(self) -> None:
+        """No eligible relationship was left out, so there is nothing to report."""
+        packet = self.wide(policy=policy(max_documents=6))
+        self.assertEqual(len(packet["documents"]), 6)
+        self.assertFalse(packet["truncated"])
+        self.assertEqual(packet["completeness"], "complete")
+        self.assertNotIn("document_limit", packet["omissions"])
+
+    def test_a_budget_below_the_shared_default_bounds_the_packet_further(self) -> None:
+        """A policy may tighten past the contract's default, and is obeyed."""
+        packet = self.wide(policy=policy(max_documents=2))
+        self.assertEqual(len(packet["documents"]), 2)
+        self.assertTrue(packet["truncated"])
+        self.assertEqual(packet["completeness"], "partial")
+        self.assertIn("document_limit", packet["omissions"])
+
+    def test_a_budget_above_the_adapters_ceiling_does_not_lift_it(self) -> None:
+        """The policy bounds the packet downward only; the ceiling still holds."""
+        self.assertGreater(20, query.MAX_DOCUMENTS)
+        packet = self.wide(callers=20, policy=policy(max_documents=20))
+        self.assertEqual(len(packet["documents"]), query.MAX_DOCUMENTS)
+        self.assertTrue(packet["truncated"])
+        self.assertEqual(packet["completeness"], "partial")
+        self.assertIn("document_limit", packet["omissions"])
+
+    def test_the_summary_reports_the_same_bounded_count_as_the_packet(self) -> None:
+        """A metadata-only reader must not be told the answer was whole."""
+        self.publish(wide_graph_document(6))
+        outcome = self.context()
+        self.assertEqual(outcome.summary["documents"], len(outcome.packet["documents"]))
+        self.assertEqual(outcome.summary["documents"], 5)
+        self.assertTrue(outcome.summary["truncated"])
+        self.assertEqual(outcome.summary["completeness"], "partial")
+        self.assertIn("document_limit", outcome.summary["omissions"])
 
 
 class RecipientNeutralityTests(GraphWorkspace):

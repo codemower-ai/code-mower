@@ -34,7 +34,9 @@ from code_mower import context_graph_query as query
 from code_mower.context_contract import ContextError, ContextRequest
 from code_mower.context_store import ContextStore
 from test_context_connections import MemoryVault
-from test_context_graph_query import PIN, git, graph_document, indexer, make_repository
+from test_context_graph_query import (
+    PIN, git, graph_document, indexer, make_repository, wide_graph_document,
+)
 
 
 POLICY = {
@@ -336,6 +338,64 @@ class GuidedGraphSessionTests(unittest.TestCase):
         report, code = self.prepare(saved)
         self.assertEqual((code, report["status"]), (1, "required_unavailable"))
 
+    # -- a wide answer under the default document budget -------------------
+
+    def test_a_wide_answer_is_prepared_bounded_rather_than_refused_at_delivery(self) -> None:
+        """Six citable relationships, a budget of five, one usable packet.
+
+        The default policy carries no ``max_documents``, so the contract's own
+        default of five applies -- and the contract enforces it when the packet
+        is loaded. A packet built to the query adapter's ceiling instead would
+        pass preparation and then fail every authorized load, which is a
+        required session paused over evidence the graph actually had. What the
+        builder must get is the bounded answer, told plainly that it is bounded.
+        """
+        self.manifest = self.publish(wide_graph_document(6))
+        record = self.record()
+        report, code = self.prepare(record)
+        self.assertEqual((code, report["status"], report["dependent_work"]), (0, "prepared", "usable"))
+
+        saved = context_session.read(self.associations, record["session_id"])
+        loaded = self.load(saved["packet"], "claude:builder")
+        packet = loaded.private_payload()
+        self.assertEqual(len(packet["documents"]), 5)
+        self.assertTrue(packet["truncated"])
+        self.assertEqual(packet["completeness"], "partial")
+        self.assertIn("document_limit", packet["omissions"])
+        self.assertEqual(packet["binding"]["generation"], self.manifest.generation)
+        # The builder reads it as evidence, not as a handle it cannot open.
+        evidence = context_delivery.render_evidence(loaded, saved["packet"])
+        self.assertIn("example_pkg/config.py#L12", evidence)
+
+    def test_replaying_a_bounded_packet_keeps_its_omissions_and_binding(self) -> None:
+        self.manifest = self.publish(wide_graph_document(6))
+        record = self.record()
+        self.prepare(record)
+        saved = context_session.read(self.associations, record["session_id"])
+        again, code = self.prepare(saved)
+        self.assertEqual((code, again["status"], again["reused"]), (0, "prepared", True))
+        self.assertEqual(
+            context_session.read(self.associations, record["session_id"])["packet"],
+            saved["packet"],
+        )
+        first = self.load(saved["packet"], "claude:builder").private_payload()
+        replayed = self.load(saved["packet"], "codex:builder").private_payload()
+        self.assertEqual(replayed["omissions"], first["omissions"])
+        self.assertEqual(replayed["truncated"], first["truncated"])
+        self.assertEqual(replayed["binding"], first["binding"])
+        self.assertEqual(len(replayed["documents"]), 5)
+
+    def test_an_optional_wide_answer_is_delivered_rather_than_degraded(self) -> None:
+        """A budget is not unavailability: optional work gets the evidence too."""
+        self.manifest = self.publish(wide_graph_document(6))
+        record = self.record(required=False)
+        report, code = self.prepare(record)
+        self.assertEqual((code, report["status"]), (0, "prepared"))
+        saved = context_session.read(self.associations, record["session_id"])
+        self.assertEqual(
+            len(self.load(saved["packet"], "claude:builder").private_payload()["documents"]), 5,
+        )
+
     def _attach(self, handle: str, head: str):
         return context_delivery.reserve_attachment(
             self.store, "local-graph", handle, POLICY,
@@ -461,6 +521,63 @@ class StandaloneGraphFetchCommandTests(unittest.TestCase):
         code, report = self.run_command(consuming, required=False)
         self.assertEqual((code, report["status"]), (0, "optional_unavailable"))
         self.assertEqual(list(self.private.glob(".p-*.json")), [])
+
+    def _publish_wide(self, callers: int = 6):
+        """Republish this checkout's graph with ``callers`` citable relationships."""
+        self.manifest = lifecycle.build_graph(
+            self.repository, pin=PIN, indexer=indexer(wide_graph_document(callers)),
+            root=self.private,
+        )
+        return self.manifest
+
+    def test_a_wide_answer_is_delivered_bounded_instead_of_failing_validation(self) -> None:
+        """Six relationships, the contract's default budget of five, one packet.
+
+        Before the document budget reached the traversal, the command built six
+        documents and the shared contract refused them on the way into the
+        store: ``packet_invalid``, required work paused, over evidence the graph
+        had and the policy simply did not have room for. The answer is five
+        documents that say they are five of more, and no validation failure.
+        """
+        manifest = self._publish_wide(6)
+        code, report = self.run_command(self.repository)
+        self.assertEqual((code, report["status"]), (0, "available"))
+        self.assertNotEqual(report.get("reason"), "packet_invalid")
+        self.assertNotIn("failure_reason", report)
+        self.assertEqual(report["documents"], 5)
+        self.assertEqual(report["completeness"], "partial")
+        self.assertTrue(report["truncated"])
+
+        packet = context_packets.load_authorized(
+            self.store, "local-graph", report["packet_handle"], POLICY,
+            ContextRequest("owner/repo", "WORK-1", "claude:builder", manifest.commit),
+        ).private_payload()
+        self.assertEqual(len(packet["documents"]), 5)
+        self.assertIn("document_limit", packet["omissions"])
+        self.assertEqual(packet["binding"]["generation"], manifest.generation)
+        # Every delivered citation still points at the immutable tree.
+        self.assertTrue(all(
+            citation["source"].startswith(("example_pkg/", "tests/"))
+            for item in packet["documents"] for citation in item["citations"]
+        ))
+
+    def test_an_optional_wide_answer_is_delivered_rather_than_degraded(self) -> None:
+        """A budget is not unavailability: the optional caller gets evidence too."""
+        self._publish_wide(6)
+        code, report = self.run_command(self.repository, required=False)
+        self.assertEqual((code, report["status"]), (0, "available"))
+        self.assertNotEqual(report.get("reason"), "packet_invalid")
+        self.assertEqual(report["documents"], 5)
+        self.assertTrue(report["truncated"])
+
+    def test_an_answer_that_fits_the_budget_exactly_is_still_complete(self) -> None:
+        """The bound is only reported when it actually left evidence out."""
+        self._publish_wide(5)
+        code, report = self.run_command(self.repository)
+        self.assertEqual((code, report["status"]), (0, "available"))
+        self.assertEqual(report["documents"], 5)
+        self.assertEqual(report["completeness"], "complete")
+        self.assertFalse(report["truncated"])
 
     def test_a_consumer_that_is_not_a_checkout_is_refused_rather_than_defaulted(self) -> None:
         """No revision at all is a refusal, not a fall back to the graph's."""

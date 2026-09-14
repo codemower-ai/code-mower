@@ -235,6 +235,10 @@ MAX_DEPTH = 4
 #: delivery.
 DEFAULT_NODE_BUDGET = 40
 MAX_NODE_BUDGET = 200
+#: The adapter's own hard ceiling on documents per packet. The selected
+#: policy's ``max_documents`` applies on top of it and only ever downward: a
+#: packet carries the smaller of the two, and a policy asking for more than this
+#: still gets this.
 MAX_DOCUMENTS = 16
 MAX_CITATIONS_PER_DOCUMENT = 10
 MAX_SEEDS = 8
@@ -1108,7 +1112,7 @@ class PacketDraft:
 
 
 def _documents(
-    result: QueryResult, validator: CitationValidator
+    result: QueryResult, validator: CitationValidator, budget: int
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """One document per relationship, with only citations that actually resolve.
 
@@ -1116,14 +1120,22 @@ def _documents(
     commit is dropped rather than downgraded: the packet's whole claim is that
     its citations point at the immutable tree, and evidence that cannot be
     pointed at is not weaker evidence, it is none.
+
+    ``budget`` is the selected policy's document allowance. The effective
+    ceiling is the smaller of it and this adapter's own ``MAX_DOCUMENTS``, so a
+    policy may only tighten what one packet carries, never lift the adapter
+    limit. Answering past the policy's budget is not an option: the contract
+    refuses such a packet at delivery, which turns an honestly truncated answer
+    into no answer at all.
     """
     omissions: list[str] = []
     documents: list[dict[str, Any]] = []
+    limit = min(MAX_DOCUMENTS, budget)
     dropped = False
     unvalidated = False
     citations_used = 0
     for item in result.relations:
-        if len(documents) >= MAX_DOCUMENTS:
+        if len(documents) >= limit:
             dropped = True
             break
         # Both endpoints of the edge the sentence states, never the seed the
@@ -1224,7 +1236,7 @@ def build_packet(
         raise ContextError("unsupported local graph completeness")
     if not result.resolved:
         raise ContextError("local graph query resolved no symbol or path to cite")
-    documents, dropped = _documents(result, validator)
+    documents, dropped = _documents(result, validator, limits["max_documents"])
     if not documents:
         raise ContextError("local graph query produced no citable evidence")
     omissions = list(dict.fromkeys([
