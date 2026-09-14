@@ -62,6 +62,7 @@ import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -1592,6 +1593,304 @@ def _refuse_broad_readable(readable: Iterable[str], *, repository: Path) -> None
             )
 
 
+#: Mach-O magics, and the ``struct`` byte order each one means. A Mach-O image
+#: declares its own order in its first four bytes; the swapped spellings are how
+#: a big-endian image announces itself to a little-endian reader. Both widths
+#: are listed with the size of the header that follows, because the load
+#: commands this reads begin directly after it.
+_MACHO_MAGICS: Mapping[bytes, tuple[str, int]] = {
+    b"\xcf\xfa\xed\xfe": ("<", 32),  # 64-bit, little endian
+    b"\xce\xfa\xed\xfe": ("<", 28),  # 32-bit, little endian
+    b"\xfe\xed\xfa\xcf": (">", 32),  # 64-bit, big endian
+    b"\xfe\xed\xfa\xce": (">", 28),  # 32-bit, big endian
+}
+
+#: A universal ("fat") archive: a big-endian count of architecture records, each
+#: naming the offset of a real Mach-O image inside the same file. A python.org
+#: interpreter ships these; a Homebrew one does not.
+_MACHO_FAT_MAGICS = frozenset({b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"})
+
+#: The load commands that name a library the image will make dyld find. Weak,
+#: re-exported and upward links are included: a weak dependency that *is*
+#: installed is still opened, and an image that re-exports another still loads
+#: it. ``LC_REQ_DYLD`` is the high bit these commands carry.
+_MACHO_DYLIB_COMMANDS = frozenset({0x0C, 0x8000_0018, 0x8000_001F, 0x8000_0023})
+
+#: How much of an image's load-command block this will read. The block is a
+#: header, not the image; anything past this bound is not a Mach-O this module
+#: is prepared to reason about.
+_MAX_MACHO_COMMAND_BYTES = 4 * 1024 * 1024
+
+#: How many architecture slices a universal archive may declare.
+_MAX_MACHO_ARCHITECTURES = 32
+
+#: How many files the runtime scan will look at, and how many libraries it will
+#: add. Both are bounds on somebody else's install, which is the same reason
+#: every other foreign file this module reads is bounded: a provider install is
+#: not this repository's to trust about its own size.
+_MAX_SCANNED_IMAGES = 20_000
+_MAX_LINKED_LIBRARIES = 256
+
+#: A shared library that is larger than this is not one; refusing is the honest
+#: answer rather than mapping an arbitrary file into the child's view.
+_MAX_LINKED_LIBRARY_BYTES = 512 * 1024 * 1024
+
+#: File names that are never a Mach-O image, so the scan does not open them.
+#: Purely an optimization -- the magic is what decides -- but it is what keeps
+#: the walk over a populated ``site-packages`` cheap.
+_NOT_MACHO_SUFFIXES = frozenset(
+    {
+        ".py", ".pyc", ".pyi", ".pyx", ".txt", ".md", ".rst", ".json", ".toml",
+        ".yaml", ".yml", ".cfg", ".ini", ".h", ".hpp", ".c", ".cpp", ".html",
+        ".css", ".js", ".png", ".jpg", ".svg", ".gif", ".pdf", ".zip", ".gz",
+        ".whl", ".pem", ".crt", ".dist-info", ".egg-info", ".a", ".la",
+    }
+)
+
+#: Directories the scan does not descend into: build caches and vendored
+#: sources, none of which hold an image the child loads.
+_NOT_MACHO_DIRECTORIES = frozenset({"__pycache__", ".git", "include", "man", "doc", "docs"})
+
+
+def _macho_dylib_names(path: Path) -> tuple[str, ...]:
+    """Every library path a Mach-O image at ``path`` asks dyld to load.
+
+    Read out of the image's own load commands rather than out of ``otool``:
+    deriving the boundary must not itself depend on a developer tool being
+    installed, and a parse that reads a bounded header is a smaller thing to
+    trust than a subprocess. A file that is not a Mach-O -- which is almost
+    everything under an install prefix -- costs four bytes and returns nothing.
+    """
+    try:
+        with path.open("rb") as stream:
+            magic = stream.read(4)
+            if magic in _MACHO_FAT_MAGICS:
+                return _macho_fat_dylib_names(stream)
+            if magic not in _MACHO_MAGICS:
+                return ()
+            stream.seek(0)
+            return _macho_slice_dylib_names(stream, 0)
+    except (OSError, ValueError, struct.error):
+        # An unreadable or truncated image says nothing about what the runtime
+        # needs. The build still fails if it was a library the provider loads,
+        # and it fails as dyld naming the image rather than as this module
+        # guessing at one.
+        return ()
+
+
+def _macho_fat_dylib_names(stream: io.BufferedReader) -> tuple[str, ...]:
+    """The union over a universal archive's slices.
+
+    The union rather than the slice matching this process: the child is the
+    provider's interpreter, whose architecture is not necessarily this one, and
+    every slice's dependencies are paths on the same host.
+    """
+    count = struct.unpack(">I", stream.read(4))[0]
+    if count > _MAX_MACHO_ARCHITECTURES:
+        return ()
+    offsets = []
+    for _ in range(count):
+        record = stream.read(20)
+        if len(record) != 20:
+            return ()
+        # cputype, cpusubtype, offset, size, align
+        offsets.append(struct.unpack(">5I", record)[2])
+    names: dict[str, None] = {}
+    for offset in offsets:
+        for name in _macho_slice_dylib_names(stream, offset):
+            names.setdefault(name, None)
+    return tuple(names)
+
+
+def _macho_slice_dylib_names(stream: io.BufferedReader, offset: int) -> tuple[str, ...]:
+    """The ``LC_LOAD_DYLIB`` family of one Mach-O image beginning at ``offset``."""
+    stream.seek(offset)
+    magic = stream.read(4)
+    order_and_header = _MACHO_MAGICS.get(magic)
+    if order_and_header is None:
+        return ()
+    order, header_size = order_and_header
+    header = stream.read(header_size - 4)
+    if len(header) != header_size - 4:
+        return ()
+    # cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags[, reserved]
+    ncmds, sizeofcmds = struct.unpack(f"{order}6I", header[:24])[3:5]
+    if sizeofcmds > _MAX_MACHO_COMMAND_BYTES:
+        return ()
+    block = stream.read(sizeofcmds)
+    names: dict[str, None] = {}
+    position = 0
+    for _ in range(ncmds):
+        if position + 8 > len(block):
+            break
+        command, size = struct.unpack_from(f"{order}2I", block, position)
+        if size < 8 or position + size > len(block):
+            break
+        if command in _MACHO_DYLIB_COMMANDS and size >= 24:
+            name_offset = struct.unpack_from(f"{order}I", block, position + 8)[0]
+            if 8 <= name_offset < size:
+                raw = block[position + name_offset : position + size]
+                name = raw.split(b"\0", 1)[0].decode("utf-8", "replace")
+                if name:
+                    names.setdefault(name, None)
+        position += size
+    return tuple(names)
+
+
+def _scan_images(root: Path, *, budget: list[int]) -> Iterator[Path]:
+    """Regular files under ``root`` that could be Mach-O images, within a budget.
+
+    ``budget`` is shared across every root of one derivation, so the cost is a
+    property of the whole runtime rather than of each prefix in it. Symlinks are
+    not followed during the walk: an install that links a directory elsewhere is
+    reached through whatever named it, and following would let one link turn a
+    narrow prefix into an unbounded traversal.
+    """
+    for parent, directories, files in os.walk(root, followlinks=False):
+        directories[:] = [name for name in directories if name not in _NOT_MACHO_DIRECTORIES]
+        for name in files:
+            if budget[0] <= 0:
+                return
+            if any(name.endswith(suffix) for suffix in _NOT_MACHO_SUFFIXES):
+                continue
+            budget[0] -= 1
+            yield Path(parent) / name
+
+
+def _trusted_library(path: Path) -> bool:
+    """Could only a trusted account have put this library where the child reads it?
+
+    The same question :func:`_trusted_launcher` asks of a sandbox launcher, and
+    for the same reason: a library the provider maps executable inside the
+    boundary is code, and a file -- or a directory above it -- that some other
+    account may write is a file somebody else chooses the contents of. Asked of
+    the *resolved* path, so a link's own spelling is not what is trusted.
+    """
+    trusted = {0, os.geteuid()}
+    for current in (path, *path.parents):
+        try:
+            entry = os.lstat(current)
+        except OSError:
+            return False
+        writable = bool(entry.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+        if writable and stat.S_ISDIR(entry.st_mode) and entry.st_mode & stat.S_ISVTX:
+            # A sticky shared directory -- ``/tmp`` and the per-user temporary
+            # directories under it. Another account may create its own entries
+            # there and may not touch this one, which is the whole point of the
+            # bit, so the ancestry it provides is not an account boundary this
+            # has to refuse. The file itself is still held to the rule.
+            continue
+        if entry.st_uid not in trusted or writable:
+            return False
+    return True
+
+
+def _linked_runtime_libraries(
+    roots: Sequence[Path], *, covered: Sequence[Path], repository: Path
+) -> tuple[str, ...]:
+    """Shared libraries the exposed runtime links to from outside the exposure.
+
+    A pinned provider's install and the base interpreter it was created from are
+    exposed as prefixes, and that was taken to be the whole runtime. It is not,
+    on a host whose interpreter was installed by a package manager: CPython's
+    ``_ssl`` extension is linked against an OpenSSL that lives under the
+    manager's own prefix, not under the interpreter's, and Graphify imports
+    ``ssl`` during start-up even for a code-only extraction. Under the
+    filesystem boundary that library is simply absent, so the provider aborted
+    at import time -- which is a missing runtime dependency, not an argument for
+    giving the child a network or a wider filesystem.
+
+    So the dependency is *derived* rather than named. Every Mach-O image inside
+    the exposure is read for the libraries it asks dyld to load, and each one
+    that is not already covered is resolved and added as a single file. Newly
+    added libraries are read in turn, so a transitive dependency -- ``libssl``
+    needing ``libcrypto`` -- is reached without either being written down here.
+
+    What is added is the library file, never the directory holding it: exposing
+    ``/opt/homebrew/opt/openssl@3/lib`` is a package manager's prefix, and
+    exposing the manager's ``etc`` or ``var`` beside it is the operator data
+    this boundary exists to withhold. Every added path is put through the same
+    ownership and broad-exposure refusals as any other exposure, and a path that
+    is not a bounded regular file is refused rather than exposed on the strength
+    of an image having named it.
+
+    Linux is unchanged: an ELF runtime's libraries live under the ``/lib`` and
+    ``/usr/lib`` directories the read-only runtime already names, and this
+    derivation reads Mach-O images, of which such a host has none.
+    """
+    if sys.platform != "darwin":
+        return ()
+    system = tuple(Path(os.path.realpath(path)) for path in _SYSTEM_READ_PATHS)
+    boundaries = [*system, *(Path(os.path.realpath(root)) for root in covered)]
+    added: dict[str, None] = {}
+    pending = [Path(os.path.realpath(root)) for root in roots]
+    budget = [_MAX_SCANNED_IMAGES]
+    while pending:
+        current = pending.pop(0)
+        images = _scan_images(current, budget=budget) if current.is_dir() else iter((current,))
+        for image in images:
+            for name in _macho_dylib_names(image):
+                if not name.startswith("/"):
+                    # ``@rpath``, ``@loader_path`` and ``@executable_path`` are
+                    # resolved by dyld against the image itself, so they name
+                    # something inside the exposure already.
+                    continue
+                referenced = Path(name)
+                resolved = Path(os.path.realpath(referenced))
+                if any(_under(resolved, boundary) for boundary in boundaries):
+                    continue
+                if str(resolved) in added:
+                    continue
+                if not resolved.exists():
+                    # A weak dependency the host does not have installed. If it
+                    # was a required one the provider fails at launch, as dyld
+                    # naming the library it could not find.
+                    continue
+                _refuse_linked_library(resolved, repository=repository)
+                if len(added) >= _MAX_LINKED_LIBRARIES:
+                    raise ContextError(
+                        "the local graph provider's runtime links to more shared libraries "
+                        "outside its install than this boundary is willing to expose; "
+                        "no generation was published"
+                    )
+                added[str(resolved)] = None
+                if str(referenced) != str(resolved):
+                    # Both spellings, for the same reason the executable has
+                    # two: a bind-mount boundary names a literal destination,
+                    # and dyld opens the path the image wrote down.
+                    added.setdefault(str(referenced), None)
+                pending.append(resolved)
+    return tuple(added)
+
+
+def _refuse_linked_library(resolved: Path, *, repository: Path) -> None:
+    """Refuse a derived dependency that is not a library this may expose."""
+    _refuse_broad_exposure(resolved, repository=repository)
+    try:
+        info = os.lstat(resolved)
+    except OSError:  # pragma: no cover - the caller has just seen it exist
+        raise ContextError(
+            "a shared library the local graph provider's runtime links to could not be "
+            "read while deriving the containment boundary; no generation was published"
+        ) from None
+    if not stat.S_ISREG(info.st_mode):
+        raise ContextError(
+            "the local graph provider's runtime links to something that is not a regular "
+            "file; refusing to expose it to the sandbox"
+        )
+    if info.st_size > _MAX_LINKED_LIBRARY_BYTES:
+        raise ContextError(
+            "a shared library the local graph provider's runtime links to is implausibly "
+            "large for one; refusing to expose it to the sandbox"
+        )
+    if not _trusted_library(resolved):
+        raise ContextError(
+            "a shared library the local graph provider's runtime links to is writable by "
+            "an account other than yours or root, so what the provider would load inside "
+            "the sandbox is not what this host installed; no generation was published"
+        )
+
+
 def _provider_read_paths(command: str, *, repository: Path) -> tuple[str, ...]:
     """The install the pinned provider needs to be readable, and nothing beside it.
 
@@ -1640,7 +1939,16 @@ def _provider_read_paths(command: str, *, repository: Path) -> tuple[str, ...]:
     # out of *this* environment's own ``pyvenv.cfg`` rather than taken from the
     # interpreter Code Mower happens to be running under, which is a different
     # installation whenever the provider was pinned with a different Python.
-    return (*spellings, str(root), *_provider_base_prefixes(root, repository=repository))
+    prefixes = (str(root), *_provider_base_prefixes(root, repository=repository))
+    # Last, and derived from the prefixes rather than added to them: a prefix is
+    # not the whole runtime on a host whose interpreter links against libraries
+    # a package manager keeps somewhere else.
+    libraries = _linked_runtime_libraries(
+        [Path(prefix) for prefix in prefixes],
+        covered=[Path(prefix) for prefix in prefixes],
+        repository=repository,
+    )
+    return (*spellings, *prefixes, *libraries)
 
 
 #: Where an installed distribution records its own identity (PEP 376). The
@@ -1869,11 +2177,31 @@ def _verify_provider_installation(command: str, *, pin: GraphifyPin) -> None:
 #: The subcommand the evaluated release exposes, recorded in
 #: ``docs/graphify-evaluation.md``: the clean-room run indexed with
 #: ``extract --code-only --no-cluster --max-workers 4``. There is no
-#: ``--source``/``--output`` pair to hand it; ``extract`` reads the directory
-#: it is run in and writes its state beside those sources, which is why the
-#: child's working directory is the materialized copy and why the adapter
-#: collects an artifact afterwards rather than naming one up front.
+#: ``--source``/``--output`` pair to hand it; ``extract`` writes its state
+#: beside the sources it was pointed at, which is why the child's working
+#: directory is the materialized copy and why the adapter collects an artifact
+#: afterwards rather than naming one up front.
 _PROVIDER_EXTRACT = "extract"
+
+#: The scan target, which the pinned CLI requires and does not default.
+#:
+#: This module used to launch ``extract`` with the options alone, on the reading
+#: that a subcommand which writes beside its sources must also discover them
+#: from the working directory. The pinned CLI does not: it takes the target as
+#: the first positional after the subcommand, decides it has one only when that
+#: argument does not begin with ``-``, and exits 1 with ``must specify a path to
+#: scan or a --postgres DSN`` when it does not. Every real build therefore
+#: failed before extraction, and the failure arrived as the generic non-zero
+#: refusal rather than as anything naming the omission.
+#:
+#: ``.`` rather than the source root's absolute path: the child's working
+#: directory is already the materialized copy, so the relative spelling names
+#: exactly the tree this build means and names nothing about where that tree
+#: sits on the host. It must be passed *between* the subcommand and the options
+#: -- the CLI reads ``sys.argv[2]`` and nothing later -- and it is a path, so a
+#: bare ``.`` can never be mistaken for a flag the way a caller-supplied string
+#: could.
+_PROVIDER_SCAN_TARGET = "."
 
 #: The provider's own record of what it processed. Completeness is read from
 #: here, never inferred from an exit status: the clean-room run recorded 54
@@ -2302,9 +2630,10 @@ def subprocess_indexer(
     callable that would run whatever a later request's pin happened to name.
 
     The argv is the interface the adopt decision evaluated, not a guess at a
-    conventional one: ``extract`` with the required restrictions and then the
-    pinned options, in the materialized copy. Everything the provider leaves
-    behind is then collected and classified from its own report.
+    conventional one: ``extract``, the scan target the pinned CLI requires, the
+    required restrictions and then the pinned options, in the materialized copy.
+    Everything the provider leaves behind is then collected and classified from
+    its own report.
     """
     command = _resolved_executable(executable)
     if containment_mechanism() is None:
@@ -2351,7 +2680,7 @@ def subprocess_indexer(
         options = _extraction_options(request.pin.options)
         try:
             returncode = _run_contained(
-                [*sandbox, command, _PROVIDER_EXTRACT, *options],
+                [*sandbox, command, _PROVIDER_EXTRACT, _PROVIDER_SCAN_TARGET, *options],
                 environment=request.environment,
                 cwd=str(request.source_root),
                 timeout=EXTRACTION_TIMEOUT_SECONDS,

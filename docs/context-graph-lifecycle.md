@@ -180,6 +180,35 @@ being read out of a file makes a path no narrower than guessing it would — and
 an environment that records no base that still exists is refused with an
 instruction rather than built against whatever runtime is lying around.
 
+A prefix is still not the whole runtime on a host whose interpreter came from a
+package manager. CPython's `_ssl` extension lives inside the interpreter's
+prefix and is *linked against* an OpenSSL that does not — under Homebrew,
+`/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib` and the `libcrypto` beside it —
+and Graphify imports `ssl` during start-up even for a code-only extraction. With
+only the prefixes exposed those libraries are simply absent, so the provider
+aborted inside the loader before it scanned anything. That is a missing runtime
+dependency; it is not an argument for giving the child a network or a wider
+filesystem, and neither was granted.
+
+So the dependency is **derived, never named**. Every Mach-O image inside the
+exposure is read for the libraries its own load commands ask `dyld` to find,
+each one not already covered is resolved and added, and newly added libraries
+are read in turn, so `libssl` needing `libcrypto` is reached without either
+being written down. What is added is the **library file**, never the directory
+holding it: exposing `/opt/homebrew/opt/openssl@3/lib` exposes a package
+manager's prefix, and its `etc` and `var` with it. `@rpath`, `@loader_path` and
+`@executable_path` names are resolved by `dyld` against the image itself and are
+not paths this adds. Every derived path goes through the same broad-exposure
+refusals as any other exposure — the filesystem root, the operator's home, the
+checkout, an ancestor of either — and is additionally refused unless it is a
+regular file within a size bound whose ancestry only this account or root may
+write, because a library the provider maps executable inside the boundary is
+code. A referenced path that this host does not have installed is skipped: if it
+turns out to have been required, the loader fails the build naming the library
+it could not find. The derivation reads Mach-O images, so **Linux is unchanged**
+— an ELF runtime's libraries are already under the `/lib` and `/usr/lib`
+directories the read-only runtime names.
+
 The prefix a particular build ends up with is probed before that build runs,
 not just the host's mechanism at startup: the readable set of a real build is
 the provider's install rather than the interpreter paths the host probe uses,
@@ -301,12 +330,25 @@ states. It carries no indexed content, no provider output, and no local path.
 ## How the provider is actually invoked
 
 `subprocess_indexer()` builds the argv for the interface the adopt decision
-evaluated, not a conventional-looking one: `extract` plus the pinned options,
-run with its working directory set to the materialized copy. The evaluated
-release takes no `--source`/`--output` pair — `extract` reads the directory it
-is run in and writes its state beside those sources, which the clean-room run in
+evaluated, not a conventional-looking one: `extract`, the scan target, then the
+pinned options, run with its working directory set to the materialized copy. The
+evaluated release takes no `--source`/`--output` pair — `extract` writes its
+state beside the sources it was pointed at, which the clean-room run in
 [the evaluation](graphify-evaluation.md) recorded as
 `extract --code-only --no-cluster --max-workers 4`.
+
+**The scan target is required, and it is positional.** This module used to pass
+the options alone, on the reading that a subcommand which writes beside its
+sources must also discover them from the working directory. The pinned CLI does
+not: it takes the target as the first positional after the subcommand, decides
+it has one only when that argument does not begin with `-`, and exits 1 with
+`must specify a path to scan or a --postgres DSN` when it does not. Every real
+build therefore failed before extraction, and failed as the adapter's generic
+non-zero refusal rather than as anything naming the omission. The target passed
+is `.`: the child's working directory is already the materialized copy, so the
+relative spelling names exactly that tree and names nothing about where it sits
+on this host. It goes **between** the subcommand and the options, because the
+CLI reads `sys.argv[2]` and nothing later.
 
 **`--code-only` and `--no-cluster` are always passed, whatever the pin says.**
 They are conditions of the adopt decision, not preferences: a pin that named no

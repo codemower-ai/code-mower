@@ -25,6 +25,7 @@ import json
 import os
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -1176,12 +1177,67 @@ class ProviderLaunchTests(TemporaryWorkspace):
 
     def test_the_provider_is_invoked_through_its_documented_extract_interface(self) -> None:
         # The interface the adopt decision evaluated, recorded in
-        # docs/graphify-evaluation.md as ``extract`` plus options. An
-        # ``index --source ... --output ...`` shape would be a different CLI.
+        # docs/graphify-evaluation.md as ``extract`` over a scan target plus
+        # options. An ``index --source ... --output ...`` shape would be a
+        # different CLI.
         argv = self.launched_argv("graphify")
-        self.assertEqual(argv[3:], ["extract", *PIN.options])
+        self.assertEqual(argv[3:], ["extract", ".", *PIN.options])
         self.assertNotIn("--source", argv)
         self.assertNotIn("--output", argv)
+
+    def test_the_scan_target_is_passed_where_the_pinned_cli_reads_it(self) -> None:
+        """The pinned CLI requires a target and reads it from one position only.
+
+        It takes the target as the first positional after the subcommand,
+        decides it has one only when that argument does not begin with ``-``,
+        and exits 1 with ``must specify a path to scan or a --postgres DSN``
+        otherwise. The launch used to pass the options alone, so every real
+        build failed before extraction -- and failed as the adapter's generic
+        non-zero refusal, which names nothing about the omission.
+
+        ``.`` rather than an absolute path: the child's working directory is
+        already the materialized copy, so the relative spelling names that tree
+        and nothing about where it sits on this host.
+        """
+        argv = self.launched_argv("graphify")
+        subcommand = argv.index("extract")
+        self.assertEqual(argv[subcommand + 1], ".")
+        self.assertFalse(argv[subcommand + 1].startswith("-"))
+        # Before the options, not after them: an argument that follows a flag is
+        # read as that flag's value or skipped, and either way the CLI still
+        # sees no path.
+        for option in PIN.options:
+            self.assertLess(subcommand + 1, argv.index(option))
+
+    def test_the_pinned_cli_would_accept_this_argv(self) -> None:
+        """Read the requirement off the staged pinned source, not off a memory.
+
+        The reference under ``.build/graphify-914-reference`` is the CLI this
+        pin actually installs. If a later pin stops requiring a positional
+        target, or starts reading it from somewhere other than ``sys.argv[2]``,
+        this test is what says so rather than a real build failing opaquely.
+        """
+        reference = (
+            Path(__file__).resolve().parent.parent
+            / ".build"
+            / "graphify-914-reference"
+            / "graphify-cli-pinned.py"
+        )
+        if not reference.is_file():
+            # The reference is a local read-only staging of the pinned provider's
+            # own source, excluded from the repository rather than vendored into
+            # it, so this check runs where it is staged and skips where it is not.
+            self.skipTest("pinned CLI reference is not staged in this checkout")
+        source = reference.read_text(encoding="utf-8", errors="replace")
+        self.assertIn("error: must specify a path to scan or a --postgres DSN", source)
+        # The target is ``sys.argv[2]`` and a leading dash means "no path".
+        self.assertIn('if sys.argv[2].startswith("-"):', source)
+        argv = self.launched_argv("graphify")
+        provider = argv.index(str(self.provider))
+        # ``sys.argv`` inside the child is the provider and everything after it,
+        # so ``sys.argv[2]`` is the second argument past the executable.
+        self.assertEqual(argv[provider + 1], "extract")
+        self.assertEqual(argv[provider + 2], ".")
 
     def test_extraction_is_restricted_to_code_and_never_clusters(self) -> None:
         """The adoption conditions are enforced at the launch, not assumed.
@@ -1193,7 +1249,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         """
         bare = lifecycle.GraphifyPin(distribution="graphifyy", version="0.9.58", wheel_sha256="a" * 64)
         argv, _ = self.run_indexer("graphify", pin=bare)
-        self.assertEqual(argv[3:], ["extract", "--code-only", "--no-cluster"])
+        self.assertEqual(argv[3:], ["extract", ".", "--code-only", "--no-cluster"])
 
     def test_the_launch_restricts_extraction_even_if_the_pin_did_not(self) -> None:
         # The pin normalizes its own options, so this reaches past the
@@ -1201,7 +1257,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         stripped = lifecycle.GraphifyPin(distribution="graphifyy", version="0.9.58", wheel_sha256="a" * 64)
         object.__setattr__(stripped, "options", ())
         argv, _ = self.run_indexer("graphify", pin=stripped)
-        self.assertEqual(argv[3:], ["extract", "--code-only", "--no-cluster"])
+        self.assertEqual(argv[3:], ["extract", ".", "--code-only", "--no-cluster"])
 
     def test_the_collected_artifact_holds_the_state_the_provider_wrote(self) -> None:
         _, result = self.run_indexer("graphify")
@@ -1847,6 +1903,286 @@ class RuntimeExposureTests(ProviderExposureFixture):
                     lifecycle.containment_prefix(
                         writable=(self.root,), readable=(home,), repository=self.repository
                     )
+
+
+def macho(path: Path, *dependencies: str) -> Path:
+    """A real 64-bit Mach-O header whose load commands name ``dependencies``.
+
+    A header, not a whole image: the derivation reads ``LC_LOAD_DYLIB`` out of
+    the load-command block and nothing else, so a file with a real magic, a real
+    command count and real commands exercises exactly the parse under test
+    without needing a compiler on the machine running these tests.
+    """
+    commands = b""
+    for name in dependencies:
+        raw = name.encode("utf-8") + b"\0"
+        raw += b"\0" * ((-len(raw)) % 8)
+        # cmd=LC_LOAD_DYLIB, cmdsize, name offset, timestamp, versions.
+        commands += struct.pack("<6I", 0x0C, 24 + len(raw), 24, 0, 0, 0) + raw
+    # magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved
+    header = struct.pack(
+        "<8I", 0xFEEDFACF, 0x0100_000C, 0, 6, len(dependencies), len(commands), 0, 0
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(header + commands)
+    return path
+
+
+class LinkedRuntimeLibraryTests(ProviderExposureFixture):
+    """Shared libraries the exposed runtime links to from outside the exposure.
+
+    A pinned provider's environment and the base interpreter it was created from
+    were exposed as prefixes, and that was taken to be the whole runtime. On a
+    host whose interpreter came from a package manager it is not: CPython's
+    ``_ssl`` extension is linked against an OpenSSL under the *manager's* prefix,
+    and Graphify imports ``ssl`` during start-up even for a code-only
+    extraction, so under this boundary the provider aborted before it scanned
+    anything.
+
+    These hold the repair to the shape it has to have: the dependency is derived
+    from the images themselves rather than named here, what is exposed is a
+    library file rather than the manager's prefix, every added path goes through
+    the same refusals as any other exposure, and Linux is untouched.
+    """
+
+    def derive(self, *prefixes: Path) -> tuple[str, ...]:
+        with mock.patch.object(sys, "platform", "darwin"):
+            return lifecycle._linked_runtime_libraries(
+                list(prefixes), covered=list(prefixes), repository=self.repository
+            )
+
+    def library(self, path: Path, *dependencies: str) -> Path:
+        return macho(path, *dependencies)
+
+    def test_a_library_outside_the_exposure_is_added_as_a_file(self) -> None:
+        brew = self.root / "brew" / "Cellar" / "openssl@3" / "3.6.3" / "lib"
+        libssl = self.library(brew / "libssl.3.dylib")
+        prefix = self.root / "python"
+        self.library(prefix / "lib-dynload" / "_ssl.so", str(libssl))
+        derived = self.derive(prefix)
+        self.assertIn(str(libssl), derived)
+        # The file, never the directory holding it: exposing that directory is
+        # exposing a package manager's prefix, and its ``etc`` and ``var`` with
+        # it.
+        self.assertNotIn(str(brew), derived)
+        self.assertNotIn(str(brew.parent), derived)
+        self.assertNotIn(str(self.root / "brew"), derived)
+
+    def test_a_transitive_dependency_is_reached(self) -> None:
+        """``libssl`` needs ``libcrypto``, and neither is written down here."""
+        brew = self.root / "brew" / "lib"
+        libcrypto = self.library(brew / "libcrypto.3.dylib")
+        libssl = self.library(brew / "libssl.3.dylib", str(libcrypto))
+        prefix = self.root / "python"
+        self.library(prefix / "lib-dynload" / "_ssl.so", str(libssl))
+        derived = self.derive(prefix)
+        self.assertIn(str(libssl), derived)
+        self.assertIn(str(libcrypto), derived)
+
+    def test_a_link_is_resolved_and_both_spellings_are_kept(self) -> None:
+        """A manager's stable ``opt`` name is a link into its versioned cellar.
+
+        dyld opens the path the image wrote down; a bind-mount boundary names a
+        literal destination in an otherwise empty root. Neither spelling is the
+        other, so both are exposed -- and the file that is *validated* is the
+        resolved one, because a link's own spelling is not what gets read.
+        """
+        cellar = self.library(self.root / "brew" / "Cellar" / "o" / "3" / "lib" / "libssl.dylib")
+        stable = self.root / "brew" / "opt" / "openssl@3"
+        stable.parent.mkdir(parents=True, exist_ok=True)
+        stable.symlink_to(cellar.parent.parent)
+        referenced = stable / "lib" / "libssl.dylib"
+        prefix = self.root / "python"
+        self.library(prefix / "_ssl.so", str(referenced))
+        derived = self.derive(prefix)
+        self.assertIn(str(cellar), derived)
+        self.assertIn(str(referenced), derived)
+
+    def test_a_dependency_already_inside_the_exposure_is_not_added(self) -> None:
+        prefix = self.root / "python"
+        inside = self.library(prefix / "lib" / "libpython.dylib")
+        self.library(prefix / "lib-dynload" / "_x.so", str(inside))
+        self.assertEqual(self.derive(prefix), ())
+
+    def test_a_dependency_the_read_only_runtime_already_covers_is_not_added(self) -> None:
+        """``/usr/lib/libSystem.B.dylib`` is in every child's view already."""
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", "/usr/lib/libSystem.B.dylib")
+        self.assertEqual(self.derive(prefix), ())
+
+    def test_loader_relative_names_are_not_treated_as_paths(self) -> None:
+        """``@rpath`` and friends are resolved by dyld against the image itself."""
+        prefix = self.root / "python"
+        self.library(
+            prefix / "_x.so",
+            "@rpath/libfoo.dylib",
+            "@loader_path/../libbar.dylib",
+            "@executable_path/libbaz.dylib",
+        )
+        self.assertEqual(self.derive(prefix), ())
+
+    def test_an_absent_dependency_is_skipped_rather_than_refused(self) -> None:
+        """A weak link to something this host never installed.
+
+        Skipped, not refused: if it turns out to have been required, the
+        provider fails at launch as dyld naming the library it could not find,
+        which is a better answer than this module refusing a build over a link
+        that is never opened.
+        """
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(self.root / "brew" / "lib" / "libgone.dylib"))
+        self.assertEqual(self.derive(prefix), ())
+
+    def test_a_dependency_inside_the_checkout_is_refused(self) -> None:
+        """The live working tree is what the materialized copy exists to replace."""
+        inside = self.library(self.repository / "vendor" / "libevil.dylib")
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(inside))
+        with self.assertRaises(ContextError):
+            self.derive(prefix)
+
+    def test_a_dependency_that_is_the_home_directory_is_refused(self) -> None:
+        home = self.root / "home"
+        home.mkdir()
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(home))
+        with mock.patch.object(Path, "home", staticmethod(lambda: home)):
+            with self.assertRaises(ContextError):
+                self.derive(prefix)
+
+    def test_a_dependency_that_is_not_a_regular_file_is_refused(self) -> None:
+        directory = self.root / "brew" / "lib"
+        directory.mkdir(parents=True)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(directory))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a regular file", str(raised.exception))
+
+    def test_an_implausibly_large_dependency_is_refused(self) -> None:
+        big = self.root / "brew" / "lib" / "libhuge.dylib"
+        big.parent.mkdir(parents=True)
+        big.write_bytes(b"")
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(big))
+        with mock.patch.object(lifecycle, "_MAX_LINKED_LIBRARY_BYTES", -1):
+            with self.assertRaises(ContextError) as raised:
+                self.derive(prefix)
+        self.assertIn("implausibly large", str(raised.exception))
+
+    def test_a_dependency_another_account_may_rewrite_is_refused(self) -> None:
+        """What the provider maps executable inside the boundary is code.
+
+        A library some other account may write is a library somebody else
+        chooses the contents of, and the sandbox would then be confining the
+        provider to a runtime this host did not install.
+        """
+        loose = self.library(self.root / "brew" / "lib" / "libloose.dylib")
+        loose.chmod(0o666)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(loose))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("writable by", str(raised.exception))
+
+    def test_more_libraries_than_the_bound_are_refused(self) -> None:
+        brew = self.root / "brew" / "lib"
+        names = [str(self.library(brew / f"lib{index}.dylib")) for index in range(4)]
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", *names)
+        with mock.patch.object(lifecycle, "_MAX_LINKED_LIBRARIES", 2):
+            with self.assertRaises(ContextError):
+                self.derive(prefix)
+
+    def test_linux_derives_nothing(self) -> None:
+        """An ELF runtime's libraries are already under the read-only runtime.
+
+        The derivation reads Mach-O images, of which such a host has none, and
+        the previous behaviour there is the whole behaviour.
+        """
+        brew = self.root / "brew" / "lib"
+        libssl = self.library(brew / "libssl.so")
+        prefix = self.root / "python"
+        self.library(prefix / "_ssl.so", str(libssl))
+        with mock.patch.object(sys, "platform", "linux"):
+            self.assertEqual(
+                lifecycle._linked_runtime_libraries(
+                    [prefix], covered=[prefix], repository=self.repository
+                ),
+                (),
+            )
+
+    def test_a_file_that_is_not_an_image_reads_as_no_dependencies(self) -> None:
+        prefix = self.root / "python"
+        prefix.mkdir()
+        (prefix / "notes").write_bytes(b"not a mach-o at all")
+        (prefix / "truncated.dylib").write_bytes(b"\xcf\xfa\xed\xfe")
+        self.assertEqual(self.derive(prefix), ())
+
+    def test_a_universal_archive_is_read_slice_by_slice(self) -> None:
+        """python.org ships fat binaries; the union of the slices is the answer."""
+        brew = self.root / "brew" / "lib"
+        first = self.library(brew / "libone.dylib")
+        second = self.library(brew / "libtwo.dylib")
+        slices = [
+            macho(self.root / "slice-one", str(first)).read_bytes(),
+            macho(self.root / "slice-two", str(second)).read_bytes(),
+        ]
+        header = struct.pack(">2I", 0xCAFEBABE, 2)
+        offset = len(header) + 40
+        body = b""
+        arches = b""
+        for payload in slices:
+            arches += struct.pack(">5I", 0x0100_000C, 0, offset + len(body), len(payload), 0)
+            body += payload
+        prefix = self.root / "python"
+        prefix.mkdir(exist_ok=True)
+        (prefix / "fat.dylib").write_bytes(header + arches + body)
+        derived = self.derive(prefix)
+        self.assertIn(str(first), derived)
+        self.assertIn(str(second), derived)
+
+    def test_the_provider_exposure_carries_the_derived_libraries(self) -> None:
+        """The whole point: what ``subprocess_indexer`` confines the child to."""
+        brew = self.root / "brew" / "lib"
+        libssl = self.library(brew / "libssl.3.dylib")
+        environment = self.root / "venv"
+        provider = self.script(environment / "bin" / "graphify", venv=True)
+        self.library(environment / "lib" / "_ssl.so", str(libssl))
+        with mock.patch.object(sys, "platform", "darwin"):
+            exposed = self.exposure(provider)
+        self.assertIn(str(libssl), exposed)
+        self.assertIn(str(environment), exposed)
+        self.assertNotIn(str(brew), exposed)
+
+    @unittest.skipUnless(sys.platform == "darwin", "Mach-O linkage is a macOS question")
+    def test_the_real_ssl_extension_dependencies_are_covered(self) -> None:
+        """Against this host's actual interpreter, not a fixture.
+
+        The fixtures above prove the parse and the refusals; only this proves
+        the thing the blocker was about -- that the libraries CPython's ``_ssl``
+        really links against end up inside the boundary. Every absolute
+        dependency that extension names must be either under the read-only
+        runtime every child gets or in the derived set.
+        """
+        import _ssl  # noqa: PLC0415 - the point is this host's real extension
+
+        extension = Path(getattr(_ssl, "__file__", "") or "")
+        if not extension.is_file():  # pragma: no cover - a statically linked build
+            self.skipTest("this interpreter's _ssl is not a separate extension module")
+        prefix = Path(sys.base_prefix)
+        derived = lifecycle._linked_runtime_libraries(
+            [prefix], covered=[prefix], repository=self.repository
+        )
+        system = [Path(os.path.realpath(path)) for path in lifecycle._SYSTEM_READ_PATHS]
+        covered = [*system, Path(os.path.realpath(prefix))]
+        for name in lifecycle._macho_dylib_names(extension):
+            if not name.startswith("/"):
+                continue
+            resolved = Path(os.path.realpath(name))
+            if any(lifecycle._under(resolved, root) for root in covered):
+                continue
+            self.assertIn(str(resolved), derived, f"{name} is outside the provider's boundary")
 
 
 class ProviderIdentityTests(TemporaryWorkspace):
@@ -3043,6 +3379,12 @@ class CommandTests(TemporaryWorkspace):
             body=(
                 "#!/bin/sh\n"
                 '[ "$1" = "extract" ] || exit 64\n'
+                # The pinned CLI requires a scan target here and exits 1 without
+                # one, so the stand-in refuses the same argv the real provider
+                # refuses rather than accepting a launch that could never work.
+                '[ -n "$2" ] || exit 65\n'
+                'case "$2" in -*) exit 65 ;; esac\n'
+                '[ -d "$2" ] || exit 65\n'
                 "mkdir -p .graphify\n"
                 "printf graph-bytes > .graphify/graph.bin\n"
                 'printf \'{"complete": %s, "code_files": 1, "requeued": 0}\' '
