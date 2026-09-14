@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -312,7 +316,75 @@ class TrustedBaseAuthorityTests(unittest.TestCase):
             repo_root=self.root, base_ref="refs/heads/no-such-base"
         )
         self.assertIsNone(config)
-        self.assertEqual(source, "packaged_default")
+        self.assertEqual(source, review_authority.TRUSTED_BASE_UNAVAILABLE)
+
+    def test_a_missing_base_ref_never_grants_the_maintained_default(self):
+        # A base that could not be read proves nothing. Reporting the starter's
+        # defaults would claim merge authority no trusted policy supports.
+        self._commit(
+            self.LANE.format(authority="true", informational="false"), "base policy"
+        )
+        payload = review_authority.effective_merge_authority(
+            "codex", repo_root=self.root, base_ref="refs/heads/no-such-base"
+        )
+        self.assertFalse(payload["merge_authority"])
+        self.assertFalse(payload["configured_merge_authority"])
+        self.assertEqual(
+            payload["config_source"], review_authority.TRUSTED_BASE_UNAVAILABLE
+        )
+        self.assertEqual(payload["reason"], review_authority.TRUSTED_BASE_UNAVAILABLE)
+        self.assertEqual(payload["label"], review_authority.INFORMATIONAL_LABEL)
+        self.assertTrue(payload["action"])
+
+    def test_malformed_tracked_configuration_is_unavailable_not_default(self):
+        # Tracked, but not a configuration mapping at all.
+        self._commit("- not\n- a mapping\n", "malformed base policy")
+        config, source = review_authority.resolve_repository_config(
+            repo_root=self.root, base_ref="main"
+        )
+        self.assertIsNone(config)
+        self.assertEqual(source, review_authority.TRUSTED_BASE_UNAVAILABLE)
+
+    def test_a_failed_git_lookup_is_unavailable_not_default(self):
+        self._commit(
+            self.LANE.format(authority="true", informational="false"), "base policy"
+        )
+        broken = self.root / "broken"
+        broken.mkdir()
+        (broken / ".git").write_text("not a git dir\n", encoding="utf-8")
+        config, source = review_authority.resolve_repository_config(
+            repo_root=broken, base_ref="main"
+        )
+        self.assertIsNone(config)
+        self.assertEqual(source, review_authority.TRUSTED_BASE_UNAVAILABLE)
+
+    def test_a_positive_override_cannot_widen_an_unavailable_base(self):
+        self._commit(
+            self.LANE.format(authority="true", informational="false"), "base policy"
+        )
+        payload = review_authority.effective_merge_authority(
+            "claude",
+            repo_root=self.root,
+            base_ref="refs/heads/no-such-base",
+            override=True,
+        )
+        self.assertFalse(payload["merge_authority"])
+        self.assertTrue(payload["override_ignored"])
+
+    def test_verified_absence_is_distinguished_from_unavailability(self):
+        # Proving the base tracks no configuration is evidence; it selects the
+        # maintained defaults, and nothing else in this class does.
+        (self.root / "README.md").write_text("x\n", encoding="utf-8")
+        self._git("add", "README.md")
+        self._git("commit", "-m", "no config")
+        _, absent = review_authority.resolve_repository_config(
+            repo_root=self.root, base_ref="main"
+        )
+        _, unavailable = review_authority.resolve_repository_config(
+            repo_root=self.root, base_ref="refs/heads/no-such-base"
+        )
+        self.assertEqual(absent, "packaged_default")
+        self.assertEqual(unavailable, review_authority.TRUSTED_BASE_UNAVAILABLE)
 
     def test_an_explicit_selection_still_wins_over_the_trusted_base(self):
         self._commit(
@@ -345,7 +417,10 @@ class PortableStarterCommandTests(unittest.TestCase):
             config_source=self.STARTER,
             devin=True,
         )
-        self.assertEqual(command, "`code-mower doctor --easy --devin`")
+        self.assertEqual(
+            command,
+            "`code-mower doctor --packaged-starter --profile recommended --devin`",
+        )
         self.assertNotIn(self.INSTALLED, command)
 
     def test_starter_transport_selection_is_portable_and_still_staged(self):
@@ -356,9 +431,15 @@ class PortableStarterCommandTests(unittest.TestCase):
             config_source=self.STARTER,
         )
         self.assertNotIn(self.INSTALLED, steps)
-        self.assertIn("code-mower init --easy --set-transport devin=devin_api_v3 --dry-run", steps)
+        self.assertIn(
+            "code-mower init --packaged-starter --profile recommended "
+            "--set-transport devin=devin_api_v3 --dry-run",
+            steps,
+        )
         self.assertIn("--apply --output-dir", steps)
-        self.assertIn("code-mower doctor --easy --devin", steps)
+        self.assertIn(
+            "code-mower doctor --packaged-starter --profile recommended --devin", steps
+        )
 
     def test_repository_configuration_is_never_replaced_by_the_starter(self):
         repository = "code-mower.yml"
@@ -366,16 +447,25 @@ class PortableStarterCommandTests(unittest.TestCase):
             "devin_api_v3", config_path=repository, profile="recommended"
         )
         self.assertIn(repository, steps)
+        self.assertNotIn("--packaged-starter", steps)
         self.assertNotIn("--easy", steps)
 
-    def test_a_non_recommended_starter_profile_keeps_its_explicit_pin(self):
-        # `--easy` is an alias for the recommended profile, so it cannot stand in
-        # for another one; the command stays honest rather than short.
+    def test_a_non_recommended_starter_profile_keeps_its_selected_profile(self):
+        # The selector names the package resource and chooses no profile, so a
+        # starter finding under any profile stays pinned to the one it describes.
         command = devin_readiness.doctor_command(
             config_path=self.INSTALLED, profile="advanced", config_source=self.STARTER
         )
+        self.assertIn("--packaged-starter", command)
         self.assertIn("--profile advanced", command)
+        self.assertNotIn(self.INSTALLED, command)
         self.assertNotIn("--easy", command)
+
+    def test_a_starter_profile_containing_spaces_stays_quoted(self):
+        command = devin_readiness.doctor_command(
+            config_path=self.INSTALLED, profile="my profile", config_source=self.STARTER
+        )
+        self.assertIn("--packaged-starter --profile 'my profile'", command)
 
     def test_paths_and_profiles_containing_spaces_stay_quoted(self):
         spaced = "/" + "srv/Code Mower/code-mower.yml"
@@ -394,7 +484,7 @@ class PortableStarterCommandTests(unittest.TestCase):
             lanes=("house_devin",),
         )
         self.assertNotIn(self.INSTALLED, guidance)
-        self.assertIn("packaged starter configuration (--easy)", guidance)
+        self.assertIn("packaged starter configuration (--packaged-starter)", guidance)
         self.assertIn("`house_devin`", guidance)
 
     def test_readiness_findings_carry_the_starter_source_into_remediation(self):
@@ -411,7 +501,103 @@ class PortableStarterCommandTests(unittest.TestCase):
             for finding in findings
         )
         self.assertNotIn(self.INSTALLED, rendered)
-        self.assertIn("--easy", rendered)
+        self.assertIn("--packaged-starter", rendered)
+
+
+class PackagedStarterSelectorTests(unittest.TestCase):
+    """`--packaged-starter` selects the maintained resource, not a cwd-local file.
+
+    The rendered command is only portable if the selector it names resolves the
+    same configuration from any directory, so these assert the CLI-level
+    selection against decoy files rather than comparing command strings.
+    """
+
+    def _decoy_dir(self) -> Path:
+        import tempfile
+
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        # Both cwd-local files that `--easy` would prefer: doctor picks up
+        # code-mower.yml, init picks up code-mower.example.yml.
+        for name in ("code-mower.yml", "code-mower.example.yml"):
+            (root / name).write_text("lanes: {}\n", encoding="utf-8")
+        return root
+
+    def test_the_packaged_starter_resolver_ignores_cwd_local_decoys(self):
+        from code_mower import package as code_mower_package
+
+        root = self._decoy_dir()
+        cwd = Path.cwd()
+        os.chdir(root)
+        self.addCleanup(os.chdir, cwd)
+        resolved = code_mower_package.packaged_starter_config_path()
+        self.assertTrue(resolved.is_file())
+        self.assertEqual(resolved.name, "code-mower.example.yml")
+        for decoy in ("code-mower.yml", "code-mower.example.yml"):
+            self.assertNotEqual(resolved.resolve(), (root / decoy).resolve())
+
+    def test_doctor_and_init_select_the_same_config_under_decoys(self):
+        from code_mower import doctor as code_mower_doctor
+        from code_mower import init as code_mower_init
+        from code_mower import package as code_mower_package
+
+        root = self._decoy_dir()
+        cwd = Path.cwd()
+        os.chdir(root)
+        self.addCleanup(os.chdir, cwd)
+        expected = code_mower_package.packaged_starter_config_path().resolve()
+
+        selected: list[Path] = []
+        with mock.patch.object(
+            code_mower_doctor, "run_doctor", side_effect=RuntimeError("stop")
+        ) as run_doctor:
+            with self.assertRaises(RuntimeError):
+                code_mower_doctor.main(["--packaged-starter", "--profile", "advanced"])
+        selected.append(Path(run_doctor.call_args.kwargs["config_path"]).resolve())
+        self.assertEqual(run_doctor.call_args.kwargs["config_source"], "packaged_starter")
+        # The selector chooses the resource, never the profile.
+        self.assertEqual(run_doctor.call_args.kwargs["profile"], "advanced")
+
+        with mock.patch.object(
+            code_mower_init, "load_config", side_effect=RuntimeError("stop")
+        ) as load_config:
+            with self.assertRaises(RuntimeError):
+                code_mower_init.main(
+                    ["--packaged-starter", "--profile", "advanced", "--dry-run"]
+                )
+        selected.append(Path(load_config.call_args.args[0]).resolve())
+
+        self.assertEqual(selected, [expected, expected])
+
+    def test_a_contradictory_explicit_config_is_rejected_not_ignored(self):
+        from code_mower import doctor as code_mower_doctor
+        from code_mower import init as code_mower_init
+
+        root = self._decoy_dir()
+        cwd = Path.cwd()
+        os.chdir(root)
+        self.addCleanup(os.chdir, cwd)
+        selections = (
+            (code_mower_doctor.main, ["code-mower.yml", "--packaged-starter"]),
+            (
+                code_mower_init.main,
+                ["code-mower.yml", "--packaged-starter", "--dry-run"],
+            ),
+        )
+        for main, argv in selections:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                status = main(argv)
+            self.assertEqual(status, 1)
+            self.assertIn("--packaged-starter", err.getvalue())
+
+    def test_the_cli_routes_the_selector_without_injecting_a_default_config(self):
+        from code_mower import cli as code_mower_cli
+
+        with mock.patch.object(
+            code_mower_cli.code_mower_init, "main", return_value=0
+        ) as init_main:
+            code_mower_cli._init_main(["--packaged-starter", "--dry-run"])
+        self.assertEqual(init_main.call_args.args[0], ["--packaged-starter", "--dry-run"])
 
 
 class SupersededDevinBridgeTests(unittest.TestCase):
@@ -639,8 +825,18 @@ class PromptPackDevinGuidanceTests(unittest.TestCase):
         self.assertIn("docs/participant-qualification.md", self.text)
 
     def test_packaged_starter_posture_names_the_portable_selector(self):
-        self.assertIn("code-mower doctor --easy --devin", self.text)
-        self.assertIn("Never substitute --easy for a repository", self.text)
+        self.assertIn(
+            "code-mower doctor --packaged-starter --profile PROFILE --devin", self.text
+        )
+        self.assertIn(
+            "Never substitute the starter for a repository configuration", self.text
+        )
+
+    def test_the_prompt_pack_does_not_call_easy_a_packaged_starter_selector(self):
+        # `--easy` resolves against cwd-local files, so the pack must not offer it
+        # as the way to name the maintained package resource.
+        self.assertNotIn("code-mower doctor --easy --devin", self.text)
+        self.assertIn("--easy does not", self.text)
 
 
 if __name__ == "__main__":

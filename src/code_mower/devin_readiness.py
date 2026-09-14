@@ -70,11 +70,14 @@ DEFAULT_ADOPTION_POSTURE = "reviewer-gate"
 # transport. Rewriting the participant list instead would delete every unrelated
 # participant and profile lane the repository selected.
 TRANSPORT_OPTION = "--set-transport"
-# The packaged starter configuration is selected by `--easy`, not by a path: the
-# path it resolves to lives inside the installation that ran the check.
+# The packaged starter configuration is selected by its own explicit selector,
+# not by a path: the path it resolves to lives inside the installation that ran
+# the check. `--easy` is not that selector -- it is a first-run profile alias
+# whose starter fallback depends on what the working directory contains, and
+# doctor and init fall back to different files -- so the supported selector that
+# names the maintained package resource directly is rendered instead.
 PACKAGED_STARTER_SOURCE = "packaged_starter"
-PACKAGED_STARTER_OPTION = "--easy"
-PACKAGED_STARTER_PROFILE = "recommended"
+PACKAGED_STARTER_OPTION = "--packaged-starter"
 SELECTABLE_TRANSPORTS = (LOCAL_TRANSPORT, HOSTED_TRANSPORT)
 CANONICAL_LANES = frozenset(
     entry.review_lane
@@ -761,19 +764,15 @@ def _unselected_findings(pin: _Pin) -> tuple[ReadinessFinding, ...]:
 
 
 def _portable_starter(config_source: str, profile: str) -> bool:
-    """Return true when `--easy` names this posture without an installed path.
+    """Return true when the starter selector names this posture without a path.
 
     The packaged starter has no repository path: it is resolved inside whichever
     installation ran the check, so pinning it renders a command only that machine
-    can run. ``--easy`` is the supported selector for exactly that posture, but
-    it is also an alias for the recommended profile, so it can only stand in when
-    the finding describes that profile; any other profile keeps the pinned path
-    rather than silently selecting a different one.
+    can run. ``--packaged-starter`` selects exactly that maintained resource and
+    keeps whichever ``--profile`` the finding describes, so it stands in for the
+    path at every profile rather than only the recommended one.
     """
-    return (
-        config_source == PACKAGED_STARTER_SOURCE
-        and profile == PACKAGED_STARTER_PROFILE
-    )
+    return config_source == PACKAGED_STARTER_SOURCE
 
 
 def _pinned(
@@ -783,12 +782,13 @@ def _pinned(
 
     Both inputs are shell-quoted because a configuration path and a profile name
     may contain spaces, and an unquoted command would inspect something else. The
-    packaged starter is named by its supported selector instead, because its
-    resolved path belongs to one installation.
+    packaged starter is named by its supported selector instead of a path,
+    because its resolved path belongs to one installation; the profile is still
+    pinned, because the selector does not choose one.
     """
     if _portable_starter(config_source, profile):
-        return f"{command} {PACKAGED_STARTER_OPTION}"
-    if config_path:
+        command += f" {PACKAGED_STARTER_OPTION}"
+    elif config_path:
         command += f" {shlex.quote(config_path)}"
     if profile:
         command += f" --profile {shlex.quote(profile)}"
@@ -875,9 +875,10 @@ def select_transport_command(
     list, which would drop every unrelated participant and profile lane.
 
     A finding against the packaged starter has no repository path to pin, so the
-    steps name that posture with its supported `--easy` selector instead of the
-    path it happened to resolve to inside this installation. A repository
-    configuration is never replaced by the starter to shorten a command.
+    steps name that posture with its supported `--packaged-starter` selector
+    instead of the path it happened to resolve to inside this installation, and
+    still pin the profile the finding describes. A repository configuration is
+    never replaced by the starter to shorten a command.
 
     `init` never rewrites the configuration it read: `--apply` stages a reviewable
     generated tree, so the steps are a dry-run preview, an apply into an explicit

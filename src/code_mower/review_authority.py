@@ -37,6 +37,15 @@ REPOSITORY_CONFIG_FILENAME = "code-mower.yml"
 # Implicit discovery reads the repository's active policy, which lives on the
 # trusted base ref rather than in the PR-head checkout an audit runs against.
 DEFAULT_BASE_REF = "origin/main"
+# The trusted base could not be read at all, which is different from a base that
+# verifiably tracks no configuration. An unknown policy supports no authority
+# claim, so this source always renders informational with an actionable reason.
+TRUSTED_BASE_UNAVAILABLE = "trusted_base_unavailable"
+TRUSTED_BASE_UNAVAILABLE_ACTION = (
+    "fetch the base ref this audit compares against (for example "
+    "`git fetch origin main`) or pass --code-mower-config with the repository "
+    "configuration to report, then rerun the audit"
+)
 
 
 def authority_label(payload: Mapping[str, Any], *, session: bool = False) -> str:
@@ -121,10 +130,14 @@ def _trusted_base_config(repo_root: Path, base_ref: str) -> tuple[Mapping[str, A
     before it is approved, so implicit discovery reads the base ref the same way
     :func:`context_audit.required_for_repo` does.
 
-    A base ref that does not track the file configures no lane, which is the
-    maintained default. Discovery that cannot run at all falls back to the same
-    default rather than to the proposed configuration: the trusted answer is
-    unavailable, and the untrusted one is exactly what must not be read.
+    Only a successful trusted-tree lookup that proves the file is absent selects
+    the maintained lane defaults: that base configures no lane, so the default is
+    the repository's active policy. Everything else -- a missing or invalid base
+    ref, a failed or timed-out Git command, tracked configuration that does not
+    parse -- leaves the trusted answer unknown. Unknown is not evidence of a
+    posture, so it is reported as unavailable rather than resolved either to the
+    maintained default (which would grant starter authority nothing verified) or
+    to the proposed head configuration (which is exactly what must not be read).
     """
     import subprocess
 
@@ -135,8 +148,11 @@ def _trusted_base_config(repo_root: Path, base_ref: str) -> tuple[Mapping[str, A
             ["git", "ls-tree", "--name-only", base_ref, "--", REPOSITORY_CONFIG_FILENAME],
             cwd=repo_root, capture_output=True, text=True, check=True, timeout=10,
         )
-        if not listing.stdout.strip():
-            return None, "packaged_default"
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None, TRUSTED_BASE_UNAVAILABLE
+    if not listing.stdout.strip():
+        return None, "packaged_default"
+    try:
         shown = subprocess.run(
             ["git", "show", f"{base_ref}:{REPOSITORY_CONFIG_FILENAME}"],
             cwd=repo_root, capture_output=True, text=True, check=True, timeout=10,
@@ -144,9 +160,9 @@ def _trusted_base_config(repo_root: Path, base_ref: str) -> tuple[Mapping[str, A
         parsed = _YamlSubsetParser(shown.stdout).parse()
         if not isinstance(parsed, Mapping):
             raise ConfigError("top-level config must be a mapping")
-        return parsed, "trusted_base_config"
     except (OSError, ValueError, TypeError, subprocess.SubprocessError, ConfigError):
-        return None, "packaged_default"
+        return None, TRUSTED_BASE_UNAVAILABLE
+    return parsed, "trusted_base_config"
 
 
 def resolve_repository_config(
@@ -161,9 +177,11 @@ def resolve_repository_config(
     by the packaged starter, and an unreadable one is an error rather than a
     silent downgrade to a different posture. Without an explicit selection, a Git
     checkout is read at its trusted base ref rather than at the head under
-    review, and only a base that configures nothing falls back to the maintained
-    lane defaults. A directory that is not a Git checkout has no base ref to
-    trust, so its own file is the configuration it runs under.
+    review, and only a base that verifiably configures nothing falls back to the
+    maintained lane defaults; a base that could not be read at all reports
+    :data:`TRUSTED_BASE_UNAVAILABLE` instead of a default posture. A directory
+    that is not a Git checkout has no base ref to trust, so its own file is the
+    configuration it runs under.
     """
     from . import config as code_mower_config
 
@@ -200,6 +218,11 @@ def effective_merge_authority(
     unqualified role, and it never skips an explicitly selected configuration
     that could not be read. An override asking for informational is always
     honoured, and whichever source decided the rendered posture is named.
+
+    A trusted base that could not be read leaves the repository's policy unknown,
+    so the posture renders informational with a bounded action rather than
+    granting the packaged starter's defaults; a positive override cannot widen
+    that either.
     """
     config, config_source = resolve_repository_config(
         config_path=config_path, repo_root=repo_root, base_ref=base_ref
@@ -207,6 +230,18 @@ def effective_merge_authority(
     payload = review_authority(
         product, config=config, lane=lane, config_source=config_source
     )
+    if config_source == TRUSTED_BASE_UNAVAILABLE:
+        # No trusted policy was read, so nothing here is evidence of merge
+        # authority. The lane defaults computed above describe the packaged
+        # starter, not this repository, so the rendered posture is the bounded
+        # non-authoritative one and says what would make it resolvable.
+        payload["configured_merge_authority"] = False
+        payload["merge_authority"] = False
+        payload["scope"] = "informational"
+        payload["policy_source"] = "unavailable"
+        payload["reason"] = TRUSTED_BASE_UNAVAILABLE
+        payload["action"] = TRUSTED_BASE_UNAVAILABLE_ACTION
+        payload["label"] = authority_label(payload)
     if override is None:
         return payload
     payload["operator_override"] = override
