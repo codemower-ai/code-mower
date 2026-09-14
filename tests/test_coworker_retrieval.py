@@ -78,6 +78,22 @@ class NormalizationTests(unittest.TestCase):
         value["result"]["retrieval"]["returned"] = 0
         self.assertEqual(normalize_search(value, limits=normalize_policy(POLICY), maximum_results=5)["documents"], [])
 
+    def test_no_data_is_an_explicit_empty_search_not_a_format_or_access_failure(self):
+        value = copy.deepcopy(SPARSE)
+        value["result"].update(status="no_data", results=[])
+        value["result"]["retrieval"].update(returned=0, has_more=False)
+        result = normalize_search(value, limits=normalize_policy(POLICY), maximum_results=5)
+        self.assertEqual(result["documents"], [])
+        self.assertEqual(result["completeness"], "partial")
+        self.assertEqual(result["omissions"], ["provider_no_data"])
+        self.assertFalse(result["truncated"])
+        for mutation in (lambda v: v["result"]["retrieval"].update(has_more=True),
+                         lambda v: v["result"].update(results=[SPARSE["result"]["results"][0]])):
+            invalid = copy.deepcopy(value)
+            mutation(invalid)
+            with self.assertRaises(ContextRetrievalError):
+                normalize_search(invalid, limits=normalize_policy(POLICY), maximum_results=5)
+
     def test_qualified_attributes_preserve_citation_date_and_uncertainty(self):
         result = normalize_search(FIXTURE["search_response"], limits=normalize_policy(POLICY), maximum_results=3)
         doc = result["documents"][0]
@@ -190,6 +206,14 @@ class RetrievalSDKTests(unittest.TestCase):
             self.retrieve()
         self.assertEqual(raised.exception.reason, "response_invalid")
         self.assertNotIn("authorization", str(raised.exception))
+        self.assertEqual(sum(r["method"] == "tools/call" for r in self.requests), 1)
+
+    def test_no_data_through_real_sdk_performs_only_one_search(self):
+        self.result["result"].update(status="no_data", results=[])
+        self.result["result"]["retrieval"].update(returned=0, has_more=False)
+        result = self.retrieve()
+        self.assertEqual(result["documents"], [])
+        self.assertIn("provider_no_data", result["omissions"])
         self.assertEqual(sum(r["method"] == "tools/call" for r in self.requests), 1)
 
     def test_nested_sdk_task_groups_preserve_only_closed_retrieval_reasons(self):

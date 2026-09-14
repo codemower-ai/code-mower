@@ -59,11 +59,15 @@ def _normalize_search(value, *, limits, maximum_results):
             or len(records) > maximum_results
             or type(retrieval.get("returned")) is not int or retrieval["returned"] != len(records)
             or type(retrieval.get("has_more")) is not bool
-            or result.get("status") not in ("complete", "partial")):
+            or result.get("status") not in ("complete", "partial", "no_data")
+            or (result.get("status") == "no_data" and (records or retrieval["has_more"]))):
         raise ContextError("Coworker search completeness or result count is invalid")
     partial = result["status"] == "partial" or retrieval["has_more"]
     truncated = bool(value.get("compaction"))
     omissions = []
+    if result["status"] == "no_data":
+        partial = True
+        omissions.append("provider_no_data")
     if result["status"] == "partial":
         omissions.append("provider_partial")
     if retrieval["has_more"]:

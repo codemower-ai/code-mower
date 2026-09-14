@@ -15,6 +15,8 @@ later entries are regular releases.
   including nested SDK task-group errors, no longer masquerade as access
   failures; fetch and guided prepare return closed, redacted failure reasons
   and preserve the explicit-refresh requirement.
+- Coworker's `no_data` response now yields explicitly incomplete empty evidence
+  instead of a format or access failure.
 
 ## v1.4.0
 

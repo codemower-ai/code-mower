@@ -122,6 +122,10 @@ scores do not establish truth. `Text` can appear in the fast response even with
 Records without either source locator, or with an unknown kind, are omitted with
 `missing_citation` or `unsupported_record_kind` metadata. A nonempty batch with
 no citable qualified records fails rather than reporting successful empty evidence.
+The observed `no_data` status is accepted only with zero records and `has_more=false`;
+it produces empty, partial evidence with `provider_no_data`. Retrieval succeeded,
+but there is no supporting evidence for the query. Refine the query or report the
+context gap; do not infer that access failed or that the question was answered.
 Unresolved
 entities, warnings, additional unreturned results, and text truncation produce
 explicit partial evidence. No source URL or revision is invented.

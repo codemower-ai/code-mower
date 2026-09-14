@@ -81,6 +81,11 @@ Unknown kinds and records without locators are explicitly omitted; a nonempty
 batch with no usable cited evidence fails. Present but malformed citation fields
 still fail closed. Neither these response variants nor an SDK exception group
 may be reported as evidence of an account authorization failure.
+An additional source-filtered search returned `status=no_data`, zero records,
+`returned=0`, `has_more=false`, and unresolved entities. This is an empty search
+result rather than an access or format error. It is represented by zero documents,
+partial completeness, and `provider_no_data`; it does not satisfy an unanswered
+context question merely because the API call succeeded.
 
 The [synthetic contract fixture](../tests/fixtures/coworker_mcp_contract.json)
 records stripped input schemas and an invented response with the observed

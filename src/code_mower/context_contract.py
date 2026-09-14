@@ -457,10 +457,11 @@ def load_packet(
         raise ContextError("context completeness and truncation are inconsistent")
     documents = packet["documents"]
     omissions = packet.get("omissions", [])
-    if (not isinstance(omissions, list) or len(omissions) > 10
+    if (not isinstance(omissions, list) or len(omissions) > 11
             or any(item not in ("provider_partial", "provider_has_more", "unresolved_entities",
                                 "provider_warning", "provider_compaction", "text_limit", "document_limit",
-                                "source_title_unavailable", "missing_citation", "unsupported_record_kind")
+                                "source_title_unavailable", "missing_citation", "unsupported_record_kind",
+                                "provider_no_data")
                    for item in omissions)):
         raise ContextError("context omissions must use bounded metadata codes")
     if not isinstance(documents, list) or len(documents) > limits["max_documents"]:

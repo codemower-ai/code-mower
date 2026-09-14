@@ -84,6 +84,19 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(packet["documents"][1]["citations"][0]["source"], "example:source:b")
         self.assertEqual(self.backend.searches, 1)
 
+    def test_no_data_survives_delivery_as_explicitly_incomplete_empty_evidence(self):
+        self.backend.result["result"].update(status="no_data", results=[])
+        self.backend.result["result"]["retrieval"].update(returned=0, has_more=False)
+        result = self.fetch()
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["documents"], 0)
+        packet = self.load(result["packet_handle"]).private_payload()
+        self.assertEqual(packet["documents"], [])
+        self.assertEqual(packet["completeness"], "partial")
+        self.assertIn("provider_no_data", packet["omissions"])
+        self.assertTrue(self.fetch()["reused"])
+        self.assertEqual(self.backend.searches, 1)
+
     def test_response_failure_is_saved_without_private_values_and_requires_explicit_refresh(self):
         self.backend.result["result"]["results"][0]["source_row_id"] = "private\nlocator"
         for _attempt in range(2):

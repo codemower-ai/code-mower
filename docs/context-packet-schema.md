@@ -77,7 +77,9 @@ that the source is correct, safe to render as a link, or independently verified.
 Coworker records with a missing source title use the explicit display label
 `Source title unavailable`, not a generated document title. The bounded omission
 codes also include `source_title_unavailable`, `missing_citation`, and
-`unsupported_record_kind`; the adapter marks these results partial. A missing
+`unsupported_record_kind`, and `provider_no_data`; the adapter marks these results
+partial. `provider_no_data` denotes a successful search with no matching records,
+not supporting evidence or proof of comprehensive coverage. A missing
 source locator never becomes a citation to an invented URL or an evidence record
 ID. Participants consuming these new omission codes need the updated adapter and
 packet validator; older validators fail closed on an unknown code.
