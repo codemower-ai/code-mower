@@ -221,7 +221,7 @@ and the [Cloud Data Contract](docs/cloud-data-contract.md).
 | --- | --- |
 | Default builders and reviewers | Claude Code + Codex |
 | Session hosts | Codex, Claude Code, and Cursor qualified; other identities recognized but require explicit handoff/provider transport |
-| Devin | Maintained local builder and hosted release-qualification transport; local review remains informational and Devin is not yet a qualified peer orchestrator |
+| Devin | Maintained local builder lane and an exact PR-bound hosted work-order library seam (`code_mower.devin_work_orders`, no packaged CLI command); local review remains informational and Devin is not yet a qualified peer orchestrator |
 | Organizational context | Optional Coworker delivery to approved Claude/Codex/Devin roles |
 | Work trackers | GitHub Issues by default; Jira Cloud is optional and guarded |
 | Forge and merge gate | GitHub |
@@ -230,7 +230,8 @@ and the [Cloud Data Contract](docs/cloud-data-contract.md).
 | Slack | Command and authenticated bounded ingress foundation only; no Slack worker delivery, results, or orchestration authority |
 
 GitLab, Bitbucket, broad unattended rollout, uncalibrated merge gates, Devin
-peer-orchestrator/reviewer parity, a required Graphify dependency, and Slack
+peer-orchestrator/reviewer parity, a hosted work-order CLI, runtime role-policy
+enforcement, a required Graphify dependency, and Slack
 worker delivery are not shipped in v1.4.0. The current priorities and
 boundaries are recorded in
 [Current State And Roadmap](docs/current-state-and-roadmap.md).

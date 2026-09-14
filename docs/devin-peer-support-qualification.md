@@ -71,9 +71,23 @@ model-quality estimate.
 
 ## Hosted API builder deliveries and recovery
 
-Hosted Devin v3 work orders through `code-mower devin work-order`. Time is
-public wall time from PR creation to merge; active provider time is
-unavailable. Monetary cost is unavailable for both rows.
+Hosted Devin v3 work orders were dispatched by the trusted orchestrator through
+the packaged `code_mower.devin_work_orders.DevinWorkOrders` library seam; see the
+[embedding example](devin-work-orders.md#embedding-example).
+No packaged CLI command dispatches a hosted work order, and none is planned
+here: a work-order CLI would be a separate product feature with its own issue,
+not documentation written ahead of the code. Time is public wall time from PR
+creation to merge; active provider time is unavailable. Monetary cost is
+unavailable for both rows.
+
+Generic remote-session dispatch (`code-mower session`, the `RemoteSessions`
+seam, and the provider transports beneath it) gives provider-neutral lifecycle
+handling: create, status, message, cancel, and result collection. It does not
+independently verify issue, branch, pull request, author, base, and exact head.
+Only the exact PR-bound `DevinWorkOrders` path makes those observations
+independently against GitHub and fails closed when any of them disagree. The
+hosted rows below are evidence for that exact-bound path, not for lifecycle
+dispatch alone.
 
 | Work order | ACU cap | Observed ACU | Public wall time | Active time | Work-order round | Exact-head audit cycles | Intervention | Verified PR / head | Recovery result |
 | --- | ---: | ---: | ---: | --- | ---: | --- | --- | --- | --- |
@@ -277,6 +291,30 @@ shared `RemoteSessions` result precedence, and exact-round, issue, repository,
 branch, author, PR, head-SHA, and base-branch verification are unchanged, and a
 later valid exact-round collection clears the rejection and returns verified PR
 evidence.
+
+## Post-release hosted-builder campaign conclusion
+
+The bounded hosted-builder campaign run after the v1.4.0 release is closed. It
+is recorded here as supervised transport evidence only; it does not change the
+recommendation posture below.
+
+- Bounded hosted-builder deliveries: 3 of 5.
+- [#865](https://github.com/codemower-ai/code-mower/issues/865) and
+  [#935](https://github.com/codemower-ai/code-mower/issues/935) were completed
+  separately by Code Mower Codex in
+  [PR #971](https://github.com/codemower-ai/code-mower/pull/971) and
+  [PR #973](https://github.com/codemower-ai/code-mower/pull/973).
+- The final #935 recovery attempt was cancelled by the user before delivery. It
+  is not a completed implementation failure and must not be counted as one.
+- Correction to earlier `invalid_request` explanations: the observed failures
+  were caused by malformed or missing request keys, not by provider-side
+  rejection of the work order itself. Valid fix and cancel calls in the same
+  session subsequently succeeded.
+- A structured logical completion does not prove that the provider session
+  exited. Code Mower treats the verified structured result as complete while
+  the remote session may remain resumable.
+- Settled billing for the campaign remains unknown. Observed ACU is a
+  point-in-time consumption snapshot, never a final invoice.
 
 ## Limitations
 

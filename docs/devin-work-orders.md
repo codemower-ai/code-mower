@@ -7,11 +7,29 @@ existing `RemoteSessions`, `DevinProvider`, organization-scoped v3 client, priva
 It does not change campaign dispatch, release policy, review authority, or lane CLI
 capability declarations. No new lifecycle or automatic polling daemon is introduced.
 
+This is a library seam, not a command. The packaged CLI exposes no hosted
+work-order command; an embedding dispatcher calls the library directly, as in
+the example below. A work-order CLI would be a separate product feature and
+must be tracked as one before it is documented.
+
+Generic remote-session dispatch and this exact PR-bound path are not
+interchangeable. Generic session dispatch — `code-mower session`, the
+`RemoteSessions` seam, and the provider transports beneath it — provides
+provider-neutral lifecycle handling: create, status, message, cancel, and
+result collection. It does not independently verify issue, branch, pull
+request, author, base, and exact head; a provider's own claims about those are
+not observations. `DevinWorkOrders` adds exactly that independent verification:
+every one of those bindings is observed against GitHub by the caller's own
+credentials and fails closed on any disagreement. Use the exact-bound path
+whenever hosted output becomes builder evidence.
+
 The caller must first apply its trusted issue-author/work-order-comment policy and
 acquire the repository's existing builder lease. A work-order manifest is not proof
 of authorization. Pass the approved Markdown body explicitly; the library does not
 open manifest paths, load context files, or fetch an untrusted issue body. Repository,
 issue, branch, base, and expected GitHub author ID/login are dispatcher policy inputs.
+
+## Embedding example
 
 ```python
 from code_mower.devin_sessions import DevinClient
