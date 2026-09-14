@@ -311,11 +311,34 @@ class TraversalTests(GraphWorkspace):
             self.graph(), question="impact", target="parse_config").relations]
         self.assertEqual(first, second)
 
+    def test_a_second_hop_reports_the_edge_it_actually_walked(self) -> None:
+        """The graph says ``render`` calls ``load``, and nothing about render and parse_config."""
+        reached = {item.node.name: item for item in self.query().relations}
+        self.assertEqual(reached["load"].origin.name, "parse_config")
+        self.assertEqual(reached["render"].depth, 2)
+        self.assertEqual(reached["render"].origin.name, "load")
+        # The seed the walk started from is still carried, as provenance rather
+        # than as a relationship anybody asserted.
+        self.assertEqual(reached["render"].seed.name, "parse_config")
+
     def test_budget_truncates_and_says_so(self) -> None:
         result = self.query(node_budget=1)
         self.assertEqual(len(result.relations), 1)
         self.assertTrue(result.truncated)
         self.assertIn("provider_has_more", result.omissions)
+
+    def test_more_definitions_than_the_seed_bound_is_reported_as_truncation(self) -> None:
+        """Seeds the bound dropped take their whole reachable neighbourhood with them."""
+        document = graph_document()
+        for index in range(query.MAX_SEEDS + 1):
+            document["nodes"].append(
+                node(f"n-extra-{index}", "symbol", "parse_config", "example_pkg/loader.py", 1, 2))
+        graph = query.load_graph(document, generation="a" * 32, commit="b" * 40)
+        result = query.run_query(graph, question="impact", target="parse_config")
+        self.assertEqual(len(result.seeds), query.MAX_SEEDS)
+        self.assertTrue(result.truncated)
+        self.assertIn("provider_has_more", result.omissions)
+        self.assertIn("unresolved_entities", result.omissions)
 
     def test_depth_bounds_the_walk(self) -> None:
         """``render`` is two hops from ``parse_config`` and out of a one-hop walk."""
@@ -418,6 +441,23 @@ class PacketTests(GraphWorkspace):
         # request degrades rather than delivering an answer that looks whole.
         self.assertEqual(outcome.status, query.OPTIONAL_UNAVAILABLE)
         self.assertEqual(outcome.summary["reason"], "partial")
+
+    def test_multi_hop_evidence_names_and_cites_the_edge_it_walked(self) -> None:
+        """A transitive result reads as a path, never as a direct relationship."""
+        documents = {item["text"]: item for item in self.context().packet["documents"]}
+        [text] = [item for item in documents if "render" in item]
+        self.assertIn("render calls load", text)
+        self.assertIn("reached from parse_config", text)
+        self.assertEqual(
+            {citation["source"] for citation in documents[text]["citations"]},
+            {"example_pkg/report.py#L5-L12", "example_pkg/loader.py#L40-L44"},
+        )
+        # Each citation is titled with the node it points at, not with the node
+        # the relationship happened to reach.
+        self.assertEqual(
+            {citation["title"] for citation in documents[text]["citations"]},
+            {"symbol render", "symbol load"},
+        )
 
     def test_packet_text_carries_no_indexed_content(self) -> None:
         outcome = self.context()
@@ -543,6 +583,21 @@ class CommandTests(GraphWorkspace):
         # The summary is what an operator may paste anywhere; the evidence is
         # only in the private file they named.
         self.assertNotIn("citations", json.dumps(summary))
+
+    def test_an_existing_readable_destination_is_replaced_by_a_private_file(self) -> None:
+        """A creation mode binds only a file the open created; this one replaces."""
+        destination = self.root / "packet.json"
+        destination.write_text("stale", encoding="utf-8")
+        destination.chmod(0o644)
+        code, _ = self.invoke(
+            "--question", "impact", "--target", "parse_config",
+            "--packet-out", str(destination),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(destination.read_text())["kind"], "repository")
+        # Nothing is left behind under a name the operator did not ask for.
+        self.assertEqual([item.name for item in self.root.iterdir() if "partial" in item.name], [])
 
     def test_required_unavailable_exits_non_zero_without_a_packet(self) -> None:
         lifecycle.remove_graph(self.repository, root=self.state)

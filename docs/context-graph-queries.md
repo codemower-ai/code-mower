@@ -77,7 +77,16 @@ generation and one question produce one answer, every time, and a budget cut
 removes the furthest relationships rather than arbitrary ones.
 
 Reaching the node budget sets `truncated` and raises `provider_has_more`. It
-never silently shortens the answer.
+never silently shortens the answer. A target name carried by more definitions
+than the seed bound allows does the same: seeds the bound drops take their whole
+reachable neighbourhood out of the answer, so that is truncation too, not a
+complete result over the seeds that happened to sort first.
+
+Every reported relationship is the one edge the walk crossed, between that
+edge's own two endpoints. A second-hop result names the intermediate node and
+cites it — `render calls load (inferred, hop 2, reached from parse_config, …)` —
+rather than asserting a direct relationship between the seed and the node two
+hops away, which the graph does not carry.
 
 ## Citations are validated against the bound commit
 
@@ -174,7 +183,13 @@ connection, not to a query.
 
 Standard output is metadata only — counts, states, the bound revision and
 generation, and the omission codes. The evidence itself goes to the private file
-named by `--packet-out`, created `0600`, or nowhere at all.
+named by `--packet-out`, created `0600`, or nowhere at all. A destination that
+already exists is replaced rather than reopened: a creation mode binds only a
+file the open creates, so writing into an existing world-readable path would put
+the evidence behind whatever permissions that path already carried. The packet
+is written to a freshly created private sibling and renamed over the
+destination, which is also atomic — a reader never sees a half-written packet,
+and a failed write leaves the previous file untouched.
 
 ## Boundary
 

@@ -168,19 +168,31 @@ class CodeGraph:
     outgoing: Mapping[str, tuple[GraphEdge, ...]]
     incoming: Mapping[str, tuple[GraphEdge, ...]]
 
-    def seeds(self, target: str) -> tuple[GraphNode, ...]:
-        """Nodes a query target names, by symbol name first and then by path.
+    def seed_matches(self, target: str) -> tuple[tuple[GraphNode, ...], bool]:
+        """The seeds a target names, and whether the seed bound dropped any.
 
         Symbol-first, as the adoption record requires: a bare name resolves to
         the symbols that carry it, and only a target that names no symbol at
         all is read as a path. Ordered by id so two runs against one generation
         seed identically.
+
+        The overflow flag is not cosmetic. A name carried by more than
+        ``MAX_SEEDS`` definitions has definitions this traversal will never
+        start from, and every relationship reachable only from those is absent
+        from the answer. Silently slicing here would let ``run_query`` report a
+        complete, untruncated result over a graph it only partly read, which is
+        exactly the failure the adoption record's condition 4 is about.
         """
         name = _text(target, maximum=512)
         matches = [node for node in self.nodes.values() if node.name == name]
         if not matches:
             matches = [node for node in self.nodes.values() if node.path == name]
-        return tuple(sorted(matches, key=lambda node: node.id))[:MAX_SEEDS]
+        ordered = tuple(sorted(matches, key=lambda node: node.id))
+        return ordered[:MAX_SEEDS], len(ordered) > MAX_SEEDS
+
+    def seeds(self, target: str) -> tuple[GraphNode, ...]:
+        """The bounded seed set alone, for callers that do not report truncation."""
+        return self.seed_matches(target)[0]
 
 
 def _member(value: Any, keys: set[str], *, what: str) -> Mapping[str, Any]:
@@ -324,11 +336,22 @@ def read_graph(state: lifecycle.GraphStateRoot, status: lifecycle.GenerationStat
 
 @dataclass(frozen=True)
 class Relation:
-    """One traversal result: a reached node, how it was reached, and from where."""
+    """One traversal result: a reached node, the edge that reached it, and both ends.
+
+    ``origin`` is the *other endpoint of ``via``* -- the node the walk expanded
+    when it found this one -- and never the seed it started from. Those differ
+    from the second hop onwards, and conflating them is how a traversal comes
+    to assert a relationship the graph does not carry: a two-hop walk from
+    ``parse_config`` that reaches ``render`` through ``load`` would otherwise
+    read as "render calls parse_config" and cite two locations that have no
+    edge between them. ``seed`` keeps the provenance that conflation was
+    standing in for, without putting it in the claim.
+    """
 
     node: GraphNode
     via: GraphEdge
     origin: GraphNode
+    seed: GraphNode
     depth: int
 
 
@@ -398,7 +421,7 @@ def run_query(
     if type(limit) is not int or not 1 <= limit <= MAX_DEPTH:
         raise ContextError("local graph traversal depth is out of range")
     direction, kinds = _TRAVERSALS[question]
-    seeds = graph.seeds(target)
+    seeds, seed_overflow = graph.seed_matches(target)
     omissions: list[str] = []
     if not seeds:
         return QueryResult(
@@ -407,33 +430,42 @@ def run_query(
             omissions=("unresolved_entities",),
         )
     # More than one definition carries the target's name, so every relationship
-    # below is reported from a seed set the provider could not disambiguate.
-    ambiguous = len(seeds) > 1
+    # below is reported from a seed set the provider could not disambiguate --
+    # and a name with more definitions than the seed bound allows is the same
+    # uncertainty, only worse.
+    ambiguous = len(seeds) > 1 or seed_overflow
     seen = {node.id for node in seeds}
     relations: list[Relation] = []
-    truncated = False
+    over_budget = False
     frontier: list[tuple[GraphNode, GraphNode, int]] = [(node, node, 0) for node in seeds]
     while frontier:
-        node, origin, level = frontier.pop(0)
+        node, seed, level = frontier.pop(0)
         if level >= limit:
             continue
         for edge, other_id in _neighbours(graph, node.id, direction, kinds):
             if other_id in seen:
                 continue
             if len(relations) >= node_budget:
-                truncated = True
+                over_budget = True
                 break
             seen.add(other_id)
             reached = graph.nodes[other_id]
-            relations.append(Relation(node=reached, via=edge, origin=origin, depth=level + 1))
-            frontier.append((reached, origin, level + 1))
-        if truncated:
+            # ``node``, not ``seed``: the relationship being reported is the one
+            # this edge carries, between the node the walk expanded and the node
+            # it just reached. The seed travels alongside as provenance.
+            relations.append(Relation(node=reached, via=edge, origin=node, seed=seed, depth=level + 1))
+            frontier.append((reached, seed, level + 1))
+        if over_budget:
             break
     if question == "related_tests":
         # Relationship-filtered is not the same as answer-filtered: the walk
         # reaches callers so that a test two hops away is found, but only the
         # tests are the answer.
         relations = [item for item in relations if item.node.kind == "test"]
+    # Two different ways to have left something out, reported as one state: a
+    # relationship budget that stopped the walk, and a seed bound that stopped
+    # it from ever starting at some of the target's definitions.
+    truncated = over_budget or seed_overflow
     if truncated:
         omissions.append("provider_has_more")
     if ambiguous or any(item.via.evidence == "ambiguous" for item in relations):
@@ -544,6 +576,11 @@ def _relation_text(question: str, item: Relation) -> str:
 
     Names, paths and relationship kinds only: everything here is already in the
     citations beside it, so the prose adds no claim a recipient cannot check.
+
+    The sentence states exactly the one edge ``via`` carries, between its own
+    two endpoints. Where the walk reached that edge from is a separate clause,
+    ``reached from``, so a recipient reads a transitive result as a path and
+    never as a direct relationship the graph does not assert.
     """
     verb = {
         "calls": "calls", "imports": "imports", "defines": "defines",
@@ -553,9 +590,10 @@ def _relation_text(question: str, item: Relation) -> str:
         subject, object_ = item.node.name, item.origin.name
     else:
         subject, object_ = item.origin.name, item.node.name
+    provenance = "" if item.depth <= 1 else f", reached from {item.seed.name}"
     return (
         f"{question}: {subject} {verb} {object_} "
-        f"({item.via.evidence}, hop {item.depth}, {item.node.kind} at {item.node.path})"
+        f"({item.via.evidence}, hop {item.depth}{provenance}, {item.node.kind} at {item.node.path})"
     )
 
 
@@ -586,11 +624,17 @@ def _documents(
         if len(documents) >= MAX_DOCUMENTS:
             dropped = True
             break
-        # ``dict.fromkeys`` rather than a set: a self-referential relationship
-        # cites one location once, in a fixed order.
-        candidates = list(dict.fromkeys((item.node.citation, item.origin.citation)))
-        cited = [candidate for candidate in candidates if validator.validate(candidate)]
-        if len(cited) != len(candidates):
+        # Both endpoints of the edge the sentence states, never the seed the
+        # walk started from: a citation is where a recipient goes to check the
+        # claim, and the claim is about these two nodes. Keyed by citation and
+        # first-write-wins, so a self-referential relationship cites one
+        # location once, in a fixed order.
+        endpoints: dict[str, GraphNode] = {}
+        for endpoint in (item.node, item.origin):
+            endpoints.setdefault(endpoint.citation, endpoint)
+        cited = [(citation, endpoint) for citation, endpoint in endpoints.items()
+                 if validator.validate(citation)]
+        if len(cited) != len(endpoints):
             # The graph claimed a location the bound commit does not carry.
             # That is the provider disagreeing with the immutable tree, which
             # a recipient must be told about even when the relationship keeps
@@ -608,9 +652,12 @@ def _documents(
             "text": _relation_text(result.question, item),
             "confidence": EVIDENCE_CONFIDENCE[item.via.evidence],
             "source_kind": "local_repository_graph",
+            # Each citation is titled with the node it actually points at, so a
+            # two-endpoint relationship does not label the endpoint it came
+            # from with the name of the one it reached.
             "citations": [
-                {"source": source, "title": f"{item.node.kind} {item.node.name}"}
-                for source in cited
+                {"source": citation, "title": f"{endpoint.kind} {endpoint.name}"}
+                for citation, endpoint in cited
             ],
         })
     if unvalidated:

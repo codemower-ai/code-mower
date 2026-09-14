@@ -81,11 +81,36 @@ def _write_packet(destination: Path, packet: dict) -> None:
     ``0o600`` at creation rather than after: the delivery path refuses a packet
     whose mode ever allowed anyone else, and a chmod after the fact is a window
     in which it did.
+
+    A destination that already exists is *replaced*, never reopened. The
+    creation mode an open passes is only honoured for a file the open creates,
+    so writing into an existing world-readable path would put the evidence
+    behind whatever permissions that path already carried -- which the delivery
+    contract then refuses, after the bytes are already readable. The packet is
+    therefore written to a freshly created private sibling and renamed over the
+    destination, which is also atomic: a reader never sees a half-written
+    packet, and a failed write leaves the previous file untouched.
     """
     body = json.dumps(packet, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        stream.write(body)
+    # ``O_EXCL`` so the mode below is the mode of a file this process created.
+    # The name is unique per process rather than random: this directory is the
+    # operator's own, and a leftover from a crashed run must not be adopted.
+    staging = destination.with_name(f".{destination.name}.{os.getpid()}.partial")
+    descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staging, destination)
+    except BaseException:
+        # The evidence never survives a failed write under a name anyone asked
+        # for, and never under the staging name either.
+        try:
+            os.unlink(staging)
+        except OSError:
+            pass
+        raise
 
 
 def _emit(payload: dict, *, as_json: bool, text: str) -> None:
