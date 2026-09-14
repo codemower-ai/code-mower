@@ -24,6 +24,11 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from code_mower import builder_lineage, lane_delivery, lane_handoff  # noqa: E402
+from code_mower.audit_labeler_lib import (  # noqa: E402
+    lineage_marker_author_trust,
+    published_lineage_episodes,
+    resolve_builder_lineage,
+)
 from code_mower.provider_runners import lineage as reviewer_lineage  # noqa: E402
 
 from test_builder_lineage_consumers import (  # noqa: E402
@@ -702,6 +707,152 @@ class BoundedIdenticalReplay(unittest.TestCase):
         )
         self.assertEqual(resolved.status, "conflict")
         self.assertEqual(resolved.reason, "episode_malformed")
+
+
+class CumulativePublicationAtFullLength(unittest.TestCase):
+    """The longest supported lineage, published the way the producer publishes.
+
+    Evidence goes out as a cumulative snapshot after every round, so a lineage
+    that runs to ``MAX_EPISODES`` is delivered as ``1 + 2 + ... + 32`` raw
+    episodes. A bound below that total refuses a lineage the system is
+    documented to support -- and refuses it before deduplication, the only step
+    that could have shown those arrivals to be one chain.
+    """
+
+    def _chain(self, length: int):
+        episodes = [takeover_episode(resulting="0" * 39 + "1")]
+        for index in range(2, length + 1):
+            episodes.append(
+                continuation_episode(
+                    sequence=index,
+                    expected=episodes[-1].resulting_head,
+                    resulting=f"{index:040x}",
+                )
+            )
+        return tuple(episodes)
+
+    def _cumulative_comments(self, chain):
+        """One published comment per round, each carrying the whole chain."""
+
+        return [published(chain[:length]) for length in range(1, len(chain) + 1)]
+
+    def _gate_episodes(self, comments):
+        """What the gate and the labelers actually read off the comments."""
+
+        return published_lineage_episodes(
+            comments,
+            trusted_author=lineage_marker_author_trust(authorities=(AUTHORITY,)),
+        )
+
+    def test_the_full_cumulative_history_is_the_documented_arrival_maximum(self):
+        chain = self._chain(builder_lineage.MAX_EPISODES)
+        arrivals = self._gate_episodes(self._cumulative_comments(chain))
+        expected = builder_lineage.MAX_EPISODES * (builder_lineage.MAX_EPISODES + 1) // 2
+        self.assertEqual(len(arrivals), expected, "1 + 2 + ... + 32")
+        self.assertEqual(expected, 528)
+        self.assertLessEqual(expected, builder_lineage.MAX_EPISODE_ARRIVALS)
+
+    def test_the_gate_resolves_the_current_head_from_the_full_history(self):
+        chain = self._chain(builder_lineage.MAX_EPISODES)
+        arrivals = self._gate_episodes(self._cumulative_comments(chain))
+        lineage = resolve_builder_lineage(
+            labels=["builder:codex"],
+            author="devin-ai-integration[bot]",
+            config=IDENTITY,
+            repo=REPO,
+            pr_number=PR,
+            branch=BRANCH,
+            head_sha=chain[-1].resulting_head,
+            episodes=arrivals,
+        )
+        self.assertEqual(lineage.status, "resolved")
+        self.assertEqual(lineage.episodes, builder_lineage.MAX_EPISODES)
+        self.assertEqual(lineage.current_writer, "codex")
+
+    def test_a_reviewer_overlapping_its_private_record_still_resolves(self):
+        """The completed chain arrives once more from the local store."""
+
+        root = git_free_tempdir(self, "code-mower-cumulative-")
+        chain = self._chain(builder_lineage.MAX_EPISODES)
+        for episode in chain:
+            builder_lineage.record_episode(lane_handoff.lineage_root(root), episode)
+        comments = self._cumulative_comments(chain)
+        with mock.patch.dict("os.environ", {lane_handoff.STATE_DIR_ENV: str(root)}):
+            arrivals = reviewer_lineage.reviewer_evidence(
+                REPO, PR, authorities=(AUTHORITY,), fetch_comments=lambda: comments
+            )
+        # The reviewer path merges the two stores and collapses them itself.
+        self.assertEqual(len(arrivals), builder_lineage.MAX_EPISODES)
+        resolved = builder_lineage.resolve_lineage(
+            repo=REPO, pr_number=PR, branch=BRANCH,
+            head_sha=chain[-1].resulting_head, episodes=arrivals,
+        )
+        self.assertEqual(resolved.status, "resolved")
+        self.assertEqual(resolved.episodes, builder_lineage.MAX_EPISODES)
+
+    def test_the_raw_public_and_private_union_resolves_at_the_bound(self):
+        """A consumer that collapses nothing hands over the exact maximum."""
+
+        chain = self._chain(builder_lineage.MAX_EPISODES)
+        arrivals = self._gate_episodes(self._cumulative_comments(chain)) + chain
+        self.assertEqual(len(arrivals), builder_lineage.MAX_EPISODE_ARRIVALS)
+        self.assertEqual(len(arrivals), 560)
+        resolved = builder_lineage.resolve_lineage(
+            repo=REPO, pr_number=PR, branch=BRANCH,
+            head_sha=chain[-1].resulting_head, episodes=arrivals,
+        )
+        self.assertEqual(resolved.status, "resolved")
+        self.assertEqual(resolved.episodes, builder_lineage.MAX_EPISODES)
+        self.assertEqual(resolved.current_writer, "codex")
+
+    def test_one_arrival_past_the_contract_is_still_refused(self):
+        chain = self._chain(builder_lineage.MAX_EPISODES)
+        arrivals = self._gate_episodes(self._cumulative_comments(chain)) + chain
+        arrivals = arrivals + (chain[-1],)
+        self.assertEqual(len(arrivals), builder_lineage.MAX_EPISODE_ARRIVALS + 1)
+        resolved = builder_lineage.resolve_lineage(
+            repo=REPO, pr_number=PR, branch=BRANCH,
+            head_sha=chain[-1].resulting_head, episodes=arrivals,
+        )
+        self.assertEqual(resolved.status, "conflict")
+        self.assertEqual(resolved.reason, "episode_malformed")
+
+    def test_a_disagreeing_duplicate_inside_the_full_history_fails_closed(self):
+        chain = self._chain(builder_lineage.MAX_EPISODES)
+        arrivals = self._gate_episodes(self._cumulative_comments(chain))
+        forged = _variant(chain[4], destination_lane="claude", source_lane="claude")
+        resolved = builder_lineage.resolve_lineage(
+            repo=REPO, pr_number=PR, branch=BRANCH,
+            head_sha=chain[-1].resulting_head, episodes=arrivals + (forged,),
+        )
+        self.assertEqual(resolved.status, "conflict")
+        self.assertEqual(resolved.reason, "episode_duplicated")
+
+    def test_a_stale_full_history_waits_rather_than_resolving(self):
+        chain = self._chain(builder_lineage.MAX_EPISODES)
+        arrivals = self._gate_episodes(self._cumulative_comments(chain))
+        resolved = builder_lineage.resolve_lineage(
+            repo=REPO, pr_number=PR, branch=BRANCH, head_sha=FIXED, episodes=arrivals,
+        )
+        self.assertEqual(resolved.status, "waiting")
+        self.assertEqual(resolved.reason, "lineage_behind_head")
+
+    def test_a_full_history_bound_to_another_branch_fails_closed(self):
+        chain = self._chain(builder_lineage.MAX_EPISODES)
+        arrivals = self._gate_episodes(self._cumulative_comments(chain))
+        resolved = builder_lineage.resolve_lineage(
+            repo=REPO, pr_number=PR, branch="codex/959-other",
+            head_sha=chain[-1].resulting_head, episodes=arrivals,
+        )
+        self.assertEqual(resolved.status, "conflict")
+        self.assertEqual(resolved.reason, "episode_unbound")
+
+    def test_a_sequence_past_the_lineage_bound_never_constructs(self):
+        """The distinct-episode bound is enforced per entry, as it arrives."""
+
+        chain = self._chain(builder_lineage.MAX_EPISODES)
+        with self.assertRaises(builder_lineage.LineageError):
+            _variant(chain[-1], sequence=builder_lineage.MAX_EPISODES + 1)
 
 
 class LaneStatusProjection(unittest.TestCase):

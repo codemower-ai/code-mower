@@ -404,8 +404,21 @@ def build_auto_builder_run_event(
     # against Devin is the same mistake the label and the branch prefix make.
     # The builder id and run url stay with the inference that produced them --
     # they describe the opener's run and would be a fabrication on any other.
-    writer = _LANE_ATTRIBUTION.get(lineage.current_writer) if lineage.resolved else None
-    if writer and (inference.provider, inference.executor) != writer:
+    #
+    # Only a verified *writer transition* may move attribution. Lanes are
+    # coarser than the transports inside them: an ordinary `devin/` branch
+    # infers the local `devin_cli` transport but normalizes to lane `devin`,
+    # whose canonical attribution is the hosted pair. Comparing transports
+    # against that pair rewrote every ordinary local Devin CLI run into a
+    # hosted one, cleared its builder id and claimed high confidence -- on
+    # identity-only resolution that had observed no episode at all. So the
+    # comparison is between lanes, and it is gated on evidence: no episodes
+    # means no transition, and a same-lane continuation keeps the transport
+    # its own inference established.
+    inferred_lane = _lane_from_inference(inference)
+    writer_lane = lineage.current_writer if lineage.resolved else ""
+    writer = _LANE_ATTRIBUTION.get(writer_lane) if writer_lane else None
+    if writer and lineage.episodes and writer_lane != inferred_lane:
         inference = replace(
             inference,
             provider=writer[0],
@@ -413,7 +426,7 @@ def build_auto_builder_run_event(
             builder_id="",
             run_url="",
             confidence="high",
-            signals=inference.signals + (f"builder_lineage:{lineage.current_writer}",),
+            signals=inference.signals + (f"builder_lineage:{writer_lane}",),
         )
     pr_ref = metadata.url or (
         f"{metadata.repo}#{metadata.number}" if metadata.repo and metadata.number else ""

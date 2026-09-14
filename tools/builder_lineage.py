@@ -80,15 +80,27 @@ MAX_EPISODES = 32
 
 #: How many raw entries a caller may hand the resolver before it refuses to
 #: parse them. A lineage is at most :data:`MAX_EPISODES` distinct episodes, but
-#: the same chain legitimately arrives several times over: the producer
-#: publishes the whole chain on every round, a reviewer merges its private
-#: record with every trusted published marker, and an eight-episode lineage
-#: published eight times is already thirty-six entries. Counting raw arrivals
-#: against the lineage bound would call an authorised idempotent replay
-#: malformed, so the input is bounded separately and the lineage bound is
-#: applied to the distinct episodes that survive deduplication. Entries that
-#: merely repeat are collapsed; entries that disagree still fail closed.
-MAX_EPISODE_ENTRIES = MAX_EPISODES * 16
+#: the same chain legitimately arrives many times over, and the bound has to be
+#: the one the supported publication contract actually produces rather than a
+#: round multiple.
+#:
+#: Evidence is published as a *cumulative* snapshot: after episode ``n`` the
+#: producer republishes all ``n``. A lineage that runs to its full length is
+#: therefore delivered as ``1 + 2 + ... + MAX_EPISODES`` entries, and a reader
+#: that also holds the private record sees the completed chain once more on top
+#: of that. Anything under that total would refuse a lineage the system is
+#: documented to support -- and would refuse it *before* deduplication, which
+#: is the only step that could have shown the arrivals to be one chain.
+#:
+#: So arrivals are bounded here, deduplication happens as they are walked, and
+#: the lineage bound applies to the distinct episodes that survive: an episode
+#: sequence outside ``1..MAX_EPISODES`` is rejected per entry, so working state
+#: stays bounded by the lineage length however many times it repeats. Entries
+#: that merely repeat are collapsed; entries that disagree still fail closed.
+MAX_EPISODE_ARRIVALS = MAX_EPISODES * (MAX_EPISODES + 1) // 2 + MAX_EPISODES
+
+#: Retained name for the arrival bound, used by the vendored gate helper.
+MAX_EPISODE_ENTRIES = MAX_EPISODE_ARRIVALS
 
 EPISODE_FIELDS = (
     "schema",
@@ -499,13 +511,19 @@ def resolve_lineage(
     opener = _lane(opener_lane)
     labels = tuple(dict.fromkeys(lane for lane in (_lane(item) for item in label_lanes) if lane))
 
-    if len(episodes) > MAX_EPISODE_ENTRIES:
-        # Bounded input, not a bounded lineage: refuse to parse an unbounded
-        # arrival before looking at any of it.
-        return _lineage("conflict", "episode_malformed", head_sha=head)
-
-    parsed: list[ContributionEpisode] = []
+    # Bounded input, not a bounded lineage. Arrivals are counted as they are
+    # walked and collapsed on the way, so a conforming cumulative publication
+    # history -- the same chain republished after every round, optionally
+    # overlapping a private record of it -- is deduplicated into one lineage
+    # instead of being refused for its length. Working state never exceeds the
+    # lineage bound, because an episode whose sequence falls outside
+    # ``1..MAX_EPISODES`` is rejected as it arrives.
+    seen: dict[int, ContributionEpisode] = {}
+    arrivals = 0
     for item in episodes:
+        arrivals += 1
+        if arrivals > MAX_EPISODE_ARRIVALS:
+            return _lineage("conflict", "episode_malformed", head_sha=head)
         try:
             episode = item if isinstance(item, ContributionEpisode) else episode_from_mapping(item)
         except LineageError:
@@ -523,20 +541,18 @@ def resolve_lineage(
         )
         if episode.writer_state not in expected_state:
             return _lineage("conflict", "writer_state_unverified", head_sha=head)
-        parsed.append(episode)
-
-    if not parsed:
-        return resolve_identity_only(opener_lane=opener, label_lanes=labels, head_sha=head)
-
-    ordered = sorted(parsed, key=lambda episode: episode.sequence)
-    seen: dict[int, ContributionEpisode] = {}
-    for episode in ordered:
         previous = seen.get(episode.sequence)
         if previous is not None:
             if previous.as_dict() != episode.as_dict():
+                # Two records claim the same position and disagree. Which one
+                # describes the diff is exactly what cannot be guessed.
                 return _lineage("conflict", "episode_duplicated", head_sha=head)
             continue
         seen[episode.sequence] = episode
+
+    if not seen:
+        return resolve_identity_only(opener_lane=opener, label_lanes=labels, head_sha=head)
+
     ordered = [seen[sequence] for sequence in sorted(seen)]
     if [episode.sequence for episode in ordered] != list(range(1, len(ordered) + 1)):
         return _lineage("conflict", "episode_unchained", head_sha=head)

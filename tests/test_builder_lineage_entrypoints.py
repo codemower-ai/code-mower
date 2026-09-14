@@ -620,5 +620,139 @@ class GeneratedProvenanceJobCarriesTheAuthorityContract(unittest.TestCase):
         self.assertNotEqual(payload.get("executor"), "chatgpt-codex-connector")
 
 
+class AttributionMovesOnlyOnAVerifiedTransition(unittest.TestCase):
+    """Lanes are coarser than the transports inside them.
+
+    An ordinary `devin/` branch infers the local `devin_cli` transport but
+    normalizes to lane `devin`, whose canonical attribution is the hosted pair.
+    Comparing transports against that pair rewrote every ordinary local Devin
+    CLI run into a hosted one, cleared its builder id and claimed high
+    confidence -- from identity-only resolution that had seen no episode at
+    all. Attribution may move only when verified evidence shows the writer
+    actually changed lanes.
+    """
+
+    def _record(self, *, branch, author, comments=(), labels=("builder:devin",)):
+        from code_mower import builder_runs
+
+        with _private_root(self) as root:
+            pull_request = _pull_request()
+            pull_request["head"] = {"sha": TAKEN, "ref": branch}
+            pull_request["user"] = {"login": author}
+            pull_request["labels"] = [{"name": name} for name in labels]
+            pr_json = Path(root) / "event.json"
+            pr_json.write_text(
+                json.dumps({"pull_request": pull_request}), encoding="utf-8"
+            )
+            comments_json = Path(root) / "comments.json"
+            comments_json.write_text(json.dumps(list(comments)), encoding="utf-8")
+            output = Path(root) / "run.json"
+            env = {
+                "CODE_MOWER_DECISION_AUTHORITIES": AUTHORITY,
+                "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+            }
+            captured = _Capture()
+            with mock.patch.dict(os.environ, env, clear=False), \
+                    mock.patch("sys.stdout", captured):
+                code = builder_runs.main([
+                    "auto-record",
+                    "--pr-json", str(pr_json),
+                    "--repo", REPO,
+                    "--comments-json", str(comments_json),
+                    "--output", str(output),
+                    "--force",
+                    "--json",
+                ])
+            self.assertEqual(code, 0)
+            payload = json.loads(captured.text())
+            payload["_event"] = json.loads(output.read_text(encoding="utf-8"))
+            return payload
+
+    def _dimensions(self, payload):
+        return payload["_event"]["dimensions"]
+
+    def test_an_ordinary_devin_slash_branch_stays_local_devin_cli(self):
+        payload = self._record(branch="devin/963-thing", author="a-human")
+        self.assertEqual(payload["provider"], "devin_cli")
+        self.assertEqual(payload["executor"], "devin_cli")
+        dimensions = self._dimensions(payload)
+        self.assertTrue(dimensions["builder_id"], "the inferred id must survive")
+        self.assertEqual(dimensions["builder_inference_confidence"], "medium")
+        self.assertNotIn(
+            "builder_lineage:devin", dimensions["builder_inference_signals"]
+        )
+
+    def test_an_ordinary_devin_dash_branch_stays_local_devin_cli(self):
+        payload = self._record(branch="devin-963-thing", author="a-human")
+        self.assertEqual(payload["provider"], "devin_cli")
+        self.assertEqual(payload["executor"], "devin_cli")
+        self.assertEqual(
+            self._dimensions(payload)["builder_inference_confidence"], "medium"
+        )
+
+    def test_an_ordinary_hosted_devin_pull_request_stays_hosted(self):
+        payload = self._record(branch="devin/963-thing", author=OPENER)
+        self.assertEqual(payload["provider"], "devin")
+        self.assertEqual(payload["executor"], "devin")
+        self.assertEqual(
+            self._dimensions(payload)["builder_inference_confidence"], "high"
+        )
+
+    def test_a_same_lane_continuation_keeps_its_established_transport(self):
+        """Evidence exists, but the writer never left the lane it started in."""
+
+        episodes = (
+            builder_lineage.ContributionEpisode(
+                sequence=1,
+                kind=builder_lineage.HANDOFF_KIND,
+                repo=REPO,
+                pr_number=PR,
+                branch="devin/963-thing",
+                source_lane="codex",
+                destination_lane="devin",
+                expected_head="a" * 40,
+                resulting_head=TAKEN,
+                writer_state="terminated",
+            ),
+        )
+        marker = {
+            "user": {"login": AUTHORITY},
+            "body": MARKER_BODY + builder_lineage.lineage_comment_marker(episodes),
+        }
+        payload = self._record(
+            branch="devin/963-thing", author="a-human", comments=[marker]
+        )
+        self.assertEqual(payload["provider"], "devin_cli")
+        self.assertEqual(payload["executor"], "devin_cli")
+        self.assertEqual(
+            self._dimensions(payload)["builder_current_writer"], "devin"
+        )
+
+    def test_a_verified_cross_lane_takeover_attributes_the_current_writer(self):
+        payload = self._record(
+            branch=BRANCH, author=OPENER, comments=[marker_comment()],
+            labels=("builder:codex",),
+        )
+        self.assertEqual(payload["provider"], "codex")
+        self.assertEqual(payload["executor"], "chatgpt-codex-connector")
+        dimensions = self._dimensions(payload)
+        self.assertEqual(dimensions["builder_current_writer"], "codex")
+        self.assertEqual(dimensions["builder_inference_confidence"], "high")
+        self.assertIn(
+            "builder_lineage:codex", dimensions["builder_inference_signals"]
+        )
+        self.assertEqual(
+            dimensions["builder_id"], "", "no id may be invented for another lane"
+        )
+
+    def test_an_untrusted_takeover_marker_moves_no_attribution(self):
+        payload = self._record(
+            branch=BRANCH, author=OPENER, comments=[marker_comment(OUTSIDER)],
+            labels=("builder:devin",),
+        )
+        self.assertEqual(payload["provider"], "devin")
+        self.assertEqual(payload["executor"], "devin")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
