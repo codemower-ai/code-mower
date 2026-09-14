@@ -113,6 +113,15 @@ code-mower work-order draft \
   --output .code-mower/work-orders/billing-settings.md
 ```
 
+The default review lanes are `codex-audit` and `claude-audit`. To select
+additional reviewers, repeat `--review-lane` for the complete set you want;
+explicit selections replace the default. For example, add these flags to the
+draft command to include Gitar alongside Claude and Codex:
+
+```bash
+  --review-lane codex-audit --review-lane claude-audit --review-lane gitar
+```
+
 The work order includes role/lens sections for product, architecture,
 implementation, QA, security, operability, and devil's advocate review. These
 sections are deliberately prompts for thinking, not requirements to spawn a
@@ -147,7 +156,7 @@ code-mower work-order attach-delivery \
   .code-mower/work-orders/billing-settings.cloud-event.json \
   --pr owner/repo#124 \
   --reviewer-check codex-audit=success \
-  --reviewer-check gitar=approved \
+  --reviewer-check claude-audit=success \
   --merge-sha abc123def456
 ```
 
