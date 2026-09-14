@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from code_mower import context_audit, context_delivery, context_review
+from code_mower.review_authority import AuthorityRequest as ReviewAuthorityRequest
 
 if __package__ in {None, "", "tools"}:
     try:
@@ -248,6 +249,10 @@ class ClaudeAuditConfig:
     include_decision_context: bool = True
     decision_authorities: Tuple[str, ...] = ()
     merge_authority: bool = True
+    # When set, `merge_authority` above is only the fail-closed value used until
+    # `audit_pr()` resolves the posture against the base revision it fetched.
+    # Direct callers that decided authority themselves leave this unset.
+    authority_request: Optional[ReviewAuthorityRequest] = None
     calibration_badge: str = ""
     context_revision: Optional[str] = None
     context_state_dir: Optional[Path] = None
@@ -297,6 +302,11 @@ class DiffContext:
     full_diff_bytes: int
     included_diff_bytes: int
     adaptive_expanded: bool = False
+    # The commit the base ref resolved to once fetched, which is the revision
+    # this diff was taken against. Defaulted so historical fixtures and direct
+    # constructions keep working; an empty value means "not recorded", not
+    # "the working tree".
+    fetched_base_ref: str = ""
 
     def __iter__(self):
         """Preserve the historical `(stat, diff, truncated)` unpacking API."""
@@ -876,6 +886,36 @@ def _run_git_limited(
     return _decode_limited_diff(chunks, truncated=truncated), observed_bytes, truncated
 
 
+def _resolve_fetched_authority(
+    config: ClaudeAuditConfig, local_repo: Path, base_revision: str
+) -> ClaudeAuditConfig:
+    """Return `config` with the posture resolved against the fetched base.
+
+    The wrapper cannot decide authority before the audit runs: the local base ref
+    may be stale or missing until the diff context fetches it, so a posture
+    computed then would describe the policy the fetch replaced — keeping
+    merge-authority wording through a repository demotion, or reporting an
+    unavailable base that is simply not fetched yet. The review diffs against the
+    fetched revision, so the rendered header is resolved against that same one.
+
+    Callers that decided authority themselves pass no request and are returned
+    unchanged, which keeps direct `ClaudeAuditConfig` use and fixtures working.
+    """
+    request = config.authority_request
+    if request is None:
+        return config
+    posture = request.resolve(
+        repo_root=local_repo, base_ref=base_revision or config.base_ref
+    )
+    print(
+        "  review authority: "
+        f"{posture['label']} ({posture['policy_source']}/{posture['reason']})",
+        file=sys.stderr,
+        flush=True,
+    )
+    return replace(config, merge_authority=posture["merge_authority"])
+
+
 def _build_diff_context(
     local_repo: Path,
     pr_number: int,
@@ -935,6 +975,7 @@ def _build_diff_context(
         full_diff_bytes=full_diff_bytes,
         included_diff_bytes=len(included_diff.encode("utf-8")),
         adaptive_expanded=adaptive_expanded,
+        fetched_base_ref=fetched_base_ref,
     )
 
 
@@ -1349,6 +1390,9 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             config.max_diff_hard_limit_bytes,
         )
     except FetchedHeadMismatch as exc:
+        # The base was fetched before the head mismatch was detected, so the
+        # stale notice still renders the posture of the refreshed base.
+        config = _resolve_fetched_authority(config, local_repo, config.base_ref)
         actions_run_id = os.environ.get("GITHUB_RUN_ID") or None
         print(
             f"  force-push race: fetched head {exc.actual_sha[:8]} does not "
@@ -1447,6 +1491,11 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
         )
         return result
 
+    # The diff was taken against the revision the base ref resolved to once
+    # fetched, so the comment's posture is resolved against that same revision.
+    config = _resolve_fetched_authority(
+        config, local_repo, diff_context.fetched_base_ref
+    )
     print(
         f"  diff budget: {diff_context.diagnostics()}",
         file=sys.stderr,
@@ -2034,21 +2083,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         repo_paths = _parse_repo_paths(args.repo_paths)
         _validate_repo_path_for_wrapper(repo_paths, args.repo)
-        from code_mower import review_authority as code_mower_review_authority
-
-        posture = code_mower_review_authority.effective_merge_authority(
-            "claude",
+        # The posture is resolved inside audit_pr, against the base revision the
+        # diff is taken from; the local base ref here may still be stale or
+        # missing. Only an explicitly selected configuration is checked now, so
+        # an operator typo fails before any network work rather than mid-audit.
+        authority_request = ReviewAuthorityRequest(
+            product="claude",
             config_path=args.code_mower_config,
-            repo_root=repo_paths.get(args.repo),
-            base_ref=args.base_ref,
             override=args.merge_authority,
         )
-        print(
-            "  review authority: "
-            f"{posture['label']} ({posture['policy_source']}/{posture['reason']})",
-            file=sys.stderr,
-            flush=True,
-        )
+        authority_request.validate()
         config = ClaudeAuditConfig(
             github_token=token,
             repo_paths=repo_paths,
@@ -2071,7 +2115,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             max_plan_context_bytes=args.max_plan_context_bytes,
             max_plan_context_file_bytes=args.max_plan_context_file_bytes,
             include_decision_context=not args.no_decision_context,
-            merge_authority=posture["merge_authority"],
+            # Fail closed until the fetched base decides: nothing rendered before
+            # that resolution may claim authority this run has not verified.
+            merge_authority=False,
+            authority_request=authority_request,
             calibration_badge=args.calibration_badge,
         )
         result = audit_pr(config, args.repo, args.pr)

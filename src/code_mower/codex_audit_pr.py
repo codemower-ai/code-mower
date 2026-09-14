@@ -70,6 +70,7 @@ from __future__ import annotations
 
 from code_mower import context_audit, context_delivery, context_review
 from code_mower.context_contract import ContextError
+from code_mower.review_authority import AuthorityRequest as ReviewAuthorityRequest
 
 import argparse
 import json
@@ -288,6 +289,11 @@ class AuditConfig:
     # reference provider catalog's Codex audit posture; pass --informational
     # when replaying or calibrating a lane that is not a repository gate.
     merge_authority: bool = True
+    # When set, `merge_authority` above is only the fail-closed value used until
+    # `audit_pr()` resolves the posture against the base revision it fetches.
+    # Direct callers that decided authority themselves leave this unset and keep
+    # whatever `merge_authority` they passed.
+    authority_request: Optional["ReviewAuthorityRequest"] = None
     # Optional human-facing calibration status. This must never decide merge
     # authority; it only renders as a separate badge line in the comment.
     calibration_badge: str = ""
@@ -863,6 +869,52 @@ def _fetch_base_ref(local_repo: Path, base_ref: str) -> None:
     to update the corresponding tracking ref.
     """
     _shared_fetch_base_ref(local_repo, base_ref)
+
+
+def _pinned_base_revision(local_repo: Path, base_ref: str) -> str:
+    """Return the commit `base_ref` names right after it was fetched.
+
+    Pinning the snapshot immediately after the fetch keeps everything derived
+    from it describing one revision even if the tracking ref moves later in the
+    run. When the ref cannot be resolved the name is returned unchanged, so a
+    base that is genuinely unavailable stays unavailable rather than being
+    quietly replaced by something that resolves.
+    """
+    try:
+        pinned = _run_git_text(
+            local_repo, ["rev-parse", "--verify", f"{base_ref}^{{commit}}"], timeout=10
+        ).strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return base_ref
+    return pinned or base_ref
+
+
+def _resolve_fetched_authority(
+    config: "AuditConfig", local_repo: Path, base_revision: str
+) -> "AuditConfig":
+    """Return `config` with the posture resolved against the fetched base.
+
+    The wrapper cannot decide authority before the audit runs: the local base ref
+    may be stale or missing until `audit_pr` fetches it, so a posture computed
+    then would describe the policy the fetch replaced — keeping merge-authority
+    wording through a repository demotion, or reporting an unavailable base that
+    is simply not fetched yet. The review compares against the fetched revision,
+    so the rendered header is resolved against that same revision here.
+
+    Callers that decided authority themselves pass no request and are returned
+    unchanged, which keeps direct `AuditConfig` use and recorded fixtures working.
+    """
+    request = config.authority_request
+    if request is None:
+        return config
+    posture = request.resolve(repo_root=local_repo, base_ref=base_revision)
+    print(
+        "  review authority: "
+        f"{posture['label']} ({posture['policy_source']}/{posture['reason']})",
+        file=sys.stderr,
+        flush=True,
+    )
+    return replace(config, merge_authority=posture["merge_authority"])
 
 
 def _run_git_text(local_repo: Path, args: List[str], *, timeout: int = 60) -> str:
@@ -1871,6 +1923,11 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     # before running the review. Stale base = wrong diff = wrong review.
     _fetch_pr_head(local_repo, pr_number, head_sha_start)
     _fetch_base_ref(local_repo, config.base_ref)
+    # The base is now the revision this review compares against, so the posture
+    # the comment renders is resolved here rather than before the fetch.
+    config = _resolve_fetched_authority(
+        config, local_repo, _pinned_base_revision(local_repo, config.base_ref)
+    )
     decision_authorities = _decision_authorities_for_repo(
         local_repo,
         config.decision_authorities,
@@ -2631,24 +2688,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         repo_paths = _parse_repo_paths(args.repo_paths)
         _validate_repo_path_for_wrapper(repo_paths, args.repo)
-        from code_mower import review_authority as code_mower_review_authority
-
-        posture = code_mower_review_authority.effective_merge_authority(
-            "codex",
+        # The posture is resolved inside audit_pr, against the base revision this
+        # audit fetches; the local base ref here may still be stale or missing.
+        # Only an explicitly selected configuration is checked now, so an
+        # operator typo fails before any network work rather than mid-audit.
+        authority_request = ReviewAuthorityRequest(
+            product="codex",
             config_path=args.code_mower_config,
-            repo_root=repo_paths.get(args.repo),
-            base_ref=args.base_ref,
             override=args.merge_authority,
         )
+        authority_request.validate()
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(
-        "  review authority: "
-        f"{posture['label']} ({posture['policy_source']}/{posture['reason']})",
-        file=sys.stderr,
-        flush=True,
-    )
 
     # --venv-path semantics:
     #   not set         (None)         -> auto-discover <local_repo>/.venv/
@@ -2692,7 +2744,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         max_plan_context_bytes=args.max_plan_context_bytes,
         max_plan_context_file_bytes=args.max_plan_context_file_bytes,
         include_decision_context=not args.no_decision_context,
-        merge_authority=posture["merge_authority"],
+        # Fail closed until the fetched base decides: nothing rendered before
+        # that resolution may claim authority this run has not verified.
+        merge_authority=False,
+        authority_request=authority_request,
         calibration_badge=args.calibration_badge,
     )
 

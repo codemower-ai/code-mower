@@ -90,6 +90,13 @@ CANONICAL_LANES = frozenset(
 # through the normal setup PR. A test pins this directory to init's own default.
 GENERATED_OUTPUT_DIR = ".code-mower.generated"
 
+# Installing the reviewed tree writes the repository's own configuration, and
+# that installed file -- not the package resource a starter finding was read
+# from -- is what the run afterwards uses. Verification therefore selects this
+# path, because the packaged starter is never rewritten by an install and would
+# keep reporting its unchanged transport. A test pins it to init's own default.
+INSTALLED_CONFIG_PATH = "code-mower.yml"
+
 # The public declaration fields a lane names for each transport. A repository that
 # named its own Devin lanes edits these fields itself: no generated command can
 # retarget a lane it cannot name without rebuilding the profile around it.
@@ -857,6 +864,27 @@ def readiness_command(
     )
 
 
+def _installed_readiness_command(
+    *, config_path: str, profile: str, config_source: str
+) -> str:
+    """Return the readiness command that confirms an installed switch took effect.
+
+    Preview and staging select the configuration the finding was read from, but
+    the check that confirms the transport actually changed has to read the
+    configuration the repository runs afterwards. An install never rewrites the
+    packaged starter, so keeping its selector here would re-report the unchanged
+    starter transport rather than the installed one; the installed repository
+    configuration is named instead, at the same profile the finding describes. A
+    finding already sourced from a repository configuration is installed over
+    that same file, so its own path stays the right thing to verify.
+    """
+    if _portable_starter(config_source, profile):
+        return readiness_command(config_path=INSTALLED_CONFIG_PATH, profile=profile)
+    return readiness_command(
+        config_path=config_path, profile=profile, config_source=config_source
+    )
+
+
 def select_transport_command(
     transport: str,
     *,
@@ -886,6 +914,12 @@ def select_transport_command(
     PR, and only then a rerun of readiness. Claiming the posture switched because
     files were staged would misreport the active configuration.
 
+    That final check reads the *installed* configuration at the same profile. A
+    starter-sourced finding selects the package resource to preview and stage
+    from, but an install writes the repository's own configuration and leaves the
+    starter untouched, so verifying through the starter selector would report the
+    unchanged starter transport instead of the switch.
+
     When the profile's Devin lanes are custom-named, no generated command can
     retarget them, so bounded manual guidance names those lanes instead. The Code
     Mower `--profile` selects the configuration profile and is never the credential
@@ -911,12 +945,14 @@ def select_transport_command(
         config_source=config_source,
     )
     staged = shlex.quote(GENERATED_OUTPUT_DIR)
+    verify = _installed_readiness_command(
+        config_path=config_path, profile=profile, config_source=config_source
+    )
     return (
         f"preview it with `{pinned} {selection} --dry-run`, stage it with `{pinned} "
         f"{selection} --apply --output-dir {staged}`, then review the generated "
         "configuration and support files and install them through the normal setup PR "
-        "before rerunning "
-        f"{doctor_command(config_path=config_path, profile=profile, config_source=config_source, devin=True)}"
+        f"before confirming the installed configuration with {verify}"
         "; staging writes only that review tree, so the active posture keeps reporting "
         "the installed configuration until the generated one replaces it, and the "
         "saved selection is repository-wide, so every profile selecting Devin moves "

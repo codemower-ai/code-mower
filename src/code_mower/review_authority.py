@@ -15,6 +15,7 @@ becoming a claim about the posture of this run.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -46,6 +47,47 @@ TRUSTED_BASE_UNAVAILABLE_ACTION = (
     "`git fetch origin main`) or pass --code-mower-config with the repository "
     "configuration to report, then rerun the audit"
 )
+
+
+@dataclass(frozen=True)
+class AuthorityRequest:
+    """The wrapper inputs that resolve a posture once the base ref is fetched.
+
+    A wrapper knows its product, its operator override, and any explicitly
+    selected configuration before it starts, but it does not yet know the base
+    revision the review will compare against: the local base ref can be stale or
+    entirely missing until the audit fetches it. Resolving before that fetch
+    reports the policy the fetch is about to replace, or reports the base as
+    unavailable when it is merely not fetched yet -- while the review itself uses
+    the refreshed revision. Carrying the inputs rather than an answer lets the
+    one resolver in this module run against the revision the review actually
+    used, so the rendered header and the review describe the same base.
+    """
+
+    product: str
+    config_path: str | Path | None = None
+    override: bool | None = None
+
+    def validate(self) -> None:
+        """Fail now on an explicitly selected configuration that cannot be read.
+
+        Resolution happens mid-audit, after network work has already started, so
+        an operator typo in ``--code-mower-config`` is surfaced up front instead.
+        Nothing about the base ref is consulted here: it is not fetched yet, and
+        an unfetched base is not an error.
+        """
+        if self.config_path is not None:
+            resolve_repository_config(config_path=self.config_path)
+
+    def resolve(self, *, repo_root: str | Path | None, base_ref: str) -> dict[str, Any]:
+        """Return the posture for `base_ref`, the revision this audit fetched."""
+        return effective_merge_authority(
+            self.product,
+            config_path=self.config_path,
+            repo_root=repo_root,
+            base_ref=base_ref,
+            override=self.override,
+        )
 
 
 def authority_label(payload: Mapping[str, Any], *, session: bool = False) -> str:

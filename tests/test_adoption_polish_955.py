@@ -14,7 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from code_mower import devin_readiness, migration, review_authority, session
+from code_mower import devin_readiness, init as code_mower_init, migration, review_authority, session
 from code_mower.doctor_checks.models import DoctorCheck, DoctorReport
 from code_mower.doctor_checks.output import render_doctor_summary, render_doctor_text
 from code_mower.yaml_subset import ConfigError
@@ -401,6 +401,285 @@ class TrustedBaseAuthorityTests(unittest.TestCase):
         self.assertEqual(payload["config_source"], "explicit_repository_config")
 
 
+class FetchedBaseAuthorityTests(unittest.TestCase):
+    """Both wrappers render the posture of the base revision they fetched.
+
+    The local base ref can be stale or absent when a wrapper starts. Resolving
+    then reports the policy the audit's own fetch is about to replace, while the
+    review compares against the refreshed revision -- so a repository demotion
+    would keep merge-authority wording, and a base that is merely not fetched yet
+    would report as unavailable. These drive the real entry points with offline
+    fakes so the ordering, not just the resolver, is covered.
+    """
+
+    LANES = (
+        "version: 1\n"
+        "lanes:\n"
+        "  claude_audit:\n"
+        "    type: review\n"
+        "    driver: claude_cli\n"
+        "    provider: claude\n"
+        "    merge_authority: {authority}\n"
+        "    informational: {informational}\n"
+        "    labels:\n"
+        "      needs: needs-claude-audit\n"
+        "      done: claude-audit-done\n"
+        "      blocked: claude-audit-blocked\n"
+        "  codex:\n"
+        "    type: audit\n"
+        "    driver: local_cli\n"
+        "    provider: codex\n"
+        "    merge_authority: {authority}\n"
+        "    informational: {informational}\n"
+        "    labels:\n"
+        "      needs: needs-codex-audit\n"
+        "      done: codex-audit-done\n"
+        "      blocked: codex-audit-blocked\n"
+    )
+    AUTHORITATIVE = LANES.format(authority="true", informational="false")
+    DEMOTED = LANES.format(authority="false", informational="true")
+
+    def _git(self, *args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=self.repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    def setUp(self):
+        import shutil
+        import tempfile
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        self._git("init", "--initial-branch", "main")
+        self._git("config", "user.email", "lane@example.invalid")
+        self._git("config", "user.name", "Lane")
+        self._git("config", "commit.gpgsign", "false")
+
+    def _commit(self, body: str, message: str) -> str:
+        (self.repo / "code-mower.yml").write_text(body, encoding="utf-8")
+        self._git("add", "code-mower.yml")
+        self._git("commit", "-m", message)
+        return self._git("rev-parse", "HEAD")
+
+    def _stale_demotion(self) -> None:
+        """Leave `origin/main` on the authoritative policy the remote demoted."""
+        self._commit(self.AUTHORITATIVE, "authoritative policy")
+        self._git("update-ref", "refs/remotes/origin/main", "main")
+        self._commit(self.DEMOTED, "demote the review lane")
+        # The PR head under review keeps declaring merge authority, so reading
+        # the checkout instead of the fetched base would also be wrong.
+        (self.repo / "code-mower.yml").write_text(self.AUTHORITATIVE, encoding="utf-8")
+
+    def _fetch_effect(self):
+        """Advance `origin/main` the way the wrapper's real fetch would."""
+
+        def effect(*args, **kwargs):
+            self._git("update-ref", "refs/remotes/origin/main", "main")
+            return self._git("rev-parse", "main")
+
+        return effect
+
+    def _request(self, product: str, override=None):
+        return review_authority.AuthorityRequest(product=product, override=override)
+
+    def _run_codex(self, config):
+        from code_mower import codex_audit_pr as cap
+
+        worktree = self.tmp / "worktree"
+        worktree.mkdir(exist_ok=True)
+        head = "d" * 40
+        pr_payload = {"head": {"sha": head, "ref": "human/fix"}, "title": "Fix"}
+        parsed = cap.CodexVerdict(verdict="PASS", prose="Summary:\n\nNone.")
+        diagnostics = cap.ReviewContextDiagnostics(
+            base_ref=config.base_ref,
+            head_sha=head,
+            changed_file_count=1,
+            diff_bytes=128,
+            requested_max_bytes=config.max_diff_bytes,
+            hard_limit_bytes=(
+                config.max_diff_hard_limit_bytes
+                or cap.DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES
+            ),
+            included_diff_bytes=128,
+            effective_budget_usd=config.max_budget_usd or cap.DEFAULT_MAX_BUDGET_USD,
+        )
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {
+                    "PYTEST_CURRENT_TEST": "",
+                    "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(self.tmp / "verdicts"),
+                    "GITHUB_RUN_ID": "",
+                },
+            ),
+            mock.patch.object(cap, "fetch_pull_request", side_effect=[pr_payload] * 2),
+            mock.patch.object(cap, "preflight_codex_cli", return_value="codex-test"),
+            mock.patch.object(cap, "_discover_venv", return_value=None),
+            mock.patch.object(cap, "_fetch_pr_head"),
+            mock.patch.object(cap, "_fetch_base_ref", side_effect=self._fetch_effect()),
+            mock.patch.object(
+                cap, "_build_review_context_diagnostics", return_value=diagnostics
+            ),
+            mock.patch.object(cap, "_create_temp_worktree", return_value=worktree),
+            mock.patch.object(cap, "_remove_worktree"),
+            mock.patch.object(cap, "run_codex_review", return_value=("review", "")),
+            mock.patch.object(
+                cap,
+                "run_codex_verdict_structuring",
+                return_value=(parsed, '{"structured_output":"pass"}', ""),
+            ),
+            mock.patch.object(cap, "post_pr_comment", return_value={"html_url": "u"}),
+        ):
+            return cap.audit_pr(config, "owner/repo", 42)
+
+    def _codex_config(self, **kwargs):
+        from code_mower import codex_audit_pr as cap
+
+        return cap.AuditConfig(
+            "token",
+            {"owner/repo": self.repo},
+            include_plan_context=False,
+            include_decision_context=False,
+            **{"merge_authority": False, **kwargs},
+        )
+
+    def test_codex_drops_authority_when_the_fetch_brings_a_demotion(self):
+        # `merge_authority=True` stands in for a posture resolved against the
+        # stale local ref: the fetched base demoted the lane, so the comment the
+        # audit renders must not keep that wording.
+        self._stale_demotion()
+        result = self._run_codex(
+            self._codex_config(
+                merge_authority=True, authority_request=self._request("codex")
+            )
+        )
+        self.assertIn(review_authority.INFORMATIONAL_LABEL, result.comment_body)
+        self.assertNotIn(review_authority.MERGE_AUTHORITY_LABEL, result.comment_body)
+
+    def test_codex_reports_a_base_that_only_the_fetch_made_available(self):
+        # Nothing named `origin/main` locally yet: resolving before the fetch
+        # would report the base unavailable for a repository that has a policy.
+        self._commit(self.AUTHORITATIVE, "authoritative policy")
+        result = self._run_codex(self._codex_config(authority_request=self._request("codex")))
+        self.assertIn(review_authority.MERGE_AUTHORITY_LABEL, result.comment_body)
+
+    def test_codex_without_a_request_keeps_the_authority_it_was_given(self):
+        # Direct callers and recorded fixtures decided authority themselves.
+        self._stale_demotion()
+        result = self._run_codex(self._codex_config(merge_authority=True))
+        self.assertIn(review_authority.MERGE_AUTHORITY_LABEL, result.comment_body)
+
+    def test_codex_positive_override_cannot_widen_the_fetched_demotion(self):
+        self._stale_demotion()
+        result = self._run_codex(
+            self._codex_config(
+                merge_authority=True,
+                authority_request=self._request("codex", override=True),
+            )
+        )
+        self.assertIn(review_authority.INFORMATIONAL_LABEL, result.comment_body)
+
+    def _run_claude(self, config):
+        from code_mower import claude_audit_pr as cap
+
+        head = "d" * 40
+        pr_payload = {"head": {"sha": head, "ref": "human/fix"}, "title": "Fix"}
+        parsed = cap.ClaudeVerdict(verdict="PASS", prose="Summary:\n\nNone.")
+        advance = self._fetch_effect()
+
+        def build_diff_context(*args, **kwargs):
+            # Stands in for the real builder, which fetches the base and pins the
+            # revision it diffed against onto the context it returns.
+            return cap.DiffContext(
+                "stat", "diff", ("src/app.py",), False, 1000, 1000, 40, 40,
+                fetched_base_ref=advance(),
+            )
+
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {
+                    "PYTEST_CURRENT_TEST": "",
+                    "CODE_MOWER_VERDICT_ARTIFACT_DIR": str(self.tmp / "verdicts"),
+                    "GITHUB_RUN_ID": "",
+                },
+            ),
+            mock.patch.object(cap, "fetch_pull_request", side_effect=[pr_payload] * 2),
+            mock.patch.object(cap, "_build_diff_context", side_effect=build_diff_context),
+            mock.patch.object(cap.code_mower_prompts, "load_review_prompt", return_value=""),
+            mock.patch.object(
+                cap,
+                "run_claude_audit",
+                return_value=(parsed, '{"structured_output":"pass"}', ""),
+            ),
+            mock.patch.object(cap, "post_pr_comment", return_value={"html_url": "u"}),
+        ):
+            return cap.audit_pr(config, "owner/repo", 42)
+
+    def _claude_config(self, **kwargs):
+        from code_mower import claude_audit_pr as cap
+
+        return cap.ClaudeAuditConfig(
+            "token",
+            {"owner/repo": self.repo},
+            include_plan_context=False,
+            include_decision_context=False,
+            **{"merge_authority": False, **kwargs},
+        )
+
+    def test_claude_drops_authority_when_the_diff_base_carries_a_demotion(self):
+        self._stale_demotion()
+        result = self._run_claude(
+            self._claude_config(
+                merge_authority=True, authority_request=self._request("claude")
+            )
+        )
+        self.assertIn(review_authority.INFORMATIONAL_LABEL, result.comment_body)
+        self.assertNotIn(review_authority.MERGE_AUTHORITY_LABEL, result.comment_body)
+
+    def test_claude_reports_a_base_that_only_the_fetch_made_available(self):
+        self._commit(self.AUTHORITATIVE, "authoritative policy")
+        result = self._run_claude(
+            self._claude_config(authority_request=self._request("claude"))
+        )
+        self.assertIn(review_authority.MERGE_AUTHORITY_LABEL, result.comment_body)
+
+    def test_claude_without_a_request_keeps_the_authority_it_was_given(self):
+        self._stale_demotion()
+        result = self._run_claude(self._claude_config(merge_authority=True))
+        self.assertIn(review_authority.MERGE_AUTHORITY_LABEL, result.comment_body)
+
+    def test_the_posture_and_the_review_consume_the_same_fetched_revision(self):
+        # The rendered posture must match the policy at the exact revision the
+        # diff was taken from, not the checkout and not the pre-fetch ref.
+        self._stale_demotion()
+        fetched = self._git("rev-parse", "main")
+        at_fetched = review_authority.effective_merge_authority(
+            "claude", repo_root=self.repo, base_ref=fetched
+        )
+        self.assertFalse(at_fetched["merge_authority"])
+        at_head = review_authority.effective_merge_authority(
+            "claude", config_path=self.repo / "code-mower.yml"
+        )
+        self.assertTrue(at_head["merge_authority"])
+        result = self._run_claude(
+            self._claude_config(
+                merge_authority=True, authority_request=self._request("claude")
+            )
+        )
+        self.assertIn(at_fetched["label"], result.comment_body)
+        self.assertNotIn(at_head["label"], result.comment_body)
+
+    def test_a_historical_diff_context_records_no_fetched_revision(self):
+        from code_mower import claude_audit_pr as cap
+
+        context = cap.DiffContext("stat", "diff", (), False, 1, 1, 1, 1)
+        self.assertEqual(context.fetched_base_ref, "")
+        self.assertEqual(tuple(context), ("stat", "diff", False))
+
+
 class PortableStarterCommandTests(unittest.TestCase):
     """The packaged starter has no repository path a rendered command can pin."""
 
@@ -437,8 +716,46 @@ class PortableStarterCommandTests(unittest.TestCase):
             steps,
         )
         self.assertIn("--apply --output-dir", steps)
+
+    def test_starter_verification_inspects_the_installed_configuration(self):
+        # Preview and staging read the package resource, but an install writes the
+        # repository's own configuration and leaves the starter unchanged, so the
+        # final check must select the installed file at the same profile.
+        steps = devin_readiness.select_transport_command(
+            "devin_api_v3",
+            config_path=self.INSTALLED,
+            profile="advanced",
+            config_source=self.STARTER,
+        )
+        preview, _, verification = steps.partition("install them through")
         self.assertIn(
-            "code-mower doctor --packaged-starter --profile recommended --devin", steps
+            "code-mower init --packaged-starter --profile advanced "
+            "--set-transport devin=devin_api_v3 --dry-run",
+            preview,
+        )
+        self.assertIn("--packaged-starter --profile advanced --set-transport", preview)
+        self.assertIn(
+            "`code-mower doctor code-mower.yml --profile advanced --devin`",
+            verification,
+        )
+        self.assertNotIn("--packaged-starter", verification)
+        self.assertNotIn(self.INSTALLED, steps)
+
+    def test_repository_verification_keeps_the_configuration_it_installs_over(self):
+        # A repository finding installs over its own file, so nothing redirects.
+        steps = devin_readiness.select_transport_command(
+            "devin_api_v3", config_path="ops/mower.yml", profile="recommended"
+        )
+        _, _, verification = steps.partition("install them through")
+        self.assertIn(
+            "`code-mower doctor ops/mower.yml --profile recommended --devin`",
+            verification,
+        )
+        self.assertNotIn("code-mower.yml", verification)
+
+    def test_the_installed_configuration_path_matches_what_init_writes(self):
+        self.assertEqual(
+            devin_readiness.INSTALLED_CONFIG_PATH, code_mower_init.ADOPTION_CONFIG_PATH
         )
 
     def test_repository_configuration_is_never_replaced_by_the_starter(self):
