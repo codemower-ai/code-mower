@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import os
 import re
 import sys
@@ -219,7 +220,7 @@ def render_session(payload: Mapping[str, Any]) -> str:
                 f"Lease: held by {holder} until {lease['expires_at']} (session {lease['session_id']})"
             )
             lines.append("Inspect lease: code-mower session lease show")
-            lines.append(f"When finished: code-mower session lease release --session-id {lease['session_id']}")
+            lines.append(f"When finished: code-mower session lease release --session-id {shlex.quote(str(lease['session_id']))}")
         else:
             lines.append("Lease: none (read-only brief; no mutating orchestration authority)")
     if payload.get("session_file"):

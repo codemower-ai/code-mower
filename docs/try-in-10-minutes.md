@@ -83,7 +83,9 @@ for customized setup and session startup. A mutating `session start` acquires a
 local orchestrator lease, normally for 12 hours. An eligible host should save
 its session ID, inspect it with `code-mower session lease show`, and end the
 session with `code-mower session lease release --session-id SESSION_ID` after
-its writers stop. A later shell must pass that ID explicitly. Use `--dry-run`
+its writers stop. A later shell must pass that ID explicitly. Renew a live lease
+with `code-mower session lease renew --session-id SESSION_ID` if work continues;
+`code-mower session show --current` finds its matching brief. Use `--dry-run`
 for a preview or `--no-lease` for a saved read-only brief. Participant selection
 alone does not qualify an orchestrator; Devin requires a qualified supervisor.
 The next package includes role admission and exact startup lease commands;

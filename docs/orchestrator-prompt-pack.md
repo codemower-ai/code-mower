@@ -86,6 +86,9 @@ For an eligible orchestrator, session start takes a local lease, normally for
 startup. Inspect it with code-mower session lease show. When the session ends,
 quiesce its writers and run code-mower session lease release --session-id
 SESSION_ID using the saved ID. A later shell must pass that ID explicitly.
+If work intentionally continues, renew only your live lease with code-mower
+session lease renew --session-id SESSION_ID. Use session show --current to
+find the matching saved brief from this checkout.
 Do not force-release another session as routine cleanup. A read-only adoption
 check can use session start --dry-run or --no-lease.
 
