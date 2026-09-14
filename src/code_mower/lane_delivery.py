@@ -38,6 +38,7 @@ import os
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -599,6 +600,7 @@ def supervise_process(
     stdin_path: Path | None = None,
     term_grace_seconds: float = DEFAULT_TERM_GRACE_SECONDS,
     descendant_drain_seconds: float = DEFAULT_DESCENDANT_DRAIN_SECONDS,
+    writer: Any = None,
 ) -> SupervisionResult:
     """Run a provider CLI in its own process group with bounded output.
 
@@ -648,6 +650,9 @@ def supervise_process(
     exit_code = 1
     signals_sent: tuple[str, ...] = ()
     try:
+        if writer is not None and writer.stop_requested():
+            writer.finish(quiescent=True)
+            return SupervisionResult(exit_code=EXIT_INTERRUPTED, interrupted=True)
         stdin_handle = (
             stdin_path.open("rb") if stdin_path is not None else subprocess.DEVNULL
         )
@@ -662,6 +667,8 @@ def supervise_process(
         )
         child = proc
         pgid = os.getpgid(child.pid)
+        if writer is not None:
+            writer.started(child.pid, pgid)
 
         def _group_alive(group_id: int) -> bool:
             # Reap the direct child first. A zombie group leader still counts
@@ -677,6 +684,8 @@ def supervise_process(
         selector.register(proc.stdout, selectors.EVENT_READ)
         with log_path.open("wb") as log_handle:
             while True:
+                if writer is not None and writer.stop_requested():
+                    interrupted["value"] = True
                 if interrupted["value"]:
                     break
                 remaining = deadline - time.monotonic()
@@ -756,19 +765,30 @@ def supervise_process(
         if exit_code < 0:
             exit_code = 128 - exit_code
     finally:
-        # Every terminal path closes the supervisor's own descriptors: the
-        # provider pipe, the selector, and any stdin file handle.
-        if proc is not None and proc.stdout is not None:
-            proc.stdout.close()
-        if selector is not None:
-            selector.close()
-        if stdin_handle not in (None, subprocess.DEVNULL):
-            stdin_handle.close()  # type: ignore[union-attr]
-        for sig, handler in previous_handlers.items():
-            try:
-                signal.signal(sig, handler)
-            except (ValueError, OSError):  # pragma: no cover
-                pass
+        try:
+            if proc is not None:
+                # Control I/O failures must also clean descendants after their
+                # leader exits. Only this supervisor's known group is touched.
+                proc.poll()
+                if _default_is_group_alive(proc.pid):
+                    terminate_process_group(proc.pid, grace_seconds=term_grace_seconds)
+                if proc.poll() is None:
+                    proc.wait(timeout=term_grace_seconds + 5)
+                if writer is not None:
+                    writer.finish(quiescent=_wait_for_group_exit(proc.pid))
+        finally:
+            # Control-store failures do not skip descriptor/signal cleanup.
+            if proc is not None and proc.stdout is not None:
+                proc.stdout.close()
+            if selector is not None:
+                selector.close()
+            if stdin_handle not in (None, subprocess.DEVNULL):
+                stdin_handle.close()  # type: ignore[union-attr]
+            for sig, handler in previous_handlers.items():
+                try:
+                    signal.signal(sig, handler)
+                except (ValueError, OSError):  # pragma: no cover
+                    pass
 
     if timed_out:
         exit_code = EXIT_TIMEOUT
@@ -1161,6 +1181,9 @@ def _add_handoff_parser(subparsers: Any) -> None:
     )
     handoff.add_argument("--output", type=Path)
     handoff.add_argument("--json", action="store_true")
+    handoff.add_argument("--source-file", type=Path, help="Private bound source transport; required for takeover")
+    handoff.add_argument("--state-dir", type=Path, help="Private handoff intent store")
+    handoff.add_argument("--reserve-launch", action="store_true", help="Claim the verified destination launch once")
 
 
 def _add_scan_prompt_parser(subparsers: Any) -> None:
@@ -1183,6 +1206,10 @@ def _add_supervise_parser(subparsers: Any) -> None:
     supervise.add_argument("--cwd", type=Path)
     supervise.add_argument("--stdin-file", type=Path)
     supervise.add_argument("--status-file", type=Path)
+    supervise.add_argument("--writer", help="Stable private alias for this supervisor invocation")
+    supervise.add_argument("--writer-state-dir", type=Path)
+    supervise.add_argument("--writer-repo")
+    supervise.add_argument("--writer-lane")
     # The remainder must not be named "command": that is the subparsers dest, and
     # argparse would overwrite the selected subcommand with the provider argv.
     supervise.add_argument(
@@ -1201,6 +1228,14 @@ def main(argv: list[str] | None = None) -> int:
     _add_handoff_parser(subparsers)
     _add_scan_prompt_parser(subparsers)
     _add_supervise_parser(subparsers)
+    admit = subparsers.add_parser("admit-builder", help="Check role admission against the trusted fresh-base checkout")
+    admit.add_argument("--checkout", type=Path, required=True)
+    admit.add_argument("--lane", required=True)
+    admit.add_argument("--runtime-readiness", choices=("ready", "unchecked", "unavailable"), default="unchecked")
+    runtime = subparsers.add_parser("runtime", help="Prepare bounded dedicated-checkout builder capabilities")
+    runtime.add_argument("--checkout", type=Path, required=True)
+    runtime.add_argument("--python", default="")
+    runtime.add_argument("--codex", default="", help="Also verify the installed Codex sandbox without a model call")
     args = parser.parse_args(argv)
 
     try:
@@ -1214,13 +1249,63 @@ def main(argv: list[str] | None = None) -> int:
             return _scan_prompt_main(args)
         if args.command == "supervise":
             return _supervise_main(args)
+        if args.command == "admit-builder":
+            return _admit_builder_main(args)
+        if args.command == "runtime":
+            from . import lane_runtime
+            payload = lane_runtime.prepare(args.checkout, args.python)
+            if args.codex:
+                lane_runtime.preflight(args.checkout, args.codex, payload["codex_config"], payload["python"])
+            print(json.dumps(payload))
+            return 0
     except LaneDeliveryError as exc:
         print(f"lane-delivery: {exc}", file=sys.stderr)
         return 2
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"lane-delivery: {type(exc).__name__}", file=sys.stderr)
         return 2
     raise AssertionError(f"unhandled lane-delivery command: {args.command}")
+
+
+def _admit_builder_main(args: argparse.Namespace) -> int:
+    # The maintained runner has reset this dedicated checkout to the trusted
+    # default branch, before any provider launch. Missing config means the
+    # maintained defaults; unreadable or non-regular config never means defaults.
+    from .config import load_config
+    from .participants import configured_transports
+    from .role_eligibility import decide_role, require_builder, require_role
+    from .yaml_subset import ConfigError
+
+    if not args.checkout.is_dir():
+        raise LaneDeliveryError("builder role admission requires an existing trusted checkout")
+    path = args.checkout / "code-mower.yml"
+    try:
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            configuration = {}
+        else:
+            if not stat.S_ISREG(mode):
+                raise ConfigError("builder role admission requires regular trusted repository configuration")
+            try:
+                configuration = load_config(path)
+            except (ConfigError, OSError, UnicodeError):
+                raise ConfigError("builder role admission requires valid trusted repository configuration") from None
+        if args.lane == "devin":
+            if configured_transports(configuration).get("devin", "devin_cli") != "devin_cli":
+                raise ConfigError("the local Devin runner cannot substitute for a selected hosted transport")
+            decision = require_builder(config=configuration, transport="devin_cli",
+                                       runtime=args.runtime_readiness)
+        else:
+            decision = decide_role(args.lane, "builder", config=configuration,
+                                   runtime=args.runtime_readiness, bounded=True)
+            require_role(decision, execution=True)
+    except (ConfigError, OSError, UnicodeError) as exc:
+        if isinstance(exc, ConfigError):
+            raise LaneDeliveryError(str(exc)) from None
+        raise LaneDeliveryError("trusted builder configuration is unavailable; inspect local permissions") from None
+    print(json.dumps(decision, sort_keys=True))
+    return 0
 
 
 def _classify_main(args: argparse.Namespace) -> int:
@@ -1297,6 +1382,7 @@ def _transition_main(args: argparse.Namespace) -> int:
 
 
 def _handoff_main(args: argparse.Namespace) -> int:
+    from . import lane_handoff
     handoff = validate_handoff(
         source_lane=args.source_lane,
         destination_lane=args.destination_lane,
@@ -1308,7 +1394,15 @@ def _handoff_main(args: argparse.Namespace) -> int:
         target_branch=args.target_branch,
         source_branch_prefixes=args.source_branch_prefixes,
     )
-    payload = handoff.as_dict()
+    if args.source_file is None:
+        raise LaneDeliveryError("handoff requires a private source binding; writer quiescence is unverified")
+    source = lane_handoff.read_source(args.source_file)
+    root = args.state_dir or lane_handoff.default_root()
+    if args.reserve_launch:
+        payload = {"launch_allowed": lane_handoff.reserve_launch(handoff, root),
+                   "handoff": handoff.as_dict()}
+    else:
+        payload = lane_handoff.prepare(handoff, source, root)
     _assert_safe_metadata(payload, path="handoff")
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -1319,8 +1413,7 @@ def _handoff_main(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(
-            f"handoff accepted: {handoff.source_lane} -> {handoff.destination_lane} "
-            f"on {handoff.target_pr}"
+            "handoff " + ("accepted" if payload.get("accepted") else "not launched")
         )
     return 0
 
@@ -1345,6 +1438,13 @@ def _supervise_main(args: argparse.Namespace) -> int:
         command = command[1:]
     if not command:
         raise LaneDeliveryError("supervise requires a command after --")
+    writer = None
+    if args.writer:
+        from .lane_handoff import LocalWriter
+        if not (args.writer_state_dir and args.writer_repo and args.writer_lane and args.cwd):
+            raise LaneDeliveryError("writer supervision requires private state, repo, lane, and checkout")
+        writer = LocalWriter(args.writer_state_dir, args.writer)
+        writer.register(repo=args.writer_repo, lane=args.writer_lane, checkout=args.cwd)
     result = supervise_process(
         command,
         log_path=args.log,
@@ -1352,6 +1452,7 @@ def _supervise_main(args: argparse.Namespace) -> int:
         max_log_bytes=args.max_log_bytes,
         cwd=args.cwd,
         stdin_path=args.stdin_file,
+        writer=writer,
     )
     if args.status_file is not None:
         args.status_file.parent.mkdir(parents=True, exist_ok=True)

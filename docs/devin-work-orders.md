@@ -52,6 +52,7 @@ builder = DevinWorkOrders.hosted(
     private_state_root,
     DevinClient(organization_id, devin_service_user_key),
     GitHubBuilderEvidence(github_read_token),
+    config=config, runtime=verified_runtime_readiness,
 )
 preview = builder.run("dispatch", order)  # no filesystem or network operations
 # An embedding CLI must map explicit --apply to apply=True. Never default it on.
@@ -59,6 +60,21 @@ metadata = builder.run("dispatch", order, apply=apply_from_cli)
 metadata = builder.run("status", order)
 metadata = builder.run("collect", order, apply=apply_from_cli)
 ```
+
+The trusted dispatcher must pass its loaded repository configuration and a fresh
+runtime assessment (`"ready"`, `"unchecked"`, or `"unavailable"`). Only `"ready"`
+admits live dispatch, clarification, or fix work; unchecked runtime can still
+preview an otherwise qualified order. Omitted configuration or live readiness,
+disabled builder policy, and missing or stale role qualification fail before
+state locks, reservations, or provider calls. Do not derive readiness or
+qualification from provider output. See [Participant Qualification](participant-qualification.md).
+
+Role admission is evaluated for each new-work operation and is separate from the
+immutable work-order binding. Existing bindings remain available to `status`,
+`collect`, and `cancel` when qualification expires, policy changes, or the current
+dispatcher lacks runtime readiness; constructing a dispatcher for those operations
+does not require admission fields. This preserves inspection and recovery without
+creating a replacement session.
 
 Use a stable, private, operator-owned state root outside any checkout, with no
 symlink components. All dispatchers must share the same roots. The library reserves

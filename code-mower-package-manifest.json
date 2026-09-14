@@ -164,6 +164,11 @@
     },
     {
       "kind": "doc",
+      "source": "docs/operational-evidence.md",
+      "target": "docs/operational-evidence.md"
+    },
+    {
+      "kind": "doc",
       "source": "docs/oss-v1-checklist.md",
       "target": "docs/oss-v1-checklist.md"
     },
@@ -171,6 +176,11 @@
       "kind": "doc",
       "source": "docs/package-customization.md",
       "target": "docs/package-customization.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/participant-qualification.md",
+      "target": "docs/participant-qualification.md"
     },
     {
       "kind": "doc",
@@ -1184,6 +1194,16 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/lane_handoff.py",
+      "target": "src/code_mower/lane_handoff.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/lane_runtime.py",
+      "target": "src/code_mower/lane_runtime.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/lane_status.py",
       "target": "src/code_mower/lane_status.py"
     },
@@ -1246,6 +1266,11 @@
       "kind": "core",
       "source": "src/code_mower/next_steps.py",
       "target": "src/code_mower/next_steps.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/operational_evidence.py",
+      "target": "src/code_mower/operational_evidence.py"
     },
     {
       "kind": "core",
@@ -1431,6 +1456,16 @@
       "kind": "core",
       "source": "src/code_mower/reviewer_spend.py",
       "target": "src/code_mower/reviewer_spend.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/role_eligibility.py",
+      "target": "src/code_mower/role_eligibility.py"
+    },
+    {
+      "kind": "schema",
+      "source": "src/code_mower/role_eligibility.schema.json",
+      "target": "src/code_mower/role_eligibility.schema.json"
     },
     {
       "kind": "labeler",

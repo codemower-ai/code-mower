@@ -17,6 +17,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from runner_fixture_support import enable_fake_codex_sandbox, fake_handoff_source
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
@@ -413,7 +415,7 @@ printf 'fake codex completed\\n'
 """,
                 encoding="utf-8",
             )
-            fake_codex.chmod(0o755)
+            enable_fake_codex_sandbox(fake_codex)
             argv = [str(runner), "--lane", "codex", "--repo", repo, "--max-minutes", "1"]
             if explicit_issue_target:
                 argv.extend(["--target", "issue:12"])
@@ -683,7 +685,7 @@ printf 'fake codex completed\\n'
         self.assertEqual(guard, {})
 
     def _run_codex_fix_round(self, pr_json: dict, *, template: str | None = JIRA_TEMPLATE,
-                             handoff_source: str | None = None,
+                             handoff_source: str | None = None, replay: bool = False,
                              ) -> tuple[subprocess.CompletedProcess, dict]:
         """Run the generated codex runner with ``--target pr:21`` against ``pr_json``."""
         runner, _text = self._generate(_config_with_policy(template))
@@ -735,12 +737,13 @@ exit 0
             fake_codex = bin_dir / "codex"
             fake_codex.write_text("#!/usr/bin/env bash\ncat >/dev/null\nprintf 'fake codex completed\\n'\n",
                                   encoding="utf-8")
-            fake_codex.chmod(0o755)
+            enable_fake_codex_sandbox(fake_codex)
             argv = [str(runner), "--lane", "codex", "--repo", "owner/repo",
                     "--max-minutes", "1", "--target", "pr:21"]
             if handoff_source is not None:
                 argv.extend(["--handoff-source-lane", handoff_source,
-                             "--handoff-expected-head", pr_view["headRefOid"]])
+                             "--handoff-expected-head", pr_view["headRefOid"],
+                             "--handoff-source-file", str(fake_handoff_source(root))])
             completed = subprocess.run(
                 argv,
                 cwd=ROOT,
@@ -755,6 +758,17 @@ exit 0
                 capture_output=True,
                 check=False,
             )
+            if replay:
+                repeated = subprocess.run(argv, cwd=ROOT, env={**os.environ, "HOME": str(root),
+                    "LANE_WORK_ROOT": str(work_root), "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    **_LANE_DELIVERY_ENV}, text=True, capture_output=True, check=False)
+                self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                completed.stdout += repeated.stdout
+                self.assertNotIn("fake codex completed", repeated.stdout)
+                from code_mower.remote_session import FakeProvider, RemoteSessions
+                state = root.resolve() / "remote-sessions"
+                engine = RemoteSessions(state, FakeProvider(state / "fake-provider"))
+                self.assertEqual(engine.run("status", "source")["counts"]["cancel"], 1)
             guard_path = work_root / "codex" / "owner__repo" / ".git" / "code-mower-lane-guard.json"
             guard = json.loads(guard_path.read_text(encoding="utf-8")) if guard_path.exists() else {}
         return completed, guard
@@ -806,6 +820,17 @@ exit 0
         self.assertEqual(guard["allowed_branch_expected_head"], "c" * 40)
         self.assertEqual(guard["allowed_prefixes"], [])
         self.assertEqual(guard["handoff"]["target_branch"], branch)
+        self.assertEqual(guard["handoff"]["expected_head"], "c" * 40)
+
+    def test_generated_devin_to_codex_takeover_and_replay_need_no_prefix_patch(self) -> None:
+        source = self._pr(21, "devin/21-fix", labels=("builder:devin",),
+                          author="devin-ai-integration[bot]")
+        completed, guard = self._run_codex_fix_round(
+            source, template=None, handoff_source="devin", replay=True)
+        self.assertEqual(completed.stdout.count("accepted explicit handoff devin -> codex"), 1)
+        self.assertEqual(completed.stdout.count("fake codex completed"), 1)
+        self.assertIn("no repeated acceptance or writer launch", completed.stdout)
+        self.assertEqual(guard["handoff"]["target_branch"], "devin/21-fix")
         self.assertEqual(guard["handoff"]["expected_head"], "c" * 40)
 
     def test_fix_round_without_a_policy_keeps_the_lane_prefix_target(self) -> None:
@@ -892,27 +917,28 @@ exit 0
     def test_runner_embeds_provenance_for_every_configured_builder_lane(self) -> None:
         # cursor is a configured builder without a local runner. Its labels and
         # authors still take part in conflict detection; execution eligibility
-        # (the lane case and builder_labels_json) stays limited to local lanes.
+        # (the lane case) stays limited to local lanes.
         _runner, text = self._generate(_config_with_policy())
         self.assertIn('case "$LANE" in codex|claude)', text)
         self.assertIn(
-            """builder_labels_json='{"claude":"builder:claude","codex":"builder:codex"}'""",
+            """builder_labels_json='{"claude":"builder:claude","codex":"builder:codex","cursor":"builder:cursor","devin":"builder:devin"}'""",
             text,
         )
         provenance = next(row for row in text.splitlines() if row.startswith("provenance_labels_json="))
         self.assertEqual(
             json.loads(provenance[len("provenance_labels_json="):].strip("'")),
             {"builder:claude": "claude", "builder:codex": "codex",
-             "builder:cursor": "cursor", "builder:grok-bot": "cursor"},
+             "builder:cursor": "cursor", "builder:devin": "devin", "builder:grok-bot": "cursor"},
         )
         authors = next(row for row in text.splitlines() if row.startswith("builder_authors_json="))
         self.assertEqual(
             json.loads(authors[len("builder_authors_json="):].strip("'")),
             {"chatgpt-codex-connector[bot]": "codex", "claude[bot]": "claude",
-             "cursor[bot]": "cursor", "grok-bot[bot]": "cursor"},
+             "cursor[bot]": "cursor", "devin-ai-integration": "devin",
+             "devin-ai-integration[bot]": "devin", "grok-bot[bot]": "cursor"},
         )
-        # A builder that is not configured at all contributes no provenance.
-        self.assertNotIn("devin-ai-integration", text)
+        # Inactive Devin execution still contributes its canonical source identity.
+        self.assertIn("devin-ai-integration", text)
 
     def test_label_alone_or_author_alone_is_sufficient_lane_provenance(self) -> None:
         for own in (

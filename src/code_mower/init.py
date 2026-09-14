@@ -1141,12 +1141,16 @@ def _lane_mac_runner_script_entry(
         lane: [f"{lane}/"] for lane in mac_lanes
     }
     for prefix, lane in sorted(configured_prefixes.items()):
-        if lane in branch_prefixes and prefix not in branch_prefixes[lane]:
+        branch_prefixes.setdefault(lane, [])
+        if prefix not in branch_prefixes[lane]:
             branch_prefixes[lane].append(prefix)
     # Provenance covers every configured builder lane, local or not, so a PR
     # carrying another builder's label or author reads as a conflict rather
     # than as unowned. Which lanes this runner may execute stays mac_lanes.
-    builder_lanes = [str(entry["lane"]) for entry in builder_entries]
+    builder_lanes = list(dict.fromkeys([
+        *(str(entry["lane"]) for entry in builder_entries),
+        *_identity_section(identity, "labels", canonicalize_lanes=True).values(),
+    ]))
     provenance_labels: dict[str, str] = {}
     for entry in builder_entries:
         lane = str(entry["lane"])
@@ -1162,6 +1166,7 @@ def _lane_mac_runner_script_entry(
     ):
         if lane in builder_lanes:
             provenance_labels.setdefault(label, lane)
+            builder_labels.setdefault(lane, label)
     builder_authors = {
         login: lane
         for login, lane in sorted(
@@ -2530,6 +2535,16 @@ def render_init_plan(
     context_required: bool | None = None,
     without_context: bool = False,
 ) -> RenderedPlan:
+    if not builders:
+        owner = config.get("owner_surface")
+        if isinstance(owner, Mapping) and "lane_runner_builders" in owner:
+            configured_builders = owner["lane_runner_builders"]
+            if (not isinstance(configured_builders, list) or not configured_builders
+                    or any(not isinstance(item, str) or item not in MAC_RUNNER_BUILDER_LANES
+                           for item in configured_builders)
+                    or len(set(configured_builders)) != len(configured_builders)):
+                raise ConfigError("owner_surface.lane_runner_builders must select unique local builder lanes")
+            builders = tuple(configured_builders)
     if without_context and (context_connection is not None or context_required is not None):
         raise ConfigError('--without-context cannot be combined with a context selection')
     context_changed = without_context or context_connection is not None or context_required is not None
@@ -2578,6 +2593,17 @@ def render_init_plan(
     profile = _profile(config, profile_id)
     lanes: Mapping[str, Mapping[str, Any]] = config["lanes"]
     selected_lanes = {lane_id: lanes[lane_id] for lane_id in profile.lanes}
+
+    from .role_eligibility import PRODUCTS, decide_role, require_role
+    builder_eligibility = {}
+    for builder in builders:
+        if builder in PRODUCTS:
+            decision = decide_role(
+                builder, "builder", config=config, bounded=True,
+                transport=code_mower_participants.configured_transports(config).get(builder),
+            )
+            require_role(decision)
+            builder_eligibility[builder] = decision
 
     labels: list[str] = []
     workflows: list[dict[str, str]] = []
@@ -3056,6 +3082,7 @@ def render_init_plan(
         "builder_loop": {
             "enabled": bool(builder_entries),
             "builders": list(builders),
+            "role_eligibility": builder_eligibility,
             "lanes": list(builder_entries),
             "ready_label": owner_surface["ready_label"],
             "owner_labels": json.loads(

@@ -293,13 +293,39 @@ say so explicitly and pin the head it inspected:
 tools/lanes/run_mac_lane.sh --lane claude --repo OWNER/REPO \
   --target pr:750 \
   --handoff-source-lane codex \
-  --handoff-expected-head <40-char sha>
+  --handoff-expected-head <40-char sha> \
+  --handoff-source-file "$SOURCE_BINDING_FILE"
 ```
 
-The runner validates the handoff, refuses it if the expected head is stale or
-the destination lane is not the one running, records it in the pre-push guard
-config, and posts an audit comment on the PR. Without those flags, a foreign
-head branch stays a hard refusal — there is no implicit cross-lane takeover.
+The source file is a private, operator-owned regular file (mode `0600`) outside
+Git. For an existing hosted binding it contains `transport: "remote_session"`,
+`provider: "devin"`, `session` (the existing Code Mower alias), and `state_dir`
+(the absolute private lifecycle-store directory). For a supervised local CLI,
+use the runner's private `.source.json` artifact: its fields are
+`transport: "local_process"`, `writer`, and `state_dir`. Keep these bindings and
+all control artifacts private; public handoff evidence contains lane, PR, and
+head metadata only. No new hosted session is created by a handoff.
+
+Code Mower asks the existing local supervisor to stop its own process group, or
+cancels the bound remote session through the existing idempotent lifecycle. It
+then independently verifies raw writer exit or suspension. A logical completed
+state, structured result, or cancellation acknowledgment does not prove exit.
+A retired remote binding cannot receive another resume/message operation; its
+status and cancellation remain available. Older private bindings without a
+repository identity fail closed and require operator reconciliation.
+
+The runner rechecks source quiescence and the PR head immediately before the
+single destination launch. Local source checkout commits are checked as well,
+including unpublished commits. Missing evidence, uncertain cancellation, or
+head movement prevents launch and produces one bounded owner action. Repeating
+the same intent cannot cancel twice, post another acceptance, or launch another
+writer. Interrupted/uncertain intents stay reserved for operator reconciliation;
+they do not become automatic retries. The owner must inspect the known source
+and private intent before authorizing further recovery.
+
+The runner records the verified handoff in the pre-push guard and posts its
+metadata on the PR. A foreign head remains refused without the explicit flags
+and source binding.
 
 A handoff can only hand over a branch the named source lane actually owns. The
 runner looks the source lane's branch prefixes up in its own identity config,
@@ -315,8 +341,37 @@ kept writing after the handoff was issued makes the push fail instead of being
 overwritten — including by `--force-with-lease`, whose lease is taken against a
 freshly fetched ref and would otherwise permit exactly that. A recovery run may
 still push more than once: the guard also accepts a remote sitting at a head the
-same run already wrote. A refused push means the handoff is stale; re-issue it
-against the current head.
+same run already wrote. A refused push means the handoff is stale. Inspect the
+source again before authorizing a new intent against the current head.
+
+### Builder Git capability and Python parity
+
+The runner requires a dedicated clone with local `.git` metadata. Shared Git
+worktrees and linked runtime directories are refused. Codex receives a
+per-invocation permission profile that allows writes inside that checkout and
+its Git metadata, while protecting Git configuration, the pre-push hook and its
+policy, and agent configuration. The OS sandbox stays enabled. Before a model
+run, a disposable installed-Codex probe must prove Git metadata writes and
+write denial for the pre-push hook, Git/guard configuration, and paths outside
+the checkout. Existing protected files are opened without truncation or data
+writes; an incompatible CLI stops before model spend.
+`LANE_CODEX_EXTRA_FLAGS` cannot replace this permission profile.
+
+Set `LANE_PYTHON` to the supported Python environment with the repository's test
+dependencies installed. An explicit runtime must be Python 3.12 or newer; otherwise
+the runner selects a supported version from its path. Validation and provider
+`python`/`python3` commands use that same executable through checkout-local shims,
+and temporary files stay inside the dedicated checkout. Claude's bounded test
+allowlist includes those Python commands and `scripts/dev-python`; a denied test
+is recorded as an execution limitation, never as an implementation verdict.
+
+`owner_surface.lane_runner_builders` selects the local execution lanes when
+`--builders` is omitted. All configured builder identities still contribute
+handoff source prefixes and provenance, so a `devin/` source is recognized even
+when only Codex and Claude execution is enabled. For this repository, regenerate
+`tools/lanes/run_mac_lane.sh` with `scripts/sync_lane_runner.py` after canonical
+configuration/template edits. Its `--check` mode and the unit suite detect drift
+from the generated runner; source and packaged templates must agree.
 
 ## Keychain And Signing Notes
 

@@ -139,6 +139,8 @@ class Session:
     state: str
     reason: str = ""
     structured_output: dict[str, Any] | None = field(default=None, repr=False)
+    # Independent of result readiness, status_detail, or archival metadata.
+    writer_state: str = "unknown"
 
 
 def normalize_session(data: Mapping[str, Any], session_id: str = "") -> Session:
@@ -187,7 +189,10 @@ def normalize_session(data: Mapping[str, Any], session_id: str = "") -> Session:
         state = "complete"
     else:
         state = {"new": "pending", "claimed": "pending", "resuming": "running"}.get(status, status)
-    return Session(sid, state, reason, data.get("structured_output"))
+    writer_state = {"exit": "terminated", "suspended": "suspended"}.get(status)
+    if writer_state is None:
+        writer_state = "unknown" if status == "error" else "running"
+    return Session(sid, state, reason, data.get("structured_output"), writer_state)
 
 
 @dataclass(frozen=True)

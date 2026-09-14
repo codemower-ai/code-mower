@@ -166,6 +166,7 @@ class DevinReadinessFindingTests(unittest.TestCase):
                 "provider.devin.selection",
                 "provider.devin.capabilities",
                 "provider.devin.local_cli",
+                "provider.devin.role_eligibility",
                 "provider.devin.permissions",
                 "provider.devin.lifecycle",
             ],

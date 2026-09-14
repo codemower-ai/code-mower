@@ -190,9 +190,10 @@ class DevinCapabilityTests(unittest.TestCase):
         source = config.load_config(STARTER)
         source["lanes"]["devin"] = lane
         self.assertTrue(any("Legacy Devin" in issue.message for issue in config.validate_config(source)))
-        # Explicit repository promotion is preserved; selection never grants it.
+        # Product/transport declarations are not independently reviewed qualification.
         lane["transport"] = "devin_api_v3"
-        self.assertTrue(normalize_lane("devin", lane)["merge_authority"])
+        with self.assertRaisesRegex(config.ConfigError, "cannot act as reviewer"):
+            normalize_lane("devin", lane)
 
     def test_contradictory_declarations_and_forged_capabilities_fail(self):
         original = participants.reference_review_config("devin_cli")
@@ -233,11 +234,9 @@ class DevinCapabilityTests(unittest.TestCase):
                 self.assertEqual(expected == "devin_api_v3", "context=agent_handoff" in rendered)
 
     def test_hosted_transport_cannot_coordinate(self):
-        with self.assertRaisesRegex(config.ConfigError, "cannot coordinate"):
-            session.build_session(repo="owner/repo", host="devin_api_v3", selected=("devin",), config={})
-        brief = session.build_session(repo="owner/repo", host="devin_cli", selected=("devin",), config={})
-        self.assertEqual(brief["host"], "devin")
-        self.assertEqual(brief["host_transport"], "devin_cli")
+        for transport in ("devin_api_v3", "devin_cli"):
+            with self.assertRaisesRegex(config.ConfigError, "cannot act as orchestrator"):
+                session.build_session(repo="owner/repo", host=transport, selected=("devin",), config={})
 
     def test_configured_transport_and_cli_alias_survive_generated_setup(self):
         source = config.load_config(STARTER)

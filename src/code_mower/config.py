@@ -592,6 +592,12 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
     owner_surface = config.get("owner_surface")
     if owner_surface is not None:
         owner_surface_map = _as_mapping(owner_surface, "owner_surface", issues)
+        if "lane_runner_builders" in owner_surface_map:
+            builders = owner_surface_map["lane_runner_builders"]
+            if (not isinstance(builders, list) or not builders
+                    or any(not isinstance(item, str) or item not in {"codex", "claude", "devin"} for item in builders)
+                    or len(set(builders)) != len(builders)):
+                issues.append(ConfigIssue("owner_surface.lane_runner_builders", "must select unique local builder lanes"))
         for key in (
             "dispatch_token_env",
             "dispatch_token_expires_var",
@@ -745,7 +751,7 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
             issues.append(ConfigIssue(f"{path}.driver", f"must be one of {sorted(ALLOWED_DRIVERS)}"))
         _require_string(lane_map.get("provider"), f"{path}.provider", issues)
         try:
-            lane_transport(lane_id, lane_map)
+            lane_transport(lane_id, lane_map, config=config)
         except ConfigError as exc:
             issues.append(ConfigIssue(path, str(exc)))
         if lane_map.get("trailer_lane") is not None:

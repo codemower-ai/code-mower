@@ -6,6 +6,9 @@ import sys
 from pathlib import Path
 
 from .context_contract import ContextError
+from .config import load_config
+from .role_eligibility import require_builder
+from .yaml_subset import ConfigError
 from .devin_sessions import DevinApiError, DevinClient
 from .remote_session import (
     SCHEMA, DevinProvider, FakeProvider, RemoteError, RemoteSessions, default_root,
@@ -26,6 +29,9 @@ def register(sub):
         mode.add_argument("--dry-run", action="store_true", help="no provider or state access")
         if command in {"dispatch", "message"}:
             parser.add_argument("--input-file", type=Path, help="private UTF-8 task/message file")
+            parser.add_argument("--config", type=Path, help="trusted repository config required for live Devin builder work")
+            parser.add_argument("--runtime-readiness", choices=("ready", "unchecked", "unavailable"),
+                                default="unchecked", help="trusted runtime assessment for live Devin builder work")
         if command == "dispatch":
             parser.add_argument("--repo", required=True)
             parser.add_argument("--max-acu-limit", type=int, default=10)
@@ -42,6 +48,17 @@ def run(args):
             payload = {"schema": SCHEMA, "mode": "dry_run", "operation": args.command,
                        "apply_required": args.command != "status"}
         else:
+            if args.provider == "devin" and args.command in {"dispatch", "message"}:
+                config_path = getattr(args, "config", None)
+                try:
+                    configuration = load_config(config_path) if config_path is not None else None
+                except (ConfigError, OSError, UnicodeError):
+                    raise RemoteError("role_not_eligible: trusted repository configuration is unavailable or invalid") from None
+                try:
+                    require_builder(config=configuration, transport="devin_api_v3",
+                                    runtime=getattr(args, "runtime_readiness", "unchecked"))
+                except ConfigError as exc:
+                    raise RemoteError(f"role_not_eligible: {exc}") from None
             prose = ""
             input_file = getattr(args, "input_file", None)
             if input_file is not None:
