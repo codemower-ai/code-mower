@@ -710,6 +710,167 @@ class BoundedIdenticalReplay(unittest.TestCase):
         self.assertEqual(resolved.reason, "episode_malformed")
 
 
+class AReviewerMustBeAbleToNameItsOwnLane(unittest.TestCase):
+    """A floor, not a default.
+
+    Reviewer independence is decided by naming lanes. A deployment whose
+    contract maps the reviewer's own label or account to a blank string names
+    no lane for it, so it cannot be recognised as the contributor it is -- and
+    the seam admits exactly the reviewer it exists to exclude. `setdefault`
+    left such an entry in place, because the key was present.
+    """
+
+    MINIMAL = {
+        "enabled": True,
+        "labels": {"builder:codex": ""},
+        "authors": {"codex[bot]": ""},
+    }
+
+    def _admit(self, lane, identity, *, author="codex[bot]",
+               labels=("builder:codex",)):
+        from code_mower import codex_audit_pr
+
+        with mock.patch.dict(
+            "os.environ",
+            {reviewer_lineage.AUTHOR_EXCLUSION_ENV: json.dumps(identity)},
+        ):
+            return codex_audit_pr._require_independent_review(
+                lane, REPO, PR, pr_meta(author=author, labels=labels), TAKEN,
+                authorities=(), fetch_comments=lambda: [],
+            )
+
+    def test_a_blank_own_label_and_account_still_exclude_codex(self):
+        with self.assertRaises(RuntimeError) as raised:
+            self._admit("codex", self.MINIMAL)
+        self.assertIn("contributor_not_independent", str(raised.exception))
+
+    def test_an_unrelated_reviewer_is_unaffected_by_its_own_blank_entry(self):
+        """Only the reviewer's own lane is floored; Claude still reviews."""
+
+        decision = self._admit("claude", self.MINIMAL)
+        self.assertTrue(decision["admitted"])
+
+    def test_a_missing_contract_still_excludes_the_reviewer(self):
+        with self.assertRaises(RuntimeError) as raised:
+            self._admit("codex", {"enabled": False, "labels": {}, "authors": {}})
+        self.assertIn("contributor_not_independent", str(raised.exception))
+
+    def test_an_invalid_own_mapping_is_overwritten_not_preserved(self):
+        for invalid in (None, 0, [], {}, "   "):
+            with self.subTest(invalid=invalid):
+                identity = {
+                    "enabled": True,
+                    "labels": {"builder:codex": invalid},
+                    "authors": {"codex[bot]": invalid},
+                }
+                with self.assertRaises(RuntimeError) as raised:
+                    self._admit("codex", identity)
+                self.assertIn("contributor_not_independent", str(raised.exception))
+
+    def test_a_conflicting_own_label_refuses_before_the_provider_runs(self):
+        identity = {
+            "enabled": True,
+            "labels": {"builder:codex": "claude"},
+            "authors": {"codex[bot]": "codex"},
+        }
+        with self.assertRaises(reviewer_lineage.ReviewerIdentityInvalid) as raised:
+            self._admit("codex", identity)
+        self.assertIn("reviewer_identity_invalid", str(raised.exception))
+
+    def test_a_conflicting_own_account_refuses_before_the_provider_runs(self):
+        identity = {
+            "enabled": True,
+            "labels": {"builder:codex": "codex"},
+            "authors": {"codex[bot]": "devin"},
+        }
+        with self.assertRaises(reviewer_lineage.ReviewerIdentityInvalid):
+            self._admit("codex", identity)
+
+    def test_a_disabled_contract_with_a_conflict_still_refuses(self):
+        """Disabling the contract does not make a misnamed own lane safe."""
+
+        identity = {
+            "enabled": False,
+            "labels": {"builder:codex": "claude"},
+            "authors": {},
+        }
+        with self.assertRaises(reviewer_lineage.ReviewerIdentityInvalid):
+            self._admit("codex", identity)
+
+
+class ConfiguredBranchIdentityIsCounted(unittest.TestCase):
+    """`branch_prefixes` was rendered into the contract and then ignored.
+
+    A `codex/` branch carrying a `builder:claude` label is two configured
+    signals disagreeing about who wrote the diff. Resolving it to a sole
+    Claude writer admits Codex to review its own work.
+    """
+
+    CONFIG = {
+        "enabled": True,
+        "labels": {"builder:claude": "claude", "builder:codex": "codex"},
+        "authors": {"claude[bot]": "claude", "codex[bot]": "codex"},
+        "branch_prefixes": {"claude/": "claude", "codex/": "codex"},
+        "require_verified_lineage": True,
+    }
+    UNCONFIGURED = {
+        "enabled": True,
+        "labels": {"builder:claude": "claude", "builder:codex": "codex"},
+        "authors": {},
+    }
+
+    def _gate(self, *, branch, labels, config=None, episodes=()):
+        return resolve_builder_lineage(
+            labels=list(labels),
+            author="a-human",
+            config=config or self.CONFIG,
+            repo=REPO,
+            pr_number=PR,
+            branch=branch,
+            head_sha=TAKEN,
+            episodes=episodes,
+        )
+
+    def test_a_branch_and_label_disagreement_requires_verified_lineage(self):
+        resolved = self._gate(branch="codex/topic", labels=["builder:claude"])
+        self.assertEqual(resolved.status, "conflict")
+        self.assertEqual(resolved.reason, "conflicting_builder_identity")
+
+    def test_a_matching_branch_and_label_stay_ordinary(self):
+        resolved = self._gate(branch="claude/topic", labels=["builder:claude"])
+        self.assertEqual(resolved.status, "resolved")
+        self.assertEqual(resolved.current_writer, "claude")
+
+    def test_an_unconfigured_deployment_keeps_its_old_answer(self):
+        resolved = self._gate(
+            branch="codex/topic", labels=["builder:claude"], config=self.UNCONFIGURED
+        )
+        self.assertEqual(resolved.status, "resolved")
+        self.assertEqual(resolved.current_writer, "claude")
+
+    def test_a_recorded_takeover_is_still_accepted_over_the_branch(self):
+        """Verified episodes decide; the branch never invents a takeover."""
+
+        resolved = self._gate(
+            branch=BRANCH, labels=["builder:codex"], episodes=(takeover_episode(),)
+        )
+        self.assertEqual(resolved.status, "resolved")
+        self.assertEqual(resolved.current_writer, "codex")
+
+    def test_the_wrapper_refuses_the_disagreement_rather_than_admitting(self):
+        decision = reviewer_lineage.reviewer_admission(
+            "codex",
+            repo=REPO,
+            pr_number=PR,
+            pr_meta=pr_meta(author="a-human", labels=("builder:claude",),
+                            branch="codex/topic"),
+            head_sha=TAKEN,
+            episodes=(),
+            identity=self.CONFIG,
+        )
+        self.assertFalse(decision["admitted"])
+
+
 class ATrustedMarkerMustParseOrSaySo(unittest.TestCase):
     """A broken marker is unreadable evidence, never absent evidence.
 

@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from code_mower import builder_lineage, lane_delivery, lane_handoff  # noqa: E402
 from code_mower import saas_reviewer_labeler as labeler  # noqa: E402
+from code_mower.provider_runners import lineage as reviewer_lineage  # noqa: E402
 
 from test_builder_lineage_consumers import (  # noqa: E402
     BRANCH,
@@ -623,6 +624,126 @@ class GeneratedProvenanceJobCarriesTheAuthorityContract(unittest.TestCase):
             comments=[marker_comment(OUTSIDER)],
         )
         self.assertNotEqual(payload.get("executor"), "chatgpt-codex-connector")
+
+
+INVALID_COMMENT_RESPONSES = (
+    None,
+    False,
+    {},
+    {"comments": [{"user": {"login": AUTHORITY}, "body": "hi"}]},
+    [{"user": {"login": AUTHORITY}, "body": "hi"}, "not a comment"],
+)
+
+
+class ASuccessfulButInvalidCommentReadIsNotAnEmptyHistory(unittest.TestCase):
+    """`None`, `False`, `{}` and a list with a non-object are not "no comments".
+
+    Each is a *successful* read that carries no readable history. Normalising
+    it away -- with `or []`, or by filtering non-mappings out -- reports "there
+    is nothing here" for "this could not be read", and the takeover marker is
+    in the newest part of exactly the history that got dropped.
+    """
+
+    def test_the_saas_labeler_mutates_no_label_on_an_invalid_page(self):
+        applied = []
+        event = {
+            "action": "completed",
+            "check_run": {
+                "status": "completed",
+                "conclusion": "success",
+                "name": "greptile review",
+                "app": {"slug": "greptile-apps"},
+                "head_sha": TAKEN,
+                "pull_requests": [{"number": PR}],
+            },
+        }
+        for response in INVALID_COMMENT_RESPONSES:
+            with self.subTest(response=response):
+                applied.clear()
+
+                def api(method, path, **_kwargs):
+                    if "/comments" in path:
+                        return response
+                    if re.search(r"/pulls/\d+$", path):
+                        return _pull_request()
+                    if "/commits/" in path:
+                        return [{"number": PR}]
+                    return []
+
+                root = git_free_tempdir(self, "code-mower-invalid-comments-")
+                event_path = Path(root) / "event.json"
+                event_path.write_text(json.dumps(event), encoding="utf-8")
+                env = {
+                    "GITHUB_EVENT_PATH": str(event_path),
+                    "GITHUB_REPOSITORY": REPO,
+                    "GITHUB_EVENT_NAME": "check_run",
+                    "GREPTILE_LABEL_TOKEN": "t",
+                    "GITHUB_TOKEN": "t",
+                    "CODE_MOWER_DECISION_AUTHORITIES": AUTHORITY,
+                    "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+                    "DRY_RUN": "",
+                }
+                with mock.patch.dict(os.environ, env, clear=False), \
+                        mock.patch.object(
+                            labeler, "github_request_with_fallback", api), \
+                        mock.patch(
+                            "code_mower.audit_labeler_lib."
+                            "github_request_with_fallback", api), \
+                        mock.patch.object(
+                            labeler, "_apply_or_log",
+                            lambda *a, **k: applied.append(a)), \
+                        mock.patch("sys.stdout", new_callable=_Capture):
+                    code = labeler.main(["--adapter", "greptile"])
+                self.assertEqual(code, 0)
+                self.assertEqual(applied, [], "no label may move on an unread history")
+
+    def test_a_genuinely_empty_page_stays_ordinary(self):
+        def api(method, path, **_kwargs):
+            if "/comments" in path:
+                return []
+            if re.search(r"/pulls/\d+$", path):
+                return _pull_request()
+            return []
+
+        with mock.patch.object(labeler, "github_request_with_fallback", api):
+            self.assertEqual(
+                labeler.fetch_issue_comments(REPO, PR, tokens=(), page_cap=5), []
+            )
+
+    def test_the_direct_wrapper_surfaces_an_invalid_read_as_unreadable(self):
+        for response in INVALID_COMMENT_RESPONSES:
+            with self.subTest(response=response):
+                with self.assertRaises(builder_lineage.LineageError):
+                    reviewer_lineage.reviewer_evidence(
+                        REPO, PR,
+                        authorities=(AUTHORITY,),
+                        fetch_comments=lambda: response,
+                        state_dir=git_free_tempdir(self, "code-mower-invalid-"),
+                    )
+
+    def test_the_direct_wrapper_accepts_a_genuinely_empty_history(self):
+        episodes = reviewer_lineage.reviewer_evidence(
+            REPO, PR,
+            authorities=(AUTHORITY,),
+            fetch_comments=lambda: [],
+            state_dir=git_free_tempdir(self, "code-mower-empty-"),
+        )
+        self.assertEqual(episodes, ())
+
+    def test_no_provider_is_launched_on_an_invalid_read(self):
+        from code_mower import claude_audit_pr
+
+        with self.assertRaises(RuntimeError) as raised:
+            claude_audit_pr._require_independent_review(
+                "claude", REPO, PR,
+                {"user": {"login": "a-human"},
+                 "head": {"ref": BRANCH, "sha": TAKEN},
+                 "labels": []},
+                TAKEN,
+                authorities=(AUTHORITY,),
+                fetch_comments=lambda: {},
+            )
+        self.assertIn("lineage_unreadable", str(raised.exception))
 
 
 class TheGeneratedJobReadsTheWholeCommentHistory(unittest.TestCase):

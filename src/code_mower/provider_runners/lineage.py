@@ -124,10 +124,41 @@ def identity_with_lane_floor(identity: Mapping[str, Any] | None, lane: str) -> M
     merged_labels = dict(labels) if isinstance(labels, Mapping) else {}
     merged_authors = dict(authors) if isinstance(authors, Mapping) else {}
     if reviewer:
-        merged_labels.setdefault(f"builder:{reviewer}", reviewer)
+        # A floor, not a default. ``setdefault`` leaves a present-but-useless
+        # mapping alone -- `{"builder:codex": ""}` keeps naming no lane -- and
+        # a lane that cannot be named cannot be recognised as a contributor,
+        # which admits exactly the reviewer this seam exists to exclude. The
+        # reviewer's own canonical label and accounts therefore *must* resolve
+        # to its own lane: a blank or malformed entry is overwritten, and one
+        # that names a different lane is a configuration error the reviewer
+        # refuses on rather than silently correcting, because the deployment
+        # believes something about its own identity that is not true.
+        _claim_own_identity(merged_labels, f"builder:{reviewer}", reviewer, "label")
         for login in LANE_ACCOUNT_FLOOR.get(reviewer, ()):
-            merged_authors.setdefault(login, reviewer)
+            _claim_own_identity(merged_authors, login, reviewer, "account")
     return {"enabled": True, "labels": merged_labels, "authors": merged_authors}
+
+
+class ReviewerIdentityInvalid(RuntimeError):
+    """The deployment's identity contract misnames the reviewer's own lane."""
+
+
+def _claim_own_identity(
+    mapping: dict, key: str, reviewer: str, kind: str
+) -> None:
+    """Make ``key`` name ``reviewer``, or refuse if it already names another."""
+
+    present = mapping.get(key)
+    named = str(present).strip().lower() if isinstance(present, str) else ""
+    if named and named != reviewer:
+        raise ReviewerIdentityInvalid(
+            f"reviewer_identity_invalid: the configured {kind} `{key}` names "
+            f"lane `{named}`, but it is the {reviewer} lane's own {kind}. "
+            f"Correct CODE_MOWER_AUTHOR_EXCLUSION_JSON before running a "
+            f"{reviewer} review; a reviewer that cannot name its own lane "
+            f"cannot be excluded from its own contribution."
+        )
+    mapping[key] = reviewer
 
 
 def recorded_episodes(repo: str, pr_number: Any, state_dir: Any = None) -> tuple:
@@ -251,7 +282,15 @@ def reviewer_evidence(
                 f"published builder lineage for {repo}#{pr_number} could not be "
                 f"read: {type(exc).__name__}"
             ) from None
-        comments = [item for item in (fetched or ()) if isinstance(item, Mapping)]
+        # A successful fetch that is not a list of comment objects has not
+        # answered the question. Filtering it down to what happens to be a
+        # Mapping -- or treating None or {} as "no comments" -- reports an
+        # unreadable history as an absent one.
+        from ..builder_lineage import require_comment_list
+
+        comments = require_comment_list(
+            fetched, what=f"published builder lineage for {repo}#{pr_number}"
+        )
     return trusted_episodes(
         repo,
         pr_number,
@@ -284,8 +323,11 @@ def pr_lineage(
     ]
     author = str(((pr_meta.get("user") or {}).get("login")) or "")
     branch = str(((pr_meta.get("head") or {}).get("ref")) or "")
+    from ..builder_lineage import branch_lane_from_identity
+
+    contract = identity if identity is not None else load_identity()
     opener_lane, label_lanes = lanes_from_identity(
-        identity=identity if identity is not None else load_identity(),
+        identity=contract,
         labels=labels,
         author=author,
     )
@@ -297,6 +339,9 @@ def pr_lineage(
         episodes=episodes,
         opener_lane=opener_lane,
         label_lanes=label_lanes,
+        # The wrapper decides admission from the same contract the gate does,
+        # so a configured branch identity has to reach it here too.
+        branch_lane=branch_lane_from_identity(identity=contract, branch=branch),
     )
 
 

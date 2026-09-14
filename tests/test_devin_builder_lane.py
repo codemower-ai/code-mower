@@ -677,6 +677,119 @@ exit 0
             ["lineage", "--label", "builder:devin", "--label", "needs-codex-audit"],
         )
 
+    def test_devin_lane_full_runner_refuses_when_only_the_label_read_fails(
+        self,
+    ) -> None:
+        """The whole generated runner, with only the labels lookup failing.
+
+        The fragment-level case proves the guard refuses; this proves the
+        *ordering* -- that the generated runner reaches the guard before it
+        publishes a lineage comment or edits a label, so a failed label read
+        cannot leave a pull request carrying two builder labels.
+        """
+
+        # The lane's private context store refuses to live inside a Git
+        # repository, and this runtime's TMPDIR is inside this checkout. That
+        # is a real product constraint, so the fixture is placed outside one
+        # rather than the constraint being relaxed.
+        base = Path(tempfile.gettempdir()).resolve()
+        if any((parent / ".git").exists() for parent in (base, *base.parents)):
+            base = Path("/tmp").resolve()
+        if any((parent / ".git").exists() for parent in (base, *base.parents)):
+            self.skipTest("no Git-free temporary directory is available here")
+        tmp = tempfile.mkdtemp(prefix="code-mower-full-runner-", dir=str(base))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        if True:
+            root = Path(tmp).resolve()
+            output_dir = root / "generated"
+            runner = self._generated_runner(output_dir)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            work_root = root / "work"
+            work = work_root / "devin" / "owner__repo"
+            work.joinpath(".git", "hooks").mkdir(parents=True)
+            # Fail only the fresh label lookup; everything else answers.
+            (root / _LABEL_LOOKUP_FAILS_MARKER).write_text("", encoding="utf-8")
+
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                _FAKE_GH_DELIVERY_HEADER
+                + """if [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:devin"* ]]; then
+  printf '%s\\n' '[{"number":77,"labels":[{"name":"builder:devin"}],"updatedAt":"2026-01-01T00:00:00Z","headRepository":{"nameWithOwner":"owner/repo"},"headRefName":"devin/issue-12","author":{"login":"devin-ai-integration[bot]"}}]'
+elif [ "$cmd" = "issue list" ]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--search"* ]]; then
+  printf '%s\\n' '[]'
+elif [ "$cmd" = "repo view" ]; then
+  printf 'main\\n'
+elif [ "$cmd" = "pr edit" ]; then
+  printf 'label mutation must not happen\\n' >&2
+  exit 9
+elif [ "$cmd" = "issue view" ]; then
+  if [[ "$args" == *"--json comments"* ]]; then
+    printf '%s\\n' '{"comments":[{"author":{"login":"owner"},"createdAt":"2026-01-01T00:00:00Z","body":"# Work Order: Trusted task\\n\\nFix it."}]}'
+  else
+    printf '%s\\n' '{"title":"Issue 12","body":"Body","labels":[{"name":"tier:R"}],"url":"https://github.com/owner/repo/issues/12","author":{"login":"owner"}}'
+  fi
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            (bin_dir / "git").write_text(_FAKE_GIT, encoding="utf-8")
+            (bin_dir / "git").chmod(0o755)
+            (bin_dir / "devin").write_text(_FAKE_DEVIN_DELIVERS, encoding="utf-8")
+            (bin_dir / "devin").chmod(0o755)
+            (bin_dir / "code-mower").write_text(
+                "#!/usr/bin/env bash\nexit 0\n", encoding="utf-8"
+            )
+            (bin_dir / "code-mower").chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    str(runner), "--lane", "devin", "--repo", "owner/repo",
+                    "--max-minutes", "1",
+                ],
+                cwd=output_dir,
+                env={
+                    **os.environ, **_lane_delivery_env(),
+                    "HOME": str(root),
+                    "LANE_WORK_ROOT": str(work_root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                },
+                text=True,
+                capture_output=True,
+            )
+            invoked = (root / _GH_INVOCATION_LOG).read_text(encoding="utf-8")
+
+        if "nothing to do" in completed.stdout:
+            # INCOMPLETE: this fixture selects no pull-request unit, so the run
+            # never reaches the reconciliation block and this case proves
+            # nothing about ordering. The PR-selection path needs the fix-round
+            # inputs (audit verdict labels and a matching runner comment) that
+            # the issue-kind fixtures above do not provide. Left in place, and
+            # reported as unfinished, rather than passing on a run that never
+            # exercised the boundary.
+            self.skipTest(
+                "fixture does not yet reach a pull-request unit; the ordering "
+                "boundary is unproven by this case"
+            )
+        self.assertNotEqual(completed.returncode, 0, completed.stdout)
+        self.assertIn(
+            "refusing to publish builder lineage", completed.stderr, completed.stderr
+        )
+        # Nothing was published and nothing was relabelled: the runner reached
+        # the required read before either write.
+        for forbidden in ("pr edit", "pr comment"):
+            self.assertNotIn(
+                f"\n{forbidden} ", f"\n{invoked}", f"the runner ran `gh {forbidden}`"
+            )
+
     def test_devin_lane_warns_but_still_succeeds_when_builder_record_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

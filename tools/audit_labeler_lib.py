@@ -31,6 +31,7 @@ if __package__:
             Lineage,
             LineageError,
             episodes_from_comment_body,
+            branch_lane_from_identity,
             lanes_from_identity,
             resolve_identity_only,
             resolve_lineage,
@@ -43,6 +44,7 @@ if __package__:
             Lineage,
             LineageError,
             episodes_from_comment_body,
+            branch_lane_from_identity,
             lanes_from_identity,
             resolve_identity_only,
             resolve_lineage,
@@ -55,6 +57,7 @@ else:  # pragma: no cover - direct helper execution
         Lineage,
         LineageError,
         episodes_from_comment_body,
+        branch_lane_from_identity,
         lanes_from_identity,
         resolve_identity_only,
         resolve_lineage,
@@ -246,8 +249,17 @@ def resolve_builder_lineage(
     opener_lane, label_lanes = lanes_from_identity(
         identity=config, labels=labels, author=author
     )
+    # The configured branch identity is a signal the deployment asked to be
+    # counted; rendering it and then resolving without it is how a `codex/`
+    # branch labelled `builder:claude` resolved to a sole Claude writer and
+    # admitted Codex to review its own diff.
+    branch_lane = branch_lane_from_identity(identity=config, branch=branch)
     if not (head_sha and repo and pr_number):
-        return resolve_identity_only(opener_lane=opener_lane, label_lanes=label_lanes)
+        return resolve_identity_only(
+            opener_lane=opener_lane,
+            label_lanes=label_lanes,
+            branch_lane=branch_lane,
+        )
     return resolve_lineage(
         repo=repo,
         pr_number=pr_number,
@@ -256,6 +268,7 @@ def resolve_builder_lineage(
         episodes=episodes,
         opener_lane=opener_lane,
         label_lanes=label_lanes,
+        branch_lane=branch_lane,
     )
 
 

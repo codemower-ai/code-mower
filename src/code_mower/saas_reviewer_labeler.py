@@ -181,15 +181,34 @@ def fetch_issue_comments(
     tokens: Sequence[GitHubToken],
     page_cap: int,
 ) -> list[dict[str, Any]]:
-    """Fetch issue/PR comments with a safety cap."""
+    """Fetch issue/PR comments with a safety cap.
+
+    A page that comes back successfully but is not a list of comment objects
+    is not an empty page. ``None``, ``False``, a bare object and a list holding
+    a non-object were all collapsed to "no more comments", which ends the read
+    early and reports whatever was gathered so far as the whole history -- and
+    the marker proving a takeover is in the newest part. A genuinely empty list
+    is still the ordinary end of the history.
+    """
+
+    path = f"/repos/{repo}/issues/{issue_number}/comments"
     all_comments: list[dict[str, Any]] = []
     page = 1
     while page <= page_cap:
         chunk = github_request_with_fallback(
             "GET",
-            f"/repos/{repo}/issues/{issue_number}/comments?per_page=100&page={page}",
+            f"{path}?per_page=100&page={page}",
             tokens=tokens,
-        ) or []
+        )
+        if not isinstance(chunk, list) or any(
+            not isinstance(item, dict) for item in chunk
+        ):
+            raise GitHubRequestError(
+                "GET",
+                f"{path}?per_page=100&page={page}",
+                0,
+                "comment page is not a list of comment objects",
+            )
         if not chunk:
             return all_comments
         all_comments.extend(chunk)

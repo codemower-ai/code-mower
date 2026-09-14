@@ -508,6 +508,7 @@ def resolve_lineage(
     episodes: Sequence[Mapping[str, Any] | ContributionEpisode] = (),
     opener_lane: str = "",
     label_lanes: Sequence[str] = (),
+    branch_lane: str = "",
 ) -> Lineage:
     """Resolve who built the diff at ``head_sha``.
 
@@ -567,7 +568,12 @@ def resolve_lineage(
         seen[episode.sequence] = episode
 
     if not seen:
-        return resolve_identity_only(opener_lane=opener, label_lanes=labels, head_sha=head)
+        return resolve_identity_only(
+            opener_lane=opener,
+            label_lanes=labels,
+            head_sha=head,
+            branch_lane=branch_lane,
+        )
 
     ordered = [seen[sequence] for sequence in sorted(seen)]
     if [episode.sequence for episode in ordered] != list(range(1, len(ordered) + 1)):
@@ -625,7 +631,11 @@ def resolve_lineage(
 
 
 def resolve_identity_only(
-    *, opener_lane: str = "", label_lanes: Sequence[str] = (), head_sha: str = ""
+    *,
+    opener_lane: str = "",
+    label_lanes: Sequence[str] = (),
+    head_sha: str = "",
+    branch_lane: str = "",
 ) -> Lineage:
     """The ordinary single-builder case, and the #959 shape without evidence.
 
@@ -633,12 +643,25 @@ def resolve_identity_only(
     one lane opened the PR and still holds the only builder label. Any other
     combination is the inconsistency this issue exists to stop guessing about,
     so it fails closed instead of preferring the opener or the newest label.
+
+    ``branch_lane`` is the deployment's *configured* branch identity, when it
+    configured one. It is a signal of the same weight as the label and the
+    opener, so it joins them as a candidate: a `codex/` branch carrying a
+    `builder:claude` label is two lanes disagreeing about who wrote the diff,
+    and answering "Claude" would admit Codex to review its own work. It can
+    never establish a takeover on its own -- only a recorded episode does that
+    -- it can only refuse to pick a winner.
     """
 
     head = _sha(head_sha)
     opener = _lane(opener_lane)
+    branch = _lane(branch_lane)
     labels = tuple(dict.fromkeys(lane for lane in (_lane(item) for item in label_lanes) if lane))
-    candidates = tuple(dict.fromkeys(([opener] if opener else []) + list(labels)))
+    candidates = tuple(
+        dict.fromkeys(
+            ([opener] if opener else []) + list(labels) + ([branch] if branch else [])
+        )
+    )
     if len(candidates) > 1:
         return _lineage("conflict", "conflicting_builder_identity", head_sha=head)
     if not candidates:
@@ -683,6 +706,55 @@ def lanes_from_identity(
     )
     lowered = {_text(key).lower(): value for key, value in author_map.items()}
     return _lane(lowered.get(_text(author).lower())), label_lanes
+
+
+def require_comment_list(value: Any, *, what: str) -> tuple[Mapping[str, Any], ...]:
+    """A successful comment read must be a complete list of comment objects.
+
+    ``None``, ``False``, a bare object and a list holding a non-object are all
+    *successful* responses that carry no readable history. Normalising them to
+    an empty list -- with ``or ()``, or by filtering non-mappings out -- turns
+    "this could not be read" into "there is nothing here", which is the answer
+    that admits a reviewer onto a diff whose takeover marker was in the part
+    that got dropped. A genuinely empty list is ordinary and stays ordinary.
+    """
+
+    if not isinstance(value, list):
+        raise LineageError(f"{what} did not come back as a list of comments")
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise LineageError(f"{what} contains an entry that is not a comment")
+    return tuple(value)
+
+
+def branch_lane_from_identity(
+    *, identity: Mapping[str, Any] | None, branch: str = ""
+) -> str:
+    """The lane the deployment's configured branch prefixes name, if any.
+
+    ``branch_prefixes`` and ``require_verified_lineage`` are rendered into the
+    identity contract for exactly this question, and were being rendered and
+    then ignored. They are read only together: a deployment that did not ask
+    for verified lineage keeps the ordinary opener/label answer it has always
+    had, and one that did gets its branch identity counted as the signal it
+    configured it to be.
+    """
+
+    if not isinstance(identity, Mapping) or not identity.get("enabled"):
+        return ""
+    if not identity.get("require_verified_lineage"):
+        return ""
+    prefixes = identity.get("branch_prefixes")
+    if not isinstance(prefixes, Mapping):
+        return ""
+    name = _text(branch).lower()
+    if not name:
+        return ""
+    # Longest prefix first, so `codex-review/` cannot be shadowed by `codex-`.
+    for prefix in sorted((_text(key) for key in prefixes), key=len, reverse=True):
+        if prefix and name.startswith(prefix.lower()):
+            return _lane(prefixes.get(prefix))
+    return ""
 
 
 # --- durable metadata-only record -------------------------------------------
