@@ -186,33 +186,65 @@ def _read_lease_result(path: str | Path) -> tuple[str, dict[str, Any] | None]:
     return "read", record
 
 
-def observe_lease(*, start: str | Path | None = None, now: datetime | None = None) -> dict[str, Any]:
-    """Read local display metadata without locks, writes, or authority decisions.
+def observe_lease_record(*, root: str | Path, now: datetime | None = None) -> dict[str, Any]:
+    """Lock-free snapshot of the full lease record for one working-copy root.
 
-    Atomic lease replacement makes a lock-free snapshot sufficient for display.
-    Diagnostic states do not alter the recovery semantics of ``read_lease``.
-    No paths, session identifiers, or raw errors are returned.
+    Unlike :func:`inspect_lease`, this never takes the lease lock and so never
+    creates ``.code-mower/`` or the lock file: it is a pure read. Atomic lease
+    replacement makes the snapshot consistent. The result carries a closed
+    ``state`` (``held``, ``absent``, ``expired``, ``malformed``, or
+    ``unavailable``), the full ``record`` when one could be parsed and its
+    timestamps are valid, and ``expires_at`` normalized to UTC ``Z`` form.
+    Callers that must not follow stale state read twice and compare records.
     """
-    unavailable = {"state": "unavailable", "provider": None, "expires_at": None}
+    result: dict[str, Any] = {"state": "unavailable", "record": None, "expires_at": None}
     try:
-        root = find_working_copy_root(start)
         state, record = _read_lease_result(lease_path(root))
-    except (OSError, SessionLeaseError, RuntimeError):
-        return unavailable
+    except (OSError, RuntimeError):
+        return result
     if record is None:
-        return {**unavailable, "state": state}
+        return {**result, "state": state}
     timestamps = [_parse_timestamp(record[field]) for field in ("acquired_at", "renewed_at", "expires_at")]
     if any(value is None for value in timestamps):
-        return {**unavailable, "state": "malformed"}
+        return {**result, "state": "malformed"}
     try:
         expiry = timestamps[2].astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         state = lease_state(record, now=now)
     except (OverflowError, ValueError):
-        return {**unavailable, "state": "malformed"}
+        return {**result, "state": "malformed"}
+    return {"state": state, "record": dict(record), "expires_at": expiry}
+
+
+def observe_lease(
+    *,
+    start: str | Path | None = None,
+    now: datetime | None = None,
+    repo: str | None = None,
+) -> dict[str, Any]:
+    """Read local display metadata without locks, writes, or authority decisions.
+
+    Atomic lease replacement makes a lock-free snapshot sufficient for display.
+    Diagnostic states do not alter the recovery semantics of ``read_lease``.
+    No paths, session identifiers, or raw errors are returned. When ``repo`` is
+    given, a lease held for a different repository slug is reported as
+    ``other_repository`` with no provider or expiry, so a checkout for one
+    repository never displays its lease as another's.
+    """
+    unavailable = {"state": "unavailable", "provider": None, "expires_at": None}
+    try:
+        root = find_working_copy_root(start)
+    except (OSError, SessionLeaseError, RuntimeError):
+        return unavailable
+    observed = observe_lease_record(root=root, now=now)
+    record = observed["record"]
+    if record is None:
+        return {**unavailable, "state": observed["state"]}
+    if repo is not None and str(record["repo"]).casefold() != repo.casefold():
+        return {**unavailable, "state": "other_repository"}
     return {
-        "state": "active" if state == STATE_HELD else state,
+        "state": "active" if observed["state"] == STATE_HELD else observed["state"],
         "provider": record["orchestrator"],
-        "expires_at": expiry,
+        "expires_at": observed["expires_at"],
     }
 
 

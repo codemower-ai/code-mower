@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping
 
 from . import session_lease
+from .config import ConfigError
 from .context_contract import ContextError, _object, _text, normalize_policy
 from .context_store import ContextStore, default_context_root
 from .participants import PARTICIPANTS, participant_id
@@ -255,17 +256,31 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
 def load_session(path: Path) -> dict[str, Any]:
     """Read the public operating brief needed to locate private state."""
     try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        raise ContextError("saved Code Mower session is unavailable or invalid") from None
+    return parse_session(raw)
+
+
+def parse_session(raw: bytes) -> dict[str, Any]:
+    """Validate already-read brief bytes; callers that open the file themselves use this."""
+    try:
         from .context_store import strict_json
-        value = strict_json(Path(path).read_bytes())
-    except (OSError, ContextError):
+        value = strict_json(raw)
+    except ContextError:
         raise ContextError("saved Code Mower session is unavailable or invalid") from None
     required = {"schema", "id", "repo", "host", "orchestrator", "participants", "lease"}
     if value.get("schema") != "code_mower.session.v1" or not required.issubset(value):
         raise ContextError("saved Code Mower session is unavailable or invalid")
     _session_id(value["id"])
     _repo(value["repo"])
-    participant_id(value["host"])
-    participant_id(value["orchestrator"])
+    for field in ("host", "orchestrator"):
+        if not isinstance(value[field], str):
+            raise ContextError("saved Code Mower session is unavailable or invalid")
+        try:
+            participant_id(value[field])
+        except ConfigError:
+            raise ContextError("saved Code Mower session is unavailable or invalid") from None
     if not isinstance(value["participants"], list):
         raise ContextError("saved Code Mower session is unavailable or invalid")
     return value

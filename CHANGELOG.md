@@ -26,6 +26,11 @@ the first-run default and every new integration stays opt-in.
 - A release-hygiene assertion and `release-readiness` check that fail when the
   committed `code-mower-package-manifest.json` version disagrees with
   `pyproject.toml` and `src/code_mower/__init__.py`.
+- `code-mower session show --current` resolves the checkout's live orchestrator
+  lease to its exact saved brief from any subdirectory, strictly read-only, with
+  bounded nonzero guidance for absent, expired, malformed, missing, mismatched,
+  symlinked, or raced state, and `lanes status` reports the same metadata-only
+  `orchestrator_lease` state, provider, and expiry bound to the requested repo.
 
 ### Fixed
 

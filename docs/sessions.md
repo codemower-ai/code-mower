@@ -82,6 +82,9 @@ explicitly requests a handoff to Claude if the session starts in another tool.
 
 The command writes a local brief under `.code-mower/sessions/` and reports its
 path. `session show PATH` reads it; `session start ... --dry-run` previews it.
+From anywhere inside the checkout, `session show --current` finds the brief the
+live lease names without a filename (see [Find The Current
+Session](#find-the-current-session)).
 This is an agent-coordinated session: the hosting agent drives work through
 its available tools, manual handoffs, or Code Mower's existing dispatcher.
 Creating the brief does not launch provider processes, authenticate tools, or
@@ -194,11 +197,49 @@ Both delivery commands write private content to stdout. Session status remains
 redacted and has closed states for pending or uncertain publication, expired
 evidence, failed authorization, attached input, and retrieved feedback.
 
+## Find The Current Session
+
+A cold operator in a checkout does not need to know a session filename to ask
+"is there an active local Code Mower session here?":
+
+```bash
+code-mower session show --current
+code-mower session lease show
+code-mower lanes status --repo OWNER/REPO
+```
+
+`session show --current` resolves the working copy's live orchestrator lease to
+its saved brief and prints that brief exactly as `session show SESSION_FILE`
+would. It works from the repository root or any subdirectory and is strictly
+read-only: it takes no lock, creates no directory, and renews nothing. It looks
+only at `.code-mower/sessions/<lease session id>.json` (or the same filename
+under an explicit `--state-dir DIR` for a brief that was saved elsewhere); it
+never picks a file by modification time or scans another directory. The brief
+must match the lease's repository, session id, and orchestrator, must not be a
+symlink or escape the state directory, and the lease is re-read after the brief
+so a takeover or expiry during the read is rejected.
+
+The command exits zero only for one active, exact-matching brief. No lease, an
+expired or malformed lease, a missing or mismatched brief, a symlinked brief, or
+a lease that changed mid-read exit nonzero with one line of guidance -- for
+example, a live lease whose brief is not in the default directory asks for the
+session file or its `--state-dir`. `--json` also prints a closed
+`code_mower.currentSession.v1` diagnostic with the lease's state, provider, and
+expiry and no session id or local path. `session show SESSION_FILE` is
+unchanged; pass either the file or `--current`, not both.
+
+`lanes status` includes the same metadata-only `orchestrator_lease` telemetry
+(`state`, `provider`, `expires_at`) the Board shows, bound to the requested
+`--repo`: a checkout leased for a different repository reports
+`other_repository`. The remote-participant `session status ALIAS` command is
+unrelated; it reports hosted session lifecycle, not the local checkout.
+
 ## Single Orchestrator Lease
 
 `session start` takes a local lease before it saves anything, so one repository
 working copy has one mutating orchestrator at a time. The lease lives at
-`.code-mower/sessions/orchestrator-lease.json`, is written under a file lock
+`.code-mower/orchestrator-lease.json` at the working-copy root (not under
+`.code-mower/sessions/`, which only holds briefs), is written under a file lock
 through a temporary file, and holds coordination metadata only: the repository
 slug, the normalized orchestrator id, the session id, the acquired/renewed/
 expires UTC timestamps, and a schema version. It is never uploaded or exported.
@@ -217,7 +258,8 @@ error: another session already holds the mutating orchestrator lease for owner/r
   read-only briefs need no lease: add --dry-run or --no-lease to session start
 ```
 
-Manage the lease directly when a session ends or stalls:
+Manage the lease directly when a session ends or stalls (`session lease show`
+reports the lease alone; `session show --current` resolves it to its brief):
 
 ```bash
 code-mower session lease show

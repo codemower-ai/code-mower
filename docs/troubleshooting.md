@@ -60,6 +60,35 @@ status-code fields such as `api_error_status`, `status_code`, or `http_status`.
 Doctor only reports sanitized auth status codes (`401` or `403`), never raw
 provider-supplied status text.
 
+## Which Local Session Is Active In This Checkout?
+
+You do not need the session filename. From anywhere inside the checkout:
+
+```bash
+code-mower session show --current
+code-mower session lease show
+code-mower lanes status --repo OWNER/REPO
+```
+
+`session show --current` prints the brief the live orchestrator lease names,
+read from `.code-mower/sessions/<lease session id>.json`, and exits zero only
+when that brief is present, valid, and matches the lease's repository, session
+id, and orchestrator. It is read-only and never scans for or guesses a file.
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `no mutating orchestrator lease is held in this working copy` | no `session start` has run here, or the lease was released | start a session, or pass the brief path to `session show SESSION_FILE` |
+| `the orchestrator lease in this working copy has expired` | the last orchestrator stopped renewing | the next `session start` takes the lease over; `session lease show` reports the stale holder |
+| `is not a lease this version can read` / `could not be read` | the lease file is malformed or unreadable | inspect it with `session lease show` and check permissions |
+| `its saved brief was not found` | the brief was saved outside `.code-mower/sessions/` or removed | rerun with `--state-dir DIR`, or pass the exact `SESSION_FILE` |
+| `records a different session, repository, or orchestrator` / `is a symlink or escapes the state directory` | the file at the lease's path belongs to another session, or was replaced by a link | inspect the lease with `session lease show`; only an exact-matching regular file is presented as current |
+| `the orchestrator lease changed while the saved brief was being read` | another orchestrator took over or the lease expired mid-read | rerun; the command never presents a raced brief |
+
+The lease file itself is `.code-mower/orchestrator-lease.json` at the
+working-copy root. `lanes status` reports the same bounded `orchestrator_lease`
+state, provider, and expiry without session ids or local paths, and
+`other_repository` means the checkout is leased for a different `--repo`.
+
 ## Devin Is Selected But Not Ready
 
 Devin is optional. Claude + Codex stay the default pair, and a repository that

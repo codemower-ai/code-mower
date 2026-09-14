@@ -322,6 +322,7 @@ PACKAGE_FILES = (
     ("src/code_mower/slack_contract.py", "src/code_mower/slack_contract.py", "core"),
     ("src/code_mower/slack_contract.schema.json", "src/code_mower/slack_contract.schema.json", "schema"),
     ("src/code_mower/session_lease.py", "src/code_mower/session_lease.py", "core"),
+    ("src/code_mower/session_current.py", "src/code_mower/session_current.py", "core"),
     ("src/code_mower/lane_status.py", "src/code_mower/lane_status.py", "core"),
     ("tools/code_mower_package.py", "src/code_mower/package.py", "core"),
     ("tools/code_mower_package_content.py", "src/code_mower/package_content.py", "core"),
