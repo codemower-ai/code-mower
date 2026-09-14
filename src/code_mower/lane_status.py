@@ -313,7 +313,6 @@ def builder_lineage_for(
     """
 
     from . import builder_lineage as lineage_module
-    from . import lane_handoff
     from .decisions import decision_authorities_from_env
     from .provider_runners.lineage import load_identity, trusted_episodes
 

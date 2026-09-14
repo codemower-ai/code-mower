@@ -437,10 +437,19 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   context_required=context_required,
               )
 
-          # Contribution lineage, not one label and one author. Episodes are
-          # read only from comments this gate already trusts, so publishing a
-          # marker is a transport and never an authorization. The resolver is
-          # the same one the runner and the reviewer wrappers use.
+          # Contribution lineage, not one label and one author. The hidden
+          # marker is a transport and never an authorization, so episodes are
+          # read only from the repository's configured decision authorities --
+          # the same trust contract the publisher, both labelers and every
+          # reviewer wrapper apply. Permission to post an audit verdict is not
+          # takeover authority, so reviewer bot authors are deliberately not
+          # consulted here. An unconfigured checkout trusts nobody, reads no
+          # episodes, and falls back to the ordinary single-builder answer.
+          lineage_authorities = {
+              item.strip().lower().lstrip("@")
+              for item in decision_authorities
+              if item.strip()
+          }
           lineage_episodes = []
           lineage_readable = True
           for comment in comments:
@@ -448,10 +457,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
               if LINEAGE_MARKER not in comment_body:
                   continue
               comment_author = str(((comment.get("user") or {}).get("login")) or "")
-              if not any(
-                  trusted_comment_author(lane, comment_author, comment_body, comment.get("id"))
-                  for lane in lanes
-              ):
+              if comment_author.strip().lower().lstrip("@") not in lineage_authorities:
                   continue
               try:
                   lineage_episodes.extend(episodes_from_comment_body(comment_body))

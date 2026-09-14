@@ -1686,6 +1686,8 @@ jobs:
         commit_pull_requests: dict[str, list[dict[str, object]]] | None = None,
         author_exclusion: dict[str, object] | None = None,
         owner_login: str = "owner",
+        pr_author: str = "",
+        branch: str = "",
         env: dict[str, str] | None = None,
     ) -> dict[str, str]:
         template = (
@@ -1707,7 +1709,13 @@ jobs:
             json.dump(event_pages if event_pages is not None else [events or []], handle)
             events_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
-            json.dump({"number": pr_number, "head": {"sha": pr_head_sha or head_sha}}, handle)
+            pr_payload: dict[str, object] = {
+                "number": pr_number,
+                "head": {"sha": pr_head_sha or head_sha, "ref": branch},
+            }
+            if pr_author:
+                pr_payload["user"] = {"login": pr_author}
+            json.dump(pr_payload, handle)
             pr_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             json.dump(audit_runs or [], handle)
@@ -1882,6 +1890,120 @@ jobs:
 
         self.assertEqual(result["gate_state"], "success")
         self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    # The lineage marker is a transport, never an authorization. The rendered
+    # gate must read it under the same configured decision-authority contract
+    # as the publisher and every other lineage consumer, so these drive the
+    # actual gate decision rather than the resolver helper underneath it.
+    _LINEAGE_HEAD = "a" * 40
+    _LINEAGE_OPENED = "d" * 40
+    _LINEAGE_BRANCH = "devin/7-release-dogfood"
+    _LINEAGE_AUTHOR = "devin-ai-integration[bot]"
+
+    def _lineage_gate_lanes(self) -> list[dict[str, str]]:
+        return [
+            {
+                "id": "codex",
+                "display_name": "Codex",
+                "done": "codex-audit-done",
+                "blocked": "codex-audit-blocked",
+                "author_lane": "codex",
+                "builder_label": "builder:codex",
+                "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
+            },
+            {
+                "id": "claude",
+                "display_name": "Claude",
+                "done": "claude-audit-done",
+                "blocked": "claude-audit-blocked",
+                "author_lane": "claude",
+                "builder_label": "builder:claude",
+                "bot_authors": "claude-audit-bot,claude-audit-bot[bot]",
+            },
+            {
+                "id": "devin",
+                "display_name": "Devin",
+                "done": "devin-audit-done",
+                "blocked": "devin-audit-blocked",
+                "author_lane": "devin",
+                "builder_label": "builder:devin",
+                "bot_authors": "devin-audit-bot,devin-ai-integration[bot]",
+            },
+        ]
+
+    def _run_lineage_gate_decision(self, *, marker_author: str) -> dict[str, str]:
+        """The rendered gate on a verified Devin -> Codex takeover.
+
+        Devin opened the pull request, Codex wrote the head, and independent
+        Claude passed at that exact head. Only ``marker_author`` varies.
+        """
+
+        from code_mower import builder_lineage
+
+        takeover = builder_lineage.ContributionEpisode(
+            sequence=1,
+            kind=builder_lineage.HANDOFF_KIND,
+            repo="owner/repo",
+            pr_number=7,
+            branch=self._LINEAGE_BRANCH,
+            source_lane="devin",
+            destination_lane="codex",
+            expected_head=self._LINEAGE_OPENED,
+            resulting_head=self._LINEAGE_HEAD,
+            writer_state="terminated",
+        )
+        return self._run_gate_template_decision(
+            lanes=self._lineage_gate_lanes(),
+            labels={"builder:codex", "claude-audit-done"},
+            head_sha=self._LINEAGE_HEAD,
+            pr_author=self._LINEAGE_AUTHOR,
+            branch=self._LINEAGE_BRANCH,
+            author_exclusion={
+                "enabled": True,
+                "labels": {
+                    "builder:codex": "codex",
+                    "builder:claude": "claude",
+                    "builder:devin": "devin",
+                },
+                "authors": {self._LINEAGE_AUTHOR: "devin"},
+            },
+            comments=[
+                {
+                    "body": "Builder contribution lineage for this head.\n\n"
+                    + builder_lineage.lineage_comment_marker((takeover,)),
+                    "user": {"login": marker_author},
+                },
+                {
+                    "body": "Head SHA: `" + self._LINEAGE_HEAD + "`\n"
+                    "<!-- CLAUDE_AUDIT_STATE: claude-audit-done -->",
+                    "user": {"login": "claude-audit-bot"},
+                },
+            ],
+        )
+
+    def test_gate_trusts_lineage_published_by_a_decision_authority(self) -> None:
+        # A configured decision authority attests the takeover, so Codex as
+        # well as the Devin opener are contributors and independent Claude's
+        # exact-head pass is the qualifying audit.
+        result = self._run_lineage_gate_decision(marker_author="owner")
+
+        self.assertEqual(result["gate_state"], "success")
+        self.assertEqual(result["gate_description"], "Code Mower merge gate passed")
+
+    def test_gate_refuses_lineage_published_by_a_non_authority_audit_bot(self) -> None:
+        # The identical marker from a reviewer bot that may post verdicts but
+        # holds no decision authority establishes no contributor history. The
+        # gate is left with the unexplained author/label disagreement this
+        # issue exists to surface, so it fails closed instead of passing.
+        result = self._run_lineage_gate_decision(marker_author="codex-audit-bot")
+
+        self.assertEqual(result["gate_state"], "failure")
+        self.assertNotEqual(
+            result["gate_description"], "Code Mower merge gate passed"
+        )
+        self.assertIn(
+            "conflicting Code Mower builder identity", result["gate_description"]
+        )
 
     def test_gate_reads_required_policy_from_current_trusted_checkout(self) -> None:
         # Execute the shipped workflow decision with unchanged old review/head
