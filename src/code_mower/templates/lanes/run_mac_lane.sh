@@ -123,11 +123,12 @@ fi
 if [ "${#lane_delivery[@]}" -eq 0 ]; then
   echo "${LANE}: lane-delivery contract inactive (${lane_delivery_source})" >&2
 fi
-if [ -n "$HANDOFF_SOURCE_LANE" ] || [ -n "$HANDOFF_EXPECTED_HEAD" ]; then
-  [ -n "$HANDOFF_SOURCE_LANE" ] && [ -n "$HANDOFF_EXPECTED_HEAD" ] || {
-    echo "--handoff-source-lane and --handoff-expected-head must be given together" >&2
+if [ -n "$HANDOFF_SOURCE_LANE" ] || [ -n "$HANDOFF_EXPECTED_HEAD" ] || [ -n "$HANDOFF_SOURCE_FILE" ]; then
+  [ -n "$HANDOFF_SOURCE_LANE" ] && [ -n "$HANDOFF_EXPECTED_HEAD" ] && [ -n "$HANDOFF_SOURCE_FILE" ] || {
+    echo "--handoff-source-lane, --handoff-expected-head, and --handoff-source-file are required together" >&2
     exit 2
   }
+  case "$TARGET" in pr:*) ;; *) echo "handoff requires an explicit --target pr:<number>" >&2; exit 2 ;; esac
   [ "${#lane_delivery[@]}" -gt 0 ] || {
     echo "explicit handoff needs the code-mower CLI on PATH to validate it" >&2
     exit 2
@@ -883,7 +884,10 @@ if [ "${#lane_delivery[@]}" -eq 0 ]; then
   exit 2
 fi
 runtime_args=(--checkout "$work" --python "$LANE_PYTHON")
-[ "$LANE" != "codex" ] || runtime_args+=(--codex "$(command -v codex)")
+if [ "$LANE" = "codex" ]; then
+  codex_command="$(command -v codex)" || { echo "codex CLI not on PATH" >&2; exit 1; }
+  runtime_args+=(--codex "$codex_command")
+fi
 runtime_file="${log_dir}/runtime.json"
 "${lane_delivery[@]}" runtime "${runtime_args[@]}" > "$runtime_file"
 export PATH="$(jq -r '.bin_dir' "$runtime_file"):$PATH"
@@ -1290,7 +1294,7 @@ case "$LANE" in
   codex)
     command -v codex >/dev/null 2>&1 || { echo "codex CLI not on PATH" >&2; exit 1; }
     provider_stdin="$prompt_file"
-    run_provider codex exec --cd "$work" --skip-git-repo-check \
+    run_provider "$codex_command" exec --cd "$work" --skip-git-repo-check \
       "${codex_config_args[@]}" \
       "${codex_extra[@]+"${codex_extra[@]}"}" \
       --output-last-message "${log%.log}.last.md" \

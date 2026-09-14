@@ -259,6 +259,22 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("devin/", prefixes["devin"])
         self.assertEqual(json.loads(entry["lane_mac_runner_builder_labels_json"])["devin"], "builder:devin")
 
+    def test_runner_rejects_incomplete_or_non_pr_handoff_before_remote_work(self):
+        for target, flags, diagnostic in (
+            ("issue:12", ["--handoff-source-lane", "devin", "--handoff-expected-head", SHA,
+                          "--handoff-source-file", "private-binding.json"], "explicit --target pr:"),
+            ("pr:12", ["--handoff-source-lane", "devin", "--handoff-expected-head", SHA],
+             "required together"),
+            ("pr:12", ["--handoff-source-file", "private-binding.json"], "required together"),
+        ):
+            with self.subTest(target=target, flags=flags):
+                result = subprocess.run(["bash", str(ROOT / "tools/lanes/run_mac_lane.sh"),
+                    "--lane", "codex", "--repo", "owner/repo", "--target", target, *flags],
+                    env={**os.environ, "LANE_PYTHON": sys.executable}, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertNotIn("unbound variable", result.stderr)
+
     def test_canonical_execution_selection_is_explicit_and_validated(self):
         cfg = config.load_config(ROOT / "code-mower.yml")
         cfg["owner_surface"]["lane_runner_builders"] = ["devin"]
