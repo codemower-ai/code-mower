@@ -52,6 +52,11 @@ PACKAGE_FILES = (
         "src/code_mower/context_graph_command.py",
         "core",
     ),
+    (
+        "src/code_mower/context_graph_connection.py",
+        "src/code_mower/context_graph_connection.py",
+        "core",
+    ),
     ("src/code_mower/productivity_report.py", "src/code_mower/productivity_report.py", "core"),
     ("tools/code_mower_requirements.txt", "requirements/requirements.txt", "tooling"),
     ("tools/code_mower_calibration.py", "src/code_mower/code_mower_calibration.py", "core"),

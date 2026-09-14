@@ -229,11 +229,23 @@ class GraphWorkspace(unittest.TestCase):
             now=NOW,
         )
 
+    def authorized(self, **overrides) -> dict:
+        """An envelope as the connection mints one: bound to what is published now.
+
+        ``authorize_locked`` reads the current generation on every call rather
+        than remembering one, and a packet may only carry the generation its
+        evidence came from. A literal fixed at ``setUp`` would authorize one
+        generation and cite another as soon as a test rebuilds the graph --
+        the disagreement the packet builder refuses.
+        """
+        published = lifecycle.graph_status(self.repository, root=self.state).generation
+        return envelope(**{"generation": published, **overrides})
+
     def context(self, **overrides) -> query.GraphContext:
         arguments = {
             "question": "impact",
             "target": "parse_config",
-            "envelope": envelope(),
+            "envelope": self.authorized(),
             "policy": policy(),
             "context_repository": "owner/repo",
             "work_item": "work-item-one",
@@ -258,7 +270,7 @@ class GraphWorkspace(unittest.TestCase):
             reference={"path": "delivered-packet.json", "sha256": hashlib.sha256(encoded).hexdigest()},
             policy=policy(),
             request=contract.ContextRequest("owner/repo", "work-item-one", recipient, revision),
-            authorize=lambda: envelope(),
+            authorize=lambda: self.authorized(),
             now=NOW,
         )
 
@@ -385,6 +397,22 @@ class GraphSchemaTests(unittest.TestCase):
                 mutate(document)
                 with self.assertRaises(ContextError):
                     self.load(document)
+
+    def test_refuses_a_vocabulary_field_that_is_not_text_at_all(self) -> None:
+        """A JSON array or object where a word belongs is a refusal, not a crash.
+
+        Both vocabulary fields are checked by membership in a set or a dict, and
+        an unhashable value there raises ``TypeError`` -- out of a reader whose
+        callers only ever catch ``ContextError``, so the graph-context path
+        would propagate it instead of reporting the graph unreadable.
+        """
+        for field_name, record in (("file_type", "nodes"), ("confidence", "links")):
+            for value in ([], {}, ["code"], {"value": "EXTRACTED"}, 3, None, True):
+                with self.subTest(field=field_name, value=value):
+                    document = graph_document()
+                    document[record][0][field_name] = value
+                    with self.assertRaises(ContextError):
+                        self.load(document)
 
     def test_refuses_an_unreadable_source_location(self) -> None:
         for location in ("12", "line 12", "L", "L0", "L-4", "L99999999999"):
@@ -521,6 +549,24 @@ class CitationValidationTests(GraphWorkspace):
 
 
 class PacketTests(GraphWorkspace):
+    def test_a_packet_binds_the_generation_its_evidence_actually_came_from(self) -> None:
+        """An envelope authorizing another generation is refused, not copied.
+
+        The delivery contract's freshness rules all read the binding's
+        generation, so a packet that carried an authorized-but-unqueried
+        generation would keep passing them after a rebuild -- the one case the
+        rules exist to catch. Nothing here rewrites the envelope: it is an
+        authorization this module did not mint.
+        """
+        republished = self.publish(graph_document())
+        self.assertNotEqual(republished.generation, self.manifest.generation)
+        # An authorization minted before the rebuild: it names the generation
+        # that is gone, while the traversal reads the one published now.
+        outcome = self.context(envelope=self.authorized(generation=self.manifest.generation))
+        self.assertEqual(outcome.status, query.REQUIRED_UNAVAILABLE)
+        self.assertEqual(outcome.summary["reason"], "uncitable")
+        self.assertIsNone(outcome.packet)
+
     def test_packet_carries_its_provenance_and_loads_through_the_contract(self) -> None:
         outcome = self.context()
         self.assertEqual(outcome.status, query.AVAILABLE)
@@ -665,6 +711,27 @@ class AvailabilityTests(GraphWorkspace):
         self.assertEqual(outcome.status, query.REQUIRED_UNAVAILABLE)
         self.assertEqual(outcome.summary["reason"], "unreadable")
 
+    def test_a_malformed_vocabulary_field_reports_unreadable_both_ways(self) -> None:
+        """Required blocks and optional degrades, which is what "unreadable" means.
+
+        The reader refuses a ``file_type`` that is a JSON array rather than a
+        word, and this is the path that refusal has to arrive on: a graph the
+        caller is told it cannot use, not an exception out of an opt-in
+        feature. Both dispositions are covered because only one of them pauses
+        the dependent work.
+        """
+        document = graph_document()
+        document["nodes"][0]["file_type"] = ["code"]
+        self.publish(document)
+        blocked = self.context()
+        self.assertEqual(blocked.status, query.REQUIRED_UNAVAILABLE)
+        self.assertEqual(blocked.summary["reason"], "unreadable")
+        self.assertEqual(blocked.dependent_work, "paused")
+        degraded = self.context(policy=policy(required=False))
+        self.assertEqual(degraded.status, query.OPTIONAL_UNAVAILABLE)
+        self.assertEqual(degraded.summary["reason"], "unreadable")
+        self.assertEqual(degraded.dependent_work, "usable")
+
     def test_an_unresolved_target_blocks_required_context(self) -> None:
         outcome = self.context(target="no_such_symbol")
         self.assertEqual(outcome.status, query.REQUIRED_UNAVAILABLE)
@@ -684,7 +751,7 @@ class CommandTests(GraphWorkspace):
         # rather than at the fixed ``NOW`` the library-level tests use.
         live = datetime.now(timezone.utc) + timedelta(minutes=30)
         payload = {
-            "connection": envelope(expires_at=live.isoformat()),
+            "connection": self.authorized(expires_at=live.isoformat()),
             "policy": policy(),
             "repository": "owner/repo",
             "work_item": "work-item-one",

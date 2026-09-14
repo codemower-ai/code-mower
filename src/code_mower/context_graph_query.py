@@ -390,7 +390,10 @@ def _node(value: Any) -> GraphNode | None:
     ``load_graph`` prunes and counts.
     """
     record = _required(value, GRAPH_NODE_FIELDS, what="node")
-    file_type = record["file_type"]
+    # Bounded text before membership: a vocabulary field is looked up in a set,
+    # and a JSON array or object there is unhashable, so testing it first
+    # raises TypeError out of a reader whose only failure is ``ContextError``.
+    file_type = _text(record["file_type"], maximum=64)
     if file_type not in GRAPH_FILE_TYPES:
         raise ContextError("unsupported local graph node file type")
     if file_type != CODE_FILE_TYPE:
@@ -427,7 +430,10 @@ def _edge(value: Any, nodes: Mapping[str, GraphNode]) -> GraphEdge | None:
     answer instead of present with one end unstated.
     """
     record = _required(value, GRAPH_EDGE_FIELDS, what="edge")
-    confidence = record["confidence"]
+    # Bounded text first, for the same reason as a node's ``file_type``: the
+    # lookup below is a dict membership test, which a non-text value turns into
+    # a TypeError instead of the refusal this module promises.
+    confidence = _text(record["confidence"], maximum=64)
     if confidence not in GRAPH_CONFIDENCES:
         raise ContextError("unsupported local graph edge confidence")
     relation = _text(record["relation"], maximum=128)
@@ -912,7 +918,9 @@ def build_packet(
     generation as its provenance, so a consumer that asked about a different
     revision resolves ``stale`` at delivery without decoding the payload. The
     binding is the authorization envelope's, unchanged: this module decides
-    what the evidence is, never who may read it.
+    what the evidence is, never who may read it. What it does check is that the
+    two describe one graph -- an envelope authorizing a generation the
+    traversal did not read is refused rather than reconciled.
     """
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
@@ -923,6 +931,16 @@ def build_packet(
     connection = validate_connection(envelope, now=current)
     if connection["kind"] != "repository":
         raise ContextError("local graph evidence requires a repository-kind connection")
+    # The binding names one generation, and the freshness rules the delivery
+    # contract enforces all read it: a rebuilt graph is refused because the
+    # published generation moved. Copying the envelope's word for it would make
+    # that check vacuous whenever the traversal came from a different
+    # generation than the one authorized -- the packet would claim provenance
+    # it does not have, and still pass every later comparison. The envelope is
+    # not rewritten to match, because it is an authorization this module did
+    # not mint: the disagreement is the refusal.
+    if connection["generation"] != result.generation:
+        raise ContextError("local graph evidence is not from the authorized graph generation")
     if completeness not in (lifecycle.COMPLETE, lifecycle.PARTIAL):
         raise ContextError("unsupported local graph completeness")
     if not result.resolved:
