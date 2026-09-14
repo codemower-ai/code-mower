@@ -788,7 +788,7 @@ class VendoredToolMirrors(unittest.TestCase):
         tools = root / "tools"
         tools.mkdir()
         (tools / "__init__.py").write_text("", encoding="utf-8")
-        for target, package_copy_from, _, _ in init.PRODUCT_SUPPORT_FILES:
+        for target, _package_copy_from, _, _ in init.PRODUCT_SUPPORT_FILES:
             if not (target.startswith("tools/") and target.endswith(".py")):
                 continue
             vendored = Path(target)
