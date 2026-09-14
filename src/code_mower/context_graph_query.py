@@ -156,7 +156,8 @@ EVIDENCE_CONFIDENCE = {"extracted": "extracted", "inferred": "inferred", "ambigu
 #: A derivation, like ``_node_kind`` itself, and deliberately conservative:
 #: naming a non-test file a test would put it in a ``related_tests`` answer.
 _TEST_PREFIXES = ("tests/", "test/")
-_TEST_STEMS = ("test_", "_test", ".test", "_spec", ".spec")
+_TEST_DIRECTORIES = ("/tests/", "/test/")
+_TEST_STEM_SUFFIXES = ("_test", "_spec")
 
 #: Relationship filters per question, and whether the traversal runs along
 #: edges or against them. ``impact`` asks who is affected by a change, which is
@@ -367,10 +368,9 @@ def _node_kind(path: str, label: str, node_type: Any) -> str:
         stem = base.lower().rsplit(".", 1)[0]
         is_test = (
             lowered.startswith(_TEST_PREFIXES)
-            or "/tests/" in lowered
-            or "/test/" in lowered
+            or any(directory in lowered for directory in _TEST_DIRECTORIES)
             or stem.startswith("test_")
-            or stem.endswith(("_test", "_spec"))
+            or stem.endswith(_TEST_STEM_SUFFIXES)
         )
         if is_test:
             return "test"
