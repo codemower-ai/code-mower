@@ -28,6 +28,7 @@ from .participants import (
     selected_transports,
 )
 from .provider_capabilities import TRANSPORTS, normalize_lane
+from .role_eligibility import decide_role, require_role
 
 
 DEFAULT_STATE_DIR = session_current.DEFAULT_STATE_DIR
@@ -98,12 +99,16 @@ def build_session(
     if not PARTICIPANTS[host].orchestrator or not PARTICIPANTS[coordinator].orchestrator:
         raise ConfigError("the host and orchestrator must be agent tools, not reviewer-only services")
     role_transports = {}
+    role_admission = {}
     for role, raw, name in (("host", raw_host, host), ("orchestrator", raw_coordinator, coordinator)):
+        transport_id = None
         if name == "devin":
             transport_id = selected_transports((raw,)).get("devin", transports["devin"])
-            if TRANSPORTS[transport_id].capabilities.coordinate == "unavailable":
-                raise ConfigError("devin_api_v3 cannot coordinate sessions; use an available agent host such as devin_cli, codex, or claude")
             role_transports[f"{role}_transport"] = transport_id
+        decision = decide_role(name, "orchestrator", transport=transport_id,
+                               config=config, runtime="ready" if name == host else "unchecked")
+        require_role(decision)
+        role_admission[role] = decision
     selected = parse_participants(",".join(selected))
     lanes = config.get("lanes", {})
     if not isinstance(lanes, Mapping):
@@ -125,17 +130,29 @@ def build_session(
                 "policy_source": "repository" if review_lane in lanes else "starter",
                 "readiness": "unchecked",
             }
+            review["eligibility"] = decide_role(
+                name, "reviewer", transport=transports.get(name), config=config,
+                merge_authority=review["merge_authority"],
+            )
+            require_role(review["eligibility"])
+        coordinator_role = decide_role(
+            name, "orchestrator", transport=transports.get(name), config=config,
+        )
+        builder_role = decide_role(
+            name, "builder", transport=transports.get(name), config=config, bounded=True,
+        ) if item.builder else None
         members.append({
             "id": name, "name": item.name,
-            "can_coordinate": item.orchestrator,
-            "builder": ({"lane": item.builder_lane, "handoff": "agent", "readiness": "unchecked"}
+            "can_coordinate": coordinator_role["status"] != "ineligible",
+            "orchestrator_eligibility": coordinator_role,
+            "builder": ({"lane": item.builder_lane, "handoff": "agent", "readiness": "unchecked",
+                         "eligibility": builder_role}
                         if item.builder else None),
             "reviewer": review, "note": item.note,
         })
         if name in transports:
             execution = TRANSPORTS[transports[name]]
             members[-1]["execution"] = execution.brief()
-            members[-1]["can_coordinate"] = execution.capabilities.coordinate != "unavailable"
             if members[-1]["builder"]:
                 members[-1]["builder"].update(
                     transport=execution.transport, execution_mode=execution.capabilities.build,
@@ -144,6 +161,7 @@ def build_session(
         "schema": "code_mower.session.v1",
         "repo": repo, "host": host, "orchestrator": coordinator,
         **role_transports,
+        "role_eligibility": role_admission,
         "participants": members,
         "mode": "agent_coordinated",
         "status": "prepared" if host == coordinator else "handoff_required",
@@ -199,6 +217,8 @@ def render_session(payload: Mapping[str, Any]) -> str:
             lines.append(
                 f"Lease: held by {holder} until {lease['expires_at']} (session {lease['session_id']})"
             )
+            lines.append("Inspect lease: code-mower session lease show")
+            lines.append(f"When finished: code-mower session lease release --session-id {lease['session_id']}")
         else:
             lines.append("Lease: none (read-only brief; no mutating orchestration authority)")
     if payload.get("session_file"):

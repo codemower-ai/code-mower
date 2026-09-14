@@ -2,13 +2,15 @@
 
 Choose the tools you want to work with. Claude Code and Codex are the default
 pair; Devin and other participants are explicit additions. The agent hosting
-your conversation is the default orchestrator for that session.
+your conversation is the default orchestrator when its role is eligible.
 
 The participant picker, host-led session brief, single-orchestrator lease,
 shared Jira tracker brief, controller host telemetry, and explicit Cursor
 qualification documented below are available in `code-mower==1.4.0`.
 Install from the matching tag when following release documentation, or use a
-contributor checkout when testing later source changes.
+contributor checkout when testing later source changes. Role-specific admission
+and startup lease commands described here are stabilization changes for the next
+package; the published `v1.4.0` artifacts remain unchanged.
 
 ## Choose During Setup
 
@@ -57,10 +59,13 @@ You can give the hosting agent this request:
 
 ```text
 Start a Code Mower session with Claude, Codex, and Devin on OWNER/REPO.
-You are the orchestrator because I am starting the session here. Use
-code-mower session start, supply your own identity with --host, read the
-resulting operating brief, and check participant readiness before assigning
-work. Keep one writer per branch and independent current-head peer reviews.
+Check your role eligibility before becoming the orchestrator. If eligible, use
+code-mower session start with your own --host identity, read the resulting
+operating brief, and verify participant readiness before assigning work.
+Keep one writer per branch and independent current-head peer reviews. Record
+the lease session ID and release that exact lease when this session finishes.
+If your orchestrator role is ineligible, report the diagnostic and hand off to
+an eligible supervisor before coordinating changes.
 ```
 
 From Codex, the corresponding command is:
@@ -70,7 +75,11 @@ code-mower session start --repo OWNER/REPO --with claude,codex,devin --host code
 ```
 
 From Claude, only `--host claude` changes. The same convention works for
-`cursor`, `devin`, `grok-bot`, and `antigravity`. The agent supplies its own
+`cursor`, `grok-bot`, and `antigravity` under their existing repository policy.
+Devin is qualified only for bounded builder work and informational review;
+`--host devin` and a Devin orchestrator handoff are rejected before acquiring a
+lease or saving a brief. Selecting Devin as a participant does not grant
+orchestration authority. The agent supplies its own
 identity; the user does not have to choose the orchestrator every time.
 Wrappers can set `CODE_MOWER_HOST` instead. A plain shell with no host context
 requires an explicit host rather than guessing from installed CLIs.
@@ -84,7 +93,20 @@ The command writes a local brief under `.code-mower/sessions/` and reports its
 path. `session show PATH` reads it; `session start ... --dry-run` previews it.
 From anywhere inside the checkout, `session show --current` finds the brief the
 live lease names without a filename (see [Find The Current
-Session](#find-the-current-session)).
+Session](#find-the-current-session)). A successful mutating start takes a lease
+with a default 12-hour lifetime. Human output lists the exact inspection and
+release commands. Save the session ID and release the lease when work ends:
+
+```bash
+code-mower session lease show
+code-mower session lease release --session-id SESSION_ID
+```
+
+Replace `SESSION_ID` with the ID from this startup or lease inspection. A later
+shell process should pass it explicitly; it cannot infer ownership from a
+previous process. Releasing a lease does not cancel provider work. Quiesce any
+active writer before an authorized handoff, and do not use `--force` as routine
+cleanup.
 This is an agent-coordinated session: the hosting agent drives work through
 its available tools, manual handoffs, or Code Mower's existing dispatcher.
 Creating the brief does not launch provider processes, authenticate tools, or
@@ -289,10 +311,10 @@ policy, or the generated workflows.
 | Concept | Rule |
 | --- | --- |
 | Participant | A selected product identity, independent of a particular execution transport. |
-| Orchestrator | The hosting agent by default; coordinates assignments, evidence, and recovery. |
+| Orchestrator | An eligible hosting agent; coordinates assignments, evidence, and recovery. |
 | Builder | One writer per branch, using an available execution path. |
 | Reviewer | An independent current-head verdict through a supported review lane. |
-| Merge authority | Repository policy; selecting or coordinating a tool does not grant it. |
+| Merge authority | Qualified role and repository policy; selecting or coordinating a tool does not grant it. |
 
 Devin defaults to the local `devin_cli` transport and remains informational under
 the starter policy. Select hosted Devin explicitly with `--with devin_api_v3`
@@ -330,8 +352,8 @@ readiness, and explicit gaps. The modes describe maintained Code Mower paths:
 
 These declarations describe the current integration; they do not launch a
 process, verify credentials, enable a session lifecycle, or confer merge
-authority. Hosted Devin cannot be a coordinating host; use an available agent
-host such as `devin_cli`, Claude, or Codex. Required work that depends on an
+authority. Neither Devin transport has an orchestrator qualification; use a
+qualified host such as Claude or Codex. Required work that depends on an
 unavailable capability pauses. The same contract is reported by doctor and
 specified in the packaged
 [`provider_capabilities.schema.json`](../src/code_mower/provider_capabilities.schema.json).
@@ -357,9 +379,12 @@ per-symptom next actions.
 Legacy lane configurations infer product and transport in memory without
 rewriting files. A legacy Devin lane with `merge_authority: true` and no explicit
 product/transport declaration fails with instructions to set
-`merge_authority: false` and `informational: true`. Retaining an independently
-calibrated repository promotion requires explicit product and transport fields;
-selection never performs that promotion. Contradictory driver/transport pairs or
+`merge_authority: false` and `informational: true`. Explicit product/transport
+fields or `merge_authority: true` do not qualify a Devin reviewer. Promotion
+requires separately maintained evidence for that role and supported transport;
+no such reviewer or orchestrator record currently exists. See
+[Participant Qualification](participant-qualification.md) for the shared
+`role_eligibility` decision, narrowing policy, and future promotion contract. Contradictory driver/transport pairs or
 capability overrides fail validation; remove `capabilities` to use maintained
 defaults. The exceptions are the exact earlier maintained hosted declarations
 (`devin_api_v3` before remote-session message, cancel, and structured results,

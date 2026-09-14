@@ -47,7 +47,7 @@ class ParticipantTests(unittest.TestCase):
         result["lanes"]["devin_cli"]["informational"] = False
         updated = participants.config_with_participants(result, ("claude", "codex", "devin"))
         self.assertTrue(updated["lanes"]["devin_cli"]["merge_authority"])
-        self.assertEqual(config.validate_config(updated), [])
+        self.assertTrue(any(issue.path == "lanes.devin_cli" for issue in config.validate_config(updated)))
 
     def test_narrowing_selection_reports_removal_of_promoted_and_custom_reviewers(self):
         for lane_id in ("greptile", "custom_security"):
@@ -238,7 +238,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(gate['context_required'], 'true')
 
     def test_each_agent_host_is_the_implicit_orchestrator(self):
-        for host in ("claude", "codex", "devin", "cursor", "grok-bot", "antigravity"):
+        for host in ("claude", "codex", "cursor", "grok-bot", "antigravity"):
             with self.subTest(host=host):
                 plan = session.build_session(repo="team/project", host=host, selected=("claude", "codex", "devin"), config={})
                 self.assertEqual(plan["orchestrator"], host)

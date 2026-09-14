@@ -79,7 +79,15 @@ To choose the initial participants, use `code-mower init --interactive` for a
 checkbox menu, or `code-mower init --with claude,codex,devin` for an explicit
 selection. Add `--apply` to generate files with that selection. The examples
 below use the default Claude + Codex pair; see [Participants And Sessions](sessions.md)
-for customized setup and session startup.
+for customized setup and session startup. A mutating `session start` acquires a
+local orchestrator lease, normally for 12 hours. An eligible host should save
+its session ID, inspect it with `code-mower session lease show`, and end the
+session with `code-mower session lease release --session-id SESSION_ID` after
+its writers stop. A later shell must pass that ID explicitly. Use `--dry-run`
+for a preview or `--no-lease` for a saved read-only brief. Participant selection
+alone does not qualify an orchestrator; Devin requires a qualified supervisor.
+The next package includes role admission and exact startup lease commands;
+these changes do not alter the published `v1.4.0` artifact.
 
 Run this from a clean checkout of the repository you want to pilot:
 

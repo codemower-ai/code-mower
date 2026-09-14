@@ -78,6 +78,8 @@ def parse_participants(raw: str) -> tuple[str, ...]:
 
 
 def configured_participants(config: Mapping[str, Any]) -> tuple[str, ...]:
+    from .role_eligibility import role_policy
+    role_policy(config)
     defaults = config.get("session_defaults", {})
     if not isinstance(defaults, Mapping):
         raise ConfigError("session_defaults must be a mapping")

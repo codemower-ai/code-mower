@@ -146,6 +146,12 @@ def lane_transport(lane_id: str, lane: Mapping[str, Any]) -> ProviderTransport |
             "informational: true. Only retain promotion after independent calibration and "
             "explicit product: devin plus transport: devin_cli or devin_api_v3."
         )
+    if lane.get("merge_authority"):
+        from .role_eligibility import decide_role, require_role
+        require_role(decide_role(
+            "devin", "reviewer", transport=transport.transport,
+            merge_authority=True, qualification=lane.get("role_qualification"),
+        ))
     return transport
 
 
