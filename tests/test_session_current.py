@@ -215,6 +215,16 @@ class ResolveCurrentSessionTests(unittest.TestCase):
             self.assertEqual((code, out), (1, ""))
             self.assertIn("refusing to follow it", err)
 
+    def test_regular_brief_does_not_require_platform_blocking_mode_support(self):
+        with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
+            _init_git_repo(tmp)
+            start_session()
+            with mock.patch.object(os, "set_blocking", create=True, side_effect=OSError("pipes only")) as set_blocking:
+                result = session_current.resolve_current_session()
+                self.assertEqual(result["state"], "active")
+                self.assertEqual(show_current()[0], 0)
+                set_blocking.assert_not_called()
+
     def test_cli_shows_the_current_brief_from_a_subdirectory_with_exit_zero(self):
         with tempfile.TemporaryDirectory() as tmp, working_directory(tmp):
             _init_git_repo(tmp)
@@ -371,6 +381,7 @@ class ResolveCurrentSessionTests(unittest.TestCase):
             self.assertEqual(result["state"], "lease_changed")
             self.assertIsNone(result["session"])
             self.assertEqual(result["lease"]["provider"], "codex")
+            self.assertEqual(result["lease"]["state"], "active")
 
             session_lease.release_lease(force=True)
             saved = start_session()

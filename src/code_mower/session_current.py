@@ -109,6 +109,8 @@ _GUIDANCE = {
 
 def _safe_lease(observed: dict[str, Any], *, state: str) -> dict[str, Any]:
     """The metadata-only projection the Board already uses: no ids, no paths."""
+    if state == session_lease.STATE_HELD:
+        state = "active"
     record = observed.get("record")
     if record is None:
         return {"state": state, "provider": None, "expires_at": None}
@@ -176,8 +178,8 @@ def _read_brief_without_following(path: Path, *, state_dir: Path) -> tuple[str, 
                 return STATE_BRIEF_REFUSED, None
         except OSError:
             return STATE_BRIEF_REFUSED, None
-        if hasattr(os, "set_blocking"):
-            os.set_blocking(descriptor, True)
+        # O_NONBLOCK has no effect on regular files. Do not call set_blocking:
+        # Windows exposes that API for pipes, not regular-file descriptors.
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = -1
             return "read", handle.read()
