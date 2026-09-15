@@ -374,6 +374,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/builder_lineage.py",
+      "target": "src/code_mower/builder_lineage.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/builder_runs.py",
       "target": "src/code_mower/builder_runs.py"
     },
@@ -2056,6 +2061,11 @@
       "kind": "workflow",
       "source": "generated",
       "target": "templates/workflows/trailer-comment-labeler.yml.j2"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/builder_lineage.py",
+      "target": "tools/builder_lineage.py"
     }
   ],
   "mode": "materialize",

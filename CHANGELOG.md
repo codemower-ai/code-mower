@@ -7,6 +7,13 @@ later entries are regular releases.
 
 ## Unreleased
 
+### Added
+
+- A pure typed builder-lineage contract with immutable exact targets, validated
+  contribution chains, explicit comment history and authority accounts, and
+  contributor-aware reviewer admission. Includes a standalone init support
+  module; live consumers will adopt the contract in a later stage.
+
 ### Fixed
 
 - Coworker fast-search responses with `source_id`, missing titles, or `Text`
