@@ -10,7 +10,7 @@ DEFAULT_PACKAGE_CONFIG = "code-mower.example.yml"
 
 PACKAGE_FILES = (
     ("src/code_mower/builder_lineage.py", "src/code_mower/builder_lineage.py", "core"),
-    ("src/code_mower/builder_lineage.py", "tools/builder_lineage.py", "core"),
+    ("tools/builder_lineage.py", "tools/builder_lineage.py", "core"),
     ("tools/CODE_MOWER_APACHE_LICENSE.txt", "LICENSE", "package"),
     ("tools/CODE_MOWER_NOTICE.txt", "NOTICE", "package"),
     ("tools/code_mower_cli.py", "src/code_mower/cli.py", "core"),
