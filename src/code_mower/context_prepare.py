@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from . import context_packets, context_session, work_orders
 from .context_contract import ContextError, ContextRequest, _text
+from .context_packets import consuming_revision
 from .context_delivery import SUPPORTED_HOSTS
 from .context_store import ContextStore
 from .participants import PARTICIPANTS, participant_id
@@ -242,6 +243,10 @@ def prepare(
             reused=True,
         ), 0
 
+    # Read once, before any retrieval or replay: every load below is for the
+    # work this checkout is at, and a checkout that moves mid-preparation must
+    # not have one packet authorized against two commits.
+    revision = consuming_revision(repo_root)
     explicit_query = query is not None
     effective_query = _text(
         query if explicit_query else DEFAULT_QUERY_PREFIX + record["work_item"],
@@ -289,7 +294,7 @@ def prepare(
                 record["connection"],
                 record["packet"],
                 record["policy"],
-                ContextRequest(record["repo"], record["work_item"], recipient),
+                ContextRequest(record["repo"], record["work_item"], recipient, revision),
                 backend=backend,
             )
         except ContextError as exc:
@@ -381,7 +386,7 @@ def prepare(
                 record["connection"],
                 packet_handle,
                 record["policy"],
-                ContextRequest(record["repo"], record["work_item"], recipient),
+                ContextRequest(record["repo"], record["work_item"], recipient, revision),
                 backend=backend,
             )
         except ContextError as exc:
@@ -409,6 +414,7 @@ def prepare(
                 },
                 backend=backend,
                 refresh=refresh,
+                revision=revision,
             )
         except ContextError as exc:
             context_session.record_failure(association_store, record, exc)

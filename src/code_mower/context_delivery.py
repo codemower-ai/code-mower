@@ -6,6 +6,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 
+from . import context_graph_connection as graph_connection
 from . import context_review
 from .context_connections import _state
 from .context_contract import ContextError, ContextRequest, ValidatedPacket, _identifier, _object, _text, normalize_policy
@@ -75,11 +76,17 @@ def read_binding(store, revision):
         return _binding(lookup.artifact("d-" + revision).read())
 
 
-def _packet_for_binding(store, binding, recipient, *, backend=None):
+def _packet_for_binding(store, binding, recipient, *, backend=None, revision=None):
     if recipient not in SUPPORTED_RECIPIENTS:
         raise ContextError("this participant cannot consume private context in this release")
+    # The consuming revision of a delivery is the head the binding was published
+    # for, which the caller has already confirmed against the trusted current
+    # input. A repository-kind connection re-derives its authorization from that
+    # commit; an organization connection ignores it.
+    revision = revision or binding["metadata"]["head"]
     packet = load_authorized(store, binding["connection"], binding["handle"], binding["policy"],
-        ContextRequest(binding["repository"], binding["work_item"], recipient), backend=backend)
+        ContextRequest(binding["repository"], binding["work_item"], recipient), backend=backend,
+        revision=revision)
     if packet.sha256 != binding["packet_sha256"]:
         raise ContextError("context evidence changed; attach the new input and review again")
     return packet
@@ -102,11 +109,21 @@ def reserve_attachment(
     A caller-supplied revision lets a guided session persist its intent before
     touching GitHub and resume that exact intent after a crash. Repeating the
     same reservation is idempotent; a conflicting reuse fails closed.
+
+    ``revision`` here is that attachment handle, not a Git revision. The Git
+    revision an attachment binds is ``head``: the PR head the caller read from
+    the trusted remote. Repository-kind evidence is authorized and checked
+    against that commit, so a packet prepared while the checkout sat at commit A
+    cannot be attached to a PR whose head is commit B.
     """
     if request.recipient not in SUPPORTED_RECIPIENTS or not request.recipient.endswith(":orchestrator"):
         raise ContextError("an approved orchestrator must attach context")
     policy = normalize_policy(policy)
-    packet = load_authorized(store, name, handle, policy, request, backend=backend)
+    packet = load_authorized(
+        store, name, handle, policy,
+        ContextRequest(request.repository, request.work_item, request.recipient, head),
+        backend=backend, revision=head,
+    )
     payload = packet.private_payload()
     revision = revision or uuid.uuid4().hex
     _handle(revision)
@@ -114,8 +131,24 @@ def reserve_attachment(
         "state": "available", "expires_at": payload["binding"]["expires_at"]})
     render_evidence(packet, handle)
     with store.locked(name) as locked:
-        state = _state(locked.read(), name)
-        if state["state"] != "verified" or state["generation"] != payload["binding"]["generation"]:
+        saved = locked.read()
+        if graph_connection.is_graph(saved):
+            state = graph_connection.saved_state(saved, name)
+            # The local graph's "authorization changed" is a rebuild: the
+            # published generation is what a packet binds, so a graph rebuilt
+            # between preparation and attachment fails the same check a revoked
+            # organization authorization does.
+            generation = graph_connection.current_generation(state, root=store.root, revision=head)
+            # Stated here as well as enforced on the load, because this is the
+            # line an attachment is read off: repository evidence describes one
+            # commit's code, and the commit this PR is at is the only one it may
+            # be attached to.
+            if payload["source_revision"] != head:
+                raise ContextError("context evidence is not bound to the current pull request head")
+        else:
+            state = _state(saved, name)
+            generation = state["generation"]
+        if state["state"] != "verified" or generation != payload["binding"]["generation"]:
             raise ContextError("context authorization changed before attachment")
         index_file, index = _index(locked)
         entry = next((item for item in index["entries"] if item["handle"] == handle), None)

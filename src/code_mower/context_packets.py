@@ -11,6 +11,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import context_graph_connection as graph_connection
+from . import context_graph_lifecycle as lifecycle
 from .context_connections import _backend, _state, authorize_locked
 from .context_contract import (
     CAPABILITY_VERSION, PACKET_SCHEMA, ContextError, ContextRequest, ContextRetrievalError, _object,
@@ -39,6 +41,26 @@ def request_spec(value, name):
             "query": _text(value["query"], maximum=2000),
             "source": _text(value["source"], maximum=80) if value.get("source") is not None else None,
             "policy": policy}
+
+
+def consuming_revision(repo_root) -> str | None:
+    """The commit the *consuming* checkout is at, or ``None`` if it has none.
+
+    This is the revision prepared evidence is for, and it is read from the
+    checkout doing the work rather than from whichever checkout a connection was
+    registered against: the two are routinely different commits, and a local
+    repository graph describing the other one does not describe this work.
+
+    ``None`` rather than a raise, so a connection that has no use for a code
+    revision -- an organization search, whose sources are documents with their
+    own versions -- still prepares from a directory that is not a Git checkout.
+    A repository-kind connection refuses instead of falling back.
+    """
+    try:
+        commit, _tree = lifecycle.resolve_revision(Path(repo_root))
+    except (ContextError, OSError, ValueError):
+        return None
+    return commit
 
 
 def _handle(value):
@@ -107,37 +129,84 @@ def _delete_entry(locked, entry):
     locked.artifact("p-" + entry["handle"]).delete()
 
 
-def _request(spec, recipient=None):
-    return ContextRequest(spec["repository"], spec["work_item"], recipient or spec["recipient"])
+def _request(spec, recipient=None, revision=None):
+    return ContextRequest(spec["repository"], spec["work_item"], recipient or spec["recipient"],
+                          revision)
 
 
-def _load(store, entry, policy, request, envelope):
+def _load(store, entry, policy, request, envelope, *, bound_revision=None):
+    """Load one saved packet, and for a local graph require the consuming revision.
+
+    ``bound_revision`` is the commit the *consuming* work is at, resolved by the
+    same authorization that produced ``envelope``. The shared contract already
+    computes ``revision_state`` from it; what is decided here is what a
+    mismatch means. For a local repository graph it is a refusal: the evidence
+    describes one commit's code, so evidence for commit A handed to work on
+    commit B is wrong rather than merely old, and the caller's own required or
+    optional policy then decides whether that pauses or degrades the work.
+
+    An organization connection passes ``None`` and is unaffected. Its source
+    revision is an external document version that has no reason to equal a code
+    commit, and requiring one would refuse every organization packet.
+    """
     if entry["reference"] is None:
         if "failure_reason" in entry:
             raise ContextRetrievalError(entry["failure_reason"])
         raise ContextError("context retrieval did not complete; use an explicit refresh to try again")
-    return load_packet(private_root=store.root, reference=entry["reference"], policy=policy,
-                       request=request, authorize=lambda: envelope)
+    packet = load_packet(private_root=store.root, reference=entry["reference"], policy=policy,
+                         request=request, authorize=lambda: envelope)
+    if bound_revision is not None and packet.revision_state != "matching":
+        raise ContextError("local graph evidence is not bound to the consuming revision")
+    return packet
 
 
-def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False):
-    """Retrieve once, or reauthorize and reuse; never redispatch automatically."""
+def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False, revision=None):
+    """Retrieve once, or reauthorize and reuse; never redispatch automatically.
+
+    Which provider answers is the connection's own saved state, read here under
+    the same lock that guards the retrieval. A local repository graph reaches
+    the same index, the same packet files, and the same delivery contract as an
+    organization connection; what differs is only where authorization and
+    evidence come from, and neither kind can be mistaken for the other because
+    the saved schema is checked before either path is taken.
+
+    ``revision`` is the commit the *consuming* work is at, and it has no
+    default: a caller that cannot name it gets a refusal from a repository
+    graph rather than the registered checkout's ``HEAD``, which is a different
+    checkout that moves independently. An organization connection never reads
+    it, so the same default costs it nothing.
+    """
     spec = request_spec(spec, name)
     policy = spec["policy"]
     started = time.monotonic()
-    backend = backend or _backend()
     with store.locked(name, timeout_seconds=policy["timeout_seconds"]) as locked:
+        local = graph_connection.is_graph(locked.read())
         left = policy["timeout_seconds"] - (time.monotonic() - started)
         if left <= 0:
             raise ContextError("context retrieval deadline exceeded before authorization")
-        envelope = authorize_locked(locked, name, backend, timeout_seconds=min(left, 30))
+        bound = None
+        if local:
+            if revision is None:
+                # Default-deny rather than fall back to the registered
+                # checkout's ``HEAD``: that fallback is exactly how evidence for
+                # one commit reaches work on another.
+                raise ContextError("local graph context requires the consuming checkout revision")
+            envelope, bound = graph_connection.authorized_revision(
+                locked, name, root=store.root, revision=revision,
+            )
+        else:
+            # Deferred until the connection kind is known: a local graph must
+            # not require the optional provider SDK to be installed at all.
+            backend = backend or _backend()
+            envelope = authorize_locked(locked, name, backend, timeout_seconds=min(left, 30))
         if spec["repository"] not in envelope["repositories"] or spec["recipient"] not in envelope["recipients"]:
             raise ContextError("context connection does not authorize this repository or recipient")
         fingerprint = _key({k: v for k, v in spec.items() if k != "recipient"})
         index_file, index = _index(locked)
         old = next((entry for entry in index["entries"] if entry["key"] == fingerprint), None)
         if old is not None and not refresh:
-            packet = _load(store, old, policy, _request(spec), envelope)
+            packet = _load(store, old, policy, _request(spec, revision=bound), envelope,
+                           bound_revision=bound)
             return {**packet.shareable_summary(), "status": "available", "packet_handle": old["handle"],
                     "reused": True, "usage": old["usage"]}
         # Reserve before any paid/read tool call. Restarting a failed attempt
@@ -155,31 +224,45 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False):
         left = policy["timeout_seconds"] - (time.monotonic() - started)
         if left <= 0:
             raise ContextError("context retrieval deadline exceeded; no search was sent")
-        state = _state(locked.read(), name)
-        credentials = locked.vault.get(state["credential_id"])
+        state = graph_connection.saved_state(locked.read(), name) if local else _state(locked.read(), name)
+        credentials = None if local else locked.vault.get(state["credential_id"])
         try:
             try:
-                result = backend.retrieve(credentials, spec["query"], spec["source"], policy, timeout_seconds=left)
+                if local:
+                    # The local graph mints its own packet: it decides what the
+                    # evidence is, and the envelope above decides who may read it.
+                    packet_data = graph_connection.retrieve(
+                        state, spec, envelope=envelope, root=store.root, revision=revision,
+                    )
+                else:
+                    result = backend.retrieve(credentials, spec["query"], spec["source"], policy, timeout_seconds=left)
             except Exception as exc:
+                # Either provider failing to produce evidence is a retrieval
+                # failure, told apart below from storage and packet validation.
                 raise ContextRetrievalError(
                     exc.reason if isinstance(exc, ContextRetrievalError) else "retrieval_failed"
                 ) from None
-            now = datetime.now(timezone.utc)
-            expiry = min(_timestamp(envelope["expires_at"]), now + timedelta(seconds=policy["max_age_seconds"]))
-            packet_data = {"schema": PACKET_SCHEMA, "capability_version": CAPABILITY_VERSION,
-                           "provider": "coworker", "kind": "organization", "retrieved_at": now.isoformat(),
-                           **{key: result[key] for key in ("documents", "completeness", "truncated", "source_revision", "source_built_at", "omissions")},
-                           "binding": {**{key: envelope[key] for key in ("connection", "generation", "identity", "recipients")},
-                                       "repository": spec["repository"], "work_item": spec["work_item"],
-                                       "policy_version": policy["policy_version"], "expires_at": expiry.isoformat()}}
+            usage = None
+            if not local:
+                now = datetime.now(timezone.utc)
+                expiry = min(_timestamp(envelope["expires_at"]), now + timedelta(seconds=policy["max_age_seconds"]))
+                packet_data = {"schema": PACKET_SCHEMA, "capability_version": CAPABILITY_VERSION,
+                               "provider": "coworker", "kind": "organization", "retrieved_at": now.isoformat(),
+                               **{key: result[key] for key in ("documents", "completeness", "truncated", "source_revision", "source_built_at", "omissions")},
+                               "binding": {**{key: envelope[key] for key in ("connection", "generation", "identity", "recipients")},
+                                           "repository": spec["repository"], "work_item": spec["work_item"],
+                                           "policy_version": policy["policy_version"], "expires_at": expiry.isoformat()}}
+                usage = result["usage"]
             locked.artifact("p-" + entry["handle"]).write(packet_data)
             raw = json.dumps(packet_data, allow_nan=False, separators=(",", ":")).encode()
             entry["reference"] = {"path": ".p-" + entry["handle"] + ".json", "sha256": hashlib.sha256(raw).hexdigest()}
-            packet = _load(store, entry, policy, _request(spec), envelope)
-            entry["usage"] = result["usage"]
+            packet = _load(store, entry, policy, _request(spec, revision=bound), envelope,
+                           bound_revision=bound)
+            entry["usage"] = usage
             index_file.write(index)
             _index(locked)
-            locked.write({**state, "capability_status": {"search": "available", "memory": "available"}})
+            if not local:
+                locked.write({**state, "capability_status": {"search": "available", "memory": "available"}})
         except Exception as exc:
             # Storage and local packet validation are not provider failures.
             failure = ContextRetrievalError(
@@ -192,7 +275,9 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False):
             try:
                 index_file.write(index)
                 locked.artifact("p-" + entry["handle"]).delete()
-                locked.write({**state, "capability_status": {"search": "unavailable", "memory": "unavailable"}})
+                if not local:
+                    # A local graph connection keeps no provider capability state.
+                    locked.write({**state, "capability_status": {"search": "unavailable", "memory": "unavailable"}})
             except (OSError, ContextError):
                 entry["failure_reason"] = "storage_unavailable"
                 try:
@@ -205,16 +290,44 @@ def fetch(store: ContextStore, name, spec, *, backend=None, refresh=False):
                 "reused": False, "usage": entry["usage"]}
 
 
-def load_authorized(store, name, handle, policy, request: ContextRequest, *, backend=None):
-    """Every participant replay obtains a new online authorization under lock."""
+def load_authorized(store, name, handle, policy, request: ContextRequest, *, backend=None,
+                    revision=None):
+    """Every participant replay obtains a new authorization under lock.
+
+    For an organization connection that is a fresh online check. For a local
+    repository graph it is a fresh read of current local state: the published
+    generation for the *consuming* revision. Either way the envelope is minted
+    here and now, so a packet whose graph was rebuilt or whose revision has
+    moved on is refused by the shared contract rather than replayed.
+
+    The consuming revision travels on the request the caller already builds --
+    ``ContextRequest.revision`` -- and ``revision`` is the same value for the
+    callers that hold it without holding a request, such as an attachment that
+    knows only the trusted current PR head. Neither is defaulted to ``HEAD``
+    for a graph: a replay that cannot name the revision it is for is refused,
+    because the checkout the graph was registered from moves independently of
+    the work consuming the evidence.
+    """
     _handle(handle)
     with store.locked(name) as locked:
-        envelope = authorize_locked(locked, name, backend or _backend())
+        bound = None
+        if graph_connection.is_graph(locked.read()):
+            consuming = request.revision or revision
+            if consuming is None:
+                raise ContextError("local graph context requires the consuming checkout revision")
+            envelope, bound = graph_connection.authorized_revision(
+                locked, name, root=store.root, revision=consuming,
+            )
+            # Resolved, so a symbolic consuming revision is compared as the
+            # commit it names rather than as the word the caller typed.
+            request = ContextRequest(request.repository, request.work_item, request.recipient, bound)
+        else:
+            envelope = authorize_locked(locked, name, backend or _backend())
         _file, index = _index(locked)
         entry = next((entry for entry in index["entries"] if entry["handle"] == handle), None)
         if entry is None:
             raise ContextError("context packet is missing or was invalidated")
-        return _load(store, entry, policy, request, envelope)
+        return _load(store, entry, policy, request, envelope, bound_revision=bound)
 
 
 def main(argv=None):
@@ -230,7 +343,16 @@ def main(argv=None):
     try:
         spec = request_spec(strict_json(sys.stdin.buffer.read(262_145)), args.connection)
         required = spec["policy"]["required"]
-        result = fetch(ContextStore(args.state_dir), args.connection, spec, refresh=args.refresh)
+        # The consuming checkout is the one this command was run from, not the
+        # one a connection was registered against. Leaving ``fetch`` to default
+        # to ``HEAD`` resolves that word in the *registered* graph checkout, so a
+        # graph for commit A could answer work at commit B -- the exact fallback
+        # the guided route already refuses. ``None`` when the caller is not a Git
+        # checkout at all: that refuses a repository graph here (it cannot name
+        # the revision its evidence would be for) and is ignored by an
+        # organization connection, whose sources version independently of code.
+        result = fetch(ContextStore(args.state_dir), args.connection, spec, refresh=args.refresh,
+                       revision=consuming_revision(Path.cwd()))
         code = 0
     except (ContextError, OSError, ValueError) as exc:
         result = {"status": "required_unavailable" if required else "optional_unavailable",

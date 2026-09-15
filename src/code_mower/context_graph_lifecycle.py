@@ -58,19 +58,22 @@ import os
 import re
 import io
 import secrets
+import shlex
 import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from .context_contract import ContextError, _identifier, _text, _timestamp
@@ -113,15 +116,32 @@ MAX_SKIPPED_PATHS = MAX_TRACKED_FILES
 _REGULAR_MODES = frozenset({"100644", "100755"})
 _SKIPPED_MODES = {"120000": "symlink", "160000": "submodule"}
 
-#: Where the provider keeps its own index state. Both names are on the
-#: excluded-roots list in ``context_graph``, and a repository is free to track
-#: either of them -- a committed ``.graph/`` is somebody else's graph, or an
-#: earlier incremental cache of this one. Neither may be materialized: the
+#: Where the pinned provider actually writes. Read off ``graphify/paths.py`` at
+#: the evaluated pin rather than assumed: ``GRAPHIFY_OUT`` defaults to the
+#: literal ``graphify-out`` and every output path is built from it, so an
+#: unmodified ``extract`` run in the materialized copy leaves
+#: ``graphify-out/graph.json`` and ``graphify-out/manifest.json`` beneath the
+#: scan target. The environment override that constant reads is deliberately
+#: *not* honoured here: the child is given a fixed environment, and an output
+#: root this adapter did not choose is a root it cannot bound to the copy.
+_PROVIDER_OUTPUT_DIRECTORY = "graphify-out"
+
+#: The document the ``--no-cluster`` branch dumps, and the provider's own record
+#: of which inputs it processed. Exactly these two names are read; a run that
+#: leaves something else has not produced the evidence this adapter classifies.
+_PROVIDER_GRAPH_NAME = "graph.json"
+_PROVIDER_MANIFEST_NAME = "manifest.json"
+
+#: Where the provider keeps its own index state or output. All three names are
+#: on the excluded-roots list in ``context_graph``, and a repository is free to
+#: track any of them -- a committed ``.graph/`` is somebody else's graph, a
+#: committed ``graphify-out/`` is an earlier build's published output, and
+#: ``.graphify/`` is an incremental cache. None may be materialized: the
 #: provider would then resume from a cache built over content this build never
 #: saw, and the adapter would collect tracked repository bytes as if the
 #: provider had just produced them, binding stale contents to a fresh commit.
 #: Matched at any depth and case-folded, for the same reasons ``.git`` is.
-_PROVIDER_STATE_DIRECTORIES = (".graphify", ".graph")
+_PROVIDER_STATE_DIRECTORIES = (_PROVIDER_OUTPUT_DIRECTORY, ".graphify", ".graph")
 _PROVIDER_STATE_ROOTS = frozenset(name.casefold() for name in _PROVIDER_STATE_DIRECTORIES)
 
 #: The evidence contract's excluded roots, bound rather than copied. One module
@@ -1329,6 +1349,13 @@ class IndexRequest:
     #: directory the environment points at but the sandbox does not expose is a
     #: provider that cannot start.
     writable: tuple[Path, ...] = ()
+    #: The census the copy was materialized from -- the denominator completeness
+    #: is measured against. Carried on the request rather than re-read from the
+    #: copy after the run, because by then the provider has written into that
+    #: tree: the question is what this build *gave* the provider, and only the
+    #: census is immutable evidence of that. A request without one cannot be
+    #: classified as complete, which is the safe direction.
+    census: TrackedCensus | None = None
 
 
 @dataclass(frozen=True)
@@ -1337,6 +1364,12 @@ class IndexResult:
 
     completeness: str = COMPLETE
     indexed_files: int = 0
+    #: Inputs this provider classified as code and then deterministically could
+    #: not extract -- no wired extractor, or an extractor that declined by
+    #: design. Read bytes, no contribution; reported rather than counted as
+    #: indexed, and distinct from the census entries a build declines to
+    #: materialize at all.
+    unsupported_inputs: int = 0
     notes: tuple[str, ...] = ()
 
 
@@ -1592,6 +1625,531 @@ def _refuse_broad_readable(readable: Iterable[str], *, repository: Path) -> None
             )
 
 
+#: Mach-O magics, and the ``struct`` byte order each one means. A Mach-O image
+#: declares its own order in its first four bytes; the swapped spellings are how
+#: a big-endian image announces itself to a little-endian reader. Both widths
+#: are listed with the size of the header that follows, because the load
+#: commands this reads begin directly after it.
+_MACHO_MAGICS: Mapping[bytes, tuple[str, int]] = {
+    b"\xcf\xfa\xed\xfe": ("<", 32),  # 64-bit, little endian
+    b"\xce\xfa\xed\xfe": ("<", 28),  # 32-bit, little endian
+    b"\xfe\xed\xfa\xcf": (">", 32),  # 64-bit, big endian
+    b"\xfe\xed\xfa\xce": (">", 28),  # 32-bit, big endian
+}
+
+#: The 64-bit thin header's width, which is also what says an image's pointers
+#: -- and so the multiple its load-command sizes must be -- are eight bytes.
+_MACHO_HEADER_BYTES_64 = 32
+
+#: A load command's own header: the command and its size.
+_MACHO_COMMAND_HEADER_BYTES = 8
+
+#: A universal ("fat") archive: a count of architecture records, each naming the
+#: offset and size of a real Mach-O image inside the same file. A python.org
+#: interpreter ships these; a Homebrew one does not.
+#:
+#: The two spellings are the same header written in the two byte orders, and the
+#: magic is what says which: ``FAT_MAGIC`` reads as ``0xCAFEBABE`` big-endian, so
+#: the count and the architecture records that follow it are big-endian too;
+#: ``FAT_CIGAM`` is those four bytes reversed, and its fields are reversed with
+#: them. Reading a ``FAT_CIGAM`` header as big-endian -- which is what this did
+#: -- turns a count of 2 into 33_554_432 and a slice offset into a number with
+#: no relation to the file, so the container was not being decoded at all.
+_MACHO_FAT_ORDERS: Mapping[bytes, str] = {
+    b"\xca\xfe\xba\xbe": ">",  # FAT_MAGIC
+    b"\xbe\xba\xfe\xca": "<",  # FAT_CIGAM
+}
+
+#: One architecture record: cputype, cpusubtype, offset, size, align.
+_MACHO_FAT_ARCH_BYTES = 20
+
+#: The 64-bit universal header (``FAT_MAGIC_64``) is deliberately absent. Its
+#: records are a different width with 64-bit offsets, so admitting it would mean
+#: a second parse; an unrecognized container is refused rather than guessed at,
+#: and no runtime this boundary has had to derive ships one.
+
+#: The load commands that name a library the image will make dyld find. Weak,
+#: re-exported and upward links are included: a weak dependency that *is*
+#: installed is still opened, and an image that re-exports another still loads
+#: it. ``LC_REQ_DYLD`` is the high bit these commands carry.
+_MACHO_DYLIB_COMMANDS = frozenset({0x0C, 0x8000_0018, 0x8000_001F, 0x8000_0023})
+
+#: How much of an image's load-command block this will read. The block is a
+#: header, not the image; anything past this bound is not a Mach-O this module
+#: is prepared to reason about.
+_MAX_MACHO_COMMAND_BYTES = 4 * 1024 * 1024
+
+#: How many architecture slices a universal archive may declare.
+_MAX_MACHO_ARCHITECTURES = 32
+
+#: How many files the runtime scan will look at, and how many libraries it will
+#: add. Both are bounds on somebody else's install, which is the same reason
+#: every other foreign file this module reads is bounded: a provider install is
+#: not this repository's to trust about its own size.
+_MAX_SCANNED_IMAGES = 20_000
+_MAX_LINKED_LIBRARIES = 256
+
+#: A shared library that is larger than this is not one; refusing is the honest
+#: answer rather than mapping an arbitrary file into the child's view.
+_MAX_LINKED_LIBRARY_BYTES = 512 * 1024 * 1024
+
+#: File names that are never a Mach-O image, so the scan does not open them.
+#: Purely an optimization -- the magic is what decides -- but it is what keeps
+#: the walk over a populated ``site-packages`` cheap.
+_NOT_MACHO_SUFFIXES = frozenset(
+    {
+        ".py", ".pyc", ".pyi", ".pyx", ".txt", ".md", ".rst", ".json", ".toml",
+        ".yaml", ".yml", ".cfg", ".ini", ".h", ".hpp", ".c", ".cpp", ".html",
+        ".css", ".js", ".png", ".jpg", ".svg", ".gif", ".pdf", ".zip", ".gz",
+        ".whl", ".pem", ".crt", ".dist-info", ".egg-info", ".a", ".la",
+    }
+)
+
+#: Directories the scan does not descend into: build caches and vendored
+#: sources, none of which hold an image the child loads.
+_NOT_MACHO_DIRECTORIES = frozenset({"__pycache__", ".git", "include", "man", "doc", "docs"})
+
+
+@dataclass(frozen=True)
+class _MachoSlice:
+    """One structurally validated Mach-O image inside a file.
+
+    Produced only by :func:`_macho_slices`, and only after that function has
+    established that every field below names a region the file actually carries.
+    Holding the located load-command region rather than its bytes keeps the peak
+    cost of reading a universal archive one slice's block rather than all of
+    them at once.
+    """
+
+    order: str
+    """The byte order this image declared in its own magic."""
+
+    filetype: int
+    """What the image says it is: ``MH_DYLIB``, ``MH_EXECUTE``, and so on."""
+
+    ncmds: int
+    """How many load commands the region carries. Validated to walk exactly."""
+
+    commands_offset: int
+    """Absolute offset in the file of the first load command."""
+
+    sizeofcmds: int
+    """Size of the whole load-command region, bounded and known to be present."""
+
+
+def _macho_slices(path: Path) -> tuple[_MachoSlice, ...] | None:
+    """Every Mach-O image in ``path``, or ``None`` if it is not a Mach-O file.
+
+    The one structural parse: what a container *is* is decided here, and both
+    the dependency derivation and the exposure refusal read its answer rather
+    than each re-deriving a weaker version of it. ``None`` means this module
+    could not read the file as a Mach-O at all, which covers a file that is not
+    one, a truncated one, and a malformed one -- a universal header declaring
+    slices the file does not carry, slices that overlap each other or the
+    architecture table, a load-command region that runs past its slice, or a
+    command chain that does not walk to exactly the size the header declared.
+
+    Nothing here is inferred from a name, a size or a suffix. Every bound is
+    checked against the file's own length, taken from the open descriptor so
+    that what is measured is what is read. The whole parse is bounded before it
+    allocates: at most :data:`_MAX_MACHO_ARCHITECTURES` slices, each with at
+    most :data:`_MAX_MACHO_COMMAND_BYTES` of load commands, read one at a time.
+
+    A header alone is not enough to make this judgement, which is why it is made
+    here rather than at a magic and a ``filetype`` field. Those four bytes and
+    that one integer are the cheapest thing in the file for a provider that
+    writes its own linker input to reproduce over arbitrary operator-owned
+    bytes; the structure behind them is not.
+    """
+    try:
+        with path.open("rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            magic = stream.read(4)
+            order = _MACHO_FAT_ORDERS.get(magic)
+            if order is not None:
+                return _macho_fat_slices(stream, order=order, size=size)
+            if magic not in _MACHO_MAGICS:
+                return None
+            located = _macho_slice(stream, offset=0, limit=size)
+            return None if located is None else (located,)
+    except (OSError, ValueError, struct.error):
+        return None
+
+
+def _macho_fat_slices(
+    stream: io.BufferedReader, *, order: str, size: int
+) -> tuple[_MachoSlice, ...] | None:
+    """The validated slices of a universal archive, or ``None`` if malformed.
+
+    Every slice must parse, not merely one: the child is the provider's
+    interpreter, whose architecture is not necessarily this one, so a fat file
+    admitted on the strength of a readable first slice would be admitting
+    whatever the rest of it holds.
+    """
+    raw = stream.read(4)
+    if len(raw) != 4:
+        return None
+    count = struct.unpack(f"{order}I", raw)[0]
+    if not 1 <= count <= _MAX_MACHO_ARCHITECTURES:
+        return None
+    table_end = 8 + _MACHO_FAT_ARCH_BYTES * count
+    if table_end > size:
+        # The header promises more architecture records than the file carries.
+        return None
+    extents: list[tuple[int, int]] = []
+    for _ in range(count):
+        record = stream.read(_MACHO_FAT_ARCH_BYTES)
+        if len(record) != _MACHO_FAT_ARCH_BYTES:
+            return None
+        # cputype, cpusubtype, offset, size, align
+        _, _, offset, length, _ = struct.unpack(f"{order}5I", record)
+        if length <= 0 or offset < table_end or offset + length > size:
+            # A slice that starts inside the header this is reading, or that
+            # runs off the end of the file, describes a file other than this
+            # one. Both fields came out of the file, so both are bounded
+            # 32-bit values and the sum cannot overflow a Python int.
+            return None
+        extents.append((offset, length))
+    ordered = sorted(extents)
+    for (offset, length), (next_offset, _) in zip(ordered, ordered[1:], strict=False):
+        if offset + length > next_offset:
+            # Overlapping slices make "which image is this" ambiguous, and an
+            # ambiguous container is not one to answer a trust question from.
+            return None
+    slices = []
+    for offset, length in extents:
+        located = _macho_slice(stream, offset=offset, limit=length)
+        if located is None:
+            return None
+        slices.append(located)
+    return tuple(slices)
+
+
+def _macho_slice(stream: io.BufferedReader, *, offset: int, limit: int) -> _MachoSlice | None:
+    """One Mach-O image of ``limit`` bytes at ``offset``, fully validated.
+
+    ``limit`` is the slice's own extent -- the whole file for a thin image, the
+    architecture record's declared size for a fat one -- and every read is held
+    inside it. A slice may not reach past itself into another slice's bytes to
+    satisfy its header.
+    """
+    stream.seek(offset)
+    magic = stream.read(4)
+    order_and_header = _MACHO_MAGICS.get(magic)
+    if order_and_header is None:
+        return None
+    order, header_size = order_and_header
+    if limit < header_size:
+        return None
+    header = stream.read(header_size - 4)
+    if len(header) != header_size - 4:
+        return None
+    # cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags[, reserved]
+    _, _, filetype, ncmds, sizeofcmds, _ = struct.unpack(f"{order}6I", header[:24])
+    if sizeofcmds > _MAX_MACHO_COMMAND_BYTES:
+        return None
+    if header_size + sizeofcmds > limit:
+        # The declared load-command region does not fit in the image that
+        # declared it.
+        return None
+    if ncmds * _MACHO_COMMAND_HEADER_BYTES > sizeofcmds:
+        # Every load command carries at least its own command and size, so a
+        # region this small cannot hold the count claimed over it.
+        return None
+    block = stream.read(sizeofcmds)
+    if len(block) != sizeofcmds:
+        return None
+    pointer = 8 if header_size == _MACHO_HEADER_BYTES_64 else 4
+    if not _macho_commands_walk(block, order=order, ncmds=ncmds, pointer=pointer):
+        return None
+    return _MachoSlice(
+        order=order,
+        filetype=int(filetype),
+        ncmds=int(ncmds),
+        commands_offset=offset + header_size,
+        sizeofcmds=int(sizeofcmds),
+    )
+
+
+def _macho_commands_walk(block: bytes, *, order: str, ncmds: int, pointer: int) -> bool:
+    """Whether ``block`` is exactly ``ncmds`` well-formed load commands.
+
+    Exactly: the chain must consume the region the header declared, with nothing
+    left over and nothing missing. ``sizeofcmds`` is defined as the total size
+    of all the load commands, so a chain that stops short leaves bytes in a
+    region that is supposed to be nothing but commands, and a chain that would
+    run past has already lied about one command's size. Either way the image is
+    not describing itself, and this refuses rather than reading as far as it can
+    and treating the prefix as the truth.
+
+    ``pointer`` is the image's pointer width, which is the multiple dyld
+    requires each ``cmdsize`` to be: 8 for a 64-bit image, 4 for a 32-bit one.
+    """
+    position = 0
+    for _ in range(ncmds):
+        if position + _MACHO_COMMAND_HEADER_BYTES > len(block):
+            return False
+        _, size = struct.unpack_from(f"{order}2I", block, position)
+        if size < _MACHO_COMMAND_HEADER_BYTES or size % pointer:
+            return False
+        if position + size > len(block):
+            return False
+        position += size
+    return position == len(block)
+
+
+def _macho_dylib_names(path: Path) -> tuple[str, ...]:
+    """Every library path a Mach-O image at ``path`` asks dyld to load.
+
+    Read out of the image's own load commands rather than out of ``otool``:
+    deriving the boundary must not itself depend on a developer tool being
+    installed, and a parse that reads a bounded header is a smaller thing to
+    trust than a subprocess. A file that is not a Mach-O -- which is almost
+    everything under an install prefix -- costs four bytes and returns nothing.
+
+    The union over a universal archive's slices rather than the slice matching
+    this process: the child is the provider's interpreter, whose architecture is
+    not necessarily this one, and every slice's dependencies are paths on the
+    same host.
+
+    A file this cannot read structurally contributes nothing. An unreadable or
+    malformed image says nothing about what the runtime needs; the build still
+    fails if it was a library the provider loads, and it fails as dyld naming
+    the image rather than as this module guessing at one.
+    """
+    slices = _macho_slices(path)
+    if not slices:
+        return ()
+    names: dict[str, None] = {}
+    try:
+        with path.open("rb") as stream:
+            for located in slices:
+                stream.seek(located.commands_offset)
+                block = stream.read(located.sizeofcmds)
+                if len(block) != located.sizeofcmds:
+                    return ()
+                _collect_dylib_names(block, order=located.order, ncmds=located.ncmds, into=names)
+    except (OSError, ValueError, struct.error):
+        return ()
+    return tuple(names)
+
+
+def _collect_dylib_names(
+    block: bytes, *, order: str, ncmds: int, into: dict[str, None]
+) -> None:
+    """The ``LC_LOAD_DYLIB`` family in an already-validated command region."""
+    position = 0
+    for _ in range(ncmds):
+        command, size = struct.unpack_from(f"{order}2I", block, position)
+        if command in _MACHO_DYLIB_COMMANDS and size >= 24:
+            name_offset = struct.unpack_from(f"{order}I", block, position + 8)[0]
+            if 8 <= name_offset < size:
+                raw = block[position + name_offset : position + size]
+                name = raw.split(b"\0", 1)[0].decode("utf-8", "replace")
+                if name:
+                    into.setdefault(name, None)
+        position += size
+
+
+#: The Mach-O file types dyld will open for an ``LC_LOAD_DYLIB``-family command:
+#: ``MH_DYLIB``, and the ``MH_DYLIB_STUB`` a stripped SDK ships in its place.
+#: Not ``MH_BUNDLE``, which is reached through ``dlopen`` rather than through
+#: the load commands this derivation reads, and not an executable, an object
+#: file, a core dump or a kernel extension -- none of which is a dependency an
+#: image's load command can legitimately name.
+_MACHO_DYLIB_FILETYPES = frozenset({0x6, 0x9})
+
+
+def _macho_filetypes(path: Path) -> tuple[int, ...] | None:
+    """Every slice's declared Mach-O ``filetype``, or ``None`` for a non-Mach-O.
+
+    The two answers are different refusals for the caller, so they are kept
+    apart rather than collapsed into a falsehood. ``None`` is a file whose
+    container this module could not read as a Mach-O -- not one at all,
+    truncated, or structurally malformed. A tuple is a file whose structure it
+    did validate, and whose own declaration of what it is the caller then holds
+    to the shared-library rule.
+    """
+    slices = _macho_slices(path)
+    return None if slices is None else tuple(located.filetype for located in slices)
+
+
+def _scan_images(root: Path, *, budget: list[int]) -> Iterator[Path]:
+    """Regular files under ``root`` that could be Mach-O images, within a budget.
+
+    ``budget`` is shared across every root of one derivation, so the cost is a
+    property of the whole runtime rather than of each prefix in it. Symlinks are
+    not followed during the walk: an install that links a directory elsewhere is
+    reached through whatever named it, and following would let one link turn a
+    narrow prefix into an unbounded traversal.
+    """
+    for parent, directories, files in os.walk(root, followlinks=False):
+        directories[:] = [name for name in directories if name not in _NOT_MACHO_DIRECTORIES]
+        for name in files:
+            if budget[0] <= 0:
+                return
+            if any(name.endswith(suffix) for suffix in _NOT_MACHO_SUFFIXES):
+                continue
+            budget[0] -= 1
+            yield Path(parent) / name
+
+
+def _trusted_library(path: Path) -> bool:
+    """Could only a trusted account have put this library where the child reads it?
+
+    The same question :func:`_trusted_launcher` asks of a sandbox launcher, and
+    for the same reason: a library the provider maps executable inside the
+    boundary is code, and a file -- or a directory above it -- that some other
+    account may write is a file somebody else chooses the contents of. Asked of
+    the *resolved* path, so a link's own spelling is not what is trusted.
+    """
+    trusted = {0, os.geteuid()}
+    for current in (path, *path.parents):
+        try:
+            entry = os.lstat(current)
+        except OSError:
+            return False
+        writable = bool(entry.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+        if writable and stat.S_ISDIR(entry.st_mode) and entry.st_mode & stat.S_ISVTX:
+            # A sticky shared directory -- ``/tmp`` and the per-user temporary
+            # directories under it. Another account may create its own entries
+            # there and may not touch this one, which is the whole point of the
+            # bit, so the ancestry it provides is not an account boundary this
+            # has to refuse. The file itself is still held to the rule.
+            continue
+        if entry.st_uid not in trusted or writable:
+            return False
+    return True
+
+
+def _linked_runtime_libraries(
+    roots: Sequence[Path], *, covered: Sequence[Path], repository: Path
+) -> tuple[str, ...]:
+    """Shared libraries the exposed runtime links to from outside the exposure.
+
+    A pinned provider's install and the base interpreter it was created from are
+    exposed as prefixes, and that was taken to be the whole runtime. It is not,
+    on a host whose interpreter was installed by a package manager: CPython's
+    ``_ssl`` extension is linked against an OpenSSL that lives under the
+    manager's own prefix, not under the interpreter's, and Graphify imports
+    ``ssl`` during start-up even for a code-only extraction. Under the
+    filesystem boundary that library is simply absent, so the provider aborted
+    at import time -- which is a missing runtime dependency, not an argument for
+    giving the child a network or a wider filesystem.
+
+    So the dependency is *derived* rather than named. Every Mach-O image inside
+    the exposure is read for the libraries it asks dyld to load, and each one
+    that is not already covered is resolved and added as a single file. Newly
+    added libraries are read in turn, so a transitive dependency -- ``libssl``
+    needing ``libcrypto`` -- is reached without either being written down here.
+
+    What is added is the library file, never the directory holding it: exposing
+    ``/opt/homebrew/opt/openssl@3/lib`` is a package manager's prefix, and
+    exposing the manager's ``etc`` or ``var`` beside it is the operator data
+    this boundary exists to withhold. Every added path is put through the same
+    ownership and broad-exposure refusals as any other exposure, and a path that
+    is not a bounded regular file -- or that is not a structurally valid Mach-O
+    declaring itself a shared library -- is refused rather than exposed on the
+    strength of an image having named it. That last check is what keeps the
+    dependency *names*, which come out of somebody else's image, from choosing
+    which of the operator's files this boundary exposes, and it is the whole
+    container rather than a magic and a ``filetype`` field that has to hold up:
+    see :func:`_macho_slices`.
+
+    Linux is unchanged: an ELF runtime's libraries live under the ``/lib`` and
+    ``/usr/lib`` directories the read-only runtime already names, and this
+    derivation reads Mach-O images, of which such a host has none.
+    """
+    if sys.platform != "darwin":
+        return ()
+    system = tuple(Path(os.path.realpath(path)) for path in _SYSTEM_READ_PATHS)
+    boundaries = [*system, *(Path(os.path.realpath(root)) for root in covered)]
+    added: dict[str, None] = {}
+    pending = [Path(os.path.realpath(root)) for root in roots]
+    budget = [_MAX_SCANNED_IMAGES]
+    while pending:
+        current = pending.pop(0)
+        images = _scan_images(current, budget=budget) if current.is_dir() else iter((current,))
+        for image in images:
+            for name in _macho_dylib_names(image):
+                if not name.startswith("/"):
+                    # ``@rpath``, ``@loader_path`` and ``@executable_path`` are
+                    # resolved by dyld against the image itself, so they name
+                    # something inside the exposure already.
+                    continue
+                referenced = Path(name)
+                resolved = Path(os.path.realpath(referenced))
+                if any(_under(resolved, boundary) for boundary in boundaries):
+                    continue
+                if str(resolved) in added:
+                    continue
+                if not resolved.exists():
+                    # A weak dependency the host does not have installed. If it
+                    # was a required one the provider fails at launch, as dyld
+                    # naming the library it could not find.
+                    continue
+                _refuse_linked_library(resolved, repository=repository)
+                if len(added) >= _MAX_LINKED_LIBRARIES:
+                    raise ContextError(
+                        "the local graph provider's runtime links to more shared libraries "
+                        "outside its install than this boundary is willing to expose; "
+                        "no generation was published"
+                    )
+                added[str(resolved)] = None
+                if str(referenced) != str(resolved):
+                    # Both spellings, for the same reason the executable has
+                    # two: a bind-mount boundary names a literal destination,
+                    # and dyld opens the path the image wrote down.
+                    added.setdefault(str(referenced), None)
+                pending.append(resolved)
+    return tuple(added)
+
+
+def _refuse_linked_library(resolved: Path, *, repository: Path) -> None:
+    """Refuse a derived dependency that is not a library this may expose."""
+    _refuse_broad_exposure(resolved, repository=repository)
+    try:
+        info = os.lstat(resolved)
+    except OSError:  # pragma: no cover - the caller has just seen it exist
+        raise ContextError(
+            "a shared library the local graph provider's runtime links to could not be "
+            "read while deriving the containment boundary; no generation was published"
+        ) from None
+    if not stat.S_ISREG(info.st_mode):
+        raise ContextError(
+            "the local graph provider's runtime links to something that is not a regular "
+            "file; refusing to expose it to the sandbox"
+        )
+    if info.st_size > _MAX_LINKED_LIBRARY_BYTES:
+        raise ContextError(
+            "a shared library the local graph provider's runtime links to is implausibly "
+            "large for one; refusing to expose it to the sandbox"
+        )
+    if not _trusted_library(resolved):
+        raise ContextError(
+            "a shared library the local graph provider's runtime links to is writable by "
+            "an account other than yours or root, so what the provider would load inside "
+            "the sandbox is not what this host installed; no generation was published"
+        )
+    # Last, and the only check that reads the candidate's contents rather than
+    # its metadata. Ownership and size say who wrote a file and how big it is,
+    # not what it is, and the name comes out of a load command in somebody
+    # else's image -- so without this the provider chooses which of the
+    # operator's files the boundary exposes by writing its own linker input.
+    # The candidate must say it is a shared library in its own header.
+    filetypes = _macho_filetypes(resolved)
+    if filetypes is None:
+        raise ContextError(
+            "the local graph provider's runtime names a dependency that is not a readable "
+            "Mach-O image; refusing to expose it to the sandbox"
+        )
+    if any(filetype not in _MACHO_DYLIB_FILETYPES for filetype in filetypes):
+        raise ContextError(
+            "the local graph provider's runtime names a dependency that is a Mach-O image "
+            "but not a shared library; refusing to expose it to the sandbox"
+        )
+
+
 def _provider_read_paths(command: str, *, repository: Path) -> tuple[str, ...]:
     """The install the pinned provider needs to be readable, and nothing beside it.
 
@@ -1640,7 +2198,16 @@ def _provider_read_paths(command: str, *, repository: Path) -> tuple[str, ...]:
     # out of *this* environment's own ``pyvenv.cfg`` rather than taken from the
     # interpreter Code Mower happens to be running under, which is a different
     # installation whenever the provider was pinned with a different Python.
-    return (*spellings, str(root), *_provider_base_prefixes(root, repository=repository))
+    prefixes = (str(root), *_provider_base_prefixes(root, repository=repository))
+    # Last, and derived from the prefixes rather than added to them: a prefix is
+    # not the whole runtime on a host whose interpreter links against libraries
+    # a package manager keeps somewhere else.
+    libraries = _linked_runtime_libraries(
+        [Path(prefix) for prefix in prefixes],
+        covered=[Path(prefix) for prefix in prefixes],
+        repository=repository,
+    )
+    return (*spellings, *prefixes, *libraries)
 
 
 #: Where an installed distribution records its own identity (PEP 376). The
@@ -1869,37 +2436,212 @@ def _verify_provider_installation(command: str, *, pin: GraphifyPin) -> None:
 #: The subcommand the evaluated release exposes, recorded in
 #: ``docs/graphify-evaluation.md``: the clean-room run indexed with
 #: ``extract --code-only --no-cluster --max-workers 4``. There is no
-#: ``--source``/``--output`` pair to hand it; ``extract`` reads the directory
-#: it is run in and writes its state beside those sources, which is why the
-#: child's working directory is the materialized copy and why the adapter
-#: collects an artifact afterwards rather than naming one up front.
+#: ``--source``/``--output`` pair to hand it; ``extract`` writes its state
+#: beside the sources it was pointed at, which is why the child's working
+#: directory is the materialized copy and why the adapter collects an artifact
+#: afterwards rather than naming one up front.
 _PROVIDER_EXTRACT = "extract"
 
-#: The provider's own record of what it processed. Completeness is read from
-#: here, never inferred from an exit status: the clean-room run recorded 54
-#: manifest entries requeued by a repeat that exited zero in 1.63 s.
-_PROVIDER_REPORT_NAMES = ("manifest.json", "index.json", "report.json")
+#: The scan target, which the pinned CLI requires and does not default.
+#:
+#: This module used to launch ``extract`` with the options alone, on the reading
+#: that a subcommand which writes beside its sources must also discover them
+#: from the working directory. The pinned CLI does not: it takes the target as
+#: the first positional after the subcommand, decides it has one only when that
+#: argument does not begin with ``-``, and exits 1 with ``must specify a path to
+#: scan or a --postgres DSN`` when it does not. Every real build therefore
+#: failed before extraction, and the failure arrived as the generic non-zero
+#: refusal rather than as anything naming the omission.
+#:
+#: ``.`` rather than the source root's absolute path: the child's working
+#: directory is already the materialized copy, so the relative spelling names
+#: exactly the tree this build means and names nothing about where that tree
+#: sits on the host. It must be passed *between* the subcommand and the options
+#: -- the CLI reads ``sys.argv[2]`` and nothing later -- and it is a path, so a
+#: bare ``.`` can never be mistaken for a flag the way a caller-supplied string
+#: could.
+_PROVIDER_SCAN_TARGET = "."
 
-#: Counters whose presence above zero means the provider did not finish. Any
-#: one of them, not all: a report that admits requeued entries is a partial
-#: build however healthy the rest of it looks.
-_INCOMPLETE_COUNTERS = ("requeued", "pending", "failed", "errors", "incomplete")
+#: The extensions the pinned provider's own ``detect.CODE_EXTENSIONS`` treats as
+#: code, transcribed from the hash-verified 0.9.58 wheel. This is the
+#: denominator's definition and it has to be the provider's, not a plausible
+#: one: a build is complete when every input the provider itself would dispatch
+#: was processed, and holding it to every tracked documentation file instead
+#: would make a correct run permanently partial. Nothing outside this set is
+#: counted against the run -- those inputs are deterministically not code to
+#: this pin, so they are skipped rather than missing.
+_PROVIDER_CODE_EXTENSIONS = frozenset({
+    ".py", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".ejs",
+    ".ets", ".go", ".rs", ".java", ".groovy", ".gradle", ".cpp", ".cc", ".cxx",
+    ".c", ".h", ".hpp", ".cu", ".cuh", ".metal", ".rb", ".rake", ".swift",
+    ".kt", ".kts", ".cs", ".scala", ".php", ".lua", ".luau", ".toc", ".zig",
+    ".ps1", ".psm1", ".psd1", ".ex", ".exs", ".m", ".mm", ".ml", ".mli", ".jl",
+    ".vue", ".svelte", ".astro", ".dart", ".v", ".sv", ".svh", ".sql", ".r",
+    ".f", ".F", ".f90", ".F90", ".f95", ".F95", ".f03", ".F03", ".f08", ".F08",
+    ".pas", ".pp", ".dpr", ".dpk", ".lpr", ".inc", ".dfm", ".lfm", ".lpk",
+    ".sh", ".bash", ".json", ".tf", ".tfvars", ".hcl", ".dm", ".dme", ".dmi",
+    ".dmm", ".dmf", ".sln", ".slnx", ".csproj", ".fsproj", ".vbproj", ".xaml",
+    ".razor", ".cshtml", ".cls", ".trigger", ".lisp", ".cl", ".lsp", ".asd",
+    ".robot", ".resource",
+})
 
-#: Where the provider reports how many files it actually indexed.
-_INDEXED_COUNTERS = ("indexed_files", "code_files", "files", "entries")
+#: Names the pinned ``detect.classify_file`` routes to code by *filename*,
+#: ahead of every suffix class, because ``manifest_ingest`` parses them
+#: deterministically (``PACKAGE_MANIFEST_NAMES``, compared lower-cased against
+#: the basename). Suffix membership alone misses all of them -- ``.yml``,
+#: ``.toml``, ``.mod`` and ``.xml`` are not in ``CODE_EXTENSIONS`` -- so a
+#: denominator built from extensions would let a package manifest the provider
+#: failed on drop out of the coverage question entirely.
+_PROVIDER_PACKAGE_MANIFEST_NAMES = frozenset({
+    "apm.yml", "apm.yaml", "pyproject.toml", "cargo.toml", "go.mod", "pom.xml",
+})
 
-#: An affirmative claim that the run finished, in either shape a report can
-#: carry one. Nothing else counts: an empty object, or one whose schema this
-#: adapter does not recognize, says nothing about completion and is therefore
-#: not evidence of it.
-_COMPLETION_FLAGS = ("complete", "completed", "finished")
-#: Narrow on purpose: a field that names the run's state, not one that might
-#: carry a path or a message, so an unrecognized value here is a real
-#: non-completion rather than an adapter that read the wrong field.
-_COMPLETION_STATUS_FIELDS = ("status", "state")
-_COMPLETION_STATUS_VALUES = frozenset(
-    {"complete", "completed", "success", "succeeded", "ok", "finished", "done"}
+#: The one compound suffix the pin tests before the simple one. ``.blade.php``
+#: already ends in a code extension, so this only decides *which* extractor the
+#: pin uses; it is named here because the classification below is meant to be
+#: readable against ``classify_file``'s own order rather than to be minimal.
+_PROVIDER_COMPOUND_CODE_SUFFIX = ".blade.php"
+
+#: ``detect._SHEBANG_CODE_INTERPRETERS``: the interpreters that make an
+#: *extensionless* tracked file code to this pin. ``classify_file`` reaches
+#: this branch before any extension test, so a CLI entry point with no suffix
+#: is dispatched exactly like a ``.py`` file and belongs in the denominator.
+_PROVIDER_SHEBANG_CODE_INTERPRETERS = frozenset({
+    "python", "python3", "python2",
+    "ruby", "perl", "node", "nodejs",
+    "bash", "sh", "dash", "zsh", "fish", "ksh", "tcsh",
+    "lua", "php", "julia", "Rscript",
+})
+
+#: ``extract._SHEBANG_DISPATCH``: the subset of the above that the pin has an
+#: extractor for. The remainder (``perl``, ``fish``, ``tcsh``, ``Rscript``) is
+#: classified as code and then deterministically contributes nothing.
+_PROVIDER_SHEBANG_EXTRACTORS = frozenset({
+    "python", "python2", "python3",
+    "bash", "sh", "dash", "zsh", "ksh",
+    "node", "nodejs", "ruby", "lua", "php", "julia",
+})
+
+#: The extensions in the pin's ``CODE_EXTENSIONS`` with no entry in
+#: ``extract._DISPATCH`` -- the exact set difference of the two staged tables.
+#: The pin warns about these itself (#1689: "classified as code but graphify
+#: has no AST extractor for their language"), dispatches them, and stamps them,
+#: because ``_get_extractor`` returning ``None`` short-circuits to
+#: ``{"nodes": [], "edges": []}`` with neither an ``error`` nor a ``skipped``
+#: marker, and the CLI's failed-source rule only clears rows for the two cases
+#: that carry one. They are counted and reported, never silently folded into
+#: the files this build says were indexed.
+_PROVIDER_UNSUPPORTED_EXTENSIONS = frozenset({".ejs", ".ets", ".r"})
+
+#: ``.m`` is the one suffix whose dispatch the pin decides from the *bytes*
+#: rather than the table: it is Objective-C or MATLAB/Octave, and
+#: ``_get_extractor`` returns ``None`` for a ``.m`` carrying no Objective-C
+#: directive (#1702) rather than force-parsing MATLAB through the ObjC grammar.
+#: The static table difference above cannot see that, so without this branch a
+#: MATLAB file would be counted as a file this build indexed on the strength of
+#: a stamped row alone -- and the row *is* stamped, because a ``None`` extractor
+#: short-circuits to ``{"nodes": [], "edges": []}`` carrying neither marker the
+#: failed-source rule looks for. It is code either way, so it stays in the
+#: denominator; what is decided here is only whether it contributed anything.
+_PROVIDER_OBJC_AMBIGUOUS_SUFFIX = ".m"
+
+#: ``extract._OBJC_HEADER_MARKERS``: the Objective-C-only directives the pin
+#: sniffs for, and the window it sniffs in (``_is_objc_header`` slices the first
+#: 256 KiB). A marker past that window is invisible to the pin too, so reading
+#: exactly that much decides the same way while staying bounded.
+_PROVIDER_OBJC_MARKERS = (
+    b"@interface", b"@protocol", b"@implementation", b"@import", b"#import",
 )
+_OBJC_PROBE_BYTES = 256 * 1024
+
+#: How much of an extensionless input is read to find its shebang. The pin
+#: reads the same 256 bytes and keeps only the first line.
+_SHEBANG_PROBE_BYTES = 256
+
+#: A manifest row's content hash, as the pin computes it: ``_md5_file`` streams
+#: the file and returns a hex digest, or the empty string when the read failed.
+#: So a well-formed 32-character digest is the provider's own statement that it
+#: read those bytes, and anything else -- blank, short, uppercase, non-string --
+#: is a row that proves nothing about the file it names.
+_MANIFEST_HASH = re.compile(r"[0-9a-f]{32}\Z")
+
+#: The row fields the pinned ``save_manifest`` writes. Read as a shape check
+#: only: a mapping missing them is not the document this adapter can classify.
+_MANIFEST_ROW_FIELDS = ("mtime", "seen", "ast_hash", "semantic_hash")
+
+#: How much of a materialized input is hashed at a time while deriving what the
+#: provider's row for it must say. Bounded by the census, which is already
+#: bounded by ``MAX_TRACKED_BYTES``, so this only bounds resident memory.
+_MANIFEST_DIGEST_CHUNK_BYTES = 1024 * 1024
+
+
+def _materialized_digest(path: Path) -> str:
+    """The pin's own content digest of one materialized input, or ``""``.
+
+    ``_md5_file`` in the pinned 0.9.58 wheel streams the file and returns the
+    MD5 hex digest of its bytes -- the same digest the fresh contained
+    extraction's manifest carried for both Python inputs of the public fixture,
+    matching their exact bytes. So this is not a re-implementation of the
+    provider's AST work: it is the one thing the provider's row is a statement
+    *about*, computed here so the statement can be checked rather than believed.
+
+    ``""`` for anything that cannot be read as a regular file, which is a
+    refusal rather than a pass: a row this build cannot check is a row it cannot
+    count.
+    """
+    digest = hashlib.md5(usedforsecurity=False)
+    try:
+        if path.is_symlink() or not path.is_file():
+            return ""
+        with path.open("rb") as stream:
+            while True:
+                chunk = stream.read(_MANIFEST_DIGEST_CHUNK_BYTES)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError:
+        return ""
+    return digest.hexdigest()
+
+
+def _materialized_digests(
+    source_root: Path,
+    census: TrackedCensus | None,
+    inputs: _ProviderInputs | None = None,
+) -> dict[str, str] | None:
+    """What every eligible code input's manifest row must say, before the run.
+
+    Taken from the materialized copy *before* the provider is launched, which is
+    the only moment those bytes are still exactly what this build gave it. After
+    the run the same tree also holds provider output, and a digest read then
+    would be checking the provider's manifest against whatever the provider left
+    behind.
+
+    ``None`` when there is no census, because there is then nothing to enumerate
+    -- that case is already the partial one. An input the copy cannot be read
+    for is simply absent from the map, and ``_read_completeness`` keeps the run
+    partial for it rather than accepting the row unchecked.
+
+    Keyed by the exact Git tree path, never by a folded spelling of it. Two
+    tracked names that differ only by Unicode normalization are two files with
+    two blobs, and a map keyed on their shared normal form holds one digest for
+    both -- so the expected bytes of one input would be read from the other's.
+    Normalization is a question about what the *provider* named its rows, and it
+    is asked once, in ``_read_completeness``, against this exact denominator.
+    """
+    if census is None:
+        return None
+    if inputs is None:
+        inputs = _provider_inputs(census, source_root)
+    digests: dict[str, str] = {}
+    for path in inputs.dispatched:
+        host = _census_host_path(source_root, path)
+        if host is None:
+            continue
+        digest = _materialized_digest(host)
+        if digest:
+            digests[path] = digest
+    return digests
 
 
 def _refuse_pre_existing_provider_state(source_root: Path) -> None:
@@ -1921,111 +2663,496 @@ def _refuse_pre_existing_provider_state(source_root: Path) -> None:
             )
 
 
-def _provider_state_directory(source_root: Path) -> Path:
-    """The state directory the provider wrote during this run.
+def _provider_output_directory(source_root: Path) -> Path:
+    """The output root the provider wrote during this run.
 
-    Only reachable after ``_refuse_pre_existing_provider_state``, so whichever
-    of the two names is present was created by the run that just finished.
+    Exactly one name is collected -- the pin's own ``graphify-out`` -- and it is
+    resolved beneath the materialized copy, never from a path or an environment
+    variable a caller could supply. Only reachable after
+    ``_refuse_pre_existing_provider_state``, so what is found here was created
+    by the run that just finished.
+
+    A second provider root beside it is refused rather than ignored. This
+    adapter cannot tell which of two roots a generation should be cut from, and
+    picking one would publish an artifact whose provenance is a guess; a
+    ``.graphify/`` that appeared next to ``graphify-out/`` also says the run did
+    something other than the single contained extraction that was launched.
     """
-    for name in _PROVIDER_STATE_DIRECTORIES:
-        candidate = source_root / name
-        if candidate.is_dir() and not candidate.is_symlink():
-            return candidate
-    raise ContextError("local graph provider wrote no index state; no generation was published")
+    directory = source_root / _PROVIDER_OUTPUT_DIRECTORY
+    competing = [
+        name
+        for name in _PROVIDER_STATE_DIRECTORIES
+        if name != _PROVIDER_OUTPUT_DIRECTORY
+        and ((source_root / name).exists() or (source_root / name).is_symlink())
+    ]
+    if competing:
+        raise ContextError(
+            "local graph provider wrote more than one output root; no generation was published"
+        )
+    if directory.is_symlink() or not directory.is_dir():
+        raise ContextError("local graph provider wrote no output; no generation was published")
+    graph = directory / _PROVIDER_GRAPH_NAME
+    if graph.is_symlink() or not graph.is_file():
+        raise ContextError(
+            "local graph provider left no graph document; no generation was published"
+        )
+    return directory
 
 
-def _provider_report(state_directory: Path) -> Mapping[str, Any] | None:
-    """The provider's completion evidence, or ``None`` if it left none.
+def _provider_manifest(output_directory: Path) -> Mapping[str, Any] | None:
+    """The provider's own record of what it processed, or ``None`` if unreadable.
 
-    Bounded at the stream, not after the fact: the report is provider output of
-    unknown size, and reading it whole to slice it afterwards would let it
+    Bounded at the stream, not after the fact: the manifest is provider output
+    of unknown size, and reading it whole to slice it afterwards would let it
     exhaust this process before any budget was consulted. Anything longer than
     a manifest is rejected outright rather than parsed from a prefix, which
     would be a different document than the one the provider wrote.
     """
-    for name in _PROVIDER_REPORT_NAMES:
-        path = state_directory / name
-        if not path.is_file() or path.is_symlink():
-            continue
-        try:
-            with path.open("rb") as stream:
-                raw = stream.read(MAX_MANIFEST_BYTES + 1)
-        except OSError:
-            return None
-        if len(raw) > MAX_MANIFEST_BYTES:
-            return None
-        try:
-            payload = json.loads(raw)
-        except ValueError:
-            return None
-        return payload if isinstance(payload, Mapping) else None
-    return None
+    path = output_directory / _PROVIDER_MANIFEST_NAME
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_MANIFEST_BYTES + 1)
+    except OSError:
+        return None
+    if len(raw) > MAX_MANIFEST_BYTES:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, Mapping) else None
 
 
-def _completion_claim(report: Mapping[str, Any]) -> bool | None:
-    """``True`` finished, ``False`` denied it, ``None`` said nothing either way."""
-    claim: bool | None = None
-    for name in _COMPLETION_FLAGS:
-        value = report.get(name)
-        if value is True:
-            claim = True
-        elif value is False:
-            return False
-    for field in _COMPLETION_STATUS_FIELDS:
-        value = report.get(field)
-        if not isinstance(value, str):
-            continue
-        if value.strip().casefold() in _COMPLETION_STATUS_VALUES:
-            claim = True
-        else:
-            # A status the adapter does not recognize is not a completion.
-            return False
-    return claim
+@dataclass(frozen=True)
+class _ProviderInputs:
+    """How the pin would classify this census, decided before it is launched.
 
-
-def _indexed_count(report: Mapping[str, Any]) -> int | None:
-    """How many files the provider says it indexed, if it says at all."""
-    for counter in _INDEXED_COUNTERS:
-        value = report.get(counter)
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            return value
-    return None
-
-
-def _read_completeness(report: Mapping[str, Any] | None) -> IndexResult:
-    """Classify a provider run from its own report, defaulting to partial.
-
-    Absent or unreadable evidence is *not* evidence of a complete build, and
-    neither is a readable report that says nothing. ``complete`` is reached
-    only by a report shaped the way this adapter understands one: an
-    affirmative completion claim, a count of what was indexed, and no counter
-    admitting work left over. An empty object, an unrecognized schema, and a
-    document that happens to parse all stay ``partial``, which
-    ``graph_status`` refuses by default. The provider owns no provenance (the
-    evaluation records this as the first product constraint), so that refusal
-    is the failure an operator can act on; silently calling it complete is the
-    one they cannot.
+    ``dispatched`` is the denominator: every tracked path ``classify_file``
+    would call code, in census order. ``unsupported`` is the subset of those the
+    pin then has no extractor for, which is a real and reportable outcome rather
+    than a failure. ``unclassified`` is everything the classification could not
+    decide -- an extensionless input the copy could not be read for, or a
+    shebang spelling this adapter refuses to guess at -- and it keeps the run
+    partial, because an input nobody can classify is an input nobody can say was
+    covered.
     """
-    if report is None:
-        return IndexResult(completeness=PARTIAL, notes=("provider left no readable completion report",))
+
+    dispatched: tuple[str, ...] = ()
+    unsupported: frozenset[str] = frozenset()
+    unclassified: tuple[str, ...] = ()
+
+
+def _census_host_path(source_root: Path, path: str) -> Path | None:
+    """Where a census path lives in the materialized copy, or ``None``.
+
+    ``read_tracked_census`` reads Git's own index paths, which are relative and
+    carry no traversal segment. Held to that here anyway, because this is the
+    only place a census path is turned back into a host path, and a join is not
+    the place to discover otherwise.
+    """
+    parts = PurePosixPath(path).parts
+    if not parts or any(part in ("", ".", "..", "/") for part in parts):
+        return None
+    return source_root.joinpath(*parts)
+
+
+def _shebang_interpreter(path: Path) -> tuple[str | None, bool]:
+    """``(interpreter, resolved)`` for an extensionless input's first line.
+
+    ``(None, True)`` is a decision: there is no shebang, so ``classify_file``
+    would not call this file code. ``(None, False)`` is a refusal: the bytes
+    could not be read, or the line is one of the ``env(1)`` spellings the pin
+    resolves through option parsing this adapter deliberately does not
+    reimplement (``-S``/``--split-string`` and friends). A refusal is carried as
+    *unclassified* rather than guessed either way, because guessing "not code"
+    would drop a real input out of the denominator and guessing "code" would
+    demand a row for a file the pin never dispatched.
+
+    Only the simple, unambiguous ``env`` forms are resolved here: leading
+    ``NAME=value`` assignments followed by the interpreter, which is what a
+    tracked script ordinarily carries.
+    """
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None, False
+        with path.open("rb") as stream:
+            head = stream.read(_SHEBANG_PROBE_BYTES)
+    except OSError:
+        return None, False
+    if not head.startswith(b"#!"):
+        return None, True
+    line = head.split(b"\n")[0].decode(errors="replace")[2:].strip()
+    try:
+        parts = shlex.split(line)
+    except ValueError:
+        return None, False
+    if not parts:
+        return None, True
+    interpreter = PurePosixPath(parts[0].replace("\\", "/")).name
+    if interpreter != "env":
+        return interpreter, True
+    for argument in parts[1:]:
+        if argument.startswith("-"):
+            # An option-carrying ``env`` line. The pin has a full parser for
+            # these; this one says so rather than pretending to.
+            return None, False
+        if "=" in argument:
+            continue
+        return PurePosixPath(argument.replace("\\", "/")).name, True
+    return None, True
+
+
+def _objc_source(path: Path) -> tuple[bool, bool]:
+    """``(objective_c, resolved)`` for one materialized ``.m`` input.
+
+    ``(False, True)`` is a decision: the bytes carry no Objective-C directive,
+    so the pin's ``_get_extractor`` returns ``None`` for this file and it is
+    dispatched, stamped, and contributes nothing. ``(False, False)`` is a
+    refusal: the copy could not be read here, so which way the pin decided is
+    unknown and the caller carries the input as unclassified rather than
+    guessing. The pin's own sniff answers ``False`` on a read error, but that is
+    a statement about *its* read; this adapter failing to read the same bytes
+    proves nothing about what the provider was shown.
+    """
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False, False
+        with path.open("rb") as stream:
+            head = stream.read(_OBJC_PROBE_BYTES)
+    except OSError:
+        return False, False
+    return any(marker in head for marker in _PROVIDER_OBJC_MARKERS), True
+
+
+def _provider_inputs(
+    census: TrackedCensus, source_root: Path | None = None
+) -> _ProviderInputs:
+    """Classify the census the way the pinned ``detect.classify_file`` would.
+
+    In its order, which is the part suffix membership gets wrong: a package
+    manifest is routed by *filename* before any extension is looked at, and an
+    extensionless file is routed by its *shebang* before the extension table is
+    reached at all. A denominator built from ``CODE_EXTENSIONS`` alone drops
+    both, so a ``pyproject.toml`` or a ``#!/usr/bin/env python3`` CLI the
+    provider failed on could be missing from the manifest while an unrelated
+    ``.py`` file let the run claim it was complete.
+
+    Case is tried both ways for the extension test because the pin's set carries
+    both ``.f90`` and ``.F90``; matching the spelling first and the lower-cased
+    suffix second can only widen the denominator, which is the direction that
+    refuses rather than over-claims.
+
+    ``source_root`` is the materialized copy, read *before* the provider is
+    launched -- the only moment those bytes are still exactly what this build
+    handed over. Without it no extensionless input and no ``.m`` can be
+    classified, so each of them is unclassified and the run stays partial.
+
+    Two dispatch questions are answered from those bytes rather than from a
+    table: which interpreter an extensionless script names, and whether a ``.m``
+    is Objective-C or MATLAB. The second decides only whether a code input had
+    an extractor at all, never whether it is code -- ``.m`` is in the pin's
+    extension table either way.
+    """
+    dispatched: list[str] = []
+    unsupported: set[str] = set()
+    unclassified: list[str] = []
+    for entry in census.entries:
+        path = entry.path
+        pure = PurePosixPath(path)
+        name = pure.name.lower()
+        if name in _PROVIDER_PACKAGE_MANIFEST_NAMES or name.endswith(
+            _PROVIDER_COMPOUND_CODE_SUFFIX
+        ):
+            dispatched.append(path)
+            continue
+        suffix = pure.suffix
+        if not suffix:
+            host = _census_host_path(source_root, path) if source_root is not None else None
+            if host is None:
+                unclassified.append(path)
+                continue
+            interpreter, resolved = _shebang_interpreter(host)
+            if not resolved:
+                unclassified.append(path)
+            elif interpreter in _PROVIDER_SHEBANG_CODE_INTERPRETERS:
+                dispatched.append(path)
+                if interpreter not in _PROVIDER_SHEBANG_EXTRACTORS:
+                    unsupported.add(path)
+            continue
+        if suffix in _PROVIDER_CODE_EXTENSIONS or suffix.lower() in _PROVIDER_CODE_EXTENSIONS:
+            dispatched.append(path)
+            if suffix.lower() in _PROVIDER_UNSUPPORTED_EXTENSIONS:
+                unsupported.add(path)
+            elif suffix.lower() == _PROVIDER_OBJC_AMBIGUOUS_SUFFIX:
+                # The one dispatch the pin decides from the bytes. Read from the
+                # same pre-launch copy every other classification here reads, so
+                # the answer is about what the provider was handed.
+                host = _census_host_path(source_root, path) if source_root is not None else None
+                objective_c, resolved = _objc_source(host) if host is not None else (False, False)
+                if not resolved:
+                    unclassified.append(path)
+                elif not objective_c:
+                    unsupported.add(path)
+    return _ProviderInputs(tuple(dispatched), frozenset(unsupported), tuple(unclassified))
+
+
+def _census_normalization_collisions(census: TrackedCensus) -> frozenset[str]:
+    """Normal forms that more than one distinct tracked path folds onto.
+
+    Git's tree is a set of exact byte paths, and two of them can be canonically
+    equivalent without being equal: ``café.py`` spelled with U+00E9 and the same
+    name spelled ``e`` + U+0301 are two entries, two blobs and two files, and a
+    Linux checkout carries both at once. The manifest this build reads back is
+    keyed by name, so those two inputs are the one case where a name cannot
+    identify an input on its own.
+
+    Taken from the whole census rather than from the dispatched subset, because
+    the collapse this exists to catch is a property of the tracked names, and an
+    eligible input colliding with a tracked file the pin would not dispatch is
+    the same ambiguity. The census is immutable evidence taken before the launch,
+    so a provider that folded the pair into one manifest row cannot hide that
+    they were two. Bounded by the census, which ``read_tracked_census`` has
+    already bounded.
+    """
+    seen: dict[str, str] = {}
+    collided: set[str] = set()
+    for entry in census.entries:
+        folded = unicodedata.normalize("NFC", entry.path)
+        if seen.setdefault(folded, entry.path) != entry.path:
+            collided.add(folded)
+    return frozenset(collided)
+
+
+def _manifest_keys_for(
+    path: str, rows: Mapping[str, Any], folded: Mapping[str, Sequence[str]]
+) -> Sequence[str]:
+    """Which manifest keys could be a record of ``path``.
+
+    Exact identity first: a key spelled exactly as the tracked path names one
+    input and no other, whatever else the manifest carries, so it is never
+    reached past. The normalized fallback exists for the ordinary macOS case,
+    where the copy's filesystem hands the provider a canonically equivalent
+    spelling of the one name it was given, and it answers only when exactly one
+    key folds onto that name -- more than one is two records this build cannot
+    attribute, and the caller keeps the run partial rather than picking one.
+    """
+    if path in rows:
+        return (path,)
+    return folded.get(unicodedata.normalize("NFC", path), ())
+
+
+def _read_completeness(
+    manifest: Mapping[str, Any] | None,
+    census: TrackedCensus | None,
+    digests: Mapping[str, str] | None = None,
+    inputs: _ProviderInputs | None = None,
+) -> IndexResult:
+    """Classify a provider run against its own manifest, defaulting to partial.
+
+    The pinned ``save_manifest`` writes a flat mapping of repository-relative
+    POSIX path to ``{mtime, seen, ast_hash, semantic_hash}``. It is not a
+    completion report and carries no flag or count, so completeness is a
+    coverage question: did every input this pin would dispatch come back with a
+    hash proving the provider read its bytes?
+
+    The denominator is the immutable materialized census classified the way
+    ``detect.classify_file`` classifies it -- filename-routed package manifests
+    first, then extensionless shebang scripts, then the extension table (see
+    ``_provider_inputs``). Inputs outside that classification are
+    deterministically not code to this pin and are skipped, not missing.
+    Everything else is counted, and a
+    file is processed only when its row carries a well-formed ``ast_hash`` *and
+    that hash is the digest of the bytes this build actually handed the
+    provider*. A well-formed digest alone says a hash-shaped string is present;
+    only the comparison says it is a hash of this input. Without it a row
+    carried over from another tree, another revision, or a resumed cache reads
+    as proof of work on bytes the provider was never shown -- and the digests
+    come from ``_materialized_digests``, taken before the launch, so they cannot
+    have been influenced by what the run wrote. A row whose digest disagrees, and
+    an input the copy could not be re-read for, both stay partial.
+
+    What a stamped row is evidence *of* comes from the pin's own
+    post-extraction writer rule, staged in ``extract.py`` and ``cli.py``. After
+    the run, ``_failed_sources`` is assembled from the per-file results and the
+    CLI clears (``clear_ast``) exactly those rows; every other dispatched input
+    is stamped. A result lands in ``_failed_sources`` when it carries an
+    ``error``, or when its extractor produced zero nodes. It does **not** when:
+
+    * ``_get_extractor`` returned ``None`` -- the file short-circuits to
+      ``{"nodes": [], "edges": []}`` with neither marker, so a code-classified
+      input the pin has no extractor for is stamped while contributing nothing
+      (the pin's own #1689 warning); or
+    * the extractor declined by design -- ``extractors/json_config`` returns a
+      ``skipped`` marker for data JSON and for a non-object root, and the CLI
+      skips those deliberately so they are not requeued forever (#2879).
+
+    So a stamped, matching row proves the provider read those exact bytes and
+    did not fail on them. It does not prove nodes, and it is not read here as
+    if it did. The deterministically unsupported dispatch is counted and
+    reported separately (``unsupported_inputs``) rather than folded into
+    ``indexed_files``, and zero nodes for a file whose row is stamped is a
+    complete *read* of that file and nothing more.
+
+    The boundary, plainly. ``classify_file`` is the eligibility oracle: what it
+    deterministically calls not-code -- every suffix outside its registry
+    included -- is not in the denominator and does not make a run partial, so
+    there is no separate count of it. ``unsupported_inputs`` counts the inputs
+    it *does* call code that then reach a dispatch the pin has no extractor for:
+    the static table difference, a code shebang with no ``_SHEBANG_DISPATCH``
+    entry, and a ``.m`` whose bytes carry no Objective-C directive. Anything
+    else is partial: an eligible code input that failed, one whose postcondition
+    is unknown, one whose row disagrees with the bytes, and one whose zero-node
+    result cannot be told apart from a failure.
+
+    Names, and the one place they are not identities. The denominator is keyed
+    by exact Git tree path, and so is the digest map: two tracked names that are
+    canonically equivalent without being equal are two entries with two blobs,
+    coexisting in any Linux checkout, and folding them together would let one
+    input's stamped row and expected digest answer for the other -- a blank row
+    for a failed extraction overwritten by a successful twin, reported as two
+    files indexed. Unicode normalization survives only as what it was for: the
+    macOS case where the copy's filesystem hands the provider a canonically
+    equivalent spelling of the single name it was given. So a manifest key that
+    matches an input exactly is that input's record, and the normalized fallback
+    answers only when exactly one key folds onto it and no other tracked name
+    shares its normal form (``_census_normalization_collisions``,
+    ``_manifest_keys_for``). Both ambiguities are counted and stay partial
+    rather than resolved by position, because picking the first or the last
+    colliding row is picking which failure to not report.
+
+    Blank rows are the cases the pin's rule makes blank: an extractor error or
+    an anomalous zero-node extract. They stay partial here. The clean-room
+    repeat that exited zero in 1.63 s requeued 54 entries; the retained
+    evidence for that run carries *stamped* rows, so requeueing there is not
+    observable as a blank row and nothing in this adapter claims it is. That
+    remains an observed limitation of the incremental gate rather than a shape
+    this module reports on.
+
+    Nothing upgrades a run: the exit status, a non-empty graph, and the raw
+    extraction's ``extracted_sources`` are all statements about what was
+    *dispatched*, failures included, so none of them is success evidence.
+    Missing evidence, an unparseable manifest, a shape this adapter does not
+    recognize, an input it could not classify, and a row that cannot be told
+    apart from a failure all stay ``partial``, which ``graph_status`` refuses
+    by default. The provider owns no provenance (the evaluation records this as
+    the first product constraint), so that refusal is the failure an operator
+    can act on; silently calling it complete is the one they cannot.
+    """
+    if census is None:
+        return IndexResult(
+            completeness=PARTIAL,
+            notes=("build recorded no census to check the provider's manifest against",),
+        )
+    if manifest is None:
+        return IndexResult(
+            completeness=PARTIAL,
+            notes=("provider left no readable manifest of what it processed",),
+        )
+    if digests is None:
+        return IndexResult(
+            completeness=PARTIAL,
+            notes=("build recorded no input digests to check the provider's manifest against",),
+        )
+    if inputs is None:
+        inputs = _provider_inputs(census)
+    eligible = inputs.dispatched
+    rows: dict[str, Any] = {}
+    folded_keys: dict[str, list[str]] = {}
+    malformed_rows = 0
+    for key, row in manifest.items():
+        if not isinstance(key, str):
+            malformed_rows += 1
+            continue
+        if not isinstance(row, Mapping) or any(
+            field not in row for field in _MANIFEST_ROW_FIELDS
+        ):
+            malformed_rows += 1
+            continue
+        rows[key] = row
+        folded_keys.setdefault(unicodedata.normalize("NFC", key), []).append(key)
+    collisions = _census_normalization_collisions(census)
+    missing = 0
+    unstamped = 0
+    unreadable = 0
+    mismatched = 0
+    processed = 0
+    unsupported = 0
+    collided = 0
+    ambiguous = 0
+    for path in eligible:
+        if unicodedata.normalize("NFC", path) in collisions:
+            # Two tracked names this build cannot tell apart by name, and the
+            # manifest is keyed by name. Whichever row is found, one successful
+            # input would be standing in as proof for the other, so neither is
+            # counted and the run stays partial.
+            collided += 1
+            continue
+        keys = _manifest_keys_for(path, rows, folded_keys)
+        if len(keys) > 1:
+            ambiguous += 1
+            continue
+        row = rows[keys[0]] if keys else None
+        if row is None:
+            missing += 1
+            continue
+        digest = row.get("ast_hash")
+        if not isinstance(digest, str) or not _MANIFEST_HASH.fullmatch(digest):
+            unstamped += 1
+            continue
+        expected = digests.get(path)
+        if expected is None:
+            # The row is well formed and this build cannot say what it should
+            # have contained. Counting it would be believing the row on its own
+            # word, which is the whole thing the comparison exists to stop.
+            unreadable += 1
+        elif digest != expected:
+            mismatched += 1
+        elif path in inputs.unsupported:
+            # Read, not failed, and deterministically not extractable by this
+            # pin. Counted on its own line rather than as a file this build
+            # indexed, which it is not.
+            unsupported += 1
+        else:
+            processed += 1
     notes: list[str] = []
-    for counter in _INCOMPLETE_COUNTERS:
-        value = report.get(counter)
-        if value is True:
-            notes.append(f"provider reported {counter}")
-        elif isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            notes.append(f"provider reported {value} {counter}")
-    claim = _completion_claim(report)
-    if claim is False:
-        notes.append("provider did not report the extraction as complete")
-    elif claim is None:
-        notes.append("provider report carried no completion claim")
-    indexed = _indexed_count(report)
-    if indexed is None:
-        notes.append("provider report did not say how many files it indexed")
+    if malformed_rows:
+        notes.append(f"provider manifest carried {malformed_rows} unreadable records")
+    if missing:
+        notes.append(f"provider manifest does not account for {missing} code files")
+    if unstamped:
+        notes.append(f"provider left {unstamped} code files unprocessed or requeued")
+    if unreadable:
+        notes.append(f"build could not re-read {unreadable} code files to check their hashes")
+    if mismatched:
+        notes.append(f"provider hashed {mismatched} code files that are not the bytes it was given")
+    if collided:
+        notes.append(
+            f"the census carried {collided} code files whose tracked names differ from "
+            "another tracked name only by Unicode normalization"
+        )
+    if ambiguous:
+        notes.append(
+            f"provider manifest carried more than one candidate record for {ambiguous} code files"
+        )
+    if inputs.unclassified:
+        notes.append(
+            f"build could not classify {len(inputs.unclassified)} tracked inputs "
+            "against this provider's own dispatch"
+        )
+    if not eligible:
+        notes.append("the census carried no code files this provider would index")
     if notes:
-        return IndexResult(completeness=PARTIAL, indexed_files=indexed or 0, notes=tuple(notes))
-    return IndexResult(completeness=COMPLETE, indexed_files=indexed)
+        return IndexResult(
+            completeness=PARTIAL,
+            indexed_files=processed,
+            unsupported_inputs=unsupported,
+            notes=tuple(notes),
+        )
+    return IndexResult(
+        completeness=COMPLETE, indexed_files=processed, unsupported_inputs=unsupported
+    )
 
 
 class _BoundedBuffer(io.BytesIO):
@@ -2302,9 +3429,10 @@ def subprocess_indexer(
     callable that would run whatever a later request's pin happened to name.
 
     The argv is the interface the adopt decision evaluated, not a guess at a
-    conventional one: ``extract`` with the required restrictions and then the
-    pinned options, in the materialized copy. Everything the provider leaves
-    behind is then collected and classified from its own report.
+    conventional one: ``extract``, the scan target the pinned CLI requires, the
+    required restrictions and then the pinned options, in the materialized copy.
+    Everything the provider leaves behind is then collected and classified from
+    its own report.
     """
     command = _resolved_executable(executable)
     if containment_mechanism() is None:
@@ -2335,6 +3463,19 @@ def subprocess_indexer(
                 "against; no generation was published"
             )
         _refuse_pre_existing_provider_state(request.source_root)
+        # Before the launch, and only here. These are the bytes this build hands
+        # the provider; once the child has run, the same tree also holds the
+        # provider's own output, and a digest taken then would be checking the
+        # provider's manifest against the provider's own leavings.
+        # Classified and digested from the copy *before* the launch: after the
+        # run the same tree also holds provider output, and a shebang read then
+        # would be classifying whatever the provider left behind.
+        inputs = (
+            _provider_inputs(request.census, request.source_root)
+            if request.census is not None
+            else None
+        )
+        digests = _materialized_digests(request.source_root, request.census, inputs)
         # Built per run, because the boundary is a function of what this build
         # exposes: the materialized copy and the build's own scratch areas are
         # writable, the pinned provider's install is readable, and nothing else
@@ -2351,7 +3492,7 @@ def subprocess_indexer(
         options = _extraction_options(request.pin.options)
         try:
             returncode = _run_contained(
-                [*sandbox, command, _PROVIDER_EXTRACT, *options],
+                [*sandbox, command, _PROVIDER_EXTRACT, _PROVIDER_SCAN_TARGET, *options],
                 environment=request.environment,
                 cwd=str(request.source_root),
                 timeout=EXTRACTION_TIMEOUT_SECONDS,
@@ -2366,9 +3507,11 @@ def subprocess_indexer(
             raise ContextError("local graph provider could not be run from its pinned install") from None
         if returncode != 0:
             raise ContextError("local graph provider failed; no generation was published")
-        state_directory = _provider_state_directory(request.source_root)
-        result = _read_completeness(_provider_report(state_directory))
-        _write_private_file(request.output_path, _pack_state(state_directory))
+        output_directory = _provider_output_directory(request.source_root)
+        result = _read_completeness(
+            _provider_manifest(output_directory), request.census, digests, inputs
+        )
+        _write_private_file(request.output_path, _pack_state(output_directory))
         return result
 
     return run
@@ -2399,6 +3542,13 @@ class BuildManifest:
     completeness: str
     skipped_paths: int
     indexed_files: int
+    #: Inputs the provider classified as code and deterministically could not
+    #: extract. Deliberately *not* folded into ``skipped_paths``, which counts
+    #: tracked entries this build declined to materialize at all (symlinks,
+    #: submodules, private state). Those two numbers answer different questions
+    #: -- what this build withheld, and what the provider could not read --
+    #: and an operator who needs to act on one cannot act on their sum.
+    unsupported_inputs: int = 0
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -2416,6 +3566,7 @@ class BuildManifest:
             "completeness": self.completeness,
             "skipped_paths": self.skipped_paths,
             "indexed_files": self.indexed_files,
+            "unsupported_inputs": self.unsupported_inputs,
         }
 
     def shareable_summary(self) -> dict[str, Any]:
@@ -2432,11 +3583,21 @@ class BuildManifest:
             "graph_digest": self.graph_digest,
             "graph_bytes": self.graph_bytes,
             "completeness": self.completeness,
+            "unsupported_inputs": self.unsupported_inputs,
         }
 
 
 def load_manifest(payload: Mapping[str, Any]) -> BuildManifest:
-    """Validate a manifest. Every unreadable shape is a refusal, not a default."""
+    """Validate a manifest. Every unreadable shape is a refusal, not a default.
+
+    ``unsupported_inputs`` is accepted as optional so a generation published
+    before it existed still loads. It is always written, so the only manifests
+    that take the default are older ones, and ``0`` is the honest reading of
+    them: that build never counted the provider's unsupported dispatch, and a
+    zero says the same thing a missing key does. Nothing else is optional --
+    an unrecognized key is still a refusal, so this widens what loads by
+    exactly one name.
+    """
     if not isinstance(payload, Mapping):
         raise ContextError("local graph manifest must be an object")
     expected = {
@@ -2444,7 +3605,9 @@ def load_manifest(payload: Mapping[str, Any]) -> BuildManifest:
         "tracked_files", "tracked_bytes", "census_digest", "graph_digest",
         "graph_bytes", "completeness", "skipped_paths", "indexed_files",
     }
-    if set(payload) != expected:
+    optional = {"unsupported_inputs"}
+    present = set(payload)
+    if not expected <= present or not present <= (expected | optional):
         raise ContextError("local graph manifest fields are missing or unrecognized")
     if payload["schema"] != MANIFEST_SCHEMA:
         raise ContextError("unsupported local graph manifest schema")
@@ -2474,6 +3637,9 @@ def load_manifest(payload: Mapping[str, Any]) -> BuildManifest:
         completeness=completeness,
         skipped_paths=_size(payload["skipped_paths"], MAX_SKIPPED_PATHS),
         indexed_files=_size(payload["indexed_files"], MAX_TRACKED_FILES),
+        unsupported_inputs=_size(
+            payload.get("unsupported_inputs", 0), MAX_TRACKED_FILES
+        ),
     )
 
 
@@ -3229,6 +4395,9 @@ def build_graph(
                     # at, so what the provider is told to use and what it is
                     # allowed to write are one decision rather than two.
                     writable=(home, temporary),
+                    # The very census those bytes were written from, so the
+                    # indexer measures coverage against what it was given.
+                    census=census,
                 )
             )
             if not isinstance(result, IndexResult) or result.completeness not in (COMPLETE, PARTIAL):
@@ -3257,6 +4426,9 @@ def build_graph(
                 completeness=result.completeness,
                 skipped_paths=len(census.skipped),
                 indexed_files=min(_size(result.indexed_files, MAX_TRACKED_FILES), census.file_count),
+                unsupported_inputs=min(
+                    _size(result.unsupported_inputs, MAX_TRACKED_FILES), census.file_count
+                ),
             )
             published = state.publish(manifest, artifact)
             if not keep_previous:
@@ -3473,6 +4645,8 @@ def render_status_text(status: GenerationStatus) -> str:
                 f"  census:     {manifest.census_digest}",
                 f"  graph:      {manifest.graph_digest} ({manifest.graph_bytes} bytes)",
                 f"  complete:   {manifest.completeness}",
+                f"  indexed:    {manifest.indexed_files} files "
+                f"({manifest.unsupported_inputs} unsupported by this provider)",
             ]
         )
     return "\n".join(lines) + "\n"

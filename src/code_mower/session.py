@@ -13,7 +13,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import context_guided, context_prepare, context_session, remote_session_cli, session_current, session_lease
+from . import (
+    context_graph_query, context_guided, context_prepare, context_session,
+    remote_session_cli, session_current, session_lease,
+)
 from .config import ConfigError, _format_issues, load_config, validate_config
 from .context_contract import ContextError, normalize_policy
 from .context_store import ContextStore
@@ -410,7 +413,12 @@ def _run_context_command(args: argparse.Namespace) -> tuple[dict[str, Any], int]
             )
         return {"private_text": text}, 0
     tracker = source.get("tracker")
-    retrieval_source = (
+    # ``--question`` is the local repository graph's retrieval source: that
+    # connection answers one bounded question about a named symbol or path, and
+    # the question is the operator's to choose. It takes precedence over the
+    # tracker-derived source, which only means anything to an organization
+    # search; a checkout cannot be connected to both at one connection name.
+    retrieval_source = getattr(args, "question", None) or (
         "jira" if isinstance(tracker, Mapping) and tracker.get("kind") == "jira_cloud" else None
     )
     return context_prepare.prepare(
@@ -511,6 +519,10 @@ def main(argv: list[str] | None = None) -> int:
     context_prepare_parser.add_argument(
         "--query-stdin", action="store_true",
         help="read a private query override from stdin; the selected work item is the default",
+    )
+    context_prepare_parser.add_argument(
+        "--question", choices=context_graph_query.QUESTIONS,
+        help="bounded question for a local repository graph connection; the query names the symbol or path",
     )
     context_prepare_parser.add_argument("--work-order-body-file", type=Path)
     context_prepare_parser.add_argument("--title")

@@ -14,7 +14,7 @@ from . import context_review
 from .claude_audit_pr import _decision_authorities_for_repo
 from .context_contract import ContextError, ContextRequest, _object, normalize_policy
 from .context_delivery import SUPPORTED_HOSTS, SUPPORTED_RECIPIENTS, attach, deliver, read_binding, render_evidence
-from .context_packets import load_authorized
+from .context_packets import consuming_revision, load_authorized
 from .context_store import ContextStore, strict_json
 from .provider_runners import fetch_issue_comments, fetch_pull_request, post_pr_comment
 from .provider_runners.github_auth import resolve_github_token_from_env_or_gh
@@ -63,7 +63,8 @@ def main(argv=None):
             if args.recipient not in SUPPORTED_RECIPIENTS or args.recipient.endswith(":reviewer"):
                 raise ContextError("independent reviewers consume an attached review revision")
             packet = load_authorized(store, args.connection, args.packet, spec["policy"],
-                ContextRequest(spec["repository"], spec["work_item"], args.recipient))
+                ContextRequest(spec["repository"], spec["work_item"], args.recipient,
+                               consuming_revision(args.repo_path)))
             print(render_evidence(packet, args.packet), end="")
             return 0
         if args.command in ('deliver', 'feedback') and (args.connection or args.request_stdin):

@@ -25,11 +25,13 @@ import json
 import os
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+import unicodedata
 import unittest
 import uuid
 from datetime import datetime, timezone
@@ -129,14 +131,19 @@ class FakeChild:
 
 
 def recording_indexer(payload: bytes = b"graph-bytes", *, completeness: str = lifecycle.COMPLETE,
-                      seen: list | None = None, indexed_files: int = 0):
+                      seen: list | None = None, indexed_files: int = 0,
+                      unsupported_inputs: int = 0):
     """An indexer that writes a fixed artifact and records what it was shown."""
 
     def run(request: lifecycle.IndexRequest) -> lifecycle.IndexResult:
         if seen is not None:
             seen.append(request)
         request.output_path.write_bytes(payload)
-        return lifecycle.IndexResult(completeness=completeness, indexed_files=indexed_files)
+        return lifecycle.IndexResult(
+            completeness=completeness,
+            indexed_files=indexed_files,
+            unsupported_inputs=unsupported_inputs,
+        )
 
     return run
 
@@ -1014,9 +1021,71 @@ class NetworkIsolationTests(unittest.TestCase):
         self.assertEqual(calls, [()])
 
 
-#: What a provider that finished leaves behind: a completion claim and counts
-#: that admit nothing outstanding.
-FINISHED_REPORT = {"complete": True, "code_files": 3, "requeued": 0}
+#: The census a launch fixture indexes: one Python file, one Markdown file.
+#: Only the first is a code input to the pin, so only the first is the
+#: denominator completeness is measured against.
+CODE_INPUT = "src/app.py"
+DOC_INPUT = "docs/guide.md"
+
+#: The bytes a launch fixture actually materializes for each of those, because
+#: a manifest row is now checked against them rather than merely shaped like a
+#: hash. A census that named files the copy does not hold would be a build that
+#: cannot check any row, which is its own (partial) case and has its own test.
+FIXTURE_INPUTS = {
+    CODE_INPUT: b"def main():\n    return 0\n",
+    DOC_INPUT: b"# guide\n",
+}
+
+#: What the pin's ``_md5_file`` would return for the code input above. The
+#: adapter derives the same value from the copy before the launch, so this is
+#: the one digest a finished manifest can carry for ``src/app.py``.
+CODE_INPUT_DIGEST = hashlib.md5(FIXTURE_INPUTS[CODE_INPUT], usedforsecurity=False).hexdigest()
+
+#: The same rendered filename in its two canonically equivalent spellings:
+#: ``é`` as U+00E9, and ``e`` followed by the U+0301 combining acute. Git holds
+#: exact bytes, so these are two tracked entries with two blobs, and a Linux
+#: checkout carries both at once. They are meant to render identically -- that
+#: is the whole point -- so nothing here tells them apart by eye, and a census
+#: fixture rather than a real checkout is the platform-independent way to test
+#: the pair: macOS cannot hold both names at the same time.
+NFC_INPUT = "src/café.py"
+NFD_INPUT = "src/café.py"
+
+
+def census_of(*paths: str) -> lifecycle.TrackedCensus:
+    """A census naming ``paths``, shaped the way ``read_tracked_census`` does."""
+    entries = tuple(
+        lifecycle.TrackedEntry(
+            path=path, mode="100644", blob="0" * 40, size=len(FIXTURE_INPUTS.get(path, b"x"))
+        )
+        for path in paths
+    )
+    return lifecycle.TrackedCensus(entries=entries, skipped=(), digest="0" * 64)
+
+
+def materialize_fixture_inputs(source_root: Path, census: lifecycle.TrackedCensus) -> None:
+    """Write the census's own bytes into the copy, as a real build would.
+
+    ``materialize_tracked_files`` puts the commit's blobs here before the
+    provider is launched; the launch fixtures used to leave the copy empty,
+    which no longer describes a build whose completeness check reads those
+    bytes.
+    """
+    for entry in census.entries:
+        destination = source_root.joinpath(*entry.path.split("/"))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(FIXTURE_INPUTS.get(entry.path, b"x"))
+
+
+def manifest_row(digest: str = CODE_INPUT_DIGEST) -> dict:
+    """One ``save_manifest`` row, in the pin's own shape."""
+    return {"mtime": 1.0, "seen": 2.0, "ast_hash": digest, "semantic_hash": digest}
+
+
+#: What a provider that processed every code input leaves behind: a row per
+#: dispatched file, each carrying the content hash that proves its bytes were
+#: read. No completion flag and no count -- the pinned manifest has neither.
+FINISHED_MANIFEST = {CODE_INPUT: manifest_row()}
 
 
 class ProviderLaunchTests(TemporaryWorkspace):
@@ -1053,6 +1122,11 @@ class ProviderLaunchTests(TemporaryWorkspace):
         # than exercise anything, so each request names its own.
         artifact = Path(tempfile.mkdtemp(dir=self.root)) / "graph.bin"
         self.artifacts.append(artifact)
+        census = census_of(CODE_INPUT, DOC_INPUT)
+        # A real build materializes the census into the copy before launching.
+        # The completeness check now reads those bytes, so the fixture has to
+        # actually hold them rather than name them.
+        materialize_fixture_inputs(source, census)
         return lifecycle.IndexRequest(
             source_root=source,
             output_path=artifact,
@@ -1060,6 +1134,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             pin=pin,
             commit="a" * 40,
             tree="b" * 40,
+            census=census,
         )
 
     def run_indexer(
@@ -1067,15 +1142,15 @@ class ProviderLaunchTests(TemporaryWorkspace):
         executable: str,
         *,
         sandbox=("/sandbox", "--deny"),
-        report: object = FINISHED_REPORT,
-        state_directory: str = ".graphify",
+        report: object = FINISHED_MANIFEST,
+        state_directory: str = lifecycle._PROVIDER_OUTPUT_DIRECTORY,
         pin: lifecycle.GraphifyPin = PIN,
     ) -> tuple[list[str], lifecycle.IndexResult]:
         """Launch the adapter with the provider's side of the contract faked.
 
-        ``extract`` writes its state beside the sources it was run over, so the
-        stand-in has to leave that state behind for the adapter to collect --
-        an exit status alone is not a finished build.
+        ``extract`` writes ``graphify-out/`` beneath the tree it was run over,
+        so the stand-in has to leave that output behind for the adapter to
+        collect -- an exit status alone is not a finished build.
         """
         request = self.request(pin)
         recorded: list[list[str]] = []
@@ -1089,7 +1164,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
             if state_directory:
                 written = request.source_root / state_directory
                 written.mkdir(exist_ok=True)
-                (written / "graph.bin").write_bytes(b"graph-bytes")
+                (written / "graph.json").write_text("{}", encoding="utf-8")
                 if report is not None:
                     (written / "manifest.json").write_text(json.dumps(report), encoding="utf-8")
             return FakeChild()
@@ -1132,10 +1207,10 @@ class ProviderLaunchTests(TemporaryWorkspace):
             return ("/sandbox",)
 
         def fake_popen(argv, **kwargs):
-            written = request.source_root / ".graphify"
+            written = request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY
             written.mkdir(exist_ok=True)
-            (written / "graph.bin").write_bytes(b"graph-bytes")
-            (written / "manifest.json").write_text(json.dumps(FINISHED_REPORT), encoding="utf-8")
+            (written / "graph.json").write_text("{}", encoding="utf-8")
+            (written / "manifest.json").write_text(json.dumps(FINISHED_MANIFEST), encoding="utf-8")
             return FakeChild()
 
         with stand_in_containment(("/sandbox",)):
@@ -1176,12 +1251,67 @@ class ProviderLaunchTests(TemporaryWorkspace):
 
     def test_the_provider_is_invoked_through_its_documented_extract_interface(self) -> None:
         # The interface the adopt decision evaluated, recorded in
-        # docs/graphify-evaluation.md as ``extract`` plus options. An
-        # ``index --source ... --output ...`` shape would be a different CLI.
+        # docs/graphify-evaluation.md as ``extract`` over a scan target plus
+        # options. An ``index --source ... --output ...`` shape would be a
+        # different CLI.
         argv = self.launched_argv("graphify")
-        self.assertEqual(argv[3:], ["extract", *PIN.options])
+        self.assertEqual(argv[3:], ["extract", ".", *PIN.options])
         self.assertNotIn("--source", argv)
         self.assertNotIn("--output", argv)
+
+    def test_the_scan_target_is_passed_where_the_pinned_cli_reads_it(self) -> None:
+        """The pinned CLI requires a target and reads it from one position only.
+
+        It takes the target as the first positional after the subcommand,
+        decides it has one only when that argument does not begin with ``-``,
+        and exits 1 with ``must specify a path to scan or a --postgres DSN``
+        otherwise. The launch used to pass the options alone, so every real
+        build failed before extraction -- and failed as the adapter's generic
+        non-zero refusal, which names nothing about the omission.
+
+        ``.`` rather than an absolute path: the child's working directory is
+        already the materialized copy, so the relative spelling names that tree
+        and nothing about where it sits on this host.
+        """
+        argv = self.launched_argv("graphify")
+        subcommand = argv.index("extract")
+        self.assertEqual(argv[subcommand + 1], ".")
+        self.assertFalse(argv[subcommand + 1].startswith("-"))
+        # Before the options, not after them: an argument that follows a flag is
+        # read as that flag's value or skipped, and either way the CLI still
+        # sees no path.
+        for option in PIN.options:
+            self.assertLess(subcommand + 1, argv.index(option))
+
+    def test_the_pinned_cli_would_accept_this_argv(self) -> None:
+        """Read the requirement off the staged pinned source, not off a memory.
+
+        The reference under ``.build/graphify-914-reference`` is the CLI this
+        pin actually installs. If a later pin stops requiring a positional
+        target, or starts reading it from somewhere other than ``sys.argv[2]``,
+        this test is what says so rather than a real build failing opaquely.
+        """
+        reference = (
+            Path(__file__).resolve().parent.parent
+            / ".build"
+            / "graphify-914-reference"
+            / "graphify-cli-pinned.py"
+        )
+        if not reference.is_file():
+            # The reference is a local read-only staging of the pinned provider's
+            # own source, excluded from the repository rather than vendored into
+            # it, so this check runs where it is staged and skips where it is not.
+            self.skipTest("pinned CLI reference is not staged in this checkout")
+        source = reference.read_text(encoding="utf-8", errors="replace")
+        self.assertIn("error: must specify a path to scan or a --postgres DSN", source)
+        # The target is ``sys.argv[2]`` and a leading dash means "no path".
+        self.assertIn('if sys.argv[2].startswith("-"):', source)
+        argv = self.launched_argv("graphify")
+        provider = argv.index(str(self.provider))
+        # ``sys.argv`` inside the child is the provider and everything after it,
+        # so ``sys.argv[2]`` is the second argument past the executable.
+        self.assertEqual(argv[provider + 1], "extract")
+        self.assertEqual(argv[provider + 2], ".")
 
     def test_extraction_is_restricted_to_code_and_never_clusters(self) -> None:
         """The adoption conditions are enforced at the launch, not assumed.
@@ -1193,7 +1323,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
         """
         bare = lifecycle.GraphifyPin(distribution="graphifyy", version="0.9.58", wheel_sha256="a" * 64)
         argv, _ = self.run_indexer("graphify", pin=bare)
-        self.assertEqual(argv[3:], ["extract", "--code-only", "--no-cluster"])
+        self.assertEqual(argv[3:], ["extract", ".", "--code-only", "--no-cluster"])
 
     def test_the_launch_restricts_extraction_even_if_the_pin_did_not(self) -> None:
         # The pin normalizes its own options, so this reaches past the
@@ -1201,14 +1331,16 @@ class ProviderLaunchTests(TemporaryWorkspace):
         stripped = lifecycle.GraphifyPin(distribution="graphifyy", version="0.9.58", wheel_sha256="a" * 64)
         object.__setattr__(stripped, "options", ())
         argv, _ = self.run_indexer("graphify", pin=stripped)
-        self.assertEqual(argv[3:], ["extract", "--code-only", "--no-cluster"])
+        self.assertEqual(argv[3:], ["extract", ".", "--code-only", "--no-cluster"])
 
     def test_the_collected_artifact_holds_the_state_the_provider_wrote(self) -> None:
         _, result = self.run_indexer("graphify")
         self.assertEqual(result.completeness, lifecycle.COMPLETE)
-        self.assertEqual(result.indexed_files, 3)
+        # One of the two census files is a code input to this pin; the Markdown
+        # file is not, so it is skipped rather than counted against the run.
+        self.assertEqual(result.indexed_files, 1)
         names = self.archived_names(self.artifacts[-1].read_bytes())
-        self.assertIn("graph.bin", names)
+        self.assertIn("graph.json", names)
 
     def archived_names(self, artifact: bytes) -> list[str]:
         with tarfile.open(fileobj=io.BytesIO(artifact), mode="r") as archive:
@@ -1253,30 +1385,550 @@ class ProviderLaunchTests(TemporaryWorkspace):
         with self.assertRaises(ContextError):
             self.run_indexer("graphify", state_directory="")
 
+    def test_the_output_is_collected_from_the_root_the_pin_actually_writes(self) -> None:
+        """``graphify-out/``, not a name this adapter would have preferred.
+
+        The pin builds every output path from ``GRAPHIFY_OUT``, whose default is
+        the literal ``graphify-out``, so a collector that only accepted
+        ``.graphify``/``.graph`` found nothing after a real run and refused
+        every generation the adopted path can produce.
+        """
+        _, result = self.run_indexer("graphify")
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        with self.assertRaises(ContextError):
+            self.run_indexer("graphify", state_directory=".graphify")
+
+    def test_a_second_output_root_beside_the_real_one_publishes_nothing(self) -> None:
+        """Two roots means the provenance of a generation would be a guess."""
+        request = self.request()
+
+        def fake_popen(argv, **kwargs):
+            for name in (lifecycle._PROVIDER_OUTPUT_DIRECTORY, ".graphify"):
+                written = request.source_root / name
+                written.mkdir(exist_ok=True)
+                (written / "graph.json").write_text("{}", encoding="utf-8")
+            return FakeChild()
+
+        with stand_in_containment(("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                with self.assertRaises(ContextError):
+                    indexer(request)
+
+    def test_a_symlinked_output_root_publishes_nothing(self) -> None:
+        """A link names a directory outside the copy; the boundary is the copy."""
+        request = self.request()
+        elsewhere = Path(tempfile.mkdtemp(dir=self.root))
+        (elsewhere / "graph.json").write_text("{}", encoding="utf-8")
+
+        def fake_popen(argv, **kwargs):
+            (request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY).symlink_to(elsewhere)
+            return FakeChild()
+
+        with stand_in_containment(("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                with self.assertRaises(ContextError):
+                    indexer(request)
+
+    def test_an_output_root_without_a_graph_document_publishes_nothing(self) -> None:
+        request = self.request()
+
+        def fake_popen(argv, **kwargs):
+            written = request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY
+            written.mkdir(exist_ok=True)
+            (written / "manifest.json").write_text("{}", encoding="utf-8")
+            return FakeChild()
+
+        with stand_in_containment(("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                with self.assertRaises(ContextError):
+                    indexer(request)
+
     def test_a_successful_run_with_requeued_entries_is_partial(self) -> None:
-        # The defect the clean-room run recorded: a repeat that exits zero in
-        # 1.63 s having requeued 54 entries has not built a complete graph.
-        _, result = self.run_indexer("graphify", report={"complete": True, "files": 429, "requeued": 54})
-        self.assertEqual(result.completeness, lifecycle.PARTIAL)
-        self.assertIn("54 requeued", " ".join(result.notes))
+        """The defect the clean-room run recorded, in the shape the pin writes it.
 
-    def test_a_provider_that_denies_completion_is_partial(self) -> None:
-        _, result = self.run_indexer("graphify", report={"complete": False, "files": 10})
+        A repeat that exits zero in 1.63 s having requeued 54 entries has not
+        built a complete graph. The pin records a requeue by blanking the row's
+        hashes -- ``clear_ast`` does exactly that for an extractor error or an
+        anomalous zero-node extract -- so a blank ``ast_hash`` is the evidence,
+        not a ``requeued`` counter the pinned manifest has never carried.
+        """
+        requeued = {CODE_INPUT: {"mtime": 1.0, "seen": 2.0, "ast_hash": "", "semantic_hash": ""}}
+        _, result = self.run_indexer("graphify", report=requeued)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("1 code files unprocessed or requeued", " ".join(result.notes))
+        self.assertEqual(result.indexed_files, 0)
 
-    def test_a_run_that_left_no_report_is_partial_rather_than_complete(self) -> None:
+    def test_a_code_input_the_manifest_never_names_is_partial(self) -> None:
+        """Silence about a file is not a claim that it was indexed."""
+        _, result = self.run_indexer("graphify", report={})
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("does not account for 1 code files", " ".join(result.notes))
+
+    def test_a_non_code_input_is_skipped_rather_than_counted_against_the_run(self) -> None:
+        """The denominator is the pin's own code set, not every tracked file.
+
+        ``docs/guide.md`` is deterministically not code to this pin, so a run
+        that never touches it is still complete. Holding a correct run to every
+        tracked documentation file would make it permanently partial.
+        """
+        _, result = self.run_indexer("graphify")
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertNotIn(DOC_INPUT, json.dumps(FINISHED_MANIFEST))
+
+    def test_a_malformed_manifest_record_is_partial_rather_than_complete(self) -> None:
+        """A row this adapter cannot read is indistinguishable from a failure."""
+        malformed = (
+            {CODE_INPUT: "not a row"},
+            {CODE_INPUT: {"ast_hash": "a" * 32}},
+            {CODE_INPUT: manifest_row("A" * 32)},
+            {CODE_INPUT: manifest_row("short")},
+            {CODE_INPUT: dict(manifest_row(), ast_hash=None)},
+        )
+        for report in malformed:
+            with self.subTest(report=report):
+                _, result = self.run_indexer("graphify", report=report)
+                self.assertEqual(result.completeness, lifecycle.PARTIAL)
+                self.assertTrue(result.notes)
+
+    def test_a_manifest_listing_every_code_input_with_a_hash_is_complete(self) -> None:
+        """Hashes prove processed bytes, which is what completeness claims.
+
+        Nothing else upgrades a run: the exit status is zero in every case here,
+        and the graph document is ``{}`` -- an empty graph with every input
+        stamped is a complete read, and a full graph with one input unstamped is
+        not. The hash has to be *this* input's, which is the next test.
+        """
+        _, result = self.run_indexer("graphify", report={CODE_INPUT: manifest_row()})
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, 1)
+
+    def test_a_hash_that_is_not_this_input_s_bytes_is_partial(self) -> None:
+        """A hash-shaped string is not a hash of what the provider was given.
+
+        ``b`` repeated is well formed by every rule the old check applied, and it
+        is not the digest of ``src/app.py``. A row like it is what a manifest
+        carried over from another tree or resumed from a cache looks like, so it
+        must not count as work done on these bytes.
+        """
+        _, result = self.run_indexer("graphify", report={CODE_INPUT: manifest_row("b" * 32)})
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("not the bytes it was given", " ".join(result.notes))
+        self.assertEqual(result.indexed_files, 0)
+
+    def test_the_expected_digest_is_taken_before_the_provider_runs(self) -> None:
+        """The comparison is against what this build handed over, not leavings.
+
+        The stand-in rewrites ``src/app.py`` while it "runs" and stamps the
+        manifest with the digest of what it wrote. Read after the fact, that
+        agrees with itself; read before the launch, as it is, it does not.
+        """
+        request = self.request()
+        replacement = b"def main():\n    return 1\n"
+        stamped = hashlib.md5(replacement, usedforsecurity=False).hexdigest()
+
+        def fake_popen(argv, **kwargs):
+            request.source_root.joinpath(*CODE_INPUT.split("/")).write_bytes(replacement)
+            written = request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY
+            written.mkdir(exist_ok=True)
+            (written / "graph.json").write_text("{}", encoding="utf-8")
+            (written / "manifest.json").write_text(
+                json.dumps({CODE_INPUT: manifest_row(stamped)}), encoding="utf-8"
+            )
+            return FakeChild()
+
+        with stand_in_containment(("/sandbox",)):
+            indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
+            with mock.patch.object(subprocess, "Popen", fake_popen):
+                result = indexer(request)
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("not the bytes it was given", " ".join(result.notes))
+
+    def test_a_code_input_the_copy_does_not_hold_cannot_be_counted(self) -> None:
+        """An unreadable input is a row this build cannot check, so it is partial.
+
+        Not an error: the census is the denominator and the copy is the
+        evidence, and a build that lost one of the two states that rather than
+        believing the provider's row on its own word.
+        """
+        result = lifecycle._read_completeness(
+            {CODE_INPUT: manifest_row()}, census_of(CODE_INPUT), {}
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("could not re-read 1 code files", " ".join(result.notes))
+        self.assertEqual(result.indexed_files, 0)
+
+    def test_a_named_package_manifest_is_in_the_denominator(self) -> None:
+        """``classify_file`` routes these by filename before any suffix class.
+
+        ``.toml`` is not a code extension, so an extension-only denominator
+        drops ``pyproject.toml`` entirely: the provider could fail on it while
+        ``src/app.py`` alone let the run claim it was complete. Every name the
+        pin's ``PACKAGE_MANIFEST_NAMES`` carries is checked, including the
+        mixed-case spellings the repositories that use them actually commit.
+        """
+        for name in (
+            "pyproject.toml", "Cargo.toml", "go.mod", "pom.xml", "apm.yml", "apm.yaml",
+        ):
+            with self.subTest(name=name):
+                inputs = lifecycle._provider_inputs(census_of(CODE_INPUT, name))
+                self.assertIn(name, inputs.dispatched)
+                self.assertEqual(inputs.unsupported, frozenset())
+                result = lifecycle._read_completeness(
+                    FINISHED_MANIFEST,
+                    census_of(CODE_INPUT, name),
+                    {CODE_INPUT: CODE_INPUT_DIGEST},
+                    inputs,
+                )
+                self.assertEqual(result.completeness, lifecycle.PARTIAL)
+                self.assertIn("does not account for 1 code files", " ".join(result.notes))
+
+    def test_a_shebang_script_without_a_suffix_is_in_the_denominator(self) -> None:
+        """The pin routes extensionless files by their first line, so this does.
+
+        Both halves matter: a supported interpreter is a dispatched input whose
+        absence from the manifest keeps the run partial, and one the pin has no
+        extractor for is dispatched *and* reported as unsupported rather than
+        counted as work.
+        """
+        root = self.root / "copy"
+        (root / "bin").mkdir(parents=True)
+        (root / "bin" / "devctl").write_bytes(b"#!/usr/bin/env python3\nprint(1)\n")
+        (root / "bin" / "report").write_bytes(b"#!/usr/bin/perl\nprint 1;\n")
+        (root / "bin" / "notes").write_bytes(b"plain text, no shebang\n")
+        (root / "bin" / "packed").write_bytes(b"#!/usr/bin/env -S python3 -u\n")
+        inputs = lifecycle._provider_inputs(
+            census_of("bin/devctl", "bin/report", "bin/notes", "bin/packed"), root
+        )
+        self.assertEqual(
+            set(inputs.dispatched), {"bin/devctl", "bin/report"}
+        )
+        # perl is code to ``detect`` and has no entry in ``_SHEBANG_DISPATCH``.
+        self.assertEqual(inputs.unsupported, frozenset({"bin/report"}))
+        # No shebang is a decision, not a refusal: the pin would not call it code.
+        self.assertNotIn("bin/notes", inputs.unclassified)
+        # ``env -S`` is the option-carrying form this adapter declines to guess at.
+        self.assertEqual(inputs.unclassified, ("bin/packed",))
+
+    def test_an_input_that_cannot_be_classified_keeps_the_run_partial(self) -> None:
+        """Unknown is not the same as not-code, and must not read as coverage."""
+        result = lifecycle._read_completeness(
+            FINISHED_MANIFEST,
+            census_of(CODE_INPUT),
+            {CODE_INPUT: CODE_INPUT_DIGEST},
+            lifecycle._ProviderInputs(
+                dispatched=(CODE_INPUT,), unclassified=("bin/packed",)
+            ),
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("could not classify 1 tracked inputs", " ".join(result.notes))
+
+    def test_unsupported_dispatch_is_counted_apart_from_indexed_files(self) -> None:
+        """A stamped row proves read bytes, not a supported extraction.
+
+        ``_get_extractor`` returns ``None`` for a code-classified extension with
+        no wired extractor, which short-circuits to an empty result carrying
+        neither an ``error`` nor a ``skipped`` marker -- so the CLI's
+        failed-source rule leaves the row stamped. Counting that as an indexed
+        file would report work the provider demonstrably did not do.
+        """
+        census = census_of(CODE_INPUT, "analysis/model.r")
+        digest = hashlib.md5(b"x", usedforsecurity=False).hexdigest()
+        result = lifecycle._read_completeness(
+            {CODE_INPUT: manifest_row(), "analysis/model.r": manifest_row(digest)},
+            census,
+            {CODE_INPUT: CODE_INPUT_DIGEST, "analysis/model.r": digest},
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, 1)
+        self.assertEqual(result.unsupported_inputs, 1)
+
+    def test_a_matlab_dot_m_is_dispatched_but_is_not_an_indexed_file(self) -> None:
+        """``.m`` is the one dispatch the pin decides from the bytes (#1702).
+
+        The suffix table maps ``.m`` to the Objective-C extractor, but
+        ``_get_extractor`` returns ``None`` for a ``.m`` carrying no
+        Objective-C directive rather than force-parsing MATLAB through the ObjC
+        grammar. The row is stamped all the same -- that short circuit carries
+        neither marker the failed-source rule looks for -- so the static table
+        difference cannot see it and a stamped row alone would report work the
+        provider demonstrably did not do. An Objective-C file beside it is a
+        real extraction and still has to count.
+        """
+        root = self.root / "objc"
+        (root / "src").mkdir(parents=True)
+        sources = {
+            "src/solver.m": b"function y = f(x)\n  y = x + 1;\nend\n",
+            "src/Thing.m": b'#import "Thing.h"\n@implementation Thing\n@end\n',
+        }
+        for path, body in sources.items():
+            (root / path).write_bytes(body)
+        census = census_of(*sources)
+        inputs = lifecycle._provider_inputs(census, root)
+        self.assertEqual(set(inputs.dispatched), set(sources))
+        self.assertEqual(inputs.unsupported, frozenset({"src/solver.m"}))
+        self.assertEqual(inputs.unclassified, ())
+        digests = {
+            path: hashlib.md5(body, usedforsecurity=False).hexdigest()
+            for path, body in sources.items()
+        }
+        result = lifecycle._read_completeness(
+            {path: manifest_row(digest) for path, digest in digests.items()},
+            census,
+            digests,
+            inputs,
+        )
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, 1)
+        self.assertEqual(result.unsupported_inputs, 1)
+
+    def test_a_dot_m_the_copy_cannot_be_read_for_stays_unclassified(self) -> None:
+        """Which way the pin dispatched it is unknown, so the run stays partial.
+
+        The pin's own sniff answers "not Objective-C" when its read fails, but
+        that is a statement about its read. This adapter failing to read the
+        same bytes proves nothing, and guessing either way would either excuse a
+        real extraction or invent an unsupported one.
+        """
+        census = census_of("src/solver.m")
+        inputs = lifecycle._provider_inputs(census, self.root / "absent")
+        self.assertEqual(inputs.dispatched, ("src/solver.m",))
+        self.assertEqual(inputs.unsupported, frozenset())
+        self.assertEqual(inputs.unclassified, ("src/solver.m",))
+        digest = hashlib.md5(b"function y = f(x)\n", usedforsecurity=False).hexdigest()
+        result = lifecycle._read_completeness(
+            {"src/solver.m": manifest_row(digest)},
+            census,
+            {"src/solver.m": digest},
+            inputs,
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("could not classify 1 tracked inputs", " ".join(result.notes))
+
+    def test_an_unsupported_extension_still_has_to_be_accounted_for(self) -> None:
+        """Reported, not excused: an absent row for one is still partial."""
+        census = census_of(CODE_INPUT, "web/view.ejs")
+        result = lifecycle._read_completeness(
+            FINISHED_MANIFEST,
+            census,
+            {CODE_INPUT: CODE_INPUT_DIGEST},
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("does not account for 1 code files", " ".join(result.notes))
+        self.assertEqual(result.unsupported_inputs, 0)
+
+    def test_two_tracked_names_that_differ_only_by_normalization_stay_partial(self) -> None:
+        """One input's success must never stand in as proof for another's.
+
+        ``src/café.py`` spelled with U+00E9 and the same name spelled ``e`` plus
+        U+0301 are two Git entries, two blobs and two files, and a Linux
+        checkout carries both at once. Give them identical bytes -- so their
+        expected digests are identical too and only the name can tell the rows
+        apart -- then fail one extraction and stamp the other. Folded onto a
+        shared key, the stamped row overwrites the blank one and both inputs
+        read as processed; held apart, neither is counted and the run is what it
+        actually was. Both census orders and both manifest orders, because a
+        fix that merely preferred the first or the last colliding row would pass
+        one of them.
+        """
+        for census_order in ((NFC_INPUT, NFD_INPUT), (NFD_INPUT, NFC_INPUT)):
+            for rows_order in (census_order, census_order[::-1]):
+                with self.subTest(census=census_order, manifest=rows_order):
+                    census = census_of(*census_order)
+                    result = lifecycle._read_completeness(
+                        {
+                            rows_order[0]: manifest_row(""),
+                            rows_order[1]: manifest_row(CODE_INPUT_DIGEST),
+                        },
+                        census,
+                        dict.fromkeys(census_order, CODE_INPUT_DIGEST),
+                        lifecycle._provider_inputs(census),
+                    )
+                    self.assertEqual(result.completeness, lifecycle.PARTIAL)
+                    self.assertEqual(result.indexed_files, 0)
+                    self.assertIn("Unicode normalization", " ".join(result.notes))
+
+    def test_colliding_tracked_names_with_different_bytes_stay_partial(self) -> None:
+        """The digest map collapses the same way the rows do, so it is checked too.
+
+        Different content gives the two inputs different expected digests, and a
+        map keyed on their shared normal form holds one of them for both. The
+        row that survives then agrees with whichever digest survived, which is a
+        comparison between two statements about one file and no statement at all
+        about the other.
+        """
+        other = hashlib.md5(b"def other():\n    return 1\n", usedforsecurity=False).hexdigest()
+        census = census_of(NFC_INPUT, NFD_INPUT)
+        result = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(CODE_INPUT_DIGEST), NFD_INPUT: manifest_row(other)},
+            census,
+            {NFC_INPUT: CODE_INPUT_DIGEST, NFD_INPUT: other},
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertEqual(result.indexed_files, 0)
+        self.assertIn("Unicode normalization", " ".join(result.notes))
+
+    def test_a_collapsed_manifest_cannot_hide_a_collision_in_the_census(self) -> None:
+        """The census is the immutable evidence that there were two inputs.
+
+        A provider that wrote one row for the pair leaves nothing in its own
+        output to say a second file existed. The denominator is not its output:
+        it is the tracked census taken before the launch, so the missing input
+        is visible whether or not the manifest admits to it.
+        """
+        census = census_of(NFC_INPUT, NFD_INPUT)
+        result = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(CODE_INPUT_DIGEST)},
+            census,
+            dict.fromkeys((NFC_INPUT, NFD_INPUT), CODE_INPUT_DIGEST),
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertEqual(result.indexed_files, 0)
+
+    def test_one_tracked_name_still_matches_a_normalized_manifest_key(self) -> None:
+        """The macOS case normalization was for, which has to keep working.
+
+        A single tracked name whose copy hands the provider a canonically
+        equivalent spelling is one input and one row. There is nothing to
+        confuse it with, so it matches and the run is complete -- in both
+        directions, because which spelling Git holds and which the filesystem
+        returns are independent.
+        """
+        for tracked, written in ((NFD_INPUT, NFC_INPUT), (NFC_INPUT, NFD_INPUT)):
+            with self.subTest(tracked=tracked):
+                census = census_of(tracked)
+                result = lifecycle._read_completeness(
+                    {written: manifest_row(CODE_INPUT_DIGEST)},
+                    census,
+                    {tracked: CODE_INPUT_DIGEST},
+                    lifecycle._provider_inputs(census),
+                )
+                self.assertEqual(result.completeness, lifecycle.COMPLETE)
+                self.assertEqual(result.indexed_files, 1)
+
+    def test_a_manifest_key_spelled_exactly_is_that_input_s_own_record(self) -> None:
+        """Exact identity is never reached past for a folded near-match.
+
+        Both spellings are present as keys and only one of them is this input's
+        name. The blank row beside it is about some other file, and a build that
+        resolved by normal form could read either one as the answer.
+        """
+        census = census_of(NFD_INPUT)
+        digests = {NFD_INPUT: CODE_INPUT_DIGEST}
+        inputs = lifecycle._provider_inputs(census)
+        stamped = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(""), NFD_INPUT: manifest_row(CODE_INPUT_DIGEST)},
+            census, digests, inputs,
+        )
+        self.assertEqual(stamped.completeness, lifecycle.COMPLETE)
+        self.assertEqual(stamped.indexed_files, 1)
+        blank = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(CODE_INPUT_DIGEST), NFD_INPUT: manifest_row("")},
+            census, digests, inputs,
+        )
+        self.assertEqual(blank.completeness, lifecycle.PARTIAL)
+        self.assertEqual(blank.indexed_files, 0)
+        self.assertIn("unprocessed or requeued", " ".join(blank.notes))
+
+    def test_two_manifest_keys_folding_onto_one_input_are_not_resolved(self) -> None:
+        """A collision can be the provider's alone, and it is refused the same way.
+
+        ``U+212B`` (ANGSTROM SIGN) and ``A`` plus ``U+030A`` both fold onto the
+        ``U+00C5`` the census holds, and neither is spelled the way the tracked
+        path is. Two candidate records and no exact one is two statements this
+        build cannot attribute to its single input.
+        """
+        # Escaped, because all three names render identically and a reader
+        # cannot otherwise tell which line is which.
+        tracked = "src/Ångstrom.py"
+        legacy = "src/Ångstrom.py"
+        decomposed = "src/Ångstrom.py"
+        # The precondition this test is about, asserted rather than assumed.
+        self.assertEqual(
+            {unicodedata.normalize("NFC", key) for key in (legacy, decomposed)},
+            {unicodedata.normalize("NFC", tracked)},
+        )
+        self.assertNotIn(tracked, (legacy, decomposed))
+        census = census_of(tracked)
+        result = lifecycle._read_completeness(
+            {legacy: manifest_row(""), decomposed: manifest_row(CODE_INPUT_DIGEST)},
+            census,
+            {tracked: CODE_INPUT_DIGEST},
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertEqual(result.indexed_files, 0)
+        self.assertIn("more than one candidate record", " ".join(result.notes))
+
+    def test_distinct_unicode_names_that_do_not_fold_together_are_unaffected(self) -> None:
+        """The refusal is about canonical equivalence, not about non-ASCII names."""
+        naive = "src/naïve.py"
+        census = census_of(NFC_INPUT, naive)
+        result = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(CODE_INPUT_DIGEST), naive: manifest_row(CODE_INPUT_DIGEST)},
+            census,
+            dict.fromkeys((NFC_INPUT, naive), CODE_INPUT_DIGEST),
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, 2)
+
+    def test_input_digests_are_keyed_by_the_exact_tracked_path(self) -> None:
+        """What the copy was read for is recorded under the name Git holds.
+
+        One file, one spelling, so this runs on any filesystem: the point is the
+        key, not a dual-name checkout. A map keyed on the normal form would
+        answer to a different tracked path than the one it was read for, and the
+        pre-launch digest is the only thing a manifest row is checked against.
+        The normalized manifest key beside it still resolves, which is the macOS
+        compatibility this keeps.
+        """
+        root = self.root / "digests"
+        (root / "src").mkdir(parents=True)
+        (root / NFD_INPUT).write_bytes(FIXTURE_INPUTS[CODE_INPUT])
+        census = census_of(NFD_INPUT)
+        digests = lifecycle._materialized_digests(root, census)
+        self.assertEqual(digests, {NFD_INPUT: CODE_INPUT_DIGEST})
+        result = lifecycle._read_completeness(
+            {NFC_INPUT: manifest_row(CODE_INPUT_DIGEST)},
+            census,
+            digests,
+            lifecycle._provider_inputs(census),
+        )
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, 1)
+
+    def test_a_request_without_a_census_cannot_be_complete(self) -> None:
+        """There is no denominator, so there is no coverage claim to make."""
+        self.assertEqual(
+            lifecycle._read_completeness(FINISHED_MANIFEST, None).completeness, lifecycle.PARTIAL
+        )
+
+    def test_a_build_that_recorded_no_input_digests_cannot_be_complete(self) -> None:
+        """Without the immutable bytes there is nothing to check a row against."""
+        result = lifecycle._read_completeness(FINISHED_MANIFEST, census_of(CODE_INPUT), None)
+        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+        self.assertIn("no input digests", " ".join(result.notes))
+
+    def test_a_run_that_left_no_manifest_is_partial_rather_than_complete(self) -> None:
         # Exit status zero is not completion evidence. Absent evidence resolves
         # to the state ``graph_status`` refuses, not the one it accepts.
         _, result = self.run_indexer("graphify", report=None)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
 
-    def test_an_unparseable_report_is_partial_rather_than_complete(self) -> None:
+    def test_an_unparseable_manifest_is_partial_rather_than_complete(self) -> None:
         request = self.request()
 
         def fake_popen(argv, **kwargs):
-            written = request.source_root / ".graph"
+            written = request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY
             written.mkdir(exist_ok=True)
-            (written / "graph.bin").write_bytes(b"graph-bytes")
+            (written / "graph.json").write_text("{}", encoding="utf-8")
             (written / "manifest.json").write_bytes(b"{not json")
             return FakeChild()
 
@@ -1286,40 +1938,7 @@ class ProviderLaunchTests(TemporaryWorkspace):
                 result = indexer(request)
         self.assertEqual(result.completeness, lifecycle.PARTIAL)
 
-    def test_a_report_without_affirmative_completion_evidence_is_partial(self) -> None:
-        """A document that parses is not a document that claims completion.
-
-        ``{}`` and a report in some schema this adapter does not understand
-        both say nothing about whether the extraction finished, and nothing is
-        not a claim. Treating them as complete would hand ``graph_status`` a
-        usable generation built from an unknown run.
-        """
-        silent = (
-            {},
-            {"schema": "unexpected"},
-            {"code_files": 3},
-            {"complete": True},
-            {"status": "running", "code_files": 3},
-            {"status": "partial", "complete": True, "code_files": 3},
-        )
-        for report in silent:
-            with self.subTest(report=report):
-                _, result = self.run_indexer("graphify", report=report)
-                self.assertEqual(result.completeness, lifecycle.PARTIAL)
-                self.assertTrue(result.notes)
-
-    def test_a_report_that_claims_completion_and_counts_its_work_is_complete(self) -> None:
-        claimed = (
-            {"complete": True, "code_files": 3},
-            {"status": "success", "indexed_files": 3},
-            {"completed": True, "entries": 0, "requeued": 0},
-        )
-        for report in claimed:
-            with self.subTest(report=report):
-                _, result = self.run_indexer("graphify", report=report)
-                self.assertEqual(result.completeness, lifecycle.COMPLETE)
-
-    def test_an_oversized_report_is_refused_without_being_read_whole(self) -> None:
+    def test_an_oversized_manifest_is_refused_without_being_read_whole(self) -> None:
         """Provider output is unbounded input; the read is bounded at the stream.
 
         Slicing after ``read_bytes()`` would have allocated the whole document
@@ -1327,12 +1946,12 @@ class ProviderLaunchTests(TemporaryWorkspace):
         nothing in the collection path may read a provider file whole.
         """
         request = self.request()
-        oversized = b'{"complete": true, "code_files": 3, "pad": "' + b"x" * lifecycle.MAX_MANIFEST_BYTES + b'"}'
+        oversized = b'{"' + CODE_INPUT.encode() + b'": "' + b"x" * lifecycle.MAX_MANIFEST_BYTES + b'"}'
 
         def fake_popen(argv, **kwargs):
-            written = request.source_root / ".graphify"
+            written = request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY
             written.mkdir(exist_ok=True)
-            (written / "graph.bin").write_bytes(b"graph-bytes")
+            (written / "graph.json").write_text("{}", encoding="utf-8")
             (written / "manifest.json").write_bytes(oversized)
             return FakeChild()
 
@@ -1849,6 +2468,722 @@ class RuntimeExposureTests(ProviderExposureFixture):
                     )
 
 
+def macho(path: Path, *dependencies: str, filetype: int = 0x6) -> Path:
+    """A real 64-bit Mach-O header whose load commands name ``dependencies``.
+
+    A header, not a whole image: the derivation reads ``LC_LOAD_DYLIB`` out of
+    the load-command block and nothing else, so a file with a real magic, a real
+    command count and real commands exercises exactly the parse under test
+    without needing a compiler on the machine running these tests.
+
+    ``filetype`` defaults to ``MH_DYLIB``, which is what every image these tests
+    write stands in for. It is a parameter because what a candidate *declares
+    itself to be* is now a check, and the refusals need images that declare
+    something else.
+    """
+    commands = b""
+    for name in dependencies:
+        raw = name.encode("utf-8") + b"\0"
+        raw += b"\0" * ((-len(raw)) % 8)
+        # cmd=LC_LOAD_DYLIB, cmdsize, name offset, timestamp, versions.
+        commands += struct.pack("<6I", 0x0C, 24 + len(raw), 24, 0, 0, 0) + raw
+    # magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved
+    header = struct.pack(
+        "<8I", 0xFEEDFACF, 0x0100_000C, 0, filetype, len(dependencies), len(commands), 0, 0
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(header + commands)
+    return path
+
+
+def fat_macho(path: Path, *slices: bytes) -> Path:
+    """A universal archive carrying ``slices`` as real Mach-O images."""
+    header = struct.pack(">2I", 0xCAFEBABE, len(slices))
+    offset = len(header) + 20 * len(slices)
+    arches = b""
+    body = b""
+    for payload in slices:
+        arches += struct.pack(">5I", 0x0100_000C, 0, offset + len(body), len(payload), 0)
+        body += payload
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(header + arches + body)
+    return path
+
+
+class LinkedRuntimeLibraryTests(ProviderExposureFixture):
+    """Shared libraries the exposed runtime links to from outside the exposure.
+
+    A pinned provider's environment and the base interpreter it was created from
+    were exposed as prefixes, and that was taken to be the whole runtime. On a
+    host whose interpreter came from a package manager it is not: CPython's
+    ``_ssl`` extension is linked against an OpenSSL under the *manager's* prefix,
+    and Graphify imports ``ssl`` during start-up even for a code-only
+    extraction, so under this boundary the provider aborted before it scanned
+    anything.
+
+    These hold the repair to the shape it has to have: the dependency is derived
+    from the images themselves rather than named here, what is exposed is a
+    library file rather than the manager's prefix, every added path goes through
+    the same refusals as any other exposure, and Linux is untouched.
+    """
+
+    def derive(self, *prefixes: Path) -> tuple[str, ...]:
+        with mock.patch.object(sys, "platform", "darwin"):
+            return lifecycle._linked_runtime_libraries(
+                list(prefixes), covered=list(prefixes), repository=self.repository
+            )
+
+    def library(self, path: Path, *dependencies: str) -> Path:
+        return macho(path, *dependencies)
+
+    def test_a_library_outside_the_exposure_is_added_as_a_file(self) -> None:
+        brew = self.root / "brew" / "Cellar" / "openssl@3" / "3.6.3" / "lib"
+        libssl = self.library(brew / "libssl.3.dylib")
+        prefix = self.root / "python"
+        self.library(prefix / "lib-dynload" / "_ssl.so", str(libssl))
+        derived = self.derive(prefix)
+        self.assertIn(str(libssl), derived)
+        # The file, never the directory holding it: exposing that directory is
+        # exposing a package manager's prefix, and its ``etc`` and ``var`` with
+        # it.
+        self.assertNotIn(str(brew), derived)
+        self.assertNotIn(str(brew.parent), derived)
+        self.assertNotIn(str(self.root / "brew"), derived)
+
+    def test_a_transitive_dependency_is_reached(self) -> None:
+        """``libssl`` needs ``libcrypto``, and neither is written down here."""
+        brew = self.root / "brew" / "lib"
+        libcrypto = self.library(brew / "libcrypto.3.dylib")
+        libssl = self.library(brew / "libssl.3.dylib", str(libcrypto))
+        prefix = self.root / "python"
+        self.library(prefix / "lib-dynload" / "_ssl.so", str(libssl))
+        derived = self.derive(prefix)
+        self.assertIn(str(libssl), derived)
+        self.assertIn(str(libcrypto), derived)
+
+    def test_a_link_is_resolved_and_both_spellings_are_kept(self) -> None:
+        """A manager's stable ``opt`` name is a link into its versioned cellar.
+
+        dyld opens the path the image wrote down; a bind-mount boundary names a
+        literal destination in an otherwise empty root. Neither spelling is the
+        other, so both are exposed -- and the file that is *validated* is the
+        resolved one, because a link's own spelling is not what gets read.
+        """
+        cellar = self.library(self.root / "brew" / "Cellar" / "o" / "3" / "lib" / "libssl.dylib")
+        stable = self.root / "brew" / "opt" / "openssl@3"
+        stable.parent.mkdir(parents=True, exist_ok=True)
+        stable.symlink_to(cellar.parent.parent)
+        referenced = stable / "lib" / "libssl.dylib"
+        prefix = self.root / "python"
+        self.library(prefix / "_ssl.so", str(referenced))
+        derived = self.derive(prefix)
+        self.assertIn(str(cellar), derived)
+        self.assertIn(str(referenced), derived)
+
+    def test_a_dependency_already_inside_the_exposure_is_not_added(self) -> None:
+        prefix = self.root / "python"
+        inside = self.library(prefix / "lib" / "libpython.dylib")
+        self.library(prefix / "lib-dynload" / "_x.so", str(inside))
+        self.assertEqual(self.derive(prefix), ())
+
+    def test_a_dependency_the_read_only_runtime_already_covers_is_not_added(self) -> None:
+        """``/usr/lib/libSystem.B.dylib`` is in every child's view already."""
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", "/usr/lib/libSystem.B.dylib")
+        self.assertEqual(self.derive(prefix), ())
+
+    def test_loader_relative_names_are_not_treated_as_paths(self) -> None:
+        """``@rpath`` and friends are resolved by dyld against the image itself."""
+        prefix = self.root / "python"
+        self.library(
+            prefix / "_x.so",
+            "@rpath/libfoo.dylib",
+            "@loader_path/../libbar.dylib",
+            "@executable_path/libbaz.dylib",
+        )
+        self.assertEqual(self.derive(prefix), ())
+
+    def test_an_absent_dependency_is_skipped_rather_than_refused(self) -> None:
+        """A weak link to something this host never installed.
+
+        Skipped, not refused: if it turns out to have been required, the
+        provider fails at launch as dyld naming the library it could not find,
+        which is a better answer than this module refusing a build over a link
+        that is never opened.
+        """
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(self.root / "brew" / "lib" / "libgone.dylib"))
+        self.assertEqual(self.derive(prefix), ())
+
+    def test_a_dependency_inside_the_checkout_is_refused(self) -> None:
+        """The live working tree is what the materialized copy exists to replace."""
+        inside = self.library(self.repository / "vendor" / "libevil.dylib")
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(inside))
+        with self.assertRaises(ContextError):
+            self.derive(prefix)
+
+    def test_a_dependency_that_is_the_home_directory_is_refused(self) -> None:
+        home = self.root / "home"
+        home.mkdir()
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(home))
+        with mock.patch.object(Path, "home", staticmethod(lambda: home)):
+            with self.assertRaises(ContextError):
+                self.derive(prefix)
+
+    def test_a_dependency_that_is_not_a_regular_file_is_refused(self) -> None:
+        directory = self.root / "brew" / "lib"
+        directory.mkdir(parents=True)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(directory))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a regular file", str(raised.exception))
+
+    def test_an_implausibly_large_dependency_is_refused(self) -> None:
+        big = self.root / "brew" / "lib" / "libhuge.dylib"
+        big.parent.mkdir(parents=True)
+        big.write_bytes(b"")
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(big))
+        with mock.patch.object(lifecycle, "_MAX_LINKED_LIBRARY_BYTES", -1):
+            with self.assertRaises(ContextError) as raised:
+                self.derive(prefix)
+        self.assertIn("implausibly large", str(raised.exception))
+
+    def test_a_dependency_another_account_may_rewrite_is_refused(self) -> None:
+        """What the provider maps executable inside the boundary is code.
+
+        A library some other account may write is a library somebody else
+        chooses the contents of, and the sandbox would then be confining the
+        provider to a runtime this host did not install.
+        """
+        loose = self.library(self.root / "brew" / "lib" / "libloose.dylib")
+        loose.chmod(0o666)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(loose))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("writable by", str(raised.exception))
+
+    def test_a_dependency_that_is_not_a_binary_is_refused(self) -> None:
+        """The name comes out of somebody else's image, so the file must answer.
+
+        Ownership and size say who wrote a file and how big it is, not what it
+        is. Without reading the container, a provider that writes its own linker
+        input picks which of the operator's files this boundary exposes -- a
+        shell profile, a keychain database, a notes file -- and each one passes
+        every metadata check an operator-owned file passes.
+        """
+        secret = self.root / "documents" / "notes.txt"
+        secret.parent.mkdir(parents=True)
+        secret.write_text("an operator's file, owned by the operator\n")
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(secret))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a readable Mach-O image", str(raised.exception))
+
+    def test_a_truncated_dependency_is_refused(self) -> None:
+        """A magic is not a header. Nothing is admitted on four bytes."""
+        stub = self.root / "brew" / "lib" / "libcut.dylib"
+        stub.parent.mkdir(parents=True)
+        stub.write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 8)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(stub))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a readable Mach-O image", str(raised.exception))
+
+    def test_a_dependency_that_is_an_executable_is_refused(self) -> None:
+        """A Mach-O, and still not something a load command may name."""
+        binary = macho(self.root / "brew" / "bin" / "tool", filetype=0x2)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(binary))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a shared library", str(raised.exception))
+
+    def test_a_dependency_that_is_a_bundle_is_refused(self) -> None:
+        """``MH_BUNDLE`` is reached through ``dlopen``, not through dyld's loader."""
+        bundle = macho(self.root / "brew" / "lib" / "plugin.bundle", filetype=0x8)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(bundle))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a shared library", str(raised.exception))
+
+    def test_a_dylib_stub_is_admitted(self) -> None:
+        """``MH_DYLIB_STUB`` is what a stripped SDK ships in a library's place."""
+        stub = macho(self.root / "brew" / "lib" / "libstub.dylib", filetype=0x9)
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(stub))
+        self.assertIn(str(stub), self.derive(prefix))
+
+    def test_a_universal_dependency_is_admitted_when_every_slice_is_a_library(self) -> None:
+        library = self.root / "brew" / "lib" / "libfat.dylib"
+        fat_macho(
+            library,
+            macho(self.root / "arm-slice").read_bytes(),
+            macho(self.root / "intel-slice").read_bytes(),
+        )
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(library))
+        self.assertIn(str(library), self.derive(prefix))
+
+    def test_a_universal_dependency_with_a_non_library_slice_is_refused(self) -> None:
+        """One readable library slice is not a licence for whatever the rest are.
+
+        The child is the provider's interpreter, whose architecture is not
+        necessarily this one, so the slice that gets loaded inside the boundary
+        is not the slice a check here would have picked.
+        """
+        mixed = self.root / "brew" / "lib" / "libmixed.dylib"
+        fat_macho(
+            mixed,
+            macho(self.root / "good-slice").read_bytes(),
+            macho(self.root / "bad-slice", filetype=0x2).read_bytes(),
+        )
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(mixed))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a shared library", str(raised.exception))
+
+    def test_a_universal_dependency_with_an_unreadable_slice_is_refused(self) -> None:
+        """A fat header may declare a slice the file does not carry."""
+        broken = self.root / "brew" / "lib" / "libbroken.dylib"
+        broken.parent.mkdir(parents=True)
+        header = struct.pack(">2I", 0xCAFEBABE, 1)
+        # An architecture record whose offset points past the end of the file.
+        broken.write_bytes(header + struct.pack(">5I", 0x0100_000C, 0, 4096, 32, 0))
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", str(broken))
+        with self.assertRaises(ContextError) as raised:
+            self.derive(prefix)
+        self.assertIn("not a readable Mach-O image", str(raised.exception))
+
+    def test_more_libraries_than_the_bound_are_refused(self) -> None:
+        brew = self.root / "brew" / "lib"
+        names = [str(self.library(brew / f"lib{index}.dylib")) for index in range(4)]
+        prefix = self.root / "python"
+        self.library(prefix / "_x.so", *names)
+        with mock.patch.object(lifecycle, "_MAX_LINKED_LIBRARIES", 2):
+            with self.assertRaises(ContextError):
+                self.derive(prefix)
+
+    def test_linux_derives_nothing(self) -> None:
+        """An ELF runtime's libraries are already under the read-only runtime.
+
+        The derivation reads Mach-O images, of which such a host has none, and
+        the previous behaviour there is the whole behaviour.
+        """
+        brew = self.root / "brew" / "lib"
+        libssl = self.library(brew / "libssl.so")
+        prefix = self.root / "python"
+        self.library(prefix / "_ssl.so", str(libssl))
+        with mock.patch.object(sys, "platform", "linux"):
+            self.assertEqual(
+                lifecycle._linked_runtime_libraries(
+                    [prefix], covered=[prefix], repository=self.repository
+                ),
+                (),
+            )
+
+    def test_a_file_that_is_not_an_image_reads_as_no_dependencies(self) -> None:
+        prefix = self.root / "python"
+        prefix.mkdir()
+        (prefix / "notes").write_bytes(b"not a mach-o at all")
+        (prefix / "truncated.dylib").write_bytes(b"\xcf\xfa\xed\xfe")
+        self.assertEqual(self.derive(prefix), ())
+
+    def test_a_universal_archive_is_read_slice_by_slice(self) -> None:
+        """python.org ships fat binaries; the union of the slices is the answer."""
+        brew = self.root / "brew" / "lib"
+        first = self.library(brew / "libone.dylib")
+        second = self.library(brew / "libtwo.dylib")
+        slices = [
+            macho(self.root / "slice-one", str(first)).read_bytes(),
+            macho(self.root / "slice-two", str(second)).read_bytes(),
+        ]
+        header = struct.pack(">2I", 0xCAFEBABE, 2)
+        offset = len(header) + 40
+        body = b""
+        arches = b""
+        for payload in slices:
+            arches += struct.pack(">5I", 0x0100_000C, 0, offset + len(body), len(payload), 0)
+            body += payload
+        prefix = self.root / "python"
+        prefix.mkdir(exist_ok=True)
+        (prefix / "fat.dylib").write_bytes(header + arches + body)
+        derived = self.derive(prefix)
+        self.assertIn(str(first), derived)
+        self.assertIn(str(second), derived)
+
+    def test_the_provider_exposure_carries_the_derived_libraries(self) -> None:
+        """The whole point: what ``subprocess_indexer`` confines the child to."""
+        brew = self.root / "brew" / "lib"
+        libssl = self.library(brew / "libssl.3.dylib")
+        environment = self.root / "venv"
+        provider = self.script(environment / "bin" / "graphify", venv=True)
+        self.library(environment / "lib" / "_ssl.so", str(libssl))
+        with mock.patch.object(sys, "platform", "darwin"):
+            exposed = self.exposure(provider)
+        self.assertIn(str(libssl), exposed)
+        self.assertIn(str(environment), exposed)
+        self.assertNotIn(str(brew), exposed)
+
+    @unittest.skipUnless(sys.platform == "darwin", "Mach-O linkage is a macOS question")
+    def test_the_real_ssl_extension_dependencies_are_covered(self) -> None:
+        """Against this host's actual interpreter, not a fixture.
+
+        The fixtures above prove the parse and the refusals; only this proves
+        the thing the blocker was about -- that the libraries CPython's ``_ssl``
+        really links against end up inside the boundary. Every absolute
+        dependency that extension names must be either under the read-only
+        runtime every child gets or in the derived set.
+
+        Not every host runtime can be admitted, and this test must not assume
+        it. An interpreter installed under a shared package-manager prefix whose
+        ancestry is group-writable is a runtime another account may rewrite, and
+        the trust rule refuses it on purpose: the derivation raises rather than
+        exposing code somebody else chooses the contents of. So a refusal is
+        checked here rather than swallowed -- this host is asked, independently
+        of the derivation, whether one of ``_ssl``'s own dependencies really is
+        untrusted, and the refusal is only accepted when it is. A refusal over a
+        runtime this host does trust would be the regression this test exists to
+        catch, and any other exception is not caught at all.
+        """
+        import _ssl  # noqa: PLC0415 - the point is this host's real extension
+
+        extension = Path(getattr(_ssl, "__file__", "") or "")
+        if not extension.is_file():  # pragma: no cover - a statically linked build
+            self.skipTest("this interpreter's _ssl is not a separate extension module")
+        prefix = Path(sys.base_prefix)
+        system = [Path(os.path.realpath(path)) for path in lifecycle._SYSTEM_READ_PATHS]
+        covered = [*system, Path(os.path.realpath(prefix))]
+        # The extension's own out-of-runtime dependencies, resolved the way the
+        # derivation resolves them. Computed before the derivation runs so the
+        # expectation does not come from the code under test.
+        external = [
+            Path(os.path.realpath(name))
+            for name in lifecycle._macho_dylib_names(extension)
+            if name.startswith("/")
+        ]
+        external = [
+            resolved
+            for resolved in external
+            if not any(lifecycle._under(resolved, root) for root in covered)
+        ]
+        untrusted = [str(path) for path in external if not lifecycle._trusted_library(path)]
+        # The same question for the other refusal a real host can legitimately
+        # hit: a dependency that resolves to something which does not declare
+        # itself a shared library. Asked here so a refusal over a host whose
+        # dependencies *are* all libraries still fails the test.
+        malformed = [
+            str(path)
+            for path in external
+            if (types := lifecycle._macho_filetypes(path)) is None
+            or any(kind not in lifecycle._MACHO_DYLIB_FILETYPES for kind in types)
+        ]
+        try:
+            derived = lifecycle._linked_runtime_libraries(
+                [prefix], covered=[prefix], repository=self.repository
+            )
+        except lifecycle.ContextError as refusal:
+            # The derivation walks the whole runtime, so the library it refused
+            # need not be one of ``_ssl``'s: a shared package-manager prefix is
+            # refused through its own ancestry, before any single dependency.
+            # Either is a correct refusal; neither being true is not.
+            self.assertTrue(
+                untrusted
+                or malformed
+                or not lifecycle._trusted_library(Path(os.path.realpath(prefix))),
+                "the boundary refused this host's runtime, but the runtime and "
+                f"every library _ssl links to are trusted shared libraries: {refusal}",
+            )
+            return
+        self.assertEqual(
+            untrusted,
+            [],
+            "the boundary admitted a runtime whose libraries are writable by another account",
+        )
+        self.assertEqual(
+            malformed,
+            [],
+            "the boundary admitted a dependency that is not a shared library",
+        )
+        for resolved in external:
+            self.assertIn(
+                str(resolved), derived, f"{resolved} is outside the provider's boundary"
+            )
+
+
+def fat_container(
+    path: Path,
+    *slices: bytes,
+    order: str = ">",
+    magic: int = 0xCAFEBABE,
+    count: int | None = None,
+    extents: list[tuple[int, int]] | None = None,
+) -> Path:
+    """A universal archive with every field of its header under the test's hand.
+
+    :func:`fat_macho` writes a well-formed one. This writes whatever a malformed
+    or hostile one would say: a count that disagrees with the records, an offset
+    inside the header being read, a slice running off the end of the file, two
+    slices claiming the same bytes, or the whole header in the other byte order.
+    ``extents`` replaces the computed ``(offset, size)`` of each record; the
+    payloads are still laid out end to end after the table, so a record can
+    describe a region the file does or does not carry.
+    """
+    declared = len(slices) if count is None else count
+    header = struct.pack(f"{order}2I", magic, declared)
+    start = len(header) + 20 * len(slices)
+    body = b""
+    placed = []
+    for payload in slices:
+        placed.append((start + len(body), len(payload)))
+        body += payload
+    records = extents if extents is not None else placed
+    arches = b""
+    for offset, size in records:
+        arches += struct.pack(f"{order}5I", 0x0100_000C, 0, offset, size, 0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(header + arches + body)
+    return path
+
+
+class MachoContainerStructureTests(unittest.TestCase):
+    """What a candidate's own container has to establish before it is exposed.
+
+    Ownership, size and regular-file status say who wrote a file and how big it
+    is. A magic and a ``filetype`` field say what four bytes and one integer
+    claim -- and the name being checked came out of an ``LC_LOAD_DYLIB`` in the
+    provider's own image, so those are the cheapest thing in the file for a
+    provider that writes its own linker input to reproduce over arbitrary
+    operator-owned bytes.
+
+    These hold the parse to the structure behind the claim: the container is
+    decoded in the byte order its magic declares, every declared region is
+    checked against the length of the file that carries it, slices may not
+    overlap each other or the table describing them, and each image's
+    load-command region must be present and walk to exactly the size its header
+    declared. A container that fails any of it is refused rather than read as
+    far as it parses.
+    """
+
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.root = Path(self._directory.name).resolve()
+
+    def thin(self, *dependencies: str, filetype: int = 0x6) -> bytes:
+        return macho(self.root / "payload", *dependencies, filetype=filetype).read_bytes()
+
+    # -- containers that are read ------------------------------------------
+
+    def test_a_thin_library_reads_as_its_filetype_and_dependencies(self) -> None:
+        library = macho(self.root / "libthin.dylib", "/usr/lib/libz.dylib")
+        self.assertEqual(lifecycle._macho_filetypes(library), (0x6,))
+        self.assertEqual(lifecycle._macho_dylib_names(library), ("/usr/lib/libz.dylib",))
+
+    def test_a_universal_library_reads_as_every_slice(self) -> None:
+        library = fat_container(self.root / "libfat.dylib", self.thin(), self.thin(filetype=0x9))
+        self.assertEqual(lifecycle._macho_filetypes(library), (0x6, 0x9))
+
+    def test_a_swapped_universal_header_is_decoded_in_its_own_order(self) -> None:
+        """``FAT_CIGAM`` is the same header written the other way round.
+
+        Read big-endian -- which is what this did -- a count of two reads as
+        33_554_432 and every slice offset is a number with no relation to the
+        file, so a legitimate archive was refused as malformed and the fields
+        that were supposed to bound the parse were never the fields on disk.
+        """
+        library = fat_container(
+            self.root / "libswapped.dylib",
+            self.thin(),
+            self.thin(filetype=0x9),
+            order="<",
+        )
+        # The same header value, written the other way: ``FAT_CIGAM`` on disk.
+        self.assertEqual(library.read_bytes()[:4], b"\xbe\xba\xfe\xca")
+        self.assertEqual(lifecycle._macho_filetypes(library), (0x6, 0x9))
+
+    def test_a_swapped_universal_header_carries_its_dependencies(self) -> None:
+        """The same decode, through the derivation that reads load commands."""
+        library = fat_container(
+            self.root / "libswapped.dylib",
+            self.thin("/usr/lib/libz.dylib"),
+            order="<",
+        )
+        self.assertEqual(lifecycle._macho_dylib_names(library), ("/usr/lib/libz.dylib",))
+
+    def test_an_image_with_no_load_commands_is_read(self) -> None:
+        """Zero commands and a zero-length region agree with each other."""
+        library = macho(self.root / "libbare.dylib")
+        self.assertEqual(lifecycle._macho_filetypes(library), (0x6,))
+
+    # -- containers that are refused ---------------------------------------
+
+    def refused(self, path: Path) -> None:
+        self.assertIsNone(lifecycle._macho_filetypes(path))
+        self.assertEqual(lifecycle._macho_dylib_names(path), ())
+
+    def test_a_file_that_is_not_a_macho_is_refused(self) -> None:
+        other = self.root / "notes.txt"
+        other.write_bytes(b"not a mach-o at all")
+        self.refused(other)
+
+    def test_a_sixty_four_bit_universal_header_is_refused_as_unrecognized(self) -> None:
+        """``FAT_MAGIC_64`` has wider records; guessing at them is not reading them."""
+        container = self.root / "lib64fat.dylib"
+        container.write_bytes(struct.pack(">2I", 0xCAFEBABF, 1) + b"\0" * 32)
+        self.refused(container)
+
+    def test_a_slice_running_past_the_end_of_the_file_is_refused(self) -> None:
+        payload = self.thin()
+        container = fat_container(
+            self.root / "libpast.dylib", payload, extents=[(28, len(payload) + 4096)]
+        )
+        self.refused(container)
+
+    def test_a_slice_beginning_past_the_end_of_the_file_is_refused(self) -> None:
+        container = fat_container(
+            self.root / "libgone.dylib", self.thin(), extents=[(0x10_0000, 32)]
+        )
+        self.refused(container)
+
+    def test_a_slice_inside_the_architecture_table_is_refused(self) -> None:
+        """A slice may not start in the header that is describing it."""
+        payload = self.thin()
+        container = fat_container(
+            self.root / "liboverlap.dylib", payload, extents=[(4, len(payload))]
+        )
+        self.refused(container)
+
+    def test_a_zero_length_slice_is_refused(self) -> None:
+        container = fat_container(self.root / "libempty.dylib", self.thin(), extents=[(28, 0)])
+        self.refused(container)
+
+    def test_overlapping_slices_are_refused(self) -> None:
+        """Two records claiming the same bytes make "which image is this" ambiguous."""
+        payload = self.thin()
+        container = fat_container(
+            self.root / "libambiguous.dylib",
+            payload,
+            payload,
+            extents=[(48, len(payload)), (48 + len(payload) // 2, len(payload))],
+        )
+        self.refused(container)
+
+    def test_an_architecture_table_larger_than_the_file_is_refused(self) -> None:
+        """A count is a promise about bytes the file has to carry."""
+        container = fat_container(self.root / "libclaims.dylib", self.thin(), count=8)
+        self.refused(container)
+
+    def test_more_architectures_than_the_bound_are_refused(self) -> None:
+        container = self.root / "libmany.dylib"
+        count = lifecycle._MAX_MACHO_ARCHITECTURES + 1
+        container.write_bytes(struct.pack(">2I", 0xCAFEBABE, count) + b"\0" * (20 * count))
+        self.refused(container)
+
+    def test_a_zero_architecture_universal_header_is_refused(self) -> None:
+        container = self.root / "libnone.dylib"
+        container.write_bytes(struct.pack(">2I", 0xCAFEBABE, 0))
+        self.refused(container)
+
+    def test_a_truncated_thin_header_is_refused(self) -> None:
+        container = self.root / "libcut.dylib"
+        container.write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 8)
+        self.refused(container)
+
+    def test_a_truncated_load_command_region_is_refused(self) -> None:
+        """The header declares a region; the file has to carry all of it."""
+        whole = self.thin("/usr/lib/libz.dylib")
+        container = self.root / "libshort.dylib"
+        container.write_bytes(whole[:-8])
+        self.refused(container)
+
+    def test_a_load_command_region_declared_past_the_slice_is_refused(self) -> None:
+        """A slice may not reach into the next slice's bytes to satisfy its header.
+
+        The bytes that follow are a real, complete image, so a parse bounded by
+        the file rather than by the slice would read them and admit this.
+        """
+        payload = self.thin()
+        stretched = bytearray(payload)
+        struct.pack_into("<I", stretched, 20, len(payload))  # sizeofcmds
+        struct.pack_into("<I", stretched, 16, 1)  # ncmds
+        container = fat_container(
+            self.root / "libreach.dylib", bytes(stretched), self.thin()
+        )
+        self.refused(container)
+
+    def test_a_command_count_too_large_for_its_region_is_refused(self) -> None:
+        """Every command carries at least its own command and size."""
+        image = bytearray(self.thin("/usr/lib/libz.dylib"))
+        struct.pack_into("<I", image, 16, 64)  # ncmds, against a region of one
+        container = self.root / "libcount.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_command_chain_that_stops_short_is_refused(self) -> None:
+        """``sizeofcmds`` is the size of *all* the commands, not of a prefix.
+
+        A chain that leaves bytes over means the region holds something other
+        than the commands it was declared to hold, and reading the prefix as if
+        it were the whole truth is how a trailing record goes unexamined.
+        """
+        image = bytearray(self.thin("/usr/lib/libz.dylib", "/usr/lib/libiconv.dylib"))
+        struct.pack_into("<I", image, 16, 1)  # ncmds, against two real commands
+        container = self.root / "libshortchain.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_command_larger_than_its_region_is_refused(self) -> None:
+        image = bytearray(self.thin("/usr/lib/libz.dylib"))
+        struct.pack_into("<I", image, 36, 4096)  # the first command's cmdsize
+        container = self.root / "libbig.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_misaligned_command_size_is_refused(self) -> None:
+        """dyld requires each ``cmdsize`` to be a multiple of the pointer width."""
+        image = bytearray(self.thin("/usr/lib/libz.dylib"))
+        declared = struct.unpack_from("<I", image, 36)[0]
+        struct.pack_into("<I", image, 36, declared - 4)
+        struct.pack_into("<I", image, 20, declared - 4)  # sizeofcmds, so it still walks
+        container = self.root / "libodd.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_zero_sized_command_is_refused(self) -> None:
+        """A command of no size is an unbounded walk, not a record."""
+        image = bytearray(self.thin("/usr/lib/libz.dylib"))
+        struct.pack_into("<I", image, 36, 0)
+        container = self.root / "libzero.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_load_command_region_larger_than_the_bound_is_refused(self) -> None:
+        image = bytearray(self.thin())
+        struct.pack_into("<I", image, 20, lifecycle._MAX_MACHO_COMMAND_BYTES + 8)
+        container = self.root / "libhuge.dylib"
+        container.write_bytes(bytes(image))
+        self.refused(container)
+
+    def test_a_malformed_slice_refuses_the_whole_universal_archive(self) -> None:
+        """One readable slice is not a licence for whatever the rest are."""
+        broken = bytearray(self.thin("/usr/lib/libz.dylib"))
+        struct.pack_into("<I", broken, 36, 0)
+        container = fat_container(
+            self.root / "libmixed.dylib", self.thin(), bytes(broken)
+        )
+        self.refused(container)
+
+
 class ProviderIdentityTests(TemporaryWorkspace):
     """The pin is checked against the install, before the install is run.
 
@@ -2257,6 +3592,48 @@ class BuildAndPublishTests(TemporaryWorkspace):
     def test_manifest_round_trips_through_validation(self) -> None:
         manifest = self.build()
         self.assertEqual(lifecycle.load_manifest(manifest.to_json()), manifest)
+
+    def test_the_unsupported_count_survives_the_build_and_the_status_report(self) -> None:
+        """The number has to outlive the indexer, or it is not a report.
+
+        ``IndexResult.notes`` are read by the build and then dropped, so a
+        count that lived only there would never reach an operator. This one is
+        written into the manifest, round-trips through validation, and appears
+        in the summary ``status`` emits.
+        """
+        manifest = self.build(
+            indexer=recording_indexer(indexed_files=1, unsupported_inputs=2)
+        )
+        self.assertEqual(manifest.unsupported_inputs, 2)
+        self.assertEqual(manifest.to_json()["unsupported_inputs"], 2)
+        self.assertEqual(lifecycle.load_manifest(manifest.to_json()), manifest)
+        self.assertEqual(manifest.shareable_summary()["unsupported_inputs"], 2)
+        status = lifecycle.graph_status(self.repository, root=self.state)
+        self.assertIsNotNone(status.manifest)
+        self.assertEqual(status.shareable_summary()["build"]["unsupported_inputs"], 2)
+
+    def test_the_unsupported_count_is_not_the_unmaterialized_count(self) -> None:
+        """Two different questions, so two different numbers.
+
+        ``skipped_paths`` is what this build declined to materialize; the new
+        count is what the provider could not extract from what it *was* given.
+        Folding either into the other would report a number an operator cannot
+        act on.
+        """
+        manifest = self.build(
+            indexer=recording_indexer(indexed_files=1, unsupported_inputs=1)
+        )
+        self.assertEqual(manifest.skipped_paths, 0)
+        self.assertEqual(manifest.unsupported_inputs, 1)
+
+    def test_a_manifest_published_before_the_count_existed_still_loads(self) -> None:
+        """Compatibility, bounded to exactly the one new name."""
+        payload = self.build().to_json()
+        payload.pop("unsupported_inputs")
+        self.assertEqual(lifecycle.load_manifest(payload).unsupported_inputs, 0)
+        payload["some_other_field"] = 1
+        with self.assertRaises(ContextError):
+            lifecycle.load_manifest(payload)
 
     def test_shareable_summary_carries_no_content_or_local_path(self) -> None:
         summary = self.build().shareable_summary()
@@ -3043,10 +4420,51 @@ class CommandTests(TemporaryWorkspace):
             body=(
                 "#!/bin/sh\n"
                 '[ "$1" = "extract" ] || exit 64\n'
-                "mkdir -p .graphify\n"
-                "printf graph-bytes > .graphify/graph.bin\n"
-                'printf \'{"complete": %s, "code_files": 1, "requeued": 0}\' '
-                f"'{'true' if complete else 'false'}' > .graphify/manifest.json\n"
+                # The pinned CLI requires a scan target here and exits 1 without
+                # one, so the stand-in refuses the same argv the real provider
+                # refuses rather than accepting a launch that could never work.
+                '[ -n "$2" ] || exit 65\n'
+                'case "$2" in -*) exit 65 ;; esac\n'
+                '[ -d "$2" ] || exit 65\n'
+                # The real output root, with the two documents the pinned
+                # ``--no-cluster`` branch writes there.
+                "mkdir -p graphify-out\n"
+                'printf \'{"nodes": [], "edges": []}\' > graphify-out/graph.json\n'
+                # A complete run stamps every input it was shown; a partial one
+                # leaves the manifest empty, which is what an unprocessed code
+                # file looks like to the collector.
+                + (
+                    (
+                        # The real pin stamps ``_md5_file`` of the bytes it was
+                        # handed, and the collector checks the row against the
+                        # immutable materialized copy. A constant here would be
+                        # a stand-in that never reads its inputs, so it stamps
+                        # the actual digest -- ``md5 -q`` on macOS, ``md5sum``
+                        # elsewhere -- and a build/refresh round trip exercises
+                        # the same contract a real provider has to meet.
+                        # Three spellings because the host decides which exists:
+                        # openssl and md5 ship with macOS, md5sum with GNU
+                        # coreutils. An empty result is left empty rather than
+                        # faked, so a host with none of them fails the coverage
+                        # check loudly instead of passing on a constant.
+                        "digest_of() {\n"
+                        "  h=$(openssl dgst -md5 -r \"$1\" 2>/dev/null | cut -d' ' -f1)\n"
+                        "  [ -n \"$h\" ] || h=$(md5 -q \"$1\" 2>/dev/null)\n"
+                        "  [ -n \"$h\" ] || h=$(md5sum \"$1\" 2>/dev/null | cut -d' ' -f1)\n"
+                        "  printf '%s' \"$h\"\n"
+                        "}\n"
+                        "{ printf '{'; sep=''; "
+                        "find . -path ./graphify-out -prune -o -type f -print | "
+                        "sed 's|^\\./||' | while read -r f; do "
+                        'h=$(digest_of "$f"); '
+                        'printf \'%s"%s":{"mtime":1,"seen":2,'
+                        '"ast_hash":"%s",'
+                        "\"semantic_hash\":\"%s\"}' \"$sep\" \"$f\" \"$h\" \"$h\"; "
+                        "sep=','; done; printf '}'; } > graphify-out/manifest.json\n"
+                    )
+                    if complete
+                    else "printf '{}' > graphify-out/manifest.json\n"
+                )
             ),
             **installed,
         )
