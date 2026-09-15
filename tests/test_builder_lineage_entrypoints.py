@@ -177,6 +177,238 @@ class PublisherRequiresATrustedAuthority(unittest.TestCase):
         self.assertEqual(gh.label_commands, [], "no label may be reconciled")
 
 
+class PublicationIsDecidedSemantically(unittest.TestCase):
+    """The expected text being present is not a verified publication.
+
+    Idempotency and readback used a substring test, so a body holding that
+    text beside a broken marker -- or a second trusted comment carrying a
+    different chain -- counted as "already published", and the builder label
+    moved on a history consumers would not resolve the same way.
+    """
+
+    def _publish(self, comments, *, publish_as=AUTHORITY):
+        posted: list[str] = []
+        existing = list(comments)
+
+        def record(body):
+            posted.append(body)
+            existing.append({"user": {"login": publish_as}, "body": body})
+
+        result = lane_delivery.publish_lineage_evidence(
+            repo=REPO, pr_number=str(PR), branch=BRANCH, head_sha=TAKEN,
+            episodes=(takeover_episode(),),
+            opener_lane="devin", label_lanes=("codex",),
+            existing_bodies=lambda: list(existing),
+            publish=record,
+            trusted_author=reviewer_lineage.marker_author_trust((AUTHORITY,)),
+        )
+        return result, posted
+
+    def _valid_marker(self):
+        return MARKER_BODY + builder_lineage.lineage_comment_marker(
+            (takeover_episode(),)
+        )
+
+    def test_a_valid_trusted_duplicate_is_still_idempotent(self):
+        result, posted = self._publish(
+            [{"user": {"login": AUTHORITY}, "body": self._valid_marker()}]
+        )
+        self.assertTrue(result["duplicate"])
+        self.assertEqual(posted, [])
+
+    def test_the_expected_text_beside_a_broken_marker_is_not_a_publication(self):
+        broken = self._valid_marker() + "\n\n<!-- " + builder_lineage.LINEAGE_MARKER
+        result, posted = self._publish(
+            [{"user": {"login": AUTHORITY}, "body": broken}]
+        )
+        self.assertFalse(result["published"])
+        self.assertFalse(result.get("duplicate"))
+        self.assertEqual(result["reason"], "existing_lineage_unreadable")
+        self.assertEqual(posted, [], "nothing may be added to a history nobody reads")
+
+    def test_a_second_trusted_comment_with_a_different_chain_conflicts(self):
+        other = MARKER_BODY + builder_lineage.lineage_comment_marker(
+            (takeover_episode(resulting="c" * 40),)
+        )
+        result, posted = self._publish(
+            [
+                {"user": {"login": AUTHORITY}, "body": self._valid_marker()},
+                {"user": {"login": AUTHORITY}, "body": other},
+            ]
+        )
+        self.assertFalse(result["published"])
+        self.assertIn(
+            result["reason"],
+            ("existing_lineage_conflicts", "existing_lineage_unreadable"),
+        )
+        self.assertEqual(posted, [])
+
+    def test_an_untrusted_publisher_is_still_refused(self):
+        result, posted = self._publish([], publish_as=OUTSIDER)
+        self.assertFalse(result["published"])
+        self.assertEqual(result["reason"], "publication_author_untrusted")
+        self.assertEqual(len(posted), 1, "the attempt happened; it did not count")
+
+    def test_an_untrusted_identical_body_does_not_suppress_publication(self):
+        result, posted = self._publish(
+            [{"user": {"login": OUTSIDER}, "body": self._valid_marker()}]
+        )
+        self.assertTrue(result["published"])
+        self.assertEqual(len(posted), 1)
+
+    def test_an_announced_empty_chain_already_public_stops_publication(self):
+        empty = MARKER_BODY + builder_lineage.lineage_comment_marker(())
+        result, posted = self._publish(
+            [{"user": {"login": AUTHORITY}, "body": empty}]
+        )
+        self.assertEqual(result["reason"], "existing_lineage_unreadable")
+        self.assertEqual(posted, [])
+
+
+class TheDeliveryTransportValidatesRawComments(unittest.TestCase):
+    """`gh pr view --json comments` embeds one list, and it is validated."""
+
+    def _bodies(self, payload):
+        def check_output(command, **_kwargs):
+            return json.dumps({"comments": payload})
+
+        with mock.patch.object(
+            lane_delivery.subprocess, "check_output", check_output
+        ):
+            return lane_delivery._gh_comment_bodies(REPO, str(PR))
+
+    def test_a_malformed_history_is_not_an_empty_one(self):
+        for payload in (
+            None,
+            False,
+            {},
+            {"nodes": []},
+            [{"author": {"login": AUTHORITY}, "body": "hi"}, "not a comment"],
+            [{"author": {"login": AUTHORITY}, "body": 12345}],
+            [{"author": "codemower-ai", "body": "hi"}],
+            [{"author": {"login": 7}, "body": "hi"}],
+            [{"author": {"login": AUTHORITY}, "body": "ok"},
+             {"author": {"login": None}, "body": "hi"}],
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaises((builder_lineage.LineageError,
+                                        lane_delivery.LaneDeliveryError)):
+                    self._bodies(payload)
+
+    def test_githubs_own_schema_and_both_author_transports_are_read(self):
+        bodies = self._bodies(
+            [
+                {"author": None, "body": "a deleted account said this"},
+                {"author": {"login": "someone"}},
+                {"user": {"login": AUTHORITY}, "body": "REST shape"},
+                {"author": {"login": AUTHORITY}, "body": "gh shape"},
+            ]
+        )
+        self.assertEqual(len(bodies), 4)
+        self.assertEqual(bodies[2]["user"]["login"], AUTHORITY)
+        self.assertEqual(bodies[3]["user"]["login"], AUTHORITY)
+
+    def test_a_genuinely_empty_history_stays_ordinary(self):
+        self.assertEqual(self._bodies([]), ())
+
+
+class AStructuralRequeueAnswersToLineageFirst(unittest.TestCase):
+    """A requeue clears done/blocked, so it is a label-state mutation.
+
+    Both structural paths -- a missing review id and a failed inline-comment
+    fetch -- removed those labels before any lineage was parsed, so evidence
+    nobody could read still changed which lane the pull request believed.
+    """
+
+    def _run(self, *, comments, review_id=4242, reviews_fail=False, labels=None):
+        applied: list = []
+        root = git_free_tempdir(self, "code-mower-structural-")
+        event = {
+            "action": "submitted",
+            "review": ({"id": review_id} if review_id else {}) | {"state": "commented", "user": {"login": "greptile-apps[bot]"}},
+            "pull_request": {"number": PR},
+        }
+        event_path = Path(root) / "event.json"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+
+        def api(method, path, **_kwargs):
+            if "/comments" in path and "/reviews/" in path:
+                if reviews_fail:
+                    raise labeler.GitHubRequestError("GET", path, 500, "boom")
+                return []
+            if "/comments" in path:
+                return comments if "page=1" in path else []
+            if re.search(r"/pulls/\d+$", path):
+                pull = _pull_request(labels=labels or ("builder:codex", "greptile-audit-done"))
+                pull["user"] = {"login": OPENER}
+                return pull
+            return []
+
+        env = {
+            "GITHUB_EVENT_PATH": str(event_path),
+            "GITHUB_REPOSITORY": REPO,
+            "GITHUB_EVENT_NAME": "pull_request_review",
+            "GREPTILE_LABEL_TOKEN": "t",
+            "GITHUB_TOKEN": "t",
+            "CODE_MOWER_DECISION_AUTHORITIES": AUTHORITY,
+            "CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE": "",
+            "CODE_MOWER_AUTHOR_EXCLUSION_JSON": json.dumps(
+                {
+                    "enabled": True,
+                    "labels": {"builder:codex": "codex", "builder:claude": "claude"},
+                    "authors": {"devin-ai-integration[bot]": "devin"},
+                }
+            ),
+            "DRY_RUN": "",
+        }
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(labeler, "github_request_with_fallback", api), \
+                mock.patch(
+                    "code_mower.audit_labeler_lib.github_request_with_fallback", api), \
+                mock.patch.object(
+                    labeler, "_apply_or_log", lambda *a, **k: applied.append(a)), \
+                mock.patch("sys.stdout", new_callable=_Capture):
+            code = labeler.main(["--adapter", "greptile"])
+        return code, applied
+
+    def _unreadable(self):
+        return [{"user": {"login": AUTHORITY},
+                 "body": MARKER_BODY + "<!-- " + builder_lineage.LINEAGE_MARKER}]
+
+    def _conflicting(self):
+        return [{"user": {"login": AUTHORITY},
+                 "body": MARKER_BODY + builder_lineage.lineage_comment_marker(
+                     (takeover_episode(resulting="c" * 40),)
+                 )}]
+
+    def test_a_missing_review_id_changes_no_label_on_unreadable_lineage(self):
+        code, applied = self._run(comments=self._unreadable(), review_id=None)
+        self.assertEqual(code, 0)
+        self.assertEqual(applied, [], "a requeue may not clear labels on this")
+
+    def test_a_missing_review_id_changes_no_label_on_conflicting_lineage(self):
+        code, applied = self._run(comments=self._conflicting(), review_id=None)
+        self.assertEqual(code, 0)
+        self.assertEqual(applied, [])
+
+    def test_a_failed_inline_fetch_changes_no_label_on_unreadable_lineage(self):
+        code, applied = self._run(comments=self._unreadable(), reviews_fail=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(applied, [])
+
+    def test_a_failed_inline_fetch_changes_no_label_on_conflicting_lineage(self):
+        code, applied = self._run(comments=self._conflicting(), reviews_fail=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(applied, [])
+
+    def test_an_ordinary_no_lineage_requeue_still_happens(self):
+        """Positive control: with no published lineage, the requeue proceeds."""
+
+        code, applied = self._run(comments=[], review_id=None)
+        self.assertEqual(code, 0)
+        self.assertTrue(applied, "a structural requeue with clean lineage still runs")
+
+
 class _Capture:
     """Minimal stdout stand-in that keeps what an entrypoint printed."""
 

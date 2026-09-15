@@ -998,6 +998,100 @@ class TheWrapperCompositionKeepsTheConfiguredBranchContract(unittest.TestCase):
                     reviewer_lineage.load_identity(), "codex"
                 )
 
+    def _aliased(self, *pairs):
+        contract = dict(self.CONFIG)
+        contract["authors"] = dict(pairs)
+        return contract
+
+    def test_a_conflicting_account_alias_refuses_in_either_order(self):
+        """Account names match case-insensitively, so these are one account.
+
+        Composing the floor over the raw key left the alias untouched beside a
+        new canonical entry, and which one survived normalisation came down to
+        insertion order -- an alias could outrank the canonical account and let
+        a lane review its own diff.
+        """
+
+        orders = (
+            (("Codex[Bot]", "claude"), ("codex[bot]", "codex")),
+            (("codex[bot]", "codex"), ("Codex[Bot]", "claude")),
+            ((" codex[bot] ", "claude"), ("codex[bot]", "codex")),
+            (("CODEX[BOT]", "devin"), ("codex[bot]", "codex")),
+        )
+        for pairs in orders:
+            with self.subTest(order=pairs):
+                with mock.patch.dict(
+                    "os.environ",
+                    {reviewer_lineage.AUTHOR_EXCLUSION_ENV: json.dumps(
+                        self._aliased(*pairs)
+                    )},
+                ):
+                    with self.assertRaises(
+                        reviewer_lineage.ReviewerIdentityInvalid
+                    ):
+                        reviewer_lineage.identity_with_lane_floor(
+                            reviewer_lineage.load_identity(), "codex"
+                        )
+
+    def test_no_provider_is_invoked_on_a_conflicting_alias(self):
+        """The wrappers refuse during composition, before any provider runs."""
+
+        contract = self._aliased(("Codex[Bot]", "claude"), ("codex[bot]", "codex"))
+        with mock.patch.dict(
+            "os.environ",
+            {
+                reviewer_lineage.AUTHOR_EXCLUSION_ENV: json.dumps(contract),
+                "CODE_MOWER_DECISION_AUTHORITIES": AUTHORITY,
+            },
+        ):
+            for wrapper in ("codex_audit_pr", "claude_audit_pr"):
+                with self.subTest(wrapper=wrapper):
+                    module = __import__(
+                        f"code_mower.{wrapper}", fromlist=["_require_independent_review"]
+                    )
+                    with self.assertRaises(
+                        reviewer_lineage.ReviewerIdentityInvalid
+                    ):
+                        module._require_independent_review(
+                            "codex", REPO, PR, pr_meta(), TAKEN,
+                            authorities=(AUTHORITY,), fetch_comments=lambda: [],
+                        )
+            from code_mower import devin_cli_audit_pr
+
+            config = SimpleNamespace(repo=REPO, pr_number=PR, github_token="unused")
+            with self.assertRaises(reviewer_lineage.ReviewerIdentityInvalid):
+                devin_cli_audit_pr._require_independent_devin_review(
+                    config, pr_meta(), TAKEN, "a-human", fetch_comments=lambda: [],
+                )
+
+    def test_a_compatible_account_alias_is_accepted(self):
+        """Two spellings that name the same lane are one account, not a clash."""
+
+        for pairs in (
+            (("Codex[Bot]", "codex"), ("codex[bot]", "codex")),
+            (("codex[bot]", "codex"), ("CODEX[BOT]", "Codex")),
+            ((" codex[bot] ", "codex"),),
+        ):
+            with self.subTest(order=pairs):
+                floored = reviewer_lineage.identity_with_lane_floor(
+                    self._aliased(*pairs), "codex"
+                )
+                self.assertEqual(floored["authors"]["codex[bot]"], "codex")
+                self.assertEqual(
+                    floored["branch_prefixes"], self.CONFIG["branch_prefixes"]
+                )
+                self.assertTrue(floored["require_verified_lineage"])
+
+    def test_an_alias_cannot_outrank_the_canonical_account(self):
+        """Whatever the alias said, the canonical account names its own lane."""
+
+        floored = reviewer_lineage.identity_with_lane_floor(
+            self._aliased(("Codex[Bot]", "codex"), ("devin-ai-integration[bot]", "devin")),
+            "codex",
+        )
+        self.assertEqual(floored["authors"]["codex[bot]"], "codex")
+        self.assertEqual(floored["labels"]["builder:codex"], "codex")
+
     def test_the_floor_carries_the_branch_contract_through(self):
         floored = reviewer_lineage.identity_with_lane_floor(self.CONFIG, "codex")
         self.assertEqual(floored["branch_prefixes"], self.CONFIG["branch_prefixes"])

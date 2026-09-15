@@ -32,8 +32,10 @@ if __package__ and __package__.startswith("code_mower"):
         lineage_context,
         lineage_decision_authorities,
         lineage_marker_author_trust,
+        load_author_exclusion_config,
         load_json,
         require_comment_list,
+        resolve_builder_lineage,
         sha_matches,
     )
 else:
@@ -53,8 +55,10 @@ else:
             lineage_context,
             lineage_decision_authorities,
             lineage_marker_author_trust,
+            load_author_exclusion_config,
             load_json,
             require_comment_list,
+            resolve_builder_lineage,
             sha_matches,
         )
     except ImportError:  # pragma: no cover - direct `python tools/foo.py` execution
@@ -73,8 +77,10 @@ else:
             lineage_context,
             lineage_decision_authorities,
             lineage_marker_author_trust,
+            load_author_exclusion_config,
             load_json,
             require_comment_list,
+            resolve_builder_lineage,
             sha_matches,
         )
 
@@ -253,6 +259,64 @@ def fetch_lineage_comments(
         tokens=tokens,
         page_cap=adapter.review_comments_page_cap,
     )
+
+
+def structural_lineage_refusal(
+    *,
+    repo: str,
+    pr_number: int,
+    branch: str,
+    head_sha: Optional[str],
+    comments: Optional[Sequence[Mapping[str, Any]]],
+    labels: Sequence[str],
+    author: str,
+) -> str:
+    """Why a structural requeue must not touch labels, or ``""`` when it may.
+
+    A requeue removes the done and blocked labels. That is a label-state
+    mutation, so it answers to the same published-lineage contract a verdict
+    does: evidence nobody can read, or evidence that disagrees with itself at
+    this head, is not a basis for changing which lane is believed. Deciding
+    this *before* either requeue path is the point -- clearing the labels first
+    and resolving afterwards leaves the pull request already changed.
+    """
+
+    try:
+        lineage = lineage_context(
+            repo=repo,
+            pr_number=pr_number,
+            branch=branch,
+            head_sha=head_sha,
+            comments=comments,
+            trusted_author=lineage_marker_author_trust(
+                authorities=lineage_decision_authorities()
+            ),
+        )
+    except LineageError:
+        return "published builder lineage is unreadable; leaving labels unchanged"
+    resolved = resolve_builder_lineage(
+        labels=list(labels),
+        author=author,
+        config=load_author_exclusion_config(),
+        repo=lineage.repo,
+        pr_number=lineage.pr_number,
+        branch=lineage.branch,
+        head_sha=lineage.head_sha,
+        episodes=lineage.episodes,
+    )
+    if lineage.episodes and resolved.status != "resolved":
+        # Only a *published history* blocks the requeue, and only when it does
+        # not settle at this head: a chain that conflicts, or that describes
+        # some other head, is not a basis for deciding which lane is believed.
+        # An identity-only disagreement -- an opener and a label naming
+        # different lanes, with no episodes at all -- is the ordinary
+        # no-lineage case every other route already handles, and refusing it
+        # here would stop requeues that have nothing to do with lineage.
+        return (
+            f"builder lineage is unresolved ({resolved.reason}); "
+            f"leaving labels unchanged"
+        )
+    return ""
 
 
 def has_same_head_review(
@@ -887,6 +951,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"skip: could not fetch published builder lineage: {exc}")
             return 0
         if adapter.requires_review_comments:
+            # Both requeue paths below mutate labels without consulting a
+            # verdict, so lineage is parsed and admitted here -- once, before
+            # either of them can clear done or blocked on evidence nobody
+            # could read.
+            structural_refusal = structural_lineage_refusal(
+                repo=repo,
+                pr_number=pr_number,
+                branch=head_branch,
+                head_sha=current_head_sha,
+                comments=lineage_comments,
+                labels=pr_labels,
+                author=pr_author,
+            )
+            if structural_refusal:
+                print(f"skip: {structural_refusal}")
+                return 0
             review = event.get("review") or {}
             review_id = review.get("id")
             if not review_id:

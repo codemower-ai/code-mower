@@ -270,13 +270,28 @@ def _lineage_comments(pr: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
     here keeps one marker-trust rule instead of one per transport.
     """
 
+    from .builder_lineage import require_comment_list
+
+    # Validated before it is normalised, like every other authoritative read:
+    # `or []` turned a null or object response into an empty history, and
+    # filtering non-mappings out dropped records that could have carried the
+    # marker. `gh pr view --json comments` embeds one list -- not the gate's
+    # slurped array of page arrays, and not REST's comment count -- and an
+    # unreadable one is surfaced to the caller rather than shrunk to absence.
+    payload = pr.get("comments")
+    if payload is None:
+        return ()
+    validated = require_comment_list(payload, what="pull request comments")
     return tuple(
         {
-            "user": {"login": _text((item.get("author") or {}).get("login"))},
+            "user": {
+                "login": _text(
+                    (item.get("author") or item.get("user") or {}).get("login")
+                )
+            },
             "body": _text(item.get("body")),
         }
-        for item in (pr.get("comments") or [])
-        if isinstance(item, Mapping)
+        for item in validated
     )
 
 
@@ -298,6 +313,7 @@ def builder_lineage_for(
     author: str,
     state_dir: Path | None = None,
     comments: Sequence[Mapping[str, Any]] = (),
+    raw_comments: Any = None,
 ) -> dict[str, Any]:
     """Resolve recorded contribution lineage for one pull request at its head.
 
@@ -319,6 +335,11 @@ def builder_lineage_for(
     identity = load_identity()
     authorities = decision_authorities_from_env()
     try:
+        # Normalised inside the same guard that already answers for unreadable
+        # evidence, so a malformed published history reaches the caller as one
+        # bounded conflict rather than as an exception out of a status run.
+        if raw_comments is not None:
+            comments = _lineage_comments({"comments": raw_comments})
         episodes = trusted_episodes(
             repo,
             pr_number,
@@ -355,6 +376,13 @@ def builder_lineage_for(
         episodes=episodes,
         opener_lane=opener_lane,
         label_lanes=label_lanes,
+        # The same identity contract the gate and the wrappers resolve under.
+        # Without it this projection would call a `codex/` branch labelled
+        # `builder:claude` a sole Claude writer and route a reviewer on that,
+        # while the gate refused the very same pull request.
+        branch_lane=lineage_module.branch_lane_from_identity(
+            identity=identity, branch=branch
+        ),
     ).as_dict()
 
 
@@ -397,7 +425,7 @@ def _summarize_pr(
             head_sha=head_sha,
             labels=[name for names in labels.values() for name in names],
             author=_author(pr),
-            comments=_lineage_comments(pr),
+            raw_comments=pr.get("comments") or [],
         ),
     }
 

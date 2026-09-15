@@ -122,7 +122,16 @@ def identity_with_lane_floor(identity: Mapping[str, Any] | None, lane: str) -> M
     labels = base.get("labels")
     authors = base.get("authors")
     merged_labels = dict(labels) if isinstance(labels, Mapping) else {}
-    merged_authors = dict(authors) if isinstance(authors, Mapping) else {}
+    # Account keys are matched case-insensitively downstream, so the floor has
+    # to compose over the *same* keys resolution will use. Flooring the raw key
+    # left `{"Codex[Bot]": "claude"}` untouched beside a new `codex[bot]`
+    # entry, and which of the two survived normalisation came down to
+    # insertion order -- an alias could quietly outrank the canonical account
+    # and let a lane review its own diff. Normalising first also makes two
+    # aliases that disagree visible as the contradiction they are.
+    merged_authors = _normalized_account_map(
+        authors if isinstance(authors, Mapping) else {}
+    )
     if reviewer:
         # A floor, not a default. ``setdefault`` leaves a present-but-useless
         # mapping alone -- `{"builder:codex": ""}` keeps naming no lane -- and
@@ -135,7 +144,9 @@ def identity_with_lane_floor(identity: Mapping[str, Any] | None, lane: str) -> M
         # believes something about its own identity that is not true.
         _claim_own_identity(merged_labels, f"builder:{reviewer}", reviewer, "label")
         for login in LANE_ACCOUNT_FLOOR.get(reviewer, ()):
-            _claim_own_identity(merged_authors, login, reviewer, "account")
+            _claim_own_identity(
+                merged_authors, _account_key(login), reviewer, "account"
+            )
     # The floor raises the three fields it is responsible for and leaves the
     # rest of the deployment's contract intact. Rebuilding the mapping from
     # scratch dropped `branch_prefixes` and `require_verified_lineage`, so
@@ -151,6 +162,42 @@ def identity_with_lane_floor(identity: Mapping[str, Any] | None, lane: str) -> M
 
 class ReviewerIdentityInvalid(RuntimeError):
     """The deployment's identity contract misnames the reviewer's own lane."""
+
+
+def _account_key(login: Any) -> str:
+    """The form account lookups actually use: trimmed and case-folded."""
+
+    return str(login or "").strip().lower()
+
+
+def _normalized_account_map(authors: Mapping[str, Any]) -> dict:
+    """Account map keyed the way resolution reads it, aliases reconciled.
+
+    Two spellings of one account are compatible when they name the same lane
+    and a contradiction when they do not -- and a contradiction has to be the
+    same contradiction whichever order the deployment wrote them in. Values
+    keep whatever the contract said; only the key is normalised.
+    """
+
+    normalized: dict = {}
+    for raw_key, value in authors.items():
+        key = _account_key(raw_key)
+        if not key:
+            continue
+        if key in normalized:
+            first = str(normalized[key]).strip().lower()
+            second = str(value).strip().lower()
+            if first != second:
+                raise ReviewerIdentityInvalid(
+                    f"reviewer_identity_invalid: the configured accounts name "
+                    f"`{key}` as both `{first or 'nothing'}` and "
+                    f"`{second or 'nothing'}`. Account names are matched "
+                    f"case-insensitively, so these are one account with two "
+                    f"answers; correct CODE_MOWER_AUTHOR_EXCLUSION_JSON."
+                )
+            continue
+        normalized[key] = value
+    return normalized
 
 
 def _claim_own_identity(

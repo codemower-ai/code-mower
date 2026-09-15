@@ -1269,18 +1269,35 @@ def _gh_comment_bodies(repo: str, number: str) -> tuple[dict[str, Any], ...]:
     consumer reads is not a publication.
     """
 
+    from . import builder_lineage
+
     result = subprocess.check_output(
         ["gh", "pr", "view", number, "--repo", repo, "--json", "comments"],
         timeout=60, text=True, stderr=subprocess.DEVNULL,
     )
-    payload = json.loads(result).get("comments") or []
+    # `gh pr view --json comments` embeds one list under the pull request --
+    # not the gate's slurped array of page arrays, and not REST's comment
+    # count. Whatever it is, it is validated before it is normalised: `or []`
+    # made a null or object response an empty history, and filtering
+    # non-objects out dropped records that could have carried the marker.
+    payload = json.loads(result).get("comments")
+    if payload is None:
+        raise LaneDeliveryError(
+            f"gh pr view returned no comments field for {repo}#{number}"
+        )
+    validated = builder_lineage.require_comment_list(
+        payload, what=f"pull request comments for {repo}#{number}"
+    )
     return tuple(
         {
-            "user": {"login": str(((item.get("author") or {}).get("login")) or "")},
+            "user": {
+                "login": str(
+                    ((item.get("author") or item.get("user") or {}).get("login")) or ""
+                )
+            },
             "body": str(item.get("body") or ""),
         }
-        for item in payload
-        if isinstance(item, dict)
+        for item in validated
     )
 
 
@@ -1357,20 +1374,76 @@ def publish_lineage_evidence(
     _assert_safe_metadata(json.loads(marker.split(None, 2)[2].rsplit("-->", 1)[0].strip()),
                           path="lineage_marker")
 
-    def _readable_marker_present() -> bool:
+    def _published_episodes() -> tuple:
+        """Every episode the trusted published history actually carries.
+
+        The expected marker text appearing *somewhere* is not a publication.
+        A body can hold that substring beside a broken marker, and two trusted
+        comments can each carry a different chain -- in both cases the history
+        consumers will read is not the one being published. So the trusted
+        comments are parsed under the strict framing rule and their episodes
+        are collected whole; an unreadable one raises rather than being
+        skipped past.
+        """
+
+        collected: list = []
         for item in existing_bodies() or ():
             if isinstance(item, Mapping):
                 login = str(((item.get("user") or {}).get("login")) or "")
                 body = str(item.get("body") or "")
             else:
                 login, body = "", str(item)
-            if marker not in body:
+            if builder_lineage.LINEAGE_MARKER not in body:
                 continue
-            if trusted_author(login):
-                return True
-        return False
+            if not trusted_author(login):
+                continue
+            collected.extend(builder_lineage.episodes_from_comment_body(body))
+        return tuple(collected)
 
-    if _readable_marker_present():
+    def _published_state() -> tuple[str, str]:
+        """``(state, detail)`` for the trusted history at this exact head."""
+
+        try:
+            collected = _published_episodes()
+        except builder_lineage.LineageError as exc:
+            return "unreadable", str(exc)
+        if not collected:
+            return "absent", ""
+        resolved = builder_lineage.resolve_lineage(
+            repo=repo, pr_number=pr_number, branch=branch, head_sha=head_sha,
+            episodes=collected, opener_lane=opener_lane, label_lanes=label_lanes,
+        )
+        if resolved.status != "resolved":
+            return "conflicting", resolved.reason
+        if (
+            resolved.current_writer != lineage.current_writer
+            or resolved.episodes != lineage.episodes
+            or tuple(resolved.contributors) != tuple(lineage.contributors)
+        ):
+            return "conflicting", "published lineage describes a different chain"
+        return "published", ""
+
+    state, detail = _published_state()
+    if state == "unreadable":
+        # Whatever is already public cannot be read. Adding to it would leave
+        # two histories nobody can reconcile, and moving the label would rest
+        # on the one that could not be read.
+        return {"published": False, "duplicate": False,
+                "reason": "existing_lineage_unreadable", "detail": detail,
+                "owner_action": (
+                    "the builder lineage already published on this pull "
+                    "request cannot be read; correct or remove it before "
+                    "publishing again"
+                )}
+    if state == "conflicting":
+        return {"published": False, "duplicate": False,
+                "reason": "existing_lineage_conflicts", "detail": detail,
+                "owner_action": (
+                    "the builder lineage already published on this pull "
+                    "request describes a different chain at this head; "
+                    "reconcile the two before publishing again"
+                )}
+    if state == "published":
         return {"published": False, "duplicate": True, "reason": "already_published"}
     publish(
         "Builder contribution lineage for this head, published so the gate and "
@@ -1379,13 +1452,18 @@ def publish_lineage_evidence(
         f"- contributors: {', '.join('`' + lane + '`' for lane in lineage.contributors)}\n"
         f"- head: `{lineage.head_sha}`\n\n" + marker
     )
-    if not _readable_marker_present():
-        # The comment went up under an account the consumers do not trust, so
-        # the evidence is unreadable to everyone who needs it. Reporting this
-        # as published would move the builder label onto lineage the gate
-        # cannot see -- the exact conflict this path prevents.
+    # The readback asks the same semantic question, not whether the text
+    # landed: what a consumer now resolves from the trusted history has to be
+    # the lineage that was just published.
+    state, detail = _published_state()
+    if state != "published":
+        # Either the comment went up under an account the consumers do not
+        # trust, or what is now public does not resolve to this chain. Either
+        # way the evidence is not readable as intended by everyone who needs
+        # it, and reporting it as published would move the builder label onto
+        # lineage the gate cannot see -- the exact conflict this path prevents.
         return {"published": False, "duplicate": False,
-                "reason": "publication_author_untrusted",
+                "reason": "publication_author_untrusted", "detail": detail,
                 "owner_action": (
                     "publish builder lineage from a configured decision "
                     "authority, or add the publishing account to them"
