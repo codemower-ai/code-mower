@@ -183,6 +183,12 @@ STARTER_DATA_FILES = (
 
 PRODUCT_SUPPORT_FILES = (
     (
+        "tools/builder_lineage.py",
+        "builder_lineage.py",
+        "product-support-helper",
+        "0644",
+    ),
+    (
         "tools/code_mower",
         "templates/product-support/code_mower",
         "product-support-wrapper",
