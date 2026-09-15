@@ -286,6 +286,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   audit_run_in_flight_detail_for_lane,
                   audit_verdict_newer_than_in_flight,
                   episodes_from_comment_body,
+                  flatten_paginated_comments,
                   flatten_paginated_items,
                   github_actions_comment_attested,
                   latest_current_audit_verdict,
@@ -300,6 +301,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
                   audit_run_in_flight_detail_for_lane,
                   audit_verdict_newer_than_in_flight,
                   episodes_from_comment_body,
+                  flatten_paginated_comments,
                   flatten_paginated_items,
                   github_actions_comment_attested,
                   latest_current_audit_verdict,
@@ -347,7 +349,26 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
               if isinstance(item, dict)
           }
           lanes = [lane for lane in lanes if isinstance(lane, dict)]
-          comments = flatten_paginated_items(comments_payload)
+          # Comment pages are validated under the shared record contract
+          # *before* anything flattens, filters or stringifies them. The
+          # generic flattener drops members it cannot use -- right for a mixed
+          # timeline, wrong for a comment history, where a dropped comment is a
+          # dropped marker -- and the `str(... or "")` below would turn a
+          # present non-string body into plausible text. A history nobody could
+          # read would otherwise reach the gate looking ordinary. Timeline
+          # events keep the generic flattener: they are not comments and are
+          # never read for lineage.
+          comment_history_readable = True
+          comment_history_problem = ""
+          try:
+              comments = flatten_paginated_comments(comments_payload)
+          except Exception as exc:
+              comment_history_readable = False
+              comment_history_problem = str(exc)
+              # The gate is already failing on this. Salvaging the readable
+              # members would hand records nobody could validate to every other
+              # consumer below, so nothing downstream sees this history at all.
+              comments = []
           events = flatten_paginated_items(events_payload)
           audit_runs = audit_runs_payload if isinstance(audit_runs_payload, list) else []
           configured_decision_authorities = (
@@ -451,7 +472,7 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
               if item.strip()
           }
           lineage_episodes = []
-          lineage_readable = True
+          lineage_readable = comment_history_readable
           for comment in comments:
               comment_body = str(comment.get("body") or "")
               if LINEAGE_MARKER not in comment_body:
@@ -564,7 +585,11 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           )
 
           if not lineage_readable:
-              emit("failure", "Code Mower builder contribution evidence is unreadable")
+              emit(
+                  "failure",
+                  "Code Mower builder contribution evidence is unreadable"
+                  + (": " + comment_history_problem if comment_history_problem else ""),
+              )
           elif builder_lineage.status == "conflict":
               emit("failure", "conflicting Code Mower builder identity: " + builder_lineage.owner_action)
           elif builder_lineage.status == "waiting":

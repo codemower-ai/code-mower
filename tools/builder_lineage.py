@@ -1125,4 +1125,11 @@ def episodes_from_comment_body(body: str) -> tuple[ContributionEpisode, ...]:
     items = payload.get("episodes")
     if not isinstance(items, list) or len(items) > MAX_EPISODES:
         raise LineageError("published builder lineage is unreadable")
+    if not items:
+        # A marker announces lineage. The publisher refuses to publish zero
+        # episodes, so a trusted marker carrying an empty chain is not a
+        # history that happens to be empty -- it is a claim that contradicts
+        # itself, and reading it as ordinary absence is how announced evidence
+        # disappears into the single-builder answer.
+        raise LineageError("published builder lineage declares no episodes")
     return tuple(episode_from_mapping(item) for item in items)

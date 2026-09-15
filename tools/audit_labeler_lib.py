@@ -622,6 +622,36 @@ def flatten_paginated_items(payload: Any) -> list[dict[str, Any]]:
     return items
 
 
+def flatten_paginated_comments(payload: Any) -> list[dict[str, Any]]:
+    """Flatten a paginated *comment* response under the shared record contract.
+
+    :func:`flatten_paginated_items` is for timeline entries and stays as it is:
+    it drops members it cannot use, which is right for a mixed event stream and
+    wrong for a comment history. A dropped comment is a dropped marker, and the
+    marker proving a takeover is in the newest part of the history. So comment
+    pages are validated here -- before anything flattens, filters or
+    stringifies them -- and an unreadable page raises rather than shrinking.
+
+    Genuinely empty pages, ``user: null`` and an omitted optional ``body`` are
+    GitHub's own schema and stay ordinary.
+    """
+
+    if not isinstance(payload, list):
+        raise LineageError("the comment history did not come back as a paginated array")
+    comments: list[dict[str, Any]] = []
+    for index, page in enumerate(payload, start=1):
+        # A single-object page is the un-paginated shape the generic flattener
+        # already accepts; it is validated the same way.
+        members = [page] if isinstance(page, Mapping) else page
+        comments.extend(
+            dict(comment)
+            for comment in require_comment_list(
+                members, what=f"comment page {index}"
+            )
+        )
+    return comments
+
+
 def audit_comment_head_sha(body: str) -> str:
     match = HEAD_SHA_LINE_RE.search(body)
     return match.group(1) if match else ""

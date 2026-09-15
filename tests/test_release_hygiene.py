@@ -101,6 +101,25 @@ def _reported_manifest_identity(manifest_bytes: bytes) -> dict:
     }
 
 
+def _gate_takeover_episode():
+    """One verified Devin -> Codex handoff, for marker fixtures."""
+
+    from code_mower import builder_lineage
+
+    return builder_lineage.ContributionEpisode(
+        sequence=1,
+        kind=builder_lineage.HANDOFF_KIND,
+        repo="owner/repo",
+        pr_number=7,
+        branch="devin/topic",
+        source_lane="devin",
+        destination_lane="codex",
+        expected_head="a" * 40,
+        resulting_head="b" * 40,
+        writer_state="terminated",
+    )
+
+
 class ReleaseHygieneTests(unittest.TestCase):
     def test_version_is_current_supervised_pilot_release(self) -> None:
         self.assertEqual(__version__, "1.4.0")
@@ -1676,6 +1695,7 @@ jobs:
         lanes: list[dict[str, str]],
         labels: set[str],
         comments: list[dict[str, object]] | None = None,
+        comment_pages: object = None,
         events: list[dict[str, object]] | None = None,
         event_pages: list[list[dict[str, object]]] | None = None,
         head_sha: str = "a" * 40,
@@ -1703,7 +1723,12 @@ jobs:
             json.dump([{"name": label} for label in sorted(labels)], handle)
             labels_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
-            json.dump([comments or []], handle)
+            # `comment_pages` writes the raw paginated payload, so a test can
+            # hand the gate the shapes GitHub could actually return.
+            json.dump(
+                comment_pages if comment_pages is not None else [comments or []],
+                handle,
+            )
             comments_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             json.dump(event_pages if event_pages is not None else [events or []], handle)
@@ -1821,6 +1846,104 @@ jobs:
 
     def _bound_actions_body(self, body: str, *, comment_id: int = 1234) -> str:
         return provider_runners.bind_actions_run_comment_id(body, comment_id)
+
+    _GATE_LANES = [
+        {
+            "id": "codex",
+            "display_name": "Codex",
+            "done": "codex-audit-done",
+            "blocked": "codex-audit-blocked",
+            "author_lane": "codex",
+            "builder_label": "builder:codex",
+            "bot_authors": "codex-audit-bot,codex-audit-bot[bot]",
+        }
+    ]
+
+    def _gate_over_comment_pages(self, pages):
+        return self._run_gate_template_decision(
+            lanes=self._GATE_LANES,
+            labels={"builder:codex"},
+            comment_pages=pages,
+            owner_login="owner",
+        )
+
+    def test_gate_refuses_a_comment_history_it_cannot_read(self) -> None:
+        """The rendered gate, over raw pages -- not a lower helper.
+
+        The generic flattener drops members it cannot use and `str(... or "")`
+        turns a present non-string body into plausible text, so an unreadable
+        history reached the gate looking ordinary and lineage stayed readable.
+        """
+
+        marker_author = {"login": "owner"}
+        unreadable_pages = (
+            {"comments": []},
+            [{"body": "hi", "user": marker_author}, "not a comment"],
+            [[[{"body": "hi", "user": marker_author}]]],
+            [[{"body": 12345, "user": marker_author}]],
+            [[{"body": None, "user": marker_author}]],
+            [[{"body": "hi", "user": "owner"}]],
+            [[{"body": "hi", "user": {"login": 7}}]],
+            [[{"body": "hi", "user": {"login": None}}]],
+        )
+        for pages in unreadable_pages:
+            with self.subTest(pages=pages):
+                result = self._gate_over_comment_pages(pages)
+                self.assertEqual(result["gate_state"], "failure", result)
+                self.assertIn(
+                    "builder contribution evidence is unreadable",
+                    result["gate_description"],
+                )
+
+    def test_gate_accepts_githubs_own_comment_schema(self) -> None:
+        """Positive control, valid fixtures only: none of this is unreadable."""
+
+        pages = [
+            [
+                {"user": None, "body": "a deleted account said this"},
+                {"user": {"login": "someone"}},
+                {"user": {"login": "owner"}, "body": "ordinary comment"},
+            ],
+            [],
+        ]
+        result = self._gate_over_comment_pages(pages)
+        self.assertNotIn(
+            "unreadable", result["gate_description"], result
+        )
+
+    def test_gate_accepts_a_genuinely_empty_comment_history(self) -> None:
+        result = self._gate_over_comment_pages([[]])
+        self.assertNotIn("unreadable", result["gate_description"], result)
+
+    def test_gate_refuses_a_trusted_marker_declaring_no_episodes(self) -> None:
+        """An announced empty chain is not an ordinary absence of lineage."""
+
+        from code_mower import builder_lineage
+
+        empty_marker = builder_lineage.lineage_comment_marker(())
+        valid_marker = builder_lineage.lineage_comment_marker(
+            (_gate_takeover_episode(),)
+        )
+        alone = [[{"user": {"login": "owner"}, "body": "Lineage\n\n" + empty_marker}]]
+        mixed = [
+            [
+                {"user": {"login": "owner"}, "body": "Lineage\n\n" + valid_marker},
+                {"user": {"login": "owner"}, "body": "Lineage\n\n" + empty_marker},
+            ]
+        ]
+        for label, pages in (("alone", alone), ("mixed", mixed)):
+            with self.subTest(case=label):
+                result = self._gate_over_comment_pages(pages)
+                self.assertEqual(result["gate_state"], "failure", result)
+                self.assertIn(
+                    "builder contribution evidence is unreadable",
+                    result["gate_description"],
+                )
+
+    def test_gate_reads_an_ordinary_unrelated_comment_history(self) -> None:
+        pages = [[{"user": {"login": "someone"}, "body": "looks good"}]]
+        result = self._gate_over_comment_pages(pages)
+        self.assertNotIn("unreadable", result["gate_description"], result)
 
     def test_gate_decision_rejects_builder_exclusion_with_no_independent_lane(
         self,
