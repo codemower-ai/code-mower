@@ -1879,6 +1879,16 @@ jobs:
         unreadable_pages = (
             {"comments": []},
             [{"body": "hi", "user": marker_author}, "not a comment"],
+            # A bare object where a page belongs. `gh api --paginate --slurp`
+            # returns a list of pages, so these are not pages at all -- and
+            # read as one-comment pages they looked like an absent history,
+            # leaving the gate waiting for an audit instead of refusing.
+            [{}],
+            [{"comments": []}],
+            [[], {"items": []}],
+            [None],
+            [False],
+            ["page"],
             [[[{"body": "hi", "user": marker_author}]]],
             [[{"body": 12345, "user": marker_author}]],
             [[{"body": None, "user": marker_author}]],
@@ -1912,8 +1922,21 @@ jobs:
         )
 
     def test_gate_accepts_a_genuinely_empty_comment_history(self) -> None:
-        result = self._gate_over_comment_pages([[]])
-        self.assertNotIn("unreadable", result["gate_description"], result)
+        """Valid slurped shapes stay ordinary, including empty pages."""
+
+        for pages in (
+            [],
+            [[]],
+            [[], []],
+            [
+                [{"user": {"login": "someone"}, "body": "first page"}],
+                [{"user": {"login": "someone"}, "body": "second page"}],
+            ],
+            [[{"user": {"login": "someone"}, "body": "only page"}], []],
+        ):
+            with self.subTest(pages=pages):
+                result = self._gate_over_comment_pages(pages)
+                self.assertNotIn("unreadable", result["gate_description"], result)
 
     def test_gate_refuses_a_trusted_marker_declaring_no_episodes(self) -> None:
         """An announced empty chain is not an ordinary absence of lineage."""

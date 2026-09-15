@@ -640,14 +640,20 @@ def flatten_paginated_comments(payload: Any) -> list[dict[str, Any]]:
         raise LineageError("the comment history did not come back as a paginated array")
     comments: list[dict[str, Any]] = []
     for index, page in enumerate(payload, start=1):
-        # A single-object page is the un-paginated shape the generic flattener
-        # already accepts; it is validated the same way.
-        members = [page] if isinstance(page, Mapping) else page
+        # Every page is an array. The gate fetches `gh api --paginate --slurp`,
+        # whose shape is a list of pages, so anything else in that position is
+        # not a page. Accepting a bare object as a one-comment page -- which is
+        # what the generic flattener does -- reinterprets `{}` or
+        # `{"comments": []}` as a comment with no body and no author, and a
+        # response nobody could read then looks like an absent history: the
+        # gate waits for an audit instead of refusing. Record validation cannot
+        # recover that, because by then the wrapper has already made the
+        # payload look well formed.
+        if not isinstance(page, list):
+            raise LineageError(f"comment page {index} is not an array of comments")
         comments.extend(
             dict(comment)
-            for comment in require_comment_list(
-                members, what=f"comment page {index}"
-            )
+            for comment in require_comment_list(page, what=f"comment page {index}")
         )
     return comments
 
