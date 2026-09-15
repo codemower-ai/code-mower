@@ -1474,3 +1474,111 @@ def _supervise_main(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
+
+def lineage_target_state(repo, payload):
+    """Explicit exact producer snapshot; legacy classify normalization is unchanged."""
+    from .builder_lineage import Target
+    from .builder_lineage_producer import ProducerRefusal, Snapshot
+    if (not isinstance(payload, dict) or payload.get("snapshot_complete") is not True
+            or payload.get("kind") != "pr" or payload.get("pr_state") != "OPEN"
+            or not isinstance(payload.get("labels"), list)):
+        raise ProducerRefusal("Complete exact PR snapshot required.")
+    number = payload.get("pr_number")
+    if not isinstance(number, str) or not number.isdigit() or payload.get("number") != number:
+        raise ProducerRefusal("Exact PR snapshot number required.")
+    target = Target(repo, int(number), payload.get("branch"), payload.get("head_sha"))
+    return Snapshot(target, payload.get("author"), tuple(payload["labels"]))
+
+
+def _lineage_checkout(checkout, target):
+    from .builder_lineage_producer import ProducerRefusal
+    path = Path(checkout)
+    if path != path.resolve() or not (path / ".git").exists():
+        raise ProducerRefusal("Known delivery checkout unavailable.")
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(path), *args], text=True,
+                                       timeout=10, stderr=subprocess.DEVNULL).strip()
+    if git("rev-parse", "HEAD") != target.head_sha or git("branch", "--show-current") != target.branch:
+        raise ProducerRefusal("Observed delivery checkout head or exact branch differs.")
+
+
+class LineageRound:
+    """Explicit supervisor observer, inactive until a broker deliberately uses it.
+
+    A round is registered before launch and passed as supervise_process(writer=).
+    Existing LocalWriter owns stop/reap observations. Stable writer identity is
+    distinct from the unique, non-reusable supervised round ID.
+    """
+    def __init__(self, root, round_id, writer, before, transport, checkout, *,
+                 config, runtime_observation):
+        from .builder_lineage import Target
+        from .builder_lineage_producer import ProducerRefusal, require_producer
+        from .lane_handoff import LocalWriter
+        require_producer(transport, config, runtime_observation)
+        if not isinstance(before, Target) or any(
+                not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", v)
+                for v in (round_id, writer)):
+            raise ProducerRefusal("Exact named supervised round required.")
+        _lineage_checkout(checkout, before)
+        self.control = LocalWriter(root, round_id)
+        self.control.register(repo=before.repo, lane=transport.lane, checkout=Path(checkout))
+        self.round_id, self.writer, self.before, self.transport = round_id, writer, before, transport
+        with self.control.store.locked(self.control.key) as locked:
+            record = locked.read()
+            record["lineage_round"] = dict(round_id=round_id, writer=writer,
+                target={"repo": before.repo, "pr_number": before.pr_number,
+                        "branch": before.branch, "head_sha": before.head_sha},
+                transport=transport.__dict__)
+            locked.write(record)
+
+    def stop_requested(self):
+        return self.control.stop_requested()
+
+    def started(self, pid, pgid):
+        self.control.started(pid, pgid)
+
+    def finish(self, *, quiescent):
+        self.control.finish(quiescent=quiescent)
+
+    def observed(self, after):
+        from .builder_lineage_producer import ProducerRefusal
+        if (after.repo, after.pr_number, after.branch) != (
+                self.before.repo, self.before.pr_number, self.before.branch):
+            raise ProducerRefusal("Delivery round target differs.")
+        with self.control.store.locked(self.control.key) as locked:
+            record = locked.read()
+        expected = dict(round_id=self.round_id, writer=self.writer,
+            target={"repo": self.before.repo, "pr_number": self.before.pr_number,
+                    "branch": self.before.branch, "head_sha": self.before.head_sha},
+            transport=self.transport.__dict__)
+        if (not isinstance(record, dict) or record.get("schema") != "code_mower.localWriter.v1"
+                or record.get("lineage_round") != expected
+                or record.get("repo") != after.repo or record.get("lane") != self.transport.lane
+                or record.get("finished") is not True or record.get("quiescent") is not True
+                or any(type(record.get(k)) is not int or record[k] <= 0 for k in ("pid", "pgid"))):
+            raise ProducerRefusal("Independent stopped/reaped named writer evidence required.")
+        _lineage_checkout(record["checkout"], after)
+        return self
+
+
+def lineage_continuation(round_observer, after, previous):
+    """A stopped supervised round by the same actual writer, with chained heads."""
+    from .builder_lineage import Episode
+    from .builder_lineage_producer import ProducerRefusal, _delivery
+    if not isinstance(round_observer, LineageRound):
+        raise ProducerRefusal("A supervised round observer is required.")
+    observed = round_observer.observed(after)
+    if (not isinstance(previous, dict) or previous.get("writer") != observed.writer
+            or previous.get("transport") != observed.transport.__dict__
+            or previous.get("round_id") == observed.round_id):
+        raise ProducerRefusal("Continuation requires the same writer and a fresh supervised round.")
+    episode = Episode.from_mapping(previous["episodes"][-1])
+    if (episode.repo, episode.pr_number, episode.branch, episode.resulting_head, episode.destination_lane) != (
+            after.repo, after.pr_number, after.branch, observed.before.head_sha, observed.transport.lane):
+        raise ProducerRefusal("Continuation does not chain the exact prior delivery.")
+    return _delivery(Episode(sequence=episode.sequence + 1, repo=after.repo,
+        pr_number=after.pr_number, branch=after.branch, source_lane=observed.transport.lane,
+        destination_lane=observed.transport.lane, expected_head=observed.before.head_sha,
+        resulting_head=after.head_sha, writer_state="same_writer", kind="continuation"),
+        observed.writer, observed.round_id, observed.transport)

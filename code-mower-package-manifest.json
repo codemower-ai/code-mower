@@ -379,6 +379,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/builder_lineage_producer.py",
+      "target": "src/code_mower/builder_lineage_producer.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/builder_runs.py",
       "target": "src/code_mower/builder_runs.py"
     },
@@ -1618,6 +1623,11 @@
       "target": "src/code_mower/templates/lanes/generic.md"
     },
     {
+      "kind": "template",
+      "source": "src/code_mower/templates/lanes/lineage-producer.sh",
+      "target": "src/code_mower/templates/lanes/lineage-producer.sh"
+    },
+    {
       "kind": "lane-template",
       "source": "generated",
       "target": "src/code_mower/templates/lanes/run_mac_lane.sh"
@@ -1686,6 +1696,11 @@
       "kind": "workflow",
       "source": "generated",
       "target": "src/code_mower/templates/workflows/audit-label-cleanup.yml.j2"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/templates/workflows/builder-lineage-producer.yml.j2",
+      "target": "src/code_mower/templates/workflows/builder-lineage-producer.yml.j2"
     },
     {
       "kind": "workflow",
@@ -1863,6 +1878,11 @@
       "target": "templates/lanes/generic.md"
     },
     {
+      "kind": "template",
+      "source": "templates/lanes/lineage-producer.sh",
+      "target": "templates/lanes/lineage-producer.sh"
+    },
+    {
       "kind": "lane-template",
       "source": "generated",
       "target": "templates/lanes/run_mac_lane.sh"
@@ -1991,6 +2011,11 @@
       "kind": "workflow",
       "source": "generated",
       "target": "templates/workflows/blind-review-artifacts-dry-run.yml.j2"
+    },
+    {
+      "kind": "template",
+      "source": "templates/workflows/builder-lineage-producer.yml.j2",
+      "target": "templates/workflows/builder-lineage-producer.yml.j2"
     },
     {
       "kind": "workflow",

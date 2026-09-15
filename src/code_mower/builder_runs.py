@@ -754,3 +754,21 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
+
+def record_lineage_builder(observation, transport, output, *, created_at):
+    """Explicit attribution after validated selected history; legacy auto-record is unchanged."""
+    from .builder_lineage_producer import Observation, ProducerRefusal, Transport, projection
+    if not isinstance(observation, Observation) or not isinstance(transport, Transport):
+        raise ProducerRefusal("Validated complete observation and actual transport required.")
+    if (observation.decision.status != "ready"
+            or observation.decision.current_writer != transport.lane):
+        raise ProducerRefusal("Observed transport does not match the verified current writer.")
+    target = observation.chain.target
+    event = build_builder_run_event(provider=transport.provider, executor=transport.executor,
+        integration=transport.integration, repo=target.repo, pr=f"{target.repo}#{target.pr_number}",
+        branch=target.branch, builder_id=f"{transport.lane}-{target.pr_number}-{target.head_sha}",
+        created_at=created_at)
+    event["dimensions"]["lineage"] = projection(observation)
+    write_builder_run_event(event, output)
+    return event

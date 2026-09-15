@@ -1,0 +1,44 @@
+# Staged only: explicitly materialize against an installed candidate package.
+# Normal init does not emit this workflow. #992 owns maintained integration;
+# #915 owns qualification of the eventual published package (existing pins stay).
+# The trusted caller supplies reviewed immutable-base policy, authority accounts,
+# and actual observed transport. No PR checkout, code or configuration execution.
+name: Staged lineage attribution
+on:
+  workflow_call:
+    inputs:
+      target_json:
+        required: true
+        type: string
+      policy_json:
+        required: true
+        type: string
+      authority_json:
+        required: true
+        type: string
+      transport_json:
+        required: true
+        type: string
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+jobs:
+  attribute:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Retrieve complete lineage and record attribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LINEAGE_TARGET_JSON: ${{ inputs.target_json }}
+          LINEAGE_POLICY_JSON: ${{ inputs.policy_json }}
+          LINEAGE_AUTHORITY_JSON: ${{ inputs.authority_json }}
+          LINEAGE_TRANSPORT_JSON: ${{ inputs.transport_json }}
+          LINEAGE_OUTPUT: lineage-attribution.json
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from code_mower.builder_lineage_producer import staged_record
+          staged_record(os.environ)
+          PY

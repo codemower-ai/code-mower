@@ -9,6 +9,11 @@ from __future__ import annotations
 DEFAULT_PACKAGE_CONFIG = "code-mower.example.yml"
 
 PACKAGE_FILES = (
+    ("src/code_mower/builder_lineage_producer.py", "src/code_mower/builder_lineage_producer.py", "core"),
+    ("templates/workflows/builder-lineage-producer.yml.j2", "templates/workflows/builder-lineage-producer.yml.j2", "template"),
+    ("src/code_mower/templates/workflows/builder-lineage-producer.yml.j2", "src/code_mower/templates/workflows/builder-lineage-producer.yml.j2", "template"),
+    ("templates/lanes/lineage-producer.sh", "templates/lanes/lineage-producer.sh", "template"),
+    ("src/code_mower/templates/lanes/lineage-producer.sh", "src/code_mower/templates/lanes/lineage-producer.sh", "template"),
     ("src/code_mower/builder_lineage.py", "src/code_mower/builder_lineage.py", "core"),
     ("tools/builder_lineage.py", "tools/builder_lineage.py", "core"),
     ("tools/CODE_MOWER_APACHE_LICENSE.txt", "LICENSE", "package"),

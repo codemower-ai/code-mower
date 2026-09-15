@@ -9,6 +9,12 @@ later entries are regular releases.
 
 ### Added
 
+- Staged trusted lineage producer primitives for supervised takeover and same-writer
+  delivery persistence, authenticated semantic publication, explicit builder-label
+  reconciliation, and transport-preserving attribution. Independent workflow and
+  runner assets are available for explicit materialization; normal init and
+  automatic adoption remain unchanged until #992.
+
 - A pure typed builder-lineage contract with immutable exact targets, validated
   contribution chains, explicit comment history and authority accounts, and
   contributor-aware reviewer admission. Includes a standalone init support

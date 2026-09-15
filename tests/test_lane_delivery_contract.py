@@ -2313,3 +2313,19 @@ class BoundedOutcomeBrokerTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class ExplicitLineageSnapshotTests(unittest.TestCase):
+    def test_exact_producer_snapshot_preserves_branch_case_and_legacy_defaults(self):
+        raw = {"kind": "pr", "number": "42", "pr_number": "42", "head_sha": "a" * 40,
+               "pr_state": "OPEN", "labels": [], "author": "source-bot",
+               "snapshot_complete": True, "branch": "codex/Topic"}
+        snapshot = lane_delivery.lineage_target_state("Owner/Repo", raw)
+        self.assertEqual(snapshot.target.branch, "codex/Topic")
+        self.assertEqual(snapshot.target.repo, "owner/repo")
+        legacy = lane_delivery.TargetState.from_mapping(raw)
+        self.assertNotIn("branch", legacy.as_dict())
+        for change in ({"branch": None}, {"branch": " codex/Topic"}, {"labels": None},
+                       {"snapshot_complete": False}, {"head_sha": "bad"}, {"pr_number": True}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                lane_delivery.lineage_target_state("owner/repo", raw | change)

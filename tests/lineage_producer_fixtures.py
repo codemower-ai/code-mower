@@ -1,0 +1,291 @@
+"""Finite external-I/O fixtures for the staged producer's real contracts."""
+from contextlib import contextmanager
+from copy import deepcopy
+from pathlib import Path
+
+from code_mower.builder_lineage import Authorities, Chain, Episode, History, Identity, Target, render
+from code_mower.builder_lineage_producer import Snapshot, Transport
+
+REPO = "owner/repo"
+BRANCH = "codex/Topic"
+AUTHORITY = Authorities(["lineage-publisher[bot]"])
+TRANSPORT = Transport("claude", "claude", "claude_cli", "local_cli")
+POLICY = Identity.from_mapping({"enabled": True,
+    "authors": {"source-bot": "codex"},
+    "labels": {"builder:codex": "codex", "builder:claude": "claude", "builder:devin": "devin"},
+    "branch_prefixes": {"codex/": "codex"}, "require_verified_lineage": True})
+
+
+def sha(n):
+    return f"{n:040x}"
+
+
+def target(n=1, **changes):
+    return Target(**(dict(repo=REPO, pr_number=42, branch=BRANCH, head_sha=sha(n)) | changes))
+
+
+def episode(n=1, **changes):
+    return Episode(**(dict(sequence=n, repo=REPO, pr_number=42, branch=BRANCH,
+        source_lane="codex" if n == 1 else "claude", destination_lane="claude",
+        expected_head=sha(n-1), resulting_head=sha(n), writer_state="terminated" if n == 1 else "same_writer",
+        kind="handoff" if n == 1 else "continuation") | changes))
+
+
+def comments(episodes, *, author="lineage-publisher[bot]"):
+    episodes = list(episodes)
+    bound = Chain.from_arrivals(target(episodes[-1].sequence), episodes)
+    return [{"user": {"login": author}, "body": render(bound)}]
+
+
+def observation_args(n=1):
+    return dict(target=target(n), identity=POLICY, authorities=AUTHORITY,
+                history=History([]), private=[episode(i) for i in range(1, n+1)],
+                author="source-bot", labels=["builder:codex"])
+
+
+class MemoryStore:
+    """Stub only private storage I/O; all producer validation remains real."""
+    records = None
+    effects = None
+
+    def __init__(self, root):
+        self.root = str(root)
+
+    @contextmanager
+    def locked(self, name):
+        store = self
+        key = (self.root, name)
+        class Locked:
+            def read(self):
+                return deepcopy(store.records.get(key))
+            def write(self, value):
+                store.effects.append("write")
+                store.records[key] = deepcopy(value)
+        yield Locked()
+
+
+class GitHubIO:
+    def __init__(self, n=1):
+        self.target = target(n)
+        self.current_labels = ("builder:codex", "keep")
+        self.public = []
+        self.effects = []
+        self.snapshots = 0
+        self.reads = 0
+        self.fail_snapshot = None
+        self.readback = None
+        self.fail_post = False
+
+    def snapshot(self, requested):
+        self.snapshots += 1
+        self.effects.append("snapshot")
+        if self.snapshots == self.fail_snapshot:
+            raise OSError("unreadable")
+        return Snapshot(self.target, "source-bot", self.current_labels)
+
+    def history(self, requested):
+        self.reads += 1
+        self.effects.append("history")
+        value = self.public if self.reads == 1 or self.readback is None else self.readback
+        return History(deepcopy(value))
+
+    def post(self, requested, body):
+        self.effects.append("post")
+        if self.fail_post:
+            raise OSError("unavailable")
+        self.public.append({"user": {"login": "lineage-publisher[bot]"}, "body": body})
+
+    def labels(self, requested, desired, remove, add):
+        self.effects.append("labels")
+        self.current_labels = tuple(s for s in self.current_labels if s not in remove)
+        if add:
+            self.current_labels += (desired,)
+
+
+def round_fixture(root, n=1, writer="destination-writer", config=None, runtime="ready"):
+    from code_mower.lane_delivery import LineageRound
+    return LineageRound(Path(root), f"round-{n}", writer, target(n-1), TRANSPORT,
+        Path(root) / "checkout", config=config or {}, runtime_observation=lambda: runtime)
+
+
+# Complete approved baseline from accepted commit e818a3b639dfe903bdc16aff3674af98a5a08233.
+# Expectations are fixed independently of the candidate and available without Git history.
+ACCEPTED_BASELINE = {'accepted_base': 'e818a3b639dfe903bdc16aff3674af98a5a08233',
+ 'modules': {'src/code_mower/builder_runs.py': {'definitions': {'BuilderInference': '4324ee0dd83a3091bcb788b89402e26337294acf9c735b55e46292ddfa6994c0',
+                                                                'PullRequestMetadata': '9026b80175ad20604b178df969a1b4afbc60fdb8f2d8f3a710d43d064870943f',
+                                                                '_author_from_pr_payload': '26b8088bad8733d3822c8b27c979c061ba346f660cbf5984cfc68d3bdc345d64',
+                                                                '_branch_from_pr_payload': 'fc07795121bfe64ac2b43a2b3cef32f9711575bf141c9ee6125dbfbd144f0e73',
+                                                                '_builder_id_from_url': 'a2011e146f57eba697c32767b78bf7b14c8acd604dc27e465278fa23ed3c74c3',
+                                                                '_builder_run_event_id': 'cf9409f40c62938b9c83c078f00f8a6373893825e02f00cf4d44746083822662',
+                                                                '_cursor_agent_url': '2503edb4bee610da18b532fd7b4f358688e948d1fc2fabbffaabe01b7db2c73b',
+                                                                '_default_output_path': '3942af5edc3c310369bbd998ac1f44ac17ddcb216d8083537a8d7ea73f69242d',
+                                                                '_github_url': 'a67031f20d1ec25e56f6c9acf80ad637575067b804f2c7d05014aaf1e55a0f6d',
+                                                                '_issue_url_from_ref': 'a2f14c33e838993294bc530c3bf7cc971d608efd71151b9e6af22298adb29f21',
+                                                                '_load_json_object': 'de0bbf2032377f3f38cc1d460f4cd2315b47835fa20e1abde0e2bfa7206aab9b',
+                                                                '_load_work_order_manifest': '1cf47e66e523ff7f52176b25a26c36d2c5e3e31b4c78fbc16640953345752142',
+                                                                '_nested_text': 'fc40a445e4633ff5c37d12fb59afb7c9699560305ac7266f23d5237d89946ef4',
+                                                                '_optional_nonnegative_float': '67db0dae03045ff109a2b7c7bf3170ad878958e4f41cc1734589086ecedb5d9e',
+                                                                '_optional_nonnegative_int': '63f7b5c1332d17c1ea01982beba03a619b54bcea509f87568843627bab3b9239',
+                                                                '_pr_url_from_ref': 'a2848bfc59ad175de26bd01db8dd34ee6aa605bcac2ed3f810f32410ee85055e',
+                                                                '_record': '9e7ebe8763749508bbfa59b51dfe939fb4a810090ad93164a4bf9d08bd7cdeda',
+                                                                '_repo_from_pr_payload': 'c9902153ecf27a5a7d6e5d7205c4c3f8f6cc279977ad0d11f82a8cabc13b3be3',
+                                                                '_safe_slug': 'be862cd8926de03ae396ec2645470cac12fd91cf5ede25d492beb727e39d3c9d',
+                                                                '_text': '9c73340bbc252d03137d6a83b18929b062f8e9304ef884007203a586437a511d',
+                                                                '_utc_now': '043afb904b5bf3eb34f0c440f38ec6c16a15c650abcc43d5437ff54de04f3c70',
+                                                                '_validate_anchor_repositories': 'b9907f68c7fcce6b1506b1c69b70b3da913a0c01484f19e89e57481cb3dd3bb3',
+                                                                '_work_order_manifest_path': '11533340fb4efe2990fdfcb3515f14422f2af39b94f030415a1c23f02b8dced5',
+                                                                'build_auto_builder_run_event': '14182e08976610bb9a0ada12748b0bc865a09306fc2ac458f5f538449dece549',
+                                                                'build_builder_run_event': '1b1a4415bc0ad169ca12a572e795204a0dbb98cb3a54ddbd7867ced0adff7960',
+                                                                'infer_builder_from_pr': '4b0af12c30970e2dc376af44c4ec85e37c2a1e9c3fb486b6d2f3972de4290f8b',
+                                                                'load_pull_request_metadata': 'b53bc8d0408e09bbf8ef323a78b4a1276ad5c4a8a9190c51f62284a15f25b3f3',
+                                                                'main': '903e3edd24c6c19af1e29b8b7e9c501e501634fbaaed299d9cce57f68de08cdc',
+                                                                'write_builder_run_event': '9ea66af8043dbf80be2b506d9d9033521dccd50c6aef540ac1ca2e984e780456'},
+                                                'live_segments': ['10a56c918cb5194f3ae29ab8e3e31629b32c48984194a7a2793f5ea18333131a',
+                                                                  '5384bfdb2df380b6557cc7a71d16891415bccaa87699406e236f752c6415389f',
+                                                                  'b53e5a5286172fb0a4772843ba3ed62331687bcb9939ec9c49e9066d4ee4272d',
+                                                                  '261a9112a2918e2aba03e19a2f221a027ab4b6f9e946a6c39814f54e18e07dfc',
+                                                                  '085ea91d7cfeb4f5695793f882c7463cbfdf7be9f98e6c5133847a245bbea366',
+                                                                  'a830333312c4c9c2233bb02762bd498203b1c3bf0527614735693b4b79f6d167',
+                                                                  'c517577851c489e45abae2591256c40404a05c6d19cd4d5ae7fd22b0084cec6c',
+                                                                  'ab270e34de38d99f0364043ca1808983f498a9e3943133071931657340b5bc95',
+                                                                  '07ac27eea41ef7e0d14eeb4cc65ebf0beaa2041ad913826ebdf97d56d6febd5f',
+                                                                  'bd3698cb9f306b035e45c51278a2dfff864360ff5b22ba137ee373b0821704bb',
+                                                                  '3cb9ffccba5146b2dd177a30c3057a4395ebd5c745d0789d2ed95d0cf4afe271',
+                                                                  '2f1f76a50065a201433318c3c80dbf0dda6cbd622c81283b7b13adf1508ea508',
+                                                                  'ce2857e54587b6c88d98f7cd8f2a4692258523d77f499e9bef9909ff01190bb9',
+                                                                  '3a80dd6bb6886183e9072113b5be53d1ab4cc0e39ca9c4942c8f8f6c9d4c281e',
+                                                                  '93241e739b270886462ecc611e5dd2f20b260a5e9f0bd2a4b4e16bbd28c17d3a',
+                                                                  '858f7a09afbc43320b338e796579105689fc31b316f520574233d4af2fcb56f1',
+                                                                  'fa869652896f7b59d67345f3e1aaaafd2152990364affe8a6abcfa211bb5f61b',
+                                                                  '53c376ef4ffb635cddeb6a148228838a0f4c7361e5885e9a98cf6366dd7170d4',
+                                                                  '423378d6bfd7535019d2730f8f091bf150fb75a6c05604a491cf48220c29b615',
+                                                                  'af709bc9973f5e559c83abfc7ea6cf05c42ee4b871e938b8b5d0268bf03cf912',
+                                                                  '01617a4661f2cf67a5ad98e4beb386bd60f2233229331f51a490d770d8be7c5f',
+                                                                  '9d02f33e30a4947232fe0a447aabfd64ec9bde14b66d417c33226e0a6e5d3fb4',
+                                                                  'e36aa3d0f4dbc062544aa00a56526b372eed03f467649dcfab0a46ba2ac1b05d']},
+             'src/code_mower/lane_delivery.py': {'definitions': {'DeliveryOutcome': '2c96fc216f2a371bdbdb15c917cd22542926268f8671d212a864031f87cb033c',
+                                                                 'Handoff': '8dd7c68eca42cf0b33594059a1541070ae388e981290cd415808d57db249446d',
+                                                                 'LaneDeliveryError': 'dde8efaa1162bda26f4c859f209e5eabd9f6f726ca0c10375bd539056faeeddb',
+                                                                 'SupervisionResult': '8210ccfe373b85d4073c4790738eec62443d0487f35911ae1630ca11ac460c22',
+                                                                 'TargetState': '1fda306e1efd7a44a87ed85da8d156eff5cad98f8a787c3f2e506579278f0198',
+                                                                 '_add_classify_parser': 'e1bcfdbd593639bc0a9dccd57300c874badd17d31e0934c748c2dee0b3539e80',
+                                                                 '_add_handoff_parser': '6c8d95a4a056651756cf9ceddf130f005b094ff6e38062c0c052d868bfa6ae03',
+                                                                 '_add_scan_prompt_parser': '570e8c30d178cf5ef5848310f4874ad3141d8f599e6ac98b9b552373fcc04264',
+                                                                 '_add_supervise_parser': '0ac827732ff11b217af15c15a19eec79e09f5efaaa76c3dcc4e7bb9166e824d5',
+                                                                 '_add_transition_parser': 'bbbab20d8d66eebb70a192b29e1f8f93f5245de1f61d5714cefbc78e4e39822d',
+                                                                 '_admit_builder_main': '2f51b690ce6d9c034c9c5ebf8fcbc52b35fc3f50b5464e6643afa29a9292c953',
+                                                                 '_assert_safe_metadata': '3fde171274a56d9ec5b1e4300c0b438eed1789bbcb121ef006738a956ce08594',
+                                                                 '_classify_main': 'fc679c5781e0c511ab2008e5fb55c5ecbf2634338a6547eccd87f2ab92fd767c',
+                                                                 '_default_is_group_alive': '9fefc020a14093b652085bcad0540ef8fcdb6edd3c5212b94a086de96b9745f0',
+                                                                 '_handoff_main': '9c149fabcb1009a3eee27b012409ee511eed0e23ee69b6acd85aaec51ed22f37',
+                                                                 '_load_state': '7e46824541822254b9d0f68121588f7326a8110ffcad8fbed7e8ad6a399edf7f',
+                                                                 '_scan_prompt_main': '8b9809c22d3743968b1711f014437249c3f0df3d35d7d23d21f0170144ddfe20',
+                                                                 '_supervise_main': '96e3729a167880c32e8bfd27d14ac6c15827c75f5012ff36719e5dc8d55cb192',
+                                                                 '_text': 'a8dee85fc038bdb336cd6dfd65f4656639b268af650315ec55a70c9cd2cbe86f',
+                                                                 '_transition_main': '28eb83382833cbd36c42819d5837958dcfbea0fe539395e039fa344de8a08c87',
+                                                                 '_utc_now': '043afb904b5bf3eb34f0c440f38ec6c16a15c650abcc43d5437ff54de04f3c70',
+                                                                 '_wait_for_group_exit': '6ee182644d242a62e9c685c15669b6734c2c9d98e11b65af056638b3266594c2',
+                                                                 'assert_prompt_free_of_auth_material': 'a33ab3d2c9ff868aa5475f0a22257e216144a8622f3ae4b750f51041afa5fd5d',
+                                                                 'authorize_branch_write': '24eb154c9648874df6e7edcc8199f15d732986e8082bf68559cc3a5b691694b4',
+                                                                 'build_delivery_outcome_event': 'f8dd3431a9032d989d4fb495970639e490f092ec938a6482d783236f37e7db9d',
+                                                                 'classify_delivery': '2c62d9e055b7dd21b5ecb3a7999964a3e996647f5c663d33042b478c1c399ee4',
+                                                                 'main': '98705bde1e36af092c23a994e56819fc2e27bf92a683542943d5250fd3141473',
+                                                                 'observed_transition': '2499b7f66ccfcd6105295a07f89d8cabd16ea5613b0471b10fc05dcc95dd729a',
+                                                                 'scan_auth_material': '7e9b06358faa8ffc2234ece781396470d574212caadab614255c7197addf7fad',
+                                                                 'supervise_process': 'fd369e456a5fa3654921b8c0e4069a35e1615e6a5cac35db1fa872adfcdec3b0',
+                                                                 'terminate_process_group': '87b16c7b8b36ada7ff9da280152c265cfb5eba2ab79f693d5f47f89cc50c0984',
+                                                                 'validate_handoff': '92dc1004123eccbec9ff05022c8d0150723e2922ebc9c60ab2d4398a93293a33',
+                                                                 'write_delivery_outcome_event': 'ec2def82c067d57851d49bd55671e901e0561805a5582bf0e18169eced5ad0c5'},
+                                                 'live_segments': ['0020ee2273c34f19d33ae5dd28ef6c69ddc71525aa5b1778b231255a431cd99a',
+                                                                   '5384bfdb2df380b6557cc7a71d16891415bccaa87699406e236f752c6415389f',
+                                                                   'b53e5a5286172fb0a4772843ba3ed62331687bcb9939ec9c49e9066d4ee4272d',
+                                                                   'b17c41ffb3939b0dc71fa9e725ac38888b83de0c14b844fb813deda3b5410663',
+                                                                   '261a9112a2918e2aba03e19a2f221a027ab4b6f9e946a6c39814f54e18e07dfc',
+                                                                   '3727adff524e0616022eadd8f4af21a0778b29fc4c77bdfefd1afce2cbf5e4b7',
+                                                                   'a830333312c4c9c2233bb02762bd498203b1c3bf0527614735693b4b79f6d167',
+                                                                   '9a60319879ee88ae2b4a273d8f45962bc499df0b50ae75bfd829a71b0e51352f',
+                                                                   '5890cea262fd597e61cf1a114b65d2781c700c040e9bb53cd8696cf36830134d',
+                                                                   '1fd20c880d3cde1a258aa761090aabc445918b6cf2b91712928debfc04392cff',
+                                                                   '17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a',
+                                                                   'c517577851c489e45abae2591256c40404a05c6d19cd4d5ae7fd22b0084cec6c',
+                                                                   '7b2ddb8a2e64c6166feedaf30ee50ac62165fe149fdd8b0d7b777ebee21ca34d',
+                                                                   'ab270e34de38d99f0364043ca1808983f498a9e3943133071931657340b5bc95',
+                                                                   '07ac27eea41ef7e0d14eeb4cc65ebf0beaa2041ad913826ebdf97d56d6febd5f',
+                                                                   'bd3698cb9f306b035e45c51278a2dfff864360ff5b22ba137ee373b0821704bb',
+                                                                   '3cb9ffccba5146b2dd177a30c3057a4395ebd5c745d0789d2ed95d0cf4afe271',
+                                                                   '7dd851d67f9f2afe2ccf20745c843c644449d1d0812f61a8c6d594c0aab33141',
+                                                                   '3a80dd6bb6886183e9072113b5be53d1ab4cc0e39ca9c4942c8f8f6c9d4c281e',
+                                                                   'f0e1023d365a836dec3a903b3c22beee69b12f277423169358875d2245d13930',
+                                                                   '1a3daadc49a917e44aa47bdb61879c43943fc42db1871d06746bef0bd1e3ac2a',
+                                                                   '64067ade48b8909b78c82006819e87d5baab6c651372788617ecd533b1cd5ecb',
+                                                                   'cd2ceb53d0bf8503f0791c84bee5693d4af6eb3426720739eff6dddfd9c7850f',
+                                                                   'b3503e44b72d0f15293369506c0fd7b8c9b98cd25c6def90cd53ffc3e3977d69',
+                                                                   '5c4dd73916a9da18db978b468f8c515f768a82219d31605750280267519c2c2e',
+                                                                   '8253cdd8ea8b02ef2cba8c7beb280f21787bffc32028891d325ed0036c2a9640',
+                                                                   '04d095769a2a3affb49fa3a4c5b1c6c1879025a0ae6de6e12d04262d66bbabf8',
+                                                                   'd3397f8ab3ff6d70d65ccf2d7f20a96e129849ac2269405bb3f6ab893f1891a3',
+                                                                   '65a1feda3e0ab3d45dcef88c348cec91ad2a89121892ea70287fb705d19b7314',
+                                                                   'a9742388e70d4355d6e8455df8845d630e732fd36ad6446b9f51d2753bce3133',
+                                                                   '0f703b7341f2ed1b4e741a81c4240c975db9f316bd77f9b98cf923db5a214cca',
+                                                                   '734a29e70b5d95d80c1a58acab6df0b40d2f727129a2f32447bdac5db7424773',
+                                                                   '93968c5a741e0cab1ee23ec37a18f404ed1c83d979acfe9af0533466e32b5023',
+                                                                   '1c0c488917fd12d167958a913e4bee0d56004b897c7a69086cb8814e1853b78f',
+                                                                   'b98c9b5b23af7449c14b4d85a45afb6584c1c9c2476128de773a8bd8f883fe97',
+                                                                   'bfd622bd0ae48a943d072b9db94e114ef4c610783e998a0f5ab1efa9bd644814',
+                                                                   '2ae2071c9eaa29e6e8ba931ed8b9525600d21ab5d1c9b53824cad46a6a6e12fe',
+                                                                   '74b2efb213e46f61255c4707b931ed001c02fba7e5ba9177daa413cc449fd861',
+                                                                   '234ea0928540c34115f9a19a066aab87f22d15283ff94479a6c0ee953a799167',
+                                                                   'f042f194945c8e5a11bb6ce2bbefd0020fa27e3463ac3f25db881ef74de0a557',
+                                                                   '530bbbf2290f92d40ff7446f2ea218edf767f7abc4c4a35a932669c880a1bea3',
+                                                                   'c06d442a93bcc4f8ded5e06af83b5b235acf78bc1ef717f10d37f4b3ac18a62c',
+                                                                   '3e84c8a8e96c15e0defda059187db3ddb4275c4aecdb290ecc5d3088c7ef39fa',
+                                                                   '630f2eae48d515b5cf6ef5698b9f761efd92f2708a5309af84de4fa18b5748a1',
+                                                                   'f41d0696020b1d1491d138e438cbf925261b30664c7ebe43e9b88e708aef6e95',
+                                                                   'ab50daa88ec3d92f8cd09bbc1f1614637c4aa38f8439b6e131936e3b543fe399',
+                                                                   'd07c84c155578873bff7f99a3fd5efb2a074b4c5fbceff6794c534d7690acc75',
+                                                                   '1a6a66f7b64c03a6e73a3e73cb4e9df7f2f85b8546a264832a48753f0f828882',
+                                                                   '58d540ae8fd412140d5e2489009e5dd7201b1d8b3b9d2a1c0c29af8db520e6b9',
+                                                                   '802868d81e7ad72d47aaa02360f865e734503918b4782ebabca2acf67610c252',
+                                                                   '5732ba765b9ea7d1b57dea54d73ba8bff19dc889b67f82b1f215e3955ad9664a',
+                                                                   'd7ff743c92d70faacdba505ab49aa1e350798822d58ca3a5caa252c2713d77d6',
+                                                                   'bf11c0d84460af33a13b0080f7d1aded574f5c3daa492d7df05bb9d3cd9a1239',
+                                                                   'e36aa3d0f4dbc062544aa00a56526b372eed03f467649dcfab0a46ba2ac1b05d']},
+             'src/code_mower/lane_handoff.py': {'definitions': {'LocalWriter': 'ceaf03283017c1681a1e3cb2513de83587a73c737c202da142b1a1fdaa672ab6',
+                                                                'default_root': '94bcc017d44dc68fa7cc42a304352cefd884fe6d9c9b8d85f6c111aa3a498025',
+                                                                'key': '9ac80299cff2ae7814fe5f0f78100829b2110d190941d7b0c338df79d8a2c2a3',
+                                                                'observe_head': 'bdfb7a540f7913b6a99bf5ee6bb077c0185b04d7a408527c1e75bacf69848c06',
+                                                                'prepare': '631376ac3f53bc69c55cc4cc07eb805ecb778a35ccd3089378482ebd230288dd',
+                                                                'quiesce': '83a53943cde81c6745ce65463266df73f00402c9a794d172eef31dc10507ddd7',
+                                                                'read_source': '6b94b4c6193e4f65e04730fbc63f7079e8f81364dcfdc37b588d48eeaa32481e',
+                                                                'remote_engine': 'fe4c7d5fdcd24bca72e975e49609d9aba229ae20ea4d0d99db76695ab4823175',
+                                                                'reserve_launch': 'a209248ba74f3e8e916fc065a77a35bf35b8f2eee96938c2ede512d9209abf7d'},
+                                                'live_segments': ['f889e85620eec8de2c238812dd247410d2e75f8d5001f4eecdb79b3865165c21',
+                                                                  '5384bfdb2df380b6557cc7a71d16891415bccaa87699406e236f752c6415389f',
+                                                                  '3b3ea3cdc7068a9e97cfcddbcd9d8e0c54fe4d068347b80b158fdd8b14676e3b',
+                                                                  '261a9112a2918e2aba03e19a2f221a027ab4b6f9e946a6c39814f54e18e07dfc',
+                                                                  '3727adff524e0616022eadd8f4af21a0778b29fc4c77bdfefd1afce2cbf5e4b7',
+                                                                  '1fd20c880d3cde1a258aa761090aabc445918b6cf2b91712928debfc04392cff',
+                                                                  '17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a',
+                                                                  '7b2ddb8a2e64c6166feedaf30ee50ac62165fe149fdd8b0d7b777ebee21ca34d',
+                                                                  '3cb9ffccba5146b2dd177a30c3057a4395ebd5c745d0789d2ed95d0cf4afe271',
+                                                                  'd30710bca9af95f1af88e54567bf9cb3571abb4430759486de0f61753166b6a4',
+                                                                  '14cef7b5ee10ef0b5dd80bed58c2b59a196568aea24768a9a105b5bbc0817de6',
+                                                                  '00ee41c0a680c0bafc712cebfd45a249372b727fb6ff6c25ae75d1d01f9c1656',
+                                                                  '7f0d608f78e3f586988f58d336cfabb575f9cd24462c6dbc9197c8c98213ba6f']}},
+ 'unchanged_files': {'.github/workflows/ci.yml': 'df0083c724ae7007528951557363ede1adbe6bce9ddce48dc753bc3751f2e581',
+                     '.github/workflows/claude-audit-labeler.yml': 'ac21c697ddf2a134f4e89cc6738cbaeb770f6ea76abf76823edd409ed0618e5e',
+                     '.github/workflows/claude-clear-stale.yml': '7381379101486bc9ee97805b071301f01eb4b2655ca796cfde84110ea3784b58',
+                     '.github/workflows/cloud-dogfood.yml': '9fe6b19a1214449ea8537efed12cfc6c6146c8e2f11a407ca782030e9b903b95',
+                     '.github/workflows/code-mower-agent-pr-labeler.yml': '0555ccf6d8896cadc60b271725e0cdd8f3005ff2fa4eaf231b0fd23451e37545',
+                     '.github/workflows/code-mower-fix-round-dispatch.yml': '304c952b3f5a6ed4373a091797a53877cc1e665c7b9548606d26150231190dd7',
+                     '.github/workflows/code-mower-gate.yml': 'd6ed0b9a7a37ca329868c0f7f634c915d500233250ba6ffbf921a72ac4066780',
+                     '.github/workflows/codex-audit-labeler.yml': '306b07779111d24cbe200c99fe5309978707299dbe2c2f56cbedbad640da984e',
+                     '.github/workflows/codex-clear-stale.yml': 'fe832a2b795d70d4eab8bbcd89bfc069104d6f80854b86652e2aa397f2b489ca',
+                     '.github/workflows/dispatch-lanes.yml': 'cf6d9997cfbe9468e0883497ba68f223196332bf6fc99f4b6b8e8b1068cabdcd',
+                     '.github/workflows/lane-mac-runner.yml': 'd771366c6e2ce3afc30a4919abd168b70e4a83fd19906e8ba534fed58ad606a7',
+                     '.github/workflows/local-cli-audit.yml': '5305326fd50cc183d1f3d960bac2cf96019ebad4bf4dd5663a73bad545e19ccc',
+                     '.github/workflows/release.yml': '6a6b87b30c096ff46027e5b39b6e9f6cfb4c54aa6b42bbdedcc45c1f1cd8eb4b',
+                     'src/code_mower/init.py': '429d12d80f9c9b43dc65781ccd8ee65d7994a45c4652a0a2705c0fcf369e265b',
+                     'src/code_mower/templates/lanes/run_mac_lane.sh': '89139edb988d58104972c06ed7eeb5dc598804e001b8d9df2249ad4e4a101a5b',
+                     'templates/lanes/run_mac_lane.sh': '89139edb988d58104972c06ed7eeb5dc598804e001b8d9df2249ad4e4a101a5b',
+                     'tools/lanes/run_mac_lane.sh': '8b2475bde3c95b3fdb1d8f3c118a006364cc000a637c1a1f3ca80825c73b6506'}}
