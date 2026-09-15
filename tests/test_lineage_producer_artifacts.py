@@ -30,7 +30,7 @@ class ArtifactTests(unittest.TestCase):
         cls.root = Path(cls.tmp.name)
         cls.wheels = cls.root / "wheels"
         cls.installed = cls.root / "installed"
-        result = subprocess.run([sys.executable, "-m", "build", "--wheel", "--outdir", str(cls.wheels)],
+        result = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(cls.wheels), str(ROOT)],
                                 cwd=ROOT, capture_output=True, text=True, timeout=120)
         if result.returncode:
             raise AssertionError(result.stdout + result.stderr)
