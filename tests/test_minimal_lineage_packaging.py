@@ -3,6 +3,7 @@ import ast
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -87,7 +88,7 @@ assert core.admit(decision, "claude")
 assert importlib.util.find_spec("code_mower") is None
 print("isolated import/parse/resolve/admit passed")
 '''
-            result = subprocess.run(["python", "-I", "-S", "-c", program], cwd=output,
+            result = subprocess.run([sys.executable, "-I", "-S", "-c", program], cwd=output,
                                     input=json.dumps(fixture), capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "isolated import/parse/resolve/admit passed")
