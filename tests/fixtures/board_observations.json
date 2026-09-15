@@ -1,0 +1,1185 @@
+{
+  "adversarial": [
+    {
+      "base": "observed_running",
+      "error": "invalid_contract",
+      "name": "unknown_field",
+      "set": {
+        "": {
+          "created_at": "2026-09-12T20:00:00Z",
+          "display": {
+            "authorized": false,
+            "session_label": null
+          },
+          "kind": "work",
+          "schema": "code_mower.boardObservation.v1",
+          "scope": {
+            "repository": "codemower-ai/code-mower",
+            "session_id": "sessionfixture00000000000000000001",
+            "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "sources": [
+            {
+              "checked_at": "2026-09-12T20:00:00Z",
+              "coverage": "complete",
+              "event_at": "2026-09-12T19:59:40Z",
+              "freshness": "fresh",
+              "heartbeat_at": null,
+              "id": "sessionobs",
+              "kind": "session",
+              "observed_at": "2026-09-12T19:59:50Z"
+            },
+            {
+              "checked_at": "2026-09-12T20:00:00Z",
+              "coverage": "complete",
+              "event_at": "2026-09-12T19:59:40Z",
+              "freshness": "fresh",
+              "heartbeat_at": null,
+              "id": "queueobs",
+              "kind": "work_queue",
+              "observed_at": "2026-09-12T19:59:50Z"
+            },
+            {
+              "checked_at": "2026-09-12T20:00:00Z",
+              "coverage": "complete",
+              "event_at": "2026-09-12T19:59:40Z",
+              "freshness": "fresh",
+              "heartbeat_at": null,
+              "id": "registryobs",
+              "kind": "run_registry",
+              "observed_at": "2026-09-12T19:59:50Z"
+            },
+            {
+              "checked_at": "2026-09-12T20:00:00Z",
+              "coverage": "complete",
+              "event_at": "2026-09-12T19:59:40Z",
+              "freshness": "fresh",
+              "heartbeat_at": null,
+              "id": "leaseobs",
+              "kind": "lease",
+              "observed_at": "2026-09-12T19:59:50Z"
+            },
+            {
+              "checked_at": "2026-09-12T20:00:00Z",
+              "coverage": "complete",
+              "event_at": "2026-09-12T19:59:40Z",
+              "freshness": "fresh",
+              "heartbeat_at": "2026-09-12T19:59:50Z",
+              "id": "providerobs",
+              "kind": "remote_session",
+              "observed_at": "2026-09-12T19:59:50Z"
+            }
+          ],
+          "unexpected": "not_permitted",
+          "unlinked": [],
+          "work": {
+            "evidence": {
+              "assignment": {
+                "source_id": "queueobs",
+                "state": "assigned"
+              },
+              "ci": {
+                "coverage": "unavailable",
+                "head_sha": null,
+                "source_id": null,
+                "state": "unknown"
+              },
+              "gate": {
+                "coverage": "unavailable",
+                "head_sha": null,
+                "source_id": null,
+                "state": "unknown"
+              },
+              "gate_publisher": {
+                "source_id": null,
+                "state": "unknown"
+              },
+              "lease": {
+                "source_id": "leaseobs",
+                "state": "held"
+              },
+              "merge": {
+                "source_id": null,
+                "state": "unknown"
+              },
+              "review": {
+                "coverage": "unavailable",
+                "head_sha": null,
+                "source_id": null,
+                "state": "unknown"
+              },
+              "review_request": {
+                "source_id": null,
+                "state": "unknown"
+              }
+            },
+            "id": "runningwork",
+            "measurements": {
+              "cost_usd": {
+                "coverage": "unavailable",
+                "observed": 0,
+                "total": null,
+                "value": null
+              },
+              "elapsed_seconds": {
+                "coverage": "unavailable",
+                "observed": 0,
+                "total": null,
+                "value": null
+              },
+              "productivity_count": {
+                "coverage": "unavailable",
+                "observed": 0,
+                "total": null,
+                "value": null
+              },
+              "provenance_count": {
+                "coverage": "unavailable",
+                "observed": 0,
+                "total": null,
+                "value": null
+              },
+              "quality_score": {
+                "coverage": "unavailable",
+                "observed": 0,
+                "total": null,
+                "value": null
+              }
+            },
+            "primary": {
+              "action": "none",
+              "actor": "none"
+            },
+            "pull_request": {
+              "head_sha": null,
+              "number": null
+            },
+            "reasons": [],
+            "reference": "issue-946",
+            "runs": [
+              {
+                "basis": "observed",
+                "binding": {
+                  "repository": "codemower-ai/code-mower",
+                  "session_id": "sessionfixture00000000000000000001",
+                  "work_id": "runningwork",
+                  "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "event_at": "2026-09-12T19:59:40Z",
+                "heartbeat_at": "2026-09-12T19:59:50Z",
+                "id": "runrunningwork",
+                "lifecycle": {
+                  "counts": {
+                    "cancel": 0,
+                    "collect": 0,
+                    "dispatch": 1,
+                    "message": 0
+                  },
+                  "next_action": "status",
+                  "reason": "none",
+                  "schema": "code_mower.remote_session.v1",
+                  "state": "running"
+                },
+                "observed_at": "2026-09-12T19:59:50Z",
+                "phase": "observed_running",
+                "provider": "codex",
+                "reported_stage": null,
+                "role": "builder",
+                "source_id": "providerobs"
+              }
+            ],
+            "stage": "building"
+          }
+        }
+      }
+    },
+    {
+      "base": "observed_running",
+      "error": "identity_mismatch",
+      "name": "cross_session_join",
+      "set": {
+        "/work/runs/0/binding/session_id": "othersession"
+      }
+    },
+    {
+      "base": "observed_running",
+      "error": "identity_mismatch",
+      "name": "worktree_mismatch",
+      "set": {
+        "/work/runs/0/binding/worktree_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    {
+      "base": "observed_running",
+      "error": "invalid_timestamp",
+      "name": "invalid_timestamp",
+      "set": {
+        "/sources/0/observed_at": "not-a-time"
+      }
+    },
+    {
+      "base": "observed_running",
+      "error": "stale_live_claim",
+      "name": "stale_running_claim",
+      "set": {
+        "/sources/4/coverage": "partial",
+        "/sources/4/freshness": "stale"
+      }
+    },
+    {
+      "base": "observed_running",
+      "error": "unauthorized_display",
+      "name": "label_without_authorization",
+      "set": {
+        "/display/session_label": "Unauthorized label"
+      }
+    },
+    {
+      "base": "reviewed",
+      "error": "identity_mismatch",
+      "name": "review_head_mismatch",
+      "set": {
+        "/work/evidence/review/head_sha": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    {
+      "base": "observed_running",
+      "error": "invalid_measurement",
+      "name": "missing_measurement_as_zero",
+      "set": {
+        "/work/measurements/cost_usd/value": 0
+      }
+    },
+    {
+      "base": "observed_running",
+      "error": "invalid_contract",
+      "name": "unknown_reason",
+      "set": {
+        "/work/reasons": [
+          "made_up_reason"
+        ]
+      }
+    },
+    {
+      "base": "waiting_for_user",
+      "error": "invalid_route",
+      "name": "wrong_primary_route",
+      "set": {
+        "/work/primary/action": "address_findings",
+        "/work/primary/actor": "builder"
+      }
+    },
+    {
+      "base": "no_work",
+      "error": "insufficient_coverage",
+      "name": "insufficient_no_work_coverage",
+      "set": {
+        "/sources/1/coverage": "partial",
+        "/sources/1/freshness": "stale"
+      }
+    },
+    {
+      "base": "unlinked",
+      "error": "identity_mismatch",
+      "name": "unlinked_claims_session",
+      "set": {
+        "/scope/session_id": "sessionfixture00000000000000000001"
+      }
+    },
+    {
+      "base": "observed_running",
+      "error": "invalid_contract",
+      "name": "oversized_identifier",
+      "set": {
+        "/work/id": "wxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    }
+  ],
+  "schema": "code_mower.boardObservationFixtures.v1",
+  "templates": {
+    "no_work": {
+      "created_at": "2026-09-12T20:00:00Z",
+      "display": {
+        "authorized": true,
+        "session_label": "Board contract delivery"
+      },
+      "kind": "no_work",
+      "schema": "code_mower.boardObservation.v1",
+      "scope": {
+        "repository": "codemower-ai/code-mower",
+        "session_id": "sessionfixture00000000000000000001",
+        "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sources": [
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "sessionobs",
+          "kind": "session",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "queueobs",
+          "kind": "work_queue",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "registryobs",
+          "kind": "run_registry",
+          "observed_at": "2026-09-12T19:59:50Z"
+        }
+      ],
+      "unlinked": [],
+      "work": null
+    },
+    "unlinked": {
+      "created_at": "2026-09-12T20:00:00Z",
+      "display": {
+        "authorized": false,
+        "session_label": null
+      },
+      "kind": "unlinked",
+      "schema": "code_mower.boardObservation.v1",
+      "scope": {
+        "repository": "codemower-ai/code-mower",
+        "session_id": null,
+        "worktree_id": null
+      },
+      "sources": [
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "processobs",
+          "kind": "local_process",
+          "observed_at": "2026-09-12T19:59:50Z"
+        }
+      ],
+      "unlinked": [
+        {
+          "id": "unlinkedrun",
+          "observed_at": "2026-09-12T19:59:50Z",
+          "provider": "claude",
+          "role": "unknown",
+          "source_id": "processobs"
+        }
+      ],
+      "work": null
+    },
+    "work_pr": {
+      "created_at": "2026-09-12T20:00:00Z",
+      "display": {
+        "authorized": false,
+        "session_label": null
+      },
+      "kind": "work",
+      "schema": "code_mower.boardObservation.v1",
+      "scope": {
+        "repository": "codemower-ai/code-mower",
+        "session_id": "sessionfixture00000000000000000001",
+        "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sources": [
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "sessionobs",
+          "kind": "session",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "queueobs",
+          "kind": "work_queue",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "registryobs",
+          "kind": "run_registry",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "leaseobs",
+          "kind": "lease",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": "2026-09-12T19:59:50Z",
+          "id": "providerobs",
+          "kind": "remote_session",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "githubobs",
+          "kind": "github",
+          "observed_at": "2026-09-12T19:59:50Z"
+        }
+      ],
+      "unlinked": [],
+      "work": {
+        "evidence": {
+          "assignment": {
+            "source_id": "queueobs",
+            "state": "assigned"
+          },
+          "ci": {
+            "coverage": "unavailable",
+            "head_sha": null,
+            "source_id": null,
+            "state": "unknown"
+          },
+          "gate": {
+            "coverage": "unavailable",
+            "head_sha": null,
+            "source_id": null,
+            "state": "unknown"
+          },
+          "gate_publisher": {
+            "source_id": null,
+            "state": "unknown"
+          },
+          "lease": {
+            "source_id": "leaseobs",
+            "state": "held"
+          },
+          "merge": {
+            "source_id": null,
+            "state": "unknown"
+          },
+          "review": {
+            "coverage": "unavailable",
+            "head_sha": null,
+            "source_id": null,
+            "state": "unknown"
+          },
+          "review_request": {
+            "source_id": null,
+            "state": "unknown"
+          }
+        },
+        "id": "completework",
+        "measurements": {
+          "cost_usd": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "elapsed_seconds": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "productivity_count": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "provenance_count": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "quality_score": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          }
+        },
+        "primary": {
+          "action": "review_current_head",
+          "actor": "reviewer"
+        },
+        "pull_request": {
+          "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "number": 946
+        },
+        "reasons": [
+          "review_requested"
+        ],
+        "reference": "issue-946",
+        "runs": [
+          {
+            "basis": "provider_reported",
+            "binding": {
+              "repository": "codemower-ai/code-mower",
+              "session_id": "sessionfixture00000000000000000001",
+              "work_id": "completework",
+              "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "event_at": "2026-09-12T19:59:40Z",
+            "heartbeat_at": null,
+            "id": "runcompletework",
+            "lifecycle": {
+              "counts": {
+                "cancel": 0,
+                "collect": 0,
+                "dispatch": 1,
+                "message": 0
+              },
+              "next_action": "none",
+              "reason": "none",
+              "schema": "code_mower.remote_session.v1",
+              "state": "complete"
+            },
+            "observed_at": "2026-09-12T19:59:50Z",
+            "phase": "implementation_complete",
+            "provider": "codex",
+            "reported_stage": null,
+            "role": "builder",
+            "source_id": "providerobs"
+          }
+        ],
+        "stage": "in_review"
+      }
+    },
+    "work_run": {
+      "created_at": "2026-09-12T20:00:00Z",
+      "display": {
+        "authorized": false,
+        "session_label": null
+      },
+      "kind": "work",
+      "schema": "code_mower.boardObservation.v1",
+      "scope": {
+        "repository": "codemower-ai/code-mower",
+        "session_id": "sessionfixture00000000000000000001",
+        "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sources": [
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "sessionobs",
+          "kind": "session",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "queueobs",
+          "kind": "work_queue",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "registryobs",
+          "kind": "run_registry",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "leaseobs",
+          "kind": "lease",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": "2026-09-12T19:59:50Z",
+          "id": "providerobs",
+          "kind": "remote_session",
+          "observed_at": "2026-09-12T19:59:50Z"
+        }
+      ],
+      "unlinked": [],
+      "work": {
+        "evidence": {
+          "assignment": {
+            "source_id": "queueobs",
+            "state": "assigned"
+          },
+          "ci": {
+            "coverage": "unavailable",
+            "head_sha": null,
+            "source_id": null,
+            "state": "unknown"
+          },
+          "gate": {
+            "coverage": "unavailable",
+            "head_sha": null,
+            "source_id": null,
+            "state": "unknown"
+          },
+          "gate_publisher": {
+            "source_id": null,
+            "state": "unknown"
+          },
+          "lease": {
+            "source_id": "leaseobs",
+            "state": "held"
+          },
+          "merge": {
+            "source_id": null,
+            "state": "unknown"
+          },
+          "review": {
+            "coverage": "unavailable",
+            "head_sha": null,
+            "source_id": null,
+            "state": "unknown"
+          },
+          "review_request": {
+            "source_id": null,
+            "state": "unknown"
+          }
+        },
+        "id": "runningwork",
+        "measurements": {
+          "cost_usd": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "elapsed_seconds": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "productivity_count": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "provenance_count": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "quality_score": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          }
+        },
+        "primary": {
+          "action": "none",
+          "actor": "none"
+        },
+        "pull_request": {
+          "head_sha": null,
+          "number": null
+        },
+        "reasons": [],
+        "reference": "issue-946",
+        "runs": [
+          {
+            "basis": "observed",
+            "binding": {
+              "repository": "codemower-ai/code-mower",
+              "session_id": "sessionfixture00000000000000000001",
+              "work_id": "runningwork",
+              "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "event_at": "2026-09-12T19:59:40Z",
+            "heartbeat_at": "2026-09-12T19:59:50Z",
+            "id": "runrunningwork",
+            "lifecycle": {
+              "counts": {
+                "cancel": 0,
+                "collect": 0,
+                "dispatch": 1,
+                "message": 0
+              },
+              "next_action": "status",
+              "reason": "none",
+              "schema": "code_mower.remote_session.v1",
+              "state": "running"
+            },
+            "observed_at": "2026-09-12T19:59:50Z",
+            "phase": "observed_running",
+            "provider": "codex",
+            "reported_stage": null,
+            "role": "builder",
+            "source_id": "providerobs"
+          }
+        ],
+        "stage": "building"
+      }
+    },
+    "work_without_run": {
+      "created_at": "2026-09-12T20:00:00Z",
+      "display": {
+        "authorized": false,
+        "session_label": null
+      },
+      "kind": "work",
+      "schema": "code_mower.boardObservation.v1",
+      "scope": {
+        "repository": "codemower-ai/code-mower",
+        "session_id": "sessionfixture00000000000000000001",
+        "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sources": [
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "sessionobs",
+          "kind": "session",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "queueobs",
+          "kind": "work_queue",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "registryobs",
+          "kind": "run_registry",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "complete",
+          "event_at": "2026-09-12T19:59:40Z",
+          "freshness": "fresh",
+          "heartbeat_at": null,
+          "id": "leaseobs",
+          "kind": "lease",
+          "observed_at": "2026-09-12T19:59:50Z"
+        },
+        {
+          "checked_at": "2026-09-12T20:00:00Z",
+          "coverage": "unavailable",
+          "event_at": "2026-09-12T17:59:00Z",
+          "freshness": "unavailable",
+          "heartbeat_at": "2026-09-12T18:00:00Z",
+          "id": "providerobs",
+          "kind": "remote_session",
+          "observed_at": "2026-09-12T18:00:00Z"
+        }
+      ],
+      "unlinked": [],
+      "work": {
+        "evidence": {
+          "assignment": {
+            "source_id": "queueobs",
+            "state": "assigned"
+          },
+          "ci": {
+            "coverage": "unavailable",
+            "head_sha": null,
+            "source_id": null,
+            "state": "unknown"
+          },
+          "gate": {
+            "coverage": "unavailable",
+            "head_sha": null,
+            "source_id": null,
+            "state": "unknown"
+          },
+          "gate_publisher": {
+            "source_id": null,
+            "state": "unknown"
+          },
+          "lease": {
+            "source_id": "leaseobs",
+            "state": "held"
+          },
+          "merge": {
+            "source_id": null,
+            "state": "unknown"
+          },
+          "review": {
+            "coverage": "unavailable",
+            "head_sha": null,
+            "source_id": null,
+            "state": "unknown"
+          },
+          "review_request": {
+            "source_id": null,
+            "state": "unknown"
+          }
+        },
+        "id": "unavailablework",
+        "measurements": {
+          "cost_usd": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "elapsed_seconds": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "productivity_count": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "provenance_count": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          },
+          "quality_score": {
+            "coverage": "unavailable",
+            "observed": 0,
+            "total": null,
+            "value": null
+          }
+        },
+        "primary": {
+          "action": "restore_source",
+          "actor": "orchestrator"
+        },
+        "pull_request": {
+          "head_sha": null,
+          "number": null
+        },
+        "reasons": [
+          "source_unavailable"
+        ],
+        "reference": "issue-946",
+        "runs": [],
+        "stage": "unknown"
+      }
+    }
+  },
+  "valid": [
+    {
+      "name": "assigned",
+      "set": {
+        "/work/id": "assignedwork",
+        "/work/runs/0/basis": "configured",
+        "/work/runs/0/binding/work_id": "assignedwork",
+        "/work/runs/0/heartbeat_at": null,
+        "/work/runs/0/id": "runassignedwork",
+        "/work/runs/0/lifecycle": null,
+        "/work/runs/0/phase": "assigned",
+        "/work/stage": "queued"
+      },
+      "template": "work_run"
+    },
+    {
+      "name": "dispatched",
+      "set": {
+        "/work/id": "dispatchedwork",
+        "/work/runs/0/binding/work_id": "dispatchedwork",
+        "/work/runs/0/heartbeat_at": null,
+        "/work/runs/0/id": "rundispatchedwork",
+        "/work/runs/0/lifecycle/next_action": "none",
+        "/work/runs/0/lifecycle/state": "pending",
+        "/work/runs/0/phase": "dispatched",
+        "/work/stage": "queued"
+      },
+      "template": "work_run"
+    },
+    {
+      "name": "observed_running",
+      "set": {},
+      "template": "work_run"
+    },
+    {
+      "name": "provider_reported_progress",
+      "set": {
+        "/work/id": "progresswork",
+        "/work/runs/0/basis": "provider_reported",
+        "/work/runs/0/binding/work_id": "progresswork",
+        "/work/runs/0/id": "runprogresswork",
+        "/work/runs/0/phase": "provider_progress",
+        "/work/runs/0/reported_stage": "testing"
+      },
+      "template": "work_run"
+    },
+    {
+      "name": "waiting_for_user",
+      "set": {
+        "/work/id": "questionwork",
+        "/work/primary/action": "answer_question",
+        "/work/primary/actor": "owner",
+        "/work/reasons": [
+          "user_input_required"
+        ],
+        "/work/runs/0/basis": "provider_reported",
+        "/work/runs/0/binding/work_id": "questionwork",
+        "/work/runs/0/id": "runquestionwork",
+        "/work/runs/0/lifecycle/next_action": "none",
+        "/work/runs/0/lifecycle/reason": "user_input_required",
+        "/work/runs/0/lifecycle/state": "waiting_for_user",
+        "/work/runs/0/phase": "waiting_for_user"
+      },
+      "template": "work_run"
+    },
+    {
+      "name": "waiting_for_approval",
+      "set": {
+        "/work/id": "approvalwork",
+        "/work/primary/action": "respond_to_approval",
+        "/work/primary/actor": "owner",
+        "/work/reasons": [
+          "approval_required"
+        ],
+        "/work/runs/0/basis": "provider_reported",
+        "/work/runs/0/binding/work_id": "approvalwork",
+        "/work/runs/0/id": "runapprovalwork",
+        "/work/runs/0/lifecycle/next_action": "none",
+        "/work/runs/0/lifecycle/reason": "approval_required",
+        "/work/runs/0/lifecycle/state": "waiting_for_approval",
+        "/work/runs/0/phase": "waiting_for_approval"
+      },
+      "template": "work_run"
+    },
+    {
+      "name": "implementation_complete",
+      "set": {},
+      "template": "work_pr"
+    },
+    {
+      "name": "failed",
+      "set": {
+        "/work/id": "failedwork",
+        "/work/primary/action": "inspect_failure",
+        "/work/primary/actor": "orchestrator",
+        "/work/reasons": [
+          "provider_failed"
+        ],
+        "/work/runs/0/basis": "provider_reported",
+        "/work/runs/0/binding/work_id": "failedwork",
+        "/work/runs/0/heartbeat_at": null,
+        "/work/runs/0/id": "runfailedwork",
+        "/work/runs/0/lifecycle/next_action": "inspect_provider",
+        "/work/runs/0/lifecycle/reason": "session_failed",
+        "/work/runs/0/lifecycle/state": "failed",
+        "/work/runs/0/phase": "failed"
+      },
+      "template": "work_run"
+    },
+    {
+      "name": "cancelled",
+      "set": {
+        "/work/id": "cancelledwork",
+        "/work/primary/action": "inspect_cancellation",
+        "/work/primary/actor": "orchestrator",
+        "/work/reasons": [
+          "cancelled"
+        ],
+        "/work/runs/0/binding/work_id": "cancelledwork",
+        "/work/runs/0/heartbeat_at": null,
+        "/work/runs/0/id": "runcancelledwork",
+        "/work/runs/0/lifecycle/next_action": "none",
+        "/work/runs/0/lifecycle/state": "terminated",
+        "/work/runs/0/phase": "cancelled"
+      },
+      "template": "work_run"
+    },
+    {
+      "name": "reviewed",
+      "set": {
+        "/work/evidence/review/coverage": "full",
+        "/work/evidence/review/head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "/work/evidence/review/source_id": "githubobs",
+        "/work/evidence/review/state": "pass",
+        "/work/evidence/review_request/source_id": "githubobs",
+        "/work/evidence/review_request/state": "requested",
+        "/work/id": "reviewedwork",
+        "/work/primary/action": "review_change",
+        "/work/primary/actor": "owner",
+        "/work/reasons/0": "human_review_required",
+        "/work/runs/0/binding/work_id": "reviewedwork",
+        "/work/runs/0/id": "runreviewedwork",
+        "/work/stage": "ready_for_human_review"
+      },
+      "template": "work_pr"
+    },
+    {
+      "name": "ready",
+      "set": {
+        "/work/evidence/ci/coverage": "full",
+        "/work/evidence/ci/head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "/work/evidence/ci/source_id": "githubobs",
+        "/work/evidence/ci/state": "pass",
+        "/work/evidence/gate/coverage": "full",
+        "/work/evidence/gate/head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "/work/evidence/gate/source_id": "githubobs",
+        "/work/evidence/gate/state": "pass",
+        "/work/evidence/gate_publisher/source_id": "githubobs",
+        "/work/evidence/gate_publisher/state": "pass",
+        "/work/evidence/merge/source_id": "githubobs",
+        "/work/evidence/merge/state": "ready",
+        "/work/evidence/review/coverage": "full",
+        "/work/evidence/review/head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "/work/evidence/review/source_id": "githubobs",
+        "/work/evidence/review/state": "pass",
+        "/work/evidence/review_request/source_id": "githubobs",
+        "/work/evidence/review_request/state": "requested",
+        "/work/id": "readywork",
+        "/work/primary/action": "merge",
+        "/work/primary/actor": "maintainer",
+        "/work/reasons/0": "ready_to_merge",
+        "/work/runs/0/binding/work_id": "readywork",
+        "/work/runs/0/id": "runreadywork",
+        "/work/stage": "ready_to_merge"
+      },
+      "template": "work_pr"
+    },
+    {
+      "name": "publisher_pass_gate_pending",
+      "set": {
+        "/work/evidence/gate/coverage": "full",
+        "/work/evidence/gate/head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "/work/evidence/gate/source_id": "githubobs",
+        "/work/evidence/gate/state": "pending",
+        "/work/evidence/gate_publisher/source_id": "githubobs",
+        "/work/evidence/gate_publisher/state": "pass",
+        "/work/id": "publisherwork",
+        "/work/primary/action": "wait_for_gate",
+        "/work/primary/actor": "automation",
+        "/work/reasons/0": "gate_pending",
+        "/work/runs/0/binding/work_id": "publisherwork",
+        "/work/runs/0/id": "runpublisherwork"
+      },
+      "template": "work_pr"
+    },
+    {
+      "name": "merged",
+      "set": {
+        "/work/evidence/ci/coverage": "full",
+        "/work/evidence/ci/head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "/work/evidence/ci/source_id": "githubobs",
+        "/work/evidence/ci/state": "pass",
+        "/work/evidence/gate/coverage": "full",
+        "/work/evidence/gate/head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "/work/evidence/gate/source_id": "githubobs",
+        "/work/evidence/gate/state": "pass",
+        "/work/evidence/gate_publisher/source_id": "githubobs",
+        "/work/evidence/gate_publisher/state": "pass",
+        "/work/evidence/merge/source_id": "githubobs",
+        "/work/evidence/merge/state": "merged",
+        "/work/evidence/review/coverage": "full",
+        "/work/evidence/review/head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "/work/evidence/review/source_id": "githubobs",
+        "/work/evidence/review/state": "pass",
+        "/work/evidence/review_request/source_id": "githubobs",
+        "/work/evidence/review_request/state": "requested",
+        "/work/id": "mergedwork",
+        "/work/primary/action": "none",
+        "/work/primary/actor": "none",
+        "/work/reasons": [],
+        "/work/runs/0/binding/work_id": "mergedwork",
+        "/work/runs/0/id": "runmergedwork",
+        "/work/stage": "merged"
+      },
+      "template": "work_pr"
+    },
+    {
+      "name": "stale",
+      "set": {
+        "/sources/4/coverage": "partial",
+        "/sources/4/event_at": "2026-09-12T17:59:00Z",
+        "/sources/4/freshness": "stale",
+        "/sources/4/heartbeat_at": "2026-09-12T18:00:00Z",
+        "/sources/4/observed_at": "2026-09-12T18:00:00Z",
+        "/work/id": "stalework",
+        "/work/primary/action": "refresh_evidence",
+        "/work/primary/actor": "orchestrator",
+        "/work/reasons": [
+          "stale_observation",
+          "review_requested"
+        ],
+        "/work/runs/0/binding/work_id": "stalework",
+        "/work/runs/0/id": "runstalework"
+      },
+      "template": "work_pr"
+    },
+    {
+      "name": "source_unavailable_preserves_last_observation",
+      "set": {},
+      "template": "work_without_run"
+    },
+    {
+      "name": "no_work",
+      "set": {},
+      "template": "no_work"
+    },
+    {
+      "name": "unlinked",
+      "set": {},
+      "template": "unlinked"
+    }
+  ]
+}

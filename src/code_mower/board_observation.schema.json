@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "code_mower.boardObservation.v1",
+  "title": "Provider-neutral local Board observation",
+  "description": "Closed, metadata-only local read model. It is not a cloud event or workflow authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "created_at", "scope", "display", "sources", "work", "unlinked"],
+  "properties": {
+    "schema": {"const": "code_mower.boardObservation.v1"},
+    "kind": {"enum": ["work", "no_work", "unlinked"]},
+    "created_at": {"$ref": "#/$defs/timestamp"},
+    "scope": {"$ref": "#/$defs/scope"},
+    "display": {"$ref": "#/$defs/display"},
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "work": {"$ref": "#/$defs/work"},
+    "unlinked": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/unlinked_run"}
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+      "maxLength": 128
+    },
+    "nullable_identifier": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+      "maxLength": 128
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 40
+    },
+    "nullable_timestamp": {
+      "type": ["string", "null"],
+      "maxLength": 40
+    },
+    "nullable_head": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{40}$",
+      "maxLength": 40
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "repository", "worktree_id"],
+      "properties": {
+        "session_id": {"$ref": "#/$defs/nullable_identifier"},
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "maxLength": 200
+        },
+        "worktree_id": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "maxLength": 71
+        }
+      }
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorized", "session_label"],
+      "properties": {
+        "authorized": {"type": "boolean"},
+        "session_label": {"type": ["string", "null"], "maxLength": 120}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "freshness", "coverage", "event_at", "observed_at", "checked_at", "heartbeat_at"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "kind": {"enum": ["session", "work_queue", "run_registry", "lease", "local_process", "local_runner", "remote_session", "github", "review", "ci", "gate", "measurement"]},
+        "freshness": {"enum": ["fresh", "stale", "unavailable"]},
+        "coverage": {"enum": ["complete", "partial", "unavailable"]},
+        "event_at": {"$ref": "#/$defs/nullable_timestamp"},
+        "observed_at": {"$ref": "#/$defs/nullable_timestamp"},
+        "checked_at": {"$ref": "#/$defs/timestamp"},
+        "heartbeat_at": {"$ref": "#/$defs/nullable_timestamp"}
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "work_id", "repository", "worktree_id"],
+      "properties": {
+        "session_id": {"$ref": "#/$defs/identifier"},
+        "work_id": {"$ref": "#/$defs/identifier"},
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "maxLength": 200
+        },
+        "worktree_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "maxLength": 71
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dispatch", "message", "cancel", "collect"],
+      "properties": {
+        "dispatch": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "message": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "cancel": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "collect": {"type": "integer", "minimum": 0, "maximum": 10000}
+      }
+    },
+    "lifecycle": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["schema", "state", "reason", "next_action", "counts"],
+      "properties": {
+        "schema": {"const": "code_mower.remote_session.v1"},
+        "state": {"enum": ["archived", "complete", "failed", "pending", "running", "suspended", "terminated", "uncertain", "waiting_for_approval", "waiting_for_user"]},
+        "reason": {"enum": ["approval_required", "inspect_provider_then_acknowledge", "none", "provider_unavailable", "reconcile_dispatch", "result_not_ready", "result_unavailable", "session_failed", "session_suspended", "user_input_required"]},
+        "next_action": {"enum": ["acknowledge_delivered", "inspect_provider", "none", "status"]},
+        "counts": {"$ref": "#/$defs/counts"}
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "binding", "provider", "role", "phase", "basis", "reported_stage", "source_id", "event_at", "observed_at", "heartbeat_at", "lifecycle"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "binding": {"$ref": "#/$defs/binding"},
+        "provider": {"$ref": "#/$defs/identifier"},
+        "role": {"enum": ["orchestrator", "builder", "reviewer"]},
+        "phase": {"enum": ["assigned", "dispatched", "observed_running", "provider_progress", "waiting_for_user", "waiting_for_approval", "implementation_complete", "failed", "cancelled"]},
+        "basis": {"enum": ["configured", "requested", "observed", "provider_reported"]},
+        "reported_stage": {"type": ["string", "null"], "enum": [null, "planning", "implementing", "testing", "reviewing"]},
+        "source_id": {"$ref": "#/$defs/identifier"},
+        "event_at": {"$ref": "#/$defs/nullable_timestamp"},
+        "observed_at": {"$ref": "#/$defs/timestamp"},
+        "heartbeat_at": {"$ref": "#/$defs/nullable_timestamp"},
+        "lifecycle": {"$ref": "#/$defs/lifecycle"}
+      }
+    },
+    "unlinked_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider", "role", "source_id", "observed_at"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "provider": {"$ref": "#/$defs/identifier"},
+        "role": {"enum": ["unknown", "orchestrator", "builder", "reviewer"]},
+        "source_id": {"$ref": "#/$defs/identifier"},
+        "observed_at": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "pull_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "head_sha"],
+      "properties": {
+        "number": {"type": ["integer", "null"], "minimum": 1, "maximum": 2147483647},
+        "head_sha": {"$ref": "#/$defs/nullable_head"}
+      }
+    },
+    "primary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor", "action"],
+      "properties": {
+        "actor": {"enum": ["none", "owner", "orchestrator", "builder", "reviewer", "automation", "maintainer"]},
+        "action": {"enum": ["none", "respond_to_approval", "answer_question", "restore_source", "connect_session", "refresh_evidence", "inspect_failure", "inspect_provider", "inspect_cancellation", "address_findings", "update_branch", "fix_checks", "resolve_gate", "request_review", "review_current_head", "finish_review", "wait_for_checks", "wait_for_gate", "review_change", "merge"]}
+      }
+    },
+    "evidence_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "source_id"],
+      "properties": {
+        "state": {"enum": ["unknown", "none", "not_started", "held", "absent", "expired", "unverifiable", "assigned", "unassigned", "requested", "not_requested", "running", "pending", "pass", "blocked", "failed", "stale", "draft", "open", "ready", "merged", "closed_unmerged"]},
+        "source_id": {"$ref": "#/$defs/nullable_identifier"}
+      }
+    },
+    "head_evidence_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "source_id", "head_sha", "coverage"],
+      "properties": {
+        "state": {"enum": ["unknown", "not_started", "running", "pending", "pass", "blocked", "failed", "stale"]},
+        "source_id": {"$ref": "#/$defs/nullable_identifier"},
+        "head_sha": {"$ref": "#/$defs/nullable_head"},
+        "coverage": {"enum": ["full", "sampled", "unavailable"]}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lease", "assignment", "review_request", "review", "ci", "gate_publisher", "gate", "merge"],
+      "properties": {
+        "lease": {"$ref": "#/$defs/evidence_item"},
+        "assignment": {"$ref": "#/$defs/evidence_item"},
+        "review_request": {"$ref": "#/$defs/evidence_item"},
+        "review": {"$ref": "#/$defs/head_evidence_item"},
+        "ci": {"$ref": "#/$defs/head_evidence_item"},
+        "gate_publisher": {"$ref": "#/$defs/evidence_item"},
+        "gate": {"$ref": "#/$defs/head_evidence_item"},
+        "merge": {"$ref": "#/$defs/evidence_item"}
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "coverage", "observed", "total"],
+      "properties": {
+        "value": {"type": ["number", "null"], "minimum": 0, "maximum": 1000000000},
+        "coverage": {"enum": ["complete", "partial", "unavailable"]},
+        "observed": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "total": {"type": ["integer", "null"], "minimum": 0, "maximum": 10000}
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["elapsed_seconds", "cost_usd", "quality_score", "productivity_count", "provenance_count"],
+      "properties": {
+        "elapsed_seconds": {"$ref": "#/$defs/measurement"},
+        "cost_usd": {"$ref": "#/$defs/measurement"},
+        "quality_score": {"$ref": "#/$defs/measurement"},
+        "productivity_count": {"$ref": "#/$defs/measurement"},
+        "provenance_count": {"$ref": "#/$defs/measurement"}
+      }
+    },
+    "work": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["id", "reference", "stage", "reasons", "primary", "pull_request", "runs", "evidence", "measurements"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "reference": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,127}$", "maxLength": 128},
+        "stage": {"enum": ["unknown", "queued", "building", "in_review", "changes_requested", "ready_for_human_review", "ready_to_merge", "merged"]},
+        "reasons": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 19,
+          "uniqueItems": true,
+          "items": {"enum": ["approval_required", "user_input_required", "source_unavailable", "identity_unlinked", "stale_observation", "provider_failed", "provider_suspended", "cancelled", "changes_requested", "update_required", "ci_failed", "gate_failed", "review_stale", "review_requested", "review_in_progress", "ci_pending", "gate_pending", "human_review_required", "ready_to_merge"]}
+        },
+        "primary": {"$ref": "#/$defs/primary"},
+        "pull_request": {"$ref": "#/$defs/pull_request"},
+        "runs": {"type": "array", "minItems": 0, "maxItems": 32, "items": {"$ref": "#/$defs/run"}},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "measurements": {"$ref": "#/$defs/measurements"}
+      }
+    }
+  }
+}
