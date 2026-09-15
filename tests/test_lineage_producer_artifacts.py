@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 import yaml
 from code_mower import init, package
 from code_mower.config import load_config
-from lineage_producer_fixtures import AUTHORITY, POLICY, TRANSPORT, comments, episode, target
+from lineage_producer_fixtures import ACCEPTED_BASELINE, AUTHORITY, POLICY, TRANSPORT, comments, episode, target
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = "e818a3b639dfe903bdc16aff3674af98a5a08233"
@@ -23,6 +23,64 @@ ASSETS = ("workflows/builder-lineage-producer.yml.j2", "lanes/lineage-producer.s
 
 
 class ArtifactTests(unittest.TestCase):
+    def accepted_baseline(self):
+        baseline = ACCEPTED_BASELINE
+        self.assertIsInstance(baseline, dict, 'Accepted baseline must be a complete mapping')
+        self.assertEqual(set(baseline), {'accepted_base', 'modules', 'unchanged_files'},
+                         'Accepted baseline fields are missing or unsupported')
+        self.assertEqual(baseline['accepted_base'], BASE, 'Accepted baseline commit differs')
+        modules = baseline['modules']
+        self.assertIsInstance(modules, dict, 'Accepted module baseline must be a mapping')
+        counts = {'src/code_mower/builder_runs.py': (29, 23),
+                  'src/code_mower/lane_delivery.py': (33, 54),
+                  'src/code_mower/lane_handoff.py': (9, 13)}
+        self.assertEqual(set(modules), set(counts), 'Accepted module inventory differs')
+        for path, (definition_count, live_count) in counts.items():
+            module = modules[path]
+            self.assertIsInstance(module, dict, f'{path}: malformed accepted module baseline')
+            self.assertEqual(set(module), {'definitions', 'live_segments'},
+                             f'{path}: accepted source-segment fields differ')
+            self.assertIsInstance(module['definitions'], dict, f'{path}: definitions must be a mapping')
+            self.assertEqual(len(module['definitions']), definition_count,
+                             f'{path}: accepted definitions are missing or extra')
+            self.assertIsInstance(module['live_segments'], list, f'{path}: live segments must be an ordered list')
+            self.assertEqual(len(module['live_segments']), live_count,
+                             f'{path}: accepted live segments are missing or extra')
+            for name in module['definitions']:
+                self.assertTrue(isinstance(name, str) and name.isidentifier(),
+                                f'{path}: malformed accepted definition name')
+            for digest in [*module['definitions'].values(), *module['live_segments']]:
+                self.assertIsInstance(digest, str, f'{path}: accepted source digest must be text')
+                self.assertRegex(digest, r'^[0-9a-f]{64}\Z', f'{path}: malformed accepted source digest')
+        files = baseline['unchanged_files']
+        self.assertIsInstance(files, dict, 'Accepted unchanged-file baseline must be a mapping')
+        self.assertEqual(len(files), 17, 'Accepted unchanged-file inventory must contain all 17 files')
+        for path, digest in files.items():
+            self.assertIsInstance(path, str, 'Accepted file path must be text')
+            self.assertIsInstance(digest, str, f'{path}: accepted file digest must be text')
+            self.assertRegex(digest, r'^[0-9a-f]{64}\Z', f'{path}: malformed accepted file digest')
+        serialized = (json.dumps(baseline, indent=2, sort_keys=True) + '\n').encode('utf-8')
+        self.assertEqual(hashlib.sha256(serialized).hexdigest(),
+                         '6036e7daccf07b3ab5f458315e5e8a04feeb00190bae35c4fb1e243ef519e55e',
+                         'Complete accepted baseline differs from the independently approved value')
+        return baseline
+
+    def module_source_hashes(self, path):
+        source = (ROOT/path).read_bytes().decode('utf-8')
+        lines = source.splitlines(keepends=True)
+        definitions, live_segments = {}, []
+        for node in ast.parse(source, filename=path).body:
+            is_definition = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            start = min([node.lineno, *(decorator.lineno for decorator in node.decorator_list)]) if is_definition else node.lineno
+            segment = ''.join(lines[start - 1:node.end_lineno]).encode('utf-8')
+            digest = hashlib.sha256(segment).hexdigest()
+            if is_definition:
+                self.assertNotIn(node.name, definitions, f'{path}: duplicate top-level definition {node.name}')
+                definitions[node.name] = digest
+            else:
+                live_segments.append(digest)
+        return definitions, live_segments
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
@@ -157,15 +215,14 @@ print(json.dumps(raw))
             self.assertEqual((ROOT/"templates"/asset).read_bytes(), (self.installed/"code_mower/templates"/asset).read_bytes())
         for path in ("src/code_mower/builder_lineage.py", "tools/builder_lineage.py"):
             self.assertEqual(hashlib.sha256((ROOT/path).read_bytes()).hexdigest(), CORE_HASH)
-        for path in ("src/code_mower/lane_delivery.py", "src/code_mower/lane_handoff.py", "src/code_mower/builder_runs.py"):
-            old = subprocess.check_output(["git", "show", BASE+":"+path], cwd=ROOT, text=True)
-            before, after = ast.parse(old), ast.parse((ROOT/path).read_text())
-            old_nodes = {node.name: ast.dump(node) for node in before.body if isinstance(node, (ast.ClassDef, ast.FunctionDef))}
-            new_nodes = {node.name: ast.dump(node) for node in after.body if isinstance(node, (ast.ClassDef, ast.FunctionDef))}
-            self.assertEqual(old_nodes, {key: new_nodes[key] for key in old_nodes})
-            old_live = [ast.dump(n) for n in before.body if not isinstance(n, (ast.ClassDef, ast.FunctionDef))]
-            new_live = [ast.dump(n) for n in after.body if not isinstance(n, (ast.ClassDef, ast.FunctionDef))]
-            self.assertEqual(old_live, new_live)
+        for path, baseline in self.accepted_baseline()['modules'].items():
+            definitions, live_segments = self.module_source_hashes(path)
+            self.assertFalse(set(baseline['definitions']) - set(definitions),
+                             f'{path}: missing accepted definitions: {sorted(set(baseline["definitions"]) - set(definitions))}')
+            for name, digest in baseline['definitions'].items():
+                self.assertEqual(definitions[name], digest, f'{path}: accepted definition source changed: {name}')
+            self.assertEqual(live_segments, baseline['live_segments'],
+                             f'{path}: ordered module-level live source changed')
         expected = package.committed_package_manifest_text(package.generate_committed_package_manifest(ROOT))
         self.assertEqual(expected, (ROOT/"code-mower-package-manifest.json").read_text())
 
@@ -180,8 +237,11 @@ print(json.dumps(raw))
         paths = ['src/code_mower/init.py', 'tools/lanes/run_mac_lane.sh',
                  'templates/lanes/run_mac_lane.sh', 'src/code_mower/templates/lanes/run_mac_lane.sh']
         paths.extend(p.relative_to(ROOT).as_posix() for p in (ROOT/'.github/workflows').glob('*'))
+        baseline = self.accepted_baseline()['unchanged_files']
+        self.assertCountEqual(paths, baseline, 'Actual init/runner/workflow inventory differs from accepted baseline')
         for path in paths:
-            self.assertEqual(subprocess.check_output(['git', 'show', BASE+':'+path], cwd=ROOT), (ROOT/path).read_bytes())
+            self.assertEqual(hashlib.sha256((ROOT/path).read_bytes()).hexdigest(), baseline[path],
+                             f'{path}: unchanged accepted file bytes differ')
         # Normal init emits the pure tools helper, not the package delivery modules.
         helper = output/'tools/builder_lineage.py'
         self.assertTrue(helper.is_file())
