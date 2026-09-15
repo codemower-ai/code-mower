@@ -14,7 +14,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 if __package__ and __package__.startswith("code_mower"):
     from .adapters import load_adapter
@@ -23,11 +23,19 @@ if __package__ and __package__.startswith("code_mower"):
         GitHubToken,
         LabelDecision,
         GitHubRequestError,
+        LineageContext,
+        LineageError,
         apply_label_decision,
         author_exclusion_reason,
         fetch_pull_request,
         github_request_with_fallback,
+        lineage_context,
+        lineage_decision_authorities,
+        lineage_marker_author_trust,
+        load_author_exclusion_config,
         load_json,
+        require_comment_list,
+        resolve_builder_lineage,
         sha_matches,
     )
 else:
@@ -38,11 +46,19 @@ else:
             GitHubToken,
             LabelDecision,
             GitHubRequestError,
+            LineageContext,
+            LineageError,
             apply_label_decision,
             author_exclusion_reason,
             fetch_pull_request,
             github_request_with_fallback,
+            lineage_context,
+            lineage_decision_authorities,
+            lineage_marker_author_trust,
+            load_author_exclusion_config,
             load_json,
+            require_comment_list,
+            resolve_builder_lineage,
             sha_matches,
         )
     except ImportError:  # pragma: no cover - direct `python tools/foo.py` execution
@@ -52,11 +68,19 @@ else:
             GitHubToken,
             LabelDecision,
             GitHubRequestError,
+            LineageContext,
+            LineageError,
             apply_label_decision,
             author_exclusion_reason,
             fetch_pull_request,
             github_request_with_fallback,
+            lineage_context,
+            lineage_decision_authorities,
+            lineage_marker_author_trust,
+            load_author_exclusion_config,
             load_json,
+            require_comment_list,
+            resolve_builder_lineage,
             sha_matches,
         )
 
@@ -166,15 +190,34 @@ def fetch_issue_comments(
     tokens: Sequence[GitHubToken],
     page_cap: int,
 ) -> list[dict[str, Any]]:
-    """Fetch issue/PR comments with a safety cap."""
+    """Fetch issue/PR comments with a safety cap.
+
+    A page that comes back successfully but is not a list of comment objects
+    is not an empty page. ``None``, ``False``, a bare object and a list holding
+    a non-object were all collapsed to "no more comments", which ends the read
+    early and reports whatever was gathered so far as the whole history -- and
+    the marker proving a takeover is in the newest part. A genuinely empty list
+    is still the ordinary end of the history.
+    """
+
+    path = f"/repos/{repo}/issues/{issue_number}/comments"
     all_comments: list[dict[str, Any]] = []
     page = 1
     while page <= page_cap:
         chunk = github_request_with_fallback(
             "GET",
-            f"/repos/{repo}/issues/{issue_number}/comments?per_page=100&page={page}",
+            f"{path}?per_page=100&page={page}",
             tokens=tokens,
-        ) or []
+        )
+        # One shared record contract: the page is a list, every entry is a
+        # comment, and the fields lineage reads -- `body` and `user.login` --
+        # are readable where they are present.
+        try:
+            require_comment_list(chunk, what=f"comment page {page}")
+        except LineageError as exc:
+            raise GitHubRequestError(
+                "GET", f"{path}?per_page=100&page={page}", 0, str(exc)
+            ) from None
         if not chunk:
             return all_comments
         all_comments.extend(chunk)
@@ -185,6 +228,95 @@ def fetch_issue_comments(
         f"hit pagination cap of {page_cap} pages ({page_cap * 100} comments) "
         f"for {repo}#{issue_number}; refusing to classify on partial data"
     )
+
+
+def fetch_lineage_comments(
+    repo: str,
+    pr_number: int,
+    *,
+    tokens: Sequence[GitHubToken],
+    adapter: SaaSReviewerAdapter,
+) -> Optional[list[dict[str, Any]]]:
+    """The bounded trusted comment history exact-head lineage is published on.
+
+    Every entry path needs the same three things before it can resolve lineage
+    rather than identity: the exact current head, the head branch and the
+    comments the evidence lives on. Only the last one costs a request, and only
+    when the repository configured decision authorities -- with none there is
+    nobody whose marker would be read and the fetch would buy nothing, which is
+    also the ordinary no-lineage behaviour this preserves.
+
+    Read failures are raised, never swallowed: a path that cannot tell a
+    verified takeover from its absence must stop instead of mutating labels on
+    identity alone.
+    """
+
+    if not lineage_decision_authorities():
+        return None
+    return fetch_issue_comments(
+        repo,
+        pr_number,
+        tokens=tokens,
+        page_cap=adapter.review_comments_page_cap,
+    )
+
+
+def structural_lineage_refusal(
+    *,
+    repo: str,
+    pr_number: int,
+    branch: str,
+    head_sha: Optional[str],
+    comments: Optional[Sequence[Mapping[str, Any]]],
+    labels: Sequence[str],
+    author: str,
+) -> str:
+    """Why a structural requeue must not touch labels, or ``""`` when it may.
+
+    A requeue removes the done and blocked labels. That is a label-state
+    mutation, so it answers to the same published-lineage contract a verdict
+    does: evidence nobody can read, or evidence that disagrees with itself at
+    this head, is not a basis for changing which lane is believed. Deciding
+    this *before* either requeue path is the point -- clearing the labels first
+    and resolving afterwards leaves the pull request already changed.
+    """
+
+    try:
+        lineage = lineage_context(
+            repo=repo,
+            pr_number=pr_number,
+            branch=branch,
+            head_sha=head_sha,
+            comments=comments,
+            trusted_author=lineage_marker_author_trust(
+                authorities=lineage_decision_authorities()
+            ),
+        )
+    except LineageError:
+        return "published builder lineage is unreadable; leaving labels unchanged"
+    resolved = resolve_builder_lineage(
+        labels=list(labels),
+        author=author,
+        config=load_author_exclusion_config(),
+        repo=lineage.repo,
+        pr_number=lineage.pr_number,
+        branch=lineage.branch,
+        head_sha=lineage.head_sha,
+        episodes=lineage.episodes,
+    )
+    if lineage.episodes and resolved.status != "resolved":
+        # Only a *published history* blocks the requeue, and only when it does
+        # not settle at this head: a chain that conflicts, or that describes
+        # some other head, is not a basis for deciding which lane is believed.
+        # An identity-only disagreement -- an opener and a label naming
+        # different lanes, with no episodes at all -- is the ordinary
+        # no-lineage case every other route already handles, and refusing it
+        # here would stop requeues that have nothing to do with lineage.
+        return (
+            f"builder lineage is unresolved ({resolved.reason}); "
+            f"leaving labels unchanged"
+        )
+    return ""
 
 
 def has_same_head_review(
@@ -216,8 +348,32 @@ def resolve_label_decision(
     current_head_sha: Optional[str] = None,
     review_comments: Optional[list[dict[str, Any]]] = None,
     same_head_review_exists: bool = False,
+    repo: str = "",
+    head_branch: str = "",
+    issue_comments: Optional[Sequence[Mapping[str, Any]]] = None,
+    decision_authorities: Sequence[str] = (),
 ) -> tuple[Optional[LabelDecision], str]:
     event_type = event_type or adapter.event_type
+    # Exact-head lineage is resolved once, from trusted inputs this process
+    # fetched itself, and handed to whichever entry path decides. Without it
+    # every SaaS reviewer would fall back to identity-only resolution and treat
+    # a reconciled takeover as a conflict, skipping its own done-label update.
+    number = pr_number or int(
+        (event.get("issue") or {}).get("number")
+        or (event.get("pull_request") or {}).get("number")
+        or 0
+    )
+    try:
+        lineage = lineage_context(
+            repo=repo,
+            pr_number=number,
+            branch=head_branch,
+            head_sha=current_head_sha,
+            comments=issue_comments,
+            trusted_author=lineage_marker_author_trust(authorities=decision_authorities),
+        )
+    except LineageError:
+        return None, "published builder lineage is unreadable; skipping label update"
     if event_type == "pull_request_review":
         return _resolve_pull_request_review(
             event,
@@ -227,6 +383,7 @@ def resolve_label_decision(
             pr_body=pr_body,
             current_head_sha=current_head_sha,
             review_comments=review_comments or [],
+            lineage=lineage,
         )
     if event_type == "issue_comment":
         return _resolve_issue_comment(
@@ -235,6 +392,7 @@ def resolve_label_decision(
             pr_labels=pr_labels or [],
             pr_author=pr_author,
             pr_body=pr_body,
+            lineage=lineage,
         )
     if event_type == "check_run":
         return _resolve_check_run(
@@ -246,6 +404,7 @@ def resolve_label_decision(
             pr_body=pr_body,
             current_head_sha=current_head_sha,
             same_head_review_exists=same_head_review_exists,
+            lineage=lineage,
         )
     return None, f"unsupported adapter event type: {event_type}"
 
@@ -259,6 +418,7 @@ def _resolve_pull_request_review(
     pr_body: str,
     current_head_sha: Optional[str],
     review_comments: list[dict[str, Any]],
+    lineage: Optional[LineageContext] = None,
 ) -> tuple[Optional[LabelDecision], str]:
     if event.get("action") not in ("submitted", "edited"):
         return None, f"unsupported pull_request_review action: {event.get('action')}"
@@ -283,6 +443,7 @@ def _resolve_pull_request_review(
         labels=pr_labels,
         author=pr_author,
         text=pr_body,
+        lineage=lineage,
     )
     if exclusion:
         return None, exclusion
@@ -320,6 +481,7 @@ def _resolve_issue_comment(
     pr_labels: list[str],
     pr_author: str,
     pr_body: str,
+    lineage: Optional[LineageContext] = None,
 ) -> tuple[Optional[LabelDecision], str]:
     if event.get("action") not in ("created", "edited"):
         return None, f"unsupported issue_comment action: {event.get('action')}"
@@ -349,6 +511,7 @@ def _resolve_issue_comment(
         labels=pr_labels,
         author=issue_author,
         text=issue_body,
+        lineage=lineage,
     )
     if exclusion:
         return None, exclusion
@@ -374,6 +537,7 @@ def _resolve_check_run(
     pr_body: str,
     current_head_sha: Optional[str],
     same_head_review_exists: bool,
+    lineage: Optional[LineageContext] = None,
 ) -> tuple[Optional[LabelDecision], str]:
     if event.get("action") != "completed":
         return None, f"unsupported check_run action: {event.get('action')}"
@@ -399,6 +563,7 @@ def _resolve_check_run(
         labels=pr_labels,
         author=pr_author,
         text=pr_body,
+        lineage=lineage,
     )
     if exclusion:
         return None, exclusion
@@ -605,6 +770,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     pr_labels: list[str] = []
     current_head_sha = os.environ.get("DRY_RUN_HEAD_SHA")
+    head_branch = os.environ.get("DRY_RUN_HEAD_BRANCH", "")
+    lineage_comments: Optional[Sequence[Mapping[str, Any]]] = None
     review_comments: list[dict[str, Any]] = []
     same_head_review_exists = False
     pr_number = _event_pr_number(event, adapter, event_type)
@@ -685,8 +852,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 label.get("name", "") for label in pr_current.get("labels") or []
             ]
             candidate_head = pr_current.get("head", {}).get("sha")
+            candidate_branch = str((pr_current.get("head") or {}).get("ref") or "")
             candidate_author = str(((pr_current.get("user") or {}).get("login") or ""))
             candidate_body = str(pr_current.get("body") or "")
+            try:
+                candidate_comments = fetch_lineage_comments(
+                    repo, candidate_number, tokens=tokens, adapter=adapter
+                )
+            except (GitHubRequestError, ReviewCommentsTruncated) as exc:
+                print(
+                    f"skip: could not fetch published builder lineage for "
+                    f"PR #{candidate_number}: {exc}"
+                )
+                continue
             if adapter.opt_in_required and not adapter.is_opted_in(candidate_labels):
                 _, reason = resolve_label_decision(
                     event,
@@ -697,6 +875,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     pr_author=candidate_author,
                     pr_body=candidate_body,
                     current_head_sha=candidate_head,
+                    repo=repo,
+                    head_branch=candidate_branch,
+                    issue_comments=candidate_comments,
+                    decision_authorities=lineage_decision_authorities(),
                 )
                 print(f"skip: {reason}")
                 continue
@@ -710,6 +892,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 pr_author=candidate_author,
                 pr_body=candidate_body,
                 current_head_sha=candidate_head,
+                repo=repo,
+                head_branch=candidate_branch,
+                issue_comments=candidate_comments,
+                decision_authorities=lineage_decision_authorities(),
             )
             if decision is None:
                 print(f"skip: {reason}")
@@ -753,7 +939,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pr_author = str(((pr_current.get("user") or {}).get("login") or ""))
         pr_body = str(pr_current.get("body") or "")
         current_head_sha = pr_current.get("head", {}).get("sha")
+        head_branch = str((pr_current.get("head") or {}).get("ref") or "")
+        # The review path decides the same question about the same head as the
+        # issue-comment path, so it reads the same published lineage under the
+        # same trust rule.
+        try:
+            lineage_comments = fetch_lineage_comments(
+                repo, pr_number, tokens=tokens, adapter=adapter
+            )
+        except (GitHubRequestError, ReviewCommentsTruncated) as exc:
+            print(f"skip: could not fetch published builder lineage: {exc}")
+            return 0
         if adapter.requires_review_comments:
+            # Both requeue paths below mutate labels without consulting a
+            # verdict, so lineage is parsed and admitted here -- once, before
+            # either of them can clear done or blocked on evidence nobody
+            # could read.
+            structural_refusal = structural_lineage_refusal(
+                repo=repo,
+                pr_number=pr_number,
+                branch=head_branch,
+                head_sha=current_head_sha,
+                comments=lineage_comments,
+                labels=pr_labels,
+                author=pr_author,
+            )
+            if structural_refusal:
+                print(f"skip: {structural_refusal}")
+                return 0
             review = event.get("review") or {}
             review_id = review.get("id")
             if not review_id:
@@ -788,7 +1001,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     return 0
                 _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name)
                 return 0
-    elif event_type == "issue_comment" and pr_number and adapter.opt_in_required:
+    elif event_type == "issue_comment" and pr_number:
         issue = event.get("issue") or {}
         comment = event.get("comment") or {}
         author = (comment.get("user") or {}).get("login", "")
@@ -797,6 +1010,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             pr_labels = [label.get("name", "") for label in pr_current.get("labels") or []]
             pr_author = str(((pr_current.get("user") or {}).get("login") or ""))
             pr_body = str(pr_current.get("body") or "")
+            # The comment event carries the issue, never the pull request, so
+            # the head and branch this decision is about come from the same
+            # authenticated read that supplied the labels -- not from the
+            # payload, and not left unset, which resolved identity-only lineage
+            # and skipped an otherwise eligible independent reviewer's update.
+            current_head_sha = pr_current.get("head", {}).get("sha")
+            head_branch = str((pr_current.get("head") or {}).get("ref") or "")
+            try:
+                lineage_comments = fetch_lineage_comments(
+                    repo, pr_number, tokens=tokens, adapter=adapter
+                )
+            except (GitHubRequestError, ReviewCommentsTruncated) as exc:
+                print(f"skip: could not fetch published builder lineage: {exc}")
+                return 0
     elif event_type == "issues" and pr_number and adapter.event_type == "issue_comment":
         if event.get("action") != "labeled":
             print(f"skip: unsupported issues action: {event.get('action')}")
@@ -829,6 +1056,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except (GitHubRequestError, ReviewCommentsTruncated) as exc:
             print(f"skip: could not fetch issue comments: {exc}")
             return 0
+        # Replay decides about the head the pull request has now, so it uses
+        # the head from the same authenticated read as the labels rather than
+        # the dry-run override, which is unset on this path and left every
+        # replayed comment resolving identity-only lineage.
+        replay_head = pr_current.get("head", {}).get("sha") or current_head_sha
+        replay_branch = str((pr_current.get("head") or {}).get("ref") or "")
         for comment in reversed(comments):
             synthetic_event = {
                 "action": "created",
@@ -843,7 +1076,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 pr_labels=pr_labels,
                 pr_author=pr_author,
                 pr_body=pr_body,
-                current_head_sha=current_head_sha,
+                current_head_sha=replay_head,
+                repo=repo,
+                head_branch=replay_branch,
+                issue_comments=comments,
+                decision_authorities=lineage_decision_authorities(),
             )
             if decision is None:
                 continue
@@ -863,6 +1100,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         current_head_sha=current_head_sha,
         review_comments=review_comments,
         same_head_review_exists=same_head_review_exists,
+        repo=repo,
+        head_branch=head_branch,
+        issue_comments=lineage_comments,
+        decision_authorities=lineage_decision_authorities(),
     )
     if decision is None:
         print(f"skip: {reason}")

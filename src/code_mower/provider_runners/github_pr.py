@@ -113,7 +113,16 @@ def fetch_issue_comments(
     page_cap: int = 10,
     per_page: int = 100,
 ) -> list[dict[str, Any]]:
-    """Return issue/PR comments with a bounded pagination cap."""
+    """Return issue/PR comments with a bounded pagination cap.
+
+    Shape is checked before anything else looks at the page. ``None``, ``False``
+    and ``{}`` are falsey, so testing emptiness first ended the read and
+    reported whatever had been gathered as the whole history; filtering members
+    by ``isinstance`` then dropped malformed entries silently. Both turn "this
+    could not be read" into "there is nothing here", and the marker that proves
+    a takeover is in the newest part of the history that gets dropped. Only a
+    genuinely empty list ends the read.
+    """
 
     all_comments: list[dict[str, Any]] = []
     for page in range(1, page_cap + 1):
@@ -122,11 +131,22 @@ def fetch_issue_comments(
             f"/repos/{repo}/issues/{issue_number}/comments?per_page={per_page}&page={page}",
             token=token,
         )
+        # The same shared record contract every other authoritative read uses:
+        # a list of comments whose `body` and `user.login` are readable where
+        # present. A dict is not a comment -- a numeric body or an object login
+        # would be stringified into an author or a marker GitHub never sent.
+        from ..builder_lineage import LineageError, require_comment_list
+
+        try:
+            require_comment_list(
+                chunk,
+                what=f"GitHub issue comments page {page} for {repo}#{issue_number}",
+            )
+        except LineageError as exc:
+            raise ValueError(str(exc)) from None
         if not chunk:
             return all_comments
-        if not isinstance(chunk, list):
-            raise ValueError("GitHub issue comments response was not a list")
-        all_comments.extend(comment for comment in chunk if isinstance(comment, dict))
+        all_comments.extend(chunk)
         if len(chunk) < per_page:
             return all_comments
     raise RuntimeError(

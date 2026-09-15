@@ -6,6 +6,7 @@ an approved bounded prompt. Nothing returned here is a public metadata payload.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from copy import deepcopy
 from pathlib import Path
@@ -66,6 +67,17 @@ def normalize(output: object, changed_files: set[str]) -> DevinCliVerdict:
         raise RemoteError('invalid_review_output') from None
 
 
+#: A Git branch name as it appears in authenticated pull request metadata.
+#: Deliberately narrower than Git's own rules: this value only ever travels
+#: into an exact-match binding, so anything exotic is a mismatch, not a name.
+BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}\Z")
+
+#: How many published lineage markers the embedding orchestrator may carry.
+#: The producer republishes the whole chain each round, so a real pull request
+#: accumulates several; an unbounded list is refused rather than parsed.
+MAX_REVIEW_LINEAGE_MARKERS = 32
+
+
 @dataclass(frozen=True, repr=False)
 class ReviewInput:
     repository: str
@@ -74,6 +86,77 @@ class ReviewInput:
     author: str
     context: dict
     changed_files: tuple[str, ...]
+    #: Authenticated pull request metadata the orchestrator fetched. These are
+    #: part of the immutable binding, not decoration: lineage is bound to a
+    #: branch, and an episode resolved without one is an episode resolved
+    #: against whatever branch happens to be in the record.
+    branch: str = ''
+    labels: tuple[str, ...] = ()
+    #: Bodies of comments the orchestrator already established as written by a
+    #: configured decision authority. The marker inside is a transport for
+    #: bounded metadata and confers no authority of its own; carrying the whole
+    #: body keeps parsing strict and keeps this adapter from having to invent a
+    #: second episode format.
+    lineage_markers: tuple[str, ...] = ()
+
+    def published_lineage(self) -> tuple:
+        """Episodes parsed from the trusted markers the orchestrator carried."""
+
+        from .builder_lineage import episodes_from_comment_body
+
+        if len(self.lineage_markers) > MAX_REVIEW_LINEAGE_MARKERS:
+            raise ValueError('review_lineage_unbounded')
+        return tuple(
+            episode
+            for body in self.lineage_markers
+            for episode in episodes_from_comment_body(body)
+        )
+
+    def pr_metadata(self) -> dict:
+        """The trusted metadata shape the shared resolver expects.
+
+        Branch and labels are carried through rather than dropped, so the
+        resolver binds episodes to this exact repository, pull request, branch
+        and head instead of accepting any record that names the pull request.
+        """
+
+        return {
+            'user': {'login': self.author},
+            'head': {'ref': self.branch, 'sha': self.head},
+            'labels': [{'name': name} for name in self.labels],
+        }
+
+    def lineage_admits(self) -> bool:
+        """Whether verified lineage admits the Devin reviewer lane at this head.
+
+        The author deny list below stays as a floor, but it only ever sees the
+        opener. This consults the same shared seam the direct wrappers use, so a
+        PR another lane opened and Devin later took over is refused too.
+        Unreadable or unresolved evidence is not admission.
+        """
+
+        from .builder_lineage import LineageError
+        from .provider_runners.lineage import (
+            identity_with_lane_floor, load_identity, reviewer_admission, trusted_episodes,
+        )
+
+        try:
+            episodes = trusted_episodes(
+                self.repository, self.pr, published=self.published_lineage()
+            )
+        except (LineageError, OSError, ValueError):
+            return False
+        return bool(
+            reviewer_admission(
+                'devin',
+                repo=self.repository,
+                pr_number=self.pr,
+                pr_meta=self.pr_metadata(),
+                head_sha=self.head,
+                episodes=episodes,
+                identity=identity_with_lane_floor(load_identity(), 'devin'),
+            )['admitted']
+        )
 
     def check(self, current: ReviewInput) -> None:
         try:
@@ -83,6 +166,14 @@ class ReviewInput:
                 and LOGIN.fullmatch(self.author) and not _is_excluded_author(self.author)
                 and self.author.lower() not in {'devin-ai-integration', 'devin-ai-integration[bot]',
                                                'devin-cli-audit-bot', 'devin-cli-audit-bot[bot]'}
+                and isinstance(self.branch, str) and len(self.branch) <= 255
+                and (not self.branch or BRANCH.fullmatch(self.branch))
+                and isinstance(self.labels, tuple) and len(self.labels) <= 64
+                and all(isinstance(name, str) and 0 < len(name) <= 128 for name in self.labels)
+                and isinstance(self.lineage_markers, tuple)
+                and len(self.lineage_markers) <= MAX_REVIEW_LINEAGE_MARKERS
+                and all(isinstance(body, str) for body in self.lineage_markers)
+                and self.lineage_admits()
                 and isinstance(self.changed_files, tuple)
                 and all(isinstance(p, str) and p and not p.startswith(('/', '\\'))
                         and '\\' not in p and '..' not in p.split('/') for p in self.changed_files)

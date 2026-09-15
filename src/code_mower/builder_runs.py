@@ -8,13 +8,23 @@ import math
 import re
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
 from code_mower import __version__
+from code_mower.builder_lineage import (
+    Lineage,
+    resolve_identity_only,
+    resolve_lineage,
+)
+from code_mower.audit_labeler_lib import (
+    lineage_marker_author_trust,
+    published_lineage_episodes,
+)
+from code_mower.decisions import decision_authorities_from_env
 from code_mower.work_orders import parse_github_issue_ref, parse_github_pr_ref
 
 
@@ -56,6 +66,37 @@ BRANCH_PREFIX_INFERENCE_RULES = (
 )
 
 
+#: Provider/executor identities map onto the lane names lineage speaks in.
+#: Inference names a candidate lane; it never names a contribution.
+_INFERENCE_LANES = {
+    "codex": "codex",
+    "claude": "claude",
+    "cursor_cloud_agent": "cursor",
+    "devin": "devin",
+    "devin_cli": "devin",
+}
+_LABEL_LANES = {
+    "builder:codex": "codex",
+    "builder:claude": "claude",
+    "builder:cursor": "cursor",
+    "builder:devin": "devin",
+}
+
+
+#: The provider/executor a lane writes under, for attributing a run to the lane
+#: that actually wrote the diff rather than to whoever opened the pull request.
+_LANE_ATTRIBUTION = {
+    "codex": ("codex", "chatgpt-codex-connector"),
+    "claude": ("claude", "claude_code_action"),
+    "cursor": ("cursor_cloud_agent", "cursor_cloud_agent"),
+    "devin": ("devin", "devin"),
+}
+
+
+def _lane_from_inference(inference: "BuilderInference | None") -> str:
+    return "" if inference is None else _INFERENCE_LANES.get(inference.provider, "")
+
+
 @dataclass(frozen=True)
 class PullRequestMetadata:
     repo: str
@@ -64,6 +105,13 @@ class PullRequestMetadata:
     author: str
     branch: str
     body: str
+    #: Exact head, active labels and pull request comments as they appear in
+    #: the authenticated payload auto-record is handed. Auto-record used to
+    #: read only the opener and the branch prefix out of that payload, which is
+    #: why it kept attributing a taken-over pull request to whoever opened it.
+    head_sha: str = ""
+    labels: tuple[str, ...] = ()
+    comments: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -123,6 +171,16 @@ def _load_json_object(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _load_json_list(path: Path) -> list[Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read JSON array {path}: {exc}") from exc
+    if not isinstance(payload, list):
+        raise ValueError(f"{path} must contain a JSON array")
+    return payload
+
+
 def _nested_text(payload: Mapping[str, Any], *path: str) -> str:
     current: Any = payload
     for key in path:
@@ -163,8 +221,18 @@ def _branch_from_pr_payload(pr: Mapping[str, Any]) -> str:
     )
 
 
-def load_pull_request_metadata(path: Path, *, repo: str = "") -> PullRequestMetadata:
+def load_pull_request_metadata(
+    path: Path, *, repo: str = "", comments_path: Path | None = None
+) -> PullRequestMetadata:
     payload = _load_json_object(path)
+    # A GitHub event payload never carries the pull request's comments, so the
+    # published lineage arrives as its own authenticated fetch. It is kept
+    # apart from the payload rather than merged into it: REST states the
+    # *number* of comments under the same key, and a merged list could no
+    # longer be told from the metadata it sits beside.
+    explicit_comments = (
+        _load_json_list(comments_path) if comments_path is not None else None
+    )
     pr = _record(payload.get("pull_request")) or payload
     number = _text(pr.get("number")) or _text(payload.get("number"))
     url = _text(pr.get("html_url")) or _text(pr.get("url"))
@@ -175,7 +243,98 @@ def load_pull_request_metadata(path: Path, *, repo: str = "") -> PullRequestMeta
         author=_author_from_pr_payload(pr),
         branch=_branch_from_pr_payload(pr),
         body=_text(pr.get("body")),
+        head_sha=_text((_record(pr.get("head")) or {}).get("sha")),
+        labels=_labels_from_pr_payload(pr),
+        comments=_comments_from_pr_payload(payload, pr, explicit=explicit_comments),
     )
+
+
+def _labels_from_pr_payload(pr: Mapping[str, Any]) -> tuple[str, ...]:
+    names: list[str] = []
+    for label in pr.get("labels") or ():
+        if isinstance(label, Mapping):
+            name = _text(label.get("name"))
+        else:
+            name = _text(label)
+        if name:
+            names.append(name)
+    return tuple(names)
+
+
+#: "This payload carries no comment history at all", which is not the same
+#: answer as "it carries one that cannot be read".
+_NO_HISTORY = object()
+
+
+def _selected_embedded_history(
+    payload: Mapping[str, Any], pr: Mapping[str, Any]
+) -> tuple[Any, str]:
+    """The embedded comment history, told apart from REST's comment *count*.
+
+    ``gh ... --json comments`` nests the history under the pull request. REST
+    puts an integer under the same name -- how many comments there are, with
+    the history fetched separately -- so a count is metadata, not a malformed
+    history, and must not shadow the fetched list or fail the run. Anything
+    else present under that name is a selected history and has to be readable:
+    null, false, an object and a nested list are all unreadable, not absent.
+    """
+
+    for container, source in (
+        (pr, "the pull request's embedded comment history"),
+        (payload, "the event payload's embedded comment history"),
+    ):
+        if "comments" not in container:
+            continue
+        value = container["comments"]
+        if isinstance(value, int) and not isinstance(value, bool):
+            continue
+        return value, source
+    return _NO_HISTORY, ""
+
+
+def _comments_from_pr_payload(
+    payload: Mapping[str, Any],
+    pr: Mapping[str, Any],
+    *,
+    explicit: Any = None,
+) -> tuple[Mapping[str, Any], ...]:
+    """Pull request comments from whichever transport supplied the payload.
+
+    ``gh pr view --json comments`` names the commenter ``author`` and nests the
+    list under the pull request; the REST event payload names it ``user`` and a
+    caller may hand the list in alongside. Both are normalised to the one shape
+    every lineage reader consumes, so auto-record applies the same marker-trust
+    rule as the gate rather than a transport-specific one.
+
+    The source actually used is selected explicitly, then validated *before*
+    it is normalised. This is the direct CLI's own input boundary: normalising
+    first skipped entries that were not objects and ran `_text()` over whatever
+    was there, so a list-valued body or an object login became a
+    plausible-looking record, and the already-clean tuple handed on afterwards
+    had nothing left to detect. An unreadable comments source is refused here,
+    before any attribution exists -- and a REST comment *count* is not one.
+    """
+
+    from .builder_lineage import require_comment_list
+
+    if explicit is not None:
+        # The caller fetched the history itself and said so. That is the
+        # selected source, and no field beside it may shadow it.
+        raw, source = explicit, "the supplied comment history"
+    else:
+        raw, source = _selected_embedded_history(payload, pr)
+        if raw is _NO_HISTORY:
+            # No history field at all. Ordinary: the run is attributed from
+            # the pull request's own metadata, as it always was.
+            return ()
+    validated = require_comment_list(raw, what=source)
+    normalised: list[Mapping[str, Any]] = []
+    for item in validated:
+        user = _record(item.get("user")) or _record(item.get("author")) or {}
+        normalised.append(
+            {"user": {"login": _text(user.get("login"))}, "body": _text(item.get("body"))}
+        )
+    return tuple(normalised)
 
 
 def _cursor_agent_url(body: str) -> str:
@@ -242,16 +401,87 @@ def infer_builder_from_pr(metadata: PullRequestMetadata) -> BuilderInference | N
     )
 
 
+def resolve_builder_lineage(
+    metadata: PullRequestMetadata,
+    *,
+    head_sha: str = "",
+    episodes: Sequence[Any] = (),
+    labels: Sequence[str] = (),
+) -> Lineage:
+    """Resolve the same exact-head lineage the gate and reviewers resolve.
+
+    Auto-record used to describe a pull request from its author, its branch
+    prefix and provider prose. Those still bootstrap the lane name, but they
+    cannot describe a handoff, so verified contribution episodes decide the
+    contributor list and the current writer whenever they exist.
+    """
+
+    lane = _lane_from_inference(infer_builder_from_pr(metadata))
+    label_lanes = tuple(
+        lane_name
+        for lane_name in (
+            _LABEL_LANES.get(str(label).strip().lower()) for label in labels
+        )
+        if lane_name
+    )
+    if not (head_sha and metadata.repo and metadata.number):
+        return resolve_identity_only(opener_lane=lane, label_lanes=label_lanes)
+    return resolve_lineage(
+        repo=metadata.repo,
+        pr_number=metadata.number,
+        branch=metadata.branch,
+        head_sha=head_sha,
+        episodes=episodes,
+        opener_lane=lane,
+        label_lanes=label_lanes,
+    )
+
+
 def build_auto_builder_run_event(
     metadata: PullRequestMetadata,
     *,
     created_at: str = "",
     lens: str = "implementation",
     status: str = "pr-opened",
+    head_sha: str = "",
+    episodes: Sequence[Any] = (),
+    labels: Sequence[str] = (),
 ) -> tuple[dict[str, Any] | None, BuilderInference | None]:
     inference = infer_builder_from_pr(metadata)
     if inference is None:
         return None, None
+    lineage = resolve_builder_lineage(
+        metadata, head_sha=head_sha, episodes=episodes, labels=labels
+    )
+    # Attribution follows the verified current writer, not the opener. A pull
+    # request Devin opened and Codex took over is a Codex run; recording it
+    # against Devin is the same mistake the label and the branch prefix make.
+    # The builder id and run url stay with the inference that produced them --
+    # they describe the opener's run and would be a fabrication on any other.
+    #
+    # Only a verified *writer transition* may move attribution. Lanes are
+    # coarser than the transports inside them: an ordinary `devin/` branch
+    # infers the local `devin_cli` transport but normalizes to lane `devin`,
+    # whose canonical attribution is the hosted pair. Comparing transports
+    # against that pair rewrote every ordinary local Devin CLI run into a
+    # hosted one, cleared its builder id and claimed high confidence -- on
+    # identity-only resolution that had observed no episode at all. So the
+    # comparison is between lanes, and it is gated on evidence: no episodes
+    # means no transition, and a same-lane continuation keeps the transport
+    # its own inference established.
+    inferred_lane = _lane_from_inference(inference)
+    writer_lane = lineage.current_writer if lineage.resolved else ""
+    writer = _LANE_ATTRIBUTION.get(writer_lane) if writer_lane else None
+    if writer and lineage.episodes and writer_lane != inferred_lane:
+        inference = replace(
+            inference,
+            provider=writer[0],
+            executor=writer[1],
+            builder_id="",
+            run_url="",
+            confidence="high",
+            signals=inference.signals + (f"builder_lineage:{writer_lane}",),
+        )
     pr_ref = metadata.url or (
         f"{metadata.repo}#{metadata.number}" if metadata.repo and metadata.number else ""
     )
@@ -274,6 +504,12 @@ def build_auto_builder_run_event(
     event["dimensions"]["builder_inference_confidence"] = inference.confidence
     event["dimensions"]["builder_inference_signals"] = list(inference.signals)
     event["dimensions"]["pr_author"] = metadata.author
+    # Bounded metadata only: lane names, a status and a head prefix. The full
+    # lineage record stays private; what a recorded run needs to say publicly
+    # is who contributed, who is writing now, and whether that is settled.
+    event["dimensions"]["builder_lineage_status"] = lineage.status
+    event["dimensions"]["builder_contributors"] = list(lineage.contributors)
+    event["dimensions"]["builder_current_writer"] = lineage.current_writer
     return event, inference
 
 
@@ -625,6 +861,14 @@ def main(argv: list[str] | None = None) -> int:
         help="GitHub pull_request event JSON or `gh pr view --json ...` output.",
     )
     auto_record.add_argument("--repo", default="", help="owner/repo fallback for PR metadata.")
+    auto_record.add_argument(
+        "--comments-json",
+        type=Path,
+        help=(
+            "Authenticated pull request comments, for published builder lineage. "
+            "Markers are read only from configured decision authorities."
+        ),
+    )
     auto_record.add_argument("--status", default="pr-opened")
     auto_record.add_argument("--lens", default="implementation")
     auto_record.add_argument("--created-at", default="")
@@ -692,12 +936,29 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Issue: {event['dimensions']['issue_url']}")
             return 0
         if args.command == "auto-record":
-            metadata = load_pull_request_metadata(args.pr_json, repo=args.repo)
+            metadata = load_pull_request_metadata(
+                args.pr_json, repo=args.repo, comments_path=args.comments_json
+            )
+            # The authenticated payload already carries the exact head, the
+            # active labels and the pull request's comments. Auto-record used
+            # to read only the opener out of it, so a taken-over pull request
+            # recorded a run against the lane that opened it. The published
+            # lineage is read under the gate's own trust rule: a marker from a
+            # configured decision authority, and nothing else.
+            episodes = published_lineage_episodes(
+                metadata.comments,
+                trusted_author=lineage_marker_author_trust(
+                    authorities=decision_authorities_from_env()
+                ),
+            )
             event, inference = build_auto_builder_run_event(
                 metadata,
                 created_at=args.created_at,
                 lens=args.lens,
                 status=args.status,
+                head_sha=metadata.head_sha,
+                labels=metadata.labels,
+                episodes=episodes,
             )
             if event is None or inference is None:
                 payload = {

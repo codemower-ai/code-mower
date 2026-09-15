@@ -75,11 +75,11 @@ if [ "$cmd" = "pr list" ] && [[ "$args" == *"--json number,closingIssuesReferenc
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
   printf '%s\\n' '["tier:R","builder:codex","dispatched:codex"]'
   exit 0
-elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefOid,state,labels"* ]]; then
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefName,headRefOid,state,labels"* ]]; then
   if [ -f "$HOME/lane-delivered" ]; then
-    printf '%s\\n' '{"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"OPEN","labels":[]}'
+    printf '%s\\n' '{"headRefName":"codex/issue-12","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"OPEN","labels":[]}'
   else
-    printf '%s\\n' '{"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","labels":[]}'
+    printf '%s\\n' '{"headRefName":"codex/issue-12","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","labels":[]}'
   fi
   exit 0
 elif [ "$cmd" = "issue comment" ] || [ "$cmd" = "pr comment" ]; then
@@ -1199,8 +1199,8 @@ if [ "$cmd" = "pr list" ] && [[ "$args" == *"--limit 1001"* ]] && [[ "$args" == 
 elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
   printf '%s\\n' '["tier:R","builder:{lane}","dispatched:{lane}"]'
   exit 0
-elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefOid,state,labels"* ]]; then
-  printf '%s\\n' '{{"headRefOid":"{head_oid}","state":"OPEN","labels":[]}}'
+elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefName,headRefOid,state,labels"* ]]; then
+  printf '%s\\n' '{{"headRefName":"{lane}/issue-12","headRefOid":"{head_oid}","state":"OPEN","labels":[]}}'
   exit 0
 elif [ "$cmd" = "pr list" ] && [[ "$args" == *"--label builder:{lane}"* ]]; then
   printf '%s\\n' '[]'

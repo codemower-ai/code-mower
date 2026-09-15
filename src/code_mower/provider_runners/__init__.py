@@ -23,6 +23,14 @@ from .github_auth import (
     resolve_github_token_from_env_or_gh,
     resolve_github_token_from_stdin_or_env,
 )
+from .lineage import (
+    ReviewerNotIndependent,
+    load_identity,
+    pr_lineage,
+    published_episodes,
+    require_independent_reviewer,
+    reviewer_admission,
+)
 from .github_pr import (
     edit_pr_comment,
     fetch_issue_comments,
@@ -106,6 +114,12 @@ __all__ = [
     "LOCAL_AUDIT_RUNNER_DOC",
     "pop_github_token_env",
     "post_pr_comment",
+    "pr_lineage",
+    "published_episodes",
+    "require_independent_reviewer",
+    "reviewer_admission",
+    "ReviewerNotIndependent",
+    "load_identity",
     "ProviderWorkspaceError",
     "repost_audit_verdict_artifact",
     "require_exact_keys",

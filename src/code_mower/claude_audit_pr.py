@@ -1357,6 +1357,49 @@ def format_comment(
     return limit_comment_body(body, trailer, provider_name="Claude")
 
 
+def _require_independent_review(
+    lane, repo, pr_number, pr_meta, head_sha, *, authorities=(), fetch_comments=None
+):
+    """Admit ``lane`` against verified contribution lineage, or raise.
+
+    Evidence is both the host's configured private store and the bounded
+    lineage published on the pull request by a configured decision authority.
+    A reviewer host that recorded nothing has an empty store, so reading only
+    that would answer "no takeover happened" on precisely the independent hosts
+    where a takeover is what admission turns on.
+
+    Imported lazily so the direct-script execution fallback this module
+    supports does not have to resolve the package layout at import time.
+    """
+
+    try:
+        from code_mower.builder_lineage import LineageError
+        from code_mower.provider_runners.lineage import (
+            identity_with_lane_floor, load_identity, require_reviewer_lane, reviewer_evidence,
+        )
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        from builder_lineage import LineageError  # type: ignore
+        from provider_runners.lineage import (  # type: ignore
+            identity_with_lane_floor, load_identity, require_reviewer_lane, reviewer_evidence,
+        )
+    # Real recorded evidence, not the resolver's empty default: an admission
+    # decided on no episodes cannot see a takeover, which is the whole point.
+    try:
+        episodes = reviewer_evidence(
+            repo, pr_number, authorities=authorities, fetch_comments=fetch_comments
+        )
+    except LineageError as exc:
+        raise RuntimeError(
+            f"{lane} reviewer lane is not admitted for {repo}#{pr_number} at "
+            f"{str(head_sha)[:12]}: lineage_unreadable; {exc}"
+        ) from None
+    return require_reviewer_lane(
+        lane, repo, pr_number, pr_meta, head_sha,
+        episodes=episodes,
+        identity=identity_with_lane_floor(load_identity(), lane),
+    )
+
+
 def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAuditResult:
     audit_started = time.monotonic()
     local_repo = config.repo_paths.get(repo)
@@ -1380,6 +1423,12 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
             "refusing Claude self-audit for claude/* branch. "
             "Use --allow-claude-owned only for explicitly informational dogfood."
         )
+    # The branch-prefix check above only sees where the PR started. Contribution
+    # lineage at the exact head sees who actually wrote the diff, including a
+    # Claude takeover of another lane's branch -- but deciding that needs the
+    # repository's configured decision authorities, which are read from the
+    # immutable base #955 pins below. The admission itself therefore runs after
+    # that pin and before any provider execution.
 
     config.progress.emit(
         "audit",
@@ -1533,6 +1582,20 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
         local_repo,
         config.decision_authorities,
         trusted_ref=config.base_ref,
+    )
+    # Reviewer independence, decided on the authorities the pinned base names
+    # and on both the private store and the lineage published on the pull
+    # request -- still before any provider execution below.
+    _require_independent_review(
+        "claude",
+        repo,
+        pr_number,
+        pr_meta,
+        head_sha_start,
+        authorities=decision_authorities,
+        fetch_comments=lambda: fetch_issue_comments(
+            repo, pr_number, token=config.github_token
+        ),
     )
     budget_was_explicit = bool(str(config.max_budget_usd or "").strip())
     effective_budget_usd = code_mower_audit_limits.resolve_audit_budget_usd(

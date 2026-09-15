@@ -227,6 +227,16 @@ PRODUCT_SUPPORT_FILES = (
         "0644",
     ),
     (
+        # audit_labeler_lib imports this for exact-head builder lineage. A gate
+        # runner in a generated product repository has no Code Mower package
+        # installed, so the dependency has to travel with the helper or the
+        # import fails and the gate cannot evaluate at all.
+        "tools/builder_lineage.py",
+        "builder_lineage.py",
+        "product-support-helper",
+        "0644",
+    ),
+    (
         "tools/decisions.py",
         "decisions.py",
         "product-support-helper",
@@ -1343,6 +1353,20 @@ def _author_exclusion_payload(
             payload["labels"].setdefault(f"builder:{author_lane}", author_lane)
             if raw_author_lane != author_lane:
                 payload["labels"].setdefault(f"builder:{raw_author_lane}", author_lane)
+    # Narrow resolver context for the generated gate and labelers. Branch
+    # identity is the one binding the shared resolver cannot derive from labels
+    # and authors, and `require_verified_lineage` says when the identity-only
+    # fallback is not an acceptable answer: with a takeover-capable lane set,
+    # a PR whose configured branch identity and recorded lineage disagree is an
+    # owner action, not a lane name picked from whichever signal is present.
+    payload["branch_prefixes"] = _identity_section(
+        identity, "branch_prefixes", canonicalize_lanes=True
+    )
+    for lane in sorted({lane for lane in payload["labels"].values() if lane}):
+        payload["branch_prefixes"].setdefault(f"{lane}/", lane)
+    payload["require_verified_lineage"] = bool(payload["enabled"]) and (
+        len({lane for lane in payload["labels"].values() if lane}) > 1
+    )
     return payload
 
 

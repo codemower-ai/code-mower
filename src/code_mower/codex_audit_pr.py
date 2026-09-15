@@ -1859,6 +1859,50 @@ def _codex_context_omission_notice_from_diagnostics(diagnostics: str) -> str:
 # ----- Orchestration -----
 
 
+def _require_independent_review(
+    lane, repo, pr_number, pr_meta, head_sha, *, authorities=(), fetch_comments=None
+):
+    """Admit ``lane`` against verified contribution lineage, or raise.
+
+    Evidence is both the host's configured private store and the bounded
+    lineage published on the pull request by a configured decision authority.
+    An independent reviewer host recorded none of the contributions it has to
+    reason about, so its private store is empty and reading only that would
+    answer "no takeover happened" exactly where a takeover is the question.
+
+    Imported lazily so the direct-script execution fallback this module
+    supports does not have to resolve the package layout at import time.
+    """
+
+    try:
+        from code_mower.builder_lineage import LineageError
+        from code_mower.provider_runners.lineage import (
+            identity_with_lane_floor, load_identity, require_reviewer_lane, reviewer_evidence,
+        )
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        from builder_lineage import LineageError  # type: ignore
+        from provider_runners.lineage import (  # type: ignore
+            identity_with_lane_floor, load_identity, require_reviewer_lane, reviewer_evidence,
+        )
+    # Real recorded evidence, not the resolver's empty default: an admission
+    # decided on no episodes cannot see a takeover, which is the whole point.
+    # Unreadable evidence refuses rather than reviewing on a guess.
+    try:
+        episodes = reviewer_evidence(
+            repo, pr_number, authorities=authorities, fetch_comments=fetch_comments
+        )
+    except LineageError as exc:
+        raise RuntimeError(
+            f"{lane} reviewer lane is not admitted for {repo}#{pr_number} at "
+            f"{str(head_sha)[:12]}: lineage_unreadable; {exc}"
+        ) from None
+    return require_reviewer_lane(
+        lane, repo, pr_number, pr_meta, head_sha,
+        episodes=episodes,
+        identity=identity_with_lane_floor(load_identity(), lane),
+    )
+
+
 def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     """End-to-end audit of one PR. Creates a temporary worktree at the PR
     head, runs Codex review, structures its verdict, formats + posts a
@@ -1878,6 +1922,11 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         config = replace(config, progress=AuditProgress("codex-audit"))
     pr_meta = fetch_pull_request(repo, pr_number, token=config.github_token)
     head_sha_start = pr_meta["head"]["sha"]
+    # Admission runs on trusted metadata at the exact head, before the provider
+    # is launched, so a contributing lane never spends a run reviewing its own
+    # diff and never produces a verdict it is not independent enough to give.
+    # It needs the decision authorities named by the immutable base #955 pins,
+    # so the call itself is below that pin and above every provider launch.
 
     config.progress.emit(
         "audit",
@@ -1940,6 +1989,20 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         local_repo,
         config.decision_authorities,
         trusted_ref=config.base_ref,
+    )
+    # Reviewer independence, decided on the authorities the pinned base names
+    # and on both the private store and the lineage published on the pull
+    # request -- still before any provider execution below.
+    _require_independent_review(
+        "codex",
+        repo,
+        pr_number,
+        pr_meta,
+        head_sha_start,
+        authorities=decision_authorities,
+        fetch_comments=lambda: fetch_issue_comments(
+            repo, pr_number, token=config.github_token
+        ),
     )
     private_context = context_audit.prepare(
         repository=repo, pr=pr_number, head=head_sha_start, host="codex",

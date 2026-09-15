@@ -1,14 +1,49 @@
 name: Code Mower Builder Provenance
 
 on:
-  pull_request:
+  # Base-controlled, deliberately. The decision-authority list this job trusts
+  # is rendered into this file, so the file itself is part of the trust
+  # boundary: under `pull_request` GitHub runs the workflow *as it exists on
+  # the proposed revision*, and a contributor could edit their own copy of this
+  # workflow and name themselves an authority. `pull_request_target` runs the
+  # definition from the base branch, in the base context -- the reviewed copy,
+  # and the reviewed authority list with it.
+  #
+  # The usual hazard of `pull_request_target` is running untrusted code with a
+  # privileged token. That does not arise here, and must not be introduced:
+  # this job never checks the pull request out, never installs its
+  # dependencies, and never reads its configuration. It installs a pinned
+  # release of Code Mower and reads GitHub's own metadata for the bound pull
+  # request. Permissions stay read-only for the same reason -- nothing here
+  # needs to write, and a base-context token that could would be worth
+  # attacking. Keep it that way if this workflow is ever extended.
+  #
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target
+  pull_request_target:
     types: [opened, edited, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
+  # Read-only, for the published builder lineage the auto-record reads below.
+  pull-requests: read
 
 env:
   CODE_MOWER_PACKAGE_SPEC: code-mower==1.4.0
+  # The same configured decision-authority contract every other Code Mower
+  # consumer reads. `builder auto-record` trusts published lineage markers from
+  # these accounts and nobody else, so a job that supplies neither field trusts
+  # nobody, discards every comment fetched below, and records a taken-over pull
+  # request against whoever opened it instead of its verified current writer.
+  #
+  # The list is rendered here, from the configuration this repository reviewed
+  # and installed, exactly as the gate and the labelers receive it -- and,
+  # because of the event above, from the base copy of this file rather than the
+  # proposed one. Nothing is read out of the pull request's tree: not its
+  # configuration, and not its copy of this workflow. The repository variable,
+  # which is a repository setting and not part of any revision, still overrides
+  # it.
+  CODE_MOWER_DECISION_AUTHORITIES: __DECISION_AUTHORITIES__
+  CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE: {% raw %}${{ vars.CODE_MOWER_DECISION_AUTHORITIES || '' }}{% endraw %}
 
 jobs:
   auto-record:
@@ -29,13 +64,132 @@ jobs:
       - name: Record inferred builder provenance
         id: record
         shell: bash
+        env:
+          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+          # Carried as an environment value rather than expanded into the
+          # script, and checked before use: event data names the bound target,
+          # it never becomes part of a command.
+          CODE_MOWER_PR_NUMBER: {% raw %}${{ github.event.pull_request.number }}{% endraw %}
         run: |
           set -euo pipefail
           mkdir -p .code-mower/builder-runs
-          output=".code-mower/builder-runs/pr-{% raw %}${{ github.event.pull_request.number }}{% endraw %}.cloud-event.json"
+          number="${CODE_MOWER_PR_NUMBER}"
+          case "${number}" in
+            ''|*[!0-9]*)
+              echo "builder provenance: the event named no numeric pull request;" \
+                   "refusing to attribute" >&2
+              exit 1
+              ;;
+          esac
+          output=".code-mower/builder-runs/pr-${number}.cloud-event.json"
+          comments=".code-mower/pr-comments.json"
+          # The event payload carries the opener, the head and the labels, but
+          # never the comments the verified lineage is published on. Without
+          # them a taken-over pull request records a run against whoever opened
+          # it. Markers are still only read from configured decision
+          # authorities, so this fetch grants no authority of its own.
+          #
+          # The whole history is required, not the first page of it. The marker
+          # that proves a takeover is posted when the takeover happens, so it is
+          # among the newest comments on a long-running pull request: reading
+          # one page, or substituting an empty list for a failed read, silently
+          # re-attributes the run to whoever opened it. So every page is asked
+          # for explicitly, the number of requests is finite before the first
+          # one is made, and every failure stops the job before any attribution
+          # artifact exists.
+          python - "${comments}" "${number}" <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          # Finite before the first request: at most MAX_PAGES pages of history
+          # plus one probe. Reading until the server stops answering is what
+          # "bounded" exists to rule out.
+          PER_PAGE = 100
+          MAX_PAGES = 20
+          MAX_COMMENTS = PER_PAGE * MAX_PAGES
+
+          destination, number = sys.argv[1], sys.argv[2]
+          repo = os.environ["GITHUB_REPOSITORY"]
+
+          def refuse(reason):
+              raise SystemExit(f"builder provenance: {reason}; refusing to attribute")
+
+          def read_page(index):
+              completed = subprocess.run(
+                  [
+                      "gh",
+                      "api",
+                      f"repos/{repo}/issues/{number}/comments"
+                      f"?per_page={PER_PAGE}&page={index}",
+                  ],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  text=True,
+              )
+              if completed.returncode != 0:
+                  refuse(f"page {index} of the comment history could not be read")
+              try:
+                  payload = json.loads(completed.stdout)
+              except ValueError:
+                  refuse(f"page {index} of the comment history was not complete JSON")
+              if not isinstance(payload, list):
+                  refuse(f"page {index} of the comment history is not an array")
+              if len(payload) > PER_PAGE:
+                  refuse(f"page {index} of the comment history is over the page size")
+              for entry in payload:
+                  # A dict is not a comment. The marker lives in `body` and
+                  # trust is decided from `user.login`, so a present field of
+                  # the wrong type is a record whose meaning cannot be
+                  # recovered -- and coercing it invents an author or a body
+                  # GitHub never sent. `user: null` and an absent `body` are
+                  # GitHub's own schema and stay ordinary.
+                  # Presence and value are different questions: an omitted
+                  # optional field is ordinary, a present one holding null or
+                  # the wrong type is unreadable. The one meaningful null is a
+                  # whole author object, for a deleted account.
+                  if not isinstance(entry, dict):
+                      refuse(f"page {index} of the comment history holds a non-object")
+                  if "body" in entry and not isinstance(entry["body"], str):
+                      refuse(f"page {index} holds a comment whose body is not text")
+                  for field in ("user", "author"):
+                      if field not in entry:
+                          continue
+                      author = entry[field]
+                      if author is None:
+                          continue
+                      if not isinstance(author, dict):
+                          refuse(f"page {index} holds a comment whose author is not an object")
+                      if "login" in author and not isinstance(author["login"], str):
+                          refuse(f"page {index} holds a comment whose author login is not text")
+              return payload
+
+          comments = []
+          index = 1
+          while index <= MAX_PAGES:
+              page = read_page(index)
+              comments.extend(page)
+              if len(page) < PER_PAGE:
+                  break
+              index += 1
+          else:
+              # Exactly MAX_PAGES full pages. One more request settles whether
+              # the history ends here or runs past the cap -- and an unread
+              # remainder is precisely where the newest marker would be.
+              if read_page(MAX_PAGES + 1):
+                  refuse(f"the comment history is longer than {MAX_COMMENTS} comments")
+          if len(comments) > MAX_COMMENTS:
+              refuse(f"the comment history is longer than {MAX_COMMENTS} comments")
+          # One flat array of comment objects: nested page arrays are silently
+          # ignored by the reader this feeds.
+          with open(destination, "w", encoding="utf-8") as handle:
+              json.dump(comments, handle)
+          PY
           code-mower builder auto-record \
             --pr-json "${GITHUB_EVENT_PATH}" \
             --repo "${GITHUB_REPOSITORY}" \
+            --comments-json "${comments}" \
             --output "${output}" \
             --force \
             --json | tee .code-mower/builder-auto-record.json

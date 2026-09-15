@@ -242,7 +242,10 @@ def decision_authorities_from_env(raw: str | None = None) -> tuple[str, ...]:
     text = (
         raw
         if raw is not None
-        else os.environ.get("CODE_MOWER_DECISION_AUTHORITIES", "")
+        else (
+            os.environ.get("CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE", "").strip()
+            or os.environ.get("CODE_MOWER_DECISION_AUTHORITIES", "")
+        )
     )
     return tuple(item.strip() for item in text.split(",") if item.strip())
 

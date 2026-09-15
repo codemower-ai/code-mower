@@ -374,6 +374,11 @@
     },
     {
       "kind": "core",
+      "source": "tools/builder_lineage.py",
+      "target": "src/code_mower/builder_lineage.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/builder_runs.py",
       "target": "src/code_mower/builder_runs.py"
     },
@@ -1371,6 +1376,11 @@
       "kind": "reviewer",
       "source": "src/code_mower/provider_runners/github_pr.py",
       "target": "src/code_mower/provider_runners/github_pr.py"
+    },
+    {
+      "kind": "reviewer",
+      "source": "src/code_mower/provider_runners/lineage.py",
+      "target": "src/code_mower/provider_runners/lineage.py"
     },
     {
       "kind": "reviewer",

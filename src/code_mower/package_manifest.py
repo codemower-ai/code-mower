@@ -362,6 +362,7 @@ PACKAGE_FILES = (
     ("tools/blind_review_artifacts.py", "src/code_mower/blind_review_artifacts.py", "core"),
     ("tools/audit_handoff_log.py", "src/code_mower/audit_handoff_log.py", "core"),
     ("tools/audit_labeler_lib.py", "src/code_mower/audit_labeler_lib.py", "core"),
+    ("tools/builder_lineage.py", "src/code_mower/builder_lineage.py", "core"),
     ("tools/audit_limits.py", "src/code_mower/audit_limits.py", "core"),
     ("tools/audit_progress.py", "src/code_mower/audit_progress.py", "core"),
     (
@@ -392,6 +393,11 @@ PACKAGE_FILES = (
     (
         "src/code_mower/provider_runners/github_pr.py",
         "src/code_mower/provider_runners/github_pr.py",
+        "reviewer",
+    ),
+    (
+        "src/code_mower/provider_runners/lineage.py",
+        "src/code_mower/provider_runners/lineage.py",
         "reviewer",
     ),
     (

@@ -262,6 +262,130 @@ def _author(pr: Mapping[str, Any]) -> str:
     return _text(author.get("login")) if isinstance(author, Mapping) else _text(author)
 
 
+def _lineage_comments(pr: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Pull request comments in the shape every other lineage reader expects.
+
+    ``gh`` reports the commenter under ``author``; the shared readers, which
+    were written against the REST payload, look under ``user``. Normalising
+    here keeps one marker-trust rule instead of one per transport.
+    """
+
+    from .builder_lineage import require_comment_list
+
+    # Validated before it is normalised, like every other authoritative read:
+    # `or []` turned a null or object response into an empty history, and
+    # filtering non-mappings out dropped records that could have carried the
+    # marker. `gh pr view --json comments` embeds one list -- not the gate's
+    # slurped array of page arrays, and not REST's comment count -- and an
+    # unreadable one is surfaced to the caller rather than shrunk to absence.
+    payload = pr.get("comments")
+    if payload is None:
+        return ()
+    validated = require_comment_list(payload, what="pull request comments")
+    return tuple(
+        {
+            "user": {
+                "login": _text(
+                    (item.get("author") or item.get("user") or {}).get("login")
+                )
+            },
+            "body": _text(item.get("body")),
+        }
+        for item in validated
+    )
+
+
+def _lineage_marker_trust(authorities: Sequence[str]):
+    """The one marker-trust rule, shared with the gate and the labelers."""
+
+    from .audit_labeler_lib import lineage_marker_author_trust
+
+    return lineage_marker_author_trust(authorities=authorities)
+
+
+def builder_lineage_for(
+    repo: str,
+    *,
+    pr_number: int,
+    branch: str,
+    head_sha: str,
+    labels: Sequence[str],
+    author: str,
+    state_dir: Path | None = None,
+    comments: Sequence[Mapping[str, Any]] = (),
+    raw_comments: Any = None,
+) -> dict[str, Any]:
+    """Resolve recorded contribution lineage for one pull request at its head.
+
+    Episodes come from the same two places every other reader consults: the
+    host's *configured* durable record, which only the verified handoff/delivery
+    boundary writes, and the bounded lineage published on the pull request by a
+    configured decision authority. Reading the packaged default directory would
+    consult an empty store on any deployment that configures one, and reading
+    no comments would make this projection disagree with the gate about the
+    same pull request. Unreadable evidence resolves to a conflict carrying one
+    owner action rather than degrading to the label-derived guess this issue
+    exists to remove.
+    """
+
+    from . import builder_lineage as lineage_module
+    from .decisions import decision_authorities_from_env
+    from .provider_runners.lineage import load_identity, trusted_episodes
+
+    identity = load_identity()
+    authorities = decision_authorities_from_env()
+    try:
+        # Normalised inside the same guard that already answers for unreadable
+        # evidence, so a malformed published history reaches the caller as one
+        # bounded conflict rather than as an exception out of a status run.
+        if raw_comments is not None:
+            comments = _lineage_comments({"comments": raw_comments})
+        episodes = trusted_episodes(
+            repo,
+            pr_number,
+            comments=comments if authorities else (),
+            trusted_author=(
+                _lineage_marker_trust(authorities) if authorities else None
+            ),
+            state_dir=state_dir,
+        )
+    except (lineage_module.LineageError, OSError, ValueError):
+        return lineage_module.Lineage(
+            status="conflict",
+            reason="episode_malformed",
+            head_sha=_text(head_sha),
+            contributors=(),
+            current_writer="",
+            builder_label="",
+            stale_builder_labels=(),
+            evidence="handoff_episodes",
+            episodes=0,
+            owner_action=(
+                "recorded builder contribution evidence for this pull request "
+                "could not be read; re-record it from the verified handoff"
+            ),
+        ).as_dict()
+    opener_lane, label_lanes = lineage_module.lanes_from_identity(
+        identity=identity, labels=labels, author=author
+    )
+    return lineage_module.resolve_lineage(
+        repo=repo,
+        pr_number=pr_number,
+        branch=branch,
+        head_sha=head_sha,
+        episodes=episodes,
+        opener_lane=opener_lane,
+        label_lanes=label_lanes,
+        # The same identity contract the gate and the wrappers resolve under.
+        # Without it this projection would call a `codex/` branch labelled
+        # `builder:claude` a sole Claude writer and route a reviewer on that,
+        # while the gate refused the very same pull request.
+        branch_lane=lineage_module.branch_lane_from_identity(
+            identity=identity, branch=branch
+        ),
+    ).as_dict()
+
+
 def _summarize_pr(
     repo: str,
     pr: Mapping[str, Any],
@@ -294,6 +418,15 @@ def _summarize_pr(
         "next_action": next_action,
         "next_detail": next_detail,
         "gate_rerun_command": _gate_rerun_command(repo, number, head_sha),
+        "builder_lineage": builder_lineage_for(
+            repo,
+            pr_number=number,
+            branch=_text(pr.get("headRefName")),
+            head_sha=head_sha,
+            labels=[name for names in labels.values() for name in names],
+            author=_author(pr),
+            raw_comments=pr.get("comments") or [],
+        ),
     }
 
 
@@ -342,7 +475,10 @@ def _remote(
     try:
         raw_prs = gh_json_runner([
             "pr", "list", "--repo", repo, "--state", "open", "--limit", str(pr_limit),
-            "--json", "number,title,url,headRefName,headRefOid,author,isDraft,mergeStateStatus,updatedAt,labels,statusCheckRollup",
+            # `comments` carries the published lineage markers, so the Board
+            # and controller projection resolves the same exact-head evidence
+            # the gate and the reviewers do rather than the local store alone.
+            "--json", "number,title,url,headRefName,headRefOid,author,isDraft,mergeStateStatus,updatedAt,labels,statusCheckRollup,comments",
         ])
     except LaneStatusUnavailable as exc:
         raw_prs = []

@@ -26,12 +26,45 @@ if __package__:
     try:
         from . import decisions as code_mower_decisions
         from . import context_review as code_mower_context_review
+        from .builder_lineage import (
+            LINEAGE_MARKER,
+            Lineage,
+            LineageError,
+            episodes_from_comment_body,
+            branch_lane_from_identity,
+            lanes_from_identity,
+            require_comment_list,
+            resolve_identity_only,
+            resolve_lineage,
+        )
     except ImportError:  # pragma: no cover - copied tools fallback
         import decisions as code_mower_decisions  # type: ignore
         import context_review as code_mower_context_review  # type: ignore
+        from builder_lineage import (  # type: ignore
+            LINEAGE_MARKER,
+            Lineage,
+            LineageError,
+            episodes_from_comment_body,
+            branch_lane_from_identity,
+            lanes_from_identity,
+            require_comment_list,
+            resolve_identity_only,
+            resolve_lineage,
+        )
 else:  # pragma: no cover - direct helper execution
     import decisions as code_mower_decisions  # type: ignore
     import context_review as code_mower_context_review  # type: ignore
+    from builder_lineage import (  # type: ignore
+        LINEAGE_MARKER,
+        Lineage,
+        LineageError,
+        episodes_from_comment_body,
+        branch_lane_from_identity,
+        lanes_from_identity,
+        require_comment_list,
+        resolve_identity_only,
+        resolve_lineage,
+    )
 
 MIN_ABBREVIATED_SHA_LENGTH = 7
 AUTHOR_EXCLUSION_ENV = "CODE_MOWER_AUTHOR_EXCLUSION_JSON"
@@ -196,32 +229,201 @@ def load_author_exclusion_config(raw: str | None = None) -> Mapping[str, Any]:
     return parsed if isinstance(parsed, Mapping) else {"enabled": False}
 
 
+def resolve_builder_lineage(
+    *,
+    labels: Sequence[str],
+    author: str,
+    config: Mapping[str, Any],
+    repo: str = "",
+    pr_number: Any = 0,
+    branch: str = "",
+    head_sha: str = "",
+    episodes: Sequence[Any] = (),
+) -> Lineage:
+    """Resolve the shared builder lineage from labeler-side evidence.
+
+    Labelers see labels and an author for certain, and may or may not have the
+    exact head plus published contribution episodes to hand. Without exact-head
+    evidence there is no takeover to resolve, so the result is the ordinary
+    single-builder decision; with it, the same resolver the gate, the runner
+    and the reviewer wrappers use answers the question.
+    """
+
+    opener_lane, label_lanes = lanes_from_identity(
+        identity=config, labels=labels, author=author
+    )
+    # The configured branch identity is a signal the deployment asked to be
+    # counted; rendering it and then resolving without it is how a `codex/`
+    # branch labelled `builder:claude` resolved to a sole Claude writer and
+    # admitted Codex to review its own diff.
+    branch_lane = branch_lane_from_identity(identity=config, branch=branch)
+    if not (head_sha and repo and pr_number):
+        return resolve_identity_only(
+            opener_lane=opener_lane,
+            label_lanes=label_lanes,
+            branch_lane=branch_lane,
+        )
+    return resolve_lineage(
+        repo=repo,
+        pr_number=pr_number,
+        branch=branch,
+        head_sha=head_sha,
+        episodes=episodes,
+        opener_lane=opener_lane,
+        label_lanes=label_lanes,
+        branch_lane=branch_lane,
+    )
+
+
+@dataclass(frozen=True)
+class LineageContext:
+    """The trusted exact-head evidence a labeler carries into resolution.
+
+    Every field has to come from something the labeler verified for itself: the
+    repository it is running in, the head it fetched from the pull request, and
+    episodes published by an author it already trusts. An empty context is not
+    a failure -- it is the honest statement that this call has no exact-head
+    evidence, and resolution falls back to the ordinary single-builder answer.
+    """
+
+    repo: str = ""
+    pr_number: Any = 0
+    branch: str = ""
+    head_sha: str = ""
+    episodes: tuple[Any, ...] = ()
+
+
+#: A labeler that has no exact-head evidence at all.
+NO_LINEAGE = LineageContext()
+
+
+def published_lineage_episodes(
+    comments: Sequence[Mapping[str, Any]] | None,
+    *,
+    trusted_author: Callable[[str], bool],
+) -> tuple[Any, ...]:
+    """Contribution episodes published by comment authors the caller trusts.
+
+    The hidden marker is a transport for bounded metadata, never an
+    authorization: trust is decided entirely by ``trusted_author``, so an
+    arbitrary commenter cannot assert a takeover into existence. Unreadable
+    published evidence raises :class:`LineageError` so the caller fails closed
+    rather than labelling from a partially parsed history.
+    """
+
+    collected: list[Any] = []
+    for comment in comments or ():
+        if not isinstance(comment, Mapping):
+            continue
+        login = str(((comment.get("user") or {}).get("login")) or "")
+        body = str(comment.get("body") or "")
+        if not login or LINEAGE_MARKER not in body or not trusted_author(login):
+            continue
+        collected.extend(episodes_from_comment_body(body))
+    return tuple(collected)
+
+
+def lineage_decision_authorities() -> tuple[str, ...]:
+    """The repository's configured decision authorities, for marker trust."""
+
+    return code_mower_decisions.decision_authorities_from_env()
+
+
+def lineage_marker_author_trust(
+    *,
+    authorities: Sequence[str] = (),
+) -> Callable[[str], bool]:
+    """Who this labeler may read published lineage markers from.
+
+    Trust is exactly the repository's configured decision authorities -- the
+    accounts it already treats as authoritative about its own state. Nothing
+    else is accepted, and in particular an audit bot able to post a verdict is
+    not thereby able to assert a takeover. An unconfigured checkout trusts
+    nobody, reads no episodes, and behaves exactly as it does today.
+    """
+
+    allowed = {
+        str(item).strip().lower().lstrip("@")
+        for item in authorities
+        if str(item).strip()
+    }
+
+    def trusted(login: str) -> bool:
+        return bool(allowed) and str(login).strip().lower().lstrip("@") in allowed
+
+    return trusted
+
+
+def lineage_context(
+    *,
+    repo: str,
+    pr_number: Any,
+    branch: str = "",
+    head_sha: str | None = "",
+    comments: Sequence[Mapping[str, Any]] | None = (),
+    trusted_author: Callable[[str], bool] | None = None,
+) -> LineageContext:
+    """Assemble exact-head lineage evidence for a labeler entry path.
+
+    Returns :data:`NO_LINEAGE` when the head could not be verified, because
+    lineage resolved against an unverified head would decide the wrong diff.
+    Unreadable published evidence is propagated as a
+    :class:`LineageError` for the caller's fail-closed handling.
+    """
+
+    head = str(head_sha or "")
+    if not head or not repo or not pr_number:
+        return NO_LINEAGE
+    episodes: tuple[Any, ...] = ()
+    if trusted_author is not None:
+        episodes = published_lineage_episodes(comments, trusted_author=trusted_author)
+    return LineageContext(
+        repo=str(repo),
+        pr_number=pr_number,
+        branch=str(branch or ""),
+        head_sha=head,
+        episodes=episodes,
+    )
+
+
 def builder_identity_matches(
     *,
     labels: Sequence[str],
     author: str,
     text: str,
     config: Mapping[str, Any],
+    lineage: LineageContext | None = None,
 ) -> tuple[str, ...]:
+    """Ordered verified builder lanes for this pull request.
+
+    ``text`` is retained for call compatibility and is deliberately unused:
+    freeform prose is not contribution evidence.
+    """
+
     if not bool(config.get("enabled")):
         return ()
-    label_map = _string_mapping(config.get("labels"))
-    author_map = {
-        key.lower(): value
-        for key, value in _string_mapping(config.get("authors")).items()
-    }
-    matches: list[str] = []
-
-    for label in labels:
-        lane = label_map.get(str(label))
-        if lane:
-            matches.append(lane)
-
-    lane = author_map.get(author.lower())
-    if lane:
-        matches.append(lane)
-
-    return tuple(dict.fromkeys(matches))
+    evidence = lineage or NO_LINEAGE
+    resolved = resolve_builder_lineage(
+        labels=labels,
+        author=author,
+        config=config,
+        repo=evidence.repo,
+        pr_number=evidence.pr_number,
+        branch=evidence.branch,
+        head_sha=evidence.head_sha,
+        episodes=evidence.episodes,
+    )
+    if resolved.status != "resolved":
+        # Preserve the historical "more than one identity" shape so a caller
+        # inspecting matches can still tell a conflict from a clean match.
+        opener_lane, label_lanes = lanes_from_identity(
+            identity=config, labels=labels, author=author
+        )
+        candidates = tuple(
+            dict.fromkeys(list(label_lanes) + ([opener_lane] if opener_lane else []))
+        )
+        return candidates if len(candidates) > 1 else resolved.contributors
+    return resolved.contributors
 
 
 def author_exclusion_reason(
@@ -231,20 +433,40 @@ def author_exclusion_reason(
     author: str,
     text: str,
     config: Mapping[str, Any] | None = None,
+    lineage: LineageContext | None = None,
 ) -> str | None:
+    """Why ``lane_name`` may not label its own work, or ``None``.
+
+    Exclusion follows verified contribution, not authorship: every contributing
+    lane is excluded, and a lane that merely opened the PR before handing it
+    over is excluded too because its commits are still in the diff. Conversely,
+    with exact-head evidence in ``lineage``, a lane that never touched this
+    head is *not* excluded even when a reconciled label names a different lane
+    than the opener -- which is the whole point of carrying the evidence here.
+    """
+
     exclusion_config = config or load_author_exclusion_config()
-    matches = builder_identity_matches(
-        labels=labels,
-        author=author,
-        text=text,
-        config=exclusion_config,
-    )
-    if not matches:
+    if not bool(exclusion_config.get("enabled")):
         return None
-    if len(set(matches)) > 1:
+    evidence = lineage or NO_LINEAGE
+    try:
+        resolved = resolve_builder_lineage(
+            labels=labels,
+            author=author,
+            config=exclusion_config,
+            repo=evidence.repo,
+            pr_number=evidence.pr_number,
+            branch=evidence.branch,
+            head_sha=evidence.head_sha,
+            episodes=evidence.episodes,
+        )
+    except LineageError:
+        return "builder contribution evidence is unreadable; skipping author-excluded label update"
+    if resolved.status == "conflict":
         return "conflicting builder identity; skipping author-excluded label update"
-    builder_lane = matches[0]
-    if builder_lane == lane_name:
+    if resolved.status == "waiting":
+        return "builder contribution lineage is behind the current head; skipping author-excluded label update"
+    if resolved.contributed(lane_name):
         return f"{lane_name} lane excluded for builder-authored PR"
     return None
 
@@ -398,6 +620,42 @@ def flatten_paginated_items(payload: Any) -> list[dict[str, Any]]:
             elif isinstance(page, dict):
                 items.append(page)
     return items
+
+
+def flatten_paginated_comments(payload: Any) -> list[dict[str, Any]]:
+    """Flatten a paginated *comment* response under the shared record contract.
+
+    :func:`flatten_paginated_items` is for timeline entries and stays as it is:
+    it drops members it cannot use, which is right for a mixed event stream and
+    wrong for a comment history. A dropped comment is a dropped marker, and the
+    marker proving a takeover is in the newest part of the history. So comment
+    pages are validated here -- before anything flattens, filters or
+    stringifies them -- and an unreadable page raises rather than shrinking.
+
+    Genuinely empty pages, ``user: null`` and an omitted optional ``body`` are
+    GitHub's own schema and stay ordinary.
+    """
+
+    if not isinstance(payload, list):
+        raise LineageError("the comment history did not come back as a paginated array")
+    comments: list[dict[str, Any]] = []
+    for index, page in enumerate(payload, start=1):
+        # Every page is an array. The gate fetches `gh api --paginate --slurp`,
+        # whose shape is a list of pages, so anything else in that position is
+        # not a page. Accepting a bare object as a one-comment page -- which is
+        # what the generic flattener does -- reinterprets `{}` or
+        # `{"comments": []}` as a comment with no body and no author, and a
+        # response nobody could read then looks like an absent history: the
+        # gate waits for an audit instead of refusing. Record validation cannot
+        # recover that, because by then the wrapper has already made the
+        # payload look well formed.
+        if not isinstance(page, list):
+            raise LineageError(f"comment page {index} is not an array of comments")
+        comments.extend(
+            dict(comment)
+            for comment in require_comment_list(page, what=f"comment page {index}")
+        )
+    return comments
 
 
 def audit_comment_head_sha(body: str) -> str:
@@ -936,13 +1194,23 @@ def fetch_issue_comments(
             "GET",
             f"/repos/{repo}/issues/{issue_number}/comments?per_page=100&page={page}",
             tokens=tokens,
-        ) or []
-        if not isinstance(chunk, list):
-            raise RuntimeError("GitHub API issue comments returned a non-list response")
-        if not chunk:
+        )
+        # Shape and the fields lineage reads are settled before anything else
+        # looks at the page. `or []` made `None`, `False` and `{}` -- every
+        # falsey successful response -- end the read, and filtering by
+        # `isinstance` dropped malformed records silently. Both report "there
+        # is nothing here" for "this could not be read", and this page feeds
+        # the trailer labeler's own label decision.
+        try:
+            page_comments = require_comment_list(
+                chunk, what=f"issue comments page {page} for {repo}#{issue_number}"
+            )
+        except LineageError as exc:
+            raise RuntimeError(str(exc)) from None
+        if not page_comments:
             return comments
-        comments.extend(comment for comment in chunk if isinstance(comment, dict))
-        if len(chunk) < 100:
+        comments.extend(dict(comment) for comment in page_comments)
+        if len(page_comments) < 100:
             return comments
         page += 1
     raise IssueCommentPaginationLimitExceeded(

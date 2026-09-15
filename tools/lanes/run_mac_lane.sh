@@ -949,6 +949,11 @@ snapshot_lookup() {
 # from "no PR yet" or "no head yet", so a transient failure on one side of the
 # comparison would fabricate a pr_opened or head_advanced transition for a
 # target that never moved.
+#
+# The head branch comes out of the same authenticated pull request read as the
+# head sha, so the two describe one observation. Contribution lineage binds an
+# episode to repository, PR, branch and head together; re-resolving the branch
+# from anywhere else later would bind it to something this snapshot never saw.
 capture_target_state() {
   local out="$1"
   local runner_comment_id="${2:-}"
@@ -971,7 +976,7 @@ capture_target_state() {
   fi
   if [ -n "$pr_number" ]; then
     if ! pr_json="$(snapshot_lookup gh pr view "$pr_number" -R "$REPO" \
-      --json headRefOid,state,labels 2>/dev/null)"; then
+      --json headRefName,headRefOid,state,labels 2>/dev/null)"; then
       pr_json='{}'
       complete=false
     fi
@@ -993,6 +998,7 @@ capture_target_state() {
         number: $number,
         pr_number: $pr,
         head_sha: ((.headRefOid // "") | ascii_downcase),
+        branch: (.headRefName // ""),
         pr_state: (.state // ""),
         labels: $labels,
         runner_comment_id: $comment,
@@ -1565,11 +1571,55 @@ if [ "${#lane_delivery[@]}" -gt 0 ] && [ "$mode" != "audit" ]; then
     --output "${log%.log}.delivery.json"
     --force
   )
+  # A delivered handoff round records its ordered contribution episode against
+  # the accepted private intent. The episode is written from the acceptance
+  # record and a fresh head observation, never from anything declared here, so
+  # a runner that merely names a handoff records nothing.
+  # The state directory travels even without a handoff: an ordinary fix round
+  # after a takeover has no new handoff to record but still advances the head,
+  # and lineage that stops short of it refuses every reviewer.
+  classify_args+=(--handoff-state-dir "$HANDOFF_STATE_DIR")
   [ -n "$handoff_file" ] && classify_args+=(--handoff "$handoff_file")
   set +e
   "${lane_delivery[@]}" "${classify_args[@]}"
   delivery_rc=$?
   set -e
+  # Publish the verified episodes, then reconcile to exactly one active builder
+  # label from the verified current writer. Publication comes first and the
+  # label move is abandoned without it: the GitHub gate reads episodes only
+  # from trusted comments, so a moved label with no published evidence is the
+  # conflict this whole path exists to prevent. Historical contributions stay
+  # in the record; the label only says who may write next. Unresolved lineage
+  # publishes nothing and changes no label.
+  if [ "$kind" = "pr" ] && [ "$delivery_rc" -eq 0 ]; then
+    reconcile_head="$(jq -r '.head_sha // ""' "$after_state" 2>/dev/null || printf '')"
+    reconcile_branch="$(jq -r '.branch // ""' "$after_state" 2>/dev/null || printf '')"
+    if [ -n "$reconcile_head" ]; then
+      reconcile_args=(
+        lineage --repo "$REPO" --pr "$num" --head "$reconcile_head"
+        --branch "$reconcile_branch" --state-dir "$HANDOFF_STATE_DIR"
+        --publish --reconcile-labels --json
+      )
+      # The label set handed to reconciliation decides what is *removed*. A
+      # failed read is not an empty label set: passing none makes the move
+      # purely additive, so the destination lane's label goes on while the
+      # source lane's stays, the pull request carries two builder labels, and
+      # the run reports success. This read is required, and it is required
+      # before publication -- neither the lineage comment nor the label may be
+      # written against a label set nobody observed.
+      if ! reconcile_labels="$(gh pr view "$num" -R "$REPO" \
+        --json labels -q '.labels[].name' 2>/dev/null)"; then
+        echo "${LANE}: refusing to publish builder lineage or reconcile the builder label for ${REPO}#${num} at ${reconcile_head}: the current label set could not be read, and reconciling against an unobserved label set can leave two builder labels on the pull request. Re-run this unit once 'gh pr view --json labels' succeeds for it." >&2
+        exit 2
+      fi
+      while IFS= read -r reconcile_label; do
+        [ -n "$reconcile_label" ] || continue
+        reconcile_args+=(--label "$reconcile_label")
+      done <<< "$reconcile_labels"
+      "${lane_delivery[@]}" "${reconcile_args[@]}" > "${log%.log}.lineage.json" 2>/dev/null \
+        || echo "${LANE}: builder label reconciliation did not resolve at ${reconcile_head}" >&2
+    fi
+  fi
   observed_transition="$(jq -r '.delivery.transition // "unknown"' \
     "${log%.log}.delivery.json" 2>/dev/null || printf 'unknown')"
   delivery_reason="$(jq -r '.delivery.reason // "unknown"' \
