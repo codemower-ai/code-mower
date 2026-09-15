@@ -88,11 +88,9 @@ repo_root="$(CDPATH=; cd -- "${here}/../.." && pwd -P)"
 # Command resolution is explicit, in this order, so the contract never runs
 # against whichever code-mower happens to be first on PATH:
 #   1. CODE_MOWER_LANE_DELIVERY_CMD, when the runner owner pins one.
-#   2. this source checkout, when the runner ships beside src/code_mower.
-#   3. an installed code-mower that actually implements lane-delivery.
-# An old installed CLI may still perform read-only selection. A selected builder
-# unit requires the current runtime/supervision contract and stops before provider
-# launch if it is unavailable.
+#   2. an installed code-mower that implements lane-delivery and atomic lineage.
+# Capability refusal precedes selection and every automatic publication, label,
+# attribution or provider effect. Checkout source is never an implicit fallback.
 #
 # The pin is one executable path or name, like every other command override in
 # this runner -- never a command line. Splitting an environment string into argv

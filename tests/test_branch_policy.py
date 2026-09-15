@@ -803,6 +803,7 @@ exit 0
         completed, guard = self._run_codex_fix_round(own)
         self.assertNotIn("refusing", completed.stderr)
         self.assertIn("fake codex completed", completed.stdout)
+        self.assertIn("target_pr_branch", guard, completed.stdout + completed.stderr)
         self.assertEqual(guard["target_pr_branch"], branch)
         self.assertEqual(guard["allowed_branch"], branch)
         self.assertEqual(guard["allowed_branch_expected_head"], "c" * 40)
@@ -826,6 +827,7 @@ exit 0
             source_owned, template="claude/{issue_key}-{slug}", handoff_source="claude")
         self.assertIn("accepted explicit handoff claude -> codex", completed.stdout)
         self.assertNotIn("refusing", completed.stderr)
+        self.assertIn("target_pr_branch", guard, completed.stdout + completed.stderr)
         self.assertEqual(guard["target_pr_branch"], branch)
         self.assertEqual(guard["allowed_branch"], branch)
         self.assertEqual(guard["allowed_branch_expected_head"], "c" * 40)
@@ -839,10 +841,20 @@ exit 0
         completed, guard = self._run_codex_fix_round(
             source, template=None, handoff_source="devin", replay=True)
         self.assertEqual(completed.stdout.count("accepted explicit handoff devin -> codex"), 1)
-        self.assertEqual(completed.stdout.count("fake codex completed"), 1)
+        self.assertEqual(completed.stdout.count("fake codex completed"), 1, completed.stdout + completed.stderr)
         self.assertIn("no repeated acceptance or writer launch", completed.stdout)
         self.assertEqual(guard["handoff"]["target_branch"], "devin/21-fix")
         self.assertEqual(guard["handoff"]["expected_head"], "c" * 40)
+
+    def test_handoff_runner_without_ambient_tmpdir_keeps_guard_exit_and_replay_contracts(self) -> None:
+        from unittest.mock import patch
+        # CPython's temp root remains the approved fixture area; the child shell
+        # reproduces Linux CI where TMPDIR is absent from the environment.
+        tempfile.gettempdir()
+        with patch.dict(os.environ):
+            os.environ.pop('TMPDIR', None)
+            self.test_policy_compliant_handoff_withholds_destination_lane_prefixes()
+            self.test_generated_devin_to_codex_takeover_and_replay_need_no_prefix_patch()
 
     def test_fix_round_without_a_policy_keeps_the_lane_prefix_target(self) -> None:
         own = self._pr(21, "codex/issue-12", labels=("builder:codex",),

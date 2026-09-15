@@ -18,14 +18,18 @@ AUTHORS = ('lineage-publisher[bot]',)
 # Committed owning selector inventory; independent of repository Git history.
 ROWS = {
     'A': ('test_lineage_consumer_admission.py::AdmissionConsumers::test_actual_wrappers_share_conflict_empty_takeover_and_stale_decisions',
-          'test_lineage_consumer_admission.py::AdmissionConsumers::test_wrapper_cumulative_history_budget_and_strict_announced_markers'),
-    'B': ('test_lineage_consumer_labels.py::LabelConsumers::test_check_run_fallback_and_all_normal_saas_sinks_keep_admission',),
-    'C': ('test_lineage_consumer_labels.py::LabelConsumers::test_greptile_both_structural_requeues_resolve_empty_history',),
+          'test_lineage_consumer_admission.py::AdmissionConsumers::test_wrapper_cumulative_history_budget_and_strict_announced_markers',
+          'test_devin_review.py::LineageReviewLifecycleTests'),
+    'B': ('test_lineage_consumer_labels.py::LabelConsumers::test_check_run_fallback_and_all_normal_saas_sinks_keep_admission',
+          'test_lineage_consumer_labels.py::RawFetchLabelConsumers::test_real_fetcher_rejects_bad_history_before_every_label_route'),
+    'C': ('test_lineage_consumer_labels.py::LabelConsumers::test_greptile_both_structural_requeues_resolve_empty_history',
+          'test_lineage_consumer_labels.py::RawFetchLabelConsumers::test_every_real_sink_preserves_conflict_and_legitimate_controls'),
     'D': ('test_lineage_consumer_labels.py::LabelConsumers::test_trailer_raw_history_refuses_before_terminal_event_merge',),
     'E': ('test_lineage_consumer_projection.py::ProjectionConsumers::test_materialized_and_maintained_gate_empty_conflict_stale_and_all_contributors',
           'test_lineage_consumer_projection.py::ProjectionConsumers::test_gate_cumulative_arrivals_are_bounded_before_duplicate_reduction'),
     'F': ('test_lineage_consumer_projection.py::ProjectionConsumers::test_pivot_through_actual_status_controller_and_board',
-          'test_lineage_consumer_projection.py::ProjectionConsumers::test_status_global_budget_retains_unknown_targets'),
+          'test_lineage_consumer_projection.py::ProjectionConsumers::test_status_global_budget_retains_unknown_targets',
+          'test_lineage_consumer_projection.py::ProjectionConsumers::test_custom_prefix_and_no_contract_pass_real_gates_and_status_controller_board'),
     'G': ('test_lineage_consumer_activation.py::ProducerActivation::test_actual_entrypoint_takeover_continuation_then_third_writer',
           'test_lineage_consumer_activation.py::ProducerActivation::test_cumulative_32_rounds_and_overflow_refuse_before_next_launch'),
     'H': ('test_lineage_producer_artifacts.py::ArtifactTests::test_installed_candidate_supervisor_and_public_readback_business',
@@ -72,9 +76,13 @@ def policy_text(config):
 
 
 def fixture_shell_env(directory):
-    """macOS mktemp without a template ignores TMPDIR; constrain fixture writes."""
+    """Constrain no-argument mktemp, including CI shells with TMPDIR unset."""
+    import shlex
     path = Path(directory)/'fixture-shell.sh'
-    path.write_text('mktemp() { if [ "$#" -eq 0 ]; then command mktemp "${TMPDIR%/}/tmp.XXXXXXXX"; else command mktemp "$@"; fi; }\n')
+    fallback = shlex.quote(str(Path(directory).resolve()))
+    path.write_text('mktemp() { if [ "$#" -eq 0 ]; then local fixture_tmp="${TMPDIR:-}"; '
+        '[ -n "$fixture_tmp" ] || fixture_tmp=' + fallback + '; '
+        'command mktemp "${fixture_tmp%/}/tmp.XXXXXXXX"; else command mktemp "$@"; fi; }\n')
     return {'BASH_ENV': str(path)}
 
 

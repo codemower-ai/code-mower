@@ -1283,6 +1283,8 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--output", required=True, type=Path)
     subparsers.add_parser("lineage-capabilities", help="Refuse unsupported installed lineage APIs")
     args = parser.parse_args(argv)
+    if args.command == "handoff" and not args.source_branch_prefixes and args.lineage_store is None:
+        parser.error("handoff requires --source-branch-prefix unless exact source ownership is selected with --lineage-store")
 
     try:
         if args.command == "lineage-record":

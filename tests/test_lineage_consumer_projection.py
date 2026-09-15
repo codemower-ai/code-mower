@@ -141,3 +141,44 @@ class ProjectionConsumers(unittest.TestCase):
                 result = self.gate(complete_pr(branch='codex/topic', labels=['builder:codex']), [history])
                 self.assertEqual(result['gate_state'], 'failure')
                 self.assertIn('contract unreadable', result['gate_description'])
+
+    def test_custom_prefix_and_no_contract_pass_real_gates_and_status_controller_board(self):
+        sources = [self.materialized/'.github/workflows/code-mower-gate.yml', ROOT/'.github/workflows/code-mower-gate.yml',
+            ROOT/'templates/workflows/code-mower-gate.yml.j2', ROOT/'src/code_mower/templates/workflows/code-mower-gate.yml.j2']
+        for branch, prefixes, writer, reviewer in (
+            ('feature/cx-topic', None, 'codex', 'claude'),
+            ('codex/topic', {}, 'claude', 'codex'),
+        ):
+            cfg = _config()
+            cfg['builder_identity'] = policy(prefixes)['builder_identity']
+            labels = [f'builder:{writer}', f'{reviewer}-audit-done']
+            pr = complete_pr(branch=branch, labels=labels)
+            comment = {'user': {'login': f'{reviewer}-audit-bot'},
+                'body': f'Head SHA: `{HEAD}`\n<!-- {reviewer.upper()}_AUDIT_STATE: {reviewer}-audit-done -->'}
+            for source in sources:
+                with self.subTest(branch=branch, source=source):
+                    result = self.gate(pr, [[comment]], config=cfg, source=source)
+                    self.assertEqual(result['gate_state'], 'success', result)
+            def gh(args, branch=branch, pr=pr):
+                if args[:2] == ['pr', 'list']:
+                    return [{'number': 42, 'headRefName': branch, 'headRefOid': HEAD,
+                        'author': {'login': 'human'}, 'labels': pr['labels'], 'isDraft': False,
+                        'mergeStateStatus': 'CLEAN', 'statusCheckRollup': [
+                            {'__typename': 'CheckRun', 'name': 'Code Mower Gate', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]}]
+                return []
+            report = lane_status.collect_status(repo=REPO, gh_json_runner=gh, lineage_config=cfg,
+                command_runner=lambda args: subprocess.CompletedProcess(args, 0, '', ''))
+            lineage = report['remote']['pull_requests'][0]['lineage']
+            self.assertEqual(lineage['status'], 'ready')
+            self.assertEqual(lineage['current_writer'], writer)
+            self.assertIn(reviewer, lineage['admitted_reviewers'])
+            self.assertNotIn(writer, lineage['admitted_reviewers'])
+            evaluated = controller.evaluate_controller_report(status_report=report,
+                ready_issues={'available': True, 'errors': [], 'issues': []}, config=cfg, options=_options())
+            decision = evaluated['decision']
+            self.assertEqual(decision['decision_state'], 'ready_to_merge', decision)
+            self.assertFalse(decision['would_mutate'])
+            projected = board._supervised_decision_payload(decision)
+            self.assertEqual(projected['lineage']['status'], 'ready')
+            self.assertEqual(projected['lineage']['current_writer'], writer)
+            self.assertFalse(projected['would_mutate'])

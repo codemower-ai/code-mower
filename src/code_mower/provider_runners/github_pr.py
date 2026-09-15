@@ -117,12 +117,18 @@ def fetch_issue_comments(
     """Return issue/PR comments with a bounded pagination cap."""
 
     from ..audit_labeler_lib import lineage_history
+    from ..builder_lineage import ContractError
     pages = []
     def fetch(page, size):
         raw = _gh_request("GET", f"/repos/{repo}/issues/{issue_number}/comments?per_page={size}&page={page}", token=token)
         pages.append(raw)
         return raw
-    lineage_history(fetch, page_size=per_page, max_pages=min(page_cap, 8))
+    try:
+        lineage_history(fetch, page_size=per_page, max_pages=min(page_cap, 8))
+    except ContractError as exc:
+        # Preserve this public adapter's unreadable-history RuntimeError contract.
+        # Raw History/page validation remains mandatory; refusal is never [].
+        raise RuntimeError(f"Issue comment history unreadable within pagination cap: {exc}") from exc
     return [comment for page in pages for comment in page]
 
 
