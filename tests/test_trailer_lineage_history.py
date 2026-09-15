@@ -93,7 +93,9 @@ class TrailerHistoryMustBeReadable(unittest.TestCase):
     def test_an_unreadable_history_moves_no_label(self):
         for history in MALFORMED_TRAILER_HISTORIES:
             with self.subTest(history=history):
-                _, applied = self._trailer_main(lambda *_a, **_k: history)
+                _, applied = self._trailer_main(
+                    lambda *_a, _history=history, **_k: _history
+                )
                 self.assertEqual(
                     applied, [], "an unreadable history may move no label"
                 )
