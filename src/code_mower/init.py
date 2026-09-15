@@ -227,6 +227,16 @@ PRODUCT_SUPPORT_FILES = (
         "0644",
     ),
     (
+        # The pure lineage contract the gate helper resolves through. A gate
+        # runner in a generated product repository has no Code Mower package
+        # installed, so the dependency has to travel with the helper or the
+        # import fails and the gate cannot evaluate at all.
+        "tools/builder_lineage.py",
+        "builder_lineage.py",
+        "product-support-helper",
+        "0644",
+    ),
+    (
         "tools/decisions.py",
         "decisions.py",
         "product-support-helper",

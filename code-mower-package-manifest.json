@@ -374,6 +374,11 @@
     },
     {
       "kind": "core",
+      "source": "tools/builder_lineage.py",
+      "target": "src/code_mower/builder_lineage.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/builder_runs.py",
       "target": "src/code_mower/builder_runs.py"
     },
@@ -1206,6 +1211,11 @@
       "kind": "core",
       "source": "src/code_mower/lane_status.py",
       "target": "src/code_mower/lane_status.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/lineage_identity.py",
+      "target": "src/code_mower/lineage_identity.py"
     },
     {
       "kind": "core",

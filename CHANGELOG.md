@@ -7,6 +7,28 @@ later entries are regular releases.
 
 ## Unreleased
 
+### Added
+
+- A pure builder contribution lineage contract (`code_mower.builder_lineage`,
+  `code_mower.lineage_identity`, plus the vendored `tools/builder_lineage.py`
+  the generated gate helper imports). It resolves who wrote a pull request at an
+  exact head from ordered, immutably bound contribution episodes: one current
+  writer, the full contributor set, and a concise owner action whenever the
+  evidence is stale, unbound, duplicated or contradictory. The same decision
+  also covers identity, configured branch provenance and published evidence
+  together, including when there are no episodes at all, so a configured
+  branch/label disagreement is unresolved rather than an ordinary
+  single-builder pull request. Exact-target resolution and reviewer admission
+  require the complete repository, pull request number, branch and head:
+  incomplete target data is a refusal, never a quiet downgrade to the
+  identity-only answer, which is a route callers select on purpose. Account
+  aliases and configured branch prefixes are reconciled once, so compatible
+  spellings collapse and contradictory ones refuse whatever order they were
+  written in. Announced-but-broken lineage markers, successful-but-unreadable
+  comment reads and chains that could not resolve all fail closed instead of
+  being reported as an absent history or published with an episode missing. No
+  consumer behaviour changes in this release: nothing imports the contract yet.
+
 ### Fixed
 
 - Coworker fast-search responses with `source_id`, missing titles, or `Text`

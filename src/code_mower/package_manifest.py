@@ -362,6 +362,11 @@ PACKAGE_FILES = (
     ("tools/blind_review_artifacts.py", "src/code_mower/blind_review_artifacts.py", "core"),
     ("tools/audit_handoff_log.py", "src/code_mower/audit_handoff_log.py", "core"),
     ("tools/audit_labeler_lib.py", "src/code_mower/audit_labeler_lib.py", "core"),
+    # The vendored copy is the canonical one, exactly as for the labeler helper:
+    # a generated product gate imports `tools/`, so shipping the package module
+    # from anywhere else would let the two drift where no `src/` assertion looks.
+    ("tools/builder_lineage.py", "src/code_mower/builder_lineage.py", "core"),
+    ("src/code_mower/lineage_identity.py", "src/code_mower/lineage_identity.py", "core"),
     ("tools/audit_limits.py", "src/code_mower/audit_limits.py", "core"),
     ("tools/audit_progress.py", "src/code_mower/audit_progress.py", "core"),
     (
