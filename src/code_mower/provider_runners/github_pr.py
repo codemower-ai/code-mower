@@ -48,7 +48,8 @@ def _gh_request(
                 text = response.read().decode("utf-8", errors="replace")
                 if accept.endswith("diff"):
                     return text
-                return json.loads(text) if text else None
+                from ..builder_lineage_producer import decode_transport
+                return decode_transport(text)
         except urllib.error.HTTPError:
             raise
         except transient_errors:
@@ -115,24 +116,14 @@ def fetch_issue_comments(
 ) -> list[dict[str, Any]]:
     """Return issue/PR comments with a bounded pagination cap."""
 
-    all_comments: list[dict[str, Any]] = []
-    for page in range(1, page_cap + 1):
-        chunk = _gh_request(
-            "GET",
-            f"/repos/{repo}/issues/{issue_number}/comments?per_page={per_page}&page={page}",
-            token=token,
-        )
-        if not chunk:
-            return all_comments
-        if not isinstance(chunk, list):
-            raise ValueError("GitHub issue comments response was not a list")
-        all_comments.extend(comment for comment in chunk if isinstance(comment, dict))
-        if len(chunk) < per_page:
-            return all_comments
-    raise RuntimeError(
-        f"hit pagination cap of {page_cap} pages ({page_cap * per_page} comments) "
-        f"for {repo}#{issue_number}; refusing to collect partial decision context"
-    )
+    from ..audit_labeler_lib import lineage_history
+    pages = []
+    def fetch(page, size):
+        raw = _gh_request("GET", f"/repos/{repo}/issues/{issue_number}/comments?per_page={size}&page={page}", token=token)
+        pages.append(raw)
+        return raw
+    lineage_history(fetch, page_size=per_page, max_pages=min(page_cap, 8))
+    return [comment for page in pages for comment in page]
 
 
 def post_pr_comment(

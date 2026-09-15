@@ -46,7 +46,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from .builder_lineage_producer import Observation
 
 from code_mower import __version__
 
@@ -842,6 +845,7 @@ def validate_handoff(
     observed_head: str,
     target_branch: str,
     source_branch_prefixes: Iterable[str],
+    source_ownership: Observation | None = None,
 ) -> Handoff:
     """Validate an explicit orchestrator recovery handoff.
 
@@ -902,20 +906,43 @@ def validate_handoff(
             "handoff requires --target-branch; a handoff authorizes exactly one "
             "branch and has nothing to authorize without it"
         )
-    prefixes = tuple(
-        text for text in (_text(prefix) for prefix in source_branch_prefixes) if text
-    )
-    if not prefixes:
-        raise LaneDeliveryError(
-            f"handoff source lane {source} has no configured branch prefixes; "
-            "only a configured builder lane can hand a branch over"
+    if source_ownership is not None:
+        from .builder_lineage import Chain, ContractError, Lineage, Target
+        from .builder_lineage_producer import Observation
+        try:
+            target = Target(repo, int(match.group("number")), branch, observed)
+            if not isinstance(source_ownership, Observation):
+                raise ValueError
+            chain, decision = source_ownership.chain, source_ownership.decision
+            if not isinstance(chain, Chain) or not isinstance(decision, Lineage):
+                raise ValueError
+            if not chain.episodes or chain.target != target or decision.target != target:
+                raise ValueError
+            validated = Chain.from_arrivals(target, chain.episodes)
+            contributors = tuple(sorted({lane for episode in validated.episodes
+                for lane in (episode.source_lane, episode.destination_lane)}))
+            final = validated.episodes[-1]
+            if (decision.status != "ready" or decision.reason != "verified_lineage"
+                    or final.resulting_head != observed or final.destination_lane != source
+                    or decision.current_writer != source or decision.contributors != contributors):
+                raise ValueError
+        except (ContractError, ValueError, TypeError, AttributeError):
+            raise LaneDeliveryError("handoff requires verified exact current source ownership") from None
+    else:
+        prefixes = tuple(
+            text for text in (_text(prefix) for prefix in source_branch_prefixes) if text
         )
-    if not any(branch.startswith(prefix) for prefix in prefixes):
-        raise LaneDeliveryError(
-            f"handoff target branch {branch} is not owned by source lane {source} "
-            f"(expected branch prefix {', '.join(prefixes)}); a lane may only hand "
-            "over a branch it owns"
-        )
+        if not prefixes:
+            raise LaneDeliveryError(
+                f"handoff source lane {source} has no configured branch prefixes; "
+                "only a configured builder lane can hand a branch over"
+            )
+        if not any(branch.startswith(prefix) for prefix in prefixes):
+            raise LaneDeliveryError(
+                f"handoff target branch {branch} is not owned by source lane {source} "
+                f"(expected branch prefix {', '.join(prefixes)}); a lane may only hand "
+                "over a branch it owns"
+            )
 
     return Handoff(
         source_lane=source,
@@ -1172,7 +1199,6 @@ def _add_handoff_parser(subparsers: Any) -> None:
         dest="source_branch_prefixes",
         action="append",
         default=[],
-        required=True,
         metavar="PREFIX",
         help=(
             "A branch prefix configured for the source lane. Repeatable. The "
@@ -1181,6 +1207,7 @@ def _add_handoff_parser(subparsers: Any) -> None:
     )
     handoff.add_argument("--output", type=Path)
     handoff.add_argument("--json", action="store_true")
+    handoff.add_argument("--lineage-store", type=Path)
     handoff.add_argument("--source-file", type=Path, help="Private bound source transport; required for takeover")
     handoff.add_argument("--state-dir", type=Path, help="Private handoff intent store")
     handoff.add_argument("--reserve-launch", action="store_true", help="Claim the verified destination launch once")
@@ -1210,6 +1237,14 @@ def _add_supervise_parser(subparsers: Any) -> None:
     supervise.add_argument("--writer-state-dir", type=Path)
     supervise.add_argument("--writer-repo")
     supervise.add_argument("--writer-lane")
+    supervise.add_argument("--lineage-before", type=Path)
+    supervise.add_argument("--lineage-base")
+    supervise.add_argument("--lineage-store", type=Path)
+    supervise.add_argument("--lineage-create", action="store_true")
+    supervise.add_argument("--lineage-writer")
+    supervise.add_argument("--lineage-handoff", type=Path)
+    supervise.add_argument("--lineage-handoff-root", type=Path)
+    supervise.add_argument("--lineage-output", type=Path)
     # The remainder must not be named "command": that is the subparsers dest, and
     # argparse would overwrite the selected subcommand with the provider argv.
     supervise.add_argument(
@@ -1236,9 +1271,28 @@ def main(argv: list[str] | None = None) -> int:
     runtime.add_argument("--checkout", type=Path, required=True)
     runtime.add_argument("--python", default="")
     runtime.add_argument("--codex", default="", help="Also verify the installed Codex sandbox without a model call")
+    owner = subparsers.add_parser("lineage-owner", help="Resolve current ownership from trusted exact evidence")
+    owner.add_argument("--repo", required=True)
+    owner.add_argument("--pr", required=True, type=int)
+    owner.add_argument("--lineage-store", type=Path)
+    record = subparsers.add_parser("lineage-record", help="Attribute an exact delivered PR using trusted policy and history")
+    record.add_argument("--repo", required=True)
+    record.add_argument("--pr", required=True, type=int)
+    record.add_argument("--base", required=True)
+    record.add_argument("--lane", required=True, choices=("codex", "claude", "devin"))
+    record.add_argument("--output", required=True, type=Path)
+    subparsers.add_parser("lineage-capabilities", help="Refuse unsupported installed lineage APIs")
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "lineage-record":
+            return _lineage_record_main(args)
+        if args.command == "lineage-owner":
+            return _lineage_owner_main(args)
+        if args.command == "lineage-capabilities":
+            from .provider_runners.lineage import require_capabilities
+            require_capabilities()
+            return 0
         if args.command == "classify":
             return _classify_main(args)
         if args.command == "transition":
@@ -1383,6 +1437,19 @@ def _transition_main(args: argparse.Namespace) -> int:
 
 def _handoff_main(args: argparse.Namespace) -> int:
     from . import lane_handoff
+    ownership = None
+    if args.lineage_store:
+        from .builder_lineage_producer import Observation, ProducerStore, GitHub
+        from .audit_labeler_lib import lineage_decision, lineage_snapshot
+        from .provider_runners.lineage import remote_policy
+        io = GitHub()
+        raw = io._json(f"repos/{args.repo}/pulls/{args.target_pr.split('#')[1]}")
+        target, author, labels = lineage_snapshot(args.repo, int(args.target_pr.split('#')[1]), raw)
+        _, identity, authority = remote_policy(io, target, raw['base']['sha'])
+        selected = ProducerStore(args.lineage_store).read(target)
+        chain, decision = lineage_decision(target, identity, authority, io.history(target),
+            author=author, labels=labels, private=selected['episodes'])
+        ownership = Observation(chain, decision)
     handoff = validate_handoff(
         source_lane=args.source_lane,
         destination_lane=args.destination_lane,
@@ -1393,6 +1460,7 @@ def _handoff_main(args: argparse.Namespace) -> int:
         observed_head=args.observed_head,
         target_branch=args.target_branch,
         source_branch_prefixes=args.source_branch_prefixes,
+        source_ownership=ownership,
     )
     if args.source_file is None:
         raise LaneDeliveryError("handoff requires a private source binding; writer quiescence is unverified")
@@ -1439,7 +1507,10 @@ def _supervise_main(args: argparse.Namespace) -> int:
     if not command:
         raise LaneDeliveryError("supervise requires a command after --")
     writer = None
-    if args.writer:
+    finish_lineage = None
+    if args.lineage_before:
+        writer, finish_lineage = _start_lineage_round(args)
+    elif args.writer:
         from .lane_handoff import LocalWriter
         if not (args.writer_state_dir and args.writer_repo and args.writer_lane and args.cwd):
             raise LaneDeliveryError("writer supervision requires private state, repo, lane, and checkout")
@@ -1469,11 +1540,11 @@ def _supervise_main(args: argparse.Namespace) -> int:
             + "\n",
             encoding="utf-8",
         )
+    if finish_lineage is not None:
+        finish_lineage(result)
     return result.exit_code
 
 
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
 
 
 def lineage_target_state(repo, payload):
@@ -1582,3 +1653,124 @@ def lineage_continuation(round_observer, after, previous):
         destination_lane=observed.transport.lane, expected_head=observed.before.head_sha,
         resulting_head=after.head_sha, writer_state="same_writer", kind="continuation"),
         observed.writer, observed.round_id, observed.transport)
+
+
+def _start_lineage_round(args, *, io=None, runtime_observation=None):
+    """One launcher lifetime owns registration, stopped delivery and publication."""
+    from .audit_labeler_lib import lineage_decision
+    from .builder_lineage_producer import GitHub, Observation, ProducerStore, Transport, exact_snapshot, publish
+    from .provider_runners.lineage import require_capabilities, trusted_policy
+    from . import lane_handoff, lane_runtime
+    require_capabilities()
+    if args.lineage_output is None:
+        raise LaneDeliveryError("Attribution output required before launch")
+    config, identity, authorities = trusted_policy(args.cwd, args.lineage_base)
+    before = lineage_target_state(args.writer_repo, json.loads(args.lineage_before.read_text()))
+    io = io if io is not None else GitHub()
+    if exact_snapshot(io, before.target) != before:
+        raise LaneDeliveryError("Lineage pre-launch snapshot differs")
+    transport = Transport(args.writer_lane, "devin_cli" if args.writer_lane == "devin" else args.writer_lane,
+                          args.writer_lane + "_cli", "local_cli")
+    if runtime_observation is None:
+        def runtime_observation():
+            lane_runtime.prepare(args.cwd, sys.executable)
+            return "ready"
+    handoff = Handoff(**json.loads(args.lineage_handoff.read_text())) if args.lineage_handoff else None
+    store = ProducerStore(args.lineage_store) if args.lineage_store else None
+    # Public-only is explicitly selected for ordinary first writes/first takeover.
+    # A selected continuation or re-handoff must read the existing private record.
+    previous = store.read(before.target) if store is not None and not args.lineage_create else None
+    history = io.history(before.target)
+    chain, decision = lineage_decision(before.target, identity, authorities, history,
+        author=before.author, labels=before.labels, private=previous["episodes"] if previous is not None else ())
+    ownership = Observation(chain, decision) if previous is not None else None
+    if decision.status != "ready":
+        raise LaneDeliveryError("Lineage pre-launch " + decision.reason)
+    if handoff:
+        prefixes = [prefix for prefix, lane in identity.branch_prefixes if lane == handoff.source_lane]
+        validate_handoff(**handoff.as_dict(), running_lane=transport.lane, repo=before.target.repo,
+            observed_head=before.target.head_sha, source_branch_prefixes=prefixes, source_ownership=ownership)
+        if not args.lineage_handoff_root or store is None:
+            raise LaneDeliveryError("Selected handoff and producer stores required")
+    elif decision.current_writer != transport.lane:
+        raise LaneDeliveryError("Observed current writer differs from actual transport")
+    observer = LineageRound(args.writer_state_dir, args.writer, args.lineage_writer,
+        before.target, transport, args.cwd, config=config, runtime_observation=runtime_observation)
+
+    def finish(result):
+        from .builder_lineage import Target
+        from .builder_runs import record_lineage_builder
+        raw = io._json(f"repos/{before.target.repo}/pulls/{before.target.pr_number}")
+        after_target = Target(raw['base']['repo']['full_name'], raw['number'], raw['head']['ref'], raw['head']['sha'])
+        after = exact_snapshot(io, after_target)
+        observer.observed(after.target)
+        if result.reason != "completed" or result.exit_code != 0:
+            raise LaneDeliveryError("No completed supervised delivery")
+        if after.target == before.target:
+            return
+        if handoff:
+            delivery = lane_handoff.lineage_handoff(handoff, args.lineage_handoff_root, observer,
+                after.target, source_branch_prefixes=prefixes, sequence=len(chain.episodes) + 1,
+                source_ownership=ownership)
+        elif previous is not None:
+            delivery = lineage_continuation(observer, after.target, previous)
+        else:
+            delivery = None
+        if delivery is not None:
+            store.record(delivery, after.target, identity, authorities, io.history(after.target),
+                author=after.author, labels=after.labels, config=config,
+                runtime_observation=runtime_observation, create=args.lineage_create)
+            publication = publish(io, after.target, identity, authorities, store.read(after.target)['episodes'])
+            observation = publication.observation
+        else:
+            final_chain, final_decision = lineage_decision(after.target, identity, authorities, io.history(after.target),
+                author=after.author, labels=after.labels)
+            observation = Observation(final_chain, final_decision)
+        if args.lineage_output is None:
+            raise LaneDeliveryError("Attribution output required")
+        record_lineage_builder(observation, transport, args.lineage_output,
+            created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat())
+    return observer, finish
+
+
+def _lineage_owner_main(args):
+    from .builder_lineage_producer import GitHub, ProducerStore
+    from .audit_labeler_lib import lineage_decision, lineage_snapshot, lineage_projection
+    from .provider_runners.lineage import remote_policy
+    io = GitHub()
+    raw = io._json(f"repos/{args.repo}/pulls/{args.pr}")
+    target, author, labels = lineage_snapshot(args.repo, args.pr, raw)
+    _, identity, authority = remote_policy(io, target, raw['base']['sha'])
+    private = ProducerStore(args.lineage_store).read(target)['episodes'] if args.lineage_store else ()
+    _, decision = lineage_decision(target, identity, authority, io.history(target),
+        author=author, labels=labels, private=private)
+    print(json.dumps(lineage_projection(decision)))
+    return 0 if decision.status == 'ready' else 2
+
+
+def _lineage_record_main(args):
+    from .builder_lineage_producer import GitHub, Transport, staged_record
+    from .audit_labeler_lib import lineage_snapshot
+    from .provider_runners.lineage import remote_policy, require_capabilities
+    require_capabilities()
+    io = GitHub()
+    raw = io._json(f"repos/{args.repo}/pulls/{args.pr}")
+    target, _, _ = lineage_snapshot(args.repo, args.pr, raw)
+    config, identity, authorities = remote_policy(io, target, args.base)
+    transport = Transport(args.lane, "devin_cli" if args.lane == "devin" else args.lane,
+                          args.lane + "_cli", "local_cli")
+    environ = {
+        "LINEAGE_TARGET_JSON": json.dumps(dict(repo=target.repo, pr_number=target.pr_number,
+            branch=target.branch, head_sha=target.head_sha)),
+        "LINEAGE_POLICY_JSON": json.dumps(dict(base_sha=args.base, identity=identity.to_mapping(), roles=config)),
+        "LINEAGE_AUTHORITY_JSON": json.dumps(sorted(authorities.accounts)),
+        "LINEAGE_TRANSPORT_JSON": json.dumps(transport.__dict__),
+        "LINEAGE_OUTPUT": str(args.output),
+    }
+    staged_record(environ, io=io)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    from code_mower.lane_delivery import main as entrypoint
+    raise SystemExit(entrypoint())

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from lineage_consumer_fixtures import complete_pr, pinned_repo
 
 import io
 import json
@@ -62,10 +63,12 @@ class CodexAuditPrTests(unittest.TestCase):
     ) -> tuple[cap.AuditResult, mock.Mock]:
         repo = tmp_path / "repo"
         repo.mkdir()
+        pinned_repo(repo)
         worktree = tmp_path / "worktree"
         worktree.mkdir()
         head_sha = "d" * 40
         pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+        pr_payload = complete_pr(pr_payload)
         parsed = parsed or cap.CodexVerdict(
             verdict="PASS",
             prose="Summary:\n\nNo merge-blocking regressions found.\n\nFindings: none.",
@@ -91,6 +94,7 @@ class CodexAuditPrTests(unittest.TestCase):
         )
 
         with (
+            mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
             mock.patch.dict(
                 "os.environ",
                 {
@@ -261,6 +265,7 @@ class CodexAuditPrTests(unittest.TestCase):
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
             repo.mkdir()
+            pinned_repo(repo)
             worktree = tmp_path / "worktree"
             worktree.mkdir()
             head_sha = "d" * 40
@@ -268,6 +273,7 @@ class CodexAuditPrTests(unittest.TestCase):
                 "head": {"sha": head_sha, "ref": "human/fix"},
                 "title": "Fix",
             }
+            pr_payload = complete_pr(pr_payload)
             review_context = cap.ReviewContextDiagnostics(
                 base_ref="origin/main",
                 head_sha=head_sha,
@@ -319,6 +325,7 @@ class CodexAuditPrTests(unittest.TestCase):
             )
 
             with (
+                mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
                 mock.patch.dict(
                     "os.environ",
                     {
@@ -546,10 +553,12 @@ class CodexAuditPrTests(unittest.TestCase):
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
             repo.mkdir()
+            pinned_repo(repo)
             worktree = tmp_path / "worktree"
             worktree.mkdir()
             head_sha = "d" * 40
             pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+            pr_payload = complete_pr(pr_payload)
             decision_comment = (
                 '<!-- CODE_MOWER_DECISION: id=ADR-007 scope=finding '
                 'finding_id="codex:b93829375d1f7c3d27fa" by=owner ref=ADR-007 -->'

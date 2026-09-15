@@ -6,6 +6,7 @@ the hosted Devin work-order seam, and the generated local runner seam, plus
 the provider-prefix convention that applies when no policy is configured.
 """
 from __future__ import annotations
+from lineage_consumer_fixtures import RUNNER_GH_BOUNDARY, RUNNER_GIT_BOUNDARY, runner_lineage_env, complete_pr
 
 import copy
 import json
@@ -716,6 +717,7 @@ fi
 """.replace("__PR_VIEW__", json.dumps(pr_view)).replace("__FULL_VIEW__", json.dumps(full_view)),
                 encoding="utf-8",
             )
+            fake_gh.write_text(fake_gh.read_text().replace("set -euo pipefail\n", "set -euo pipefail\n" + RUNNER_GH_BOUNDARY, 1))
             fake_gh.chmod(0o755)
             fake_git = bin_dir / "git"
             fake_git.write_text(
@@ -733,6 +735,7 @@ exit 0
 """,
                 encoding="utf-8",
             )
+            fake_git.write_text(fake_git.read_text().replace("set -euo pipefail\n", "set -euo pipefail\n" + RUNNER_GIT_BOUNDARY, 1))
             fake_git.chmod(0o755)
             fake_codex = bin_dir / "codex"
             fake_codex.write_text("#!/usr/bin/env bash\ncat >/dev/null\nprintf 'fake codex completed\\n'\n",
@@ -744,6 +747,14 @@ exit 0
                 argv.extend(["--handoff-source-lane", handoff_source,
                              "--handoff-expected-head", pr_view["headRefOid"],
                              "--handoff-source-file", str(fake_handoff_source(root))])
+            fixture_env = runner_lineage_env(root, _config_with_policy(template), complete_pr(number=21,
+                branch=pr_view['headRefName'], head=pr_view['headRefOid'],
+                author=pr_view['author']['login'], labels=[v['name'] for v in pr_view['labels']]))
+            # The complete snapshot is from the same exact declared external PR.
+            text = fake_gh.read_text().replace('"state":"OPEN","labels":[]',
+                '"state":"OPEN","labels":'+json.dumps(pr_view['labels'])+',"headRefName":'+json.dumps(pr_view['headRefName'])+',"author":'+json.dumps(pr_view['author']))
+            text = text.replace('a'*40, pr_view['headRefOid'])
+            fake_gh.write_text(text)
             completed = subprocess.run(
                 argv,
                 cwd=ROOT,
@@ -752,7 +763,7 @@ exit 0
                     "HOME": str(root),
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-                    **_LANE_DELIVERY_ENV,
+                    **_LANE_DELIVERY_ENV, **fixture_env,
                 },
                 text=True,
                 capture_output=True,
@@ -761,7 +772,7 @@ exit 0
             if replay:
                 repeated = subprocess.run(argv, cwd=ROOT, env={**os.environ, "HOME": str(root),
                     "LANE_WORK_ROOT": str(work_root), "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-                    **_LANE_DELIVERY_ENV}, text=True, capture_output=True, check=False)
+                    **_LANE_DELIVERY_ENV, **fixture_env}, text=True, capture_output=True, check=False)
                 self.assertEqual(repeated.returncode, 0, repeated.stderr)
                 completed.stdout += repeated.stdout
                 self.assertNotIn("fake codex completed", repeated.stdout)

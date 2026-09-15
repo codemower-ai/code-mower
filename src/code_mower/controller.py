@@ -273,15 +273,12 @@ def _reviewer_outcomes(
     labels = pr.get("labels") if isinstance(pr.get("labels"), Mapping) else {}
     done = set(labels.get("done") or [])
     blocked = set(labels.get("blocked") or [])
-    builder_lane = _builder_lane_from_labels(labels.get("builder") or [], config)
+    lineage = pr.get("lineage") or {}
+    builder_lane = lineage.get("current_writer") if lineage.get("status") == "ready" else ""
     excluded_author_lane = ""
     outcomes = []
     for reviewer in _merge_reviewers(config):
-        excluded = (
-            _author_never_gates(config)
-            and builder_lane
-            and reviewer["author_lane"] == builder_lane
-        )
+        excluded = reviewer["author_lane"] not in lineage.get("admitted_reviewers", [])
         if excluded:
             excluded_author_lane = reviewer["author_lane"]
             continue
@@ -379,6 +376,19 @@ def _pr_decision(
         "promoted_reviewers_passed": reviewers_passed,
         "would_mutate": False,
     }
+    lineage = pr.get("lineage") or {}
+    from .builder_lineage import Target, ContractError
+    try:
+        target = Target(lineage.get("repo"), lineage.get("pr_number"), lineage.get("branch"), lineage.get("head_sha"))
+        valid_lineage = (target.pr_number == pr.get("number") and target.branch == pr.get("branch")
+                         and target.head_sha == pr.get("head_sha") and lineage.get("status") == "ready")
+    except ContractError:
+        valid_lineage = False
+    base["lineage"] = {key: lineage.get(key) for key in ("status", "reason", "contributors", "current_writer")}
+    if not valid_lineage:
+        return {**base, "lane_id": "", "decision_state": "owner_action",
+                "next_action": "owner action required", "next_detail": "lineage " + str(lineage.get("status", "unknown")),
+                "stop_condition": "lineage_unresolved", "owner_action_kind": "lineage_unresolved", "merge_method": ""}
     if labels.get("blocked"):
         return {
             **base,
@@ -745,6 +755,7 @@ def collect_controller_report(
         gh_json_runner=gh_json_runner,
         command_runner=command_runner,
         tracker_config=resolved_config,
+        lineage_config=resolved_config,
         jira_reader=jira_reader,
         tracker_links=tracker_links,
     )

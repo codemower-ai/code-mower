@@ -4,6 +4,11 @@
       "reason": "daemon defaults and scheduling policy remain repo-local",
       "source": "tools/local_llm_audit_bridge.py",
       "target": "src/code_mower/local_llm_audit_bridge.py"
+    },
+    {
+      "reason": "core",
+      "source": "src/code_mower/provider_runners/lineage.py",
+      "target": "src/code_mower/provider_runners/lineage.py"
     }
   ],
   "files_written": [
@@ -1381,6 +1386,11 @@
       "kind": "reviewer",
       "source": "src/code_mower/provider_runners/github_pr.py",
       "target": "src/code_mower/provider_runners/github_pr.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/provider_runners/lineage.py",
+      "target": "src/code_mower/provider_runners/lineage.py"
     },
     {
       "kind": "reviewer",

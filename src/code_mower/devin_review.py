@@ -74,10 +74,28 @@ class ReviewInput:
     author: str
     context: dict
     changed_files: tuple[str, ...]
+    branch: str = ""
+    policy: dict | None = None
+    authorities: tuple[str, ...] | None = None
+    history: list | None = None
+    labels: tuple[str, ...] | None = None
+    base_sha: str = ""
 
     def check(self, current: ReviewInput) -> None:
         try:
+            from .audit_labeler_lib import lineage_decision, lineage_identity
+            from .builder_lineage import Target, Authorities, History, admit
+            from .config import validate_config
+            target = Target(self.repository, self.pr, self.branch, self.head)
+            Target(self.repository, self.pr, self.branch, self.base_sha)
+            if self.policy is None or (self.policy and validate_config(self.policy)):
+                raise ValueError("Trusted validated policy required")
+            identity = lineage_identity(self.policy).with_reviewer_floor("devin", (
+                "devin-ai-integration", "devin-ai-integration[bot]", "devin-cli-audit-bot", "devin-cli-audit-bot[bot]"))
+            _, lineage = lineage_decision(target, identity, Authorities(self.authorities), History(self.history),
+                author=self.author, labels=self.labels)
             valid = (
+                admit(lineage, "devin") and
                 self == current and REPO.fullmatch(self.repository)
                 and type(self.pr) is int and self.pr > 0 and SHA.fullmatch(self.head)
                 and LOGIN.fullmatch(self.author) and not _is_excluded_author(self.author)

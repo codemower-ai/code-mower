@@ -85,6 +85,7 @@ def make_review():
             expires_at="2099-01-01T00:00:00Z",
         ),
         ("handler.py",),
+        branch="human/fix", policy={}, authorities=(), history=[], labels=(), base_sha="b" * 40,
     )
 
 

@@ -476,6 +476,7 @@ def _resolve_diff(
     expected_head_sha: str,
     max_diff_bytes: int,
     max_diff_hard_limit_bytes: int,
+    *, fetched_base_ref: str | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     """Build a bounded diff and changed-files list from exact base/head SHAs."""
 
@@ -491,7 +492,7 @@ def _resolve_diff(
             f"local checkout head changed before diff: {expected_head_sha} -> {fetched_head_ref}"
         )
 
-    fetched_base_ref = _resolve_base_ref(repo_path, base_ref)
+    fetched_base_ref = fetched_base_ref or _resolve_base_ref(repo_path, base_ref)
     diff_range = f"{fetched_base_ref}...{fetched_head_ref}"
 
     # The changed-file list goes through the same bounded primitive as the diff
@@ -1181,6 +1182,13 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
     )
     head_sha_start = verify["local_head_sha"]
 
+    fetched_base = _resolve_base_ref(repo_path, config.base_ref)
+    from .provider_runners.github_pr import fetch_issue_comments
+    from .provider_runners.lineage import acquire
+    acquire(config.repo, config.pr_number, pr_meta, checkout=repo_path, base_sha=fetched_base,
+        fetch_comments=lambda: fetch_issue_comments(config.repo, config.pr_number, token=config.github_token),
+        reviewer="devin", reviewer_accounts=("devin-ai-integration", "devin-ai-integration[bot]",
+                                             "devin-cli-audit-bot", "devin-cli-audit-bot[bot]"))
     diff, changed_files_tuple = _resolve_diff(
         repo_path,
         config.pr_number,
@@ -1188,6 +1196,7 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
         head_sha_start,
         config.max_diff_bytes,
         config.max_diff_hard_limit_bytes,
+        fetched_base_ref=fetched_base,
     )
 
     prompt, diagnostics = build_prompt(

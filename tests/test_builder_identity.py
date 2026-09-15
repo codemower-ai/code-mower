@@ -127,10 +127,10 @@ class BuilderIdentityTests(unittest.TestCase):
         self.assertEqual(payload["authors"]["devin-ai-integration"], "devin")
         self.assertEqual(payload["authors"]["devin-ai-integration[bot]"], "devin")
         self.assertEqual(payload["authors"]["grok-bot[bot]"], "cursor")
-        self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:claude"], "claude")
-        self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:cursor"], "cursor")
-        self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:devin"], "devin")
-        self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:grok-bot"], "cursor")
+        self.assertEqual(cfg["builder_identity"]["trailers"]["CODE_MOWER_BUILDER:claude"], "claude")
+        self.assertEqual(cfg["builder_identity"]["trailers"]["CODE_MOWER_BUILDER:cursor"], "cursor")
+        self.assertEqual(cfg["builder_identity"]["trailers"]["CODE_MOWER_BUILDER:devin"], "devin")
+        self.assertEqual(cfg["builder_identity"]["trailers"]["CODE_MOWER_BUILDER:grok-bot"], "cursor")
 
     def test_legacy_grok_bot_identity_maps_to_cursor(self) -> None:
         payload = code_mower_init._author_exclusion_payload(
@@ -148,7 +148,7 @@ class BuilderIdentityTests(unittest.TestCase):
         self.assertEqual(payload["labels"]["builder:cursor"], "cursor")
         self.assertEqual(payload["labels"]["builder:grok-bot"], "cursor")
         self.assertEqual(payload["authors"]["grok-bot[bot]"], "cursor")
-        self.assertEqual(payload["trailers"]["CODE_MOWER_BUILDER:grok-bot"], "cursor")
+        self.assertNotIn("trailers", payload)
 
     def test_author_exclusion_defaults_include_informational_audit_builders(self) -> None:
         payload = code_mower_init._author_exclusion_payload(

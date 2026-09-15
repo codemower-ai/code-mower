@@ -1707,7 +1707,8 @@ jobs:
             json.dump(event_pages if event_pages is not None else [events or []], handle)
             events_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
-            json.dump({"number": pr_number, "head": {"sha": pr_head_sha or head_sha}}, handle)
+            from lineage_consumer_fixtures import complete_pr
+            json.dump(complete_pr(number=pr_number, head=pr_head_sha or head_sha, labels=labels), handle)
             pr_path = handle.name
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             json.dump(audit_runs or [], handle)
@@ -1764,7 +1765,7 @@ jobs:
                     {
                         "CODE_MOWER_GATE_LANES_JSON": json.dumps(lanes),
                         "CODE_MOWER_AUTHOR_EXCLUSION_JSON": json.dumps(
-                            author_exclusion or {"enabled": False}
+                            {key: value for key, value in (author_exclusion or {"enabled": False}).items() if key != "trailers"}
                         ),
                         "CODE_MOWER_OWNER_LABEL": "needs-owner",
                         "CODE_MOWER_OWNER_SITTING_LABEL": "owner-sitting",

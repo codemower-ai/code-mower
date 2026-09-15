@@ -39,6 +39,9 @@ class _DevinCliAuditTestCase(unittest.TestCase):
         self._run_git(["commit", "-m", "pr"])
         self.head_sha = self._run_git_text(["rev-parse", "HEAD"])
 
+        self.history = mock.patch("code_mower.provider_runners.github_pr.fetch_issue_comments", return_value=[])
+        self.history.start()
+        self.addCleanup(self.history.stop)
         self.command = self.tmp / "fake-devin"
 
     def tearDown(self) -> None:
@@ -73,10 +76,14 @@ class _DevinCliAuditTestCase(unittest.TestCase):
 
     def _pr_meta(self, *, author: str = "someone", moved: bool = False) -> dict:
         return {
+            "number": 1,
+            "labels": [],
+            "base": {"repo": {"full_name": "owner/repo"}},
             "title": "Test PR",
             "body": "Test body",
             "user": {"login": author},
             "head": {
+                "ref": "human/fix",
                 "sha": "different" if moved else self.head_sha,
                 "repo": {"full_name": "owner/repo"},
             },

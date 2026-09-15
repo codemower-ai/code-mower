@@ -110,12 +110,6 @@ if [ -n "${CODE_MOWER_LANE_DELIVERY_CMD:-}" ]; then
   }
   lane_delivery=( "${CODE_MOWER_LANE_DELIVERY_CMD}" )
   lane_delivery_source="pinned"
-elif [ -f "${repo_root}/src/code_mower/lane_delivery.py" ]; then
-  lane_delivery=(
-    env "PYTHONPATH=${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
-    "${LANE_PYTHON:-python3}" -m code_mower.lane_delivery
-  )
-  lane_delivery_source="source-checkout"
 elif command -v code-mower >/dev/null 2>&1; then
   if code-mower lane-delivery --help >/dev/null 2>&1; then
     lane_delivery=(code-mower lane-delivery)
@@ -125,7 +119,16 @@ elif command -v code-mower >/dev/null 2>&1; then
   fi
 fi
 if [ "${#lane_delivery[@]}" -eq 0 ]; then
-  echo "${LANE}: lane-delivery contract inactive (${lane_delivery_source})" >&2
+  echo "${LANE}: unsupported installed lineage capability (${lane_delivery_source}); release activation requires #915" >&2
+  exit 2
+fi
+# Released 1.4.0 lacks the complete atomic APIs. Refuse before any automatic
+# publication, label or attribution. #915 qualifies installed 1.4.1 separately.
+if [ "${#lane_delivery[@]}" -gt 0 ]; then
+  if ! "${lane_delivery[@]}" lineage-capabilities >/dev/null 2>&1; then
+    echo "unsupported installed lineage capability; release activation requires #915" >&2
+    exit 2
+  fi
 fi
 if [ -n "$HANDOFF_SOURCE_LANE" ] || [ -n "$HANDOFF_EXPECTED_HEAD" ] || [ -n "$HANDOFF_SOURCE_FILE" ]; then
   [ -n "$HANDOFF_SOURCE_LANE" ] && [ -n "$HANDOFF_EXPECTED_HEAD" ] && [ -n "$HANDOFF_SOURCE_FILE" ] || {
@@ -606,12 +609,25 @@ if [ "$kind" = "pr" ]; then
       echo "${LANE}: refusing ${mode} PR #${num}; head branch ${target_pr_branch:-missing} does not match the ${REPO} branch policy ${repo_branch_pattern} (for example ${repo_branch_example})" >&2
       exit 1
     fi
-    target_pr_owned_by_lane="$(
-      printf '%s\n' "$target_pr_json" \
-        | jq -r "${lane_provenance_args[@]}" "${lane_provenance_jq}"'
-          if acceptable_branch_name and lane_provenance then "true" else "false" end
-        '
-    )"
+    owner_args=(--repo "$REPO" --pr "$num")
+    if [ -d "${HOME}/.local/share/code-mower/lineage/${repo_key}/${num}" ]; then
+      owner_args+=(--lineage-store "${HOME}/.local/share/code-mower/lineage/${repo_key}/${num}")
+    fi
+    if ! lineage_owner="$("${lane_delivery[@]}" lineage-owner "${owner_args[@]}")"; then
+      echo "${LANE}: lineage ownership unreadable or unresolved; owner action required" >&2
+      exit 2
+    fi
+    target_pr_owned_by_lane="$(printf '%s' "$lineage_owner" | jq -r --arg lane "$LANE" '.status == "ready" and .current_writer == $lane')"
+    if [ "$target_pr_owned_by_lane" = "true" ] && \
+        [ "$(printf '%s' "$lineage_owner" | jq -r '.reason')" != "verified_lineage" ] && \
+        ! printf '%s' "$target_pr_json" | jq -e "${lane_provenance_args[@]}" "${lane_provenance_jq}"' acceptable_branch_name' >/dev/null; then
+      target_pr_owned_by_lane=false
+    fi
+    if [ "$target_pr_owned_by_lane" = "true" ] && { [ -n "$repo_branch_pattern" ] ||
+        [ "$(printf '%s' "$lineage_owner" | jq -r '.reason')" = "verified_lineage" ]; }; then
+      resolved_branch="$target_pr_branch"
+      policy_branch_expected_head="$target_pr_head"
+    fi
     if [ "$target_pr_owned_by_lane" != "true" ]; then
       # A foreign head branch is only writable through an explicit, auditable
       # orchestrator recovery handoff. Implicit cross-lane takeover stays a
@@ -636,7 +652,7 @@ if [ "$kind" = "pr" ]; then
         [ -n "$handoff_source_prefix" ] || continue
         handoff_source_prefix_args+=(--source-branch-prefix "$handoff_source_prefix")
       done <<< "$handoff_source_prefixes"
-      if [ "${#handoff_source_prefix_args[@]}" -eq 0 ]; then
+      if [ "${#handoff_source_prefix_args[@]}" -eq 0 ] && [ ! -d "${HOME}/.local/share/code-mower/lineage/${repo_key}/${num}" ]; then
         echo "${LANE}: refusing handoff for PR #${num}; source lane ${HANDOFF_SOURCE_LANE} has no configured branch prefixes" >&2
         exit 2
       fi
@@ -651,6 +667,9 @@ if [ "$kind" = "pr" ]; then
         "${handoff_source_prefix_args[@]}"
         --source-file "$HANDOFF_SOURCE_FILE" --state-dir "$HANDOFF_STATE_DIR"
       )
+      if [ -d "${HOME}/.local/share/code-mower/lineage/${repo_key}/${num}" ]; then
+        handoff_args+=(--lineage-store "${HOME}/.local/share/code-mower/lineage/${repo_key}/${num}")
+      fi
       if ! "${lane_delivery[@]}" handoff "${handoff_args[@]}" --json > "$handoff_result"; then
         handoff_owner_action
         exit 2
@@ -695,6 +714,7 @@ if [ ! -d "${work}/.git" ]; then
   git clone --quiet "https://github.com/${REPO}.git" "$work"
 fi
 git -C "$work" fetch --quiet --prune origin
+lineage_base="$(git -C "$work" rev-parse "origin/${default_branch}^{commit}")"
 git -C "$work" reset --quiet --hard
 git -C "$work" clean -fdxq -e .build -e node_modules -e .venv
 git -C "$work" checkout --quiet --force --detach "origin/${default_branch}"
@@ -717,7 +737,7 @@ is_valid_ref() {
   done < <(printf '%s' "$branch")
   git check-ref-format --branch "$branch" >/dev/null 2>&1
 }
-resolved_branch=""
+resolved_branch="${resolved_branch:-}"
 if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
   # Slugs come from mutable issue titles. Before resolving a fresh name, find
   # an existing open PR by its exact closing-issue relationship. One current
@@ -971,7 +991,7 @@ capture_target_state() {
   fi
   if [ -n "$pr_number" ]; then
     if ! pr_json="$(snapshot_lookup gh pr view "$pr_number" -R "$REPO" \
-      --json headRefOid,state,labels 2>/dev/null)"; then
+      --json headRefOid,state,labels,headRefName,author 2>/dev/null)"; then
       pr_json='{}'
       complete=false
     fi
@@ -993,6 +1013,8 @@ capture_target_state() {
         number: $number,
         pr_number: $pr,
         head_sha: ((.headRefOid // "") | ascii_downcase),
+        branch: .headRefName,
+        author: .author.login,
         pr_state: (.state // ""),
         labels: $labels,
         runner_comment_id: $comment,
@@ -1164,6 +1186,9 @@ writer_source="${log%.log}.source.json"
   '{transport:"local_process",writer:$writer,state_dir:$state_dir}' > "$writer_source" )
 
 capture_target_state "$before_state"
+if [ "$kind" = "pr" ] && [ "$mode" != "audit" ]; then
+  git -C "$work" checkout --quiet -B "$target_pr_branch" "$target_pr_head"
+fi
 # Delivery is judged by comparing this snapshot with the one taken afterwards.
 # If the before snapshot is already incomplete the comparison can never be
 # trusted, so refuse the unit here instead of spending a provider run that
@@ -1198,6 +1223,16 @@ run_provider() {
       --writer "$writer_alias" --writer-state-dir "$writer_state_dir"
       --writer-repo "$REPO" --writer-lane "$LANE"
     )
+    if [ "$kind" = "pr" ] && [ "$mode" != "audit" ]; then
+      lineage_store="${HOME}/.local/share/code-mower/lineage/${repo_key}/${num}"
+      supervise_args+=(--lineage-before "$before_state" --lineage-base "$lineage_base"
+        --lineage-writer "${LANE}-${repo_key}" --lineage-output "${log%.log}.lineage.json")
+      if [ -d "$lineage_store" ] || [ -n "$handoff_file" ]; then
+        supervise_args+=(--lineage-store "$lineage_store")
+        [ -d "$lineage_store" ] || supervise_args+=(--lineage-create)
+      fi
+      [ -z "$handoff_file" ] || supervise_args+=(--lineage-handoff "$handoff_file" --lineage-handoff-root "$HANDOFF_STATE_DIR")
+    fi
     [ -n "$provider_stdin" ] && supervise_args+=(--stdin-file "$provider_stdin")
     "${lane_delivery[@]}" supervise "${supervise_args[@]}" -- "$@"
     return "$?"
@@ -1576,32 +1611,6 @@ if [ "${#lane_delivery[@]}" -gt 0 ] && [ "$mode" != "audit" ]; then
     "${log%.log}.delivery.json" 2>/dev/null || printf 'unknown')"
 fi
 
-if [ "$LANE" = "devin" ] && [ "$rc" -eq 0 ]; then
-  (
-    set +e
-    devin_elapsed_seconds="$elapsed_seconds"
-    devin_status="observed"
-    devin_pr_number="$num"
-    if [ "$kind" = "issue" ]; then
-      devin_pr_number="$(jq -r '.pr_number // ""' "$after_state" 2>/dev/null || printf '')"
-      [ -n "$devin_pr_number" ] && devin_status="pr-opened"
-    fi
-    if [ -n "$devin_pr_number" ] && command -v code-mower >/dev/null 2>&1; then
-      devin_model_source="missing"
-      [ -n "$devin_model" ] && devin_model_source="env"
-      devin_version_source="missing"
-      [ -n "$devin_tool_version" ] && devin_version_source="probe"
-      cd "$work" && code-mower builder record \
-        --provider devin_cli --executor devin_cli \
-        --pr "${REPO}#${devin_pr_number}" --repo "$REPO" \
-        --status "$devin_status" \
-        --model "$devin_model" --model-source "$devin_model_source" \
-        --tool-version "$devin_tool_version" --version-source "$devin_version_source" \
-        --elapsed-seconds "$devin_elapsed_seconds" --user-interventions 0 \
-        --lens implementation --force --json >/dev/null 2>&1
-    fi
-  ) || echo "${LANE}: builder provenance record skipped" >&2
-fi
 subcommand="issue"
 [ "$kind" = "pr" ] && subcommand="pr"
 cap_note=""
@@ -1654,6 +1663,17 @@ if [ "$delivery_rc" -ne 0 ]; then
   rm -f "$undelivered_body_file"
   [ "$supervisor_ended" -eq 0 ] && [ "$rc" -ne 0 ] && exit "$rc"
   exit 3
+fi
+
+
+# A newly opened PR has no pre-launch PR target. Attribute only after the
+# validated delivery, with fresh exact metadata and immutable policy/history.
+if [ "$mode" != "audit" ] && [ "$kind" = "issue" ] && [ "$observed_transition" = "pr_opened" ]; then
+  delivered_pr="$(jq -r '.pr_number // empty' "$after_state")"
+  if ! "${lane_delivery[@]}" lineage-record --repo "$REPO" --pr "$delivered_pr" \
+      --base "$lineage_base" --lane "$LANE" --output "${log%.log}.builder.json"; then
+    echo "${LANE}: builder provenance record skipped; trusted lineage attribution refused" >&2
+  fi
 fi
 
 if [ "$timed_out" -eq 1 ]; then
