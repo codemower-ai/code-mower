@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import redirect_stderr, redirect_stdout
 import copy
 import http.client
+import itertools
 import json
 import math
 import re
@@ -3712,6 +3713,27 @@ def _observation_fixture(name: str) -> dict:
     return board_observation.validate(record)
 
 
+def _record_with_reasons(fixture: str, reference: str, reasons: list[str]) -> dict:
+    """One accepted record that carries several recorded states at once.
+
+    The reasons are canonicalized and the primary route is derived exactly as
+    the contract requires, so a record that is, say, both ready to merge and
+    waiting for approval is a record a producer could really emit rather than
+    a shape invented to make an ordering test pass.
+    """
+
+    record = copy.deepcopy(_observation_fixture(fixture))
+    ordered = board_observation.ordered_reasons(reasons)
+    record["work"]["id"] = reference
+    record["work"]["reference"] = reference
+    record["work"]["reasons"] = ordered
+    record["work"]["primary"] = board_observation.derive_primary(ordered)
+    for index, run in enumerate(record["work"]["runs"]):
+        run["id"] = f"run{index}-{reference}"
+        run["binding"]["work_id"] = reference
+    return board_observation.validate(record)
+
+
 def _observation_payload(records: list[dict], **overrides: object) -> dict:
     payload: dict[str, object] = {
         "generated_at": "2026-09-12T20:00:00Z",
@@ -4303,9 +4325,9 @@ class BoardWorkFirstViewTests(TestCase):
         rules = _eval_board_view("STATE_RULES.map(rule => [rule.label, rule.rank])")
         self.assertEqual(rules[0], ["merged", 0])
 
-        # Row order is a separate, explicit ranking. Every headline the views
+        # Row order is a separate, explicit ranking. Every state the views
         # can produce is ranked in it -- the recorded states, plus the two the
-        # idle and unlinked rows synthesise -- so no headline orders by accident.
+        # idle and unlinked rows synthesise -- so no state orders by accident.
         ranked = _eval_board_view("[...ROW_URGENCY_ORDER, ...TERMINAL_ROW_HEADLINES]")
         for label in [rule[0] for rule in rules] + [
             "state not recorded",
@@ -4315,18 +4337,18 @@ class BoardWorkFirstViewTests(TestCase):
         self.assertEqual(len(ranked), len(set(ranked)))
 
         # Terminal placement is explicit, not a consequence of falling off the
-        # end: every named non-terminal headline ranks below an unranked one,
-        # which ranks below every terminal headline, and no two share a rank.
+        # end: every named non-terminal state ranks below an unranked one,
+        # which ranks below every terminal state, and no two share a rank.
         ranks = _eval_board_view(
-            "[...ROW_URGENCY_ORDER, 'a headline nobody ranked', ...TERMINAL_ROW_HEADLINES]"
-            ".map(rowUrgency)"
+            "[...ROW_URGENCY_ORDER, 'a state nobody ranked', ...TERMINAL_ROW_HEADLINES]"
+            ".map(label => stateUrgency(label))"
         )
         self.assertEqual(ranks, sorted(ranks))
         self.assertEqual(len(set(ranks)), len(ranks))
         # And the two rankings genuinely disagree about merged work.
         self.assertGreater(
-            _eval_board_view("rowUrgency('merged')"),
-            _eval_board_view("rowUrgency('CI pending')"),
+            _eval_board_view("stateUrgency('merged')"),
+            _eval_board_view("stateUrgency('CI pending')"),
         )
 
     def test_finished_work_never_outranks_actionable_or_blocked_work(self) -> None:
@@ -4387,6 +4409,263 @@ class BoardWorkFirstViewTests(TestCase):
             re.findall(r'<span class="ref">([^<]+)</span>', tied["worklist"]),
             ["issue-946", "issue-947"],
         )
+
+    # Every ordering case the row ranking has to get right, as the accepted
+    # fixture the record is built from, the reference it is given, the reasons
+    # the same record states alongside it, the headline the display rules must
+    # still pick, and the recorded state the row must actually be ordered by.
+    # The last two columns differ wherever a record states more than one thing
+    # at once, which is exactly what ordering by the headline alone loses.
+    URGENCY_MATRIX = (
+        # A record can be ready to merge and still be waiting on a person, a
+        # failure or an unreadable source. The headline reports the first of
+        # those; the order has to report the rest.
+        (
+            "ready",
+            "ready-unavailable",
+            ["ready_to_merge", "source_unavailable"],
+            "ready to merge",
+            "source unavailable",
+        ),
+        (
+            "ready",
+            "ready-failed",
+            ["ready_to_merge", "provider_failed"],
+            "ready to merge",
+            "provider run failed",
+        ),
+        (
+            "ready",
+            "ready-approval",
+            ["ready_to_merge", "approval_required"],
+            "ready to merge",
+            "waiting for approval",
+        ),
+        # Weaker evidence never demotes the stronger action the same record
+        # records: a stale observation of work that is ready to merge is still
+        # ordered as work that is ready to merge.
+        (
+            "ready",
+            "ready-stale",
+            ["ready_to_merge", "stale_observation"],
+            "ready to merge",
+            "ready to merge",
+        ),
+        ("ready", "ready-plain", ["ready_to_merge"], "ready to merge", "ready to merge"),
+        # Terminal work that owes nothing stays terminal, even though the same
+        # record also states that the implementation is complete and the review
+        # passed. Terminal work that owes something is ordered by what it owes.
+        ("merged", "merged-alone", [], "merged", "merged"),
+        (
+            "merged",
+            "merged-unavailable",
+            ["source_unavailable"],
+            "merged",
+            "source unavailable",
+        ),
+        ("merged", "merged-failed", ["provider_failed"], "merged", "provider run failed"),
+        (
+            "merged",
+            "merged-approval",
+            ["approval_required"],
+            "merged",
+            "waiting for approval",
+        ),
+        # Work recorded as running owes nothing right now, so it sits between
+        # everything that does and everything that is finished.
+        ("observed_running", "running-plain", [], "provider run observed", "provider run observed"),
+    )
+
+    def _urgency_matrix_records(self) -> list[dict]:
+        return [
+            _record_with_reasons(fixture, reference, list(reasons))
+            for fixture, reference, reasons, _, _ in self.URGENCY_MATRIX
+        ]
+
+    def test_row_urgency_is_computed_from_every_recorded_state(self) -> None:
+        records = self._urgency_matrix_records() + [_observation_fixture("no_work")]
+        # The same board, read in three different input orders. Nothing about
+        # the answer may depend on which order the directory was listed in.
+        payloads = [
+            _observation_payload(records),
+            _observation_payload(list(reversed(records))),
+            _observation_payload(records[3:] + records[:3]),
+        ]
+        # The order the states themselves were recorded in must not matter
+        # either, so every permutation of a recorded state set is asserted.
+        permutations = [
+            ["merged", "waiting for approval", "review passed"],
+            ["ready to merge", "source unavailable", "implementation complete"],
+            ["merged", "implementation complete", "review passed"],
+            ["merged", "stale observation"],
+        ]
+        permuted = [
+            {"case": index, "states": list(order)}
+            for index, labels in enumerate(permutations)
+            for order in itertools.permutations(labels)
+        ]
+        result = _eval_board_view(
+            "(() => {"
+            " const [payloads, nowMs, permuted] = ARGS;"
+            " return {"
+            "  ranking: Object.fromEntries("
+            "    [...ROW_URGENCY_ORDER, ...TERMINAL_ROW_HEADLINES].map(l => [l, stateUrgency(l)])),"
+            "  boards: payloads.map(payload => {"
+            "    const rows = workRows(payload, nowMs);"
+            "    return {"
+            "      references: rows.map(row => row.reference),"
+            "      headlines: rows.map(row => row.headline),"
+            "      urgency: rows.map(row => rowUrgency(row)),"
+            "      selected: resolveSelection(rows, null),"
+            "      keys: rows.map(row => row.key)"
+            "    };"
+            "  }),"
+            "  permuted: permuted.map(item =>"
+            "    rowUrgency({states: item.states.map(label => ({label}))}))"
+            " };"
+            "})()",
+            payloads,
+            int(OBSERVATION_NOW.timestamp() * 1000),
+            permuted,
+        )
+
+        ranking = result["ranking"]
+        expected_urgency = {
+            reference: ranking[ordering_state]
+            for _, reference, _, _, ordering_state in self.URGENCY_MATRIX
+        }
+        expected_headline = {
+            reference: headline for _, reference, _, headline, _ in self.URGENCY_MATRIX
+        }
+        # Most urgent first, then the declared tiebreak on the reference. Every
+        # row that states an outstanding blocker or action sorts above the
+        # merged row that states nothing but its own completion, and the idle
+        # row is last because it is genuinely terminal.
+        expected_order = [
+            "merged-unavailable",
+            "ready-unavailable",
+            "merged-failed",
+            "ready-failed",
+            "merged-approval",
+            "ready-approval",
+            "ready-plain",
+            "ready-stale",
+            "running-plain",
+            "merged-alone",
+            "Board contract delivery",
+        ]
+        for board_index, board_rows in enumerate(result["boards"]):
+            with self.subTest(input_order=board_index):
+                self.assertEqual(board_rows["references"], expected_order)
+                # The display headline rules are untouched: a merged record
+                # still reads as merged and a ready one still reads as ready to
+                # merge, however they are ordered.
+                headlines = dict(zip(board_rows["references"], board_rows["headlines"], strict=True))
+                for reference, headline in expected_headline.items():
+                    self.assertEqual(headlines[reference], headline)
+                # And each row is ordered by the state it owes, not by the one
+                # it reads as.
+                urgency = dict(zip(board_rows["references"], board_rows["urgency"], strict=True))
+                for reference, value in expected_urgency.items():
+                    self.assertEqual(urgency[reference], value, reference)
+                self.assertEqual(
+                    board_rows["urgency"], sorted(board_rows["urgency"]), "rows are not sorted"
+                )
+                # An operator who has chosen nothing is shown the most urgent
+                # row, so the default selection follows the same ranking.
+                self.assertEqual(board_rows["selected"], board_rows["keys"][0])
+                self.assertIn("merged-unavailable", board_rows["selected"])
+
+        # Urgency is a function of the set of recorded states, not of the order
+        # they arrived in: every permutation of one set answers identically.
+        by_case: dict[int, set[int]] = {}
+        for item, value in zip(permuted, result["permuted"], strict=True):
+            by_case.setdefault(item["case"], set()).add(value)
+        self.assertEqual(
+            [sorted(values) for _, values in sorted(by_case.items())],
+            [
+                [ranking["waiting for approval"]],
+                [ranking["source unavailable"]],
+                [ranking["merged"]],
+                [ranking["merged"]],
+            ],
+        )
+
+    def test_the_default_selection_opens_on_work_that_still_owes_something(self) -> None:
+        # The same ranking, proved through the rendered page rather than
+        # through the model: the row the browser marks as selected is the
+        # merged record that is also recorded as unreadable, not the merged
+        # record that owes nothing.
+        records = self._urgency_matrix_records()
+        worklist = _render_board_sequence([{"payload": _observation_payload(records)}])[0][
+            "worklist"
+        ]
+        references = re.findall(r'<span class="ref">([^<]+)</span>', worklist)
+        self.assertEqual(references[0], "merged-unavailable")
+        self.assertEqual(references[-1], "merged-alone")
+        self.assertTrue(_selected_key(worklist).endswith("merged-unavailable"))
+        self.assertEqual(_selected_key(worklist), _work_keys(worklist)[0])
+        # The selected row still reads as merged: ordering it by what it owes
+        # did not rewrite what it says.
+        headlines = re.findall(
+            r'aria-hidden="true">[^<]*</span> ([^<]+)</span><span class="pill">stage', worklist
+        )
+        self.assertEqual(
+            dict(zip(references, headlines, strict=True)),
+            {reference: headline for _, reference, _, headline, _ in self.URGENCY_MATRIX},
+        )
+
+    def test_headline_only_urgency_would_bury_work_that_still_owes_something(self) -> None:
+        # The mutation this test exists to catch: ranking a row by its headline
+        # alone, which is what the sort used to do. It is executed here against
+        # the shipped model so the difference is demonstrated, not asserted.
+        records = self._urgency_matrix_records() + [_observation_fixture("no_work")]
+        payload = _observation_payload(records)
+        result = _eval_board_view(
+            "(() => {"
+            " const [payload, nowMs] = ARGS;"
+            " const rows = workRows(payload, nowMs);"
+            " const headlineOnly = [...rows].sort((a, b) =>"
+            "   stateUrgency(a.headline) - stateUrgency(b.headline)"
+            "   || a.reference.localeCompare(b.reference)"
+            "   || a.key.localeCompare(b.key));"
+            " return {"
+            "  shipped: rows.map(row => row.reference),"
+            "  headlineOnly: headlineOnly.map(row => row.reference),"
+            "  shippedSelected: resolveSelection(rows, null),"
+            "  headlineOnlySelected: resolveSelection(headlineOnly, null)"
+            " };"
+            "})()",
+            payload,
+            int(OBSERVATION_NOW.timestamp() * 1000),
+        )
+        self.assertNotEqual(result["shipped"], result["headlineOnly"])
+        # Headline-only ordering buries every merged record -- including the
+        # three that are still blocked or waiting on a person -- beneath work
+        # that is merely in flight, and opens the Board on a ready-to-merge
+        # item while an unreadable source goes unseen.
+        self.assertEqual(
+            result["headlineOnly"][:5],
+            [
+                "ready-approval",
+                "ready-failed",
+                "ready-plain",
+                "ready-stale",
+                "ready-unavailable",
+            ],
+        )
+        self.assertEqual(
+            result["headlineOnly"][-5:],
+            [
+                "merged-alone",
+                "merged-approval",
+                "merged-failed",
+                "merged-unavailable",
+                "Board contract delivery",
+            ],
+        )
+        self.assertEqual(result["shipped"][0], "merged-unavailable")
+        self.assertNotEqual(result["shippedSelected"], result["headlineOnlySelected"])
 
     def test_detail_actions_keep_keyboard_focus_across_a_refresh(self) -> None:
         payload = _observation_payload([_observation_fixture("ready")])

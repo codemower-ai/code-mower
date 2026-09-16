@@ -2355,50 +2355,106 @@ _BOARD_HTML = """<!doctype html>
     // So urgency is its own explicit ranking. Blocked work comes first, then
     // work waiting on a named person, then work whose evidence cannot be
     // trusted, then work that is simply in flight, and terminal work last.
-    const ROW_URGENCY_ORDER = [
+    //
+    // A record routinely carries several of these at once, and the headline
+    // reports only one of them. Ranking a row by its headline alone would
+    // therefore lose the rest: an item recorded as both ready to merge and
+    // waiting for approval reads as "ready to merge" -- correctly, that is the
+    // truth that describes it best -- and would then be ordered as if the
+    // approval nobody has given yet were not recorded at all. So urgency is
+    // computed over every state a row records, and the ranking below is a
+    // ranking of states rather than of headlines.
+    const ROW_URGENCY_BANDS = [
       // Blocked: an operator has to unblock this before anything else moves.
-      "source unavailable",
-      "changes requested",
-      "CI failed",
-      "gate failed",
-      "provider run failed",
-      "provider run cancelled",
+      {name: "blocked", demanding: true, labels: [
+        "source unavailable",
+        "changes requested",
+        "CI failed",
+        "gate failed",
+        "provider run failed",
+        "provider run cancelled"
+      ]},
       // Actionable: a named person is the only thing this is waiting on.
-      "waiting for approval",
-      "waiting for an answer",
-      "ready to merge",
-      "ready for human review",
-      "review requested",
+      {name: "actionable", demanding: true, labels: [
+        "waiting for approval",
+        "waiting for an answer",
+        "ready to merge",
+        "ready for human review",
+        "review requested"
+      ]},
       // Untrustworthy evidence: not known to be moving, not known to be stuck.
-      "stale observation",
-      "stale review",
-      "identity unlinked",
-      "state not recorded",
+      // Nobody is named as owing anything here, so evidence this weak orders a
+      // row but never overrides a terminal state the same row records.
+      {name: "untrusted", demanding: false, labels: [
+        "stale observation",
+        "stale review",
+        "identity unlinked",
+        "state not recorded"
+      ]},
       // In flight: recorded as progressing, so nothing is owed right now.
-      "review observed running",
-      "CI pending",
-      "gate pending",
-      "provider reported progress",
-      "provider run observed",
-      "dispatched",
-      "implementation complete",
-      "review passed",
-      "assigned"
+      {name: "in_flight", demanding: false, labels: [
+        "review observed running",
+        "CI pending",
+        "gate pending",
+        "provider reported progress",
+        "provider run observed",
+        "dispatched",
+        "implementation complete",
+        "review passed",
+        "assigned"
+      ]}
     ];
+    const ROW_URGENCY_ORDER = ROW_URGENCY_BANDS.flatMap(band => band.labels);
+    // The states that keep a record out of the terminal band: something is
+    // blocked, or a named person still has to act. Merged work that is also
+    // recorded as waiting for approval, failing or unreadable is not finished
+    // work, so it is ordered by what it still owes.
+    const DEMANDING_ROW_STATES = new Set(
+      ROW_URGENCY_BANDS.filter(band => band.demanding).flatMap(band => band.labels));
     // Terminal work is placed last explicitly rather than by falling off the
     // end of the ranking, so nothing can be finished and urgent at once.
     const TERMINAL_ROW_HEADLINES = ["merged", "idle with complete coverage"];
     const ROW_URGENCY = new Map(ROW_URGENCY_ORDER.map((label, index) => [label, index]));
-    // A headline nobody ranked is neither promoted above recorded work nor
+    // A state nobody ranked is neither promoted above recorded work nor
     // buried under finished work: it sorts after everything named above and
-    // before the terminal band.
+    // before the terminal band, and it counts as something owed, because an
+    // unranked state is not evidence that a record is finished.
     const UNRANKED_ROW_URGENCY = ROW_URGENCY_ORDER.length;
     const TERMINAL_ROW_URGENCY = new Map(
       TERMINAL_ROW_HEADLINES.map((label, index) => [label, UNRANKED_ROW_URGENCY + 1 + index]));
-    function rowUrgency(headline) {
-      const terminal = TERMINAL_ROW_URGENCY.get(headline);
+    function stateUrgency(label) {
+      const terminal = TERMINAL_ROW_URGENCY.get(label);
       if (terminal !== undefined) return terminal;
-      return ROW_URGENCY.get(headline) ?? UNRANKED_ROW_URGENCY;
+      return ROW_URGENCY.get(label) ?? UNRANKED_ROW_URGENCY;
+    }
+    function isDemandingState(label) {
+      if (TERMINAL_ROW_URGENCY.has(label)) return false;
+      return DEMANDING_ROW_STATES.has(label) || !ROW_URGENCY.has(label);
+    }
+    // Where one row sorts, decided by everything it records rather than by the
+    // one state that reads best. The most urgent recorded state wins, so the
+    // order never depends on which state the headline rules happened to pick,
+    // nor on the order the states were recorded in. The single exception is
+    // terminal work: a record that is terminal and owes nothing stays last,
+    // and a record that is terminal while also carrying a blocker or an
+    // outstanding action requirement is ordered by that requirement instead.
+    function rowUrgency(row) {
+      const labels = new Set(arrayOf(row?.states).map(state => text(state?.label)).filter(Boolean));
+      let owed = null;
+      let terminal = null;
+      let demanding = false;
+      for (const label of labels) {
+        const urgency = stateUrgency(label);
+        if (TERMINAL_ROW_URGENCY.has(label)) {
+          terminal = terminal === null ? urgency : Math.min(terminal, urgency);
+          continue;
+        }
+        owed = owed === null ? urgency : Math.min(owed, urgency);
+        if (isDemandingState(label)) demanding = true;
+      }
+      if (terminal !== null && !demanding) return terminal;
+      if (owed !== null) return owed;
+      return terminal === null ? UNRANKED_ROW_URGENCY : terminal;
     }
     // How recent one observation of a linked identity is. `created_at` is when
     // the observation itself was recorded, so it is what orders two
@@ -2514,7 +2570,7 @@ _BOARD_HTML = """<!doctype html>
       return observationGroups(data)
         .map(group => workRow(consolidatedRecord(group), nowMs))
         .sort((a, b) =>
-          rowUrgency(a.headline) - rowUrgency(b.headline)
+          rowUrgency(a) - rowUrgency(b)
           || a.reference.localeCompare(b.reference)
           || a.key.localeCompare(b.key));
     }
