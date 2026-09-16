@@ -276,26 +276,37 @@ class GuidedGraphSessionTests(unittest.TestCase):
         again.
         """
         handle = self.fetch()["packet_handle"]
-        binding = self._attach(handle, self.manifest.commit, consuming_revision=self.manifest.commit)
+        metadata = self._attach(handle, self.manifest.commit, consuming_revision=self.manifest.commit)
+        current = context_delivery.mark_published(self.store, "local-graph", metadata["revision"])
         with patch("code_mower.context_packets.purge_connection", side_effect=RuntimeError("boom")):
             summary = connection.disconnect(self.store, "local-graph")
             self.assertEqual((summary["status"], summary["packet_cleanup"]), ("disconnected", "needs_attention"))
             with self.assertRaises(ContextError):
                 self._reconnect()
-        # Cleanup is still pending: the connection stays disconnected, and
-        # neither the surviving packet nor its attachment binding is usable.
+        # Cleanup is still pending: the connection stays disconnected and the
+        # surviving packet cannot be loaded. ``read_binding`` is only a
+        # private file lookup with no authorization of its own, so the
+        # binding it names is expected to still be there -- that survival is
+        # exactly the pending cleanup, not a security property by itself.
         with self.store.locked("local-graph") as locked:
             self.assertEqual(connection.saved_state(locked.read(), "local-graph")["state"], "disconnected")
         with self.assertRaises(ContextError):
             self.load(handle, "claude:builder")
+        survived = context_delivery.read_binding(self.store, metadata["revision"])
+        self.assertTrue(survived["published"])
+        # The actual security property: a published binding must not replay
+        # while the connection that authorized it is disconnected.
         with self.assertRaises(ContextError):
-            context_delivery.read_binding(self.store, binding["revision"])
+            context_delivery.deliver(
+                self.store, metadata["revision"], repository="owner/repo", pr=1, head=self.manifest.commit,
+                recipient="claude:reviewer", current=current, consuming_revision=self.manifest.commit,
+            )
         # Cleanup now succeeds: reconnect completes it and only then verifies.
         self.assertEqual(self._reconnect()["status"], "verified")
         with self.assertRaises(ContextError):
             self.load(handle, "claude:builder")
         with self.assertRaises(ContextError):
-            context_delivery.read_binding(self.store, binding["revision"])
+            context_delivery.read_binding(self.store, metadata["revision"])
 
     def test_connection_status_reports_the_graph_without_minting_evidence(self) -> None:
         report = connection.status(self.store, "local-graph", root=self.private)
