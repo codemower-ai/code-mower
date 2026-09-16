@@ -4768,6 +4768,407 @@ class BoardObservationReaderTests(TestCase):
     def test_resolved_metadata_paths_bind_the_observation_directory(self) -> None:
         paths = board.resolved_metadata_paths(board.BoardConfig(repo="owner/repo", repo_path="/repo"))
         self.assertTrue(paths["observations_path"].endswith("/.code-mower/board/observations"))
+class BoardObservationPathBoundaryTests(TestCase):
+    """Every look at the observation directory, and what each failure costs.
+
+    This directory is read while one whole Board snapshot is being assembled,
+    so a filesystem call that raises here does not cost observations -- it costs
+    the refresh, and with it the repository, PR and lane data that has nothing
+    to do with observations. The rule these hold every boundary to is the same
+    one: answer from the closed path-state vocabulary, degrade observations
+    alone, and name neither the path nor the errno while doing it.
+    """
+
+    UNREADABLE_STATE = {
+        "path_state": "unreadable",
+        "path_exists": None,
+        "available": False,
+        "coverage": "unavailable",
+        "coverage_complete": False,
+        "coverage_gaps": ["directory_unreadable"],
+        "candidate_files": None,
+        "omitted_files": None,
+        "unaccounted_files": None,
+        "read_files": 0,
+        "message": "could not read local Board observations",
+    }
+
+    def _payload(self, path: Path) -> dict:
+        return board.observations_payload(
+            board.BoardConfig(repo="owner/repo", observations_path=str(path))
+        )
+
+    def _assert_state(self, payload: dict, expected: dict) -> None:
+        self.assertEqual({key: payload[key] for key in expected}, expected)
+
+    @contextmanager
+    def _counted_stat(self, target: Path, *, raises: BaseException | None = None):
+        """Count metadata calls against one path, optionally failing them."""
+
+        calls: list[str] = []
+        real_stat = os.stat
+
+        def fake_stat(candidate, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if os.fspath(candidate) == str(target):
+                calls.append(os.fspath(candidate))
+                if raises is not None:
+                    raise raises
+            return real_stat(candidate, *args, **kwargs)
+
+        with patch.object(board.os, "stat", fake_stat):
+            yield calls
+
+    @contextmanager
+    def _counted(self, name: str):
+        """Count calls to one ``os`` entry point without changing what it does."""
+
+        calls: list[object] = []
+        real = getattr(board.os, name)
+
+        def counting(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(path)
+            return real(path, *args, **kwargs)
+
+        with patch.object(board.os, name, counting):
+            yield calls
+
+    def test_every_path_state_is_decided_by_one_metadata_call(self) -> None:
+        """The real filesystem states, their payload, and the syscall budget.
+
+        One ``stat`` answers "does it exist" and "is it a directory" together,
+        so there is no window between the two for the entry to change kind in,
+        and a refresh cannot be made to pay for repeated lookups. A symlink to
+        the directory is the directory, exactly as ``Path.exists()`` resolved
+        it before; only the entries *inside* are never followed.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "real").mkdir()
+            (root / "plain.json").write_text("{}", encoding="utf-8")
+            (root / "link").symlink_to(root / "real", target_is_directory=True)
+            cases = [
+                ("directory", root / "real", "directory", True, True),
+                ("symlink to a directory", root / "link", "directory", True, True),
+                ("missing name", root / "absent", "missing", False, True),
+                ("regular file", root / "plain.json", "not_directory", True, False),
+                # An ancestor that is a file makes the name unresolvable
+                # (ENOTDIR), which is a statement about the name and not about
+                # access to it -- the same answer `Path.exists()` gave.
+                ("ancestor is a file", root / "plain.json" / "obs", "missing", False, True),
+            ]
+            for label, path, state, exists, available in cases:
+                with self.subTest(case=label):
+                    with self._counted_stat(path) as calls:
+                        payload = self._payload(path)
+                    self._assert_state(
+                        payload,
+                        {"path_state": state, "path_exists": exists, "available": available},
+                    )
+                    self.assertEqual(len(calls), 1)
+                    self.assertIn(payload["path_state"], board.OBSERVATION_PATH_STATES)
+
+    def test_a_failing_metadata_call_degrades_observations_instead_of_raising(self) -> None:
+        """Every way the preflight stat can fail, and which fact it becomes.
+
+        The split is deliberate and conservative: the errnos that mean the name
+        did not resolve are exactly the ones ``Path.exists()`` already answered
+        "no" for, so they still read as ``missing``; everything else -- every
+        errno that used to escape as an exception and abort the refresh -- is
+        ``unreadable``, because the Board could not look and "not there" is a
+        claim it cannot support.
+        """
+
+        missing_state = {
+            "path_state": "missing",
+            "path_exists": False,
+            "available": True,
+            "coverage": "complete",
+            "coverage_complete": True,
+            "records": [],
+            "warnings": [],
+            "message": "no local Board observations recorded yet",
+        }
+        cases = [
+            ("permission denied", PermissionError(errno.EACCES, "Permission denied"), "unreadable"),
+            ("io error", OSError(errno.EIO, "Input/output error"), "unreadable"),
+            ("name too long", OSError(errno.ENAMETOOLONG, "File name too long"), "unreadable"),
+            ("stale handle", OSError(getattr(errno, "ESTALE", errno.EIO), "Stale file handle"), "unreadable"),
+            ("timed out", TimeoutError(errno.ETIMEDOUT, "Operation timed out"), "unreadable"),
+            ("errno-less OSError", OSError("filesystem said no"), "unreadable"),
+            ("not found", FileNotFoundError(errno.ENOENT, "No such file"), "missing"),
+            ("ancestor not a directory", NotADirectoryError(errno.ENOTDIR, "Not a directory"), "missing"),
+            ("symlink loop", OSError(errno.ELOOP, "Too many levels of symbolic links"), "missing"),
+            ("bad descriptor", OSError(errno.EBADF, "Bad file descriptor"), "missing"),
+            ("unencodable path", ValueError("embedded null byte"), "missing"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "obs.json").write_text(
+                json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+            )
+            for label, failure, state in cases:
+                with self.subTest(case=label):
+                    with self._counted_stat(directory, raises=failure) as calls:
+                        # No exception escapes: the call returns a payload.
+                        payload = self._payload(directory)
+                    self.assertEqual(len(calls), 1)
+                    if state == "missing":
+                        self._assert_state(payload, missing_state)
+                    else:
+                        self._assert_state(payload, self.UNREADABLE_STATE)
+                        self.assertEqual(
+                            payload["warnings"],
+                            [{"file": "", "message": "could not check the local Board observation path"}],
+                        )
+                        # Distinguishable from the directory that is there but
+                        # is the wrong kind, and from one that could not be
+                        # listed: three facts, three diagnostics.
+                        self.assertNotIn("not a directory", json.dumps(payload["warnings"]))
+                        self.assertNotIn("could not list", json.dumps(payload["warnings"]))
+
+    def test_an_unreadable_path_is_never_enumerated_or_opened(self) -> None:
+        """A path that could not be examined is not then read anyway."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "obs.json").write_text(
+                json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+            )
+            with self._counted("scandir") as scans, self._counted("open") as opens:
+                with self._counted_stat(directory, raises=PermissionError(errno.EACCES, "denied")):
+                    payload = self._payload(directory)
+
+        self._assert_state(payload, self.UNREADABLE_STATE)
+        self.assertEqual(scans, [])
+        self.assertEqual(opens, [])
+
+    def test_an_inaccessible_ancestor_degrades_instead_of_aborting(self) -> None:
+        """The reported case, on a real filesystem rather than a patched one."""
+
+        if os.geteuid() == 0:  # pragma: no cover - root ignores the mode bits
+            raise SkipTest("root can search a directory with no permissions")
+        with tempfile.TemporaryDirectory() as tmp:
+            ancestor = Path(tmp) / "locked"
+            observations = ancestor / "observations"
+            observations.mkdir(parents=True)
+            (observations / "obs.json").write_text(
+                json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+            )
+            os.chmod(ancestor, 0o000)
+            try:
+                try:
+                    os.stat(observations)
+                except PermissionError:
+                    pass
+                else:  # pragma: no cover - some filesystems ignore the mode
+                    raise SkipTest("this filesystem does not enforce directory search permission")
+                payload = self._payload(observations)
+            finally:
+                os.chmod(ancestor, 0o700)
+
+        self._assert_state(payload, self.UNREADABLE_STATE)
+        self.assertEqual(payload["records"], [])
+        self.assertEqual(
+            payload["warnings"],
+            [{"file": "", "message": "could not check the local Board observation path"}],
+        )
+
+    def test_the_whole_snapshot_still_refreshes_when_observations_cannot_be_read(self) -> None:
+        """Observations degrade; repository, PR and lane data do not.
+
+        This is the cost the finding was about. ``observations_payload`` is one
+        step of ``status_payload``, so an exception raised at this boundary does
+        not produce an unavailable observations block -- it produces no snapshot
+        at all, and the Board serves whatever it had before.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            observations = Path(tmp) / ".code-mower" / "board" / "observations"
+            observations.mkdir(parents=True)
+            with self._counted_stat(observations, raises=PermissionError(errno.EACCES, "denied")):
+                payload = board.status_payload(
+                    board.BoardConfig(repo="owner/repo", repo_path=tmp),
+                    gh_json_runner=_gh_json,
+                    command_runner=_command_runner,
+                )
+
+        self._assert_state(payload["observations"], self.UNREADABLE_STATE)
+        # Everything the refresh would have lost is present and unaffected.
+        self.assertEqual(payload["schema"], lane_status.LANE_STATUS_SCHEMA)
+        self.assertEqual(payload["board"]["schema"], "code_mower.board.v1")
+        self.assertTrue(payload["remote"]["available"])
+        self.assertEqual(len(payload["remote"]["pull_requests"]), 1)
+        self.assertEqual(payload["repo"], "owner/repo")
+        self.assertEqual(payload["productivity"]["current"]["open_pr_count"], 1)
+        self.assertEqual(payload["local_processes"]["processes"][0]["provider"], "codex")
+        for block in ("agent_adapters", "release_campaigns", "owner_queue", "supervised_pilot"):
+            self.assertIn(block, payload)
+
+    def test_a_directory_lost_between_classification_and_enumeration_is_a_gap(self) -> None:
+        """The second look is the one that binds, and losing it is not absence.
+
+        Classification is not a promise about what the enumeration will find.
+        A directory removed, replaced by a file, or made unreadable after it was
+        classified costs the read its candidate set -- which is reported as an
+        unavailable coverage gap, never as "nothing recorded", because the
+        Board cannot know what the entries it never listed would have said.
+        """
+
+        cases = [
+            ("removed", FileNotFoundError(errno.ENOENT, "No such file or directory")),
+            ("swapped for a file", NotADirectoryError(errno.ENOTDIR, "Not a directory")),
+            ("permission revoked", PermissionError(errno.EACCES, "Permission denied")),
+            ("io error", OSError(errno.EIO, "Input/output error")),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "obs.json").write_text(
+                json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+            )
+            for label, failure in cases:
+                with self.subTest(case=label):
+                    with patch.object(board.os, "scandir", side_effect=failure):
+                        payload = self._payload(directory)
+                    self._assert_state(
+                        payload,
+                        {
+                            # What the Board saw is what it reports: the path
+                            # was a directory when it looked.
+                            "path_state": "directory",
+                            "path_exists": True,
+                            "available": False,
+                            "coverage": "unavailable",
+                            "coverage_gaps": ["directory_unreadable"],
+                            "candidate_files": None,
+                            "records": [],
+                        },
+                    )
+                    self.assertEqual(
+                        payload["warnings"],
+                        [{"file": "", "message": "could not list local Board observations"}],
+                    )
+
+    def test_an_entry_whose_metadata_fails_stays_a_candidate_and_is_never_opened(self) -> None:
+        """The per-entry ``lstat`` is guarded on the same terms as the directory.
+
+        An entry the Board cannot classify is not evidence of anything: it stays
+        counted, loses the recency preference, and is never opened -- because
+        "not known to be a regular file" is the state in which an open can block
+        instead of failing.
+        """
+
+        class _Entry:
+            def __init__(self, name: str, failure: BaseException) -> None:
+                self.name = name
+                self._failure = failure
+
+            def stat(self, *, follow_symlinks: bool = True):  # type: ignore[no-untyped-def]
+                raise self._failure
+
+        @contextmanager
+        def _scandir_of(entries: list[_Entry]):
+            class _Scan:
+                def __enter__(self_inner):  # type: ignore[no-untyped-def]
+                    return iter(entries)
+
+                def __exit__(self_inner, *_exc):  # type: ignore[no-untyped-def]
+                    return False
+
+            with patch.object(board.os, "scandir", lambda _path: _Scan()):
+                yield
+
+        cases = [
+            ("permission denied", PermissionError(errno.EACCES, "Permission denied")),
+            ("io error", OSError(errno.EIO, "Input/output error")),
+            ("vanished", FileNotFoundError(errno.ENOENT, "No such file or directory")),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for label, failure in cases:
+                with self.subTest(case=label):
+                    with _scandir_of([_Entry("obs.json", failure)]), self._counted(
+                        "open"
+                    ) as opens:
+                        payload = self._payload(directory)
+
+                    self._assert_state(
+                        payload,
+                        {
+                            "path_state": "directory",
+                            "available": True,
+                            "candidate_files": 1,
+                            "selected_files": 1,
+                            "attempted_files": 1,
+                            "read_files": 0,
+                            "unreadable_files": 1,
+                            "unaccounted_files": 1,
+                            "accepted_records": 0,
+                            "coverage": "partial",
+                            "coverage_complete": False,
+                            "coverage_gaps": ["files_unreadable"],
+                        },
+                    )
+                    self.assertEqual(
+                        payload["warnings"], [{"file": "obs.json", "message": "unreadable_file"}]
+                    )
+                    self.assertEqual(opens, [])
+
+    def test_no_preflight_metadata_check_may_escape_the_guard(self) -> None:
+        """The mutation check: moving either check back outside fails here.
+
+        ``Path.exists()`` and ``Path.is_dir()`` are precisely the two calls the
+        finding was about -- they read as booleans and raise on an inaccessible
+        ancestor. Neither may be reachable from this read again, so both are
+        made fatal for the duration and every path state is exercised through
+        them.
+        """
+
+        def forbidden(*_args: object, **_kwargs: object) -> bool:
+            raise AssertionError("observation path metadata must go through the guarded classifier")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory = root / "observations"
+            directory.mkdir()
+            (directory / "obs.json").write_text(
+                json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+            )
+            (root / "plain.json").write_text("{}", encoding="utf-8")
+            with patch.object(Path, "exists", forbidden), patch.object(Path, "is_dir", forbidden):
+                read = self._payload(directory)
+                missing = self._payload(root / "absent")
+                not_directory = self._payload(root / "plain.json")
+
+        self.assertEqual(len(read["records"]), 1)
+        self._assert_state(read, {"path_state": "directory", "path_exists": True, "available": True})
+        self._assert_state(missing, {"path_state": "missing", "path_exists": False, "available": True})
+        self._assert_state(
+            not_directory, {"path_state": "not_directory", "path_exists": True, "available": False}
+        )
+
+    def test_unavailable_path_diagnostics_carry_no_path_errno_or_os_message(self) -> None:
+        """A failure describes the read, never the filesystem it failed on."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "private-observations-dir"
+            directory.mkdir()
+            failure = PermissionError(
+                errno.EACCES, f"Permission denied while searching {directory}"
+            )
+            with self._counted_stat(directory, raises=failure):
+                payload = self._payload(directory)
+
+        serialized = json.dumps(payload)
+        self.assertNotIn(str(directory), serialized)
+        self.assertNotIn("private-observations-dir", serialized)
+        self.assertNotIn(tmp, serialized)
+        self.assertNotIn("EACCES", serialized)
+        self.assertNotIn("Permission denied", serialized)
+        self.assertNotIn(str(errno.EACCES), serialized)
+        self.assertNotIn("PermissionError", serialized)
+        self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertTrue(payload["path_redacted"])
 
 
 @skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
@@ -6879,6 +7280,60 @@ class BoardWorkFirstViewTests(TestCase):
         rejected_nodes = _render_board_sequence([{"payload": rejected}])[0]
         self.assertIn("passed the observation contract", rejected_nodes["worklist"])
         self.assertIn("1 rejected by the observation contract", rejected_nodes["diagnostics"])
+
+    def test_an_unexaminable_observation_path_renders_as_unread_not_as_absence(self) -> None:
+        """The page says the read failed, and says nothing about the path.
+
+        The rendered wording is the whole point of degrading rather than
+        raising: a path the Board could not examine must never reach a reader
+        as "nothing recorded yet", which is a claim about work. The rest of the
+        page is built from the same snapshot and is unaffected.
+        """
+
+        payload = _observation_payload([])
+        payload["observations"].update(
+            {
+                "available": False,
+                "path_state": "unreadable",
+                "path_exists": None,
+                "coverage": "unavailable",
+                "coverage_complete": False,
+                "coverage_gaps": ["directory_unreadable"],
+                "candidate_files": None,
+                "omitted_files": None,
+                "unaccounted_files": None,
+                "message": "could not read local Board observations",
+                "warnings": [{"file": "", "message": "could not check the local Board observation path"}],
+            }
+        )
+        payload["remote"]["pull_requests"] = [
+            {
+                "number": 1000,
+                "title": "Board: work first",
+                "url": "https://example.invalid/pr/1000",
+                "head_sha": "102ed860272e86f5abc042a046fa0fbda23f55a9",
+                "lane": "claude",
+                "draft": True,
+            }
+        ]
+        nodes = _render_board_sequence([{"payload": payload}])[0]
+
+        self.assertIn("could not read local Board observations", nodes["worklist"])
+        # Never the absence wording: the Board could not look, which is not the
+        # same statement as nothing having been recorded.
+        self.assertNotIn("No local Board observation is recorded yet", nodes["worklist"])
+        self.assertIn("Incomplete snapshot", nodes["worklist"])
+        self.assertIn("observation file coverage unavailable", nodes["worklist"])
+        # The only place "idle" may appear is the sentence withdrawing it.
+        self.assertIn(
+            "Nothing here can be read as complete coverage, as an idle session",
+            nodes["worklist"],
+        )
+        # Coverage is stated as unavailable rather than as a count of nothing.
+        self.assertIn("incomplete snapshot", nodes["chrome"])
+        self.assertIn("could not check the local Board observation path", nodes["diagnostics"])
+        # The rest of the snapshot rendered exactly as it would have.
+        self.assertIn("#1000", nodes["prs"])
 
 
 # One expression over the shipped view model returning every run-level display

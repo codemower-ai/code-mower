@@ -78,6 +78,29 @@ OBSERVATION_COVERAGE_GAPS = (
     "files_unreadable",
     "records_invalid",
 )
+# What the observation path turned out to be, as a closed vocabulary decided in
+# exactly one place (`_classify_observation_path`). `directory` is the only
+# state a read proceeds from. `missing` is a name that does not resolve, which
+# is "nothing recorded yet" and not a loss of evidence. `not_directory` is a
+# name that resolves to something else, and `unreadable` is a name whose own
+# metadata could not be read at all -- an inaccessible ancestor, for instance.
+# The last two are losses: the Board cannot see what is there, so observations
+# degrade to unavailable rather than being reported as absent.
+OBSERVATION_PATH_STATES = ("directory", "missing", "not_directory", "unreadable")
+# The errnos that mean the *name* did not resolve, as opposed to the lookup
+# having failed. They are exactly the set `pathlib` itself treats as "does not
+# exist" when answering `Path.exists()`, which is what this classification
+# replaces: a path that reported one of these before still reports `missing`,
+# and only the errnos that previously escaped as an exception become
+# `unreadable`. Looked up rather than named so an interpreter missing one still
+# imports.
+OBSERVATION_PATH_MISSING_ERRNOS = frozenset(
+    getattr(errno, name) for name in ("ENOENT", "ENOTDIR", "EBADF", "ELOOP") if hasattr(errno, name)
+)
+# The Windows equivalents `pathlib` ignores for the same reason: not ready,
+# invalid name, and a name that cannot be resolved. Plain integers because
+# these have no portable `errno` names.
+OBSERVATION_PATH_MISSING_WINERRORS = frozenset((21, 123, 1921))
 # The guards that make opening an observation candidate safe even though the
 # entry can change kind between being classified and being opened. They are
 # named here rather than inlined so a test can assert they are still in force.
@@ -1220,6 +1243,62 @@ def prune_stale_agent_adapters(
     return result
 
 
+def _classify_observation_path(path: Path) -> str:
+    """Decide what the observation path is, in one call that cannot raise.
+
+    Every preflight question the read asks about the directory -- does it
+    exist, is it a directory -- is answered here from a single ``os.stat``, and
+    the answer is one token from ``OBSERVATION_PATH_STATES``. Centralizing it is
+    the point: ``Path.exists()`` and ``Path.is_dir()`` swallow only the errnos
+    that mean the name did not resolve and re-raise everything else, so an
+    observation directory under an ancestor the process cannot search raises
+    ``PermissionError`` out of what reads like a boolean. Asked from
+    :func:`observations_payload`, which is called while the whole Board snapshot
+    is being assembled, that aborts the entire refresh -- repository, PRs, lanes
+    and all -- over one local directory the Board only ever reads. No metadata
+    call may escape this function, so there is nowhere else for that to happen.
+
+    The three failure states are kept distinct because they are different facts
+    about the evidence. ``missing`` is a name that does not resolve: nothing was
+    recorded, which the Board is entitled to say. ``not_directory`` and
+    ``unreadable`` are losses -- something may well be there and the Board
+    cannot see it -- so they degrade observations to unavailable rather than
+    reporting an absence. The split between ``missing`` and ``unreadable``
+    deliberately reuses the errnos ``pathlib`` treats as non-existence, so a
+    path that answered "no" before answers ``missing`` now and only the errnos
+    that previously escaped become ``unreadable``.
+
+    A single ``stat`` also bounds the syscalls: one metadata call per refresh,
+    with no window between "exists" and "is a directory" for the entry to change
+    kind inside. Nothing here is a promise about what the enumeration that
+    follows will find -- the directory can still be removed or replaced after
+    this returns, which :func:`observations_payload` accounts for as a gap.
+
+    Symlinks are followed, exactly as ``Path.exists()`` and ``Path.is_dir()``
+    did: a link to the observations directory is the directory. The entries
+    *inside* it are the ones never resolved through a link, which is decided per
+    entry in :func:`_select_observation_files` and re-decided on the descriptor.
+    """
+
+    try:
+        status = os.stat(path)
+    except ValueError:
+        # An unencodable path -- an embedded null byte, say -- names nothing on
+        # any filesystem. `Path.exists()` answered False for it, so it stays
+        # "nothing recorded" rather than becoming a new kind of failure.
+        return "missing"
+    except OSError as exc:
+        if (
+            getattr(exc, "errno", None) in OBSERVATION_PATH_MISSING_ERRNOS
+            or getattr(exc, "winerror", None) in OBSERVATION_PATH_MISSING_WINERRORS
+        ):
+            return "missing"
+        # PermissionError and everything else: the Board could not look, which
+        # is never the same answer as nothing being there.
+        return "unreadable"
+    return "directory" if stat.S_ISDIR(status.st_mode) else "not_directory"
+
+
 def _select_observation_files(path: Path) -> tuple[list[tuple[str, bool]], int]:
     """Choose the bounded file set to read, and count every candidate.
 
@@ -1602,16 +1681,36 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
     all, and what the contract rejected. Coverage is ``complete`` only when the
     read lost none of them, because a candidate that produced no record might
     have been the work record that contradicts an idle one beside it.
+
+    Nothing in this function may raise on the filesystem, and that is a property
+    of the Board rather than of observations: this runs inside the assembly of
+    one whole snapshot, so an exception escaping here costs the refresh its
+    repository, PR and lane data too. Every look at the directory is therefore
+    guarded -- the preflight metadata by :func:`_classify_observation_path`,
+    which answers in one call that cannot raise, and the enumeration by the
+    handler below. Observations are the only thing that degrades; the rest of
+    the snapshot is built exactly as it would have been.
     """
 
     path = _observations_path(config)
+    # One metadata call decides all of it, and it cannot raise. Everything
+    # below reads this token; no branch here asks the filesystem the same
+    # question a second time, and none of them can abort the refresh.
+    path_state = _classify_observation_path(path)
     payload: dict[str, Any] = {
         "schema": BOARD_OBSERVATIONS_SCHEMA,
         "record_schema": board_observation.SCHEMA,
         "available": True,
         "path": lane_status.LOCAL_PATH_REDACTION,
         "path_redacted": True,
-        "path_exists": path.exists(),
+        # What the path is, from the closed `OBSERVATION_PATH_STATES`
+        # vocabulary; it names no path and carries no errno. `path_exists` is
+        # the same fact reduced to the boolean consumers already read, and is
+        # `null` -- neither true nor false -- when the Board could not look,
+        # because "it is not there" is a claim an unreadable path cannot
+        # support.
+        "path_state": path_state,
+        "path_exists": {"directory": True, "not_directory": True, "missing": False}.get(path_state),
         "records": [],
         "warnings": [],
         "rejected": 0,
@@ -1656,15 +1755,29 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
         "message": "could not read local Board observations",
         "available": False,
     }
-    if not path.exists():
+    if path_state == "missing":
         return payload
-    if not path.is_dir():
+    if path_state == "not_directory":
         payload.update(unreadable)
         payload["warnings"].append({"file": "", "message": "observation path is not a directory"})
+        return payload
+    if path_state == "unreadable":
+        # Its own diagnostic, because it is its own fact: the path could not be
+        # examined, which is neither "not there" nor "there but wrong kind".
+        # Like every other diagnostic here it carries no path and no errno.
+        payload.update(unreadable)
+        payload["warnings"].append(
+            {"file": "", "message": "could not check the local Board observation path"}
+        )
         return payload
     try:
         selected, candidate_count = _select_observation_files(path)
     except OSError:
+        # The classification above is not a promise: the directory can be
+        # removed or replaced before this enumeration reaches it. Losing it here
+        # is reported as a gap rather than as an absence, for the same reason
+        # every other lost candidate is -- the Board cannot know what the
+        # entries it never listed would have said.
         payload.update(unreadable)
         payload["warnings"].append({"file": "", "message": "could not list local Board observations"})
         return payload

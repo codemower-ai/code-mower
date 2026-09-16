@@ -765,8 +765,29 @@ The block carries:
   no local path and no byte of file content; the `file` field carries the bare
   candidate name inside the Board's own observations directory and nothing else,
   and the page renders the diagnostics as counts per term without it.
-- `path`, redacted as `[local path hidden]`, `path_exists`, `available`, and a
-  safe `message`.
+- `path`, redacted as `[local path hidden]`, `path_state`, `path_exists`,
+  `available`, and a safe `message`. `path_state` is a closed vocabulary —
+  `directory`, `missing`, `not_directory`, `unreadable` — decided by one
+  metadata call per refresh that cannot raise, and `path_exists` is the same
+  fact as the boolean consumers already read: `true` for `directory` and
+  `not_directory`, `false` for `missing`, and `null` for `unreadable`, because
+  "it is not there" is a claim a path the Board could not examine cannot
+  support. Only `missing` is an absence the Board is entitled to state as
+  "nothing recorded yet"; `not_directory` and `unreadable` are losses of
+  evidence and degrade the block to `available: false` with `unavailable`
+  coverage and the `directory_unreadable` gap, each with its own fixed
+  diagnostic (`observation path is not a directory`, `could not check the local
+  Board observation path`, and `could not list local Board observations` for a
+  directory lost between that check and the enumeration). None of them names a
+  path, an errno or an OS message.
+
+Nothing in this block may raise on the filesystem. It is assembled as one step
+of the whole `/api/status` snapshot, so an exception at this boundary would not
+produce an unavailable observations block — it would abort the refresh and take
+the repository, PR and lane data with it, leaving the page on whatever it served
+before. An observation directory under an ancestor the process cannot search is
+the ordinary way that happens. Observations are therefore the only thing that
+degrades: every other block is built exactly as it would have been.
 
 Observations are not copied into the local Board event store: `code-mower board
 record` and `--record-events` persist the snapshot without the `observations`
