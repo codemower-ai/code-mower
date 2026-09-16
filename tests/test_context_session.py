@@ -178,6 +178,45 @@ class ContextSessionContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ContextError, "conflicts with the saved session"):
             context_session.resolve_bound("repository", "owner/repo", "owner/other")
 
+    def test_reserving_state_is_reported_like_pending_and_rejects_malformed_combinations(self):
+        """The durable pre-publication ``reserving`` marker validates and is
+        reported exactly like ``pending`` -- attach reconciliation, no owner
+        action -- and malformed cross-state combinations fail closed rather
+        than being inferred from a missing artifact (codex:1a4bc7b34687da726908)."""
+        record = context_session.create(self.store, self.session, work_item="SECRET-1", policy=POLICY)
+        prepared = context_session.update(
+            self.store, self.session["id"], expected_generation=record["generation"],
+            changes={
+                "stage": "prepared", "builder": "codex", "query_mode": "work_item",
+                "request_hash": "c" * 64, "packet": "b" * 32, "work_order": "work-order.md",
+            },
+        )
+        reserving = context_session.update(
+            self.store, self.session["id"], expected_generation=prepared["generation"],
+            changes={
+                "pr": 7, "head": "d" * 40, "revision": "e" * 32, "attachment_state": "reserving",
+            },
+        )
+        self.assertEqual(reserving["attachment_state"], "reserving")
+        status = context_session.status(reserving, lease_live=True)
+        self.assertEqual(status["stage"], "attachment_pending")
+        self.assertFalse(status["owner_action"])
+        self.assertIn("attach", status["next_action"])
+        for private in ("SECRET-1", "example-context", "owner/repo", "e" * 32):
+            self.assertNotIn(private, json.dumps(status))
+
+        for mutation in (
+            # Claims a mid-preparation stage while still holding an
+            # attachment identity -- a malformed cross-state record.
+            {"stage": "preparing", "builder": None, "query_mode": None, "request_hash": None,
+             "packet": None, "work_order": None},
+            {"pr": None},
+            {"head": None},
+            {"revision": None},
+        ):
+            with self.subTest(mutation=mutation), self.assertRaises(ContextError):
+                context_session.validate({**copy.deepcopy(reserving), **mutation})
+
     def test_malformed_or_cross_bound_records_fail_closed(self):
         record = context_session.create(self.store, self.session, work_item="ITEM-1", policy=POLICY)
         mutations = (

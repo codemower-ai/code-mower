@@ -328,6 +328,13 @@ class GuidedContextTests(unittest.TestCase):
         self.assertEqual(context_session.read(self.associations, self.session["id"])["revision"], revision)
 
     def test_process_crashes_around_local_reservation_and_publish_mark_resume(self):
+        # A crash inside ``reserve_attachment`` itself leaves the durable
+        # ``reserving`` marker behind with no binding ever created -- a
+        # process stop before reservation creates any binding
+        # (codex:1a4bc7b34687da726908). A later attach must recognize that
+        # state, safely finish cleanup, and only then let a fresh attach
+        # succeed; it must never silently resume toward publication in the
+        # same call that recognized the stale marker.
         with self.patches()[0], self.patches()[1], self.patches()[2], self.patches()[3], self.patches()[4], \
                 mock.patch.object(context_guided, "reserve_attachment", side_effect=KeyboardInterrupt()):
             with self.assertRaises(KeyboardInterrupt):
@@ -339,12 +346,21 @@ class GuidedContextTests(unittest.TestCase):
                     pr=42,
                     backend=self.fixture.backend,
                 )
-        pending = context_session.read(self.associations, self.session["id"])
-        revision = pending["revision"]
-        self.assertEqual(pending["attachment_state"], "pending")
+        reserving = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(reserving["attachment_state"], "reserving")
+        self.assertIsNotNone(reserving["revision"])
+
+        with self.assertRaisesRegex(ContextError, "rerun attach"):
+            self.attach()
+        recovered = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(
+            (recovered["attachment_state"], recovered["pr"], recovered["head"], recovered["revision"]),
+            ("none", None, None, None),
+        )
+        self.assertEqual(self.comments, [])
+
         report, code = self.attach()
         self.assertEqual((report["status"], code), ("attached", 0))
-        self.assertEqual(context_session.read(self.associations, self.session["id"])["revision"], revision)
 
         # Move to a new head so the same session creates another intent. GitHub
         # accepts its comment and the binding is enabled, then the process stops
@@ -558,10 +574,11 @@ class GuidedContextTests(unittest.TestCase):
             ("none", None, None, None),
         )
 
-    def test_rollback_failure_retains_the_pending_intent_rather_than_claiming_success(self):
-        """If the abandon step itself fails, the saved pending intent is left
-        in place rather than reported as cleared -- a ``ContextError`` there
-        does not prove no local write occurred (codex:1a4bc7b34687da726908)."""
+    def test_rollback_failure_retains_the_reserving_intent_rather_than_claiming_success(self):
+        """If the abandon step itself fails, the saved durable pre-publication
+        (``reserving``) intent is left in place rather than reported as
+        cleared -- a ``ContextError`` there does not prove no local write
+        occurred (codex:1a4bc7b34687da726908)."""
         with (
             self.patches()[0], self.patches()[1], self.patches()[2],
             self.patches()[3], self.patches()[4],
@@ -573,9 +590,154 @@ class GuidedContextTests(unittest.TestCase):
                     self.associations, self.fixture.store, self.record, repo_path=self.root,
                     pr=42, backend=self.fixture.backend,
                 )
-        pending = context_session.read(self.associations, self.session["id"])
-        self.assertEqual(pending["attachment_state"], "pending")
-        self.assertIsNotNone(pending["revision"])
+        reserving = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(reserving["attachment_state"], "reserving")
+        self.assertIsNotNone(reserving["revision"])
+
+    def test_interrupted_association_clear_after_reservation_recovers_on_retry(self):
+        """A crash between abandoning an unpublished binding and clearing the
+        session association leaves the durable ``reserving`` marker behind,
+        with the reservation it once named already gone. The next attach
+        recognizes that state, finishes cleanup idempotently, and only then
+        permits an explicit refresh and a successful reattachment
+        (codex:1a4bc7b34687da726908)."""
+        revision = uuid.uuid4().hex
+        reserving = context_session.update(
+            self.associations, self.session["id"], expected_generation=self.record["generation"],
+            changes={
+                "stage": "prepared", "pr": 42, "head": self.head, "revision": revision,
+                "attachment_state": "reserving",
+            },
+        )
+        context_guided.reserve_attachment(
+            self.fixture.store, reserving["connection"], reserving["packet"], reserving["policy"],
+            context_guided.ContextRequest(reserving["repo"], reserving["work_item"], "codex:orchestrator"),
+            pr=42, head=self.head, revision=revision, backend=self.fixture.backend,
+        )
+        # The reservation genuinely exists on disk; a crash then lands
+        # between the two writes ``_abandon_and_clear`` itself makes.
+        context_guided.abandon_attachment(
+            self.fixture.store, reserving["connection"], reserving["packet"], revision,
+        )
+        with self.assertRaisesRegex(ContextError, "rerun attach"):
+            self.attach()
+        recovered = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(
+            (recovered["attachment_state"], recovered["pr"], recovered["head"], recovered["revision"]),
+            ("none", None, None, None),
+        )
+        self.assertEqual(self.comments, [])
+        with self.assertRaises(ContextError):
+            read_binding(self.fixture.store, revision)
+        report, code = self.attach()
+        self.assertEqual((report["status"], code), ("attached", 0))
+
+    def test_concurrent_failure_after_cleanup_read_preserves_the_diagnostic(self):
+        """A ``record_failure`` that lands after ``_abandon_and_clear`` reads
+        the association but before it clears it -- bumping the generation
+        while keeping the same revision -- must not be lost: the same
+        revision still clears safely on a later attach while the latest
+        failure diagnostic survives (codex:1a4bc7b34687da726908)."""
+        calls = {"n": 0}
+        real_read = context_session.read
+
+        def racing_read(store, session_id):
+            calls["n"] += 1
+            current = real_read(store, session_id)
+            if calls["n"] == 2:
+                context_session.update(
+                    store, session_id, expected_generation=current["generation"],
+                    changes={"context_state": "authorization_failed"},
+                )
+            return current
+
+        with (
+            self.patches()[0], self.patches()[1], self.patches()[2],
+            self.patches()[3], self.patches()[4],
+            mock.patch.object(context_guided, "reserve_attachment", side_effect=ContextError("boom")),
+            mock.patch.object(context_session, "read", side_effect=racing_read),
+        ):
+            with self.assertRaisesRegex(ContextError, "boom"):
+                context_guided.attach_session(
+                    self.associations, self.fixture.store, self.record, repo_path=self.root,
+                    pr=42, backend=self.fixture.backend,
+                )
+        stranded = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(stranded["attachment_state"], "reserving")
+        self.assertEqual(stranded["context_state"], "authorization_failed")
+        revision = stranded["revision"]
+
+        with self.assertRaisesRegex(ContextError, "rerun attach"):
+            self.attach()
+        recovered = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(
+            (recovered["attachment_state"], recovered["pr"], recovered["head"], recovered["revision"]),
+            ("none", None, None, None),
+        )
+        # The failure diagnostic recorded during the race is preserved
+        # rather than silently erased by the eventual cleanup.
+        self.assertEqual(recovered["context_state"], "authorization_failed")
+        with self.assertRaises(ContextError):
+            read_binding(self.fixture.store, revision)
+
+    def test_abandon_and_clear_never_touches_a_different_or_published_revision(self):
+        """The identity check the reserving cleanup relies on must never
+        clear a different, replaced, or already-published revision, even
+        under a stale generation (codex:1a4bc7b34687da726908)."""
+        report, code = self.attach()
+        self.assertEqual((report["status"], code), ("attached", 0))
+        published = context_session.read(self.associations, self.session["id"])
+        stale = {**published, "revision": "0" * 32}
+        context_guided._abandon_and_clear(self.associations, self.fixture.store, stale)
+        unchanged = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(unchanged, published)
+
+    def test_interrupted_pending_transition_recovers_without_public_writes(self):
+        """A crash after a fresh reservation succeeds but before its session
+        association durably transitions to ``pending`` -- still strictly
+        before any GitHub write -- must recover on retry by abandoning the
+        unpublished binding and restoring prepared/none, with zero public
+        writes, rather than resuming toward publication in that same
+        recovery (codex:1a4bc7b34687da726908)."""
+        real_update = context_session.update
+
+        def failing_transition(store, session_id, *, expected_generation, changes):
+            if changes == {"attachment_state": "pending"}:
+                raise OSError("disk full")
+            return real_update(store, session_id, expected_generation=expected_generation, changes=changes)
+
+        with mock.patch.object(context_session, "update", side_effect=failing_transition):
+            # The mocked ``OSError`` never reaches the store boundary that
+            # would normally raise it, but it still propagates out through
+            # the surrounding ``association_store.locked`` block that
+            # ``attach_session`` holds for its whole body, so it is normalized
+            # to the same fail-closed public ``ContextError`` a genuine
+            # storage fault there would produce.
+            with self.assertRaisesRegex(ContextError, "private context store is unavailable or unsafe"):
+                self.attach()
+        reserving = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(reserving["attachment_state"], "reserving")
+        revision = reserving["revision"]
+        # The reservation itself genuinely completed before the interrupted
+        # transition -- a real, unpublished binding exists.
+        self.assertFalse(read_binding(self.fixture.store, revision)["published"])
+        self.assertEqual(self.comments, [])
+        self.assertEqual(self.events, [])
+
+        with self.assertRaisesRegex(ContextError, "rerun attach"):
+            self.attach()
+        recovered = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(
+            (recovered["attachment_state"], recovered["pr"], recovered["head"], recovered["revision"]),
+            ("none", None, None, None),
+        )
+        self.assertEqual(self.comments, [])
+        self.assertEqual(self.events, [])
+        with self.assertRaises(ContextError):
+            read_binding(self.fixture.store, revision)
+
+        report, code = self.attach()
+        self.assertEqual((report["status"], code), ("attached", 0))
 
     def test_provider_free_cross_process_qualification_is_symmetric_for_both_hosts(self):
         delivered = []
@@ -926,11 +1088,16 @@ class GuidedRepositoryDeliveryTests(unittest.TestCase):
     def test_pending_retry_revalidates_the_actual_consumer_before_publication(self):
         """A resumed pending/uncertain attachment must revalidate the current
         consumer rather than replay a stale reservation, while preserving the
-        saved intent and its failure diagnostics (codex:65a17212478a56416b1c)."""
+        saved intent and its failure diagnostics (codex:65a17212478a56416b1c).
+        The crash is injected at the start of ``_finish_publication`` so the
+        reservation has already durably transitioned to ``pending`` -- still
+        strictly before any GitHub write -- rather than leaving the
+        pre-publication ``reserving`` marker this same scenario would leave
+        if the crash instead landed inside ``reserve_attachment`` itself."""
         with (
             self.patches()[0], self.patches()[1], self.patches()[2],
             self.patches()[3], self.patches()[4],
-            mock.patch.object(context_guided, "reserve_attachment", side_effect=KeyboardInterrupt()),
+            mock.patch.object(context_guided, "_finish_publication", side_effect=KeyboardInterrupt()),
         ):
             with self.assertRaises(KeyboardInterrupt):
                 context_guided.attach_session(
@@ -948,6 +1115,37 @@ class GuidedRepositoryDeliveryTests(unittest.TestCase):
         self.assertEqual(after["revision"], revision)
         self.assertNotEqual(after["context_state"], "ready")
         self.assertEqual(self.comments, [])
+
+    def test_reserving_retry_recovers_before_any_reservation_ever_completes(self):
+        """A crash inside ``reserve_attachment`` itself -- before the saved
+        intent ever durably transitions to ``pending`` -- leaves the durable
+        pre-publication ``reserving`` marker instead. A later attach must
+        recognize it, safely abandon the identity (idempotently, since no
+        binding was ever created), and restore prepared/none rather than
+        replaying it as if it were a genuine pending publication attempt
+        (codex:1a4bc7b34687da726908)."""
+        with (
+            self.patches()[0], self.patches()[1], self.patches()[2],
+            self.patches()[3], self.patches()[4],
+            mock.patch.object(context_guided, "reserve_attachment", side_effect=KeyboardInterrupt()),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                context_guided.attach_session(
+                    self.associations, self.store, self.record, repo_path=self.repository,
+                    pr=1, backend=None,
+                )
+        reserving = context_session.read(self.associations, self.SESSION_ID)
+        self.assertEqual(reserving["attachment_state"], "reserving")
+        with self.assertRaisesRegex(ContextError, "rerun attach"):
+            self.attach()
+        recovered = context_session.read(self.associations, self.SESSION_ID)
+        self.assertEqual(
+            (recovered["attachment_state"], recovered["pr"], recovered["head"], recovered["revision"]),
+            ("none", None, None, None),
+        )
+        self.assertEqual(self.comments, [])
+        report, code = self.attach()
+        self.assertEqual((report["status"], code), ("attached", 0))
 
 
 if __name__ == "__main__":

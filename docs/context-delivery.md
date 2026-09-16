@@ -165,17 +165,37 @@ binding can deliver evidence. A saved uncertain or pending intent is never
 cleared just because a later attach was asked for: it may already be the
 GitHub-accepted state a lost response only looked like it missed.
 
-A reservation that fails before publication -- for example because the actual
-consuming checkout has moved past the evidence it was prepared from, or the
-local graph was rebuilt in the meantime -- rolls the session back to its prior
-prepared, unattached state on its own, keeping the failure reason visible in
-status. The same session can then explicitly rebuild or rerun `prepare
---refresh` and attach again; it is never left pointing at a saved intent that
-every retry would only re-fail. Once the trusted current pull request head has
-genuinely moved past a saved intent, that old identity is retired before any
-new evidence is authorized, so a checkout that has since moved on cannot block
-its own recovery. This retirement, like the rollback above, is safe to retry
-after an interruption partway through.
+Before attempting a fresh reservation, the session first saves a durable
+`reserving` marker -- proof that no GitHub write has happened yet, because
+publication only ever follows a reservation that has itself already become
+durable. If that reservation then fails within the same `attach` call -- for
+example because the actual consuming checkout has moved past the evidence it
+was prepared from, or the local graph was rebuilt in the meantime -- the same
+call rolls the session back to its prior prepared, unattached state inline,
+keeping the failure reason visible in status. If the process instead stops
+before that same-call rollback, or before the reservation's own durable
+transition out of `reserving` completes -- a crash, or a storage fault like
+the one that also surfaces as a `ContextError` from a saved-state transition
+that did not complete -- the saved intent is left as `reserving` instead. The
+next `attach` recognizes a saved `reserving` marker, finishes abandoning it
+and clearing the session back to its prior prepared, unattached state, and
+asks the caller to rerun attach rather than completing a fresh attempt in
+that same call, since resuming immediately could race a concurrent recovery.
+Only once that cleanup has actually finished is the session safe to
+explicitly rebuild, rerun `prepare --refresh`, or attach again; refresh must
+not be used while a `reserving` cleanup is still outstanding, and a storage or
+other fault surfaced while attach itself was trying to advance a saved intent
+does not promise that this cleanup has already happened -- rerunning attach is
+what finishes it.
+
+A saved `pending` or `uncertain` intent is different: its reservation is
+already durable, and GitHub publication may have begun or even completed
+before a lost response left the local state unconfirmed, so it is never
+blanket-cleared the way a `reserving` marker is. Once the trusted current pull
+request head has genuinely moved past such a saved intent, that old identity
+is retired before any new evidence is authorized, so a checkout that has since
+moved on cannot block its own recovery. This retirement, like the `reserving`
+cleanup above, is safe to retry after an interruption partway through.
 
 The lower-level expert form remains available for scripts that intentionally
 manage request files and revisions:

@@ -211,7 +211,13 @@ def _abandon_and_clear(
     Used only when ``record["revision"]`` is known to have not reached
     ``_finish_publication``'s remote publication check, so any stored
     delivery binding for it is never published and safe to abandon. Never
-    used to blanket-clear a pre-existing pending/uncertain retry.
+    used to blanket-clear a pre-existing pending/uncertain retry -- those
+    have already durably transitioned past ``reserving`` and may be the
+    GitHub-accepted state a lost response only looked like it missed. Both
+    the same-call rollback after a failed fresh reservation and a later
+    attach's recognition of a still-``reserving`` record call this; in
+    either case the identity being cleared is proven pre-publication by the
+    caller, never inferred here from a missing binding alone.
     ``record_failure`` may already have advanced the association generation,
     so the session is re-read here rather than trusting a stale one; if a
     concurrent operation has already moved the saved revision on, cleanup is
@@ -271,6 +277,24 @@ def attach_session(
         _same_bound_session(record, current_record)
         record = current_record
         head, current = _remote_input(record["repo"], pr, token=token, authorities=authorities)
+
+        if record["attachment_state"] == "reserving":
+            # A ``reserving`` identity has, by construction, never reached
+            # ``_finish_publication``: it is written before ``reserve_attachment``
+            # is even called, and only ever advances to ``pending`` -- still
+            # strictly before any GitHub write -- after that reservation
+            # durably succeeds. Finding it still ``reserving`` on a later
+            # attach therefore always means the same call that minted it
+            # stopped somewhere before, during, or just after reservation,
+            # with no public write possible, so it is always safe to abandon
+            # here regardless of the requested pull request. This never
+            # completes a fresh reattachment inline -- that would risk a
+            # public write racing this recovery -- so the caller reruns
+            # attach once cleanup below is done.
+            _abandon_and_clear(association_store, packet_store, record)
+            raise ContextError(
+                "a saved publication attempt did not complete; rerun attach to finish reconciliation"
+            )
 
         if record["attachment_state"] == "published":
             if record["pr"] != pr:
@@ -353,7 +377,7 @@ def attach_session(
             expected_generation=record["generation"],
             changes={
                 "stage": "prepared", "pr": pr, "head": head, "revision": revision,
-                "attachment_state": "pending",
+                "attachment_state": "reserving",
             },
         )
         try:
@@ -367,6 +391,21 @@ def attach_session(
             # way.
             _abandon_and_clear(association_store, packet_store, record)
             raise
+        # The reservation itself is now durable and unpublished. Recording
+        # that as ordinary ``pending`` -- still strictly before
+        # ``_finish_publication`` ever touches GitHub -- is what lets a later
+        # attach trust that ``pending`` always names a real, resumable
+        # reservation, never the ghost of one that was silently abandoned
+        # underneath it. If this transition itself does not complete (a
+        # crash, or a storage/generation failure), the record stays
+        # ``reserving`` and the next attach recognizes and clears it instead
+        # of replaying a reservation that may already be gone.
+        record = context_session.update(
+            association_store,
+            record["session_id"],
+            expected_generation=record["generation"],
+            changes={"attachment_state": "pending"},
+        )
         return _finish_publication(
             association_store,
             packet_store,
