@@ -20,13 +20,13 @@ provider differences:
 The product is useful without CodeMower.com. Cloud sharing is optional and
 dry-run-first.
 
-## Current Public Release
+## Current Source Candidate And Published Baseline
 
-The current package-index release baseline is `v1.4.0`, with pinned package
-install spec `code-mower==1.4.0`. Release evidence is recorded on the GitHub
-release and in the first-user install rehearsal.
+The current source candidate is `v1.4.1`, with target install spec
+`code-mower==1.4.1`. Publication and installed-package qualification are pending
+[#915](https://github.com/codemower-ai/code-mower/issues/915).
 
-Version 1.4.0 requires Python 3.12 or newer. It provides:
+The published v1.4.0 baseline requires Python 3.12 or newer. It provides:
 
 - pipx, uv tool, and contributor installation paths;
 - safe setup previews and selectable participants;
@@ -133,9 +133,10 @@ future hosted-service work.
 `v1.4.0` is released and its published artifacts are immutable. The agreed
 sequence from the stabilization epic is:
 
-1. Close the seven `v1.4.0` stabilization implementation children plus the
-   [#974](https://github.com/codemower-ai/code-mower/issues/974) evidence
-   verification. These are main-only fixes.
+1. Accepted on main: all seven `v1.4.0` stabilization implementation children
+   plus [#974](https://github.com/codemower-ai/code-mower/issues/974) evidence
+   verification. #963 is accepted through the #990/#991/#992 replacement stages
+   and final #997 integration, not the unaccepted #989 draft.
 2. Ship those fixes together with Graphify as `v1.4.1`
    ([#915](https://github.com/codemower-ai/code-mower/issues/915)).
 3. Ship Board as `v1.4.2`. Board work is underway;
@@ -155,15 +156,15 @@ It rejects an unqualified Devin orchestrator before lease or session writes and
 checks bounded hosted builder admission before new work. See
 [Participant Qualification](participant-qualification.md). These are main-line
 stabilization changes awaiting the next package. Effective-authority rendering
-([#955](https://github.com/codemower-ai/code-mower/issues/955)) remains planned;
+([#955](https://github.com/codemower-ai/code-mower/issues/955)) is accepted through #988;
 neither is part of the immutable `v1.4.0` artifact.
 
 Each step below is an independently gated epic rather than one cross-cutting
 implementation PR.
 
-### 1. Complete `v1.4.0` Stabilization ([#979](https://github.com/codemower-ai/code-mower/issues/979))
+### 1. Accepted `v1.4.0` Stabilization ([#979](https://github.com/codemower-ai/code-mower/issues/979))
 
-Seven main-only implementation PRs plus one evidence verification:
+Seven accepted main-only implementation units plus one evidence verification:
 
 - accurate advertised commands and live roadmap docs
   ([#965](https://github.com/codemower-ai/code-mower/issues/965));
@@ -189,18 +190,19 @@ hosted PR rather than an assumed fix.
 ### 2. Graphify Repository Context — `v1.4.1` ([#902](https://github.com/codemower-ai/code-mower/issues/902) / release [#915](https://github.com/codemower-ai/code-mower/issues/915))
 
 Graphify is a repository-context provider beside Coworker, not a participant.
-It is adopted and partly delivered: the
+Its runtime source is accepted on main: the
 [evaluation record](graphify-evaluation.md) closed
 [#876](https://github.com/codemower-ai/code-mower/issues/876) with an adopt
 decision, and `code-mower context-graph`, described in the
 [lifecycle record](context-graph-lifecycle.md), closed
-[#913](https://github.com/codemower-ai/code-mower/issues/913). Remaining work
-is the query/packet PR
-([#914](https://github.com/codemower-ai/code-mower/issues/914)), which consumes
+[#913](https://github.com/codemower-ai/code-mower/issues/913). The query/packet implementation
+([#914](https://github.com/codemower-ai/code-mower/issues/914), accepted through
+#982) consumes
 a pinned structured JSON contract and generates bounded impact, dependency,
 symbol, and related-test packets in one shape for Claude, Codex, and Devin.
-Release #915 also carries the stabilization docs, review-default, and
-operational-evidence work plus explicit freshness evidence.
+Release #915 prepares that accepted source and stabilization baseline for the
+package. The release-specific comparative scorecard, installed artifacts,
+publication, campaign, Board and fresh aggregate evidence remain pending.
 
 Installation stays opt-in, no command requires an index to exist, and Code
 Mower owns refresh policy rather than parsing human-oriented MCP prose.

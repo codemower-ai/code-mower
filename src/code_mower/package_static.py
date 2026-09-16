@@ -57,6 +57,7 @@ STATIC_PACKAGE_FILES = (
                 "recursive-include src/code_mower/templates/product-support *",
                 "include src/code_mower/*.json",
                 "recursive-include templates *.j2 *.json *.md *.yml *.yaml",
+                "recursive-include docs *.md",
                 "include requirements/*.txt",
                 "include LICENSE",
                 "include NOTICE",

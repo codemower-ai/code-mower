@@ -6,11 +6,10 @@ your conversation is the default orchestrator when its role is eligible.
 
 The participant picker, host-led session brief, single-orchestrator lease,
 shared Jira tracker brief, controller host telemetry, and explicit Cursor
-qualification documented below are available in `code-mower==1.4.0`.
+qualification documented below are included in the `code-mower==1.4.1` source candidate.
 Install from the matching tag when following release documentation, or use a
 contributor checkout when testing later source changes. Role-specific admission
-and startup lease commands described here are stabilization changes for the next
-package; the published `v1.4.0` artifacts remain unchanged.
+and startup lease commands described here are included in this candidate; the published `v1.4.0` artifacts remain unchanged.
 
 ## Choose During Setup
 
@@ -265,6 +264,9 @@ working copy has one mutating orchestrator at a time. The lease lives at
 through a temporary file, and holds coordination metadata only: the repository
 slug, the normalized orchestrator id, the session id, the acquired/renewed/
 expires UTC timestamps, and a schema version. It is never uploaded or exported.
+
+The maintained default lease duration is 12 hours. Renewal from another process
+uses the same live session ID, just like release.
 
 A second agent that starts a mutating session while the lease is live is refused
 and told what the owner can do:

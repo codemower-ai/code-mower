@@ -125,7 +125,7 @@ def _has_option(argv: list[str], option: str) -> bool:
     return any(arg.split("=", 1)[0] == option for arg in argv)
 
 
-STARTER_FALLBACK_INIT_OPTIONS = ("--interactive", "--with", "--builders")
+STARTER_FALLBACK_INIT_OPTIONS = ("--interactive", "--with", "--builders", "--graphify")
 
 
 def _resolve_provider_templates_path(path_text: str) -> Path:

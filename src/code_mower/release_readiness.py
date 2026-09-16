@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from . import __version__
 from . import package as package_module
 from . import versioning as code_mower_versioning
 
@@ -355,9 +356,8 @@ def _post_merge_runbook_markers(release_tag: str, package_index_spec: str) -> tu
         "CODE_MOWER_PYPI_PUBLISH",
         f"gh release create {release_tag}",
         "--verify-tag",
-        "provider.devin.repository_scope",
         "code-mower release campaign create",
-        "--required-providers claude,codex,devin",
+        "--required-providers claude,codex",
         "code-mower board stop --port",
         'board_wait.py" serving \\',
         "code-mower board doctor",
@@ -374,10 +374,10 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
     Ordered presence of commands cannot show that an irreversible step is gated:
     each entry here is the assertion whose removal would let the release proceed
     on an unverified merge commit, workflow run, publish-job posture, artifact
-    source, Release asset, Devin posture, publish variable, or Board.
+    source, Release asset, authorized campaign, publish variable, or Board.
     """
 
-    return (
+    assertions = (
         # The release commit is the merged pull request's own merge commit.
         "--json mergeCommit --jq '.mergeCommit.oid'",
         'test "$(git cat-file -t "$RELEASE_SHA")" = "commit"',
@@ -446,7 +446,7 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         # The remote peeled tag is re-resolved on every invocation, including
         # the one immediately before the irreversible release creation.
         'if remote_peeled_tag_sha(repo) != release_sha:',
-        'problems.append("remote v1.4.0 tag does not peel to the exact release commit")',
+        'problems.append("remote {release_tag} tag does not peel to the exact release commit")',
         'assert_release_assets.py" pre-create',
         # The Release's own assets are downloaded and compared digest by digest.
         'raise SystemExit(f"{mode} release assets are not acceptable: {problems}")',
@@ -456,37 +456,18 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'assert_release_assets.py" created',
         # Notes come from the clean checkout of the exact release commit, and
         # the published body and title are compared with that file.
-        '--notes-file "$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+        '--notes-file "$RELEASE_CHECKOUT/{release_notes}"',
         "notes_path = checkout / RELEASE_NOTES_RELPATH",
         'problems.append("release notes in the exact checkout are empty")',
         # The late gate binds the accepted or created release to the exact
         # clean checkout immediately before the existing/pre-create branch.
         'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
         'test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
-        'test -s "$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
+        'test -s "$RELEASE_CHECKOUT/{release_notes}"',
         'problems.append("release checkout is not the exact release commit")',
         'problems.append("release checkout has uncommitted or untracked changes")',
         'problems.append("release body does not match the exact checkout release notes")',
-        'problems.append("release title is not the expected v1.4.0 title")',
-        # Hosted Devin readiness is required, not reported.
-        "--set-transport devin=devin_api_v3",
-        'raise SystemExit(f"hosted Devin readiness is blocked: {problems}")',
-        # The doctor report is validated before any row is indexed, so a
-        # falsified verdict, a malformed row, or a duplicate identity cannot
-        # stand in for a hosted posture.
-        'if not isinstance(report, dict) or report.get("mode") != "doctor":',
-        'if report.get("status") not in {"pass", "warn"}:',
-        'if summary.get("failures") != 0:',
-        'raise SystemExit("hosted Devin doctor check list is not a list")',
-        'problems.append(f"doctor check {name!r} failed")',
-        'problems.append(f"unexpected Devin check {name!r}")',
-        'problems.append(f"Devin check {name!r} appears more than once")',
-        'problems.append(f"Devin checks are missing {missing}")',
-        'problems.append(f"Devin check {name!r} is {statuses.get(name)!r}")',
-        # A reported `skip` on permissions is only acceptable with the account
-        # owner's separately supplied confirmation.
-        'if permissions == "skip" and owner_confirmed != "confirmed":',
-        'if permissions not in {"pass", "skip"}:',
+        'problems.append("release title is not the expected {release_tag} title")',
         # The exact-release source rehearsal cannot reach ambient packages.
         "env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS",
         "-u PIP_NO_INDEX",
@@ -495,8 +476,8 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
         # The release checkout is cloned before the tag exists, so the tag is
         # fetched into it before its target is compared with the release commit.
-        'git -C "$RELEASE_CHECKOUT" fetch --no-tags origin "+refs/tags/v1.4.0:refs/tags/v1.4.0"',
-        'test "$(git -C "$RELEASE_CHECKOUT" rev-list -n 1 v1.4.0)" = "$RELEASE_SHA"',
+        'git -C "$RELEASE_CHECKOUT" fetch --no-tags origin "+refs/tags/{release_tag}:refs/tags/{release_tag}"',
+        'test "$(git -C "$RELEASE_CHECKOUT" rev-list -n 1 {release_tag})" = "$RELEASE_SHA"',
         'board_wait.py" gone "$BOARD_PORT"',
         # Serving is only satisfied by the expected repository on each port.
         'and row.get("repo") == expected_repo',
@@ -550,8 +531,6 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'if result.get("provider") != name:',
         'if result.get("qualification_context") != "cold_install":',
         'if outcome not in PASSING_OUTCOMES:',
-        'if devin.get("driver") != "hosted_bridge" or devin.get("transport_verified") is not True:',
-        'if devin_ref.get("transport_kind") != "devin_api_v3":',
         'raise SystemExit(f"release qualification campaign is not a pass: {problems}")',
         # Account-specific cloud identifiers stay private: they are supplied as
         # variables, required to be nonempty, and never printed.
@@ -621,11 +600,11 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'CAMPAIGN_UPLOAD_SCHEMA = "code_mower.releaseCampaignUpload.v1"',
         'if payload.get("schema") != CAMPAIGN_UPLOAD_SCHEMA:',
         'if payload.get("mode") != "release-campaign-upload":',
-        'problems.append(f"{name} campaign identity is not the v1.4.0 campaign")',
+        'problems.append(f"{name} campaign identity is not the {release_tag} campaign")',
         'if payload.get("provider_postures") != EXPECTED_POSTURES:',
         'if payload.get("counts") != EXPECTED_COUNTS:',
-        "if len(ids) != 3 or len(set(ids)) != 3 or not all(ids):",
-        'if preview_upload.get("event_types") != {"adoption_run": 3}:',
+        "if len(ids) != 2 or len(set(ids)) != 2 or not all(ids):",
+        'if preview_upload.get("event_types") != {"adoption_run": 2}:',
         'if preview.get("status") != "dry_run" or preview.get("would_upload") is not False:',
         'if preview.get("requires_yes") is not True:',
         'if preview_upload.get("report_count") != 0:',
@@ -715,6 +694,12 @@ def _post_merge_runbook_assertions(version: str, release_tag: str) -> tuple[str,
         'raise SystemExit("a Board repository path does not match its paired slug")',
         'assert_board_repo_paths.py" \\',
     )
+    return tuple(
+        marker.replace("{release_tag}", release_tag).replace(
+            "{release_notes}", _release_notes_path(release_tag)
+        )
+        for marker in assertions
+    )
 
 
 def _post_merge_runbook_gate_orders() -> tuple[tuple[str, tuple[str, ...]], ...]:
@@ -803,16 +788,7 @@ def _board_snapshot_binding_problems(runbook_doc: str) -> list[str]:
     return []
 
 
-RELEASE_CREATE_BRANCH = 'if gh release view v1.4.0 --repo "$REPO" >/dev/null 2>&1; then'
-RELEASE_CREATE_BINDING_ASSERTIONS = (
-    'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
-    'test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
-    'test -s "$RELEASE_CHECKOUT/docs/v140-release-notes.md"',
-    'test -s "$PYPI_VERIFIED_MAP"',
-)
-
-
-def _release_create_binding_problems(runbook_doc: str) -> list[str]:
+def _release_create_binding_problems(runbook_doc: str, release_tag: str | None = None) -> list[str]:
     """Require the exact clean checkout immediately before the Release branch.
 
     Accepting an existing release or creating one publishes notes read from the
@@ -820,7 +796,16 @@ def _release_create_binding_problems(runbook_doc: str) -> list[str]:
     assertions must stop the runbook before either branch runs.
     """
 
-    start = runbook_doc.find(RELEASE_CREATE_BRANCH)
+    release_tag = release_tag or _release_tag_for_version(__version__)
+    release_create_branch = f'if gh release view {release_tag} --repo "$REPO" >/dev/null 2>&1; then'
+    binding_assertions = (
+        'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"',
+        'test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"',
+        f'test -s "$RELEASE_CHECKOUT/{_release_notes_path(release_tag)}"',
+        'test -s "$PYPI_VERIFIED_MAP"',
+    )
+
+    start = runbook_doc.find(release_create_branch)
     if start < 0:
         return ["the GitHub Release creation branch is missing"]
     preceding = [
@@ -828,7 +813,7 @@ def _release_create_binding_problems(runbook_doc: str) -> list[str]:
         for line in runbook_doc[:start].splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    if preceding[-4:] != list(RELEASE_CREATE_BINDING_ASSERTIONS):
+    if preceding[-4:] != list(binding_assertions):
         return [
             "the exact clean release checkout is not re-bound immediately "
             "before the GitHub Release branch"
@@ -1166,6 +1151,10 @@ def _unordered_markers(text: str, markers: tuple[str, ...]) -> list[str]:
     return problems
 
 
+def _release_notes_path(release_tag: str) -> str:
+    return "docs/" + release_tag.replace(".", "") + "-release-notes.md"
+
+
 def _release_tag_for_version(version: str) -> str:
     return code_mower_versioning.release_tag_for_version(version)
 
@@ -1206,7 +1195,9 @@ def _workflow_dispatch_inputs(workflow: str) -> dict[str, Any]:
     return inputs if isinstance(inputs, dict) else {}
 
 
-def _dispatch_sha_gate_holds(workflow: str, workflow_jobs: dict[str, Any]) -> bool:
+def _dispatch_sha_gate_holds(
+    workflow: str, workflow_jobs: dict[str, Any], release_tag: str | None = None,
+) -> bool:
     """Require every dispatched build and publish to name the exact commit.
 
     A dispatch that only names a ref can build whatever that ref points at when
@@ -1214,6 +1205,7 @@ def _dispatch_sha_gate_holds(workflow: str, workflow_jobs: dict[str, Any]) -> bo
     job refuses to let anything else run.
     """
 
+    release_tag = release_tag or _release_tag_for_version(__version__)
     expected = _workflow_dispatch_inputs(workflow).get("expected_sha")
     if not isinstance(expected, dict):
         return False
@@ -1227,7 +1219,7 @@ def _dispatch_sha_gate_holds(workflow: str, workflow_jobs: dict[str, Any]) -> bo
         "inputs.expected_sha",
         "github.sha",
         "grep -Eq '^[0-9a-f]{40}$'",
-        'test "$ACTUAL_REF" = "refs/tags/v1.4.0"',
+        f'test "$ACTUAL_REF" = "refs/tags/{release_tag}"',
         'test "$ACTUAL_SHA" = "$EXPECTED_SHA"',
     )
     if any(fragment not in identity_text for fragment in required_identity_fragments):
@@ -1427,7 +1419,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     gate_order_problems = (
         _post_merge_gate_order_problems(runbook_doc)
         + _board_snapshot_binding_problems(runbook_doc)
-        + _release_create_binding_problems(runbook_doc)
+        + _release_create_binding_problems(runbook_doc, release_tag)
         + _post_merge_fail_fast_problems(runbook_doc)
         + _post_merge_variable_flow_problems(runbook_doc)
         if runbook_doc
@@ -1600,7 +1592,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             title="Dispatched release builds are bound to the expected commit",
             status=(
                 "pass"
-                if _dispatch_sha_gate_holds(workflow, workflow_jobs)
+                if _dispatch_sha_gate_holds(workflow, workflow_jobs, release_tag)
                 else "fail"
             ),
             evidence=str(workflow_path),
