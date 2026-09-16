@@ -493,7 +493,14 @@ signature as deterministic tiebreaks — so which file the directory listed firs
 cannot change what is shown. Change tracking compares the same deduplicated
 set, so there is exactly one row id and one detail region per identity however
 many files describe it. Several `unlinked` observations in one scope still
-consolidate into one row, unchanged. There is exactly one detail region. It is
+consolidate into one row, and that row is recomputed from all of the evidence
+retained for it: the worst freshness and coverage any retained source reported,
+the age of the oldest retained observation, the newest recorded event or
+observation as the last meaningful update, and one entry per run however many
+files observed it, kept as the worst-attested of those observations. The
+participant summary is built from this same deduplicated set, so a run that has
+moved phase is counted once, in the phase the newest observation records, and
+never again in the phase it has left. There is exactly one detail region. It is
 rendered inside the selected row, so at phone widths it follows the row it
 belongs to, and at desktop widths CSS places that same region adjacent to the
 list. Rows are buttons carrying `aria-expanded` and `aria-controls`; Up, Down,

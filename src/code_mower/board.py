@@ -1902,6 +1902,7 @@ _BOARD_HTML = """<!doctype html>
     // asserting the state of the world.
     const OBSERVATION_STALE_SECONDS = 600;
     const FRESHNESS_RANK = {fresh: 0, stale: 1, unavailable: 2};
+    const SOURCE_COVERAGE_RANK = {complete: 0, partial: 1, unavailable: 2};
     const FRESHNESS_CLASSES = {fresh: "ok", stale: "warn", unavailable: "bad"};
     const arrayOf = (value) => (Array.isArray(value) ? value : []);
     const records = (data) => arrayOf(data?.observations?.records);
@@ -1917,6 +1918,16 @@ _BOARD_HTML = """<!doctype html>
         if (at !== null && (best === null || at > best)) best = at;
       }
       return best;
+    };
+    // Which of two recorded times is the later one, answered as the recorded
+    // string rather than as a number, so a consolidated reading keeps the exact
+    // timestamp a producer wrote instead of a reformatting of it.
+    const laterTimestamp = (left, right) => {
+      const at = parseMs(left);
+      const other = parseMs(right);
+      if (other === null) return at === null ? null : left;
+      if (at === null) return right;
+      return other > at ? right : left;
     };
     // `checked_at` advances on every poll whether or not anything happened, so
     // it can never be the last meaningful update. Only a recorded event time
@@ -2208,9 +2219,22 @@ _BOARD_HTML = """<!doctype html>
       const key = workKey(record);
       const freshness = recordFreshness(record, nowMs);
       const update = lastMeaningfulUpdate(record);
+      // Every run this row is built from, with the freshness of the source
+      // behind it resolved here, where that record's source index is already in
+      // hand. The participant summary reads these rather than the records on
+      // disk, so it counts exactly the runs the rendered rows were built from
+      // and nothing a newer observation has already superseded.
+      const runSources = sourceIndex(record);
+      const participants = [...arrayOf(record?.work?.runs), ...arrayOf(record?.unlinked)].map(run => ({
+        provider: text(run?.provider) || "unknown",
+        role: text(run?.role) || "unknown",
+        phase: text(run?.phase) || "not linked to a session",
+        freshness: text(runSources[text(run?.source_id)]?.freshness) || "unavailable"
+      }));
       const base = {
         key,
         kind,
+        participants,
         signature: workSignature(record),
         repository: text(record?.scope?.repository),
         freshness,
@@ -2317,68 +2341,131 @@ _BOARD_HTML = """<!doctype html>
     // observations of the same work item; the last meaningful update breaks a
     // tie, and the signature breaks that, so the winner never depends on the
     // order the directory happened to be listed in.
-    function observationOrder(row) {
-      const created = parseMs(row.record?.created_at);
-      return [created === null ? -Infinity : created, row.update.at === null ? -Infinity : row.update.at];
+    function observationOrder(record) {
+      const created = parseMs(record?.created_at);
+      const update = lastMeaningfulUpdate(record);
+      return [created === null ? -Infinity : created, update.at === null ? -Infinity : update.at];
     }
     function isNewerObservation(candidate, existing) {
       const [candidateCreated, candidateUpdate] = observationOrder(candidate);
       const [existingCreated, existingUpdate] = observationOrder(existing);
       if (candidateCreated !== existingCreated) return candidateCreated > existingCreated;
       if (candidateUpdate !== existingUpdate) return candidateUpdate > existingUpdate;
-      return candidate.signature.localeCompare(existing.signature) > 0;
+      return workSignature(candidate).localeCompare(workSignature(existing)) > 0;
+    }
+    // The one deduplicated observation set the work-first views read. The work
+    // list, the participant summary and change tracking all consume this and
+    // nothing else, so none of them can go on counting an observation the
+    // others have already dropped.
+    //
+    // A linked identity is one work item however many observations of it are on
+    // disk, so only the newest is retained and the superseded ones are dropped.
+    // Several unlinked observations describe one condition in one repository,
+    // so all of them are retained and consolidated into one row. Records within
+    // a group are ordered by what they record, never by the order the directory
+    // happened to list the files in.
+    function observationGroups(data) {
+      const groups = new Map();
+      for (const record of records(data)) {
+        const key = workKey(record);
+        const existing = groups.get(key);
+        if (existing === undefined) {
+          groups.set(key, {key, kind: text(record?.kind), records: [record]});
+          continue;
+        }
+        if (existing.kind === "unlinked") existing.records.push(record);
+        else if (isNewerObservation(record, existing.records[0])) existing.records = [record];
+      }
+      for (const group of groups.values()) {
+        group.records.sort((a, b) =>
+          workSignature(a).localeCompare(workSignature(b))
+          || text(a?.created_at).localeCompare(text(b?.created_at))
+          || text(a?.scope?.repository).localeCompare(text(b?.scope?.repository)));
+      }
+      return [...groups.values()];
+    }
+    // One source id names one source, so a source observed in several retained
+    // files is one source here too. Its consolidated reading is the
+    // conservative one -- the worst freshness and the worst coverage any
+    // retained file reported -- carrying the newest time each of them recorded.
+    // Combining a fresh observation with an unavailable one can therefore
+    // neither hide the unavailability nor lose the later update.
+    function consolidatedSource(existing, source) {
+      if (existing === undefined) return {...source};
+      const merged = {...existing};
+      if ((FRESHNESS_RANK[text(source?.freshness)] ?? 3) > (FRESHNESS_RANK[text(existing.freshness)] ?? 3)) merged.freshness = source.freshness;
+      if ((SOURCE_COVERAGE_RANK[text(source?.coverage)] ?? 3) > (SOURCE_COVERAGE_RANK[text(existing.coverage)] ?? 3)) merged.coverage = source.coverage;
+      merged.event_at = laterTimestamp(existing.event_at, source?.event_at);
+      merged.observed_at = laterTimestamp(existing.observed_at, source?.observed_at);
+      merged.heartbeat_at = laterTimestamp(existing.heartbeat_at, source?.heartbeat_at);
+      merged.checked_at = laterTimestamp(existing.checked_at, source?.checked_at);
+      return merged;
+    }
+    // The single record one row is read off. One retained observation is
+    // itself; several retained observations of one unlinked condition are
+    // consolidated into one, so the row's freshness, age, last meaningful
+    // update and signature are recomputed from all of the evidence behind it
+    // rather than inherited from whichever file happened to be read first.
+    function consolidatedRecord(group) {
+      const [first, ...rest] = group.records;
+      if (!rest.length) return first;
+      const sources = new Map();
+      const unlinked = new Map();
+      for (const record of group.records) {
+        for (const source of arrayOf(record?.sources)) {
+          const id = text(source?.id);
+          sources.set(id, consolidatedSource(sources.get(id), source));
+        }
+        // One run observed in several files is one run, not one run per file.
+        // The observation kept for it is the worst-attested one, so a run whose
+        // source has since gone unavailable cannot go on reading as fresh
+        // because an earlier file still had it.
+        const runSources = sourceIndex(record);
+        for (const run of arrayOf(record?.unlinked)) {
+          const id = text(run?.id);
+          const rank = FRESHNESS_RANK[text(runSources[text(run?.source_id)]?.freshness)] ?? 3;
+          const existing = unlinked.get(id);
+          if (existing === undefined || rank > existing.rank) unlinked.set(id, {rank, run});
+        }
+      }
+      // The oldest retained observation sets the age, and an observation that
+      // records no time at all leaves the consolidated row unable to claim one,
+      // so a consolidated row never reads as more current than the oldest
+      // evidence in it.
+      const created = group.records.map(record => ({raw: text(record?.created_at), at: parseMs(record?.created_at)}));
+      const byId = (a, b) => text(a?.id).localeCompare(text(b?.id));
+      return {
+        ...first,
+        created_at: created.some(item => item.at === null)
+          ? ""
+          : created.reduce((oldest, item) => (item.at < oldest.at ? item : oldest)).raw,
+        sources: [...sources.values()].sort(byId),
+        unlinked: [...unlinked.values()].map(item => item.run).sort(byId)
+      };
     }
     function workRows(data, nowMs) {
-      const rows = records(data).map(record => workRow(record, nowMs));
-      const merged = [];
-      const byKey = new Map();
-      for (const row of rows) {
-        const existing = byKey.get(row.key);
-        if (existing === undefined) {
-          byKey.set(row.key, row);
-          merged.push(row);
-          continue;
-        }
-        // Several unlinked observations describe one condition in one scope, so
-        // they render as one row rather than as competing rows.
-        if (row.kind === "unlinked") {
-          existing.assignments = [...existing.assignments, ...row.assignments];
-          existing.groups[0].items = [...existing.groups[0].items, ...row.groups[0].items];
-          existing.signature = `${existing.signature}||${row.signature}`;
-          continue;
-        }
-        // A linked identity is one work item however many observations of it
-        // are on disk. An older file and the file that replaced it are not two
-        // items competing for one row id and one detail region: the newest
-        // observation is the one rendered, and the older one is dropped rather
-        // than merged into it.
-        if (!isNewerObservation(row, existing)) continue;
-        merged[merged.indexOf(existing)] = row;
-        byKey.set(row.key, row);
-      }
-      return merged.sort((a, b) =>
-        (ROW_RANK.get(a.headline) ?? 99) - (ROW_RANK.get(b.headline) ?? 99)
-        || a.reference.localeCompare(b.reference)
-        || a.key.localeCompare(b.key));
+      return observationGroups(data)
+        .map(group => workRow(consolidatedRecord(group), nowMs))
+        .sort((a, b) =>
+          (ROW_RANK.get(a.headline) ?? 99) - (ROW_RANK.get(b.headline) ?? 99)
+          || a.reference.localeCompare(b.reference)
+          || a.key.localeCompare(b.key));
     }
     // Who is recorded as taking part, and in what phase. Nothing is inferred:
     // a participant is only ever reported in the phases its own runs record,
-    // alongside how fresh the source behind them is.
-    function participantSummary(data) {
+    // alongside how fresh the source behind them is. The summary is built from
+    // the same deduplicated rows the work list renders, so an observation a
+    // newer file has replaced can neither count its runs a second time nor keep
+    // reporting a phase the work has already moved past.
+    function participantSummary(rows) {
       const summary = new Map();
-      for (const record of records(data)) {
-        const sources = sourceIndex(record);
-        const runs = [...arrayOf(record?.work?.runs), ...arrayOf(record?.unlinked)];
-        for (const run of runs) {
-          const provider = text(run?.provider) || "unknown";
-          const role = text(run?.role) || "unknown";
-          const key = `${provider}/${role}`;
-          const entry = summary.get(key) || {provider, role, count: 0, freshness: "fresh", phases: new Map()};
-          const phase = text(run?.phase) || "not linked to a session";
-          entry.phases.set(phase, (entry.phases.get(phase) || 0) + 1);
+      for (const row of rows) {
+        for (const run of row.participants) {
+          const key = `${run.provider}/${run.role}`;
+          const entry = summary.get(key) || {provider: run.provider, role: run.role, count: 0, freshness: "fresh", phases: new Map()};
+          entry.phases.set(run.phase, (entry.phases.get(run.phase) || 0) + 1);
           entry.count += 1;
-          const freshness = text(sources[text(run?.source_id)]?.freshness) || "unavailable";
-          if ((FRESHNESS_RANK[freshness] ?? 3) > (FRESHNESS_RANK[entry.freshness] ?? 3)) entry.freshness = freshness;
+          if ((FRESHNESS_RANK[run.freshness] ?? 3) > (FRESHNESS_RANK[entry.freshness] ?? 3)) entry.freshness = run.freshness;
           summary.set(key, entry);
         }
       }
@@ -2875,7 +2962,7 @@ _BOARD_HTML = """<!doctype html>
         `<span class="pill wide">${esc(observationRows.length)} observed work item${observationRows.length === 1 ? "" : "s"}</span>`,
         attentionRows.length ? `<span class="pill warn wide"><span class="cue" aria-hidden="true">~</span> ${esc(attentionRows.length)} awaiting a named role</span>` : ""
       ].filter(Boolean).join(""));
-      const participants = participantSummary(data);
+      const participants = participantSummary(observationRows);
       put("participants", participants.length
         ? participants.map(participant => `<div class="row"><div class="line"><b>${esc(participant.provider)}</b>${pill(participant.role)}${cuePill(`worst source ${participant.freshness}`, participant.class)}</div><div class="line">${participant.phases.map(phase => pill(`${phase.label} ${phase.count}`)).join("")}</div><div class="muted">${esc(participant.count)} recorded run${participant.count === 1 ? "" : "s"}; phases are what the records state, not a claim that anything is running now.</div></div>`).join("")
         : empty("No participant run is recorded in any local observation."));

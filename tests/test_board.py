@@ -4317,6 +4317,103 @@ class BoardWorkFirstViewTests(TestCase):
         self.assertIn("stage: in review", moved["worklist"])
         self.assertIn("issue-946", moved["announce"])
 
+    def test_a_run_that_changes_phase_across_observations_counts_once_and_newest(self) -> None:
+        # One run, observed twice: the file that caught it dispatched, and the
+        # file that replaced it once the run was seen running.
+        def phased(fixture_name: str, created_at: str) -> dict:
+            record = _observation_fixture(fixture_name)
+            record["created_at"] = created_at
+            record["work"]["id"] = "phasework"
+            record["work"]["runs"][0]["id"] = "phaserun"
+            record["work"]["runs"][0]["binding"]["work_id"] = "phasework"
+            return board_observation.validate(record)
+
+        older = phased("dispatched", "2026-09-12T20:00:00Z")
+        newer = phased("observed_running", "2026-09-12T20:00:20Z")
+        frames = _render_board_sequence(
+            [
+                {"payload": _observation_payload([older, newer])},
+                # The same two files listed the other way round.
+                {"payload": _observation_payload([newer, older])},
+            ]
+        )
+        participants = frames[0]["participants"]
+        # One run, counted once, in the phase the newest observation records.
+        self.assertIn("1 recorded run;", participants)
+        self.assertNotIn("2 recorded runs", participants)
+        self.assertIn('<span class="pill">observed running 1</span>', participants)
+        # The phase the run has already moved past is not still reported.
+        self.assertNotIn("dispatched 1", participants)
+        self.assertEqual(participants.count('class="row"'), 1)
+        # The participant summary reads the same deduplicated set the work list
+        # does, so file order cannot change either of them.
+        self.assertEqual(frames[1]["participants"], participants)
+        self.assertEqual(frames[1]["worklist"], frames[0]["worklist"])
+        self.assertIn("assignments: codex builder observed running", frames[0]["worklist"])
+
+    def test_consolidated_unlinked_observations_recompute_freshness_and_update(self) -> None:
+        # One unlinked run in one repository, observed twice: a first file whose
+        # source was fresh, and a later file whose source has gone unavailable
+        # while preserving a later recorded event.
+        fresh = _observation_fixture("unlinked")
+        gone = copy.deepcopy(fresh)
+        gone["created_at"] = "2026-09-12T20:00:20Z"
+        gone["sources"] = [
+            {
+                "id": "registryobs",
+                "kind": "run_registry",
+                "freshness": "unavailable",
+                "coverage": "unavailable",
+                "event_at": "2026-09-12T20:00:05Z",
+                "observed_at": "2026-09-12T20:00:10Z",
+                "checked_at": "2026-09-12T20:00:20Z",
+                "heartbeat_at": None,
+            }
+        ]
+        gone["unlinked"][0]["source_id"] = "registryobs"
+        gone["unlinked"][0]["observed_at"] = "2026-09-12T20:00:10Z"
+        # Both remain records the frozen contract accepts.
+        gone = board_observation.validate(gone)
+
+        frames = _render_board_sequence(
+            [
+                {"payload": _observation_payload([fresh, gone])},
+                # The same two files listed the other way round.
+                {"payload": _observation_payload([gone, fresh])},
+            ]
+        )
+        worklist = frames[0]["worklist"]
+        # Reversing the files cannot change one byte of the consolidated row.
+        self.assertEqual(frames[1]["worklist"], worklist)
+        self.assertEqual(frames[1]["participants"], frames[0]["participants"])
+
+        # A fresh first record cannot hide the unavailable source behind the
+        # evidence that is being shown next to it.
+        self.assertIn(
+            '<span class="pill bad"><span class="cue" aria-hidden="true">!</span>'
+            " last observed 30s ago</span>",
+            worklist,
+        )
+        self.assertNotIn(
+            '<span class="cue" aria-hidden="true">+</span> observed 30s ago', worklist
+        )
+        self.assertIn("Source unavailable: run_registry.", worklist)
+        # The later meaningful update is the one retained, not the earlier one
+        # the first file happened to record.
+        self.assertIn("last update: 25s ago", worklist)
+        self.assertNotIn("last update: 50s ago", worklist)
+        self.assertIn("last meaningful update 25s ago", worklist)
+
+        # One run observed in two files is one run, attested by the worst
+        # source that observed it.
+        self.assertIn("assignments: claude unknown", worklist)
+        self.assertNotIn("claude unknown; claude unknown", worklist)
+        self.assertIn("run_registry, unavailable, unavailable coverage", worklist)
+        participants = frames[0]["participants"]
+        self.assertIn("1 recorded run;", participants)
+        self.assertNotIn("2 recorded runs", participants)
+        self.assertIn("worst source unavailable", participants)
+
     def test_mobile_detail_follows_the_row_and_desktop_places_it_adjacent(self) -> None:
         html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
         # One detail node, rendered inside the selected row, so single-column
