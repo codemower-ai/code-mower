@@ -12,6 +12,7 @@ import os
 import re
 import signal
 import socket
+import stat
 import sys
 import time
 import urllib.error
@@ -66,7 +67,9 @@ OBSERVATION_SELECTION = "newest_modified_then_name"
 # fixed closed vocabulary so a consumer can state which kind of gap it has
 # without a file name, a local path, an errno or any record content reaching
 # the page. `files_omitted` is the cap leaving candidates unread,
-# `files_unreadable` is a selected candidate that could not be read at all,
+# `files_unreadable` is a selected candidate that could not be read at all
+# (one that raised, or one refused before any open for not being a regular
+# file; both are stated as that same fact, never as what kind of entry it was),
 # `records_invalid` is a candidate the frozen record contract rejected, and
 # `directory_unreadable` is a directory that could not be listed.
 OBSERVATION_COVERAGE_GAPS = (
@@ -1196,7 +1199,7 @@ def prune_stale_agent_adapters(
     return result
 
 
-def _select_observation_files(path: Path) -> tuple[list[str], int]:
+def _select_observation_files(path: Path) -> tuple[list[tuple[str, bool]], int]:
     """Choose the bounded file set to read, and count every candidate.
 
     The whole candidate set is counted so truncation can be reported, but only
@@ -1212,6 +1215,18 @@ def _select_observation_files(path: Path) -> tuple[list[str], int]:
     whose time cannot be read sorts last by name, and an overflowing directory
     is reported as incomplete however it was selected. Emission order stays
     file-name order, unchanged from a directory that fits inside the cap.
+
+    Each selected candidate is returned with whether it is a *regular* file,
+    decided here by one ``lstat`` that never opens anything and never blocks.
+    The caller opens only the entries this classified regular, because opening
+    the others can cost far more than a bounded read: a read on a named pipe
+    with no writer blocks until one arrives, which is long after the byte bound
+    would have applied and long enough to wedge a refresh. Symlinks are
+    deliberately not followed, even to a regular file -- resolving one would
+    reintroduce the same hazard through a link whose target the Board never
+    chose, and whose target can change between this classification and the
+    open. Nothing here is dropped for being non-regular: it stays a counted
+    candidate, and the read accounts for it as one that produced no record.
     """
 
     total = 0
@@ -1223,17 +1238,22 @@ def _select_observation_files(path: Path) -> tuple[list[str], int]:
                 if not entry.name.endswith(".json"):
                     continue
                 try:
-                    modified = entry.stat().st_mtime_ns
+                    status = entry.stat(follow_symlinks=False)
                 except OSError:
                     # Unreadable metadata is not evidence of anything; the file
                     # stays a candidate and simply loses the recency
-                    # preference.
-                    modified = 0
+                    # preference. It is not known to be a regular file either,
+                    # so it is never opened -- an entry the Board cannot
+                    # classify is accounted for as unread rather than risked.
+                    modified, regular = 0, False
+                else:
+                    modified = status.st_mtime_ns
+                    regular = stat.S_ISREG(status.st_mode)
                 total += 1
-                yield (-modified, entry.name)
+                yield (-modified, entry.name, regular)
 
     selected = heapq.nsmallest(MAX_OBSERVATION_FILES, candidates())
-    return sorted(name for _key, name in selected), total
+    return sorted((name, regular) for _key, name, regular in selected), total
 
 @dataclass(frozen=True)
 class _ObservationAccounting:
@@ -1242,8 +1262,10 @@ class _ObservationAccounting:
     Exactly one outcome is recorded per candidate, so these counts partition
     the candidate set rather than describing it loosely: every candidate is
     either omitted by the file cap or attempted; every attempted file is either
-    read or unreadable; and every file that was read either produced an
-    accepted record or was rejected by the frozen record contract.
+    read or unreadable -- including an entry refused for not being a regular
+    file, which is unreadable by decision rather than by error; and every file
+    that was read either produced an accepted record or was rejected by the
+    frozen record contract.
 
     Coverage is whole only when none of those partitions lost anything -- no
     omission, no unreadable file, and no rejected record. A dropped candidate
@@ -1270,7 +1292,15 @@ class _ObservationAccounting:
 
     @property
     def attempted_files(self) -> int:
-        """Selected candidates the read actually opened."""
+        """Selected candidates the read had to account for.
+
+        Every selected candidate is attempted in the sense that matters to
+        coverage -- the read either got its bytes or it did not. A regular file
+        is opened; an entry that is not a regular file is refused before any
+        open, because opening one can block instead of failing. Both outcomes
+        are counted below, so refusing one never removes it from the set the
+        read is answerable for.
+        """
 
         return self.selected_files
 
@@ -1343,7 +1373,7 @@ class _ObservationAccounting:
 
 def _read_observation_records(
     path: Path,
-    selected: list[str],
+    selected: list[tuple[str, bool]],
     candidate_count: int,
 ) -> _ObservationAccounting:
     """Read the selected candidates and account for every one of them.
@@ -1353,13 +1383,30 @@ def _read_observation_records(
     in the evidence and not an absence of work. A file the contract rejects --
     for being oversize or for failing to decode -- is counted separately, so
     the two are distinguishable without either being lost.
+
+    A selected candidate that is not a regular file is refused before any open
+    and counted the same way, because the cost of opening one is not bounded by
+    anything the contract controls: a named pipe with no writer blocks the read
+    rather than failing it. It is refused, not dropped -- the Board cannot know
+    what the entry it declined to open would have said, so it is one more
+    candidate that produced no record and one more reason this read is partial.
+    An entry that changes between that classification and this open is no
+    different: the open or the read raises, and lands in the same count.
     """
 
     records: list[dict[str, Any]] = []
     warnings: list[dict[str, str]] = []
     unreadable = 0
     invalid = 0
-    for record_file in (path / name for name in selected):
+    for name, regular in selected:
+        record_file = path / name
+        if not regular:
+            # Never opened, and counted exactly as a file that failed to open:
+            # the same closed diagnostic, which says a candidate produced no
+            # record without saying what kind of entry it turned out to be.
+            unreadable += 1
+            warnings.append({"file": name, "message": "unreadable_file"})
+            continue
         # The contract bounds a record to MAX_BYTES, so at most one byte past
         # that bound is ever read: an oversize file is rejected on the length
         # of what was asked for, without the remainder being loaded or decoded.
@@ -1444,6 +1491,13 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
     no consumer can read a truncated snapshot as the whole local record set.
     That coverage describes the files, not a record's own source coverage, and
     it is carried separately from the contract's closed record diagnostics.
+
+    Only regular files are ever opened. A directory entry that is a named pipe,
+    a socket, a directory or a symlink is counted as a candidate and then
+    refused unread, because a bounded read is only bounded once the file is
+    open: reading a named pipe with no writer blocks, and a refresh that blocks
+    keeps serving the snapshot before it. Refusing one is a loss of evidence
+    like any other and is reported as one.
 
     Every candidate outcome is accounted for by :class:`_ObservationAccounting`
     and reported here: what was omitted by the cap, what could not be read at

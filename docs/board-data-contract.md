@@ -705,6 +705,20 @@ directory inside the cap reads exactly as it did before. Counting the candidate
 set never widens the read — at most 32 files are opened, each with one bounded
 `MAX_BYTES + 1` request.
 
+Only **regular files** are ever opened. Every `*.json` entry is classified by one
+`lstat` that never opens anything, and a selected entry that is not a regular
+file — a named pipe, a socket, a directory, a symlink, or an entry whose own
+metadata could not be read — is refused unread and counted as `unreadable`.
+Symlinks are deliberately not followed, even to a regular file. The reason is
+that the file and byte bounds only start applying once the file is open: reading
+a named pipe with no writer blocks until a writer arrives, and a refresh that
+blocks there never finishes, so the page keeps serving the snapshot before it.
+Refusing an entry is not ignoring it — it stays a counted candidate that
+produced no record, so the read is `partial` exactly as it is for a file that
+raised. A candidate can also change between that classification and the open; a
+lost race raises on the open or the read and lands in the same `unreadable`
+count.
+
 The block carries:
 
 - `records[]` — validated `code_mower.boardObservation.v1` records, in file-name
@@ -726,9 +740,11 @@ The block carries:
   partitions are the accounting invariants:
   - `candidate_files` = `selected_files` + `omitted_files` — every `*.json`
     candidate was either selected by the bounded read or omitted by the cap.
-  - `attempted_files` = `selected_files` — every selected candidate is opened.
+  - `attempted_files` = `selected_files` — every selected candidate is one the
+    read is answerable for, whether it was opened or refused before any open.
   - `attempted_files` = `read_files` + `unreadable_files` — an attempted file
-    either yielded its bytes or raised on open or on read.
+    either yielded its bytes, or raised on open or on read, or was refused for
+    not being a regular file.
   - `read_files` = `accepted_records` + `invalid_records` — a file that was
     read either decoded into a record or was rejected by the frozen record
     contract (including for exceeding `MAX_BYTES`).
@@ -741,7 +757,9 @@ The block carries:
   selected candidate that produced no record, deliberately including unreadable
   ones, because a file that could not be read is no more accounted for than one
   the contract refused. Each has one warning carrying a fixed diagnostic:
-  `unreadable_file` for a file that could not be read, and the contract's own
+  `unreadable_file` for a file that could not be read — including one refused
+  for not being a regular file, which is stated as the same fact and never as
+  what kind of entry it was — and the contract's own
   vocabulary (`invalid_contract`, `invalid_route`, `identity_mismatch`, and so
   on) for a record it rejected. Those diagnostics carry no errno, no OS message,
   no local path and no byte of file content; the `file` field carries the bare

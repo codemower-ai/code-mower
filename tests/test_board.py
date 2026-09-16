@@ -18,7 +18,7 @@ import time
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest import TestCase, skipUnless
+from unittest import SkipTest, TestCase, skipUnless
 from unittest.mock import patch
 from io import StringIO
 
@@ -7878,6 +7878,50 @@ def _observation_read_failures(
 OBSERVATION_OUTCOMES = ("accepted", "invalid", "oversize", "unreadable_open", "unreadable_read")
 
 
+def _assert_observation_partition(case: TestCase, payload: dict) -> None:
+    """The counters partition the candidate set, and coverage follows them.
+
+    Stated once, at module scope, because it is the one accounting every read
+    has to satisfy however its candidates turned out -- a file that decoded, a
+    file that raised, and an entry that was refused before any open all land in
+    exactly one of these counts.
+    """
+
+    case.assertEqual(
+        payload["candidate_files"], payload["selected_files"] + payload["omitted_files"]
+    )
+    case.assertEqual(payload["attempted_files"], payload["selected_files"])
+    case.assertEqual(
+        payload["attempted_files"], payload["read_files"] + payload["unreadable_files"]
+    )
+    case.assertEqual(
+        payload["read_files"], payload["accepted_records"] + payload["invalid_records"]
+    )
+    case.assertEqual(payload["accepted_records"], len(payload["records"]))
+    case.assertEqual(
+        payload["unaccounted_files"],
+        payload["unreadable_files"] + payload["invalid_records"],
+    )
+    # The historical rejection count is every selected candidate the
+    # records do not account for, unreadable ones included.
+    case.assertEqual(payload["rejected"], payload["unaccounted_files"])
+    case.assertEqual(len(payload["warnings"]), payload["unaccounted_files"])
+    whole = payload["omitted_files"] == 0 and payload["unaccounted_files"] == 0
+    case.assertEqual(payload["coverage_complete"], whole)
+    case.assertEqual(payload["coverage"], "complete" if whole else "partial")
+    case.assertEqual(payload["truncated"], payload["omitted_files"] > 0)
+    case.assertEqual(payload["file_cap"], board.MAX_OBSERVATION_FILES)
+    case.assertLessEqual(payload["selected_files"], board.MAX_OBSERVATION_FILES)
+    case.assertTrue(set(payload["coverage_gaps"]) <= set(board.OBSERVATION_COVERAGE_GAPS))
+    case.assertEqual("files_omitted" in payload["coverage_gaps"], payload["omitted_files"] > 0)
+    case.assertEqual(
+        "files_unreadable" in payload["coverage_gaps"], payload["unreadable_files"] > 0
+    )
+    case.assertEqual(
+        "records_invalid" in payload["coverage_gaps"], payload["invalid_records"] > 0
+    )
+
+
 class BoardObservationOutcomeAccountingTests(TestCase):
     """Every candidate file gets exactly one outcome, and every loss counts.
 
@@ -7962,39 +8006,7 @@ class BoardObservationOutcomeAccountingTests(TestCase):
     def _assert_invariants(self, payload: dict) -> None:
         """The counters partition the candidate set, and coverage follows them."""
 
-        self.assertEqual(
-            payload["candidate_files"], payload["selected_files"] + payload["omitted_files"]
-        )
-        self.assertEqual(payload["attempted_files"], payload["selected_files"])
-        self.assertEqual(
-            payload["attempted_files"], payload["read_files"] + payload["unreadable_files"]
-        )
-        self.assertEqual(
-            payload["read_files"], payload["accepted_records"] + payload["invalid_records"]
-        )
-        self.assertEqual(payload["accepted_records"], len(payload["records"]))
-        self.assertEqual(
-            payload["unaccounted_files"],
-            payload["unreadable_files"] + payload["invalid_records"],
-        )
-        # The historical rejection count is every selected candidate the
-        # records do not account for, unreadable ones included.
-        self.assertEqual(payload["rejected"], payload["unaccounted_files"])
-        self.assertEqual(len(payload["warnings"]), payload["unaccounted_files"])
-        whole = payload["omitted_files"] == 0 and payload["unaccounted_files"] == 0
-        self.assertEqual(payload["coverage_complete"], whole)
-        self.assertEqual(payload["coverage"], "complete" if whole else "partial")
-        self.assertEqual(payload["truncated"], payload["omitted_files"] > 0)
-        self.assertEqual(payload["file_cap"], self.CAP)
-        self.assertLessEqual(payload["selected_files"], self.CAP)
-        self.assertTrue(set(payload["coverage_gaps"]) <= set(board.OBSERVATION_COVERAGE_GAPS))
-        self.assertEqual("files_omitted" in payload["coverage_gaps"], payload["omitted_files"] > 0)
-        self.assertEqual(
-            "files_unreadable" in payload["coverage_gaps"], payload["unreadable_files"] > 0
-        )
-        self.assertEqual(
-            "records_invalid" in payload["coverage_gaps"], payload["invalid_records"] > 0
-        )
+        _assert_observation_partition(self, payload)
 
     # Every candidate-outcome mixture the reader has to account for, with the
     # exact counters it must report. `omitted` is what the cap left, `read` is
@@ -8309,3 +8321,607 @@ class BoardObservationOutcomeAccountingTests(TestCase):
                 "recover the observation files that produced no record before treating this session as idle",
             ]],
         )
+
+
+# Every kind of directory entry that ends in `.json` and is not a regular file.
+# The Board's read is bounded in files and in bytes, but neither bound applies
+# until the file is open: reading a named pipe with no writer blocks, and a
+# blocked refresh keeps serving the snapshot before it. These are the entries
+# that must be counted and then refused unread.
+NON_REGULAR_ENTRIES = ("fifo", "symlink", "directory", "socket")
+
+
+def _make_non_regular(kind: str, entry: Path, link_target: Path | None = None) -> None:
+    """Create one non-regular ``*.json`` entry, or skip where it cannot exist.
+
+    Every primitive here is optional. Named pipes and Unix sockets do not exist
+    on every platform the Board runs on, socket paths have a length limit a
+    temporary directory can exceed, and creating a symlink can need a privilege
+    the test does not have. A platform that cannot produce the entry skips that
+    case outright rather than quietly asserting something weaker about it.
+    """
+
+    if kind == "directory":
+        entry.mkdir()
+        return
+    if kind == "fifo":
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+        try:
+            os.mkfifo(entry)
+        except (OSError, NotImplementedError) as exc:
+            raise SkipTest("this platform cannot create a named pipe") from exc
+        return
+    if kind == "symlink":
+        assert link_target is not None
+        try:
+            entry.symlink_to(link_target)
+        except (OSError, NotImplementedError) as exc:
+            raise SkipTest("this platform cannot create a symlink") from exc
+        return
+    if kind == "socket":
+        if not hasattr(socket, "AF_UNIX"):
+            raise SkipTest("this platform has no Unix sockets")
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as bound:
+                # Binding creates the filesystem entry; it outlives the socket
+                # object, which is all this test needs it to do.
+                bound.bind(str(entry))
+        except (OSError, NotImplementedError) as exc:
+            raise SkipTest("this platform cannot bind a Unix socket here") from exc
+        return
+    raise AssertionError(f"unknown entry kind {kind!r}")  # pragma: no cover
+
+
+@contextmanager
+def _observation_opens(directory: Path, reads: list[int] | None = None):
+    """Record which candidate names the read opened, and what it asked them for."""
+
+    opened: list[str] = []
+    real_open = Path.open
+
+    def patched(self: Path, *args: object, **kwargs: object) -> object:
+        if self.parent != directory:
+            return real_open(self, *args, **kwargs)
+        opened.append(self.name)
+        handle = real_open(self, *args, **kwargs)
+        return _RecordingHandle(handle, reads) if reads is not None else handle
+
+    with patch.object(Path, "open", patched):
+        yield opened
+
+
+class BoardObservationNonRegularEntryTests(TestCase):
+    """A candidate that is not a regular file is counted, refused, and said.
+
+    The read is bounded in files and in bytes, but a bound only starts applying
+    once the file is open, and opening a named pipe with no writer does not
+    fail -- it waits. A refresh that waits there never finishes, so the page
+    keeps serving the snapshot before it and nothing on it is ever marked
+    stale. So the entry is classified before it is opened, and refused.
+
+    Refusing it is not the same as ignoring it. The Board cannot know what the
+    entry it declined to open would have said, so it stays a counted candidate
+    that produced no record: the read is partial, and the authority to call the
+    session idle or to retire work it already observed is withheld exactly as
+    it is for a file that raised.
+    """
+
+    CAP = board.MAX_OBSERVATION_FILES
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    # Long enough that a loaded machine is not mistaken for a wedged read, and
+    # short enough that a wedged read is not mistaken for a slow one.
+    DEADLINE = 20.0
+    # Distinctive and kind-neutral: the assertions below prove the page never
+    # names the entry, so the name must not be something the page could say by
+    # coincidence, and must not itself disclose what kind of entry it was.
+    ENTRY = "b-cm948-entry.json"
+    IDLE = "a-cm948-idle.json"
+
+    def _payload_within(self, directory: Path, limit: float | None = None) -> dict:
+        """Read the directory on a worker, and fail the test rather than hang.
+
+        A refusal that did not happen does not raise here -- it blocks -- so
+        the deadline is the assertion. The worker is a daemon, so even a read
+        that never returns cannot keep the suite from exiting.
+        """
+
+        config = board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+        done: list[dict] = []
+        failed: list[BaseException] = []
+
+        def read() -> None:
+            try:
+                done.append(board.observations_payload(config))
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                failed.append(exc)
+
+        worker = threading.Thread(target=read, daemon=True)
+        worker.start()
+        worker.join(self.DEADLINE if limit is None else limit)
+        self.assertFalse(
+            worker.is_alive(), "the observation read never returned; a candidate blocked it"
+        )
+        if failed:  # pragma: no cover - a raising read is a failure either way
+            raise failed[0]
+        return done[0]
+
+    def _directory(self, tmp: Path, kind: str) -> tuple[Path, str]:
+        """One current `no_work` record beside one non-regular candidate.
+
+        The symlink points at a regular record outside the observation
+        directory, so following it would be visible in the records rather than
+        indistinguishable from reading a file that was there anyway.
+        """
+
+        directory = tmp / "observations"
+        directory.mkdir()
+        (directory / self.IDLE).write_text(
+            json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+        )
+        outside = tmp / "outside.json"
+        outside.write_text(
+            json.dumps(_referenced_record("cm948-through-the-link")), encoding="utf-8"
+        )
+        _make_non_regular(kind, directory / self.ENTRY, outside)
+        return directory, str(directory)
+
+    def test_a_non_regular_candidate_is_counted_selected_and_never_opened(self) -> None:
+        """The finding itself, for every entry kind that can exist here.
+
+        The read returns, the entry is never opened, and it is accounted for as
+        a selected candidate that produced no record.
+        """
+
+        for kind in NON_REGULAR_ENTRIES:
+            with self.subTest(kind), tempfile.TemporaryDirectory() as tmp:
+                directory, _path = self._directory(Path(tmp), kind)
+                reads: list[int] = []
+                with _observation_opens(directory, reads) as opened:
+                    payload = self._payload_within(directory)
+
+                # Never opened, so no bound had to save the read from it.
+                self.assertEqual(opened, [self.IDLE])
+                self.assertNotIn(self.ENTRY, opened)
+                self.assertEqual(reads, [board_observation.MAX_BYTES + 1])
+
+                _assert_observation_partition(self, payload)
+                self.assertEqual(payload["candidate_files"], 2)
+                self.assertEqual(payload["selected_files"], 2)
+                self.assertEqual(payload["attempted_files"], 2)
+                self.assertEqual(payload["omitted_files"], 0)
+                self.assertEqual(payload["unreadable_files"], 1)
+                self.assertEqual(payload["read_files"], 1)
+                self.assertEqual(payload["accepted_records"], 1)
+                self.assertEqual(payload["invalid_records"], 0)
+                self.assertEqual(payload["unaccounted_files"], 1)
+                self.assertEqual(payload["rejected"], 1)
+
+                # Incomplete, warned, and not truncated: nothing was left past
+                # the cap, so the page may not retell this as a cap shortfall.
+                self.assertFalse(payload["coverage_complete"])
+                self.assertEqual(payload["coverage"], "partial")
+                self.assertEqual(payload["coverage_gaps"], ["files_unreadable"])
+                self.assertFalse(payload["truncated"])
+                self.assertEqual(
+                    payload["warnings"], [{"file": self.ENTRY, "message": "unreadable_file"}]
+                )
+                self.assertIn("could not be read", payload["message"])
+                self.assertIn("incomplete", payload["message"])
+
+                # The one readable record is still read, in full, unchanged.
+                self.assertEqual([record["kind"] for record in payload["records"]], ["no_work"])
+
+    def test_a_symlink_is_not_followed_even_to_a_regular_record(self) -> None:
+        """A link the Board never chose is not a file the Board may read.
+
+        Resolving one would reintroduce the same hazard through a target the
+        directory does not control, and through a target that can be swapped
+        between the classification and the open. So the link is refused on
+        being a link, not on where it happens to point today.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, local = self._directory(Path(tmp), "symlink")
+            with _observation_opens(directory) as opened:
+                payload = self._payload_within(directory)
+
+        self.assertEqual(opened, [self.IDLE])
+        self.assertEqual(payload["unreadable_files"], 1)
+        self.assertEqual(payload["accepted_records"], 1)
+        # The target is a perfectly valid record, and it is nowhere on the page.
+        encoded = json.dumps(payload)
+        self.assertNotIn("cm948-through-the-link", encoded)
+        self.assertNotIn(local, encoded)
+        self.assertEqual([record["kind"] for record in payload["records"]], ["no_work"])
+        self.assertEqual(
+            [record["work"]["reference"] for record in payload["records"] if record.get("work")],
+            [],
+        )
+
+    def test_a_refused_candidate_withholds_current_idle(self) -> None:
+        """A current, complete-source `no_work` record is no longer enough.
+
+        Nothing about the idle record withholds the claim; what withholds it is
+        the candidate beside it that the Board declined to open, which could
+        have held the work that contradicts it.
+        """
+
+        for kind in NON_REGULAR_ENTRIES:
+            with self.subTest(kind), tempfile.TemporaryDirectory() as tmp:
+                directory, _local = self._directory(Path(tmp), kind)
+                block = self._payload_within(directory)
+
+                self.assertEqual(block["accepted_records"], 1)
+                self.assertEqual(block["unreadable_files"], 1)
+                self.assertFalse(block["coverage_complete"])
+
+                row = _eval_board_view(
+                    "workRows(ARGS[0], ARGS[1]).map(row => ({headline: row.headline,"
+                    "headline_class: row.headline_class, action: row.action_label,"
+                    "idle: row.idle || null, coverage: row.groups[0].items[0]}))[0]",
+                    _observation_payload([], observations=block),
+                    self.NOW_MS,
+                )
+                self.assertFalse(row["idle"]["affirmative"])
+                self.assertEqual(row["idle"]["reason"], "unread")
+                self.assertEqual(row["idle"]["coverage_state"], "unread")
+                self.assertEqual(row["headline"], "idle in the records read")
+                self.assertEqual(row["headline_class"], "warn")
+                self.assertIn("produced no record this refresh", row["coverage"]["note"])
+                self.assertIn("before treating this session as idle", row["action"])
+
+    def test_a_refused_candidate_never_retires_observed_work(self) -> None:
+        """Reconciliation is an absence claim too, so it needs whole coverage.
+
+        The session recorded work and then recorded itself idle. With every
+        candidate read, the later idle record retires the work row. With one
+        candidate refused unread, both readings stay on the page.
+        """
+
+        records = [
+            _observed_later(_named_work("alpha"), 0),
+            _observed_later(_observation_fixture("no_work"), 20),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "observations"
+            directory.mkdir()
+            for index, record in enumerate(records):
+                (directory / f"a-cm948-{index:03d}.json").write_text(
+                    json.dumps(record), encoding="utf-8"
+                )
+            whole = self._payload_within(directory)
+            self.assertTrue(whole["coverage_complete"])
+            self.assertEqual(
+                _eval_board_view(
+                    RECONCILED_EXPRESSION,
+                    _observation_payload([], observations=whole),
+                    self.NOW_MS,
+                )["keys"],
+                [_idle_key()],
+            )
+
+            _make_non_regular("directory", directory / self.ENTRY)
+            lossy = self._payload_within(directory)
+
+        self.assertFalse(lossy["coverage_complete"])
+        self.assertEqual(lossy["unreadable_files"], 1)
+        reconciled = _eval_board_view(
+            RECONCILED_EXPRESSION, _observation_payload([], observations=lossy), self.NOW_MS
+        )
+        self.assertEqual(reconciled["keys"], [_work_key("alpha"), _idle_key()])
+        self.assertEqual(reconciled["headlines"][1], "idle in the records read")
+
+    def test_the_refusal_names_no_entry_no_kind_and_no_errno(self) -> None:
+        """The same closed diagnostic an ordinary unreadable file gets.
+
+        A page that said a pipe was a pipe would be describing the contents of
+        a local directory to whoever is looking at the Board. It says a
+        candidate produced no record, and stops there.
+        """
+
+        for kind in NON_REGULAR_ENTRIES:
+            with self.subTest(kind), tempfile.TemporaryDirectory() as tmp:
+                directory, local = self._directory(Path(tmp), kind)
+                payload = self._payload_within(directory)
+
+                encoded = json.dumps(payload)
+                self.assertNotIn(local, encoded)
+                for leak in (
+                    "fifo",
+                    "pipe",
+                    "socket",
+                    "symlink",
+                    "S_ISREG",
+                    "regular",
+                    "Errno",
+                    "Is a directory",
+                    "permission denied",
+                ):
+                    self.assertNotIn(leak, encoded)
+                self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+                self.assertTrue(payload["path_redacted"])
+                self.assertEqual(
+                    {warning["message"] for warning in payload["warnings"]}, {"unreadable_file"}
+                )
+
+                nodes = _render_board_dom(
+                    _observation_payload([], observations=payload), now=OBSERVATION_NOW
+                )
+                rendered = json.dumps(nodes)
+                self.assertNotIn(self.ENTRY, rendered)
+                self.assertNotIn("cm948", rendered)
+                self.assertNotIn(local, rendered)
+                self.assertIn("Record diagnostics: unreadable_file.", nodes["diagnostics"])
+                self.assertIn("1 unreadable", nodes["diagnostics"])
+                self.assertIn("Incomplete snapshot", nodes["worklist"])
+                self.assertNotIn("idle with complete coverage", rendered)
+                self.assertNotIn("nothing to do in this session", rendered)
+
+    def test_refused_candidates_do_not_widen_or_reorder_the_bounded_read(self) -> None:
+        """Bounded in files and in bytes, and independent of directory order.
+
+        Non-regular entries are candidates like any other: they are counted,
+        they occupy a slot under the cap, and which candidates the cap keeps
+        does not depend on the order the filesystem listed them in.
+        """
+
+        real_scandir = os.scandir
+
+        class _ReversedScan:
+            def __init__(self, entries: list[object]) -> None:
+                self._entries = entries
+
+            def __enter__(self) -> object:
+                return iter(self._entries)
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        def reversed_scandir(path: object) -> object:
+            with real_scandir(path) as entries:
+                return _ReversedScan(list(entries)[::-1])
+
+        board_observation.schema()
+        payloads = []
+        for reverse in (False, True):
+            with tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                refused = set()
+                for index in range(self.CAP + 6):
+                    name = f"obs-{index:03d}.json"
+                    if index % 5 == 4:
+                        _make_non_regular("directory", directory / name)
+                        refused.add(name)
+                    else:
+                        (directory / name).write_text(
+                            json.dumps(_referenced_record(f"work-{index:03d}")), encoding="utf-8"
+                        )
+                    # Modification time rises with the name, so the cap keeps a
+                    # fixed set whatever order the entries are handed back in.
+                    stamp = 1_600_000_000 + index
+                    os.utime(directory / name, (stamp, stamp), follow_symlinks=True)
+
+                reads: list[int] = []
+                with _observation_opens(directory, reads) as opened:
+                    if reverse:
+                        with patch.object(board.os, "scandir", reversed_scandir):
+                            payload = self._payload_within(directory)
+                    else:
+                        payload = self._payload_within(directory)
+
+                _assert_observation_partition(self, payload)
+                # The cap still decides how many candidates are selected, and
+                # every candidate that was opened asked for one bounded read.
+                self.assertEqual(payload["selected_files"], self.CAP)
+                self.assertEqual(payload["candidate_files"], self.CAP + 6)
+                self.assertEqual(payload["omitted_files"], 6)
+                self.assertEqual(reads, [board_observation.MAX_BYTES + 1] * len(opened))
+                self.assertEqual(len(opened), payload["read_files"])
+                self.assertFalse(set(opened) & refused)
+                self.assertEqual(
+                    payload["read_files"] + payload["unreadable_files"], self.CAP
+                )
+                # Two kinds of loss at once, each named and neither absorbing
+                # the other.
+                self.assertEqual(
+                    payload["coverage_gaps"], ["files_omitted", "files_unreadable"]
+                )
+                payloads.append(payload)
+
+        forward, backward = payloads
+        for key in (
+            "candidate_files",
+            "selected_files",
+            "omitted_files",
+            "read_files",
+            "accepted_records",
+            "invalid_records",
+            "unreadable_files",
+            "coverage",
+            "coverage_complete",
+            "coverage_gaps",
+        ):
+            self.assertEqual(forward[key], backward[key], key)
+        self.assertEqual(
+            [record["work"]["reference"] for record in forward["records"]],
+            [record["work"]["reference"] for record in backward["records"]],
+        )
+
+    def test_an_entry_that_changes_after_classification_is_still_accounted_for(self) -> None:
+        """Classification is a decision about a moment, not a guarantee.
+
+        A candidate classified as a regular file can be gone, replaced or
+        unreadable by the time the read opens it. The bounded open and read
+        already route that through the same unreadable accounting, so a lost
+        race is a counted gap rather than a silently shorter record set.
+        """
+
+        for failure in ("open", "read"):
+            with self.subTest(failure), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                for name in (self.IDLE, self.ENTRY):
+                    (directory / name).write_text(
+                        json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+                    )
+                raced = {self.ENTRY}
+                with _observation_read_failures(
+                    directory,
+                    raced if failure == "open" else frozenset(),
+                    raced if failure == "read" else frozenset(),
+                ):
+                    payload = self._payload_within(directory)
+
+                _assert_observation_partition(self, payload)
+                self.assertEqual(payload["candidate_files"], 2)
+                self.assertEqual(payload["unreadable_files"], 1)
+                self.assertEqual(payload["accepted_records"], 1)
+                self.assertFalse(payload["coverage_complete"])
+                self.assertEqual(payload["coverage_gaps"], ["files_unreadable"])
+                self.assertEqual(
+                    payload["warnings"], [{"file": self.ENTRY, "message": "unreadable_file"}]
+                )
+
+    def test_an_unclassifiable_candidate_is_refused_rather_than_risked(self) -> None:
+        """A candidate whose own metadata will not read is never opened.
+
+        The Board cannot tell from a failed `lstat` whether the entry is a
+        record or a pipe, and the cost of being wrong is a refresh that never
+        returns. So it keeps the candidate, drops the recency preference it can
+        no longer compute, and accounts for it as one that produced no record.
+        """
+
+        real_stat = os.DirEntry.stat
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for name in (self.IDLE, self.ENTRY):
+                (directory / name).write_text(
+                    json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+                )
+
+            def failing_stat(entry: os.DirEntry, **kwargs: object) -> object:
+                if entry.name == self.ENTRY:
+                    raise OSError(13, "permission denied")
+                return real_stat(entry, **kwargs)
+
+            with patch.object(os.DirEntry, "stat", failing_stat, create=False):
+                with _observation_opens(directory) as opened:
+                    payload = self._payload_within(directory)
+
+        self.assertEqual(opened, [self.IDLE])
+        _assert_observation_partition(self, payload)
+        self.assertEqual(payload["candidate_files"], 2)
+        self.assertEqual(payload["selected_files"], 2)
+        self.assertEqual(payload["unreadable_files"], 1)
+        self.assertEqual(payload["accepted_records"], 1)
+        self.assertFalse(payload["coverage_complete"])
+        self.assertNotIn("permission denied", json.dumps(payload))
+
+    def test_dropping_a_refused_candidate_from_the_count_would_be_caught(self) -> None:
+        """Mutation: refuse the entry, but stop counting it as a candidate.
+
+        This is the tempting wrong fix -- skip what cannot be read and report
+        what is left as the whole local record set. It produces exactly the
+        present-tense idle claim the assertions above forbid, so those
+        assertions are load-bearing rather than decorative.
+        """
+
+        real_select = board._select_observation_files
+
+        def dropping_the_entry(path: Path) -> tuple[list[tuple[str, bool]], int]:
+            selected, _total = real_select(path)
+            kept = [(name, regular) for name, regular in selected if regular]
+            return kept, len(kept)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _local = self._directory(Path(tmp), "directory")
+            shipped = self._payload_within(directory)
+            with patch.object(board, "_select_observation_files", dropping_the_entry):
+                mutated = self._payload_within(directory)
+
+        # The mutant really does call a read that lost a candidate whole.
+        self.assertTrue(mutated["coverage_complete"])
+        self.assertEqual(mutated["coverage"], "complete")
+        self.assertEqual(mutated["candidate_files"], 1)
+        self.assertEqual(mutated["unreadable_files"], 0)
+        self.assertEqual(mutated["message"], "")
+        self.assertEqual(
+            _eval_board_view(
+                "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label])",
+                _observation_payload([], observations=mutated),
+                self.NOW_MS,
+            ),
+            [["idle with complete coverage", "nothing to do in this session"]],
+        )
+
+        # The shipped code, unmutated, says none of that about the same read.
+        self.assertFalse(shipped["coverage_complete"])
+        self.assertEqual(shipped["candidate_files"], 2)
+        self.assertEqual(shipped["unreadable_files"], 1)
+        self.assertEqual(
+            _eval_board_view(
+                "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label])",
+                _observation_payload([], observations=shipped),
+                self.NOW_MS,
+            ),
+            [[
+                "idle in the records read",
+                "recover the observation files that produced no record before treating this session as idle",
+            ]],
+        )
+
+    def test_removing_the_regular_file_guard_would_wedge_the_refresh(self) -> None:
+        """Mutation: classify every selected candidate as a regular file.
+
+        That is the code before this guard existed, and against a real named
+        pipe it does not return. The deadline the tests above pass comfortably
+        is the one this mutant cannot meet, which is what makes those tests a
+        proof about blocking rather than about counters alone.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+
+        real_select = board._select_observation_files
+
+        def without_the_guard(path: Path) -> tuple[list[tuple[str, bool]], int]:
+            selected, total = real_select(path)
+            return [(name, True) for name, _regular in selected], total
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _local = self._directory(Path(tmp), "fifo")
+            fifo = directory / self.ENTRY
+            config = board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            done: list[dict] = []
+            worker = threading.Thread(
+                target=lambda: done.append(board.observations_payload(config)), daemon=True
+            )
+            try:
+                with patch.object(board, "_select_observation_files", without_the_guard):
+                    worker.start()
+                    # Short on purpose: the only way to finish inside it is to
+                    # have never opened the pipe, which is the guard this
+                    # mutant removed.
+                    worker.join(2.0)
+                    self.assertTrue(
+                        worker.is_alive(),
+                        "the mutant returned, so the pipe never blocked and this proves nothing",
+                    )
+                    self.assertEqual(done, [])
+            finally:
+                # Release it: opening a pipe read-write never blocks and gives
+                # the wedged reader a writer, and closing that writer ends its
+                # read at end of file.
+                try:
+                    os.close(os.open(fifo, os.O_RDWR | getattr(os, "O_NONBLOCK", 0)))
+                except OSError:  # pragma: no cover - only if the pipe went away
+                    pass
+                worker.join(self.DEADLINE)
+
+            # And the shipped code, against the very same pipe, returns.
+            shipped = self._payload_within(directory)
+
+        self.assertEqual(shipped["unreadable_files"], 1)
+        self.assertEqual(shipped["accepted_records"], 1)
+        self.assertFalse(shipped["coverage_complete"])
