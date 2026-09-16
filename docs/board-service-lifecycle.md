@@ -118,6 +118,21 @@ on a nondefault port, is not a Board but holds the port exactly as firmly; a
 narrower inventory would call the port free and let an apply mutate local state
 straight into a conflict.
 
+### The program the service runs
+
+The `code-mower` console script is preferred, because it carries its own
+interpreter and package location and so needs nothing from the environment. A
+source checkout without that script installed falls back to `python -m
+code_mower.cli`, which does need something: the generated launchd environment
+keeps only `PATH` and the service label, and the working directory is the
+*served repository*, so a child started that way has no way to reach
+`code_mower.cli` and the keepalive job would fail and respawn forever. That
+fallback therefore names its module search path in the definition, as
+`PYTHONPATH`, resolved from the package itself rather than inherited from
+whatever the installing shell happened to have. If the package cannot be located
+on a canonical path, the request is refused before anything is applied. A
+console-script definition carries no `PYTHONPATH` at all.
+
 ### Logs
 
 The definition sends both output streams to `<repo>/.code-mower/board/logs`.
@@ -140,6 +155,26 @@ has to pass before the restart is called a restart.
 `LaunchAgents` and the port was released. A definition that could not be deleted
 would start the service again at the next login, so that reports
 `remove_incomplete` with `definition_present: true` rather than success.
+
+Deleting a definition is also how a service stops being discoverable at all, so
+it needs the job to be *positively* absent. `launchctl print` failing is not the
+same fact as launchd not holding the job: only `EX_NOTFOUND`, or the message
+launchd prints for a missing job, is absence. Any other failure -- a timeout, a
+launchd that could not be reached -- is unknown, and an unknown job is treated as
+still loaded, so removal keeps the definition and reports `remove_incomplete`
+instead of stranding a keepalive service with nothing left to manage it by.
+
+### Definitions that do not describe one service
+
+A definition is selected by its filename, and launchd registers the job under the
+`Label` inside it. When those disagree, neither one describes the whole service,
+so it is reported as unreadable *under the filename label* -- the alternative is
+aiming a bootout and a delete at a different installed Board while the definition
+actually selected stays exactly where it is. A `ProgramArguments` value that is
+not a list of scalars is unreadable for the same reason: an integer would end
+enumeration in a traceback, and a string would iterate into one argument per
+character and read as a plausible argv. Either way `--replace` remains the only
+takeover.
 
 ### Proving the checkout
 

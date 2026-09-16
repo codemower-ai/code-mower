@@ -650,6 +650,94 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertEqual(taken_over["status"], "restarted")
         self.assertTrue(self.host.provider().read_service(spec.label).readable)
 
+    def test_a_definition_that_names_another_label_never_removes_that_other_service(self) -> None:
+        self.install(self.spec())
+        other = self.spec(port=5333)
+        self.install(other)
+        path = self.root / "ai.codemower.board.5332.plist"
+        # A definition selected by one filename but declaring another Label. The
+        # filename is what selects it; the embedded Label is what launchd
+        # registers the job as. Returning the embedded one would aim this
+        # removal's bootout and delete at the *other* installed Board.
+        hijacked = board_service.launchd_definition(self.spec())
+        hijacked["Label"] = other.label
+        path.write_bytes(plistlib.dumps(hijacked, sort_keys=True))
+
+        service = self.host.provider().read_service("ai.codemower.board.5332")
+
+        self.assertEqual(service.label, "ai.codemower.board.5332")
+        self.assertFalse(service.readable)
+        self.assertEqual(service.port, 5332)
+        # Still installed and still supervised under the label that selected it.
+        self.assertTrue(service.loaded)
+
+        payload = board_service.remove_service(
+            provider=self.host.provider(),
+            port=5332,
+            command_runner=self.host.run,
+            settle_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+
+        self.assertEqual(payload["label"], "ai.codemower.board.5332")
+        self.assertFalse(path.exists())
+        # The Board that was never selected is exactly where it was.
+        self.assertTrue((self.root / "ai.codemower.board.5333.plist").exists())
+        self.assertTrue(self.host.provider().read_service(other.label).readable)
+        self.assertTrue(self.host.provider().read_service(other.label).loaded)
+
+    def test_a_definition_whose_arguments_are_not_a_list_is_unreadable(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        path = self.root / "ai.codemower.board.5332.plist"
+        # Each of these is a syntactically valid plist. An integer or a boolean
+        # raises `TypeError` on iteration, which is neither an `OSError` nor a
+        # plist parse error and so escapes both handlers; a string is worse than
+        # a crash, iterating into one argument per character and reading as a
+        # plausible argv. None of them is an argument vector.
+        for value in (5332, True, "code-mower board serve --port 5332"):
+            with self.subTest(value=value):
+                malformed = board_service.launchd_definition(spec)
+                malformed["ProgramArguments"] = value
+                path.write_bytes(plistlib.dumps(malformed, sort_keys=True))
+
+                service = self.host.provider().read_service(spec.label)
+                services = self.host.provider().list_services()
+                refused = self.restart(spec)
+
+                self.assertFalse(service.readable)
+                self.assertEqual(service.arguments, ())
+                self.assertEqual(service.port, 5332)
+                self.assertTrue(service.loaded)
+                self.assertEqual([item.label for item in services], [spec.label])
+                self.assertEqual(refused["status"], "stale_arguments")
+
+    def test_a_module_entry_point_carries_the_path_it_must_import_from(self) -> None:
+        # The generated launchd environment keeps only what the definition
+        # names, and the working directory is the served repository, so a `-m`
+        # program started from a source checkout has no way to reach
+        # `code_mower.cli` -- the keepalive job would fail and respawn forever.
+        spec = board_service.build_spec(
+            repo="codemower-ai/code-mower",
+            repo_path=self.checkout,
+            port=5332,
+            program=("/usr/bin/python3", "-m", "code_mower.cli"),
+            path_env="/usr/bin:/bin",
+        )
+        environment = board_service.launchd_definition(spec)["EnvironmentVariables"]
+
+        self.assertEqual(environment["PYTHONPATH"], board_service.module_search_path())
+        # Canonical, and resolved from the package itself rather than inherited
+        # from whatever the installing shell happened to have.
+        self.assertTrue(
+            (Path(board_service.module_search_path()) / "code_mower" / "__init__.py").is_file()
+        )
+        # A console script carries its own interpreter and package location, so
+        # it needs nothing from the environment and renders the bytes it always
+        # did.
+        console = board_service.launchd_definition(self.spec())["EnvironmentVariables"]
+        self.assertNotIn("PYTHONPATH", console)
+
     def test_a_service_may_not_bind_a_host_board_serve_would_refuse(self) -> None:
         # `board serve` refuses a non-loopback host, so a service that names one
         # describes a Board that can never come up: launchd would restart the
@@ -1160,6 +1248,47 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertEqual(payload["status"], "remove_incomplete")
         self.assertTrue(payload["definition_deleted"])
         self.assertFalse((self.root / "ai.codemower.board.5332.plist").exists())
+
+    def test_a_runtime_query_that_fails_is_never_read_as_a_missing_job(self) -> None:
+        self.install(self.spec())
+
+        def unreachable_launchd(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            # Not "could not find service": launchd said nothing about whether
+            # it holds this job. Treating that as absence is what lets a failed
+            # bootout be followed by a delete, stranding a keepalive service
+            # with nothing left to manage it by.
+            if argv[:2] == ["launchctl", "print"]:
+                return _completed("", returncode=1, stderr="Could not connect to launchd\n")
+            return self.host.run(argv)
+
+        class RefusesBootout(board_service.LaunchdProvider):
+            def bootout(self, label: str) -> tuple[bool, str]:
+                return False, "launchctl bootout failed: Operation not permitted"
+
+        provider = RefusesBootout(
+            command_runner=unreachable_launchd, root=self.root, uid=self.host.uid, platform="darwin"
+        )
+        payload = board_service.remove_service(
+            provider=provider,
+            port=5332,
+            command_runner=self.host.run,
+            settle_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+
+        self.assertEqual(
+            provider.runtime_state("ai.codemower.board.5332"), (board_service.JOB_UNKNOWN, None)
+        )
+        # The contrast the finding is about: a job launchd positively reports as
+        # missing is absent, and only that releases the definition.
+        self.assertEqual(
+            self.host.provider().runtime_state("ai.codemower.board.9999"),
+            (board_service.JOB_ABSENT, None),
+        )
+        self.assertEqual(payload["status"], "remove_incomplete")
+        self.assertFalse(payload["definition_deleted"])
+        self.assertTrue(payload["definition_present"])
+        self.assertTrue((self.root / "ai.codemower.board.5332.plist").exists())
 
     def test_remove_reports_a_port_reclaimed_by_a_process_that_is_not_a_board(self) -> None:
         self.install(self.spec())

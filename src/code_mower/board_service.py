@@ -97,6 +97,20 @@ _LAUNCHCTL_ARGUMENTS_OPEN_RE = re.compile(r"^\s*arguments\s*=\s*\{\s*$")
 _LAUNCHCTL_BLOCK_CLOSE_RE = re.compile(r"^\s*\}\s*$")
 _PYTHON_EXECUTABLE_RE = re.compile(r"^python(?:\d+(?:\.\d+)?)?$")
 
+# What launchd is known to hold, and what it merely failed to tell us. A query
+# that errored or timed out is `JOB_UNKNOWN`, never `JOB_ABSENT`: absence has to
+# be positively established before anything deletes a definition or hands a port
+# away.
+JOB_LOADED = "loaded"
+JOB_ABSENT = "absent"
+JOB_UNKNOWN = "unknown"
+
+# `launchctl` exits `EX_NOTFOUND` for a job the domain does not hold, and prints
+# one of these for it. Any other failure says nothing about whether the job is
+# there.
+_LAUNCHCTL_NOT_FOUND_CODE = 113
+_LAUNCHCTL_NOT_FOUND_RE = re.compile(r"could not find service|no such process", re.IGNORECASE)
+
 # The binding checks that make up the serving gate. Named here so a runbook can
 # assert the gate still covers everything it claims to cover.
 BINDING_CHECK_IDS = (
@@ -170,6 +184,25 @@ def default_program() -> tuple[str, ...]:
     return (sys.executable, "-m", "code_mower.cli")
 
 
+def module_search_path() -> str:
+    """The directory `code_mower` has to be importable from.
+
+    Resolved from this module's own file, so it is a canonical absolute path
+    rather than whatever the invoking shell happened to put on `PYTHONPATH`.
+    For an installed distribution this is `site-packages`, which the interpreter
+    already searches; for a source checkout run as `PYTHONPATH=src` it is that
+    `src`, which nothing else would tell the service about.
+    """
+
+    return str(Path(__file__).resolve().parent.parent)
+
+
+def uses_module_entry_point(program: Sequence[str]) -> bool:
+    """Whether a program starts the Board through `-m`, not a console script."""
+
+    return "-m" in [str(item) for item in program]
+
+
 @dataclass(frozen=True)
 class ServiceSpec:
     """Everything the rendered definition is a pure function of."""
@@ -184,6 +217,7 @@ class ServiceSpec:
     error_log_path: Path
     path_env: str
     keepalive: bool = True
+    module_path_env: str = ""
 
     @property
     def executable(self) -> str:
@@ -283,6 +317,7 @@ def build_spec(
     extra_arguments: Sequence[str] = (),
     log_dir: str | Path | None = None,
     path_env: str | None = None,
+    module_path_env: str | None = None,
 ) -> ServiceSpec:
     """Validate a request and freeze it into a deterministic spec."""
 
@@ -304,6 +339,21 @@ def build_spec(
     program_args = tuple(str(item) for item in (program or default_program()))
     if not program_args:
         raise ServiceRequestError("service program is empty")
+    # A console script carries its own interpreter and package location, so it
+    # needs nothing from the environment. The `-m` fallback does: the generated
+    # launchd environment keeps only PATH and the service label, and the working
+    # directory is the *served repository*, so a child started from a source
+    # checkout has no way to reach `code_mower.cli` and the keepalive job would
+    # fail and respawn forever. Name the search path in the definition, where it
+    # is reviewable, instead of inheriting whatever the installing shell had.
+    module_path = module_path_env if module_path_env is not None else ""
+    if module_path_env is None and uses_module_entry_point(program_args):
+        module_path = module_search_path()
+        if not (Path(module_path) / "code_mower" / "__init__.py").is_file():
+            raise ServiceRequestError(
+                "the module entry point is not importable from a canonical path; install code-mower "
+                "so its console script is on PATH, or pass an explicit program"
+            )
     log_root = Path(log_dir).expanduser().resolve() if log_dir else canonical / ".code-mower" / "board" / "logs"
     label = label_for_port(port_value)
     arguments = (
@@ -331,6 +381,7 @@ def build_spec(
         log_path=log_root / f"board-{port_value}.log",
         error_log_path=log_root / f"board-{port_value}.err.log",
         path_env=path_env if path_env is not None else os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+        module_path_env=module_path,
     )
 
 
@@ -358,6 +409,14 @@ def spec_from_service(service: ManagedService) -> ServiceSpec:
 def launchd_definition(spec: ServiceSpec) -> dict[str, Any]:
     """The launchd job description, as data, so it can be reviewed and diffed."""
 
+    environment = {
+        "PATH": spec.path_env,
+        "CODE_MOWER_BOARD_SERVICE_LABEL": spec.label,
+    }
+    # Only a program that needs it carries it, so a console-script definition
+    # renders exactly the bytes it always did.
+    if spec.module_path_env:
+        environment["PYTHONPATH"] = spec.module_path_env
     return {
         "Label": spec.label,
         "ProgramArguments": list(spec.arguments),
@@ -367,10 +426,7 @@ def launchd_definition(spec: ServiceSpec) -> dict[str, Any]:
         "ProcessType": "Background",
         "StandardOutPath": str(spec.log_path),
         "StandardErrorPath": str(spec.error_log_path),
-        "EnvironmentVariables": {
-            "PATH": spec.path_env,
-            "CODE_MOWER_BOARD_SERVICE_LABEL": spec.label,
-        },
+        "EnvironmentVariables": environment,
     }
 
 
@@ -452,13 +508,46 @@ def binding_from_arguments(arguments: Sequence[str]) -> dict[str, Any]:
     return binding
 
 
-def _service_from_definition(path: Path, data: Mapping[str, Any], *, digest: str) -> ManagedService:
-    arguments = tuple(str(item) for item in (data.get("ProgramArguments") or []))
+def program_arguments(data: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """The definition's argument vector, or None when it is not one.
+
+    `plistlib` will happily return whatever the file said, so a syntactically
+    valid definition can carry an integer, a boolean or a string where the argv
+    belongs. Iterating an integer raises `TypeError`, which is not an `OSError`
+    and not a plist parse error, so it would escape both handlers in
+    `read_service()` and end enumeration -- `board list`, `board stop`, service
+    status and removal -- in a traceback. A string is worse than a crash: it
+    iterates into one argument per character and reads as a plausible argv.
+    Only a genuine list or tuple of scalars is an argument vector; everything
+    else makes this definition unreadable, which is a fact the caller can act
+    on.
+    """
+
+    raw = data.get("ProgramArguments")
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        return None
+    arguments = []
+    for item in raw:
+        if isinstance(item, (str, int, float)) and not isinstance(item, bool):
+            arguments.append(str(item))
+        else:
+            return None
+    return tuple(arguments)
+
+
+def _service_from_definition(
+    label: str, path: Path, data: Mapping[str, Any], *, arguments: tuple[str, ...], digest: str
+) -> ManagedService:
     binding = binding_from_arguments(arguments)
     keepalive_value = data.get("KeepAlive")
     keepalive = bool(keepalive_value) if not isinstance(keepalive_value, Mapping) else True
     return ManagedService(
-        label=_text(data.get("Label")),
+        # The filename label, never the embedded one. They are proved equal
+        # before this is reached, and this is the label every mutation -- the
+        # `bootout`, the `delete_definition` -- is addressed to.
+        label=label,
         definition_path=path,
         arguments=arguments,
         repo=str(binding["repo"]),
@@ -630,7 +719,40 @@ class LaunchdProvider:
                     message="service definition is not a plist dictionary",
                 )
             )
-        return with_runtime(_service_from_definition(path, data, digest=digest))
+        embedded = _text(data.get("Label"))
+        if embedded != label:
+            # The filename is what this service is selected by, and the embedded
+            # Label is what launchd registers the job as. When they disagree,
+            # neither one describes the whole service: returning the embedded
+            # label would aim `remove`'s bootout and delete at a *different*
+            # installed Board -- unloading and deleting that one while the
+            # definition actually selected stayed exactly where it was. The
+            # disagreement is the unreadability, and it is reported under the
+            # label that was asked for.
+            return with_runtime(
+                _unreadable_service(
+                    label,
+                    path,
+                    digest=digest,
+                    message=(
+                        "service definition declares a different Label than its filename, so the "
+                        "job launchd registers is not the one this definition names"
+                    ),
+                )
+            )
+        arguments = program_arguments(data)
+        if arguments is None:
+            return with_runtime(
+                _unreadable_service(
+                    label,
+                    path,
+                    digest=digest,
+                    message="service definition does not carry a list of program arguments",
+                )
+            )
+        return with_runtime(
+            _service_from_definition(label, path, data, arguments=arguments, digest=digest)
+        )
 
     def list_services(self) -> list[ManagedService]:
         try:
@@ -647,31 +769,57 @@ class LaunchdProvider:
                 services.append(service)
         return services
 
-    def _print(self, label: str) -> str | None:
-        """The launchd job dump, or None when launchd does not hold the job."""
+    def _print(self, label: str) -> tuple[str, str | None]:
+        """The job's load state, plus its dump when launchd produced one.
+
+        "launchd does not hold this job" and "launchd could not be asked" are
+        different facts, and collapsing them into one is what lets a timed-out
+        or failed `launchctl print` read as confirmed absence. Only a failure
+        launchd itself characterises as a missing job -- `EX_NOTFOUND`, or the
+        message it prints for one -- is absence; anything else is unknown, and
+        the callers that would otherwise delete a definition or give up a port
+        on that answer refuse instead.
+        """
 
         completed = self._run(["launchctl", "print", f"{self.domain}/{label}"])
-        if completed is None or completed.returncode != 0:
-            return None
-        return completed.stdout or ""
+        if completed is None:
+            return JOB_UNKNOWN, None
+        if completed.returncode == 0:
+            return JOB_LOADED, completed.stdout or ""
+        reported = f"{completed.stderr or ''}\n{completed.stdout or ''}"
+        if completed.returncode == _LAUNCHCTL_NOT_FOUND_CODE or _LAUNCHCTL_NOT_FOUND_RE.search(reported):
+            return JOB_ABSENT, None
+        return JOB_UNKNOWN, None
 
-    def runtime(self, label: str) -> tuple[bool, int | None]:
-        """Whether launchd holds the job, and the pid it is supervising.
+    def runtime_state(self, label: str) -> tuple[str, int | None]:
+        """`JOB_LOADED`/`JOB_ABSENT`/`JOB_UNKNOWN`, and the supervised pid.
 
         A zero exit from `launchctl print` is the load state; the pid is only
         present while the job is actually running, so a loaded-but-crashed job
-        reports `(True, None)` rather than being called healthy.
+        reports no pid rather than being called healthy.
         """
 
-        stdout = self._print(label)
-        if stdout is None:
-            return False, None
+        state, stdout = self._print(label)
+        if state != JOB_LOADED or stdout is None:
+            return state, None
         pid_match = _LAUNCHCTL_PID_RE.search(stdout)
         state_match = _LAUNCHCTL_STATE_RE.search(stdout)
         pid = int(pid_match.group(1)) if pid_match else None
         if pid is None and state_match and "running" not in state_match.group(1).lower():
-            return True, None
-        return True, pid
+            return JOB_LOADED, None
+        return JOB_LOADED, pid
+
+    def runtime(self, label: str) -> tuple[bool, int | None]:
+        """Whether launchd is known to hold the job, and the pid it supervises.
+
+        Only a positively loaded job is `True` here, so an unknown answer never
+        claims a job is running. Callers deciding whether it is safe to *stop*
+        caring about a job must use `_job_load_state()`, which fails the other
+        way.
+        """
+
+        state, pid = self.runtime_state(label)
+        return state == JOB_LOADED, pid
 
     def job_arguments(self, label: str) -> tuple[str, ...] | None:
         """The argument vector launchd actually exec'd, with its boundaries.
@@ -685,8 +833,8 @@ class LaunchdProvider:
         gate treats as a failure rather than guessing.
         """
 
-        stdout = self._print(label)
-        if stdout is None:
+        state, stdout = self._print(label)
+        if state != JOB_LOADED or stdout is None:
             return None
         return parse_launchctl_arguments(stdout)
 
@@ -779,6 +927,9 @@ class UnsupportedProvider:
 
     def job_arguments(self, label: str) -> tuple[str, ...] | None:
         return None
+
+    def runtime_state(self, label: str) -> tuple[str, int | None]:
+        return JOB_ABSENT, None
 
     def runtime(self, label: str) -> tuple[bool, int | None]:
         return False, None
@@ -1799,11 +1950,20 @@ def resolve_service(
 def _job_load_state(provider: Any, label: str) -> tuple[bool, int | None]:
     """Whether launchd still holds a job, erring towards "it does".
 
-    A provider that cannot answer, or an answer that fails, leaves the job
-    unconfirmed -- and an unconfirmed job is treated as still loaded so nothing
-    destructive proceeds on a guess.
+    A provider that cannot answer, an answer that fails, and a query that could
+    not be made at all all leave the job unconfirmed -- and an unconfirmed job
+    is treated as still loaded so nothing destructive proceeds on a guess. Only
+    `JOB_ABSENT`, which the provider reports solely for a failure launchd
+    characterises as a missing job, releases the definition.
     """
 
+    runtime_state = getattr(provider, "runtime_state", None)
+    if runtime_state is not None:
+        try:
+            state, pid = runtime_state(label)
+        except (OSError, subprocess.SubprocessError):
+            return True, None
+        return state != JOB_ABSENT, pid
     runtime = getattr(provider, "runtime", None)
     if runtime is None:
         return True, None
