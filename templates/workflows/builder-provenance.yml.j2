@@ -1,3 +1,6 @@
+# Legacy PR metadata cannot supply the trusted lineage inputs.
+# Keep this compatibility workflow informational; explicit attribution belongs
+# to the separately staged builder-lineage-producer.yml.j2 trusted caller.
 name: Code Mower Builder Provenance
 
 on:
@@ -7,58 +10,30 @@ on:
 permissions:
   contents: read
 
-env:
-  CODE_MOWER_PACKAGE_SPEC: code-mower==1.4.0
-
 jobs:
-  auto-record:
+  lineage-guidance:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Set up Python
-        uses: actions/setup-python@8fc423ec5f48d6a2f5a10347eab979e8a63b7ab9
-        with:
-          python-version: "3.12"
-
-      - name: Install Code Mower
+      - name: Explain skipped automatic attribution
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install "${CODE_MOWER_PACKAGE_SPEC}"
+          mkdir -p .code-mower
+          cat > .code-mower/builder-provenance-guidance.json <<'JSON'
+          {
+            "mode": "builder-provenance-guidance",
+            "status": "skipped",
+            "reason": "Explicit trusted lineage target, policy, authority and observed transport are required.",
+            "next_step": "Use the staged builder-lineage-producer.yml.j2 with a trusted caller."
+          }
+          JSON
 
-      - name: Record inferred builder provenance
-        id: record
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .code-mower/builder-runs
-          output=".code-mower/builder-runs/pr-{% raw %}${{ github.event.pull_request.number }}{% endraw %}.cloud-event.json"
-          code-mower builder auto-record \
-            --pr-json "${GITHUB_EVENT_PATH}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --output "${output}" \
-            --force \
-            --json | tee .code-mower/builder-auto-record.json
-          if [ -s "${output}" ]; then
-            echo "event_path=${output}" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Upload builder provenance artifact
-        if: steps.record.outputs.event_path != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: code-mower-builder-provenance
-          path: |
-            .code-mower/builder-auto-record.json
-            {% raw %}${{ steps.record.outputs.event_path }}{% endraw %}
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload inference summary for skipped PRs
-        if: steps.record.outputs.event_path == ''
+      - name: Upload skipped attribution guidance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: code-mower-builder-provenance-skipped
-          path: .code-mower/builder-auto-record.json
-          if-no-files-found: ignore
+          path: .code-mower/builder-provenance-guidance.json
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 7

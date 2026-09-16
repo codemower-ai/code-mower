@@ -51,22 +51,25 @@ code-mower builder record \
   --output .code-mower/builder-runs/example.cloud-event.json
 ```
 
-For hosted PRs with recognizable metadata, `auto-record` can write the same
-sidecar from a GitHub `pull_request` event payload or `gh pr view --json`
-output. It recognizes safe markers such as Cursor agent links, the
-`chatgpt-codex-connector` author, `claude[bot]`, and `cursor/`, `codex/`, or
-`claude/` branch prefixes, but it does not store the PR body text:
+Automated attribution requires explicit trusted lineage evidence:
+`LINEAGE_TARGET_JSON` selects the exact repository, PR, branch and head;
+`LINEAGE_POLICY_JSON` binds reviewed policy to its immutable base;
+`LINEAGE_AUTHORITY_JSON` identifies trusted authority accounts; and
+`LINEAGE_TRANSPORT_JSON` records the actual observed execution transport.
+PR authors, body links and branch prefixes cannot supply authority, policy or
+transport. `builder auto-record` requires all four inputs and checks its PR JSON
+against the selected target before recording attribution.
 
-```bash
-code-mower builder auto-record \
-  --pr-json "$GITHUB_EVENT_PATH" \
-  --repo "$GITHUB_REPOSITORY" \
-  --output .code-mower/builder-runs/pr-124.cloud-event.json \
-  --force
-```
-
-The bundled `templates/workflows/builder-provenance.yml.j2` workflow runs this
-on pull requests and uploads the generated sidecar as a workflow artifact.
+The legacy `templates/workflows/builder-provenance.yml.j2` PR workflow now uploads
+only an explicit **skipped** guidance summary. It installs no package and records
+no builder sidecar. Use the separately staged
+[`builder-lineage-producer.yml.j2`](../templates/workflows/builder-lineage-producer.yml.j2)
+and its required `target_json`, `policy_json`, `authority_json`, and
+`transport_json` inputs for reviewed integration by a trusted caller. That
+producer owns the explicit-input contract; do not derive these inputs from PR
+metadata or execute PR code/configuration to obtain them. The 1.4.1 source
+candidate remains unqualified and unpublished; activation against the released
+package remains gated by #915.
 
 Treat each PR branch as single-writer. The owning `builder:<lane>` identity is
 the only lane that should push commits to that branch; other builders and audit

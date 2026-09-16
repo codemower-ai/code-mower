@@ -90,11 +90,17 @@ class ArtifactTests(unittest.TestCase):
         cls.root = Path(cls.tmp.name)
         cls.wheels = cls.root / "wheels"
         cls.installed = cls.root / "installed"
-        result = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(cls.wheels), str(ROOT)],
-                                cwd=ROOT, capture_output=True, text=True, timeout=120)
-        if result.returncode:
-            raise AssertionError(result.stdout + result.stderr)
-        wheel, = cls.wheels.glob("*.whl")
+        supplied_wheel = os.environ.get("CODE_MOWER_QUALIFICATION_WHEEL")
+        if supplied_wheel:
+            wheel = Path(supplied_wheel)
+            if not wheel.is_absolute() or not wheel.is_file() or wheel.suffix != ".whl":
+                raise AssertionError("qualification requires an existing absolute wheel path")
+        else:
+            result = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(cls.wheels), str(ROOT)],
+                                    cwd=ROOT, capture_output=True, text=True, timeout=120)
+            if result.returncode:
+                raise AssertionError(result.stdout + result.stderr)
+            wheel, = cls.wheels.glob("*.whl")
         result = subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--no-compile", "--target", str(cls.installed), str(wheel)],
                                 capture_output=True, text=True, timeout=60)
         if result.returncode:
@@ -165,12 +171,23 @@ print(json.dumps(raw))
         gh.chmod(0o755)
 
     def materialized(self, relative):
-        source = self.installed / "code_mower/templates" / relative
-        entry = {"source": "explicit-staged-asset", "copy_from_path": str(source)}
-        result = init._materialize_generated_file(entry, relative, self.root / "rendered",
-                                                  source_root=self.root)
-        self.assertFalse(result.placeholder)
-        return init._render_workflow_template(result.text, {})
+        # Render through the installed package too: post-publication replay
+        # must not substitute even a checkout's rendering helper.
+        program = """
+import sys
+from pathlib import Path
+sys.meta_path = [f for f in sys.meta_path if '__editable__' not in str(f)]
+sys.path.insert(0, sys.argv[1])
+from code_mower import init
+assert Path(init.__file__).resolve().is_relative_to(Path(sys.argv[1]))
+source = Path(sys.argv[1]) / 'code_mower/templates' / sys.argv[2]
+print(init._render_workflow_template(source.read_text(), {}), end='')
+"""
+        result = subprocess.run([sys.executable, '-I', '-c', program,
+                                 str(self.installed), relative], cwd=self.root,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
 
     def test_real_rendered_workflow_and_runner_failure_rows(self):
         workflow = yaml.safe_load(self.materialized(ASSETS[0]))
@@ -262,7 +279,12 @@ print(json.dumps(raw))
             '.github/workflows/code-mower-gate.yml'}
         for path in paths:
             if path not in activated:
-                self.assertEqual(hashlib.sha256((ROOT/path).read_bytes()).hexdigest(), baseline[path],
+                content = (ROOT/path).read_bytes()
+                if path == '.github/workflows/release.yml':
+                    # #915 changes only the release tag binding; all other
+                    # accepted workflow bytes remain frozen by this comparison.
+                    content = content.replace(b'refs/tags/v1.4.1', b'refs/tags/v1.4.0')
+                self.assertEqual(hashlib.sha256(content).hexdigest(), baseline[path],
                                  f'{path}: frozen accepted file bytes differ')
         # Normal init emits the pure tools helper, not the package delivery modules.
         helper = output/'tools/builder_lineage.py'

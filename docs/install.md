@@ -1,5 +1,9 @@
 # Install And Bootstrap
 
+The v1.4.1 source candidate is not yet published or qualified. Pinned index
+commands below apply after publication; candidate checks use the verified
+artifact. Track acceptance in [#915](https://github.com/codemower-ai/code-mower/issues/915).
+
 Code Mower requires Python 3.12 or newer. Use one install path per machine or
 agent, then verify the installed command before touching a repository.
 
@@ -63,7 +67,7 @@ Install with pipx and an explicit Python 3.12+ interpreter:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.0
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.1
 code-mower --version
 ```
 
@@ -84,7 +88,7 @@ To replace an existing pipx install with an exact release, use `--force` so the
 old venv cannot keep serving the previous package:
 
 ```bash
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.4.0
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.4.1
 code-mower --version
 ```
 
@@ -97,7 +101,7 @@ export PIPX_HOME="$CODE_MOWER_AGENT_TOOLS/pipx"
 export PIPX_BIN_DIR="$CODE_MOWER_AGENT_TOOLS/bin"
 export PIPX_LOG_DIR="$CODE_MOWER_AGENT_TOOLS/logs"
 mkdir -p "$PIPX_HOME" "$PIPX_BIN_DIR" "$PIPX_LOG_DIR"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.4.0
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.4.1
 "$PIPX_BIN_DIR/code-mower" --version
 ```
 
@@ -108,7 +112,7 @@ interactive shell profile:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 code-mower==1.4.0
+uv tool install --python 3.12 code-mower==1.4.1
 code-mower --version
 ```
 
@@ -118,7 +122,7 @@ installed command directly from the uv tool bin directory for that session.
 To replace an existing uv tool install with an exact release:
 
 ```bash
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.4.0
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.4.1
 code-mower --version
 ```
 
@@ -133,7 +137,7 @@ With pipx:
 
 ```bash
 PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
-  'code-mower[coworker]==1.4.0'
+  'code-mower[coworker]==1.4.1'
 code-mower context --help
 ```
 
@@ -141,7 +145,7 @@ With uv:
 
 ```bash
 uv tool install --python 3.12 --reinstall --refresh-package code-mower \
-  'code-mower[coworker]==1.4.0'
+  'code-mower[coworker]==1.4.1'
 code-mower context --help
 ```
 
@@ -169,7 +173,7 @@ command -v code-mower
 code-mower --version
 pipx uninstall code-mower
 uv python install 3.12
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.4.0
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.4.1
 hash -r
 command -v code-mower
 code-mower --version
@@ -189,7 +193,7 @@ For pipx:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.4.0
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.4.1
 code-mower --version
 ```
 
@@ -197,7 +201,7 @@ For uv:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.4.0
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.4.1
 code-mower --version
 ```
 

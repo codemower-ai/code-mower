@@ -9,13 +9,14 @@ The current release is supervised-pilot, bring-your-own-agent-loop software.
 It is not a drop-in unattended merge gate. Humans still own credentials,
 repository policy, reviewer promotion, and exceptional decisions.
 
-The current package-index release baseline is `v1.4.0`, with pinned package
-install spec `code-mower==1.4.0`. Release evidence is recorded on the GitHub
-release and in the first-user install rehearsal.
+The current source candidate is `v1.4.1`, with target install spec
+`code-mower==1.4.1`. Publication and installed-package qualification are pending
+[#915](https://github.com/codemower-ai/code-mower/issues/915). The published
+`v1.4.0` artifacts remain unchanged. Install commands below target v1.4.1 after
+publication; candidate rehearsals use the exact verified artifact.
 
-Documentation on `main` follows the source on `main`. When using the published
-package, start with the
-[`v1.4.0` guide](https://github.com/codemower-ai/code-mower/blob/v1.4.0/docs/try-in-10-minutes.md).
+Documentation on `main` follows the source on `main`. After v1.4.1 publication, start with the
+[`v1.4.1` guide](https://github.com/codemower-ai/code-mower/blob/v1.4.1/docs/try-in-10-minutes.md).
 
 ## What Code Mower Adds
 
@@ -43,7 +44,7 @@ one stable `pipx` installation:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.0
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.1
 command -v code-mower
 code-mower --version
 ```
@@ -107,9 +108,13 @@ paths available for each participant and records explicit handoffs where Code
 Mower has no automatic transport. Later, from anywhere in the checkout,
 `code-mower session show --current` finds the brief the live lease names and
 `code-mower session lease show` reports the lease itself; neither changes state.
+The default is 12 hours. A later process can renew or release the same session
+ID with `session lease renew --session-id SESSION_ID` or `session lease release
+--session-id SESSION_ID`; stop its writers before release. Use `session start
+--dry-run` or `--no-lease` for read-only work.
 
 Codex, Claude Code, and Cursor are qualified for the shared session, telemetry,
-lease, and Jira-authority contract in v1.4.0. Devin, Grok Bot, Antigravity,
+lease, and Jira-authority contract in v1.4.1. Devin, Grok Bot, Antigravity,
 Muse, and custom hosts are recognized for briefs and provenance, while their
 execution remains an explicit handoff or provider-specific transport. See
 [Participants And Sessions](docs/sessions.md) and the
@@ -217,7 +222,7 @@ and the [Cloud Data Contract](docs/cloud-data-contract.md).
 
 ## Current Capabilities And Limits
 
-| Area | v1.4.0 posture |
+| Area | v1.4.1 posture |
 | --- | --- |
 | Default builders and reviewers | Claude Code + Codex |
 | Session hosts | Codex, Claude Code, and Cursor qualified; other identities recognized but require explicit handoff/provider transport |
@@ -230,9 +235,8 @@ and the [Cloud Data Contract](docs/cloud-data-contract.md).
 | Slack | Command and authenticated bounded ingress foundation only; no Slack worker delivery, results, or orchestration authority |
 
 GitLab, Bitbucket, broad unattended rollout, uncalibrated merge gates, Devin
-peer-orchestrator/reviewer parity, a hosted work-order CLI, runtime role-policy
-enforcement, a required Graphify dependency, and Slack
-worker delivery are not shipped in v1.4.0. The current priorities and
+peer-orchestrator/reviewer parity, a hosted work-order CLI, a required Graphify
+dependency, and Slack worker delivery are outside the v1.4.1 candidate. The current priorities and
 boundaries are recorded in
 [Current State And Roadmap](docs/current-state-and-roadmap.md).
 
@@ -287,7 +291,7 @@ boundaries are recorded in
 - [Cloud Data Contract](docs/cloud-data-contract.md)
 - [Release Qualification](docs/release-qualification.md)
 - [Public Release Checklist](docs/public-release-checklist.md)
-- [v1.4.0 Release Notes](docs/v140-release-notes.md)
+- [v1.4.1 Release Notes](docs/v141-release-notes.md)
 - [Release History And Archived Plans](docs/release-history.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)

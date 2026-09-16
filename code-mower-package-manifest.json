@@ -154,6 +154,11 @@
     },
     {
       "kind": "doc",
+      "source": "docs/graphify-setup.md",
+      "target": "docs/graphify-setup.md"
+    },
+    {
+      "kind": "doc",
       "source": "docs/lane-promotion-policy.md",
       "target": "docs/lane-promotion-policy.md"
     },
@@ -261,6 +266,21 @@
       "kind": "doc",
       "source": "docs/v140-release-notes.md",
       "target": "docs/v140-release-notes.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/v140-release-runbook.md",
+      "target": "docs/v140-release-runbook.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/v141-qualification.md",
+      "target": "docs/v141-qualification.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/v141-release-notes.md",
+      "target": "docs/v141-release-notes.md"
     },
     {
       "kind": "package",
@@ -2125,6 +2145,6 @@
     "module": "code_mower",
     "name": "code-mower",
     "source_layout": "src/code_mower",
-    "version": "1.4.0"
+    "version": "1.4.1"
   }
 }

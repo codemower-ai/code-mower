@@ -23,7 +23,7 @@ is the first-class isolated path:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 code-mower==1.4.0
+uv tool install --python 3.12 code-mower==1.4.1
 code-mower --version
 ```
 
@@ -32,12 +32,14 @@ For a laptop or workstation that already uses pipx:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.0
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.1
 code-mower --version
 ```
 
-`1.4.0` is the supervised-pilot release. If you want a future prerelease instead
-of this exact verified release, use:
+`1.4.1` is the supervised-pilot source candidate; publication and installed
+qualification remain pending #915. These pinned install commands apply after
+publication. If you want a future prerelease instead
+of this exact release target, use:
 
 ```bash
 pipx install --python "$CODE_MOWER_PYTHON" --pip-args="--pre" code-mower
@@ -67,6 +69,17 @@ requirements. See [Participants And Sessions](sessions.md) for the role and
 transport distinctions. On shared machines, read
 [Multi-Agent Coexistence](install.md#multi-agent-coexistence) before running
 multiple builders against the same repository.
+
+An eligible `session start` creates a mutating lease with a 12-hour default.
+Discover its holder with `code-mower session show --current` or `code-mower
+session lease show`; both are read-only. Save the session ID. A later process
+can renew with `code-mower session lease renew --session-id SESSION_ID` or,
+after writers stop, release with `code-mower session lease release --session-id
+SESSION_ID`. Use `session start --dry-run` for a preview or `--no-lease` for a
+saved read-only brief. Devin orchestration is unqualified and acquires no lease.
+
+Optional local Graphify guidance is available with `code-mower init --graphify`.
+It adds no dependency, indexing or default context; see [setup](graphify-setup.md).
 
 ## 2. Authenticate GitHub
 
@@ -224,7 +237,7 @@ do not put them in repository configuration.
 
 ```bash
 PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
-  'code-mower[coworker]==1.4.0'
+  'code-mower[coworker]==1.4.1'
 code-mower init --easy --context-connection example-context --dry-run
 code-mower init --easy --context-connection example-context --apply
 code-mower context connect coworker --connection example-context
@@ -475,7 +488,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.4.0 \
+  --package-spec code-mower==1.4.1 \
   --allow-package-index \
   --python "$(command -v python3.12)" \
   --json

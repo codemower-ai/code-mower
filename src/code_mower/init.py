@@ -2535,6 +2535,7 @@ def render_init_plan(
     context_connection: str | None = None,
     context_required: bool | None = None,
     without_context: bool = False,
+    graphify: bool = False,
 ) -> RenderedPlan:
     if not builders:
         owner = config.get("owner_surface")
@@ -3139,6 +3140,20 @@ def render_init_plan(
         "warnings": warnings,
     }
 
+    if graphify:
+        data["optional_integrations"] = {"graphify": {
+            "mode": "guidance_only",
+            "package_spec": "graphifyy==0.9.58",
+            "wheel_sha256": "e239803288e91c723d6e30540860bd6d5a1dc3f0914b9fc1104b0233e98aaeb8",
+            "guidance": "https://github.com/codemower-ai/code-mower/blob/v1.4.1/docs/graphify-setup.md",
+            "instructions": (
+                "Acquire the exact wheel in a separate environment and verify its SHA-256 "
+                "before installation. Review docs/graphify-setup.md and the containment "
+                "requirements before any explicit code-only/no-cluster build. "
+                "This selector installs, invokes and indexes nothing; it does not enable context."
+            ),
+        }}
+
     if resolved_source_kind == "packaged_starter":
         source_line = f"Config source: packaged starter ({display_config_path})"
     else:
@@ -3161,6 +3176,16 @@ def render_init_plan(
         else:
             role = "standard"
         lines.append(f"- {lane_id}: {lane['driver']} / {lane['provider']} ({role})")
+
+    if graphify:
+        guidance = data["optional_integrations"]["graphify"]
+        lines.extend([
+            "", "Optional Graphify setup (guidance only):",
+            f"- separate-environment pin: {guidance['package_spec']}",
+            f"- wheel SHA-256: {guidance['wheel_sha256']}",
+            f"- {guidance['instructions']}",
+            f"- setup guide: {guidance['guidance']}",
+        ])
 
     lines.extend(["", "Labels to ensure:"])
     lines.extend(f"- {label}" for label in data["labels"])
@@ -3329,6 +3354,10 @@ def main(argv: list[str] | None = None) -> int:
         "--with", dest="participants", metavar="PARTICIPANTS",
         help="select participants, for example claude,codex,devin; saves session defaults",
     )
+    parser.add_argument(
+        "--graphify", action="store_true",
+        help="show opt-in separate-environment Graphify acquisition/pin guidance only; no install, indexing or context activation",
+    )
     parser.add_argument('--context-connection', help='Select an optional generic context reference; stores no account or credentials')
     context_mode = parser.add_mutually_exclusive_group()
     context_mode.add_argument('--context-required', dest='context_required', action='store_true', default=None,
@@ -3456,7 +3485,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.builders and not args.dry_run and not args.apply:
         args.dry_run = True
-    if (args.interactive or args.participants is not None or args.set_transport is not None
+    if (args.graphify or args.interactive or args.participants is not None or args.set_transport is not None
             or args.context_connection is not None
             or args.context_required is not None or args.without_context) and not args.dry_run and not args.apply:
         args.dry_run = True
@@ -3532,6 +3561,7 @@ def main(argv: list[str] | None = None) -> int:
             context_connection=args.context_connection,
             context_required=args.context_required,
             without_context=args.without_context,
+            graphify=args.graphify,
         )
         label_repo = ""
         should_ensure_github_labels = bool(

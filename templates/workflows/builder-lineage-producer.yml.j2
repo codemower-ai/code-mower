@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install released Code Mower
-        run: python -m pip install 'code-mower==1.4.0'
+        run: python -m pip install 'code-mower==1.4.1'
       - name: Retrieve complete lineage and record attribution
         env:
           GH_TOKEN: ${{ github.token }}
