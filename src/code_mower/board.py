@@ -2145,6 +2145,9 @@ _BOARD_HTML = """<!doctype html>
       return {
         state: worst,
         current,
+        // Whether the record carried a readable observation time at all. An
+        // age that cannot be computed is its own reading, not a stale one.
+        age_recorded: ageSeconds !== null,
         age_text: ageSeconds === null ? NOT_RECORDED : ageText(ageSeconds),
         label: ageSeconds === null
           ? "observation time not recorded"
@@ -2403,11 +2406,168 @@ _BOARD_HTML = """<!doctype html>
         {name: "policy", label: "Human policy", items: policyItems}
       ];
     }
+    // What a `no_work` record is allowed to claim, decided in one place and
+    // read by every idle surface: the row headline and its state cues, the
+    // coverage evidence the detail shows, the next action, where the row
+    // sorts, change tracking, the announcement region, and the reconciliation
+    // step that decides whether an idle snapshot may retire work beside it.
+    //
+    // "Nothing to do in this session" is a claim about now, and a record is
+    // only ever evidence about when it was written. It may be repeated as a
+    // current claim on two conditions together: the evidence behind it is
+    // current -- every source fresh and the observation itself recent -- and
+    // the coverage behind it is whole -- every source covering all of what it
+    // covers, and every candidate observation file read this refresh. Miss
+    // either and the record still says something true, but a weaker thing:
+    // that this session was observed idle once, at a stated age, from stated
+    // evidence. It never says that nothing is needed now, and it is never
+    // styled as good news.
+    const IDLE_CURRENT_LABEL = "idle with complete coverage";
+    const IDLE_CURRENT_ACTION = "nothing to do in this session";
+    // Every prior-observation reading, ordered as the row list ranks them.
+    const IDLE_PRIOR_LABELS = [
+      "idle in the files read",
+      "last observed idle, source unavailable",
+      "last observed idle, coverage incomplete",
+      "last observed idle at an unrecorded time",
+      "last observed idle"
+    ];
+    const IDLE_RECORDED = "This record states the session, work queue and run registry were observed complete when it was written";
+    const IDLE_WITHHELD = "so this session is not shown as idle";
+    // How whole the coverage behind an idle claim is. Both halves count: what
+    // the record's own sources covered, and whether this refresh read every
+    // candidate observation file. A record naming no source at all covers
+    // nothing, so it is not complete either.
+    function idleCoverageState(record, coverage) {
+      if (coverage?.truncated === true) return "truncated";
+      const sources = arrayOf(record?.sources);
+      if (!sources.length) return "partial";
+      return sources.every(source => text(source?.coverage) === "complete") ? "complete" : "partial";
+    }
+    // How current the evidence behind an idle claim is, in the same three
+    // readings every other surface uses: current, aged out or stale, a source
+    // that could not be reached, or an observation that records no time at all.
+    function idleFreshnessState(freshness) {
+      if (arrayOf(freshness?.unavailable_sources).length) return "unavailable";
+      if (freshness?.age_recorded !== true) return "unknown";
+      return freshness?.current === true ? "current" : "stale";
+    }
+    function idlePresentation(record, freshness, coverage) {
+      const coverageState = idleCoverageState(record, coverage);
+      const freshnessState = idleFreshnessState(freshness);
+      const affirmative = coverageState === "complete" && freshnessState === "current";
+      const sources = arrayOf(record?.sources);
+      const covered = sources
+        .filter(source => text(source?.freshness) === "fresh" && text(source?.coverage) === "complete")
+        .map(source => text(source?.kind));
+      const named = (list) => (list.length ? list.join(", ") : "a source");
+      const unavailable = arrayOf(freshness?.unavailable_sources);
+      const partial = sources.filter(source => text(source?.coverage) !== "complete").map(source => text(source?.kind));
+      const omitted = coverage?.omitted === null || coverage?.omitted === undefined ? "some" : coverage.omitted;
+      // Whatever withheld the claim, the age or the unreachable source is
+      // still stated, so a reading is never left without the caveat that
+      // makes it honest.
+      const caveat = freshnessState === "current"
+        ? ""
+        : freshnessState === "unavailable"
+          ? ` Source unavailable: ${named(unavailable)}, so nothing has confirmed this reading since.`
+          : freshnessState === "unknown"
+            ? " No observation time is recorded, so how old this reading is cannot be stated."
+            : ` This reading is ${text(freshness?.age_text)} old and nothing has confirmed it since.`;
+      // First match decides, worst evidence first: what the read missed, then
+      // what the record's own sources could not supply, then how old it is.
+      const reading = affirmative
+        ? {
+            key: "current",
+            label: IDLE_CURRENT_LABEL,
+            class: "ok",
+            action: IDLE_CURRENT_ACTION,
+            coverage_label: "observed complete",
+            coverage_class: "ok",
+            coverage_value: "complete",
+            note: "This session is idle because the session, work queue and run registry were all observed complete, not because nothing was looked at."
+          }
+        : coverageState === "truncated"
+          ? {
+              key: "truncated",
+              label: "idle in the files read",
+              class: "warn",
+              action: "read the unread observation files before treating this session as idle",
+              coverage_label: "recorded complete, not confirmed",
+              coverage_class: "warn",
+              coverage_value: "partial",
+              note: `${IDLE_RECORDED}, but ${omitted} observation file${omitted === 1 ? "" : "s"} went unread this refresh, ${IDLE_WITHHELD}.`
+            }
+          : freshnessState === "unavailable"
+            ? {
+                key: "unavailable",
+                label: "last observed idle, source unavailable",
+                class: "bad",
+                action: "restore the unavailable source before treating this session as idle",
+                coverage_label: "recorded complete, source unavailable",
+                coverage_class: "bad",
+                coverage_value: "unavailable",
+                note: `${IDLE_RECORDED}, but ${named(unavailable)} cannot be reached now, ${IDLE_WITHHELD}.`
+              }
+            : coverageState === "partial"
+              ? {
+                  key: "partial",
+                  label: "last observed idle, coverage incomplete",
+                  class: "warn",
+                  action: "confirm the partly covered sources before treating this session as idle",
+                  coverage_label: "recorded complete, coverage incomplete",
+                  coverage_class: "warn",
+                  coverage_value: "partial",
+                  note: `${IDLE_RECORDED}, but ${named(partial)} reported part of what it covers, ${IDLE_WITHHELD}.`
+                }
+              : freshnessState === "unknown"
+                ? {
+                    key: "unknown",
+                    label: "last observed idle at an unrecorded time",
+                    class: "muted",
+                    action: "record an observation time before treating this session as idle",
+                    coverage_label: "recorded complete at an unrecorded time",
+                    coverage_class: "muted",
+                    coverage_value: "complete",
+                    note: `${IDLE_RECORDED}, ${IDLE_WITHHELD}.`
+                  }
+                : {
+                    key: "stale",
+                    label: "last observed idle",
+                    class: "warn",
+                    action: "re-observe this session before treating it as idle",
+                    coverage_label: "recorded complete when written",
+                    coverage_class: "warn",
+                    coverage_value: "complete",
+                    note: `${IDLE_RECORDED}, ${IDLE_WITHHELD}.`
+                  };
+      return {
+        affirmative,
+        reason: reading.key,
+        freshness_state: freshnessState,
+        coverage_state: coverageState,
+        label: reading.label,
+        class: reading.class,
+        action: reading.action,
+        states: [{label: reading.label, class: reading.class, cue: cueFor(reading.class)}],
+        covered,
+        coverage_item: {
+          name: "coverage",
+          label: reading.coverage_label,
+          state: covered.length ? covered.join(", ") : NOT_RECORDED,
+          class: covered.length ? reading.coverage_class : "muted",
+          cue: cueFor(covered.length ? reading.coverage_class : "muted"),
+          source: "session sources",
+          head: "",
+          coverage: reading.coverage_value,
+          note: `${reading.note}${caveat}`
+        }
+      };
+    }
     // `coverage` is the file-level reading from observationCoverage: a row is
     // built from one record, but whether the record set behind it is complete
     // is a fact about the read, and an idle claim depends on it.
     function workRow(record, nowMs, coverage) {
-      const truncated = coverage?.truncated === true;
       const kind = text(record?.kind);
       const key = workKey(record);
       const freshness = recordFreshness(record, nowMs);
@@ -2467,46 +2627,27 @@ _BOARD_HTML = """<!doctype html>
         };
       }
       if (kind === "no_work") {
-        const covered = arrayOf(record?.sources)
-          .filter(source => text(source?.freshness) === "fresh" && text(source?.coverage) === "complete")
-          .map(source => text(source?.kind));
-        // An idle snapshot is only authoritative about a session when the
-        // whole local record set was read. With files left unread, a record
-        // that says this session had no work cannot be shown as idle: an
-        // unread file may record work in exactly this scope. The record is
-        // still rendered as what it is -- an idle snapshot -- but it claims
-        // neither complete coverage nor an idle session.
+        // One classification, consumed whole: the headline, the state cues,
+        // the next action and the coverage evidence all come from the same
+        // reading, so no surface can repeat an idle claim another surface has
+        // already withheld.
+        const idle = idlePresentation(record, freshness, coverage);
         return {
           ...base,
           reference: base.session_label || "this session",
           stage: "",
           stage_label: "no work recorded",
-          states: truncated
-            ? [{label: "idle in the files read", class: "warn", cue: CUES.warn}]
-            : [{label: "idle with complete coverage", class: "ok", cue: CUES.ok}],
-          headline: truncated ? "idle in the files read" : "idle with complete coverage",
-          headline_class: truncated ? "warn" : "ok",
+          idle,
+          states: idle.states,
+          headline: idle.label,
+          headline_class: idle.class,
           pr_number: null,
           head_sha: "",
-          action_label: truncated
-            ? "read the unread observation files before treating this session as idle"
-            : "nothing to do in this session",
+          action_label: idle.action,
           actor_label: "no responsible role recorded",
           assignments: [],
           reasons: [],
-          groups: [{name: "coverage", label: "Coverage", items: [{
-            name: "coverage",
-            label: truncated ? "recorded complete, not confirmed" : "observed complete",
-            state: covered.length ? covered.join(", ") : NOT_RECORDED,
-            class: truncated ? "warn" : covered.length ? "ok" : "muted",
-            cue: cueFor(truncated ? "warn" : covered.length ? "ok" : "muted"),
-            source: "session sources",
-            head: "",
-            coverage: truncated ? "partial" : "complete",
-            note: truncated
-              ? `This record states the session, work queue and run registry were observed complete when it was written, but ${coverage?.omitted === null || coverage?.omitted === undefined ? "some" : coverage.omitted} observation file${coverage?.omitted === 1 ? "" : "s"} went unread this refresh, so this session is not shown as idle.`
-              : "This session is idle because the session, work queue and run registry were all observed complete, not because nothing was looked at."
-          }]}],
+          groups: [{name: "coverage", label: "Coverage", items: [idle.coverage_item]}],
           measurements: []
         };
       }
@@ -2609,7 +2750,15 @@ _BOARD_HTML = """<!doctype html>
         "implementation complete",
         "review passed",
         "assigned"
-      ]}
+      ]},
+      // Previously observed idle: a session-level snapshot that may no longer
+      // be read as a current idle claim. Nobody owes anything on it, so it
+      // never sorts above work that is recorded as blocked, waiting or in
+      // flight -- a snapshot that cannot say the session is quiet now cannot
+      // outrank work that is observed to be moving. It is not finished work
+      // either, so it stays out of the terminal band, above it, where the
+      // caveat it carries is still read.
+      {name: "prior_observation", demanding: false, labels: IDLE_PRIOR_LABELS}
     ];
     const ROW_URGENCY_ORDER = ROW_URGENCY_BANDS.flatMap(band => band.labels);
     // The states that keep a record out of the terminal band: something is
@@ -2620,7 +2769,7 @@ _BOARD_HTML = """<!doctype html>
       ROW_URGENCY_BANDS.filter(band => band.demanding).flatMap(band => band.labels));
     // Terminal work is placed last explicitly rather than by falling off the
     // end of the ranking, so nothing can be finished and urgent at once.
-    const TERMINAL_ROW_HEADLINES = ["merged", "idle with complete coverage"];
+    const TERMINAL_ROW_HEADLINES = ["merged", IDLE_CURRENT_LABEL];
     const ROW_URGENCY = new Map(ROW_URGENCY_ORDER.map((label, index) => [label, index]));
     // A state nobody ranked is neither promoted above recorded work nor
     // buried under finished work: it sorts after everything named above and
@@ -2762,16 +2911,22 @@ _BOARD_HTML = """<!doctype html>
     //   idle then work  -- the session has since picked work up. The idle
     //                      snapshot is stale and goes; every work item observed
     //                      after it stays, however many there are.
-    //   work then idle  -- the session has since gone quiet. The idle snapshot
-    //                      is the truthful current state, and the superseded
-    //                      work rows go rather than being restated as current
-    //                      work. That is deliberate for terminal work too: a
+    //   work then idle, snapshot current -- the session has since gone quiet.
+    //                      The idle snapshot is the truthful current state, and
+    //                      the superseded work rows go rather than being
+    //                      restated as current work. That is deliberate for terminal work too: a
     //                      merged item observed before the session reported
     //                      itself idle is not current work either. Nothing is
     //                      invented to stand in for it -- what the page already
     //                      records is that the row is no longer recorded, which
     //                      change tracking reports in the Timeline on the poll
     //                      that drops it.
+    //
+    //   work then idle, snapshot not current -- the newer snapshot cannot be
+    //                      read as saying the session is quiet now, so it retires
+    //                      nothing. Both readings stay, and neither contradicts
+    //                      the other: the snapshot's row says only that the
+    //                      session was observed idle once, at its stated age.
     //
     // Both directions are decided per work item against the one retained idle
     // snapshot, so a session that went idle and then picked up new work keeps
@@ -2782,7 +2937,7 @@ _BOARD_HTML = """<!doctype html>
     // The Health view still reads every record on disk on purpose: a source
     // behind a superseded observation was really contacted, and its connection
     // is inspected there on its own terms rather than as a claim about work.
-    function reconcileSessionScopes(groups) {
+    function reconcileSessionScopes(groups, nowMs, coverage) {
       const idle = new Map();
       const work = new Map();
       for (const group of groups) {
@@ -2793,9 +2948,18 @@ _BOARD_HTML = """<!doctype html>
       }
       const superseded = new Set();
       for (const [scope, idleGroup] of idle) {
+        const snapshot = idleGroup.records[0];
+        // Only a snapshot this page may state as a current idle claim can
+        // retire work: retiring a work row asserts that the session has since
+        // gone quiet, which is exactly the claim a stale, partly covered or
+        // unreachable snapshot is not allowed to make. When it cannot, both
+        // readings stay -- and they no longer contradict each other, because
+        // the row built from that snapshot says only that the session was
+        // observed idle once, at its stated age.
+        const current = idlePresentation(snapshot, recordFreshness(snapshot, nowMs), coverage).affirmative;
         for (const workGroup of work.get(scope) || []) {
-          if (workSupersedesIdle(workGroup.records[0], idleGroup.records[0])) superseded.add(idleGroup);
-          else superseded.add(workGroup);
+          if (workSupersedesIdle(workGroup.records[0], snapshot)) superseded.add(idleGroup);
+          else if (current) superseded.add(workGroup);
         }
       }
       return groups.filter(group => !superseded.has(group));
@@ -2804,8 +2968,8 @@ _BOARD_HTML = """<!doctype html>
     // list, the participant summary, change tracking, selection and the
     // announcement region all descend from this call and from no other, so the
     // pre-reconciliation set cannot reach any of them.
-    function reconciledObservationGroups(data) {
-      return reconcileSessionScopes(observationGroups(data));
+    function reconciledObservationGroups(data, nowMs, coverage) {
+      return reconcileSessionScopes(observationGroups(data), nowMs, coverage);
     }
     // One source id names one source, so a source observed in several retained
     // files is one source here too. Its consolidated reading is the
@@ -2871,7 +3035,7 @@ _BOARD_HTML = """<!doctype html>
     // reshuffles the list.
     function workRows(data, nowMs) {
       const coverage = observationCoverage(data);
-      return reconciledObservationGroups(data)
+      return reconciledObservationGroups(data, nowMs, coverage)
         .map(group => workRow(consolidatedRecord(group), nowMs, coverage))
         .sort((a, b) =>
           rowUrgency(a) - rowUrgency(b)

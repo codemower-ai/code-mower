@@ -7248,7 +7248,7 @@ class BoardSessionScopeReconciliationTests(TestCase):
         unreconciled = self._reconciled(
             records,
             mutate=(
-                "return reconcileSessionScopes(observationGroups(data));",
+                "return reconcileSessionScopes(observationGroups(data), nowMs, coverage);",
                 "return observationGroups(data);",
             ),
         )
@@ -7466,3 +7466,356 @@ class BoardObservationCoverageViewTests(TestCase):
         self.assertEqual(unknown["state"], "unknown")
         self.assertEqual(unknown["class"], "muted")
         self.assertEqual(unknown["label"], "observation file coverage unknown")
+
+
+# The instant the `no_work` fixture records itself at, so a test can name an
+# age directly rather than by an offset from an unrelated clock.
+FIXTURE_CREATED = datetime(2026, 9, 12, 20, 0, tzinfo=UTC)
+
+
+def _with_extra_source(record: dict, *, freshness: str, coverage: str) -> dict:
+    """The same accepted record, plus one source with the given reading.
+
+    The frozen contract requires a `no_work` record's session, work queue and
+    run registry to have been fresh and complete when it was written, so those
+    three are never weakened here. A producer may name further sources beside
+    them, and this adds exactly one -- which is how a real record comes to
+    carry partial or unreachable evidence at all.
+    """
+
+    extended = copy.deepcopy(record)
+    # Every instant is taken from the record itself, so a source added to a
+    # record recorded a day ago is still a source a producer could have
+    # written beside it.
+    checked = datetime.strptime(extended["created_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+
+    def stamp(seconds: int) -> str:
+        return (checked - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    unreachable = freshness == "unavailable"
+    extended["sources"].append(
+        {
+            "id": "extraobs",
+            "kind": "remote_session",
+            "freshness": freshness,
+            "coverage": coverage,
+            "event_at": None if unreachable else stamp(20),
+            "observed_at": None if unreachable else stamp(10),
+            "checked_at": stamp(0),
+            "heartbeat_at": None,
+        }
+    )
+    return board_observation.validate(extended)
+
+
+def _undated(record: dict) -> dict:
+    """The same record with an observation time nothing can read.
+
+    The frozen contract requires `created_at`, so no producer can emit this.
+    The view is handed it anyway, because a record whose age cannot be
+    computed is exactly the case in which a view must not guess: the classifier
+    has to be at least as conservative here as it is for evidence it can date.
+    """
+
+    undated_record = copy.deepcopy(record)
+    undated_record["created_at"] = ""
+    return undated_record
+
+
+def _truncated_observations(records: list[dict], *, omitted: int = 1) -> dict:
+    """The observations block a bounded read emits when it left files unread."""
+
+    cap = board.MAX_OBSERVATION_FILES
+    return {
+        "schema": board.BOARD_OBSERVATIONS_SCHEMA,
+        "record_schema": board_observation.SCHEMA,
+        "available": True,
+        "path": lane_status.LOCAL_PATH_REDACTION,
+        "path_redacted": True,
+        "path_exists": True,
+        "records": records,
+        "warnings": [],
+        "rejected": 0,
+        "coverage": "partial",
+        "truncated": True,
+        "file_cap": cap,
+        "candidate_files": cap + omitted,
+        "read_files": cap,
+        "omitted_files": omitted,
+        "selection": board.OBSERVATION_SELECTION,
+        "message": f"{cap} of {cap + omitted} local Board observation files were read",
+    }
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardIdleFreshnessTests(TestCase):
+    """An idle claim is a claim about now, so it needs current, whole evidence.
+
+    A `no_work` record states that when it was written, the session, work queue
+    and run registry were all observed complete and held no work. That is a
+    fact about an instant in the past. Repeating it as "nothing to do in this
+    session" turns it into a claim about the present, and that claim holds only
+    while two things are true together: the evidence behind the record is still
+    current, and the coverage behind it is whole -- every source covering all
+    of what it covers, and every candidate observation file read this refresh.
+
+    Before this, only the second half was checked. A record that was valid when
+    written went on rendering green, as `idle with complete coverage` with
+    `nothing to do in this session` beside it, for as long as the page was left
+    open -- a day later, a week later, with `recordFreshness().current` false
+    the whole time and the row's own age pill saying so. These tests hold the
+    two halves together, one reading at a time.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    # The shipped text cues, read off the page rather than restated here.
+    CUES = _eval_board_view("CUES")
+
+    # freshness x coverage for one `no_work` record, and what the shared
+    # classifier is allowed to say about each cell. Exactly one of the nine --
+    # current evidence under whole coverage -- may speak in the present tense
+    # or render as good news. Every other cell reports a prior observation.
+    #
+    # The third freshness reading covers both ways evidence stops being
+    # datable or reachable: a source the record could not reach, and an
+    # observation carrying no readable time at all. The contract ties an
+    # unreachable source to unavailable coverage, so an undated record is the
+    # only shape that reaches that row's complete-coverage column.
+    MATRIX = (
+        ("current", "complete", "current", "idle with complete coverage", "ok"),
+        ("current", "partial", "partial", "last observed idle, coverage incomplete", "warn"),
+        ("current", "truncated", "truncated", "idle in the files read", "warn"),
+        ("stale", "complete", "stale", "last observed idle", "warn"),
+        ("stale", "partial", "partial", "last observed idle, coverage incomplete", "warn"),
+        ("stale", "truncated", "truncated", "idle in the files read", "warn"),
+        (
+            "unavailable/unknown",
+            "complete",
+            "unknown",
+            "last observed idle at an unrecorded time",
+            "muted",
+        ),
+        (
+            "unavailable/unknown",
+            "partial",
+            "unavailable",
+            "last observed idle, source unavailable",
+            "bad",
+        ),
+        ("unavailable/unknown", "truncated", "truncated", "idle in the files read", "warn"),
+    )
+
+    # The two sentences that claim the session needs nothing right now, and the
+    # cue that renders such a claim as good news.
+    PRESENT_TENSE = ("idle with complete coverage", "nothing to do in this session")
+
+    @staticmethod
+    def _record(freshness: str, coverage: str) -> dict:
+        record = _observation_fixture("no_work")
+        if freshness == "stale":
+            # A day later: every source still says it was fresh when the record
+            # was written, and the record is far past the staleness threshold.
+            record = _observed_later(record, -86400)
+        if freshness == "unavailable/unknown":
+            record = (
+                _undated(record)
+                if coverage == "complete"
+                else _with_extra_source(record, freshness="unavailable", coverage="unavailable")
+            )
+        elif coverage == "partial":
+            record = _with_extra_source(record, freshness="fresh", coverage="partial")
+        return record
+
+    @classmethod
+    def _payload(cls, freshness: str, coverage: str) -> dict:
+        record = cls._record(freshness, coverage)
+        if coverage == "truncated":
+            return _observation_payload([], observations=_truncated_observations([record]))
+        return _observation_payload([record])
+
+    def _rows(self, payload: dict, now_ms: int | None = None) -> list[dict]:
+        return _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => ({"
+            "key: row.key, headline: row.headline, headline_class: row.headline_class,"
+            "action: row.action_label, states: row.states, idle: row.idle || null,"
+            "coverage: row.groups[0].items[0], freshness: row.freshness}))",
+            payload,
+            self.NOW_MS if now_ms is None else now_ms,
+        )
+
+    def test_only_current_evidence_under_whole_coverage_claims_idle_now(self) -> None:
+        for freshness, coverage, reason, label, cls in self.MATRIX:
+            with self.subTest(freshness=freshness, coverage=coverage):
+                row = self._rows(self._payload(freshness, coverage))[0]
+                affirmative = reason == "current"
+                self.assertEqual(row["idle"]["reason"], reason)
+                self.assertEqual(row["idle"]["affirmative"], affirmative)
+                self.assertEqual(row["idle"]["coverage_state"], coverage)
+
+                # One reading, read by the headline, the state cues, the next
+                # action and the coverage evidence alike.
+                self.assertEqual(row["headline"], label)
+                self.assertEqual(row["headline_class"], cls)
+                self.assertEqual(row["states"], [{"label": label, "class": cls, "cue": self.CUES[cls]}])
+
+                if affirmative:
+                    self.assertEqual(row["action"], "nothing to do in this session")
+                    self.assertEqual(row["coverage"]["class"], "ok")
+                    self.assertIn("This session is idle because", row["coverage"]["note"])
+                    continue
+
+                # Everything else reports a prior observation, says what is
+                # missing, and is never styled as good news.
+                self.assertIn("before treating", row["action"])
+                self.assertNotIn("nothing to do", row["action"])
+                self.assertNotEqual(row["coverage"]["class"], "ok")
+                self.assertIn("not shown as idle", row["coverage"]["note"])
+                self.assertIn("when it was written", row["coverage"]["note"])
+                # The idle surfaces themselves: the headline, the cues, the
+                # action and the coverage evidence. The age pill beside them
+                # reports the record's own age and stays what it is -- a
+                # recent record whose coverage is incomplete is recent.
+                claimed = json.dumps(
+                    [row["idle"], row["states"], row["coverage"], row["headline"], row["action"]]
+                )
+                for sentence in self.PRESENT_TENSE:
+                    self.assertNotIn(sentence, claimed)
+                self.assertNotIn('"ok"', claimed)
+
+    def test_every_withheld_reading_carries_its_age_or_source_caveat(self) -> None:
+        # A row that declines to repeat an idle claim has to say why, or an
+        # operator is left with a bare label and no way to judge it.
+        caveats = {
+            ("current", "partial"): "reported part of what it covers",
+            ("current", "truncated"): "went unread this refresh",
+            ("stale", "complete"): "old and nothing has confirmed it since",
+            ("stale", "partial"): "old and nothing has confirmed it since",
+            ("stale", "truncated"): "old and nothing has confirmed it since",
+            ("unavailable/unknown", "complete"): "No observation time is recorded",
+            ("unavailable/unknown", "partial"): "Source unavailable: remote_session",
+            ("unavailable/unknown", "truncated"): "Source unavailable: remote_session",
+        }
+        for (freshness, coverage), caveat in caveats.items():
+            with self.subTest(freshness=freshness, coverage=coverage):
+                row = self._rows(self._payload(freshness, coverage))[0]
+                self.assertIn(caveat, row["coverage"]["note"])
+
+    def test_the_freshness_threshold_decides_at_its_own_boundary(self) -> None:
+        # The record is one record; only the clock moves. An observation is
+        # current up to and including the threshold, and reports itself as a
+        # past observation the first second after it.
+        threshold = _eval_board_view("OBSERVATION_STALE_SECONDS")
+        payload = _observation_payload([_observation_fixture("no_work")])
+        for age, affirmative in (
+            (threshold - 1, True),
+            (threshold, True),
+            (threshold + 1, False),
+            (86400, False),
+        ):
+            with self.subTest(age=age):
+                now_ms = int((FIXTURE_CREATED + timedelta(seconds=age)).timestamp() * 1000)
+                row = self._rows(payload, now_ms)[0]
+                self.assertEqual(row["idle"]["affirmative"], affirmative)
+                self.assertEqual(
+                    row["headline"],
+                    "idle with complete coverage" if affirmative else "last observed idle",
+                )
+                self.assertEqual(row["freshness"]["current"], affirmative)
+
+    def test_a_day_later_the_same_valid_record_states_no_present_tense_claim(self) -> None:
+        # The P2 exactly: the page is left open, the producer stops writing,
+        # and the record that was valid a day ago is still on screen. What it
+        # may still say is that this session was observed idle, a day ago.
+        payload = _observation_payload([_observation_fixture("no_work")])
+        nodes = _render_board_dom(payload, now=OBSERVATION_NOW + timedelta(days=1))
+        rendered = json.dumps(nodes)
+        for sentence in self.PRESENT_TENSE:
+            self.assertNotIn(sentence, rendered)
+        worklist = nodes["worklist"]
+        self.assertIn("last observed idle", worklist)
+        self.assertIn("last observed 24.0h ago", worklist)
+        self.assertIn("re-observe this session before treating it as idle", worklist)
+        self.assertIn("so it is shown as last observed rather than current", worklist)
+        self.assertIn("This reading is 24.0h old and nothing has confirmed it since", worklist)
+
+        # And the same record read while it is current still says both.
+        current = _render_board_dom(payload, now=OBSERVATION_NOW)["worklist"]
+        for sentence in self.PRESENT_TENSE:
+            self.assertIn(sentence, current)
+
+    def test_a_prior_observation_never_outranks_work_that_is_moving(self) -> None:
+        # Two sessions: one observed idle a day ago, one with a run observed
+        # now. An operator who has chosen nothing is shown the work.
+        stale_idle = _in_session(
+            _observed_later(_observation_fixture("no_work"), -86400),
+            session=OTHER_SESSION,
+            worktree=OTHER_WORKTREE,
+        )
+        work = _named_work("alpha")
+        rows = self._rows(_observation_payload([stale_idle, work]))
+        self.assertEqual([row["key"] for row in rows], [_work_key("alpha"), _idle_key(OTHER_SESSION, OTHER_WORKTREE)])
+
+        # Order is a property of what the rows record, never of the order the
+        # directory happened to list them in.
+        reversed_rows = self._rows(_observation_payload([work, stale_idle]))
+        self.assertEqual(reversed_rows, rows)
+
+        # A current idle snapshot is finished business and sorts below the
+        # work; a prior observation sorts below the work too, and above the
+        # terminal band, because its caveat still has to be read.
+        ranks = _eval_board_view(
+            "[stateUrgency('provider run observed'), stateUrgency('last observed idle'),"
+            "stateUrgency('idle with complete coverage')]"
+        )
+        self.assertEqual(ranks, sorted(ranks))
+        self.assertEqual(len(set(ranks)), 3)
+
+    def test_a_snapshot_that_cannot_claim_the_present_retires_no_work(self) -> None:
+        # Reconciliation retires a work row by asserting that the session has
+        # since gone quiet. A snapshot that may not make a present-tense claim
+        # may not make that one either, however recently it was written.
+        work = _observed_later(_named_work("alpha"), 0)
+        unreachable = _with_extra_source(
+            _observed_later(_observation_fixture("no_work"), 20),
+            freshness="unavailable",
+            coverage="unavailable",
+        )
+        rows = self._rows(_observation_payload([work, unreachable]))
+        # Both readings stay, and they do not contradict each other: the
+        # snapshot's row claims only a past observation.
+        self.assertEqual([row["key"] for row in rows], [_work_key("alpha"), _idle_key()])
+        self.assertEqual(rows[1]["headline"], "last observed idle, source unavailable")
+        self.assertEqual(self._rows(_observation_payload([unreachable, work])), rows)
+
+        # The prior fix is untouched: a snapshot that can claim the present
+        # still retires the work it supersedes, in either input order.
+        quiet = _observed_later(_observation_fixture("no_work"), 20)
+        for records in ([work, quiet], [quiet, work]):
+            reconciled = self._rows(_observation_payload(records))
+            self.assertEqual([row["key"] for row in reconciled], [_idle_key()])
+            self.assertEqual(reconciled[0]["action"], "nothing to do in this session")
+
+    def test_without_the_freshness_gate_a_day_old_record_still_claims_idle(self) -> None:
+        # The mutation is exactly the missing condition: coverage alone decides
+        # whether the record may speak in the present tense, which is what the
+        # Board did before.
+        payload = _observation_payload([_observed_later(_observation_fixture("no_work"), -86400)])
+        ungated = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.headline_class, row.action_label])",
+            payload,
+            self.NOW_MS,
+            mutate=(
+                'const affirmative = coverageState === "complete" && freshnessState === "current";',
+                'const affirmative = coverageState === "complete";',
+            ),
+        )
+        self.assertEqual(
+            ungated,
+            [["idle with complete coverage", "ok", "nothing to do in this session"]],
+        )
+        # And the shipped classifier, unmutated, says none of that about the
+        # very same record.
+        shipped = self._rows(payload)[0]
+        self.assertEqual(shipped["headline"], "last observed idle")
+        self.assertEqual(shipped["headline_class"], "warn")
+        self.assertEqual(shipped["action"], "re-observe this session before treating it as idle")
