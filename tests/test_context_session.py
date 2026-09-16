@@ -217,6 +217,77 @@ class ContextSessionContractTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ContextError):
                 context_session.validate({**copy.deepcopy(reserving), **mutation})
 
+    def test_reserving_precedes_context_state_failure_while_pending_and_uncertain_do_not(self):
+        """A ``reserving`` intent proves publication never began, so attach
+        reconciliation is safe without reauthorization and is reported that
+        way regardless of any ``context_state`` failure recorded against a
+        prior generation, or of required/optional policy. ``pending`` and
+        ``uncertain`` keep their existing failure precedence unchanged --
+        their authorization failures may still need owner action
+        (codex:1a4bc7b34687da726908)."""
+        failure_stage_for = {
+            "ready": None,
+            "unchecked": None,
+            "unavailable": "context_unavailable",
+            "authorization_failed": "authorization_failed",
+            "expired": "context_expired",
+        }
+        counter = 0
+
+        def make_record(attachment_state, context_state, required):
+            nonlocal counter
+            counter += 1
+            session_id = format(counter, "032x")
+            record = context_session.create(
+                self.store, session_value(session_id), work_item="SECRET-1",
+                policy={**POLICY, "required": required},
+            )
+            prepared = context_session.update(
+                self.store, session_id, expected_generation=record["generation"],
+                changes={
+                    "stage": "prepared", "builder": "codex", "query_mode": "work_item",
+                    "request_hash": "c" * 64, "packet": "b" * 32,
+                    "work_order": "work-order.md", "context_state": context_state,
+                },
+            )
+            return context_session.update(
+                self.store, session_id, expected_generation=prepared["generation"],
+                changes={
+                    "pr": 7, "head": "d" * 40, "revision": "e" * 32,
+                    "attachment_state": attachment_state,
+                },
+            )
+
+        for required in (True, False):
+            for context_state, failure_stage in failure_stage_for.items():
+                with self.subTest(required=required, context_state=context_state, attachment="reserving"):
+                    reserving = make_record("reserving", context_state, required)
+                    status = context_session.status(reserving, lease_live=True)
+                    self.assertEqual(status["stage"], "attachment_pending")
+                    self.assertEqual(status["dependent_work"], "paused")
+                    self.assertFalse(status["owner_action"])
+                    self.assertIn("attach", status["next_action"])
+                    for private in ("SECRET-1", "example-context", "owner/repo", "e" * 32):
+                        self.assertNotIn(private, json.dumps(status))
+
+                for attachment in ("pending", "uncertain"):
+                    with self.subTest(required=required, context_state=context_state, attachment=attachment):
+                        record = make_record(attachment, context_state, required)
+                        status = context_session.status(record, lease_live=True)
+                        if failure_stage is not None:
+                            self.assertEqual(status["stage"], failure_stage)
+                            self.assertTrue(status["owner_action"])
+                            self.assertEqual(
+                                status["dependent_work"], "paused" if required else "usable",
+                            )
+                        else:
+                            self.assertEqual(
+                                status["stage"],
+                                "attachment_uncertain" if attachment == "uncertain" else "attachment_pending",
+                            )
+                            self.assertEqual(status["dependent_work"], "paused")
+                            self.assertEqual(status["owner_action"], attachment == "uncertain")
+
     def test_malformed_or_cross_bound_records_fail_closed(self):
         record = context_session.create(self.store, self.session, work_item="ITEM-1", policy=POLICY)
         mutations = (

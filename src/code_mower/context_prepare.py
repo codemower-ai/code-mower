@@ -225,7 +225,7 @@ def prepare(
             work_order=record["work_order"],
             reused=True,
         ), 0
-    if record["attachment_state"] in {"pending", "uncertain"}:
+    if record["attachment_state"] in {"reserving", "pending", "uncertain"}:
         if refresh:
             raise ContextError(
                 "reconcile the saved attachment before refreshing or start a new session"

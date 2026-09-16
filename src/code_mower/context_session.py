@@ -442,6 +442,18 @@ def status(record: Mapping[str, Any] | None, *, lease_live: bool) -> dict[str, A
             "stage": "not_configured", "dependent_work": "usable", "owner_action": False,
             "next_action": "Continue the ordinary workflow or configure an optional context connection.",
         }
+    if record["attachment_state"] == "reserving":
+        # A ``reserving`` intent has never reached a GitHub write, so attach
+        # can always safely reconcile it without reauthorization; that takes
+        # precedence over any ``context_state`` failure recorded against a
+        # prior generation of this same record, unlike ``pending``/
+        # ``uncertain`` below, whose failures may still need owner action.
+        return {
+            "schema": STATUS_SCHEMA, "selected": True, "configured": True,
+            "stage": "attachment_pending", "dependent_work": "paused",
+            "owner_action": False,
+            "next_action": "Rerun attach to reconcile or finish the saved publication intent.",
+        }
     if record["context_state"] in {"expired", "authorization_failed", "unavailable"}:
         expired = record["context_state"] == "expired"
         authorization = record["context_state"] == "authorization_failed"
@@ -483,11 +495,7 @@ def status(record: Mapping[str, Any] | None, *, lease_live: bool) -> dict[str, A
                 else "Verify the selected connection, then rerun prepare with --refresh."
             ),
         }
-    if record["attachment_state"] in {"reserving", "pending"}:
-        # A ``reserving`` intent has never reached a GitHub write, but it is
-        # reported the same as ``pending`` here: both mean only attach can
-        # safely resolve the saved identity, and neither is a matter for
-        # owner judgement the way an uncertain publication result is.
+    if record["attachment_state"] == "pending":
         return {
             "schema": STATUS_SCHEMA, "selected": True, "configured": True,
             "stage": "attachment_pending", "dependent_work": "paused",
