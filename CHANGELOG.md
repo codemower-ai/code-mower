@@ -21,6 +21,21 @@ later entries are regular releases.
 
 ### Added
 
+- `code-mower board service` manages a persistent local Board: render a
+  reviewable definition, install, inspect, restart, and remove it. macOS uses
+  launchd; other platforms refuse rather than calling a transient process a
+  service. Restart is idempotent, replaces a stale managed binding atomically
+  with rollback, and fails closed on stale arguments, mismatched ownership,
+  another supervisor on the port, or an ambiguous repository selection. The
+  serving gate validates port, repository slug, exact private repository path,
+  installed version, serving version, and the exact argument list behind a
+  delayed health check. Exact local paths stay local.
+  See [Board service lifecycle](docs/board-service-lifecycle.md).
+- `code-mower board stop --repo OWNER/REPO` resolves one exact known binding.
+  Selectors must agree: an ambiguous, duplicate, or contradicting
+  repository/port/PID selection stops nothing, and a port a keepalive-managed
+  service would immediately reclaim is refused instead of reported as stopped.
+  `board list` now marks each Board managed or transient.
 - Staged trusted lineage producer primitives for supervised takeover and same-writer
   delivery persistence, authenticated semantic publication, explicit builder-label
   reconciliation, and transport-preserving attribution. Independent workflow and

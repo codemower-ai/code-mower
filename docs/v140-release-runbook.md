@@ -1070,13 +1070,19 @@ All three provider results must pass, and Devin's result must identify the
 hosted transport before peer support is claimed. Keep the profile selector,
 credentials, and result prose out of recorded evidence.
 
-### 15. Restart the three Boards from the release, waiting on each stop
+### 15. Restart the three Boards from the release as managed services
 
 The port 5332 Board must serve the exact v1.4.0 release checkout because its
-pre-release repository path is stale. Assert that checkout first, then stop each
-Board and wait through the bounded Board inventory until its listener is gone
-before starting the replacement, so no start races a dying listener on a fixed
-port.
+pre-release repository path is stale. Assert that checkout first, then restart
+each Board through its **managed service** rather than a shell-level `nohup`.
+
+A `nohup` Board dies with the invoking shell, and a pre-existing keepalive job
+can then reclaim its port from an older repository path while still answering
+the serving check. `code-mower board service` removes that whole class of
+failure: the service is supervised, so it survives the shell; the restart
+replaces a stale managed binding atomically or stops with a diagnostic; and the
+delayed health check validates the exact private binding before the restart is
+reported as successful. See [Board service lifecycle](board-service-lifecycle.md).
 
 ```bash
 set -euo pipefail
@@ -1215,22 +1221,41 @@ main()
 PY
 
 code-mower board list --json
-for BOARD_PORT in 5332 5342 5344; do
-  code-mower board stop --port "$BOARD_PORT" --yes --json
-  "$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" gone "$BOARD_PORT"
-done
 
 test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"
 test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"
-nohup code-mower board serve --repo codemower-ai/code-mower \
-  --repo-path "$RELEASE_CHECKOUT" --host 127.0.0.1 \
-  --port 5332 --record-events >/tmp/code-mower-board-5332.log 2>&1 &
-nohup code-mower board serve --repo "$BOARD_5342_REPO" \
-  --repo-path "$BOARD_5342_REPO_PATH" --host 127.0.0.1 \
-  --port 5342 --record-events >/tmp/code-mower-board-5342.log 2>&1 &
-nohup code-mower board serve --repo "$BOARD_5344_REPO" \
-  --repo-path "$BOARD_5344_REPO_PATH" --host 127.0.0.1 \
-  --port 5344 --record-events >/tmp/code-mower-board-5344.log 2>&1 &
+
+# Review each service definition before it is applied. The rendered plist is
+# written locally for review; the printed summary keeps local paths redacted.
+BOARD_SERVICE_DIR="$(mktemp -d /tmp/code-mower-board-service.XXXXXX)"
+code-mower board service render --repo codemower-ai/code-mower \
+  --repo-path "$RELEASE_CHECKOUT" --port 5332 \
+  --output "$BOARD_SERVICE_DIR/5332.plist"
+code-mower board service render --repo "$BOARD_5342_REPO" \
+  --repo-path "$BOARD_5342_REPO_PATH" --port 5342 \
+  --output "$BOARD_SERVICE_DIR/5342.plist"
+code-mower board service render --repo "$BOARD_5344_REPO" \
+  --repo-path "$BOARD_5344_REPO_PATH" --port 5344 \
+  --output "$BOARD_SERVICE_DIR/5344.plist"
+
+# Managed restart. Each restart replaces a stale managed binding atomically or
+# stops with a diagnostic, then waits through the delayed health check before
+# it reports success: settle, then refresh the whole binding gate (port,
+# repository slug, exact private repository path, installed version, serving
+# version, exact argument list) until it passes or the window closes.
+code-mower board service restart --repo codemower-ai/code-mower \
+  --repo-path "$RELEASE_CHECKOUT" --port 5332 --replace \
+  --settle-seconds 10 --timeout-seconds 120 --json
+code-mower board service restart --repo "$BOARD_5342_REPO" \
+  --repo-path "$BOARD_5342_REPO_PATH" --port 5342 --replace \
+  --settle-seconds 10 --timeout-seconds 120 --json
+code-mower board service restart --repo "$BOARD_5344_REPO" \
+  --repo-path "$BOARD_5344_REPO_PATH" --port 5344 --replace \
+  --settle-seconds 10 --timeout-seconds 120 --json
+
+# Independent delayed re-validation of every managed binding, plus the
+# inventory gate the pre-1.4.2 runbook used.
+code-mower board service status --json
 "$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" serving \
   "5332=codemower-ai/code-mower" "5342=$BOARD_5342_REPO" "5344=$BOARD_5344_REPO"
 

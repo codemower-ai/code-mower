@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 from . import __version__ as CODE_MOWER_VERSION
 from . import board_local_observation
 from . import board_observation
+from . import board_service
 from . import board_store
 from . import config as code_mower_config
 from . import controller
@@ -5078,6 +5079,33 @@ def _command_looks_like_board(command: str) -> bool:
     return lane_status.command_looks_like_code_mower_board(command)
 
 
+def _managed_service_index(
+    command_runner: lane_status.CommandRunner,
+    service_probe: Callable[[], list[Any]] | None,
+) -> dict[int, Any]:
+    """Managed Board services keyed by the port they own.
+
+    A transient Board dies when it is signaled; a keepalive-managed one is
+    restarted by its supervisor within moments. Stop has to be able to tell
+    them apart before it claims a port was released.
+    """
+
+    try:
+        services = (
+            service_probe()
+            if service_probe is not None
+            else board_service.managed_services(command_runner=command_runner)
+        )
+    except OSError:
+        return {}
+    index: dict[int, Any] = {}
+    for service in services or []:
+        port = getattr(service, "port", None)
+        if isinstance(port, int):
+            index[port] = service
+    return index
+
+
 def _default_pid_alive(pid: int) -> bool:
     """Best-effort liveness probe that never signals the target process."""
 
@@ -5099,13 +5127,18 @@ def board_inventory_payload(
     show_local_paths: bool = False,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     status_probe: Any = _probe_board_status,
+    service_probe: Callable[[], list[Any]] | None = None,
 ) -> dict[str, Any]:
     local = lane_status.collect_local_boards(command_runner)
+    services = _managed_service_index(command_runner, service_probe)
     boards: list[dict[str, Any]] = []
     for discovered in local.get("boards") or []:
         if not isinstance(discovered, Mapping):
             continue
         item = dict(discovered)
+        managed = services.get(int(item.get("port") or -1))
+        item["managed"] = managed is not None
+        item["service_label"] = getattr(managed, "label", "") if managed is not None else ""
         probed = status_probe(item) if status_probe else {}
         if isinstance(probed, Mapping) and probed.get("schema") in {BOARD_IDENTITY_SCHEMA, lane_status.LANE_STATUS_SCHEMA}:
             board_meta = probed.get("board") if isinstance(probed.get("board"), Mapping) else {}
@@ -5163,9 +5196,16 @@ def render_inventory_text(payload: Mapping[str, Any]) -> str:
         else:
             restart = " restart recommended" if board_item.get("restart_recommended") else ""
         cwd = f" cwd={board_item.get('cwd')}" if board_item.get("cwd") else ""
+        managed = (
+            f" service={board_item.get('service_label')}"
+            if board_item.get("managed")
+            else " service=none (transient)"
+            if "managed" in board_item
+            else ""
+        )
         lines.append(
             f"- {board_item.get('url') or 'localhost'} pid={board_item.get('pid')} "
-            f"repo={repo} version={version} health={health}{restart}{cwd}"
+            f"repo={repo} version={version} health={health}{restart}{managed}{cwd}"
         )
     lines.extend(["", f"Next: {payload.get('next_action') or 'inspect'}"])
     if payload.get("next_detail"):
@@ -5187,8 +5227,56 @@ def _revalidated_board_command(
     return str(stdout).strip()
 
 
+def _selector_payload(status: str, message: str, selector: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    return {
+        "schema": BOARD_STOP_SCHEMA,
+        "status": status,
+        "message": message,
+        "selector": selector,
+        "matches": [],
+        "stopped": [],
+        "errors": [],
+        **extra,
+    }
+
+
+def _stop_selector_matches(
+    boards: list[dict[str, Any]],
+    *,
+    repo: str,
+    port: int | None,
+    pid: int | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Boards satisfying every selector, and boards satisfying only some.
+
+    Every supplied selector has to agree on one binding. A board that answers
+    `--repo` but contradicts `--port` is a mismatch to report, never a target
+    to fall back to.
+    """
+
+    wanted_repo = repo.strip().lower()
+    exact: list[dict[str, Any]] = []
+    partial: list[dict[str, Any]] = []
+    for board_item in boards:
+        if board_item.get("confidence") != "high":
+            continue
+        results = []
+        if wanted_repo:
+            results.append(str(board_item.get("repo") or "").strip().lower() == wanted_repo)
+        if port is not None:
+            results.append(int(board_item.get("port") or -1) == port)
+        if pid is not None:
+            results.append(int(board_item.get("pid") or -1) == pid)
+        if results and all(results):
+            exact.append(board_item)
+        elif any(results):
+            partial.append(board_item)
+    return exact, partial
+
+
 def stop_board(
     *,
+    repo: str = "",
     port: int | None = None,
     pid: int | None = None,
     yes: bool = False,
@@ -5198,14 +5286,16 @@ def stop_board(
     prune_stale_agents: bool = False,
     agent_adapters_path: str | Path | None = None,
     pid_alive: Callable[[int], bool] | None = None,
+    service_probe: Callable[[], list[Any]] | None = None,
 ) -> dict[str, Any]:
-    prune_only = port is None and pid is None
+    repo = str(repo or "").strip()
+    prune_only = not repo and port is None and pid is None
     if prune_only:
         if not prune_stale_agents:
             return {
                 "schema": BOARD_STOP_SCHEMA,
                 "status": "invalid_selector",
-                "message": "pass exactly one of --port or --pid",
+                "message": "pass --repo, --port, or --pid",
                 "stopped": [],
                 "errors": [],
             }
@@ -5237,7 +5327,7 @@ def stop_board(
             "schema": BOARD_STOP_SCHEMA,
             "status": prune_status,
             "message": prune_message,
-            "selector": {"port": None, "pid": None},
+            "selector": {"repo": "", "port": None, "pid": None},
             "matches": [],
             "stopped": [],
             "errors": [],
@@ -5246,36 +5336,67 @@ def stop_board(
         if not show_local_paths:
             _redact_inventory_paths(payload)
         return payload
-    if (port is None) == (pid is None):
-        return {
-            "schema": BOARD_STOP_SCHEMA,
-            "status": "invalid_selector",
-            "message": "pass exactly one of --port or --pid",
-            "stopped": [],
-            "errors": [],
-        }
+    selector = {"repo": repo, "port": port, "pid": pid}
+    if repo and not board_service.REPO_SLUG_RE.match(repo):
+        return _selector_payload("invalid_selector", "--repo must be OWNER/REPO", selector)
     inventory = board_inventory_payload(
         show_local_paths=True,
         command_runner=command_runner,
         status_probe=None,
+        service_probe=service_probe,
     )
     boards = inventory.get("boards") if isinstance(inventory.get("boards"), list) else []
-    matches = [
-        board_item
-        for board_item in boards
-        if board_item.get("confidence") == "high"
-        and (
-            (port is not None and int(board_item.get("port") or -1) == port)
-            or (pid is not None and int(board_item.get("pid") or -1) == pid)
+    matches, partial = _stop_selector_matches(boards, repo=repo, port=port, pid=pid)
+    # One listener can be reported once per bound address, so distinct
+    # processes -- not distinct rows -- are what makes a selector ambiguous.
+    match_pids = {int(item.get("pid") or -1) for item in matches}
+    if len(match_pids) > 1:
+        described = ", ".join(
+            f"pid {item.get('pid')} on port {item.get('port')}" for item in matches
         )
-    ]
+        return _selector_payload(
+            "ambiguous_selector",
+            f"the selector matches more than one Board listener ({described}); "
+            "add --port or --pid to name exactly one. Nothing was stopped.",
+            selector,
+            candidates=sorted(match_pids),
+        )
+    if not matches and partial:
+        return _selector_payload(
+            "selector_mismatch",
+            "a Board listener matched part of the selector but contradicted the rest; "
+            "nothing was stopped. Run code-mower board list to see the exact bindings.",
+            selector,
+        )
     payload: dict[str, Any] = {
         "schema": BOARD_STOP_SCHEMA,
-        "selector": {"port": port, "pid": pid},
+        "selector": selector,
         "matches": matches,
         "stopped": [],
         "errors": [],
     }
+    managed_index = _managed_service_index(command_runner, service_probe)
+    managed_match = next(
+        (
+            managed_index[int(item.get("port") or -1)]
+            for item in matches
+            if int(item.get("port") or -1) in managed_index
+        ),
+        None,
+    )
+    if matches and managed_match is not None:
+        label = getattr(managed_match, "label", "")
+        managed_port = getattr(managed_match, "port", None)
+        payload["status"] = "managed_service"
+        payload["managed_service"] = {"label": label, "port": managed_port}
+        payload["message"] = (
+            f"port {managed_port} is served by managed Board service {label}, which would "
+            "immediately reclaim it; nothing was stopped. Use code-mower board service "
+            f"restart or code-mower board service remove --port {managed_port} --yes instead."
+        )
+        if not show_local_paths:
+            _redact_inventory_paths(payload)
+        return payload
     if not matches:
         payload["status"] = "not_found"
         payload["message"] = "no matching high-confidence Code Mower Board listener found"
@@ -5349,6 +5470,8 @@ def stop_board(
 
 def render_stop_text(payload: Mapping[str, Any]) -> str:
     lines = [f"Code Mower Board stop: {payload.get('status') or 'unknown'}", str(payload.get("message") or "")]
+    for candidate in payload.get("candidates") or []:
+        lines.append(f"- candidate pid={candidate}")
     stopped = payload.get("stopped") if isinstance(payload.get("stopped"), list) else []
     for item in stopped:
         lines.append(f"- stopped pid={item.get('pid')} port={item.get('port')} repo={item.get('repo') or 'unknown repo'}")
@@ -5776,6 +5899,211 @@ def render_doctor_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+_STOP_SELECTOR_STATUSES = frozenset(
+    {"invalid_selector", "confirmation_required", "ambiguous_selector", "selector_mismatch"}
+)
+# Statuses that mean a managed Board service is now serving the requested
+# binding. Everything else is a refusal or a failure and exits non-zero.
+_SERVICE_OK_STATUSES = frozenset({"installed", "restarted", "removed", "unchanged", "ok"})
+_SERVICE_REQUEST_STATUSES = frozenset({"invalid_request", "ambiguous_repository"})
+
+
+def _stop_exit_code(status: str) -> int:
+    if status in {"stopped", "pruned"}:
+        return 0
+    if status in _STOP_SELECTOR_STATUSES:
+        return 2
+    return 1
+
+
+def _service_exit_code(status: str) -> int:
+    if status in _SERVICE_OK_STATUSES:
+        return 0
+    if status in _SERVICE_REQUEST_STATUSES:
+        return 2
+    return 1
+
+
+def _service_spec_from_args(args: argparse.Namespace) -> board_service.ServiceSpec:
+    return board_service.build_spec(
+        repo=args.repo,
+        repo_path=args.repo_path,
+        port=args.port,
+        host=args.host,
+        record_events=not args.no_record_events,
+    )
+
+
+def _service_command(args: argparse.Namespace) -> int:
+    """Run one `board service` action, printing text or JSON."""
+
+    provider = board_service.select_provider()
+    show_local_paths = bool(getattr(args, "show_local_paths", False))
+    as_json = bool(getattr(args, "json", False))
+
+    if args.service_command in {"render", "install", "restart"}:
+        try:
+            spec = _service_spec_from_args(args)
+        except board_service.ServiceRequestError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    if args.service_command == "render":
+        payload = board_service.definition_payload(spec, show_local_paths=show_local_paths)
+        if args.output:
+            destination = Path(args.output).expanduser()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(board_service.render_definition(spec), encoding="utf-8")
+            payload["written"] = True
+        output = (
+            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+            if as_json
+            else board_service.render_definition_text(payload)
+        )
+        print(output, end="")
+        return 0
+
+    if args.service_command in {"install", "restart"}:
+        operation = (
+            board_service.install_service
+            if args.service_command == "install"
+            else board_service.restart_service
+        )
+        payload = operation(
+            spec,
+            provider=provider,
+            replace=args.replace,
+            settle_seconds=args.settle_seconds,
+            refresh_seconds=args.refresh_seconds,
+            timeout_seconds=args.timeout_seconds,
+            show_local_paths=show_local_paths,
+        )
+        output = (
+            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+            if as_json
+            else board_service.render_operation_text(payload)
+        )
+        print(output, end="")
+        return _service_exit_code(str(payload.get("status") or ""))
+
+    if args.service_command == "status":
+        payload = board_service.service_status(
+            provider=provider,
+            repo=args.repo,
+            port=args.port,
+            show_local_paths=show_local_paths,
+        )
+        output = (
+            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+            if as_json
+            else board_service.render_status_text(payload)
+        )
+        print(output, end="")
+        return _service_exit_code(str(payload.get("status") or ""))
+
+    if args.service_command == "remove":
+        if not args.yes:
+            print("error: board service remove only removes a service when --yes is passed", file=sys.stderr)
+            return 2
+        payload = board_service.remove_service(
+            provider=provider,
+            repo=args.repo,
+            port=args.port,
+            label=args.label,
+            settle_seconds=args.settle_seconds,
+            show_local_paths=show_local_paths,
+        )
+        output = (
+            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+            if as_json
+            else board_service.render_operation_text(payload)
+        )
+        print(output, end="")
+        return _service_exit_code(str(payload.get("status") or ""))
+
+    raise AssertionError(f"unhandled board service command: {args.service_command}")
+
+
+def _add_service_parsers(subparsers: Any) -> None:
+    service_parser = subparsers.add_parser(
+        "service", help="manage a persistent local Board service (macOS launchd)"
+    )
+    service_subparsers = service_parser.add_subparsers(dest="service_command", required=True)
+
+    def _add_delay_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--settle-seconds",
+            type=float,
+            default=board_service.DEFAULT_SETTLE_SECONDS,
+            help="wait this long before the first delayed health check",
+        )
+        parser.add_argument(
+            "--refresh-seconds",
+            type=float,
+            default=board_service.DEFAULT_REFRESH_SECONDS,
+            help="refresh interval for the delayed health check",
+        )
+        parser.add_argument(
+            "--timeout-seconds",
+            type=float,
+            default=board_service.DEFAULT_TIMEOUT_SECONDS,
+            help="give up on the delayed health check after this long",
+        )
+
+    def _add_binding_arguments(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--repo", required=True, help="OWNER/REPO the service serves")
+        parser.add_argument("--repo-path", required=True, help="repository checkout the service serves")
+        parser.add_argument("--port", type=int, required=True, help="loopback port the service binds")
+        parser.add_argument("--host", default=DEFAULT_HOST, help="loopback host to bind; default: 127.0.0.1")
+        parser.add_argument(
+            "--no-record-events",
+            action="store_true",
+            help="serve without appending local history events",
+        )
+        parser.add_argument("--show-local-paths", action="store_true", help="show exact local paths")
+        parser.add_argument("--json", action="store_true")
+
+    render_parser = service_subparsers.add_parser(
+        "render", help="render the service definition for review before applying it"
+    )
+    _add_binding_arguments(render_parser)
+    render_parser.add_argument("--output", help="write the exact definition to this file for review")
+
+    install_parser = service_subparsers.add_parser("install", help="install and start the service")
+    _add_binding_arguments(install_parser)
+    _add_delay_arguments(install_parser)
+    install_parser.add_argument(
+        "--replace", action="store_true", help="take over an existing definition for this port"
+    )
+
+    restart_parser = service_subparsers.add_parser("restart", help="restart the service idempotently")
+    _add_binding_arguments(restart_parser)
+    _add_delay_arguments(restart_parser)
+    restart_parser.add_argument(
+        "--replace", action="store_true", help="replace a stale definition for this port"
+    )
+
+    status_parser = service_subparsers.add_parser("status", help="inspect managed services and their bindings")
+    status_parser.add_argument("--repo", default="", help="only show services for OWNER/REPO")
+    status_parser.add_argument("--port", type=int, help="only show the service on this port")
+    status_parser.add_argument("--show-local-paths", action="store_true", help="show exact local paths")
+    status_parser.add_argument("--json", action="store_true")
+
+    remove_parser = service_subparsers.add_parser("remove", help="stop and remove a managed service")
+    remove_parser.add_argument("--repo", default="", help="OWNER/REPO the service serves")
+    remove_parser.add_argument("--port", type=int, help="loopback port the service binds")
+    remove_parser.add_argument("--label", default="", help="exact service label")
+    remove_parser.add_argument("--yes", action="store_true", help="remove the resolved service")
+    remove_parser.add_argument(
+        "--settle-seconds",
+        type=float,
+        default=board_service.DEFAULT_SETTLE_SECONDS,
+        help="wait this long before confirming the port was released",
+    )
+    remove_parser.add_argument("--show-local-paths", action="store_true", help="show exact local paths")
+    remove_parser.add_argument("--json", action="store_true")
+
+
 def _record_store_display(args: argparse.Namespace) -> str:
     if args.store_path:
         return "custom store path"
@@ -5800,9 +6128,12 @@ def main(argv: list[str] | None = None) -> int:
     list_parser.add_argument("--show-local-paths", action="store_true", help="show local cwd paths for debugging")
     list_parser.add_argument("--json", action="store_true")
     stop_parser = subparsers.add_parser("stop")
-    stop_selector = stop_parser.add_mutually_exclusive_group(required=False)
-    stop_selector.add_argument("--port", type=int, help="loopback port serving the Board")
-    stop_selector.add_argument("--pid", type=int, help="process id serving the Board")
+    # Not mutually exclusive: several selectors together are a stronger
+    # request, not a conflicting one. Every selector supplied must agree on one
+    # binding, and a contradiction stops nothing.
+    stop_parser.add_argument("--repo", default="", help="OWNER/REPO the Board serves")
+    stop_parser.add_argument("--port", type=int, help="loopback port serving the Board")
+    stop_parser.add_argument("--pid", type=int, help="process id serving the Board")
     stop_parser.add_argument("--yes", action="store_true", help="stop the matching Board listener")
     stop_parser.add_argument(
         "--prune-stale-agents",
@@ -5875,6 +6206,7 @@ def main(argv: list[str] | None = None) -> int:
     doctor_parser.add_argument("--event-limit", type=int, default=20)
     doctor_parser.add_argument("--show-local-paths", action="store_true")
     doctor_parser.add_argument("--json", action="store_true")
+    _add_service_parsers(subparsers)
     reset_parser = subparsers.add_parser("reset")
     reset_parser.add_argument("--repo", required=True)
     reset_parser.add_argument("--repo-path", default=".")
@@ -5889,6 +6221,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if payload.get("available") else 1
     if args.command == "stop":
         payload = stop_board(
+            repo=args.repo,
             port=args.port,
             pid=args.pid,
             yes=args.yes,
@@ -5897,7 +6230,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         output = json.dumps(payload, indent=2, sort_keys=True) + "\n" if args.json else render_stop_text(payload)
         print(output, end="")
-        return 0 if payload.get("status") in {"stopped", "pruned"} else 2 if payload.get("status") in {"invalid_selector", "confirmation_required"} else 1
+        return _stop_exit_code(str(payload.get("status") or ""))
+    if args.command == "service":
+        return _service_command(args)
     if args.command == "serve":
         return serve(
             BoardConfig(
