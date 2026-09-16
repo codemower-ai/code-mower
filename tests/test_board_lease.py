@@ -125,13 +125,17 @@ class BoardLeaseTests(TestCase):
         html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
         helpers = html[html.index("    const text =") : html.index("    function labels(")]
         renderer = re.search(r"    function renderLease\(lease\) \{.*?\n    \}", html, re.S).group()
-        script = helpers + renderer + "\nconsole.log(renderLease(JSON.parse(process.argv[1])));"
+        # The program goes in on stdin, never in argv: this slice of the page
+        # is already most of Linux's 128 KiB per-argument ceiling, and a helper
+        # that passes it with `node -e` fails on Linux long before it fails on
+        # a developer's macOS. With the program on stdin, `node -` sits at
+        # argv[1] and the JSON argument is argv[2].
+        script = helpers + renderer + "\nconsole.log(renderLease(JSON.parse(process.argv[2])));"
         for state in ("active", "expired", "absent", "malformed", "unavailable"):
             result = subprocess.run(
                 [
                     shutil.which("node"),
-                    "-e",
-                    script,
+                    "-",
                     json.dumps(
                         {
                             "state": state,
@@ -140,6 +144,7 @@ class BoardLeaseTests(TestCase):
                         }
                     ),
                 ],
+                input=script,
                 env={**os.environ, "TZ": "America/New_York"},
                 capture_output=True,
                 text=True,

@@ -1,34 +1,72 @@
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
+from collections.abc import Callable, Sequence
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+import copy
+import errno
 import http.client
+import itertools
 import json
 import math
+import os
 import re
 import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest import TestCase, skipUnless
+from unittest import SkipTest, TestCase, skipUnless
 from unittest.mock import patch
 from io import StringIO
 
-from code_mower import board, board_store, lane_status, reviewer_spend
+from code_mower import board, board_observation, board_store, lane_status, reviewer_spend
 
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+
+
+# The per-argument ceiling Linux enforces on every element of a command line
+# (``MAX_ARG_STRLEN``: a fixed 32 pages, independent of ``ARG_MAX``). The
+# shipped Board page script is comfortably past it, so handing it to ``node -e``
+# fails every Linux job with ``OSError: [Errno 7] Argument list too long`` while
+# passing locally on macOS, whose ceiling is a much larger whole-command-line
+# one. Kept as a named number because the assertions below are about the limit,
+# not about today's page size.
+LINUX_MAX_ARG_STRLEN = 32 * 4096
+
+
+def _run_node(script: str, *args: str) -> str:
+    """Run one generated program through Node, with the program on stdin.
+
+    ``node -`` reads the program from standard input, which is bounded by a
+    pipe rather than by argv, so a generated script of any size runs and only
+    the small JSON arguments are ever on the command line. Every Board helper
+    goes through here, so no helper can reintroduce the argv ceiling on its own.
+
+    Because the program is no longer an argument, ``process.argv`` carries the
+    ``-`` at index 1 and the first JSON argument is ``process.argv[2]``.
+    """
+
+    return subprocess.run(
+        [shutil.which("node") or "node", "-", *args],
+        input=script,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
 
 
 BOARD_POLL_HARNESS = """
 __CONSTANTS__
 const put = () => {};
 const render = () => {};
+const renderRetained = () => {};
 const renderEvents = () => {};
 const timers = [];
 let clearedCount = 0;
@@ -97,16 +135,7 @@ def _run_board_poll_script(steps: list[dict[str, object] | str | None]) -> list[
     script = BOARD_POLL_HARNESS.replace("__CONSTANTS__", constants.group(0)).replace(
         "__SCHEDULING__", scheduling.group(0)
     )
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "poll.js"
-        path.write_text(script, encoding="utf-8")
-        completed = subprocess.run(
-            [shutil.which("node") or "node", str(path), json.dumps(steps)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    return json.loads(completed.stdout)
+    return json.loads(_run_node(script, json.dumps(steps)))
 
 
 TRUTH_HELPERS_END = "// --- presentation truth helpers (END) ---"
@@ -119,8 +148,8 @@ const NODES = {};
 const document = {getElementById: (id) => (NODES[id] = NODES[id] || {innerHTML: "", textContent: ""})};
 Date.now = () => __NOW_MS__;
 __SCRIPT__
-render(JSON.parse(process.argv[1]));
-renderEvents(JSON.parse(process.argv[2]));
+render(JSON.parse(process.argv[2]));
+renderEvents(JSON.parse(process.argv[3]));
 console.log(JSON.stringify(Object.fromEntries(Object.entries(NODES).map(([id, node]) => [id, node.innerHTML || node.textContent]))));
 """
 
@@ -145,16 +174,10 @@ def _eval_board_truth(expression: str, *args: object) -> object:
 
     script = (
         _board_truth_helpers()
-        + "\nconst ARGS = process.argv.slice(1).map(value => JSON.parse(value));\n"
+        + "\nconst ARGS = process.argv.slice(2).map(value => JSON.parse(value));\n"
         + f"console.log(JSON.stringify({expression}));\n"
     )
-    completed = subprocess.run(
-        [shutil.which("node") or "node", "-e", script, *(json.dumps(arg) for arg in args)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return json.loads(completed.stdout)
+    return json.loads(_run_node(script, *(json.dumps(arg) for arg in args)))
 
 
 def _render_board_dom(
@@ -176,19 +199,13 @@ def _render_board_dom(
         BOARD_DOM_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000)))
         .replace("__SCRIPT__", "".join(trimmed))
     )
-    completed = subprocess.run(
-        [
-            shutil.which("node") or "node",
-            "-e",
+    return json.loads(
+        _run_node(
             script,
             json.dumps(payload),
             json.dumps(history if history is not None else {"events": []}),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
+        )
     )
-    return json.loads(completed.stdout)
 
 
 def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -408,10 +425,12 @@ class BoardTests(TestCase):
         self.assertIn("pollTimer = setTimeout(load, delayMs);", html)
         self.assertIn("clearTimeout(pollTimer);", html)
         self.assertLess(html.index("clearTimeout(pollTimer);"), html.index("pollTimer = setTimeout(load, delayMs);"))
-        # Definition plus exactly one call site, on the single path every
-        # load() takes whether it succeeded or threw.
+        # Definition plus exactly one call site, and that call site is the
+        # `finally` that closes load(): not a statement after the try, which a
+        # throw from either half of a poll skips, but the boundary every path
+        # out of load() crosses whether it returned or threw.
         self.assertEqual(html.count("scheduleNextLoad("), 2)
-        self.assertIn("      scheduleNextLoad(delayMs);\n    }", html)
+        self.assertIn("      } finally {\n        scheduleNextLoad(delayMs);\n      }\n    }", html)
 
     @skipUnless(shutil.which("node"), "node is required to execute the board polling script")
     def test_board_poll_delay_for_each_cache_state(self) -> None:
@@ -3592,3 +3611,8136 @@ class StatusCacheTests(TestCase):
             server.shutdown()
             server.server_close()
             server_thread.join(timeout=5)
+
+
+# --- Work-first Board views (#948) -----------------------------------------
+
+WORK_MODEL_END = "// --- work view model (END) ---"
+
+# The fixture clock plus 30s, so every fixture record is recent enough to be
+# reported as current unless the record itself says otherwise.
+OBSERVATION_NOW = datetime(2026, 9, 12, 20, 0, 30, tzinfo=UTC)
+
+OBSERVATION_FIXTURES = Path(__file__).parent / "fixtures" / "board_observations.json"
+
+# Render one payload after another through the shipped renderer in a single
+# page lifetime, so selection, announcements and the change timeline are
+# exercised the way a refresh actually exercises them. A step may select a work
+# row by its opaque key before rendering the next payload.
+BOARD_SEQUENCE_HARNESS = """
+const NODES = {};
+const document = {getElementById: (id) => (NODES[id] = NODES[id] || {innerHTML: "", textContent: ""})};
+Date.now = () => __NOW_MS__;
+__SCRIPT__
+const frames = [];
+for (const step of JSON.parse(process.argv[2])) {
+  if (step.select !== null) selectWork(step.select);
+  if (step.payload !== null) render(step.payload);
+  frames.push(Object.fromEntries(Object.entries(NODES).map(([id, node]) => [id, node.innerHTML || node.textContent])));
+}
+console.log(JSON.stringify(frames));
+"""
+
+
+def _board_script() -> str:
+    """The shipped page script, minus its own ``load()`` bootstrap."""
+
+    html = board.render_board_html(board.BoardConfig(repo="codemower-ai/code-mower"))
+    body = html[html.index("  <script>\n") + len("  <script>\n") : html.index("\n  </script>")]
+    trimmed = body.rsplit("    load();", 1)
+    if len(trimmed) != 2:  # pragma: no cover - guards the extraction
+        raise AssertionError("board HTML no longer bootstraps with load()")
+    return "".join(trimmed)
+
+
+def _board_view_model() -> str:
+    """Lift the shipped, DOM-free view-model transforms out of the page.
+
+    The work view model is layered on the B1 truth helpers, so the extraction
+    runs from the first helper through the end of the view-model block. As with
+    the B1 helpers, the tests execute the JavaScript the browser gets.
+    """
+
+    html = board.render_board_html(board.BoardConfig(repo="codemower-ai/code-mower"))
+    start = html.find("    const text =")
+    end = html.find(WORK_MODEL_END)
+    if start < 0 or end < start:  # pragma: no cover - guards the extraction
+        raise AssertionError("board HTML no longer exposes the work view model")
+    return html[start : end + len(WORK_MODEL_END)]
+
+
+def _eval_board_view(expression: str, *args: object, mutate: tuple[str, str] | None = None) -> object:
+    """Evaluate one shipped view-model expression against JSON arguments.
+
+    ``mutate`` replaces one exact fragment of the shipped view model before it
+    runs, so a test can execute the code this replaced and prove that the
+    assertions it makes would actually catch its return.
+    """
+
+    model = _board_view_model()
+    if mutate is not None:
+        original, replacement = mutate
+        if model.count(original) != 1:  # pragma: no cover - guards the mutation
+            raise AssertionError(f"board view model no longer contains exactly one {original!r}")
+        model = model.replace(original, replacement)
+    script = (
+        model
+        + "\nconst ARGS = process.argv.slice(2).map(value => JSON.parse(value));\n"
+        + f"console.log(JSON.stringify({expression}));\n"
+    )
+    return json.loads(_run_node(script, *(json.dumps(arg) for arg in args)))
+
+
+def _render_board_sequence(
+    steps: list[dict[str, object]],
+    *,
+    now: datetime = OBSERVATION_NOW,
+) -> list[dict[str, str]]:
+    """Render a sequence of payloads in one page lifetime."""
+
+    script = BOARD_SEQUENCE_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000))).replace(
+        "__SCRIPT__", _board_script()
+    )
+    normalized = [{"select": step.get("select"), "payload": step.get("payload")} for step in steps]
+    return json.loads(_run_node(script, json.dumps(normalized)))
+
+
+# Drive the shipped polling loop itself, in one page lifetime, against a
+# scripted sequence of `/api/status` and `/api/events` outcomes.
+#
+# `_render_board_sequence` above calls `render()` directly, which is the right
+# harness for what a *payload* renders. This is the harness for what a *failed
+# poll* renders: `load()`, its two independently settled requests, the local
+# transport state it keeps, the rerender of the retained payload it performs,
+# and the one timer it arms are all shipped code here, so nothing about the
+# failure path is restated in the test.
+#
+# The live region records writes rather than its final value. An unchanged poll
+# leaves it alone, and "left alone" and "written with the same sentence again"
+# are different things to a screen reader, so only a recorded write counts as
+# an announcement.
+BOARD_LIFETIME_HARNESS = """
+const NODES = {};
+const announced = [];
+const makeNode = (id) => {
+  const node = {innerHTML: "", _text: ""};
+  Object.defineProperty(node, "textContent", {
+    get: () => node._text,
+    set: (value) => {
+      node._text = value;
+      if (id === "announce") announced.push(value);
+    }
+  });
+  return node;
+};
+const document = {getElementById: (id) => (NODES[id] = NODES[id] || makeNode(id))};
+let CLOCK = __NOW_MS__;
+Date.now = () => CLOCK;
+const timers = [];
+let clearedCount = 0;
+const setTimeout = (fn, ms) => {
+  const timer = {fn, ms};
+  timers.push(timer);
+  return timer;
+};
+const clearTimeout = () => {
+  clearedCount += 1;
+};
+let STEP = null;
+// The three outcomes one request can have, which are the three this page has
+// to tell apart: a request that never arrived (the fetch itself rejects), a
+// response whose body is not JSON (the fetch resolves and `json()` rejects),
+// and a response that parsed -- into whatever shape it parsed into, which the
+// step supplies verbatim and is under no obligation to make renderable.
+const UNPARSABLE = "__UNPARSABLE_MARKER__";
+const fetch = async (url) => {
+  const status = url === "/api/status";
+  const outcome = status ? STEP.status : STEP.events;
+  const message = status ? STEP.status_error : STEP.events_error;
+  if (outcome === null) throw new Error(message);
+  if (outcome === UNPARSABLE) return {json: async () => { throw new Error(message); }};
+  return {json: async () => outcome};
+};
+__SCRIPT__
+(async () => {
+  const frames = [];
+  for (const step of JSON.parse(process.argv[2])) {
+    STEP = step;
+    if (step.now_ms !== null) CLOCK = step.now_ms;
+    if (step.select !== null) selectWork(step.select);
+    const armedBefore = timers.length;
+    const clearedBefore = clearedCount;
+    announced.length = 0;
+    // In the page nothing awaits load(): it is called once and then rearmed
+    // from a timer, so anything that escapes it is an unhandled rejection with
+    // no one to see it. Recorded here rather than allowed to abort the run, so
+    // a test can assert both halves of the invariant separately -- that the
+    // shipped code lets nothing escape, and that the timer is armed even when
+    // something does.
+    let escaped = null;
+    try {
+      await load();
+    } catch (error) {
+      escaped = String((error && error.message) || error);
+    }
+    const armed = timers[timers.length - 1];
+    frames.push({
+      nodes: Object.fromEntries(Object.entries(NODES).map(([id, node]) => [id, node.innerHTML || node.textContent])),
+      announced: [...announced],
+      timeline: changeLog.map(entry => entry.sentence),
+      escaped,
+      delay: armed === undefined ? null : armed.ms,
+      armed: timers.length - armedBefore,
+      cleared: clearedCount - clearedBefore,
+      timers: timers.length,
+      pending: pollTimer === armed,
+      transport: {...transportState},
+      retained: lastStatusData !== null,
+      selected: selectedWorkKey
+    });
+  }
+  console.log(JSON.stringify(frames));
+})();
+"""
+
+
+# What a step supplies for a request whose response arrives and whose body is
+# not JSON. `None` is already "the request never arrived"; this is the other
+# transport-level failure, and the two reach `fetchJson` differently.
+UNPARSABLE_BODY = "__UNPARSABLE_BODY__"
+
+
+def _run_board_lifetime(
+    steps: list[dict[str, object]],
+    *,
+    now: datetime = OBSERVATION_NOW,
+    mutate: tuple[str, str] | Sequence[tuple[str, str]] | None = None,
+) -> list[dict[str, object]]:
+    """Replay a sequence of polls through the shipped ``load()`` loop.
+
+    Each step is one poll. ``status`` and ``events`` carry the payload that
+    request answers with, or ``None`` for a request that fails outright;
+    ``now_ms`` moves the page clock before the poll, so an observation can be
+    aged out between two of them; ``select`` chooses a work row by its opaque
+    identity first, the way an operator would before a refresh lands.
+
+    ``mutate`` replaces one exact fragment of the shipped page before it runs,
+    or several, so a test can execute the code this replaced and prove the
+    assertions it makes would actually catch its return. Each fragment must
+    appear exactly once, and each is applied to the page the one before it
+    produced, so a set of them can reconstruct a whole earlier shape.
+    """
+
+    page = _board_script()
+    if mutate:
+        edits = [mutate] if isinstance(mutate[0], str) else list(mutate)
+        for original, replacement in edits:
+            if page.count(original) != 1:  # pragma: no cover - guards the mutation
+                raise AssertionError(
+                    f"board page script no longer contains exactly one {original!r}"
+                )
+            page = page.replace(original, replacement)
+    # The marker first: the page script is substituted last so nothing in it
+    # can be expanded again.
+    script = (
+        BOARD_LIFETIME_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000)))
+        .replace("__UNPARSABLE_MARKER__", UNPARSABLE_BODY)
+        .replace("__SCRIPT__", page)
+    )
+    normalized = [
+        {
+            "status": step.get("status"),
+            "events": step.get("events", {"events": []}),
+            "status_error": step.get("status_error", "Failed to fetch"),
+            "events_error": step.get("events_error", "Failed to fetch"),
+            "now_ms": step.get("now_ms"),
+            "select": step.get("select"),
+        }
+        for step in steps
+    ]
+    return json.loads(_run_node(script, json.dumps(normalized)))
+
+
+def _observation_fixture(name: str) -> dict:
+    """Build one accepted B0 fixture record, unchanged."""
+
+    fixture = json.loads(OBSERVATION_FIXTURES.read_text(encoding="utf-8"))
+    case = next(item for item in fixture["valid"] if item["name"] == name)
+    record = copy.deepcopy(fixture["templates"][case["template"]])
+    for pointer, value in case["set"].items():
+        if pointer == "":
+            record = copy.deepcopy(value)
+            continue
+        parts = [part.replace("~1", "/").replace("~0", "~") for part in pointer.split("/")[1:]]
+        target: object = record
+        for part in parts[:-1]:
+            target = target[int(part)] if isinstance(target, list) else target[part]
+        if isinstance(target, list):
+            target[int(parts[-1])] = copy.deepcopy(value)
+        else:
+            target[parts[-1]] = copy.deepcopy(value)
+    # Every fixture the views are tested against is a record the frozen
+    # contract accepts, so no view is ever proved against a shape a producer
+    # could not emit.
+    return board_observation.validate(record)
+
+
+def _record_with_reasons(fixture: str, reference: str, reasons: list[str]) -> dict:
+    """One accepted record that carries several recorded states at once.
+
+    The reasons are canonicalized and the primary route is derived exactly as
+    the contract requires, so a record that is, say, both ready to merge and
+    waiting for approval is a record a producer could really emit rather than
+    a shape invented to make an ordering test pass.
+    """
+
+    record = copy.deepcopy(_observation_fixture(fixture))
+    ordered = board_observation.ordered_reasons(reasons)
+    record["work"]["id"] = reference
+    record["work"]["reference"] = reference
+    record["work"]["reasons"] = ordered
+    record["work"]["primary"] = board_observation.derive_primary(ordered)
+    for index, run in enumerate(record["work"]["runs"]):
+        run["id"] = f"run{index}-{reference}"
+        run["binding"]["work_id"] = reference
+    return board_observation.validate(record)
+
+
+def _referenced_record(reference: str) -> dict:
+    """One accepted record distinguishable from every other by its reference."""
+
+    fixture = _observation_fixture("observed_running")
+    return _record_with_reasons("observed_running", reference, fixture["work"]["reasons"])
+
+
+def _record_with_suspended_run(reference: str, *, reasons: list[str] | None = None) -> dict:
+    """One accepted record whose run the provider suspended rather than failed.
+
+    The contract allows the `suspended` lifecycle state only alongside the
+    `failed` phase, so this is the shape a producer must emit for a paused
+    session -- and the shape that reading the phase alone would misreport.
+    """
+
+    record = copy.deepcopy(_observation_fixture("failed"))
+    ordered = board_observation.ordered_reasons(reasons or [])
+    record["work"]["id"] = reference
+    record["work"]["reference"] = reference
+    record["work"]["reasons"] = ordered
+    record["work"]["primary"] = board_observation.derive_primary(ordered)
+    for index, run in enumerate(record["work"]["runs"]):
+        run["id"] = f"run{index}-{reference}"
+        run["binding"]["work_id"] = reference
+        run["lifecycle"] = {
+            **run["lifecycle"],
+            "state": "suspended",
+            "reason": "session_suspended",
+            "next_action": "inspect_provider",
+        }
+    return board_observation.validate(record)
+
+
+# One accepted fixture per run phase the frozen contract allows, so a record
+# carrying that phase is always built from a shape the contract has already
+# accepted rather than assembled by hand.
+PHASE_FIXTURES = {
+    "assigned": "assigned",
+    "dispatched": "dispatched",
+    "observed_running": "observed_running",
+    "provider_progress": "provider_reported_progress",
+    "waiting_for_user": "waiting_for_user",
+    "waiting_for_approval": "waiting_for_approval",
+    "implementation_complete": "implementation_complete",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
+
+# A reason and next action the remote-session projection accepts for each
+# lifecycle state, so every combination below is a record a producer could
+# really emit.
+LIFECYCLE_ROUTES = {
+    "pending": ("none", "none"),
+    "running": ("none", "status"),
+    "waiting_for_user": ("user_input_required", "none"),
+    "waiting_for_approval": ("approval_required", "none"),
+    "complete": ("none", "none"),
+    "failed": ("session_failed", "inspect_provider"),
+    "suspended": ("session_suspended", "inspect_provider"),
+    "terminated": ("none", "none"),
+    "archived": ("none", "none"),
+    "uncertain": ("reconcile_dispatch", "status"),
+}
+
+# Every lifecycle state the frozen B0 contract accepts, against every phase it
+# allows that state to carry, plus the no-lifecycle case for each phase. The
+# expected label, class and cue are the operator meaning of the pair: the one
+# state whose truthful meaning is not its phase is `suspended`, which the
+# contract requires to carry the `failed` phase.
+LIFECYCLE_DISPLAY_MATRIX = (
+    (None, "assigned", "assigned", "muted", "?"),
+    (None, "dispatched", "dispatched", "warn", "~"),
+    (None, "observed_running", "observed running", "warn", "~"),
+    (None, "provider_progress", "provider reported progress", "warn", "~"),
+    (None, "waiting_for_user", "waiting for an answer", "warn", "~"),
+    (None, "waiting_for_approval", "waiting for approval", "warn", "~"),
+    (None, "implementation_complete", "implementation complete", "ok", "+"),
+    (None, "failed", "failed", "bad", "!"),
+    (None, "cancelled", "cancelled", "warn", "~"),
+    ("pending", "dispatched", "dispatched", "warn", "~"),
+    ("running", "observed_running", "observed running", "warn", "~"),
+    ("running", "provider_progress", "provider reported progress", "warn", "~"),
+    ("waiting_for_user", "waiting_for_user", "waiting for an answer", "warn", "~"),
+    ("waiting_for_approval", "waiting_for_approval", "waiting for approval", "warn", "~"),
+    ("complete", "implementation_complete", "implementation complete", "ok", "+"),
+    ("failed", "failed", "failed", "bad", "!"),
+    ("suspended", "failed", "suspended", "warn", "~"),
+    ("terminated", "cancelled", "cancelled", "warn", "~"),
+    ("archived", "implementation_complete", "implementation complete", "ok", "+"),
+    ("archived", "cancelled", "cancelled", "warn", "~"),
+    ("uncertain", "dispatched", "dispatched", "warn", "~"),
+)
+
+
+def _record_with_run_lifecycle(reference: str, phase: str, state: str | None) -> dict:
+    """One accepted record whose single run carries ``phase`` under ``state``.
+
+    The record is built from the accepted fixture for that phase and only its
+    lifecycle is rewritten, so the contract's own phase/basis, liveness and
+    lifecycle rules still decide whether the result is a record at all. No
+    reason is recorded, so what the views say about the run is decided by the
+    run rather than by a recorded blocker.
+    """
+
+    record = copy.deepcopy(_observation_fixture(PHASE_FIXTURES[phase]))
+    record["work"]["id"] = reference
+    record["work"]["reference"] = reference
+    record["work"]["reasons"] = []
+    record["work"]["primary"] = board_observation.derive_primary([])
+    for index, run in enumerate(record["work"]["runs"]):
+        run["id"] = f"run{index}-{reference}"
+        run["binding"]["work_id"] = reference
+        if state is None:
+            run["lifecycle"] = None
+            continue
+        reason, next_action = LIFECYCLE_ROUTES[state]
+        counts = (run["lifecycle"] or {}).get(
+            "counts", {"dispatch": 0, "message": 0, "cancel": 0, "collect": 0}
+        )
+        run["lifecycle"] = {
+            "schema": "code_mower.remote_session.v1",
+            "state": state,
+            "reason": reason,
+            "next_action": next_action,
+            "counts": counts,
+        }
+    return board_observation.validate(record)
+
+
+# --- Session-scope reconciliation (#948) ------------------------------------
+
+# Two more session identities the frozen contract accepts, so a scope can be
+# moved without inventing a shape a producer could not record.
+FIXTURE_SESSION = "a4ce901ecfb743609ed0b6504668aca7"
+FIXTURE_WORKTREE = f"sha256:{'a' * 64}"
+OTHER_SESSION = "b" * 32
+OTHER_WORKTREE = f"sha256:{'c' * 64}"
+
+_OBSERVATION_INSTANT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def _shift_instants(value: object, seconds: int) -> object:
+    """Move every recorded instant in a decoded record by ``seconds``."""
+
+    if isinstance(value, dict):
+        return {key: _shift_instants(item, seconds) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_shift_instants(item, seconds) for item in value]
+    if isinstance(value, str) and _OBSERVATION_INSTANT.match(value):
+        moved = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC) + timedelta(
+            seconds=seconds
+        )
+        return moved.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return value
+
+
+def _observed_later(record: dict, seconds: int) -> dict:
+    """The same accepted record, recorded ``seconds`` later than it was.
+
+    Every instant moves together, so each ordering rule the frozen contract
+    enforces between them -- a source checked no later than the record, an
+    event no later than the observation that caught it -- still holds. The
+    result is re-validated rather than assumed, so a shifted record is still a
+    record a producer could really emit.
+    """
+
+    return board_observation.validate(_shift_instants(copy.deepcopy(record), seconds))
+
+
+def _in_session(record: dict, *, session: str, worktree: str) -> dict:
+    """The same accepted record, observed in a different session scope."""
+
+    moved = copy.deepcopy(record)
+    moved["scope"]["session_id"] = session
+    moved["scope"]["worktree_id"] = worktree
+    for run in ((moved.get("work") or {}).get("runs") or []):
+        run["binding"]["session_id"] = session
+        run["binding"]["worktree_id"] = worktree
+    return board_observation.validate(moved)
+
+
+def _named_work(work_id: str, *, fixture: str = "observed_running") -> dict:
+    """One accepted work observation carrying the given work identity."""
+
+    record = copy.deepcopy(_observation_fixture(fixture))
+    record["work"]["id"] = work_id
+    record["work"]["reference"] = work_id
+    for index, run in enumerate(record["work"]["runs"]):
+        run["id"] = f"run{index}{work_id}"
+        run["binding"]["work_id"] = work_id
+    return board_observation.validate(record)
+
+
+def _idle_key(session: str = FIXTURE_SESSION, worktree: str = FIXTURE_WORKTREE) -> str:
+    return f"idle:{session}:{worktree}"
+
+
+def _work_key(
+    work_id: str, session: str = FIXTURE_SESSION, worktree: str = FIXTURE_WORKTREE
+) -> str:
+    return f"work:{session}:{worktree}:{work_id}"
+
+
+def _observation_payload(records: list[dict], **overrides: object) -> dict:
+    payload: dict[str, object] = {
+        "generated_at": "2026-09-12T20:00:00Z",
+        "next_action": "inspect",
+        "board": {
+            "cache": {
+                "state": "fresh",
+                "ttl_seconds": 15,
+                "age_seconds": 1,
+                "generation": 2,
+                "refresh_in_progress": False,
+                "retry_in_seconds": None,
+            },
+            "version": {
+                "serving_version": "1.4.1",
+                "installed_version": "1.4.1",
+                "restart_recommended": False,
+            },
+        },
+        "remote": {
+            "available": True,
+            "pull_requests": [],
+            "workflow_runs": [],
+            "gate_health": {"alerts": []},
+        },
+        "observations": {
+            "available": True,
+            "path_exists": True,
+            "records": records,
+            "warnings": [],
+            "rejected": 0,
+            "message": "",
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+# A DOM shim in which focus is a real question. Elements exist because the
+# markup that was rendered declared an id; replacing a container's innerHTML
+# destroys everything that was inside it, so a focused control that the refresh
+# does not render again is genuinely gone and focus falls to the body exactly
+# as a browser would drop it. Only the ids the shipped page ships in its static
+# shell exist up front, so a lookup for a control that a render removed returns
+# nothing rather than conjuring a phantom element to focus.
+BOARD_FOCUS_HARNESS = """
+class FakeElement {
+  constructor(doc, id, attrs, parent) {
+    this.doc = doc;
+    this.id = id;
+    this.attrs = attrs || {};
+    this.parent = parent || null;
+    this.dataset = {};
+    this.classList = (this.attrs["class"] || "").split(/\\s+/).filter(Boolean);
+    for (const [name, value] of Object.entries(this.attrs)) {
+      if (!name.startsWith("data-")) continue;
+      this.dataset[name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = value;
+    }
+    this.hidden = false;
+    this.textContent = "";
+    this._html = "";
+    // A freshly created element starts at the top, exactly as a replacement
+    // node does in a browser: this is the reset the page has to undo. The
+    // assignment itself is deliberately dumb -- nothing here clamps it -- so a
+    // restored offset is only ever in range because the page put it in range.
+    this.scrollTop = 0;
+  }
+  // Content inside a hidden panel has no box at all, so every layout metric
+  // reads zero however tall the evidence is. That is the browser behaviour the
+  // page has to tell apart from a genuine reading position of zero, so the
+  // shim reproduces it rather than letting a test opt into it.
+  get scrollHeight() { return this.doc.laidOut(this) ? (this.doc.metrics[this.id] || {}).scrollHeight || 0 : 0; }
+  get clientHeight() { return this.doc.laidOut(this) ? (this.doc.metrics[this.id] || {}).clientHeight || 0 : 0; }
+  get innerHTML() { return this._html; }
+  set innerHTML(value) {
+    this.doc.replaceChildren(this, value);
+    this._html = value;
+  }
+  focus() { this.doc.activeElement = this; }
+  matches(selector) {
+    if (selector.startsWith(".")) return this.classList.includes(selector.slice(1));
+    const attribute = /^\\[([A-Za-z-]+)(?:=([^\\]]*))?\\]$/.exec(selector);
+    if (!attribute) return false;
+    const value = this.attrs[attribute[1]];
+    if (value === undefined) return false;
+    return attribute[2] === undefined || value === attribute[2];
+  }
+  closest(selector) {
+    for (let node = this; node; node = node.parent) if (node.matches(selector)) return node;
+    return null;
+  }
+  querySelectorAll(selector) {
+    return [...(this.doc.owned.get(this.id) || new Map()).values()]
+      .filter(node => node.matches(selector));
+  }
+}
+const document = {
+  activeElement: null,
+  body: null,
+  // Content geometry the shim cannot compute, declared per element id by the
+  // step that needs it, so a test can shrink the detail region between two
+  // refreshes the way changed evidence really would.
+  metrics: {},
+  roots: new Map(),
+  owned: new Map(),
+  index: new Map(),
+  // Which view panel each static container belongs to, read off the shipped
+  // markup rather than assumed here.
+  panelOf: __PANEL_OF__,
+  getElementById(id) {
+    if (this.index.has(id)) return this.index.get(id);
+    return this.roots.get(id) || null;
+  },
+  laidOut(node) {
+    for (let current = node; current; current = current.parent) {
+      if (current.hidden === true) return false;
+      const panel = this.panelOf[current.id];
+      if (panel && (this.roots.get(panel) || {}).hidden === true) return false;
+    }
+    return true;
+  },
+  replaceChildren(root, html) {
+    for (const [id, node] of this.owned.get(root.id) || new Map()) {
+      if (this.index.get(id) === node) this.index.delete(id);
+      if (this.activeElement === node) this.activeElement = this.body;
+    }
+    const created = new Map();
+    for (const tag of html.match(/<[a-zA-Z][^>]*>/g) || []) {
+      const attrs = {};
+      for (const [, name, value] of tag.matchAll(/([A-Za-z-]+)="([^"]*)"/g)) attrs[name] = value;
+      if (attrs.id === undefined) continue;
+      const node = new FakeElement(this, attrs.id, attrs, root);
+      created.set(attrs.id, node);
+      this.index.set(attrs.id, node);
+    }
+    this.owned.set(root.id, created);
+  }
+};
+document.body = new FakeElement(document, "", {});
+document.activeElement = document.body;
+for (const id of __SHELL_IDS__) document.roots.set(id, new FakeElement(document, id, {}));
+Date.now = () => __NOW_MS__;
+__SCRIPT__
+const element = (id) => {
+  const node = document.getElementById(id);
+  if (!node) throw new Error("no element: " + id);
+  return node;
+};
+const frames = [];
+for (const step of JSON.parse(process.argv[2])) {
+  if (step.metrics) Object.assign(document.metrics, step.metrics);
+  if (step.focus) element(step.focus).focus();
+  if (step.click) element(step.on || "worklist").onclick({target: element(step.click)});
+  if (step.key) {
+    element(step.on || "worklist").onkeydown({
+      key: step.key,
+      target: element(step.from),
+      preventDefault: () => {},
+    });
+  }
+  if (step.select) selectWork(step.select);
+  if (step.scroll) {
+    // A browser moves the element and then tells the page it moved. Both
+    // halves are modelled: a page that only ever reads the offset out of the
+    // element when it is about to be replaced has nothing to read once the
+    // panel is hidden.
+    const scrolled = element(step.scroll.id || "workdetail");
+    scrolled.scrollTop = step.scroll.top;
+    if (typeof scrolled.onscroll === "function") scrolled.onscroll();
+  }
+  if (step.payload) render(step.payload);
+  const detail = document.getElementById("workdetail");
+  frames.push({
+    active: document.activeElement === document.body ? "" : document.activeElement.id,
+    detail: detail === null ? null : {key: detail.attrs["data-key"] || "", top: detail.scrollTop},
+    // What the page remembers outside the DOM, so a test can see that a
+    // hidden poll left it alone and that an identity the Board stopped
+    // showing was dropped rather than kept for ever.
+    remembered: Object.fromEntries(detailOffsets),
+    worklist: document.getElementById("worklist").innerHTML,
+    tabs: document.getElementById("tabs").innerHTML,
+    hidden: Object.fromEntries(["now", "timeline", "releases", "health"]
+      .map(view => [view, element("panel-" + view).hidden])),
+  });
+}
+console.log(JSON.stringify(frames));
+"""
+
+
+def _board_shell_ids() -> list[str]:
+    """Every id the shipped page's static markup declares, script excluded."""
+
+    html = board.render_board_html(board.BoardConfig(repo="codemower-ai/code-mower"))
+    shell = html[: html.index("  <script>\n")]
+    return sorted(set(re.findall(r'id="([^"]+)"', shell)))
+
+
+def _board_panel_of() -> dict[str, str]:
+    """Which view panel each static container in the shipped shell sits inside."""
+
+    html = board.render_board_html(board.BoardConfig(repo="codemower-ai/code-mower"))
+    shell = html[: html.index("  <script>\n")]
+    panels: dict[str, str] = {}
+    sections = list(re.finditer(r'<section class="view" id="(panel-[a-z]+)"', shell))
+    for index, section in enumerate(sections):
+        end = sections[index + 1].start() if index + 1 < len(sections) else len(shell)
+        for found in re.findall(r'id="([^"]+)"', shell[section.start() : end]):
+            if found != section.group(1):
+                panels[found] = section.group(1)
+    return panels
+
+
+def _render_board_focus(
+    steps: list[dict[str, object]],
+    *,
+    now: datetime = OBSERVATION_NOW,
+) -> list[dict[str, str]]:
+    """Drive focus, selection and refresh through the shipped page in one lifetime."""
+
+    script = (
+        BOARD_FOCUS_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000)))
+        .replace("__SHELL_IDS__", json.dumps(_board_shell_ids()))
+        .replace("__PANEL_OF__", json.dumps(_board_panel_of()))
+        .replace("__SCRIPT__", _board_script())
+    )
+    return json.loads(_run_node(script, json.dumps(steps)))
+
+
+# Evaluate one expression against the whole shipped page script, so the id
+# encoding the rows, the detail region and the actions all share can be
+# exercised directly on keys the renderer would have to survive.
+BOARD_PAGE_HARNESS = """
+const NODES = {};
+const document = {getElementById: (id) => (NODES[id] = NODES[id] || {innerHTML: "", textContent: ""})};
+Date.now = () => __NOW_MS__;
+__SCRIPT__
+const ARGS = process.argv.slice(2).map(value => JSON.parse(value));
+console.log(JSON.stringify(__EXPRESSION__));
+"""
+
+
+def _eval_board_page(expression: str, *args: object) -> object:
+    """Evaluate one shipped page expression against JSON arguments."""
+
+    script = (
+        BOARD_PAGE_HARNESS.replace("__NOW_MS__", str(int(OBSERVATION_NOW.timestamp() * 1000)))
+        .replace("__SCRIPT__", _board_script())
+        .replace("__EXPRESSION__", expression)
+    )
+    return json.loads(_run_node(script, *(json.dumps(arg) for arg in args)))
+
+
+# The desktop width at which the work list gains its second column.
+DESKTOP_MEDIA = "@media (min-width: 900px)"
+
+# The rule this page shipped before the detail region was put into normal
+# flow. It is kept here as the regression the layout model has to catch: an
+# out-of-flow detail contributes no height, so a short list leaves it hanging
+# over whatever follows.
+PREVIOUS_DESKTOP_CSS = """
+.workrows { display:grid; gap:8px; }
+.workrow { border:1px solid var(--line); }
+.workdetail { border-top:1px solid var(--line); padding:12px; }
+@media (min-width: 900px) {
+  .worklayout { position:relative; padding-right:372px; min-height:180px; }
+  .workdetail { position:absolute; top:0; right:0; width:356px; max-height:70vh; overflow:auto; }
+}
+"""
+
+
+def _css_rules(css: str) -> list[tuple[str, str, dict[str, str]]]:
+    """Every ``(at-rule, selector, declarations)`` triple a stylesheet declares."""
+
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    rules: list[tuple[str, str, dict[str, str]]] = []
+    stack: list[str] = []
+    prelude = ""
+    index = 0
+    while index < len(css):
+        char = css[index]
+        if char == "{":
+            head, prelude = prelude.strip(), ""
+            if head.startswith("@"):
+                stack.append(" ".join(head.split()))
+                index += 1
+                continue
+            end = css.index("}", index)
+            declarations: dict[str, str] = {}
+            for item in css[index + 1 : end].split(";"):
+                name, separator, value = item.partition(":")
+                if separator:
+                    declarations[name.strip()] = value.strip()
+            for selector in head.split(","):
+                rules.append((" ".join(stack), " ".join(selector.split()), declarations))
+            index = end + 1
+            continue
+        if char == "}":
+            if stack:
+                stack.pop()
+            prelude = ""
+            index += 1
+            continue
+        prelude += char
+        index += 1
+    return rules
+
+
+def _board_css() -> str:
+    """The stylesheet the shipped page serves."""
+
+    html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+    return html[html.index("<style>") + len("<style>") : html.index("</style>")]
+
+
+def _matches(selector: str, node: dict, ancestors: list[dict]) -> bool:
+    """Match the descendant-and-class selectors this stylesheet is written in."""
+
+    compounds = selector.split()
+    subject, rest = compounds[-1], compounds[:-1]
+    if not _matches_compound(subject, node):
+        return False
+    remaining = list(ancestors)
+    for compound in reversed(rest):
+        while remaining and not _matches_compound(compound, remaining[-1]):
+            remaining.pop()
+        if not remaining:
+            return False
+        remaining.pop()
+    return True
+
+
+def _matches_compound(compound: str, node: dict) -> bool:
+    if compound.startswith("#"):
+        return node.get("id") == compound[1:]
+    classes = set(node.get("classes", ()))
+    parts = [part for part in compound.split(".") if part]
+    if not compound.startswith("."):
+        tag, parts = parts[0], parts[1:]
+        if tag != node.get("tag"):
+            return False
+    return all(part in classes for part in parts)
+
+
+def _computed(css: str, node: dict, ancestors: list[dict], *, desktop: bool) -> dict[str, str]:
+    """Cascade the stylesheet onto one node in source order."""
+
+    style: dict[str, str] = {}
+    for at_rule, selector, declarations in _css_rules(css):
+        if at_rule and not (desktop and at_rule == DESKTOP_MEDIA):
+            continue
+        if _matches(selector, node, ancestors):
+            style.update(declarations)
+    return style
+
+
+def _px(value: str, *, viewport: int) -> float:
+    if value.endswith("px"):
+        return float(value[:-2])
+    if value.endswith("vh"):
+        return float(value[:-2]) * viewport / 100
+    return 0.0
+
+
+def _track_count(value: str) -> int:
+    """Count the tracks a ``grid-template-columns`` value declares."""
+
+    tracks, depth, token = 0, 0, ""
+    for char in value:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char.isspace() and depth == 0:
+            tracks += 1 if token else 0
+            token = ""
+            continue
+        token += char
+    return tracks + (1 if token else 0)
+
+
+def _work_list_layout(
+    css: str,
+    *,
+    container_classes: tuple[str, ...] = (),
+    rows: int,
+    selected: int,
+    row_height: float,
+    detail_height: float,
+    viewport: int = 900,
+) -> dict[str, float]:
+    """Model the desktop height the work list reserves and where the detail ends.
+
+    A deliberately small box model: enough to tell an out-of-flow detail, which
+    reserves nothing, from a detail that is a real item of the row's grid and
+    therefore makes the row -- and so the list, and so the section -- at least
+    as tall as itself.
+    """
+
+    container = {"tag": "div", "id": "worklist", "classes": list(container_classes)}
+    list_node = {"tag": "ul", "classes": ["workrows"]}
+    row_nodes = [
+        {"tag": "li", "classes": ["workrow"] + (["selected"] if index == selected else [])}
+        for index in range(rows)
+    ]
+    detail_node = {"tag": "div", "classes": ["workdetail"]}
+    ancestors = [container, list_node, row_nodes[selected]]
+
+    container_style = _computed(css, container, [], desktop=True)
+    list_style = _computed(css, list_node, [container], desktop=True)
+    row_style = _computed(css, row_nodes[selected], [container, list_node], desktop=True)
+    detail_style = _computed(css, detail_node, ancestors, desktop=True)
+
+    height = detail_height
+    if "max-height" in detail_style:
+        height = min(height, _px(detail_style["max-height"], viewport=viewport))
+    gap = _px(list_style.get("gap", "0px"), viewport=viewport)
+
+    out_of_flow = detail_style.get("position") in {"absolute", "fixed"}
+    side_by_side = (
+        row_style.get("display") == "grid"
+        and _track_count(row_style.get("grid-template-columns", "")) > 1
+        and detail_style.get("grid-column") not in {None, "1"}
+    )
+    if out_of_flow:
+        row_heights = [row_height] * rows
+    elif side_by_side:
+        row_heights = [
+            max(row_height, height) if index == selected else row_height for index in range(rows)
+        ]
+    else:  # normal flow, single column: the detail sits under its own row
+        row_heights = [
+            row_height + height if index == selected else row_height for index in range(rows)
+        ]
+
+    reserved = sum(row_heights) + gap * max(rows - 1, 0)
+    reserved = max(reserved, _px(container_style.get("min-height", "0px"), viewport=viewport))
+    if out_of_flow:
+        # Positioned against the list box, so it starts at the list's own top.
+        detail_bottom = _px(detail_style.get("top", "0px"), viewport=viewport) + height
+    else:
+        above = sum(row_heights[:selected]) + gap * selected
+        detail_bottom = above + height
+    return {"reserved": reserved, "detail_bottom": detail_bottom}
+
+
+def _work_keys(worklist: str) -> list[str]:
+    return re.findall(r'class="rowbtn" id="[^"]+" data-key="([^"]+)"', worklist)
+
+
+def _row_element_id(worklist: str, key: str) -> str:
+    match = re.search(rf'class="rowbtn" id="([^"]+)" data-key="{re.escape(key)}"', worklist)
+    return match.group(1) if match else ""
+
+
+def _selected_key(worklist: str) -> str:
+    match = re.search(r'data-key="([^"]+)" aria-expanded="true"', worklist)
+    return match.group(1) if match else ""
+
+
+class _RecordingHandle:
+    """A file handle that records the size of every read it is asked for."""
+
+    def __init__(self, handle: object, reads: list[int]) -> None:
+        self._handle = handle
+        self._reads = reads
+
+    def __enter__(self) -> "_RecordingHandle":
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *exc: object) -> object:
+        return self._handle.__exit__(*exc)
+
+    def read(self, size: int = -1) -> bytes:
+        self._reads.append(size)
+        return self._handle.read(size)
+
+
+@contextmanager
+def _observation_opens(
+    directory: Path,
+    reads: list[int] | None = None,
+    *,
+    open_failures: frozenset[str] = frozenset(),
+    read_failures: frozenset[str] = frozenset(),
+):
+    """Watch -- and optionally break -- the descriptor opens one Board read makes.
+
+    The observation read does not go through ``Path.open``: an entry can change
+    kind between being classified and being opened, so it opens a descriptor
+    non-blocking and without following a link and then re-checks the kind on
+    that descriptor. This therefore patches ``os.open``, which is the syscall a
+    refusal has to come *before*, and ``os.fdopen``, which is where the read's
+    handle is built. Both are scoped -- only candidates directly inside
+    ``directory``, and only descriptors this call opened -- so nothing else the
+    interpreter is doing is wrapped.
+
+    Yields the candidate names the read opened, in order.
+    """
+
+    opened: list[str] = []
+    # One slot. The read opens a descriptor and wraps it immediately, so a slot
+    # that is never consumed belonged to a candidate that was refused on its
+    # descriptor and closed, and is simply replaced by the next open.
+    pending: list[tuple[int, str]] = []
+    real_open = os.open
+    real_fdopen = os.fdopen
+
+    def patched_open(path: object, *args: object, **kwargs: object) -> int:
+        try:
+            candidate = Path(os.fsdecode(path))  # type: ignore[arg-type]
+        except TypeError:  # pragma: no cover - a descriptor-relative open
+            return real_open(path, *args, **kwargs)
+        if candidate.parent != directory:
+            return real_open(path, *args, **kwargs)
+        # Recorded before the call, so a candidate that is refused without ever
+        # being opened shows up as an absence rather than as a silent success.
+        opened.append(candidate.name)
+        if candidate.name in open_failures:
+            raise OSError(13, "permission denied")
+        descriptor = real_open(path, *args, **kwargs)
+        pending[:] = [(descriptor, candidate.name)]
+        return descriptor
+
+    def patched_fdopen(descriptor: int, *args: object, **kwargs: object) -> object:
+        handle = real_fdopen(descriptor, *args, **kwargs)
+        if not pending or pending[0][0] != descriptor:
+            return handle
+        _descriptor, name = pending.pop()
+        if name in read_failures:
+            return _FailingReadHandle(handle, reads)
+        return _RecordingHandle(handle, reads) if reads is not None else handle
+
+    with patch.object(os, "open", patched_open), patch.object(os, "fdopen", patched_fdopen):
+        yield opened
+
+
+class BoardObservationReaderTests(TestCase):
+    """The Board consumes the frozen observation contract; it never writes one."""
+
+    def _write(self, directory: Path, name: str, record: object) -> None:
+        (directory / name).write_text(json.dumps(record), encoding="utf-8")
+
+    def test_missing_directory_is_nothing_recorded_not_no_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(Path(tmp) / "absent"))
+            )
+        self.assertTrue(payload["available"])
+        self.assertFalse(payload["path_exists"])
+        self.assertEqual(payload["records"], [])
+        self.assertEqual(payload["message"], "no local Board observations recorded yet")
+        self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+
+    def test_valid_records_are_returned_and_invalid_ones_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._write(directory, "a-work.json", _observation_fixture("observed_running"))
+            self._write(directory, "b-idle.json", _observation_fixture("no_work"))
+            # A record that fails the contract is dropped, not repaired.
+            broken = _observation_fixture("observed_running")
+            broken["work"]["reasons"] = ["review_requested", "approval_required"]
+            self._write(directory, "c-broken.json", broken)
+            (directory / "d-garbage.json").write_text("{not json", encoding="utf-8")
+            payload = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            )
+
+        self.assertEqual(len(payload["records"]), 2)
+        self.assertEqual([record["kind"] for record in payload["records"]], ["work", "no_work"])
+        self.assertEqual(payload["rejected"], 2)
+        messages = {warning["message"] for warning in payload["warnings"]}
+        # Contract diagnostics are a fixed vocabulary with no values or paths.
+        self.assertTrue(messages <= {"invalid_route", "invalid_contract"})
+        self.assertEqual(payload["record_schema"], board_observation.SCHEMA)
+
+    def test_reading_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            record = _observation_fixture("no_work")
+            for index in range(board.MAX_OBSERVATION_FILES + 5):
+                self._write(directory, f"obs-{index:03d}.json", record)
+            payload = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            )
+        self.assertEqual(len(payload["records"]), board.MAX_OBSERVATION_FILES)
+
+    def _fill(self, directory: Path, count: int, *, ages: bool = False) -> list[str]:
+        """Write ``count`` distinguishable accepted records, newest name last."""
+
+        names = []
+        for index in range(count):
+            name = f"obs-{index:03d}.json"
+            self._write(directory, name, _referenced_record(f"work-{index:03d}"))
+            if ages:
+                # Modification time rises with the name, so the alphabetically
+                # first files are the oldest ones -- exactly the arrangement in
+                # which an alphabetical cap would keep the stalest records and
+                # drop every current one.
+                stamp = 1_600_000_000 + index
+                os.utime(directory / name, (stamp, stamp))
+            names.append(name)
+        return names
+
+    def _references(self, payload: dict) -> list[str]:
+        return [record["work"]["reference"] for record in payload["records"]]
+
+    def test_file_coverage_is_reported_at_every_cap_boundary(self) -> None:
+        """Exactly at the cap is complete; one file past it is not.
+
+        A directory larger than the cap is still read bounded, but the shortfall
+        is counted and stated rather than disappearing into a snapshot that
+        looks whole.
+        """
+
+        cap = board.MAX_OBSERVATION_FILES
+        for count in (0, cap - 1, cap, cap + 1, cap + 9):
+            with self.subTest(files=count), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                self._fill(directory, count)
+                payload = board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+                read = min(count, cap)
+                self.assertTrue(payload["available"])
+                self.assertEqual(payload["file_cap"], cap)
+                self.assertEqual(payload["candidate_files"], count)
+                self.assertEqual(payload["read_files"], read)
+                self.assertEqual(payload["omitted_files"], count - read)
+                self.assertEqual(len(payload["records"]), read)
+                self.assertEqual(payload["rejected"], 0)
+                self.assertEqual(payload["truncated"], count > cap)
+                self.assertEqual(payload["coverage"], "partial" if count > cap else "complete")
+                self.assertEqual(payload["selection"], board.OBSERVATION_SELECTION)
+                if count > cap:
+                    self.assertIn(f"{read} of {count}", payload["message"])
+                    self.assertIn("incomplete", payload["message"])
+                elif count:
+                    # A directory inside the cap reads exactly as it did
+                    # before: every record, in file-name order, no message.
+                    self.assertEqual(payload["message"], "")
+                    self.assertEqual(
+                        self._references(payload), [f"work-{index:03d}" for index in range(count)]
+                    )
+
+    def test_an_overflowing_directory_stays_bounded_in_files_and_in_bytes(self) -> None:
+        cap = board_observation.MAX_BYTES
+        board_observation.schema()
+        reads: list[int] = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._fill(directory, board.MAX_OBSERVATION_FILES * 3 + 4)
+
+            with _observation_opens(directory, reads):
+                payload = board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+
+        # Counting the whole candidate set never widens the read: at most the
+        # cap many files are opened, each with one bounded request.
+        self.assertEqual(reads, [cap + 1] * board.MAX_OBSERVATION_FILES)
+        self.assertEqual(payload["candidate_files"], board.MAX_OBSERVATION_FILES * 3 + 4)
+        self.assertEqual(payload["read_files"], board.MAX_OBSERVATION_FILES)
+        self.assertTrue(payload["truncated"])
+
+    def test_selection_is_deterministic_under_reversed_directory_iteration(self) -> None:
+        """Directory order is not an input to which files are read."""
+
+        real_scandir = os.scandir
+
+        class _ReversedScan:
+            def __init__(self, entries: list[object]) -> None:
+                self._entries = entries
+
+            def __enter__(self) -> object:
+                return iter(self._entries)
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._fill(directory, board.MAX_OBSERVATION_FILES + 7, ages=True)
+            config = board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            forward = board.observations_payload(config)
+
+            def reversed_scandir(path: object) -> object:
+                with real_scandir(path) as entries:
+                    return _ReversedScan(list(entries)[::-1])
+
+            with patch.object(board.os, "scandir", reversed_scandir):
+                backward = board.observations_payload(config)
+
+        self.assertEqual(self._references(forward), self._references(backward))
+        self.assertEqual(forward["candidate_files"], backward["candidate_files"])
+        self.assertEqual(forward["omitted_files"], backward["omitted_files"])
+
+    def test_the_bounded_set_does_not_systematically_starve_current_records(self) -> None:
+        """The cap keeps the most recently written files, not the first names.
+
+        File times are not part of the frozen record contract, so this is a
+        best-effort preference rather than evidence -- which is why the read is
+        reported as incomplete either way.
+        """
+
+        cap = board.MAX_OBSERVATION_FILES
+        extra = 8
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._fill(directory, cap + extra, ages=True)
+            payload = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            )
+
+        self.assertEqual(
+            self._references(payload),
+            [f"work-{index:03d}" for index in range(extra, cap + extra)],
+        )
+        # Alphabetically first is exactly what is dropped here, so the newest
+        # records survive the cap instead of being starved by it.
+        self.assertNotIn("work-000", self._references(payload))
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["omitted_files"], extra)
+
+    def test_truncation_metadata_names_no_file_and_no_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for index in range(board.MAX_OBSERVATION_FILES + 3):
+                self._write(
+                    directory,
+                    f"private-session-{index:03d}.json",
+                    _referenced_record(f"work-{index:03d}"),
+                )
+            payload = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            )
+
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["warnings"], [])
+        encoded = json.dumps(payload)
+        self.assertNotIn("private-session", encoded)
+        self.assertNotIn(str(directory), encoded)
+        self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+        # Truncation is counted metadata; the contract's record diagnostics stay
+        # their own closed vocabulary and say nothing about unread files.
+        self.assertNotIn("truncat", json.dumps(payload["warnings"]))
+
+    def test_an_unlistable_directory_reports_unavailable_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            with patch.object(board.os, "scandir", side_effect=OSError("denied")):
+                payload = board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["coverage"], "unavailable")
+        self.assertFalse(payload["truncated"])
+        # Nothing was counted, so no total is invented for it.
+        self.assertIsNone(payload["candidate_files"])
+        self.assertIsNone(payload["omitted_files"])
+        self.assertEqual(payload["read_files"], 0)
+
+    def test_an_oversize_file_is_read_bounded_and_rejected_before_it_is_decoded(self) -> None:
+        cap = board_observation.MAX_BYTES
+        # Warm the contract's own schema read so it cannot be mistaken for one
+        # of the observation reads being measured here.
+        board_observation.schema()
+        reads: list[int] = []
+        decoded: list[int] = []
+        real_decode = board_observation.decode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._write(directory, "a-small.json", _observation_fixture("no_work"))
+            # Far past the contract's cap, so there is a real remainder that
+            # must never be pulled into memory.
+            (directory / "b-huge.json").write_bytes(b'{"padding":"' + b"x" * (cap * 4) + b'"}')
+
+            def recording_decode(raw: bytes) -> object:
+                decoded.append(len(raw))
+                return real_decode(raw)
+
+            with _observation_opens(directory, reads), patch.object(
+                board.board_observation, "decode", recording_decode
+            ):
+                payload = board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+
+        # Every observation file is read with the same bounded request: one
+        # byte past the cap, which is all it takes to know the file is too big.
+        self.assertEqual(reads, [cap + 1, cap + 1])
+        # Only the record inside the cap ever reached the decoder, and it was
+        # never handed more bytes than the contract allows.
+        self.assertEqual(len(decoded), 1)
+        self.assertLessEqual(decoded[0], cap)
+
+        self.assertEqual(len(payload["records"]), 1)
+        self.assertEqual(payload["records"][0]["kind"], "no_work")
+        self.assertEqual(payload["rejected"], 1)
+        self.assertEqual(
+            payload["warnings"], [{"file": "b-huge.json", "message": "invalid_contract"}]
+        )
+        # The diagnostic carries no path and no content from the file.
+        self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertNotIn("x" * 32, json.dumps(payload))
+        self.assertNotIn(str(directory), json.dumps(payload))
+
+    def test_observations_are_not_written_into_local_history(self) -> None:
+        snapshot = {"schema": "code_mower.laneStatus.v1", "observations": {"records": [1]}}
+        self.assertNotIn("observations", board._recordable_payload(snapshot))
+        self.assertIn("observations", snapshot)
+
+    def test_resolved_metadata_paths_bind_the_observation_directory(self) -> None:
+        paths = board.resolved_metadata_paths(board.BoardConfig(repo="owner/repo", repo_path="/repo"))
+        self.assertTrue(paths["observations_path"].endswith("/.code-mower/board/observations"))
+class BoardObservationPathBoundaryTests(TestCase):
+    """Every look at the observation directory, and what each failure costs.
+
+    This directory is read while one whole Board snapshot is being assembled,
+    so a filesystem call that raises here does not cost observations -- it costs
+    the refresh, and with it the repository, PR and lane data that has nothing
+    to do with observations. The rule these hold every boundary to is the same
+    one: answer from the closed path-state vocabulary, degrade observations
+    alone, and name neither the path nor the errno while doing it.
+    """
+
+    UNREADABLE_STATE = {
+        "path_state": "unreadable",
+        "path_exists": None,
+        "available": False,
+        "coverage": "unavailable",
+        "coverage_complete": False,
+        "coverage_gaps": ["directory_unreadable"],
+        "candidate_files": None,
+        "omitted_files": None,
+        "unaccounted_files": None,
+        "read_files": 0,
+        "message": "could not read local Board observations",
+    }
+
+    def _payload(self, path: Path) -> dict:
+        return board.observations_payload(
+            board.BoardConfig(repo="owner/repo", observations_path=str(path))
+        )
+
+    def _assert_state(self, payload: dict, expected: dict) -> None:
+        self.assertEqual({key: payload[key] for key in expected}, expected)
+
+    @contextmanager
+    def _counted_stat(self, target: Path, *, raises: BaseException | None = None):
+        """Count metadata calls against one path, optionally failing them."""
+
+        calls: list[str] = []
+        real_stat = os.stat
+
+        def fake_stat(candidate, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if os.fspath(candidate) == str(target):
+                calls.append(os.fspath(candidate))
+                if raises is not None:
+                    raise raises
+            return real_stat(candidate, *args, **kwargs)
+
+        with patch.object(board.os, "stat", fake_stat):
+            yield calls
+
+    @contextmanager
+    def _counted(self, name: str):
+        """Count calls to one ``os`` entry point without changing what it does."""
+
+        calls: list[object] = []
+        real = getattr(board.os, name)
+
+        def counting(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(path)
+            return real(path, *args, **kwargs)
+
+        with patch.object(board.os, name, counting):
+            yield calls
+
+    def test_every_path_state_is_decided_by_one_metadata_call(self) -> None:
+        """The real filesystem states, their payload, and the syscall budget.
+
+        One ``stat`` answers "does it exist" and "is it a directory" together,
+        so there is no window between the two for the entry to change kind in,
+        and a refresh cannot be made to pay for repeated lookups. A symlink to
+        the directory is the directory, exactly as ``Path.exists()`` resolved
+        it before; only the entries *inside* are never followed.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "real").mkdir()
+            (root / "plain.json").write_text("{}", encoding="utf-8")
+            (root / "link").symlink_to(root / "real", target_is_directory=True)
+            cases = [
+                ("directory", root / "real", "directory", True, True),
+                ("symlink to a directory", root / "link", "directory", True, True),
+                ("missing name", root / "absent", "missing", False, True),
+                ("regular file", root / "plain.json", "not_directory", True, False),
+                # An ancestor that is a file makes the name unresolvable
+                # (ENOTDIR), which is a statement about the name and not about
+                # access to it -- the same answer `Path.exists()` gave.
+                ("ancestor is a file", root / "plain.json" / "obs", "missing", False, True),
+            ]
+            for label, path, state, exists, available in cases:
+                with self.subTest(case=label):
+                    with self._counted_stat(path) as calls:
+                        payload = self._payload(path)
+                    self._assert_state(
+                        payload,
+                        {"path_state": state, "path_exists": exists, "available": available},
+                    )
+                    self.assertEqual(len(calls), 1)
+                    self.assertIn(payload["path_state"], board.OBSERVATION_PATH_STATES)
+
+    def test_a_failing_metadata_call_degrades_observations_instead_of_raising(self) -> None:
+        """Every way the preflight stat can fail, and which fact it becomes.
+
+        The split is deliberate and conservative: the errnos that mean the name
+        did not resolve are exactly the ones ``Path.exists()`` already answered
+        "no" for, so they still read as ``missing``; everything else -- every
+        errno that used to escape as an exception and abort the refresh -- is
+        ``unreadable``, because the Board could not look and "not there" is a
+        claim it cannot support.
+        """
+
+        missing_state = {
+            "path_state": "missing",
+            "path_exists": False,
+            "available": True,
+            "coverage": "complete",
+            "coverage_complete": True,
+            "records": [],
+            "warnings": [],
+            "message": "no local Board observations recorded yet",
+        }
+        cases = [
+            ("permission denied", PermissionError(errno.EACCES, "Permission denied"), "unreadable"),
+            ("io error", OSError(errno.EIO, "Input/output error"), "unreadable"),
+            ("name too long", OSError(errno.ENAMETOOLONG, "File name too long"), "unreadable"),
+            ("stale handle", OSError(getattr(errno, "ESTALE", errno.EIO), "Stale file handle"), "unreadable"),
+            ("timed out", TimeoutError(errno.ETIMEDOUT, "Operation timed out"), "unreadable"),
+            ("errno-less OSError", OSError("filesystem said no"), "unreadable"),
+            ("not found", FileNotFoundError(errno.ENOENT, "No such file"), "missing"),
+            ("ancestor not a directory", NotADirectoryError(errno.ENOTDIR, "Not a directory"), "missing"),
+            ("symlink loop", OSError(errno.ELOOP, "Too many levels of symbolic links"), "missing"),
+            ("bad descriptor", OSError(errno.EBADF, "Bad file descriptor"), "missing"),
+            ("unencodable path", ValueError("embedded null byte"), "missing"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "obs.json").write_text(
+                json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+            )
+            for label, failure, state in cases:
+                with self.subTest(case=label):
+                    with self._counted_stat(directory, raises=failure) as calls:
+                        # No exception escapes: the call returns a payload.
+                        payload = self._payload(directory)
+                    self.assertEqual(len(calls), 1)
+                    if state == "missing":
+                        self._assert_state(payload, missing_state)
+                    else:
+                        self._assert_state(payload, self.UNREADABLE_STATE)
+                        self.assertEqual(
+                            payload["warnings"],
+                            [{"file": "", "message": "could not check the local Board observation path"}],
+                        )
+                        # Distinguishable from the directory that is there but
+                        # is the wrong kind, and from one that could not be
+                        # listed: three facts, three diagnostics.
+                        self.assertNotIn("not a directory", json.dumps(payload["warnings"]))
+                        self.assertNotIn("could not list", json.dumps(payload["warnings"]))
+
+    def test_an_unreadable_path_is_never_enumerated_or_opened(self) -> None:
+        """A path that could not be examined is not then read anyway."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "obs.json").write_text(
+                json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+            )
+            with self._counted("scandir") as scans, self._counted("open") as opens:
+                with self._counted_stat(directory, raises=PermissionError(errno.EACCES, "denied")):
+                    payload = self._payload(directory)
+
+        self._assert_state(payload, self.UNREADABLE_STATE)
+        self.assertEqual(scans, [])
+        self.assertEqual(opens, [])
+
+    def test_an_inaccessible_ancestor_degrades_instead_of_aborting(self) -> None:
+        """The reported case, on a real filesystem rather than a patched one."""
+
+        if os.geteuid() == 0:  # pragma: no cover - root ignores the mode bits
+            raise SkipTest("root can search a directory with no permissions")
+        with tempfile.TemporaryDirectory() as tmp:
+            ancestor = Path(tmp) / "locked"
+            observations = ancestor / "observations"
+            observations.mkdir(parents=True)
+            (observations / "obs.json").write_text(
+                json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+            )
+            os.chmod(ancestor, 0o000)
+            try:
+                try:
+                    os.stat(observations)
+                except PermissionError:
+                    pass
+                else:  # pragma: no cover - some filesystems ignore the mode
+                    raise SkipTest("this filesystem does not enforce directory search permission")
+                payload = self._payload(observations)
+            finally:
+                os.chmod(ancestor, 0o700)
+
+        self._assert_state(payload, self.UNREADABLE_STATE)
+        self.assertEqual(payload["records"], [])
+        self.assertEqual(
+            payload["warnings"],
+            [{"file": "", "message": "could not check the local Board observation path"}],
+        )
+
+    def test_the_whole_snapshot_still_refreshes_when_observations_cannot_be_read(self) -> None:
+        """Observations degrade; repository, PR and lane data do not.
+
+        This is the cost the finding was about. ``observations_payload`` is one
+        step of ``status_payload``, so an exception raised at this boundary does
+        not produce an unavailable observations block -- it produces no snapshot
+        at all, and the Board serves whatever it had before.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            observations = Path(tmp) / ".code-mower" / "board" / "observations"
+            observations.mkdir(parents=True)
+            with self._counted_stat(observations, raises=PermissionError(errno.EACCES, "denied")):
+                payload = board.status_payload(
+                    board.BoardConfig(repo="owner/repo", repo_path=tmp),
+                    gh_json_runner=_gh_json,
+                    command_runner=_command_runner,
+                )
+
+        self._assert_state(payload["observations"], self.UNREADABLE_STATE)
+        # Everything the refresh would have lost is present and unaffected.
+        self.assertEqual(payload["schema"], lane_status.LANE_STATUS_SCHEMA)
+        self.assertEqual(payload["board"]["schema"], "code_mower.board.v1")
+        self.assertTrue(payload["remote"]["available"])
+        self.assertEqual(len(payload["remote"]["pull_requests"]), 1)
+        self.assertEqual(payload["repo"], "owner/repo")
+        self.assertEqual(payload["productivity"]["current"]["open_pr_count"], 1)
+        self.assertEqual(payload["local_processes"]["processes"][0]["provider"], "codex")
+        for block in ("agent_adapters", "release_campaigns", "owner_queue", "supervised_pilot"):
+            self.assertIn(block, payload)
+
+    def test_a_directory_lost_between_classification_and_enumeration_is_a_gap(self) -> None:
+        """The second look is the one that binds, and losing it is not absence.
+
+        Classification is not a promise about what the enumeration will find.
+        A directory removed, replaced by a file, or made unreadable after it was
+        classified costs the read its candidate set -- which is reported as an
+        unavailable coverage gap, never as "nothing recorded", because the
+        Board cannot know what the entries it never listed would have said.
+        """
+
+        cases = [
+            ("removed", FileNotFoundError(errno.ENOENT, "No such file or directory")),
+            ("swapped for a file", NotADirectoryError(errno.ENOTDIR, "Not a directory")),
+            ("permission revoked", PermissionError(errno.EACCES, "Permission denied")),
+            ("io error", OSError(errno.EIO, "Input/output error")),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "obs.json").write_text(
+                json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+            )
+            for label, failure in cases:
+                with self.subTest(case=label):
+                    with patch.object(board.os, "scandir", side_effect=failure):
+                        payload = self._payload(directory)
+                    self._assert_state(
+                        payload,
+                        {
+                            # What the Board saw is what it reports: the path
+                            # was a directory when it looked.
+                            "path_state": "directory",
+                            "path_exists": True,
+                            "available": False,
+                            "coverage": "unavailable",
+                            "coverage_gaps": ["directory_unreadable"],
+                            "candidate_files": None,
+                            "records": [],
+                        },
+                    )
+                    self.assertEqual(
+                        payload["warnings"],
+                        [{"file": "", "message": "could not list local Board observations"}],
+                    )
+
+    def test_an_entry_whose_metadata_fails_stays_a_candidate_and_is_never_opened(self) -> None:
+        """The per-entry ``lstat`` is guarded on the same terms as the directory.
+
+        An entry the Board cannot classify is not evidence of anything: it stays
+        counted, loses the recency preference, and is never opened -- because
+        "not known to be a regular file" is the state in which an open can block
+        instead of failing.
+        """
+
+        class _Entry:
+            def __init__(self, name: str, failure: BaseException) -> None:
+                self.name = name
+                self._failure = failure
+
+            def stat(self, *, follow_symlinks: bool = True):  # type: ignore[no-untyped-def]
+                raise self._failure
+
+        @contextmanager
+        def _scandir_of(entries: list[_Entry]):
+            class _Scan:
+                def __enter__(self_inner):  # type: ignore[no-untyped-def]
+                    return iter(entries)
+
+                def __exit__(self_inner, *_exc):  # type: ignore[no-untyped-def]
+                    return False
+
+            with patch.object(board.os, "scandir", lambda _path: _Scan()):
+                yield
+
+        cases = [
+            ("permission denied", PermissionError(errno.EACCES, "Permission denied")),
+            ("io error", OSError(errno.EIO, "Input/output error")),
+            ("vanished", FileNotFoundError(errno.ENOENT, "No such file or directory")),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for label, failure in cases:
+                with self.subTest(case=label):
+                    with _scandir_of([_Entry("obs.json", failure)]), self._counted(
+                        "open"
+                    ) as opens:
+                        payload = self._payload(directory)
+
+                    self._assert_state(
+                        payload,
+                        {
+                            "path_state": "directory",
+                            "available": True,
+                            "candidate_files": 1,
+                            "selected_files": 1,
+                            "attempted_files": 1,
+                            "read_files": 0,
+                            "unreadable_files": 1,
+                            "unaccounted_files": 1,
+                            "accepted_records": 0,
+                            "coverage": "partial",
+                            "coverage_complete": False,
+                            "coverage_gaps": ["files_unreadable"],
+                        },
+                    )
+                    self.assertEqual(
+                        payload["warnings"], [{"file": "obs.json", "message": "unreadable_file"}]
+                    )
+                    self.assertEqual(opens, [])
+
+    def test_no_preflight_metadata_check_may_escape_the_guard(self) -> None:
+        """The mutation check: moving either check back outside fails here.
+
+        ``Path.exists()`` and ``Path.is_dir()`` are precisely the two calls the
+        finding was about -- they read as booleans and raise on an inaccessible
+        ancestor. Neither may be reachable from this read again, so both are
+        made fatal for the duration and every path state is exercised through
+        them.
+        """
+
+        def forbidden(*_args: object, **_kwargs: object) -> bool:
+            raise AssertionError("observation path metadata must go through the guarded classifier")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory = root / "observations"
+            directory.mkdir()
+            (directory / "obs.json").write_text(
+                json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+            )
+            (root / "plain.json").write_text("{}", encoding="utf-8")
+            with patch.object(Path, "exists", forbidden), patch.object(Path, "is_dir", forbidden):
+                read = self._payload(directory)
+                missing = self._payload(root / "absent")
+                not_directory = self._payload(root / "plain.json")
+
+        self.assertEqual(len(read["records"]), 1)
+        self._assert_state(read, {"path_state": "directory", "path_exists": True, "available": True})
+        self._assert_state(missing, {"path_state": "missing", "path_exists": False, "available": True})
+        self._assert_state(
+            not_directory, {"path_state": "not_directory", "path_exists": True, "available": False}
+        )
+
+    def test_unavailable_path_diagnostics_carry_no_path_errno_or_os_message(self) -> None:
+        """A failure describes the read, never the filesystem it failed on."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "private-observations-dir"
+            directory.mkdir()
+            failure = PermissionError(
+                errno.EACCES, f"Permission denied while searching {directory}"
+            )
+            with self._counted_stat(directory, raises=failure):
+                payload = self._payload(directory)
+
+        serialized = json.dumps(payload)
+        self.assertNotIn(str(directory), serialized)
+        self.assertNotIn("private-observations-dir", serialized)
+        self.assertNotIn(tmp, serialized)
+        self.assertNotIn("EACCES", serialized)
+        self.assertNotIn("Permission denied", serialized)
+        self.assertNotIn(str(errno.EACCES), serialized)
+        self.assertNotIn("PermissionError", serialized)
+        self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertTrue(payload["path_redacted"])
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardWorkFirstViewTests(TestCase):
+    """The Now, Timeline, Releases and Health views over B0 fixtures."""
+
+    def test_views_are_semantic_tabs_with_visible_focus_and_expanded_state(self) -> None:
+        html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+        for view in ("now", "timeline", "releases", "health"):
+            self.assertIn(f'id="panel-{view}" role="tabpanel" aria-labelledby="tab-{view}"', html)
+        self.assertIn('role="tablist"', html)
+        self.assertIn(":focus-visible { outline:", html)
+
+        nodes = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("observed_running")])}]
+        )[0]
+        tabs = nodes["tabs"]
+        self.assertEqual(tabs.count('role="tab"'), 4)
+        self.assertEqual(tabs.count('aria-selected="true"'), 1)
+        self.assertIn('id="tab-now" data-view="now" aria-selected="true"', tabs)
+        # Roving tabindex: exactly one tab is in the tab order.
+        self.assertEqual(tabs.count('tabindex="0"'), 1)
+        self.assertEqual(tabs.count('tabindex="-1"'), 3)
+        # One row is expanded and it is the one carrying the detail region.
+        self.assertEqual(nodes["worklist"].count('aria-expanded="true"'), 1)
+        self.assertIn('aria-controls="workdetail"', nodes["worklist"])
+        # The detail region is labelled by the row it belongs to, and the row's
+        # element id is derived from its opaque identity rather than its index.
+        row_id = re.search(r'class="rowbtn" id="([^"]+)"', nodes["worklist"]).group(1)
+        detail_key = re.search(r'id="workdetail" data-key="([^"]+)"', nodes["worklist"]).group(1)
+        self.assertIn(
+            f'id="workdetail" data-key="{detail_key}" role="region" aria-labelledby="{row_id}"',
+            nodes["worklist"],
+        )
+        # The identity the detail is rendered for is the selected row's own
+        # opaque key, which is what a refresh matches a preserved scroll
+        # offset against.
+        self.assertEqual(
+            detail_key,
+            re.search(r'class="rowbtn" id="[^"]+" data-key="([^"]+)"', nodes["worklist"]).group(1),
+        )
+        self.assertIn("runningwork", row_id)
+
+    def test_keyboard_movement_rules_wrap_for_tabs_and_clamp_for_rows(self) -> None:
+        moves = _eval_board_view(
+            "["
+            "nextTabIndex('ArrowRight', 3, 4), nextTabIndex('ArrowLeft', 0, 4),"
+            "nextTabIndex('Home', 2, 4), nextTabIndex('End', 0, 4), nextTabIndex('a', 0, 4),"
+            "nextRowIndex('ArrowDown', 2, 3), nextRowIndex('ArrowUp', 0, 3),"
+            "nextRowIndex('Home', 2, 3), nextRowIndex('End', 0, 3), nextRowIndex('ArrowLeft', 0, 3),"
+            "nextRowIndex('ArrowDown', 0, 0)"
+            "]"
+        )
+        self.assertEqual(moves, [0, 3, 0, 3, -1, 2, 0, 0, 2, -1, -1])
+
+    def test_row_order_is_urgency_and_never_headline_precedence(self) -> None:
+        # Headline precedence is untouched: "merged" is still the truth that
+        # describes a merged item best, and it still wins that contest outright.
+        rules = _eval_board_view("STATE_RULES.map(rule => [rule.label, rule.rank])")
+        self.assertEqual(rules[0], ["merged", 0])
+
+        # Row order is a separate, explicit ranking. Every state the views
+        # can produce is ranked in it -- the recorded states, plus the two the
+        # idle and unlinked rows synthesise -- so no state orders by accident.
+        ranked = _eval_board_view("[...ROW_URGENCY_ORDER, ...TERMINAL_ROW_HEADLINES]")
+        for label in [rule[0] for rule in rules] + [
+            "state not recorded",
+            "idle with complete coverage",
+        ]:
+            self.assertIn(label, ranked)
+        self.assertEqual(len(ranked), len(set(ranked)))
+
+        # Terminal placement is explicit, not a consequence of falling off the
+        # end: every named non-terminal state ranks below an unranked one,
+        # which ranks below every terminal state, and no two share a rank.
+        ranks = _eval_board_view(
+            "[...ROW_URGENCY_ORDER, 'a state nobody ranked', ...TERMINAL_ROW_HEADLINES]"
+            ".map(label => stateUrgency(label))"
+        )
+        self.assertEqual(ranks, sorted(ranks))
+        self.assertEqual(len(set(ranks)), len(ranks))
+        # And the two rankings genuinely disagree about merged work.
+        self.assertGreater(
+            _eval_board_view("stateUrgency('merged')"),
+            _eval_board_view("stateUrgency('CI pending')"),
+        )
+
+    def test_finished_work_never_outranks_actionable_or_blocked_work(self) -> None:
+        records = [
+            _observation_fixture("merged"),
+            _observation_fixture("waiting_for_approval"),
+            _observation_fixture("failed"),
+            # The idle row belongs to a different session. A session-level
+            # "nothing to do" snapshot is only ever truthful about a session
+            # that has no work, and reconciliation drops one that sits beside
+            # work in its own scope, so the terminal band is exercised here
+            # with a board a producer could really record.
+            _in_session(
+                _observation_fixture("no_work"),
+                session=OTHER_SESSION,
+                worktree=OTHER_WORKTREE,
+            ),
+        ]
+        payload = _observation_payload(records)
+        worklist = _render_board_sequence([{"payload": payload}])[0]["worklist"]
+        headlines = re.findall(
+            r'aria-hidden="true">[^<]*</span> ([^<]+)</span><span class="pill">stage', worklist
+        )
+        # Blocked work first, then work waiting on a person, and the two
+        # terminal rows last in their declared order.
+        self.assertEqual(
+            headlines,
+            [
+                "provider run failed",
+                "waiting for approval",
+                "merged",
+                "idle with complete coverage",
+            ],
+        )
+
+        keys = _work_keys(worklist)
+        # An operator who has chosen nothing is shown blocked work, never the
+        # merged item that used to win on headline precedence.
+        self.assertEqual(_selected_key(worklist), keys[0])
+        self.assertTrue(keys[0].endswith("failedwork"))
+
+        # The order is a property of what the rows record, not of the order the
+        # observation directory happened to list them in.
+        reversed_payload = _observation_payload(list(reversed(records)))
+        self.assertEqual(
+            _render_board_sequence([{"payload": reversed_payload}])[0]["worklist"], worklist
+        )
+
+        # With only merged work on the board, the merged row is still selected:
+        # terminal placement orders rows, it never hides them.
+        merged_only = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("merged")])}]
+        )[0]["worklist"]
+        self.assertTrue(_selected_key(merged_only).endswith("mergedwork"))
+
+        # Two rows that share a headline still order deterministically on the
+        # reference and then the opaque identity.
+        first = _observation_fixture("waiting_for_approval")
+        second = copy.deepcopy(first)
+        second["work"]["id"] = "approvaltwo"
+        second["work"]["reference"] = "issue-947"
+        for run in second["work"]["runs"]:
+            run["binding"]["work_id"] = "approvaltwo"
+        second = board_observation.validate(second)
+        tied = _render_board_sequence([{"payload": _observation_payload([second, first])}])[0]
+        self.assertEqual(
+            re.findall(r'<span class="ref">([^<]+)</span>', tied["worklist"]),
+            ["issue-946", "issue-947"],
+        )
+
+    # Every ordering case the row ranking has to get right, as the accepted
+    # fixture the record is built from, the reference it is given, the reasons
+    # the same record states alongside it, the headline the display rules must
+    # still pick, and the recorded state the row must actually be ordered by.
+    # The last two columns differ wherever a record states more than one thing
+    # at once, which is exactly what ordering by the headline alone loses.
+    URGENCY_MATRIX = (
+        # A record can be ready to merge and still be waiting on a person, a
+        # failure or an unreadable source. The headline reports the first of
+        # those; the order has to report the rest.
+        (
+            "ready",
+            "ready-unavailable",
+            ["ready_to_merge", "source_unavailable"],
+            "ready to merge",
+            "source unavailable",
+        ),
+        (
+            "ready",
+            "ready-failed",
+            ["ready_to_merge", "provider_failed"],
+            "ready to merge",
+            "provider run failed",
+        ),
+        (
+            "ready",
+            "ready-approval",
+            ["ready_to_merge", "approval_required"],
+            "ready to merge",
+            "waiting for approval",
+        ),
+        # Weaker evidence never demotes the stronger action the same record
+        # records: a stale observation of work that is ready to merge is still
+        # ordered as work that is ready to merge.
+        (
+            "ready",
+            "ready-stale",
+            ["ready_to_merge", "stale_observation"],
+            "ready to merge",
+            "ready to merge",
+        ),
+        ("ready", "ready-plain", ["ready_to_merge"], "ready to merge", "ready to merge"),
+        # Terminal work that owes nothing stays terminal, even though the same
+        # record also states that the implementation is complete and the review
+        # passed. Terminal work that owes something is ordered by what it owes.
+        ("merged", "merged-alone", [], "merged", "merged"),
+        (
+            "merged",
+            "merged-unavailable",
+            ["source_unavailable"],
+            "merged",
+            "source unavailable",
+        ),
+        ("merged", "merged-failed", ["provider_failed"], "merged", "provider run failed"),
+        (
+            "merged",
+            "merged-approval",
+            ["approval_required"],
+            "merged",
+            "waiting for approval",
+        ),
+        # Work recorded as running owes nothing right now, so it sits between
+        # everything that does and everything that is finished.
+        ("observed_running", "running-plain", [], "provider run observed", "provider run observed"),
+    )
+
+    def _urgency_matrix_records(self) -> list[dict]:
+        return [
+            _record_with_reasons(fixture, reference, list(reasons))
+            for fixture, reference, reasons, _, _ in self.URGENCY_MATRIX
+        ]
+
+    def test_row_urgency_is_computed_from_every_recorded_state(self) -> None:
+        # The idle row is a different session's: a session-level snapshot is
+        # only truthful about a session with no work of its own, so the one
+        # that exercises the terminal band here is recorded against a session
+        # the work rows do not belong to.
+        records = self._urgency_matrix_records() + [
+            _in_session(
+                _observation_fixture("no_work"),
+                session=OTHER_SESSION,
+                worktree=OTHER_WORKTREE,
+            )
+        ]
+        # The same board, read in three different input orders. Nothing about
+        # the answer may depend on which order the directory was listed in.
+        payloads = [
+            _observation_payload(records),
+            _observation_payload(list(reversed(records))),
+            _observation_payload(records[3:] + records[:3]),
+        ]
+        # The order the states themselves were recorded in must not matter
+        # either, so every permutation of a recorded state set is asserted.
+        permutations = [
+            ["merged", "waiting for approval", "review passed"],
+            ["ready to merge", "source unavailable", "implementation complete"],
+            ["merged", "implementation complete", "review passed"],
+            ["merged", "stale observation"],
+        ]
+        permuted = [
+            {"case": index, "states": list(order)}
+            for index, labels in enumerate(permutations)
+            for order in itertools.permutations(labels)
+        ]
+        result = _eval_board_view(
+            "(() => {"
+            " const [payloads, nowMs, permuted] = ARGS;"
+            " return {"
+            "  ranking: Object.fromEntries("
+            "    [...ROW_URGENCY_ORDER, ...TERMINAL_ROW_HEADLINES].map(l => [l, stateUrgency(l)])),"
+            "  boards: payloads.map(payload => {"
+            "    const rows = workRows(payload, nowMs);"
+            "    return {"
+            "      references: rows.map(row => row.reference),"
+            "      headlines: rows.map(row => row.headline),"
+            "      urgency: rows.map(row => rowUrgency(row)),"
+            "      selected: resolveSelection(rows, null),"
+            "      keys: rows.map(row => row.key)"
+            "    };"
+            "  }),"
+            "  permuted: permuted.map(item =>"
+            "    rowUrgency({states: item.states.map(label => ({label}))}))"
+            " };"
+            "})()",
+            payloads,
+            int(OBSERVATION_NOW.timestamp() * 1000),
+            permuted,
+        )
+
+        ranking = result["ranking"]
+        expected_urgency = {
+            reference: ranking[ordering_state]
+            for _, reference, _, _, ordering_state in self.URGENCY_MATRIX
+        }
+        expected_headline = {
+            reference: headline for _, reference, _, headline, _ in self.URGENCY_MATRIX
+        }
+        # Most urgent first, then the declared tiebreak on the reference. Every
+        # row that states an outstanding blocker or action sorts above the
+        # merged row that states nothing but its own completion, and the idle
+        # row is last because it is genuinely terminal.
+        expected_order = [
+            "merged-unavailable",
+            "ready-unavailable",
+            "merged-failed",
+            "ready-failed",
+            "merged-approval",
+            "ready-approval",
+            "ready-plain",
+            "ready-stale",
+            "running-plain",
+            "merged-alone",
+            "Board contract delivery",
+        ]
+        for board_index, board_rows in enumerate(result["boards"]):
+            with self.subTest(input_order=board_index):
+                self.assertEqual(board_rows["references"], expected_order)
+                # The display headline rules are untouched: a merged record
+                # still reads as merged and a ready one still reads as ready to
+                # merge, however they are ordered.
+                headlines = dict(zip(board_rows["references"], board_rows["headlines"], strict=True))
+                for reference, headline in expected_headline.items():
+                    self.assertEqual(headlines[reference], headline)
+                # And each row is ordered by the state it owes, not by the one
+                # it reads as.
+                urgency = dict(zip(board_rows["references"], board_rows["urgency"], strict=True))
+                for reference, value in expected_urgency.items():
+                    self.assertEqual(urgency[reference], value, reference)
+                self.assertEqual(
+                    board_rows["urgency"], sorted(board_rows["urgency"]), "rows are not sorted"
+                )
+                # An operator who has chosen nothing is shown the most urgent
+                # row, so the default selection follows the same ranking.
+                self.assertEqual(board_rows["selected"], board_rows["keys"][0])
+                self.assertIn("merged-unavailable", board_rows["selected"])
+
+        # Urgency is a function of the set of recorded states, not of the order
+        # they arrived in: every permutation of one set answers identically.
+        by_case: dict[int, set[int]] = {}
+        for item, value in zip(permuted, result["permuted"], strict=True):
+            by_case.setdefault(item["case"], set()).add(value)
+        self.assertEqual(
+            [sorted(values) for _, values in sorted(by_case.items())],
+            [
+                [ranking["waiting for approval"]],
+                [ranking["source unavailable"]],
+                [ranking["merged"]],
+                [ranking["merged"]],
+            ],
+        )
+
+    def test_the_default_selection_opens_on_work_that_still_owes_something(self) -> None:
+        # The same ranking, proved through the rendered page rather than
+        # through the model: the row the browser marks as selected is the
+        # merged record that is also recorded as unreadable, not the merged
+        # record that owes nothing.
+        records = self._urgency_matrix_records()
+        worklist = _render_board_sequence([{"payload": _observation_payload(records)}])[0][
+            "worklist"
+        ]
+        references = re.findall(r'<span class="ref">([^<]+)</span>', worklist)
+        self.assertEqual(references[0], "merged-unavailable")
+        self.assertEqual(references[-1], "merged-alone")
+        self.assertTrue(_selected_key(worklist).endswith("merged-unavailable"))
+        self.assertEqual(_selected_key(worklist), _work_keys(worklist)[0])
+        # The selected row still reads as merged: ordering it by what it owes
+        # did not rewrite what it says.
+        headlines = re.findall(
+            r'aria-hidden="true">[^<]*</span> ([^<]+)</span><span class="pill">stage', worklist
+        )
+        self.assertEqual(
+            dict(zip(references, headlines, strict=True)),
+            {reference: headline for _, reference, _, headline, _ in self.URGENCY_MATRIX},
+        )
+
+    def test_headline_only_urgency_would_bury_work_that_still_owes_something(self) -> None:
+        # The mutation this test exists to catch: ranking a row by its headline
+        # alone, which is what the sort used to do. It is executed here against
+        # the shipped model so the difference is demonstrated, not asserted.
+        records = self._urgency_matrix_records() + [
+            # A different session's idle snapshot, for the reason given above.
+            _in_session(
+                _observation_fixture("no_work"),
+                session=OTHER_SESSION,
+                worktree=OTHER_WORKTREE,
+            )
+        ]
+        payload = _observation_payload(records)
+        result = _eval_board_view(
+            "(() => {"
+            " const [payload, nowMs] = ARGS;"
+            " const rows = workRows(payload, nowMs);"
+            " const headlineOnly = [...rows].sort((a, b) =>"
+            "   stateUrgency(a.headline) - stateUrgency(b.headline)"
+            "   || a.reference.localeCompare(b.reference)"
+            "   || a.key.localeCompare(b.key));"
+            " return {"
+            "  shipped: rows.map(row => row.reference),"
+            "  headlineOnly: headlineOnly.map(row => row.reference),"
+            "  shippedSelected: resolveSelection(rows, null),"
+            "  headlineOnlySelected: resolveSelection(headlineOnly, null)"
+            " };"
+            "})()",
+            payload,
+            int(OBSERVATION_NOW.timestamp() * 1000),
+        )
+        self.assertNotEqual(result["shipped"], result["headlineOnly"])
+        # Headline-only ordering buries every merged record -- including the
+        # three that are still blocked or waiting on a person -- beneath work
+        # that is merely in flight, and opens the Board on a ready-to-merge
+        # item while an unreadable source goes unseen.
+        self.assertEqual(
+            result["headlineOnly"][:5],
+            [
+                "ready-approval",
+                "ready-failed",
+                "ready-plain",
+                "ready-stale",
+                "ready-unavailable",
+            ],
+        )
+        self.assertEqual(
+            result["headlineOnly"][-5:],
+            [
+                "merged-alone",
+                "merged-approval",
+                "merged-failed",
+                "merged-unavailable",
+                "Board contract delivery",
+            ],
+        )
+        self.assertEqual(result["shipped"][0], "merged-unavailable")
+        self.assertNotEqual(result["shippedSelected"], result["headlineOnlySelected"])
+
+    # Every reason the frozen B0 contract accepts, with the state the Board
+    # must display for it and the urgency band that state is ranked in. The
+    # vocabulary is not restated here: the test asserts this table covers
+    # exactly ``board_observation.REASON_ROUTES``, so a reason added to the
+    # contract without a Board classification fails rather than silently
+    # falling through to the neutral "state not recorded".
+    REASON_CLASSIFICATION = {
+        "approval_required": ("waiting for approval", "actionable"),
+        "user_input_required": ("waiting for an answer", "actionable"),
+        "source_unavailable": ("source unavailable", "blocked"),
+        "identity_unlinked": ("identity unlinked", "untrusted"),
+        "stale_observation": ("stale observation", "untrusted"),
+        "provider_failed": ("provider run failed", "blocked"),
+        "provider_suspended": ("provider run suspended", "blocked"),
+        "cancelled": ("provider run cancelled", "blocked"),
+        "changes_requested": ("changes requested", "blocked"),
+        "update_required": ("branch update required", "blocked"),
+        "ci_failed": ("CI failed", "blocked"),
+        "gate_failed": ("gate failed", "blocked"),
+        "review_stale": ("stale review", "untrusted"),
+        "review_requested": ("review requested", "actionable"),
+        "review_in_progress": ("review observed running", "in_flight"),
+        "ci_pending": ("CI pending", "in_flight"),
+        "gate_pending": ("gate pending", "in_flight"),
+        "human_review_required": ("ready for human review", "actionable"),
+        "ready_to_merge": ("ready to merge", "actionable"),
+    }
+
+    def test_every_reason_the_contract_accepts_is_displayed_and_ranked(self) -> None:
+        # The vocabulary comes from the frozen contract, not from a subset
+        # chosen by hand.
+        reasons = sorted(board_observation.REASON_ROUTES)
+        self.assertEqual(set(self.REASON_CLASSIFICATION), set(reasons))
+
+        result = _eval_board_view(
+            "(() => {"
+            " const [reasons] = ARGS;"
+            " const band = new Map(ROW_URGENCY_BANDS.flatMap("
+            "   b => b.labels.map(label => [label, b.name])));"
+            " const demanding = new Map(ROW_URGENCY_BANDS.flatMap("
+            "   b => b.labels.map(label => [label, b.demanding])));"
+            " return {"
+            "  neutral: workStates({}).map(state => state.label),"
+            "  unranked: UNRANKED_ROW_URGENCY,"
+            "  reasons: Object.fromEntries(reasons.map(reason => {"
+            "    const states = workStates({reasons: [reason]});"
+            "    const labels = states.map(state => state.label);"
+            "    return [reason, {"
+            "      labels,"
+            "      classes: states.map(state => state.class),"
+            "      band: band.get(labels[0]) ?? null,"
+            "      declaredDemanding: demanding.get(labels[0]) ?? null,"
+            "      urgency: stateUrgency(labels[0]),"
+            "      demanding: isDemandingState(labels[0])"
+            "    }];"
+            "  }))"
+            " };"
+            "})()",
+            reasons,
+        )
+
+        # The neutral classification exists and is reachable: a record that
+        # states nothing reads as nothing.
+        self.assertEqual(result["neutral"], ["state not recorded"])
+        for reason in reasons:
+            with self.subTest(reason=reason):
+                label, band = self.REASON_CLASSIFICATION[reason]
+                observed = result["reasons"][reason]
+                # One reason on its own produces exactly the one state it
+                # names -- never the neutral fallback, and never a second
+                # state the record did not record.
+                self.assertEqual(observed["labels"], [label])
+                self.assertIn(observed["classes"][0], {"ok", "warn", "bad", "muted"})
+                # And that state is explicitly ranked, in the band this table
+                # declares, rather than sorting as something nobody ranked.
+                self.assertEqual(observed["band"], band)
+                self.assertLess(observed["urgency"], result["unranked"])
+                self.assertEqual(observed["demanding"], observed["declaredDemanding"])
+
+        # Every reason whose contract route names an actor who has to act on a
+        # blocked change is ranked as demanding, so none of them can sort below
+        # work that is merely progressing.
+        for reason in reasons:
+            band = self.REASON_CLASSIFICATION[reason][1]
+            self.assertEqual(
+                result["reasons"][reason]["demanding"], band in {"blocked", "actionable"}, reason
+            )
+
+        # The rest of the closed vocabulary the same routes carry is covered
+        # too, and again against the contract rather than a hand-picked list:
+        # every actor and every next action a route can name has its own
+        # phrasing, so no route can be displayed as an unlabelled token.
+        labels = _eval_board_view("[Object.keys(ACTION_LABELS), Object.keys(ACTOR_LABELS)]")
+        self.assertEqual(set(labels[0]), set(board_observation.ACTIONS))
+        self.assertEqual(set(labels[1]), set(board_observation.ACTORS))
+
+        # The two reasons this pass added are ranked with the blockers, and
+        # both outrank ordinary progressing, CI and ready-to-merge work.
+        ranking = {
+            reason: result["reasons"][reason]["urgency"]
+            for reason in ("provider_suspended", "update_required")
+        }
+        for ordinary in ("ci_pending", "gate_pending", "review_in_progress", "ready_to_merge"):
+            for reason, urgency in ranking.items():
+                self.assertLess(urgency, result["reasons"][ordinary]["urgency"], reason)
+
+    def test_a_suspended_session_is_never_reported_as_a_failed_one(self) -> None:
+        # The contract records a suspended session as the `suspended`
+        # lifecycle state and only ever alongside the `failed` phase, so
+        # reading the phase alone reports a paused session as a failure.
+        suspended = _eval_board_view(
+            "workStates(ARGS[0]).map(state => state.label)",
+            {"runs": [{"phase": "failed", "lifecycle": {"state": "suspended"}}]},
+        )
+        self.assertEqual(suspended, ["provider run suspended"])
+        # A run that really failed is still reported as one.
+        failed = _eval_board_view(
+            "workStates(ARGS[0]).map(state => state.label)",
+            {"runs": [{"phase": "failed", "lifecycle": {"state": "failed"}}]},
+        )
+        self.assertEqual(failed, ["provider run failed"])
+        # A run with no lifecycle recorded at all is read from its phase.
+        bare = _eval_board_view(
+            "workStates(ARGS[0]).map(state => state.label)", {"runs": [{"phase": "failed"}]}
+        )
+        self.assertEqual(bare, ["provider run failed"])
+        # One work item with both records both, and reads as the failure --
+        # which is also the precedence the contract's own route table gives
+        # `provider_failed` over `provider_suspended`.
+        both = _eval_board_view(
+            "workStates(ARGS[0]).map(state => state.label)",
+            {
+                "runs": [
+                    {"phase": "failed", "lifecycle": {"state": "failed"}},
+                    {"phase": "failed", "lifecycle": {"state": "suspended"}},
+                ]
+            },
+        )
+        self.assertEqual(both, ["provider run failed", "provider run suspended"])
+        self.assertLess(
+            board_observation.REASON_ROUTES["provider_failed"][0],
+            board_observation.REASON_ROUTES["provider_suspended"][0],
+        )
+
+        # Proved once more through a record the frozen contract accepts and
+        # the page the browser is served.
+        record = _record_with_suspended_run("suspended-session")
+        worklist = _render_board_sequence(
+            [{"payload": _observation_payload([record])}]
+        )[0]["worklist"]
+        self.assertIn("provider run suspended", worklist)
+        self.assertNotIn("provider run failed", worklist)
+        # And when the reason is recorded alongside the suspended lifecycle,
+        # the row reports the contract's own route for it rather than the
+        # failure route.
+        routed = _record_with_suspended_run("suspended-routed", reasons=["provider_suspended"])
+        rows = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label, row.actor_label])",
+            _observation_payload([routed]),
+            int(OBSERVATION_NOW.timestamp() * 1000),
+        )
+        self.assertEqual(rows, [["provider run suspended", "inspect the provider", "orchestrator"]])
+
+    # The two reasons that had no state rules at all, stated on their own and
+    # alongside the states they used to be invisible next to.
+    BLOCKER_MATRIX = (
+        ("ready", "a-suspended-ready", ["ready_to_merge", "provider_suspended"],
+         "ready to merge", "provider run suspended"),
+        ("ready", "b-update-ready", ["ready_to_merge", "update_required"],
+         "ready to merge", "branch update required"),
+        ("merged", "c-suspended-merged", ["provider_suspended"],
+         "merged", "provider run suspended"),
+        ("merged", "d-update-merged", ["update_required"],
+         "merged", "branch update required"),
+        ("observed_running", "e-suspended-running", ["provider_suspended"],
+         "provider run suspended", "provider run suspended"),
+        ("observed_running", "f-update-running", ["update_required"],
+         "branch update required", "branch update required"),
+        # Ordinary work, which every row above has to outrank.
+        ("observed_running", "g-running", [], "provider run observed", "provider run observed"),
+        ("ready", "h-ci-pending", ["ci_pending"], "ready to merge", "ready to merge"),
+        ("ready", "i-ready", ["ready_to_merge"], "ready to merge", "ready to merge"),
+    )
+
+    def test_the_two_unranked_blockers_outrank_ordinary_work_in_every_state_order(self) -> None:
+        records = [
+            _record_with_reasons(fixture, reference, list(reasons))
+            for fixture, reference, reasons, _, _ in self.BLOCKER_MATRIX
+        ]
+        # The state order inside one record must not matter either, so every
+        # permutation of each recorded state set is ranked.
+        permutations = [
+            ["ready to merge", "provider run suspended"],
+            ["ready to merge", "branch update required"],
+            ["merged", "provider run suspended"],
+            ["merged", "branch update required", "review passed"],
+            ["provider run suspended", "branch update required", "CI pending"],
+        ]
+        permuted = [
+            {"case": index, "states": list(order)}
+            for index, labels in enumerate(permutations)
+            for order in itertools.permutations(labels)
+        ]
+        payloads = [
+            _observation_payload(records),
+            _observation_payload(list(reversed(records))),
+            _observation_payload(records[4:] + records[:4]),
+        ]
+        result = _eval_board_view(
+            "(() => {"
+            " const [payloads, nowMs, permuted] = ARGS;"
+            " return {"
+            "  ranking: Object.fromEntries("
+            "    [...ROW_URGENCY_ORDER, ...TERMINAL_ROW_HEADLINES].map(l => [l, stateUrgency(l)])),"
+            "  boards: payloads.map(payload => {"
+            "    const rows = workRows(payload, nowMs);"
+            "    return {"
+            "      references: rows.map(row => row.reference),"
+            "      headlines: rows.map(row => row.headline),"
+            "      urgency: rows.map(row => rowUrgency(row)),"
+            "      selected: resolveSelection(rows, null),"
+            "      keys: rows.map(row => row.key)"
+            "    };"
+            "  }),"
+            "  permuted: permuted.map(item =>"
+            "    rowUrgency({states: item.states.map(label => ({label}))}))"
+            " };"
+            "})()",
+            payloads,
+            int(OBSERVATION_NOW.timestamp() * 1000),
+            permuted,
+        )
+
+        ranking = result["ranking"]
+        expected = {
+            reference: (ranking[ordering], headline)
+            for _, reference, _, headline, ordering in self.BLOCKER_MATRIX
+        }
+        blockers = [reference for reference in expected if reference[0] in "abcdef"]
+        ordinary = [reference for reference in expected if reference[0] in "ghi"]
+        for index, board_rows in enumerate(result["boards"]):
+            with self.subTest(input_order=index):
+                urgency = dict(zip(board_rows["references"], board_rows["urgency"], strict=True))
+                headlines = dict(
+                    zip(board_rows["references"], board_rows["headlines"], strict=True)
+                )
+                for reference, (rank, headline) in expected.items():
+                    # Ordering reports what the row owes; the headline keeps
+                    # reporting the truth that describes it best. The two
+                    # responsibilities stay distinct.
+                    self.assertEqual(urgency[reference], rank, reference)
+                    self.assertEqual(headlines[reference], headline, reference)
+                self.assertEqual(board_rows["urgency"], sorted(board_rows["urgency"]))
+                # Every row carrying one of the two blockers sorts above every
+                # ordinary progressing, CI-pending or ready-to-merge row.
+                self.assertLess(
+                    max(urgency[reference] for reference in blockers),
+                    min(urgency[reference] for reference in ordinary),
+                )
+                # An operator who has chosen nothing opens on a blocker.
+                self.assertEqual(board_rows["selected"], board_rows["keys"][0])
+                # "branch update required" is the most urgent state on this
+                # board, so its row is the one the Board opens on.
+                self.assertEqual(board_rows["references"][0], "b-update-ready")
+
+        # The ranking of one recorded state set never depends on the order the
+        # states were recorded in.
+        by_case: dict[int, set[int]] = {}
+        for item, value in zip(permuted, result["permuted"], strict=True):
+            by_case.setdefault(item["case"], set()).add(value)
+        self.assertEqual(
+            [sorted(values) for _, values in sorted(by_case.items())],
+            [
+                [ranking["provider run suspended"]],
+                [ranking["branch update required"]],
+                [ranking["provider run suspended"]],
+                [ranking["branch update required"]],
+                [ranking["branch update required"]],
+            ],
+        )
+
+    def test_the_blocked_rows_are_selected_by_the_rendered_page(self) -> None:
+        # The same ranking, through the page the browser is served rather than
+        # through the model.
+        records = [
+            _record_with_reasons(fixture, reference, list(reasons))
+            for fixture, reference, reasons, _, _ in self.BLOCKER_MATRIX
+        ]
+        worklist = _render_board_sequence([{"payload": _observation_payload(records)}])[0][
+            "worklist"
+        ]
+        references = re.findall(r'<span class="ref">([^<]+)</span>', worklist)
+        headlines = re.findall(
+            r'aria-hidden="true">[^<]*</span> ([^<]+)</span><span class="pill">stage', worklist
+        )
+        # The six rows carrying a blocker come first, in any order among
+        # themselves, and the three ordinary rows follow.
+        self.assertEqual(
+            sorted(references[:6]), sorted(r for r in references if r[0] in "abcdef")
+        )
+        self.assertEqual(sorted(references[6:]), sorted(r for r in references if r[0] in "ghi"))
+        self.assertTrue(_selected_key(worklist).endswith("b-update-ready"))
+        self.assertEqual(
+            dict(zip(references, headlines, strict=True)),
+            {reference: headline for _, reference, _, headline, _ in self.BLOCKER_MATRIX},
+        )
+        # Both new states are shown with a text cue as well as a colour, like
+        # every other state the Board reports.
+        for label in ("provider run suspended", "branch update required"):
+            self.assertIn(f'aria-hidden="true">~</span> {label}</span>', worklist)
+
+    # Room for the detail region to scroll: 900px of evidence in a 300px
+    # panel, so 600px of travel.
+    DETAIL_METRICS = {"workdetail": {"scrollHeight": 900, "clientHeight": 300}}
+
+    def _scroll_case(self) -> tuple[dict, dict, str]:
+        """One payload, the same payload with changed evidence, and a key."""
+
+        first = _record_with_reasons("ready", "alpha", ["ready_to_merge"])
+        second = _record_with_reasons("observed_running", "beta", [])
+        changed = _record_with_reasons("ready", "alpha", ["ready_to_merge", "ci_pending"])
+        payload = _observation_payload([first, second])
+        refreshed = _observation_payload([changed, second])
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        key = next(item for item in _work_keys(worklist) if item.endswith("alpha"))
+        return payload, refreshed, key
+
+    def test_the_selected_detail_keeps_its_reading_position_across_a_refresh(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        steps = [
+            {"payload": payload},
+            {"select": key, "metrics": self.DETAIL_METRICS},
+            {"scroll": {"top": 240}},
+        ]
+        # A poll that observed nothing new must not move the panel at all.
+        unchanged = _render_board_focus([*steps, {"payload": payload}])
+        self.assertEqual(unchanged[-2]["detail"], {"key": key, "top": 240})
+        self.assertEqual(unchanged[-1]["detail"], {"key": key, "top": 240})
+
+        # Neither must a poll that changed the evidence of the very work item
+        # being read: the identity survived, so the reading position does too.
+        changed = _render_board_focus([*steps, {"payload": refreshed}])
+        self.assertEqual(changed[-1]["detail"], {"key": key, "top": 240})
+        self.assertIn("CI pending", changed[-1]["worklist"])
+        self.assertNotIn("CI pending", unchanged[-1]["worklist"])
+
+        # Without the offset being carried across, the replacement starts at
+        # the top -- which is the reset this test exists to catch.
+        self.assertEqual(
+            _render_board_focus(
+                [{"payload": payload}, {"select": key, "metrics": self.DETAIL_METRICS}]
+            )[-1]["detail"],
+            {"key": key, "top": 0},
+        )
+
+    def test_a_refresh_that_shortens_the_detail_clamps_the_restored_position(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        opened = [
+            {"payload": payload},
+            {"select": key, "metrics": self.DETAIL_METRICS},
+            {"scroll": {"top": 560}},
+        ]
+        # Evidence that shrinks to 400px in the same 300px panel can only
+        # scroll 100px, so the restored position is the end of what is now
+        # there rather than an offset that no longer exists.
+        shrunk = _render_board_focus(
+            [
+                *opened,
+                {
+                    "metrics": {"workdetail": {"scrollHeight": 400, "clientHeight": 300}},
+                    "payload": refreshed,
+                },
+            ]
+        )
+        self.assertEqual(shrunk[-2]["detail"], {"key": key, "top": 560})
+        self.assertEqual(shrunk[-1]["detail"], {"key": key, "top": 100})
+
+        # Evidence that no longer overflows at all cannot scroll, and the
+        # panel is left at the top rather than at a negative offset.
+        flattened = _render_board_focus(
+            [
+                *opened,
+                {
+                    "metrics": {"workdetail": {"scrollHeight": 200, "clientHeight": 300}},
+                    "payload": refreshed,
+                },
+            ]
+        )
+        self.assertEqual(flattened[-1]["detail"], {"key": key, "top": 0})
+
+    def test_a_scroll_position_is_never_inherited_by_a_different_work_item(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        other = next(item for item in _work_keys(worklist) if item != key)
+        opened = [
+            {"payload": payload},
+            {"select": key, "metrics": self.DETAIL_METRICS},
+            {"scroll": {"top": 240}},
+        ]
+
+        # Choosing another work item opens its evidence at the top. Its
+        # detail is a different identity, so it inherits nothing.
+        moved = _render_board_focus([*opened, {"select": other}])
+        self.assertEqual(moved[-1]["detail"], {"key": other, "top": 0})
+        # Coming back returns to where this identity was being read. The
+        # offsets are kept per identity, so the two never mix: the second work
+        # item's own position is its own, and it is the one restored when it
+        # is the one on screen.
+        returned = _render_board_focus(
+            [
+                *opened,
+                {"select": other},
+                {"scroll": {"top": 90}},
+                {"select": key},
+                {"select": other},
+            ]
+        )
+        self.assertEqual(returned[-3]["detail"], {"key": other, "top": 90})
+        self.assertEqual(returned[-2]["detail"], {"key": key, "top": 240})
+        self.assertEqual(returned[-1]["detail"], {"key": other, "top": 90})
+
+        # A refresh that drops the selected record entirely selects another
+        # row, which also starts at the top.
+        without = _observation_payload([_record_with_reasons("observed_running", "beta", [])])
+        dropped = _render_board_focus([*opened, {"payload": without}])
+        self.assertEqual(dropped[-1]["detail"]["top"], 0)
+        self.assertNotEqual(dropped[-1]["detail"]["key"], key)
+
+        # A refresh with nothing to show at all removes the detail region.
+        # Restoring has nowhere to land and does not fail trying.
+        emptied = _render_board_focus([*opened, {"payload": _observation_payload([])}])
+        self.assertIsNone(emptied[-1]["detail"])
+        self.assertIn("No local Board observation", emptied[-1]["worklist"])
+
+    # Reading evidence, then going to look at something else, is the ordinary
+    # thing to do with a tabbed page. While another view is open the Now panel
+    # is hidden: its content has no box, so every layout metric reads zero.
+    # These are the cases where a position read off -- or clamped against -- a
+    # hidden panel silently becomes a return to the top.
+    def _reading(self, key: str) -> list[dict[str, object]]:
+        """An operator part way down one work item's evidence, on Now."""
+
+        return [
+            {"select": key, "metrics": self.DETAIL_METRICS},
+            {"scroll": {"top": 240}},
+        ]
+
+    def test_a_poll_that_lands_while_now_is_hidden_keeps_the_reading_position(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        frames = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"click": "tab-timeline", "on": "tabs"},
+                {"payload": payload},
+                {"click": "tab-now", "on": "tabs"},
+            ]
+        )
+        # Now really is hidden while the poll lands, and the replacement the
+        # poll rendered into the hidden panel starts at the top with no
+        # measurable height at all -- there is nothing there to read.
+        self.assertTrue(frames[-2]["hidden"]["now"])
+        self.assertFalse(frames[-1]["hidden"]["now"])
+        self.assertEqual(frames[-2]["detail"], {"key": key, "top": 0})
+        # What the operator was reading was never in that element: it is kept
+        # against the identity, outside everything the poll replaced.
+        self.assertEqual(frames[-2]["remembered"], {key: 240})
+        # Returning to Now is the first moment the panel can be measured
+        # again, and it is where the reading position comes back.
+        self.assertEqual(frames[-1]["detail"], {"key": key, "top": 240})
+
+        # The keyboard takes the same route through the tab strip, and the two
+        # pieces of state compose: the keyboard is left on the tab the
+        # operator moved to, and the evidence is where they left it.
+        keyboard = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"focus": "tab-now"},
+                {"key": "ArrowRight", "on": "tabs", "from": "tab-now"},
+                {"payload": refreshed},
+                {"key": "ArrowLeft", "on": "tabs", "from": "tab-timeline"},
+            ]
+        )
+        self.assertEqual(keyboard[-3]["active"], "tab-timeline")
+        self.assertTrue(keyboard[-2]["hidden"]["now"])
+        self.assertEqual(keyboard[-1]["active"], "tab-now")
+        self.assertEqual(keyboard[-1]["detail"], {"key": key, "top": 240})
+
+    def test_many_hidden_polls_and_changed_evidence_lose_nothing(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        away = [
+            {"payload": payload},
+            *self._reading(key),
+            {"click": "tab-health", "on": "tabs"},
+        ]
+        # Eight polls land while the operator is on another view, two of them
+        # changing the evidence of the very work item being read. Each one
+        # replaces the hidden detail region; none of them may touch what is
+        # remembered for it.
+        polls: list[dict[str, object]] = []
+        for index in range(8):
+            polls.append({"payload": refreshed if index % 4 == 3 else payload})
+        frames = _render_board_focus([*away, *polls, {"click": "tab-now", "on": "tabs"}])
+        for frame in frames[len(away) : -1]:
+            self.assertTrue(frame["hidden"]["now"])
+            self.assertEqual(frame["remembered"], {key: 240})
+        self.assertEqual(frames[-1]["detail"], {"key": key, "top": 240})
+        self.assertIn("CI pending", frames[-1]["worklist"])
+
+        # Switching view twice over, with polls on both sides, is the same
+        # story: the position belongs to the identity, not to a visit.
+        returning = _render_board_focus(
+            [
+                *away,
+                {"payload": refreshed},
+                {"click": "tab-now", "on": "tabs"},
+                {"payload": payload},
+                {"click": "tab-releases", "on": "tabs"},
+                {"payload": refreshed},
+                {"click": "tab-now", "on": "tabs"},
+            ]
+        )
+        self.assertEqual(returning[-1]["detail"], {"key": key, "top": 240})
+
+    def test_a_hidden_panel_is_never_read_as_a_reading_position_of_zero(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        # Hidden content has no box: the shim reports what a browser reports,
+        # so a page that reads the offset out of the element, or clamps
+        # against its travel, sees zero and throws the reading away.
+        hidden = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"click": "tab-timeline", "on": "tabs"},
+                {"payload": refreshed},
+            ]
+        )[-1]
+        self.assertEqual(hidden["detail"], {"key": key, "top": 0})
+        self.assertEqual(hidden["remembered"], {key: 240})
+
+        # Zero metrics declared outright -- a panel the browser has not laid
+        # out yet -- are read the same way: not a position, so nothing is
+        # captured from it and nothing is clamped against it.
+        unlaid = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"metrics": {"workdetail": {"scrollHeight": 0, "clientHeight": 0}}},
+                {"payload": refreshed},
+                {"metrics": self.DETAIL_METRICS},
+                {"payload": refreshed},
+            ]
+        )
+        self.assertEqual(unlaid[-2]["remembered"], {key: 240})
+        self.assertEqual(unlaid[-1]["detail"], {"key": key, "top": 240})
+
+        # All of which rests on one property of the shipped stylesheet: a
+        # hidden view is taken out of layout rather than merely made
+        # invisible, so its content genuinely has no box to measure. The rule
+        # is read here rather than assumed, because a stylesheet that hid a
+        # panel some other way would leave these metrics reporting a box for
+        # evidence nobody can see.
+        hiding = [
+            declarations
+            for at_rule, selector, declarations in _css_rules(_board_css())
+            if selector == "[hidden]" and not at_rule
+        ]
+        self.assertEqual([entry.get("display") for entry in hiding], ["none !important"])
+
+    def test_returning_to_now_clamps_against_what_is_there_on_return(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        away = [
+            {"payload": payload},
+            {"select": key, "metrics": self.DETAIL_METRICS},
+            {"scroll": {"top": 560}},
+            {"click": "tab-timeline", "on": "tabs"},
+            {"payload": refreshed},
+        ]
+        # Evidence that shrank while the operator was away can only scroll
+        # 100px, and the clamp happens on return -- the one moment the panel
+        # can be measured -- rather than against the zeros it reported while
+        # hidden. What is remembered is then what is on screen.
+        shrunk = _render_board_focus(
+            [
+                *away,
+                {"metrics": {"workdetail": {"scrollHeight": 400, "clientHeight": 300}}},
+                {"click": "tab-now", "on": "tabs"},
+            ]
+        )
+        self.assertEqual(shrunk[-1]["detail"], {"key": key, "top": 100})
+        self.assertEqual(shrunk[-1]["remembered"], {key: 100})
+
+        # Evidence that grew keeps the place that was being read: there is
+        # more below it, not less.
+        grown = _render_board_focus(
+            [
+                *away,
+                {"metrics": {"workdetail": {"scrollHeight": 1500, "clientHeight": 300}}},
+                {"click": "tab-now", "on": "tabs"},
+            ]
+        )
+        self.assertEqual(grown[-1]["detail"], {"key": key, "top": 560})
+
+        # And growth while Now is open keeps it too, poll after poll.
+        visible = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"metrics": {"workdetail": {"scrollHeight": 1500, "clientHeight": 300}}},
+                {"payload": refreshed},
+                {"payload": payload},
+            ]
+        )
+        self.assertEqual(visible[-1]["detail"], {"key": key, "top": 240})
+
+    def test_remembered_reading_positions_are_dropped_with_the_work_they_belong_to(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        other = next(item for item in _work_keys(worklist) if item != key)
+        without = _observation_payload([_record_with_reasons("observed_running", "beta", [])])
+
+        # A work item the Board stops showing has no evidence to come back to,
+        # so what was remembered for it goes with it -- while the offset of
+        # the item still on screen is left exactly where it was.
+        frames = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"select": other},
+                {"scroll": {"top": 90}},
+                {"payload": without},
+                {"payload": payload},
+                {"select": key},
+            ]
+        )
+        self.assertEqual(frames[-3]["remembered"], {other: 90})
+        # The identity is rendered again later, but it comes back as new work
+        # rather than resuming a position from before it disappeared.
+        self.assertEqual(frames[-1]["detail"], {"key": key, "top": 0})
+
+        # Polls alone never accumulate anything: an unchanged poll remembers
+        # what the operator did, and nothing else.
+        repeated = _render_board_focus(
+            [{"payload": payload}, *self._reading(key), *([{"payload": payload}] * 6)]
+        )
+        self.assertEqual(repeated[-1]["remembered"], {key: 240})
+
+    def test_the_remembered_reading_positions_are_bounded(self) -> None:
+        # The page is left open for days. Even a stream of identities that
+        # were never on screen together cannot grow the map without limit:
+        # it is bounded, and the least recently touched entry is the one that
+        # goes. The bound is read off the page rather than assumed here.
+        limit = _eval_board_page("DETAIL_OFFSET_LIMIT")
+        self.assertIsInstance(limit, int)
+        self.assertGreater(limit, 1)
+        measured = _eval_board_page(
+            "(() => {"
+            "  for (let index = 0; index < ARGS[0]; index += 1) rememberDetailOffset('k' + index, index);"
+            "  const keys = [...detailOffsets.keys()];"
+            "  rememberDetailOffset(keys[0], 7);"
+            "  rememberDetailOffset('fresh', 9);"
+            "  return {"
+            "    size: detailOffsets.size,"
+            "    first: keys[0],"
+            "    kept: detailOffsets.get(keys[0]),"
+            "    oldest: [...detailOffsets.keys()][0],"
+            "    newest: detailOffsets.get('fresh'),"
+            "    dropped: detailOffsets.has('k0')"
+            "  };"
+            "})()",
+            2000,
+        )
+        self.assertEqual(measured["size"], limit)
+        # Every identity beyond the bound displaced an older one, touching an
+        # entry keeps it, and the entry evicted for the newest arrival is the
+        # one that had gone longest without being touched.
+        self.assertEqual(measured["kept"], 7)
+        self.assertNotEqual(measured["oldest"], measured["first"])
+        self.assertEqual(measured["newest"], 9)
+        self.assertFalse(measured["dropped"])
+
+    def test_keyboard_focus_and_the_reading_position_survive_one_refresh_together(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        row_id = _row_element_id(worklist, key)
+        opened = _render_board_focus(
+            [{"payload": payload}, {"select": key, "metrics": self.DETAIL_METRICS}]
+        )[-1]["worklist"]
+        action = re.search(r'id="(workaction-inspect-[^"]+)"', opened).group(1)
+
+        # The keyboard is on an action inside the panel and the panel is
+        # scrolled. One refresh has to carry both.
+        both = _render_board_focus(
+            [
+                {"payload": payload},
+                {"select": key, "metrics": self.DETAIL_METRICS},
+                {"focus": action},
+                {"scroll": {"top": 240}},
+                {"payload": refreshed},
+            ]
+        )
+        self.assertEqual(both[-1]["active"], action)
+        self.assertEqual(both[-1]["detail"], {"key": key, "top": 240})
+
+        # When the action the keyboard was on stops being offered, focus falls
+        # back to the row it belonged to -- and the reading position is still
+        # kept, because the identity being read did not change.
+        self.assertEqual(
+            _render_board_focus(
+                [
+                    {"payload": payload},
+                    {"select": key, "metrics": self.DETAIL_METRICS},
+                    {"focus": row_id},
+                    {"scroll": {"top": 240}},
+                    {"payload": refreshed},
+                ]
+            )[-1],
+            {**both[-1], "active": row_id, "worklist": both[-1]["worklist"]},
+        )
+
+    # Every piece of ephemeral UI state that lives inside the subtree
+    # `put("worklist", ...)` replaces on every poll: state the operator
+    # created that the payload does not contain and a re-render therefore
+    # cannot reconstruct. Each is named with where the page keeps it and what
+    # is proved about it, so nothing in this subtree is handled by accident.
+    #
+    #   selection             kept outside the subtree, in `selectedWorkKey`,
+    #                         as the opaque identity, so a refresh that
+    #                         reorders, adds or drops rows keeps the choice;
+    #   keyboard focus        read off the element about to be destroyed and
+    #                         restored by id, with the row named as the
+    #                         fallback when the control is not offered again;
+    #   detail scroll offset  kept outside the subtree too, in `detailOffsets`,
+    #                         against the same opaque identity; captured when
+    #                         the operator scrolls and before the panel is
+    #                         replaced or hidden, and restored -- clamped to
+    #                         what is there to scroll -- only while that
+    #                         identity's detail is visible and measurable.
+
+    def test_every_ephemeral_state_the_work_list_replaces_is_accounted_for(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        opened = _render_board_focus(
+            [{"payload": payload}, {"select": key, "metrics": self.DETAIL_METRICS}]
+        )[-1]["worklist"]
+
+        # The subtree holds nothing that carries state of its own beyond the
+        # three named above: no field with a value, no disclosure with an open
+        # state, no editable region. Anything the payload does not describe is
+        # therefore one of the three.
+        for tag in ("<input", "<textarea", "<select", "<details", "<summary", "contenteditable"):
+            self.assertNotIn(tag, opened)
+
+        # And exactly one element inside it scrolls independently of the page,
+        # which is the one the offset is kept for. The stylesheet is read for
+        # this rather than assumed.
+        scrollers = sorted(
+            {
+                selector
+                for _, selector, declarations in _css_rules(_board_css())
+                if declarations.get("overflow") in {"auto", "scroll"}
+            }
+        )
+        self.assertEqual(scrollers, [".workdetail"])
+        self.assertEqual(opened.count('class="workdetail"'), 1)
+
+        # Each of the three, through one lifecycle: preserved when the
+        # identity survives, and reset deliberately when it does not.
+        row_id = _row_element_id(opened, key)
+        survived = _render_board_focus(
+            [
+                {"payload": payload},
+                {"select": key, "metrics": self.DETAIL_METRICS},
+                {"focus": row_id},
+                {"scroll": {"top": 240}},
+                {"payload": refreshed},
+            ]
+        )[-1]
+        self.assertEqual(_selected_key(survived["worklist"]), key)
+        self.assertEqual(survived["active"], row_id)
+        self.assertEqual(survived["detail"], {"key": key, "top": 240})
+
+        gone = _render_board_focus(
+            [
+                {"payload": payload},
+                {"select": key, "metrics": self.DETAIL_METRICS},
+                {"focus": row_id},
+                {"scroll": {"top": 240}},
+                {"payload": _observation_payload([_record_with_reasons("observed_running", "beta", [])])},
+            ]
+        )[-1]
+        self.assertNotEqual(_selected_key(gone["worklist"]), key)
+        # The row the keyboard was on is gone, so focus is left where the
+        # browser put it rather than moved to an unrelated control, and the
+        # reading position starts again with the work item now shown.
+        self.assertEqual(gone["active"], "")
+        self.assertEqual(gone["detail"]["top"], 0)
+
+    def test_detail_actions_keep_keyboard_focus_across_a_refresh(self) -> None:
+        payload = _observation_payload([_observation_fixture("ready")])
+        payload["remote"]["pull_requests"] = [
+            {
+                "number": 946,
+                "url": "https://github.example/codemower-ai/code-mower/pull/946",
+                "title": "t",
+                "labels": {},
+                "checks": [],
+            }
+        ]
+        opened = _render_board_focus([{"payload": payload}])[0]
+        worklist = opened["worklist"]
+        key = _work_keys(worklist)[0]
+        row_id = _row_element_id(worklist, key)
+        actions = re.findall(r'id="(workaction-[^"]+)"', worklist)
+        # Every focusable action in the detail region carries an identity, and
+        # no identity is shared with another action or with the row button.
+        self.assertEqual(len(actions), 3)
+        self.assertEqual(sorted(name.split("-")[1] for name in actions), ["changes", "inspect", "openpr"])
+        self.assertEqual(len(set(actions + [row_id])), 4)
+        self.assertNotIn(row_id, actions)
+
+        # Focus each action in turn, then let an unchanged poll replace the row
+        # list under it. Focus must come back to the same action, not to the
+        # document body.
+        steps: list[dict[str, object]] = [{"payload": payload}]
+        for action in actions + [row_id, "tab-now"]:
+            steps.append({"focus": action})
+            steps.append({"payload": payload})
+        frames = _render_board_focus(steps)
+        restored = [frames[index]["active"] for index in range(2, len(frames), 2)]
+        self.assertEqual(restored, actions + [row_id, "tab-now"])
+        self.assertNotIn("", restored)
+
+        # A poll that changes the row still keeps the keyboard on the action,
+        # because the action's identity is the work's, not the render's.
+        moved = copy.deepcopy(payload)
+        moved["observations"]["records"][0]["work"]["stage"] = "in_review"
+        after_change = _render_board_focus(
+            [{"payload": payload}, {"focus": actions[0]}, {"payload": moved}]
+        )
+        self.assertIn("stage: in review", after_change[-1]["worklist"])
+        self.assertEqual(after_change[-1]["active"], actions[0])
+
+    def test_a_detail_action_that_disappears_never_hands_focus_to_another_control(self) -> None:
+        payload = _observation_payload([_observation_fixture("ready")])
+        payload["remote"]["pull_requests"] = [
+            {
+                "number": 946,
+                "url": "https://github.example/codemower-ai/code-mower/pull/946",
+                "title": "t",
+                "labels": {},
+                "checks": [],
+            }
+        ]
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        row_id = _row_element_id(worklist, _work_keys(worklist)[0])
+        open_pr = next(name for name in re.findall(r'id="(workaction-[^"]+)"', worklist) if "openpr" in name)
+
+        # The recorded PR link stops being recorded, so the action it backed is
+        # no longer offered. Focus lands on the row that action belonged to --
+        # the one control it named -- and never on whichever action now happens
+        # to sit in its place.
+        without_link = copy.deepcopy(payload)
+        without_link["remote"]["pull_requests"] = []
+        gone = _render_board_focus(
+            [{"payload": payload}, {"focus": open_pr}, {"payload": without_link}]
+        )[-1]
+        self.assertNotIn(open_pr, gone["worklist"])
+        self.assertEqual(gone["active"], row_id)
+
+        # The whole work item disappears and a different one takes the first
+        # row. Nothing is focused at all: the Board does not move the keyboard
+        # onto an unrelated work item's controls.
+        replaced = _observation_payload([_observation_fixture("observed_running")])
+        dropped = _render_board_focus(
+            [{"payload": payload}, {"focus": open_pr}, {"payload": replaced}]
+        )[-1]
+        self.assertIn("runningwork", dropped["worklist"])
+        self.assertNotIn(row_id, dropped["worklist"])
+        self.assertEqual(dropped["active"], "")
+
+        # Same when nothing at all is left to render.
+        emptied = _render_board_focus(
+            [{"payload": payload}, {"focus": open_pr}, {"payload": _observation_payload([])}]
+        )[-1]
+        self.assertEqual(emptied["active"], "")
+
+    def test_opening_a_view_from_a_detail_action_moves_focus_out_of_the_hidden_panel(self) -> None:
+        payload = _observation_payload([_observation_fixture("ready")])
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        actions = {
+            name.split("-")[1]: name for name in re.findall(r'id="(workaction-[^"]+)"', worklist)
+        }
+        # Both view-switching actions live in the Now panel, which the switch
+        # itself hides. Focus must end on the tab for the view that was opened
+        # rather than inside hidden content or back at the document body.
+        for name, view in (("inspect", "health"), ("changes", "timeline")):
+            frame = _render_board_focus(
+                [{"payload": payload}, {"focus": actions[name]}, {"click": actions[name]}]
+            )[-1]
+            self.assertTrue(frame["hidden"]["now"])
+            self.assertFalse(frame["hidden"][view])
+            self.assertEqual(frame["active"], f"tab-{view}")
+            self.assertIn(f'id="tab-{view}" data-view="{view}" aria-selected="true"', frame["tabs"])
+
+        # Choosing a row is not a view switch, so it leaves the view alone and
+        # the keyboard on the row.
+        row_id = _row_element_id(worklist, _work_keys(worklist)[0])
+        chosen = _render_board_focus(
+            [{"payload": payload}, {"focus": row_id}, {"click": row_id}]
+        )[-1]
+        self.assertFalse(chosen["hidden"]["now"])
+        self.assertEqual(chosen["active"], row_id)
+
+    def test_keyboard_navigation_moves_selection_and_focus_through_rows_and_tabs(self) -> None:
+        payload = _observation_payload(
+            [_observation_fixture("failed"), _observation_fixture("merged")]
+        )
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        keys = _work_keys(worklist)
+        rows = [_row_element_id(worklist, key) for key in keys]
+        self.assertEqual(len(rows), 2)
+
+        def press(key: str, start: str, **extra: object) -> dict[str, str]:
+            steps: list[dict[str, object]] = [
+                {"payload": payload},
+                {"focus": start},
+                {"key": key, "from": start, **extra},
+            ]
+            return _render_board_focus(steps)[-1]
+
+        # Down selects and focuses the next row; Up comes back; End and Home
+        # jump to the ends; Down on the last row clamps rather than wrapping.
+        moved = press("ArrowDown", rows[0])
+        self.assertEqual(moved["active"], rows[1])
+        self.assertEqual(_selected_key(moved["worklist"]), keys[1])
+        self.assertEqual(press("ArrowUp", rows[1])["active"], rows[0])
+        self.assertEqual(press("End", rows[0])["active"], rows[1])
+        self.assertEqual(press("Home", rows[1])["active"], rows[0])
+        clamped = press("ArrowDown", rows[1])
+        self.assertEqual(clamped["active"], rows[1])
+        self.assertEqual(_selected_key(clamped["worklist"]), keys[1])
+
+        # A key the row list does not handle leaves selection and focus alone.
+        ignored = press("ArrowLeft", rows[0])
+        self.assertEqual(ignored["active"], rows[0])
+        self.assertEqual(_selected_key(ignored["worklist"]), keys[0])
+
+        # Arrow keys pressed on a detail action are not row movement: the
+        # action keeps the keyboard and the selection does not move.
+        action = next(
+            name for name in re.findall(r'id="(workaction-[^"]+)"', worklist) if "inspect" in name
+        )
+        on_action = press("ArrowDown", action)
+        self.assertEqual(on_action["active"], action)
+        self.assertEqual(_selected_key(on_action["worklist"]), keys[0])
+
+        # Tabs wrap, and the roving tabindex follows the focused tab.
+        forward = press("ArrowRight", "tab-now", on="tabs")
+        self.assertEqual(forward["active"], "tab-timeline")
+        self.assertFalse(forward["hidden"]["timeline"])
+        self.assertTrue(forward["hidden"]["now"])
+        self.assertIn('id="tab-timeline" data-view="timeline" aria-selected="true"', forward["tabs"])
+        self.assertEqual(forward["tabs"].count('tabindex="0"'), 1)
+        wrapped = press("ArrowLeft", "tab-now", on="tabs")
+        self.assertEqual(wrapped["active"], "tab-health")
+        self.assertFalse(wrapped["hidden"]["health"])
+
+    def test_work_row_carries_reference_stage_assignment_update_action_and_role(self) -> None:
+        nodes = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("observed_running")])}]
+        )[0]
+        row = nodes["worklist"]
+        self.assertIn('<span class="ref">issue-946</span>', row)
+        self.assertIn("stage: building", row)
+        self.assertIn("assignments: codex builder observed running", row)
+        self.assertIn("last update: 50s ago", row)
+        self.assertIn("responsible: no responsible role recorded", row)
+        self.assertIn("next: <b>no next action recorded</b>", row)
+
+        reviewed = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("reviewed")])}]
+        )[0]["worklist"]
+        self.assertIn("next: <b>review the change</b>", reviewed)
+        self.assertIn("responsible: owner", reviewed)
+
+    def test_lifecycle_states_remain_distinct(self) -> None:
+        expected = {
+            "review_requested": ("implementation_complete", "review requested"),
+            "review_running": ("observed_running", "provider run observed"),
+            "stale_review": ("stale", "stale observation"),
+            "changes_requested": ("cancelled", "provider run cancelled"),
+            "implementation_complete": ("implementation_complete", "implementation complete"),
+            "human_review": ("reviewed", "ready for human review"),
+            "ready": ("ready", "ready to merge"),
+            "merged": ("merged", "merged"),
+        }
+        headlines = {}
+        for label, (fixture_name, _state) in expected.items():
+            states = _eval_board_view("workStates(ARGS[0].work)", _observation_fixture(fixture_name))
+            headlines[label] = [state["label"] for state in states]
+
+        self.assertEqual(headlines["ready"][0], "ready to merge")
+        self.assertEqual(headlines["merged"][0], "merged")
+        self.assertEqual(headlines["human_review"][0], "ready for human review")
+        self.assertEqual(headlines["implementation_complete"][0], "implementation complete")
+        self.assertIn("review requested", headlines["implementation_complete"])
+        self.assertEqual(headlines["stale_review"][0], "stale observation")
+        self.assertEqual(headlines["review_running"][0], "provider run observed")
+
+        # The eight named lifecycle states never share a label.
+        distinct = [
+            "review requested",
+            "review observed running",
+            "stale review",
+            "changes requested",
+            "implementation complete",
+            "ready for human review",
+            "ready to merge",
+            "merged",
+        ]
+        self.assertEqual(len(set(distinct)), len(distinct))
+        rules = _eval_board_view("STATE_RULES.map(rule => rule.label)")
+        for label in distinct:
+            self.assertIn(label, rules)
+        self.assertEqual(len(rules), len(set(rules)))
+
+    def test_gate_publisher_never_stands_in_for_the_gate_verdict(self) -> None:
+        nodes = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("publisher_pass_gate_pending")])}]
+        )[0]
+        detail = nodes["worklist"]
+        self.assertIn("code-mower/gate verdict", detail)
+        self.assertIn("gate publisher run", detail)
+        self.assertIn("Publisher execution only; it is not the gate verdict.", detail)
+        self.assertIn("gate pending", detail)
+
+    def test_selected_row_exposes_independent_evidence(self) -> None:
+        nodes = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("ready")])}]
+        )[0]
+        detail = nodes["worklist"]
+        for group in ("Builder", "Review", "CI", "Gate", "Merge", "Human policy"):
+            self.assertIn(f"<h4>{group}</h4>", detail)
+        self.assertIn("orchestrator lease", detail)
+        self.assertIn("An assignment is a record of intent, not of execution.", detail)
+        self.assertIn("github, fresh, complete coverage", detail)
+        self.assertIn("remote_session, fresh, complete coverage", detail)
+
+    def test_selection_is_kept_by_opaque_work_identity_across_refresh(self) -> None:
+        first = _observation_fixture("observed_running")
+        second = _observation_fixture("ready")
+        payload = _observation_payload([first, second])
+        keys = _work_keys(_render_board_sequence([{"payload": payload}])[0]["worklist"])
+        self.assertEqual(len(keys), 2)
+        running_key = next(key for key in keys if key.endswith("runningwork"))
+
+        # Select the row that is not the default, then refresh twice: once with
+        # the same payload and once with the rows in the opposite order.
+        reordered = _observation_payload([second, first])
+        frames = _render_board_sequence(
+            [
+                {"payload": payload},
+                {"select": running_key, "payload": payload},
+                {"payload": reordered},
+            ]
+        )
+        self.assertNotEqual(_selected_key(frames[0]["worklist"]), running_key)
+        self.assertEqual(_selected_key(frames[1]["worklist"]), running_key)
+        self.assertEqual(_selected_key(frames[2]["worklist"]), running_key)
+
+        # The identity is built only from session, worktree and work id.
+        key = _eval_board_view("workKey(ARGS[0])", first)
+        self.assertTrue(key.startswith("work:"))
+        self.assertIn(first["work"]["id"], key)
+        moved = copy.deepcopy(first)
+        moved["created_at"] = "2026-09-12T20:00:01Z"
+        self.assertEqual(_eval_board_view("workKey(ARGS[0])", moved), key)
+
+    def test_unchanged_polls_announce_nothing_and_stay_out_of_the_timeline(self) -> None:
+        record = _observation_fixture("observed_running")
+        payload = _observation_payload([record])
+        # A poll that only advances observation and heartbeat times is an
+        # unchanged snapshot, not news.
+        polled = copy.deepcopy(payload)
+        for source in polled["observations"]["records"][0]["sources"]:
+            source["checked_at"] = "2026-09-12T20:00:20Z"
+        changed = copy.deepcopy(payload)
+        changed["observations"]["records"][0]["work"]["stage"] = "in_review"
+
+        frames = _render_board_sequence(
+            [
+                {"payload": payload},
+                {"payload": polled},
+                {"payload": changed},
+                {"payload": changed},
+            ]
+        )
+        # The live region is only ever touched by a meaningful change, so the
+        # first render and the unchanged poll after it leave it untouched.
+        self.assertEqual(frames[0].get("announce", ""), "")
+        self.assertEqual(frames[1].get("announce", ""), "")
+        self.assertIn("not listed here", frames[1]["changes"])
+        self.assertIn("issue-946", frames[2]["announce"])
+        # A recorded change that does not move the headline is still reported
+        # as a change rather than as a new state.
+        self.assertIn("changed while staying provider run observed", frames[2]["announce"])
+        self.assertEqual(
+            _eval_board_view(
+                "changeSentence({kind: 'changed', reference: 'issue-946',"
+                " headline: 'ready to merge', from: 'in review'})"
+            ),
+            "issue-946 moved from in review to ready to merge",
+        )
+        self.assertEqual(frames[2]["changes"].count('class="row"'), 1)
+        # The fourth poll repeats the third, so nothing new is announced or logged.
+        self.assertEqual(frames[3]["announce"], frames[2]["announce"])
+        self.assertEqual(frames[3]["changes"].count('class="row"'), 1)
+
+    def test_signature_ignores_poll_timestamps_and_tracks_recorded_change(self) -> None:
+        record = _observation_fixture("observed_running")
+        polled = copy.deepcopy(record)
+        for source in polled["sources"]:
+            source["checked_at"] = "2026-09-12T20:00:20Z"
+            source["observed_at"] = "2026-09-12T20:00:10Z"
+            if source["heartbeat_at"] is not None:
+                source["heartbeat_at"] = "2026-09-12T20:00:10Z"
+        polled["created_at"] = "2026-09-12T20:00:20Z"
+        self.assertEqual(
+            _eval_board_view("workSignature(ARGS[0])", record),
+            _eval_board_view("workSignature(ARGS[0])", polled),
+        )
+        moved = copy.deepcopy(record)
+        moved["work"]["runs"][0]["phase"] = "implementation_complete"
+        moved["work"]["runs"][0]["basis"] = "provider_reported"
+        moved["work"]["runs"][0]["lifecycle"]["state"] = "complete"
+        self.assertNotEqual(
+            _eval_board_view("workSignature(ARGS[0])", record),
+            _eval_board_view("workSignature(ARGS[0])", moved),
+        )
+
+    def test_fixture_scenarios_produce_honest_summaries(self) -> None:
+        # No session: an unlinked observation claims no stage and no route.
+        unlinked = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("unlinked")])}]
+        )[0]["worklist"]
+        self.assertIn("identity unlinked", unlinked)
+        self.assertIn("stage: not linked to a session", unlinked)
+        self.assertIn("next: <b>no next action recorded</b>", unlinked)
+        self.assertIn("Nothing binds this run to Code Mower work", unlinked)
+
+        # Idle with complete coverage is idle because it was looked at.
+        idle = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("no_work")])}]
+        )[0]["worklist"]
+        self.assertIn("idle with complete coverage", idle)
+        self.assertIn("session, work_queue, run_registry", idle)
+        self.assertNotIn("no work found", idle)
+
+        # An unavailable source preserves the last observation without a live claim.
+        unavailable = _render_board_sequence(
+            [
+                {
+                    "payload": _observation_payload(
+                        [_observation_fixture("source_unavailable_preserves_last_observation")]
+                    )
+                }
+            ]
+        )[0]["worklist"]
+        self.assertIn("source unavailable", unavailable)
+        self.assertIn("last observed", unavailable)
+        self.assertIn("is not evidence of work running now", unavailable)
+
+        # A stale source is reported as stale, with its partial coverage named.
+        stale = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("stale")])}]
+        )[0]["worklist"]
+        self.assertIn("stale observation", stale)
+        self.assertIn("Source stale: remote_session", stale)
+        self.assertIn("Partial coverage: remote_session", stale)
+        self.assertNotIn("live, observed", stale)
+
+    def test_partial_coverage_reports_counts_and_never_a_percentage_or_eta(self) -> None:
+        record = _observation_fixture("observed_running")
+        record["work"]["measurements"]["elapsed_seconds"] = {
+            "value": 120.0,
+            "coverage": "partial",
+            "observed": 2,
+            "total": 5,
+        }
+        record = board_observation.validate(record)
+        nodes = _render_board_sequence([{"payload": _observation_payload([record])}])[0]
+        self.assertIn("elapsed 120.0s from 2 of 5 recorded", nodes["worklist"])
+        self.assertIn("cost not recorded", nodes["worklist"])
+
+        # Nothing the operator is shown states a share, a percentage, or a
+        # projection of work that has not been observed.
+        rendered = "\n".join(nodes.values())
+        self.assertNotIn("%", rendered)
+        for invented in ("percent", "estimat", "remaining", "projected", "eta "):
+            self.assertNotIn(invented, rendered.lower())
+        # A partial measurement is reported as counted evidence, never scaled.
+        self.assertEqual(
+            _eval_board_view(
+                "measurementText({value: 2, coverage: 'partial', observed: 2, total: 5}, 'count')"
+            ),
+            "2 from 2 of 5 recorded",
+        )
+
+    def test_unknown_states_stay_neutral_and_colour_always_carries_text(self) -> None:
+        classes = _eval_board_view(
+            "['unknown', 'not_started', 'absent', 'unverifiable', 'none', 'unassigned']"
+            ".map(state => EVIDENCE_STATE_CLASSES[state])"
+        )
+        self.assertEqual(set(classes), {"muted"})
+        nodes = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("observed_running")])}]
+        )[0]
+        detail = nodes["worklist"]
+        # Every coloured pill carries a text cue and a text label beside it.
+        for coloured in re.findall(r'<span class="pill (ok|warn|bad)">(.*?)</span>\s*</span>', detail):
+            self.assertIn('class="cue"', coloured[1] + "</span>")
+        self.assertEqual(detail.count('<span class="pill ok">'), detail.count('<span class="pill ok"><span class="cue"'))
+        self.assertEqual(detail.count('<span class="pill bad">'), detail.count('<span class="pill bad"><span class="cue"'))
+
+    def test_actions_are_read_only_and_never_invent_a_remote_link(self) -> None:
+        record = _observation_fixture("ready")
+        # No open PR is recorded locally, so no PR link may be offered.
+        without_link = _render_board_sequence([{"payload": _observation_payload([record])}])[0]
+        self.assertIn("PR #946, no local link recorded", without_link["worklist"])
+        self.assertNotIn("https://github.com/codemower-ai/code-mower/pull/946", without_link["worklist"])
+
+        payload = _observation_payload([record])
+        payload["remote"]["pull_requests"] = [
+            {
+                "number": 946,
+                "url": "https://github.example/owner/repo/pull/946",
+                "title": "t",
+                "labels": {},
+                "checks": [],
+            }
+        ]
+        with_link = _render_board_sequence([{"payload": payload}])[0]["worklist"]
+        self.assertIn('href="https://github.example/owner/repo/pull/946">Open PR #946', with_link)
+        self.assertIn("This Board never merges, requeues, cancels, retries", with_link)
+        # The page has no form, no non-GET request, and reaches only the two
+        # read-only local endpoints.
+        page = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+        self.assertNotIn("<form", page)
+        self.assertNotIn("POST", page)
+        self.assertNotIn("method=", page)
+        # Every request the page makes goes through the one `fetchJson`
+        # helper, so the endpoint literals handed to it are the whole set of
+        # endpoints the page reaches, and the single raw `fetch(` call site
+        # takes only the path it was given.
+        self.assertEqual(
+            sorted(set(re.findall(r'fetchJson\("([^"]+)"', page))),
+            ["/api/events", "/api/status"],
+        )
+        self.assertEqual(page.count("fetch("), 1)
+        self.assertIn('fetch(path, {cache:"no-store"})', page)
+
+    def test_a_same_numbered_pull_request_in_another_repository_is_never_linked(self) -> None:
+        # A custom observations directory can hold a record another repository
+        # produced. Its PR number is not this repository's PR number, so this
+        # repository's link may not be attached to it.
+        foreign = _observation_fixture("ready")
+        foreign["scope"]["repository"] = "other-org/other-repo"
+        for run in foreign["work"]["runs"]:
+            run["binding"]["repository"] = "other-org/other-repo"
+        # The foreign record is entirely self-consistent: the contract accepts
+        # it, and it names a repository that is not this one.
+        foreign = board_observation.validate(foreign)
+        payload = _observation_payload([foreign])
+        payload["remote"]["pull_requests"] = [
+            {
+                "number": 946,
+                "url": "https://github.example/codemower-ai/code-mower/pull/946",
+                "title": "t",
+                "labels": {},
+                "checks": [],
+            }
+        ]
+        worklist = _render_board_sequence([{"payload": payload}])[0]["worklist"]
+        self.assertNotIn("Open PR #946", worklist)
+        self.assertNotIn("https://github.example/codemower-ai/code-mower/pull/946", worklist)
+        # The foreign record is still shown for exactly what it is.
+        self.assertIn(
+            "PR #946 in other-org/other-repo, not this repository; no local link recorded",
+            worklist,
+        )
+
+        # The identical payload for this repository does get the recorded link,
+        # so the suppression above is the repository check and nothing else.
+        local = copy.deepcopy(payload)
+        local["observations"]["records"] = [_observation_fixture("ready")]
+        self.assertEqual(
+            local["observations"]["records"][0]["scope"]["repository"], "codemower-ai/code-mower"
+        )
+        local_worklist = _render_board_sequence([{"payload": local}])[0]["worklist"]
+        self.assertIn(
+            'href="https://github.example/codemower-ai/code-mower/pull/946">Open PR #946',
+            local_worklist,
+        )
+
+    def test_duplicate_observations_of_one_identity_render_the_newest_once(self) -> None:
+        # Two files in the directory observe the same work item: an older one
+        # and the one that replaced it.
+        older = _observation_fixture("ready")
+        newer = _observation_fixture("merged")
+        for record in (older, newer):
+            record["work"]["id"] = "readywork"
+            record["work"]["runs"][0]["binding"]["work_id"] = "readywork"
+        older["created_at"] = "2026-09-12T20:00:00Z"
+        newer["created_at"] = "2026-09-12T20:00:20Z"
+        # Both remain records the frozen contract accepts.
+        older = board_observation.validate(older)
+        newer = board_observation.validate(newer)
+        scope = older["scope"]
+        identity = f"work:{scope['session_id']}:{scope['worktree_id']}:readywork"
+
+        frames = _render_board_sequence(
+            [
+                {"payload": _observation_payload([older, newer])},
+                # The same two files listed the other way round.
+                {"payload": _observation_payload([newer, older])},
+            ]
+        )
+        worklist = frames[0]["worklist"]
+        # One identity is one row and one detail region, not two competing ones.
+        self.assertEqual(_work_keys(worklist), [identity])
+        self.assertEqual(worklist.count('class="rowbtn" id='), 1)
+        self.assertEqual(worklist.count('id="workdetail"'), 1)
+        # The newest observation is the one rendered.
+        self.assertIn("stage: merged", worklist)
+        self.assertNotIn("stage: ready to merge", worklist)
+        self.assertEqual(_selected_key(worklist), identity)
+
+        # Which file the directory happened to list first cannot change the row.
+        self.assertEqual(frames[1]["worklist"], worklist)
+        # Change tracking reads the same deduplicated set, so reordering the
+        # duplicates is not news.
+        self.assertEqual(frames[1].get("announce", ""), "")
+        self.assertIn("not listed here", frames[1]["changes"])
+
+        # A genuinely newer observation of the same identity is still a change.
+        newest = copy.deepcopy(newer)
+        newest["created_at"] = "2026-09-12T20:00:25Z"
+        newest["work"]["stage"] = "in_review"
+        newest = board_observation.validate(newest)
+        moved = _render_board_sequence(
+            [
+                {"payload": _observation_payload([older, newer])},
+                {"payload": _observation_payload([older, newest])},
+            ]
+        )[1]
+        self.assertEqual(_work_keys(moved["worklist"]), [identity])
+        self.assertIn("stage: in review", moved["worklist"])
+        self.assertIn("issue-946", moved["announce"])
+
+    def test_a_run_that_changes_phase_across_observations_counts_once_and_newest(self) -> None:
+        # One run, observed twice: the file that caught it dispatched, and the
+        # file that replaced it once the run was seen running.
+        def phased(fixture_name: str, created_at: str) -> dict:
+            record = _observation_fixture(fixture_name)
+            record["created_at"] = created_at
+            record["work"]["id"] = "phasework"
+            record["work"]["runs"][0]["id"] = "phaserun"
+            record["work"]["runs"][0]["binding"]["work_id"] = "phasework"
+            return board_observation.validate(record)
+
+        older = phased("dispatched", "2026-09-12T20:00:00Z")
+        newer = phased("observed_running", "2026-09-12T20:00:20Z")
+        frames = _render_board_sequence(
+            [
+                {"payload": _observation_payload([older, newer])},
+                # The same two files listed the other way round.
+                {"payload": _observation_payload([newer, older])},
+            ]
+        )
+        participants = frames[0]["participants"]
+        # One run, counted once, in the phase the newest observation records.
+        self.assertIn("1 recorded run;", participants)
+        self.assertNotIn("2 recorded runs", participants)
+        self.assertIn('<span class="pill">observed running 1</span>', participants)
+        # The phase the run has already moved past is not still reported.
+        self.assertNotIn("dispatched 1", participants)
+        self.assertEqual(participants.count('class="row"'), 1)
+        # The participant summary reads the same deduplicated set the work list
+        # does, so file order cannot change either of them.
+        self.assertEqual(frames[1]["participants"], participants)
+        self.assertEqual(frames[1]["worklist"], frames[0]["worklist"])
+        self.assertIn("assignments: codex builder observed running", frames[0]["worklist"])
+
+    def test_consolidated_unlinked_observations_recompute_freshness_and_update(self) -> None:
+        # One unlinked run in one repository, observed twice: a first file whose
+        # source was fresh, and a later file whose source has gone unavailable
+        # while preserving a later recorded event.
+        fresh = _observation_fixture("unlinked")
+        gone = copy.deepcopy(fresh)
+        gone["created_at"] = "2026-09-12T20:00:20Z"
+        gone["sources"] = [
+            {
+                "id": "registryobs",
+                "kind": "run_registry",
+                "freshness": "unavailable",
+                "coverage": "unavailable",
+                "event_at": "2026-09-12T20:00:05Z",
+                "observed_at": "2026-09-12T20:00:10Z",
+                "checked_at": "2026-09-12T20:00:20Z",
+                "heartbeat_at": None,
+            }
+        ]
+        gone["unlinked"][0]["source_id"] = "registryobs"
+        gone["unlinked"][0]["observed_at"] = "2026-09-12T20:00:10Z"
+        # Both remain records the frozen contract accepts.
+        gone = board_observation.validate(gone)
+
+        frames = _render_board_sequence(
+            [
+                {"payload": _observation_payload([fresh, gone])},
+                # The same two files listed the other way round.
+                {"payload": _observation_payload([gone, fresh])},
+            ]
+        )
+        worklist = frames[0]["worklist"]
+        # Reversing the files cannot change one byte of the consolidated row.
+        self.assertEqual(frames[1]["worklist"], worklist)
+        self.assertEqual(frames[1]["participants"], frames[0]["participants"])
+
+        # A fresh first record cannot hide the unavailable source behind the
+        # evidence that is being shown next to it.
+        self.assertIn(
+            '<span class="pill bad"><span class="cue" aria-hidden="true">!</span>'
+            " last observed 30s ago</span>",
+            worklist,
+        )
+        self.assertNotIn(
+            '<span class="cue" aria-hidden="true">+</span> observed 30s ago', worklist
+        )
+        self.assertIn("Source unavailable: run_registry.", worklist)
+        # The later meaningful update is the one retained, not the earlier one
+        # the first file happened to record.
+        self.assertIn("last update: 25s ago", worklist)
+        self.assertNotIn("last update: 50s ago", worklist)
+        self.assertIn("last meaningful update 25s ago", worklist)
+
+        # One run observed in two files is one run, attested by the worst
+        # source that observed it.
+        self.assertIn("assignments: claude unknown", worklist)
+        self.assertNotIn("claude unknown; claude unknown", worklist)
+        self.assertIn("run_registry, unavailable, unavailable coverage", worklist)
+        participants = frames[0]["participants"]
+        self.assertIn("1 recorded run;", participants)
+        self.assertNotIn("2 recorded runs", participants)
+        self.assertIn("worst source unavailable", participants)
+
+    def test_element_ids_encode_every_work_key_injectively(self) -> None:
+        keys = [
+            # The frozen contract admits all three of these repositories, and
+            # an unlinked row is identified by its repository alone.
+            "unlinked:owner/re.po",
+            "unlinked:owner/re-po",
+            "unlinked:owner/re_po",
+            # Work and idle identities differing only in their punctuation.
+            "work:" + "a" * 32 + ":sha256:" + "b" * 64 + ":work_one",
+            "work:" + "a" * 32 + ":sha256:" + "b" * 64 + ":work-one",
+            "idle:" + "a" * 32 + ":sha256:" + "b" * 64,
+            # Opaque keys past anything the contract admits today: non-ASCII, an
+            # astral character, separators alone, and a long one.
+            "unlinked:ówner/répo",
+            "unlinked:owner/repo\U0001f600",
+            ":::",
+            "unlinked:owner/" + "a.b-c_" * 60,
+        ]
+        rows = _eval_board_page("ARGS[0].map(rowElementId)", keys)
+        # Distinct work is distinct DOM identity: no two keys share a row id.
+        self.assertEqual(len(set(rows)), len(keys))
+        # The rule this replaced did collapse them, which is the defect: it is
+        # not a collision this set merely happens to avoid.
+        self.assertLess(len({re.sub(r"[^A-Za-z0-9_-]", "-", key) for key in keys}), len(keys))
+        for element_id in rows:
+            self.assertRegex(element_id, r"^workrow-[A-Za-z0-9_-]+$")
+        # Every id decodes back to exactly the key it came from, which is what
+        # makes the encoding injective rather than merely unlikely to collide.
+        decoded = _eval_board_page(
+            "ARGS[0].map(key => rowElementId(key).slice('workrow-'.length)"
+            ".replace(/_([0-9a-f]+)_/g, (whole, hex) => String.fromCharCode(parseInt(hex, 16))))",
+            keys,
+        )
+        self.assertEqual(decoded, keys)
+        # The detail region's actions are built from the same encoding, so they
+        # are unique per work item too, and never collide with a row button.
+        actions = _eval_board_page(
+            "ARGS[0].flatMap(key => ARGS[1].map(name => actionElementId(key, name)))",
+            keys,
+            ["openpr", "inspect", "changes"],
+        )
+        self.assertEqual(len(set(actions)), len(keys) * 3)
+        self.assertFalse(set(actions) & set(rows))
+
+    def test_keys_that_differ_only_in_punctuation_keep_separate_rows_and_focus(self) -> None:
+        def unlinked_for(repository: str) -> dict:
+            record = _observation_fixture("unlinked")
+            record["scope"]["repository"] = repository
+            # Still a record the frozen contract accepts.
+            return board_observation.validate(record)
+
+        payload = _observation_payload([unlinked_for("owner/re.po"), unlinked_for("owner/re-po")])
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        keys = _work_keys(worklist)
+        self.assertEqual(sorted(keys), ["unlinked:owner/re-po", "unlinked:owner/re.po"])
+        # Two work items, two row ids. Under the punctuation-to-hyphen rule
+        # both rows claimed one id, so the document carried a duplicate.
+        row_ids = [_row_element_id(worklist, key) for key in keys]
+        self.assertEqual(len(set(row_ids)), 2)
+
+        # The one detail region is labelled by the row that is actually
+        # selected, and the row that is not selected is not expanded.
+        selected_key = _selected_key(worklist)
+        selected_id = _row_element_id(worklist, selected_key)
+        self.assertEqual(worklist.count('id="workdetail"'), 1)
+        # The detail region also carries the opaque identity it is rendered
+        # for, which is what a refresh matches its preserved scroll offset
+        # against, so two keys that differ only in punctuation cannot inherit
+        # one another's reading position either.
+        self.assertIn(
+            f'id="workdetail" data-key="{selected_key}" role="region" aria-labelledby="{selected_id}"',
+            worklist,
+        )
+        self.assertEqual(worklist.count('aria-expanded="true"'), 1)
+
+        # Selecting its neighbour moves the detail, and the label with it.
+        other_key = next(key for key in keys if key != selected_key)
+        moved = _render_board_focus([{"payload": payload}, {"select": other_key}])[-1]["worklist"]
+        other_id = _row_element_id(moved, other_key)
+        self.assertNotEqual(other_id, selected_id)
+        self.assertEqual(_selected_key(moved), other_key)
+        self.assertEqual(moved.count('id="workdetail"'), 1)
+        self.assertIn(
+            f'id="workdetail" data-key="{other_key}" role="region" aria-labelledby="{other_id}"',
+            moved,
+        )
+        # The detail's actions belong to the work that is selected, so no
+        # action id is shared between the two rows' detail regions.
+        first_actions = set(re.findall(r'id="(workaction-[^"]+)"', worklist))
+        second_actions = set(re.findall(r'id="(workaction-[^"]+)"', moved))
+        self.assertTrue(first_actions)
+        self.assertFalse(first_actions & second_actions)
+
+        # A refresh under the keyboard restores focus to the same row, not to
+        # the neighbour that used to answer to the same id.
+        restored = _render_board_focus(
+            [
+                {"payload": payload},
+                {"select": other_key},
+                {"focus": other_id},
+                {"payload": payload},
+            ]
+        )[-1]
+        self.assertEqual(restored["active"], other_id)
+        self.assertEqual(_selected_key(restored["worklist"]), other_key)
+
+    def test_mobile_detail_follows_the_row_and_desktop_places_it_adjacent(self) -> None:
+        html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+        # One detail node, rendered inside the selected row, so single-column
+        # source order already puts it under the row it belongs to.
+        nodes = _render_board_sequence(
+            [
+                {
+                    "payload": _observation_payload(
+                        [_observation_fixture("observed_running"), _observation_fixture("ready")]
+                    )
+                }
+            ]
+        )[0]
+        self.assertEqual(nodes["worklist"].count('id="workdetail"'), 1)
+        selected = nodes["worklist"].split('<li class="workrow selected">')[1]
+        self.assertLess(selected.index("</button>"), selected.index('id="workdetail"'))
+        self.assertIn("@media (min-width: 900px) {", html)
+        # Desktop moves the detail into a second column of the row's own grid.
+        # It is still one region, still rendered inside the selected row, and
+        # still in normal flow rather than painted over the page.
+        style = _computed(
+            _board_css(),
+            {"tag": "div", "classes": ["workdetail"]},
+            [
+                {"tag": "div", "id": "worklist", "classes": []},
+                {"tag": "ul", "classes": ["workrows"]},
+                {"tag": "li", "classes": ["workrow", "selected"]},
+            ],
+            desktop=True,
+        )
+        self.assertNotIn("position", style)
+        self.assertEqual(style["grid-column"], "2")
+        row = _computed(
+            _board_css(),
+            {"tag": "li", "classes": ["workrow", "selected"]},
+            [{"tag": "div", "id": "worklist", "classes": []}, {"tag": "ul", "classes": ["workrows"]}],
+            desktop=True,
+        )
+        self.assertEqual(row["display"], "grid")
+        self.assertEqual(_track_count(row["grid-template-columns"]), 2)
+
+    def test_desktop_detail_reserves_its_height_so_a_short_list_cannot_overlap(self) -> None:
+        # A detail region far taller than the one or two rows beside it: the
+        # case where an out-of-flow panel used to hang over the Work Now and
+        # Participants sections that follow the list.
+        boxes = {"row_height": 90, "detail_height": 420}
+        for rows, selected in ((1, 0), (2, 0), (2, 1)):
+            with self.subTest(rows=rows, selected=selected):
+                layout = _work_list_layout(
+                    _board_css(), rows=rows, selected=selected, **boxes
+                )
+                # The list reserves real height for the detail, so everything
+                # after it starts below the detail rather than under it.
+                self.assertGreaterEqual(layout["reserved"], layout["detail_bottom"])
+                self.assertGreaterEqual(layout["reserved"], boxes["detail_height"])
+
+        # The same model, given the rule this page shipped before, reports the
+        # overlap it was blocked for: a one-row list reserved its 180px minimum
+        # while the absolutely positioned detail ran on to 420px.
+        previous = _work_list_layout(
+            PREVIOUS_DESKTOP_CSS, container_classes=("worklayout",), rows=1, selected=0, **boxes
+        )
+        self.assertEqual(previous["reserved"], 180)
+        self.assertEqual(previous["detail_bottom"], 420)
+        self.assertGreater(previous["detail_bottom"], previous["reserved"])
+
+    def test_no_rule_takes_dynamic_content_out_of_flow_without_pinning_its_box(self) -> None:
+        # Out-of-flow content contributes no layout height, so anything the
+        # payload can grow must stay in flow. The one exception is the
+        # visually hidden live region, which pins its own box to a clipped
+        # pixel and so can never overlap anything.
+        for at_rule, selector, declarations in _css_rules(_board_css()):
+            if declarations.get("position") not in {"absolute", "fixed"}:
+                continue
+            with self.subTest(rule=f"{at_rule} {selector}".strip()):
+                self.assertEqual(declarations.get("width"), "1px")
+                self.assertEqual(declarations.get("height"), "1px")
+                self.assertEqual(declarations.get("overflow"), "hidden")
+
+    def test_participants_report_recorded_phases_without_claiming_liveness(self) -> None:
+        nodes = _render_board_sequence(
+            [
+                {
+                    "payload": _observation_payload(
+                        [_observation_fixture("observed_running"), _observation_fixture("unlinked")]
+                    )
+                }
+            ]
+        )[0]
+        participants = nodes["participants"]
+        self.assertIn("<b>codex</b>", participants)
+        self.assertIn("observed running 1", participants)
+        self.assertIn("<b>claude</b>", participants)
+        self.assertIn("not linked to a session 1", participants)
+        self.assertIn("not a claim that anything is running now", participants)
+
+    def test_health_view_reports_connections_version_and_process_state(self) -> None:
+        payload = _observation_payload(
+            [_observation_fixture("stale"), _observation_fixture("observed_running")]
+        )
+        payload["board"]["version"]["installed_version"] = "1.5.0"
+        payload["board"]["version"]["restart_recommended"] = True
+        payload["board"]["cache"]["state"] = "stale"
+        payload["local_boards"] = {"boards": [{"port": 5332, "pid": 42, "cwd": ""}]}
+        nodes = _render_board_sequence([{"payload": payload}])[0]
+        self.assertIn("restart recommended", nodes["diagnostics"])
+        self.assertIn("installed 1.5.0", nodes["diagnostics"])
+        self.assertIn("Snapshot cache", nodes["diagnostics"])
+        self.assertIn("2 recorded", nodes["diagnostics"])
+        self.assertIn("<b>remote_session</b>", nodes["sources"])
+        self.assertIn("coverage partial", nodes["sources"])
+        self.assertIn("board localhost:5332", nodes["local"])
+
+    def test_empty_observation_directory_is_reported_as_nothing_recorded(self) -> None:
+        payload = _observation_payload([])
+        payload["observations"]["path_exists"] = False
+        nodes = _render_board_sequence([{"payload": payload}])[0]
+        self.assertIn("No local Board observation is recorded yet", nodes["worklist"])
+        self.assertNotIn("idle", nodes["worklist"])
+        rejected = _observation_payload([])
+        rejected["observations"]["rejected"] = 1
+        rejected["observations"]["message"] = "no local Board observation passed the observation contract"
+        rejected_nodes = _render_board_sequence([{"payload": rejected}])[0]
+        self.assertIn("passed the observation contract", rejected_nodes["worklist"])
+        self.assertIn("1 rejected by the observation contract", rejected_nodes["diagnostics"])
+
+    def test_an_unexaminable_observation_path_renders_as_unread_not_as_absence(self) -> None:
+        """The page says the read failed, and says nothing about the path.
+
+        The rendered wording is the whole point of degrading rather than
+        raising: a path the Board could not examine must never reach a reader
+        as "nothing recorded yet", which is a claim about work. The rest of the
+        page is built from the same snapshot and is unaffected.
+        """
+
+        payload = _observation_payload([])
+        payload["observations"].update(
+            {
+                "available": False,
+                "path_state": "unreadable",
+                "path_exists": None,
+                "coverage": "unavailable",
+                "coverage_complete": False,
+                "coverage_gaps": ["directory_unreadable"],
+                "candidate_files": None,
+                "omitted_files": None,
+                "unaccounted_files": None,
+                "message": "could not read local Board observations",
+                "warnings": [{"file": "", "message": "could not check the local Board observation path"}],
+            }
+        )
+        payload["remote"]["pull_requests"] = [
+            {
+                "number": 1000,
+                "title": "Board: work first",
+                "url": "https://example.invalid/pr/1000",
+                "head_sha": "102ed860272e86f5abc042a046fa0fbda23f55a9",
+                "lane": "claude",
+                "draft": True,
+            }
+        ]
+        nodes = _render_board_sequence([{"payload": payload}])[0]
+
+        self.assertIn("could not read local Board observations", nodes["worklist"])
+        # Never the absence wording: the Board could not look, which is not the
+        # same statement as nothing having been recorded.
+        self.assertNotIn("No local Board observation is recorded yet", nodes["worklist"])
+        self.assertIn("Incomplete snapshot", nodes["worklist"])
+        self.assertIn("observation file coverage unavailable", nodes["worklist"])
+        # The only place "idle" may appear is the sentence withdrawing it.
+        self.assertIn(
+            "Nothing here can be read as complete coverage, as an idle session",
+            nodes["worklist"],
+        )
+        # Coverage is stated as unavailable rather than as a count of nothing.
+        self.assertIn("incomplete snapshot", nodes["chrome"])
+        self.assertIn("could not check the local Board observation path", nodes["diagnostics"])
+        # The rest of the snapshot rendered exactly as it would have.
+        self.assertIn("#1000", nodes["prs"])
+
+
+# One expression over the shipped view model returning every run-level display
+# at once -- the row's own states, the assignments line, the selected-work
+# evidence panel and the participant summary -- so the displays are compared
+# against each other rather than each against its own expectation.
+RUN_DISPLAY_EXPRESSION = """(() => {
+  const rows = workRows(ARGS[0], ARGS[1]);
+  const summary = participantSummary(rows);
+  return {
+    rows: rows.map(row => ({
+      reference: row.reference,
+      states: row.states.map(state => [state.label, state.class, state.cue]),
+      assignments: row.assignments,
+      builder: (row.groups.find(group => group.name === "builder") || {items: []}).items
+        .map(item => [item.state, item.class, item.cue])
+    })),
+    participants: summary.map(entry => [
+      entry.provider,
+      entry.role,
+      entry.states.map(state => [state.label, state.count])
+    ])
+  };
+})()"""
+
+
+class BoardRunLifecycleDisplayTests(TestCase):
+    """Every run-level display names one run the same lifecycle-aware way.
+
+    The frozen contract requires the `suspended` lifecycle state to carry the
+    `failed` phase, so any display built from the phase alone reports a paused
+    provider session as a failed one. These tests execute the shipped page
+    JavaScript over every lifecycle state the contract accepts, against every
+    phase it allows that state to carry.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+
+    def _run_displays(self, records: list[dict], **kwargs: object) -> dict:
+        return _eval_board_view(
+            RUN_DISPLAY_EXPRESSION,
+            _observation_payload(records),
+            self.NOW_MS,
+            **kwargs,
+        )
+
+    def test_every_lifecycle_state_displays_one_run_the_same_way_everywhere(self) -> None:
+        vocabulary = {label for _, _, label, _, _ in LIFECYCLE_DISPLAY_MATRIX}
+        for state, phase, label, cls, cue in LIFECYCLE_DISPLAY_MATRIX:
+            with self.subTest(lifecycle=state, phase=phase):
+                reference = f"lifecycle-{state or 'none'}-{phase}"
+                record = _record_with_run_lifecycle(reference, phase, state)
+                view = self._run_displays([record])
+                row = view["rows"][0]
+                self.assertEqual(row["reference"], reference)
+                # The selected-work evidence panel, the assignments line and
+                # the participant summary all name and colour the one recorded
+                # run identically, and all three count it exactly once.
+                self.assertEqual(row["builder"], [[label, cls, cue]])
+                self.assertEqual(row["assignments"], [f"codex builder {label}"])
+                self.assertEqual(
+                    view["participants"], [["codex", "builder", [[label, 1]]]]
+                )
+                # No other run state in the contract's vocabulary is named by
+                # any of those displays, so a suspended run never reads as
+                # failed, a cancelled one never reads as failed, and an actual
+                # lifecycle failure never reads as either.
+                rendered = json.dumps([row["builder"], row["assignments"], view["participants"]])
+                for other in vocabulary - {label}:
+                    self.assertNotIn(other, rendered)
+
+    def test_a_suspended_run_never_carries_a_failed_row_state(self) -> None:
+        for state, phase, label, _, _ in LIFECYCLE_DISPLAY_MATRIX:
+            with self.subTest(lifecycle=state, phase=phase):
+                record = _record_with_run_lifecycle(f"states-{state or 'none'}-{phase}", phase, state)
+                states = [
+                    entry[0] for entry in self._run_displays([record])["rows"][0]["states"]
+                ]
+                if label == "suspended":
+                    self.assertIn("provider run suspended", states)
+                    self.assertNotIn("provider run failed", states)
+                    self.assertNotIn("provider run cancelled", states)
+                elif label == "failed":
+                    self.assertIn("provider run failed", states)
+                    self.assertNotIn("provider run suspended", states)
+                elif label == "cancelled":
+                    self.assertIn("provider run cancelled", states)
+                    self.assertNotIn("provider run failed", states)
+                else:
+                    self.assertNotIn("provider run failed", states)
+                    self.assertNotIn("provider run suspended", states)
+
+    def test_the_suspended_fixture_renders_no_failure_anywhere_on_the_page(self) -> None:
+        # The fixture the audit reproduced with: an accepted record whose run
+        # the provider suspended, which the contract records as the `failed`
+        # phase under the `suspended` lifecycle state.
+        record = _record_with_suspended_run("suspended-session")
+        frame = _render_board_sequence([{"payload": _observation_payload([record])}])[0]
+        worklist = frame["worklist"]
+        self.assertIn("provider run suspended", worklist)
+        self.assertIn("assignments: codex builder suspended", worklist)
+        # The detail is open on the first row, so this is the evidence panel.
+        self.assertIn("suspended", worklist)
+        self.assertIn("suspended 1", frame["participants"])
+        # Not one label, class or count on the whole page reports a failure.
+        for node, html in frame.items():
+            self.assertNotIn("failed", html, f"{node} reports a failure for a suspended run")
+
+    def test_one_suspended_run_and_one_failed_run_are_one_of_each(self) -> None:
+        suspended = _record_with_run_lifecycle("mixed-suspended", "failed", "suspended")
+        failed = _record_with_run_lifecycle("mixed-failed", "failed", "failed")
+        cancelled = _record_with_run_lifecycle("mixed-cancelled", "cancelled", "terminated")
+        view = self._run_displays([suspended, failed, cancelled])
+        # One entry for the one provider and role, counting each run under the
+        # state its own lifecycle records: one suspended, one failed and one
+        # cancelled, never three failures.
+        self.assertEqual(
+            view["participants"],
+            [["codex", "builder", [["cancelled", 1], ["failed", 1], ["suspended", 1]]]],
+        )
+        by_reference = {row["reference"]: row for row in view["rows"]}
+        self.assertEqual(by_reference["mixed-suspended"]["builder"], [["suspended", "warn", "~"]])
+        self.assertEqual(by_reference["mixed-failed"]["builder"], [["failed", "bad", "!"]])
+        self.assertEqual(by_reference["mixed-cancelled"]["builder"], [["cancelled", "warn", "~"]])
+
+    def test_the_timeline_reports_a_run_moving_from_suspended_to_failure(self) -> None:
+        suspended = _record_with_run_lifecycle("moving-run", "failed", "suspended")
+        failed = _record_with_run_lifecycle("moving-run", "failed", "failed")
+        frames = _render_board_sequence(
+            [
+                {"payload": _observation_payload([suspended])},
+                {"payload": _observation_payload([failed])},
+            ]
+        )
+        self.assertNotIn("failed", frames[0]["worklist"])
+        self.assertIn(
+            "moving-run moved from provider run suspended to provider run failed",
+            frames[1]["changes"],
+        )
+        self.assertIn("provider run failed", frames[1]["worklist"])
+        self.assertNotIn("suspended", frames[1]["worklist"])
+
+    def test_labelling_a_run_from_its_raw_phase_would_report_suspended_as_failed(self) -> None:
+        """The mutation the fix replaced, executed, so these checks have teeth."""
+
+        record = _record_with_run_lifecycle("mutation-suspended", "failed", "suspended")
+        raw_phase = self._run_displays(
+            [record],
+            # Emptying the lifecycle mapping is exactly raw-phase labelling:
+            # every run state becomes the phase the contract recorded.
+            mutate=('const LIFECYCLE_RUN_STATES = {suspended: "suspended"};',
+                    "const LIFECYCLE_RUN_STATES = {};"),
+        )
+        row = raw_phase["rows"][0]
+        self.assertEqual(row["builder"], [["failed", "bad", "!"]])
+        self.assertEqual(row["assignments"], ["codex builder failed"])
+        self.assertEqual(raw_phase["participants"], [["codex", "builder", [["failed", 1]]]])
+        self.assertIn("provider run failed", [entry[0] for entry in row["states"]])
+        # And the shipped view model, unmutated, says none of that.
+        shipped = self._run_displays([record])
+        self.assertEqual(shipped["rows"][0]["builder"], [["suspended", "warn", "~"]])
+        self.assertEqual(shipped["participants"], [["codex", "builder", [["suspended", 1]]]])
+
+
+# Everything a reconciled reading decides, read off the shipped view model in
+# one call: which rows survive, what each of them says, which row an operator
+# who has made no choice is shown, and what the participant summary counts.
+RECONCILED_EXPRESSION = """(() => {
+  const rows = workRows(ARGS[0], ARGS[1]);
+  return {
+    keys: rows.map(row => row.key),
+    headlines: rows.map(row => row.headline),
+    actions: rows.map(row => row.action_label),
+    selection: resolveSelection(rows, null),
+    participants: participantSummary(rows).map(entry => [entry.provider, entry.role, entry.count])
+  };
+})()"""
+
+
+class BoardSessionScopeReconciliationTests(TestCase):
+    """One session scope never states two incompatible things at once.
+
+    A session-level `no_work` snapshot and a work-specific observation of the
+    same session and worktree are different work identities, so identity
+    deduplication -- which only ever compares like with like -- retains both.
+    Reconciliation is the explicit step that decides which of the two describes
+    the session now, using the recorded observation order rather than the order
+    the directory happened to list the files in.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+
+    def _reconciled(self, records: list[dict], **kwargs: object) -> dict:
+        return _eval_board_view(
+            RECONCILED_EXPRESSION,
+            _observation_payload(records),
+            self.NOW_MS,
+            **kwargs,
+        )
+
+    # Every transition one session scope can record, with the rows that survive
+    # it. Offsets are seconds after the fixture clock, so each case fixes the
+    # recorded order outright; the reversed-order test below proves the result
+    # does not depend on the order the records were handed over in.
+    TRANSITIONS = (
+        (
+            "idle then active: the session picked work up",
+            lambda idle, work: [idle(0), work("alpha", 20)],
+            [_work_key("alpha")],
+        ),
+        (
+            "idle then two distinct work ids: both survive",
+            lambda idle, work: [idle(0), work("alpha", 20), work("beta", 25)],
+            [_work_key("alpha"), _work_key("beta")],
+        ),
+        (
+            "active then idle: the session went quiet",
+            lambda idle, work: [work("alpha", 0), idle(20)],
+            [_idle_key()],
+        ),
+        (
+            "terminal then idle: finished work is not current work either",
+            lambda idle, work: [work("alpha", 0, fixture="merged"), idle(20)],
+            [_idle_key()],
+        ),
+        (
+            "active, idle, then new active: only the newest work survives",
+            lambda idle, work: [work("alpha", 0), idle(20), work("beta", 40)],
+            [_work_key("beta")],
+        ),
+        (
+            "equal timestamps: the work-specific observation is the current one",
+            lambda idle, work: [idle(0), work("alpha", 0)],
+            [_work_key("alpha")],
+        ),
+    )
+
+    def _transition_records(self, build) -> list[dict]:
+        idle = _observation_fixture("no_work")
+
+        def at_idle(offset: int) -> dict:
+            return _observed_later(idle, offset)
+
+        def at_work(work_id: str, offset: int, *, fixture: str = "observed_running") -> dict:
+            return _observed_later(_named_work(work_id, fixture=fixture), offset)
+
+        return build(at_idle, at_work)
+
+    def test_every_session_scope_transition_keeps_one_truthful_reading(self) -> None:
+        for name, build, expected in self.TRANSITIONS:
+            with self.subTest(name):
+                records = self._transition_records(build)
+                self.assertEqual(self._reconciled(records)["keys"], expected)
+
+    def test_reconciliation_never_depends_on_the_order_the_records_arrive_in(self) -> None:
+        # Directory listing order, input order and file order are all the same
+        # accident, and none of them may decide what the Board says.
+        for name, build, expected in self.TRANSITIONS:
+            with self.subTest(name):
+                records = self._transition_records(build)
+                forward = self._reconciled(records)
+                self.assertEqual(forward["keys"], expected)
+                self.assertEqual(self._reconciled(list(reversed(records))), forward)
+
+    def test_equal_timestamps_are_a_real_tie_broken_by_specificity(self) -> None:
+        # The tie is proved rather than assumed: both records are compared on
+        # the trusted order itself, and only then on what the tie-break did.
+        idle = _observation_fixture("no_work")
+        work = _named_work("alpha")
+        orders = _eval_board_view(
+            "[observationOrder(ARGS[0]), observationOrder(ARGS[1])]", idle, work
+        )
+        self.assertEqual(orders[0], orders[1])
+        # A session-level snapshot summarizes the whole session; a work-specific
+        # observation names one item inside it. On an exact tie the specific
+        # reading wins, because "nothing to do" over a work item observed at the
+        # same instant is the contradiction being removed.
+        self.assertEqual(self._reconciled([idle, work])["keys"], [_work_key("alpha")])
+        self.assertEqual(self._reconciled([work, idle])["keys"], [_work_key("alpha")])
+
+    def test_a_different_worktree_in_the_same_session_never_supersedes(self) -> None:
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        elsewhere = _observed_later(
+            _in_session(_named_work("alpha"), session=FIXTURE_SESSION, worktree=OTHER_WORKTREE),
+            20,
+        )
+        # One session can hold several worktrees, and one of them being busy
+        # says nothing about another being idle.
+        expected = sorted([_idle_key(), _work_key("alpha", FIXTURE_SESSION, OTHER_WORKTREE)])
+        self.assertEqual(sorted(self._reconciled([idle, elsewhere])["keys"]), expected)
+        self.assertEqual(sorted(self._reconciled([elsewhere, idle])["keys"]), expected)
+
+    def test_a_different_session_in_the_same_worktree_never_supersedes(self) -> None:
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        other = _observed_later(
+            _in_session(_named_work("alpha"), session=OTHER_SESSION, worktree=FIXTURE_WORKTREE),
+            20,
+        )
+        # One worktree is reused by session after session, so a later session
+        # working in it is not evidence that an earlier one is not idle.
+        expected = sorted([_idle_key(), _work_key("alpha", OTHER_SESSION, FIXTURE_WORKTREE)])
+        self.assertEqual(sorted(self._reconciled([idle, other])["keys"]), expected)
+        self.assertEqual(sorted(self._reconciled([other, idle])["keys"]), expected)
+
+    def test_a_record_without_a_session_identity_is_never_correlated(self) -> None:
+        # The frozen contract gives an unlinked record neither half of a session
+        # identity, so nothing ties it to the session beside it. It keeps the
+        # unlinked consolidation semantics it already had, in both directions.
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        unlinked = _observed_later(_observation_fixture("unlinked"), 20)
+        keys = [_idle_key(), "unlinked:codemower-ai/code-mower"]
+        self.assertEqual(sorted(self._reconciled([idle, unlinked])["keys"]), sorted(keys))
+        older_unlinked = _observed_later(_observation_fixture("unlinked"), -20)
+        self.assertEqual(sorted(self._reconciled([idle, older_unlinked])["keys"]), sorted(keys))
+        work = _observed_later(_named_work("alpha"), 20)
+        self.assertEqual(
+            sorted(self._reconciled([work, unlinked])["keys"]),
+            sorted([_work_key("alpha"), "unlinked:codemower-ai/code-mower"]),
+        )
+
+    def test_a_scope_missing_either_half_of_its_identity_is_not_a_scope(self) -> None:
+        # Half an identity is not an identity: correlating on it would be a
+        # guess about which session a record belonged to. The view model is
+        # asked directly, because the contract does not let a producer record
+        # any of these shapes in the first place.
+        scopes = [
+            {"session_id": FIXTURE_SESSION, "worktree_id": FIXTURE_WORKTREE},
+            {"session_id": FIXTURE_SESSION, "worktree_id": None},
+            {"session_id": None, "worktree_id": FIXTURE_WORKTREE},
+            {"session_id": "", "worktree_id": FIXTURE_WORKTREE},
+            {"session_id": None, "worktree_id": None},
+            {},
+        ]
+        self.assertEqual(
+            _eval_board_view("ARGS[0].map(scope => sessionScope({scope}))", scopes),
+            [f"{FIXTURE_SESSION} {FIXTURE_WORKTREE}", "", "", "", "", ""],
+        )
+
+    def test_the_reconciled_set_is_what_every_work_first_consumer_reads(self) -> None:
+        # One reconciliation, consumed everywhere: the work list, the default
+        # selection and the participant summary all descend from it, so a
+        # superseded observation cannot keep counting a run or keep offering
+        # itself as the row an operator lands on.
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        work = _observed_later(_named_work("alpha"), 20)
+        reconciled = self._reconciled([idle, work])
+        self.assertEqual(reconciled["keys"], [_work_key("alpha")])
+        self.assertEqual(reconciled["selection"], _work_key("alpha"))
+        self.assertEqual(reconciled["participants"], [["codex", "builder", 1]])
+
+        # And in the other direction the idle snapshot is what is left, so the
+        # superseded run is no longer counted as a participant at all.
+        quiet = self._reconciled([_observed_later(_named_work("alpha"), 0), _observed_later(idle, 20)])
+        self.assertEqual(quiet["keys"], [_idle_key()])
+        self.assertEqual(quiet["selection"], _idle_key())
+        self.assertEqual(quiet["participants"], [])
+
+    def test_no_idle_claim_is_rendered_beside_active_work_in_one_scope(self) -> None:
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        work = _observed_later(_named_work("alpha"), 20)
+        nodes = _render_board_sequence([{"payload": _observation_payload([idle, work])}])[0]
+        worklist = nodes["worklist"]
+        self.assertEqual(_work_keys(worklist), [_work_key("alpha")])
+        # The two sentences that would contradict the work beside them.
+        self.assertNotIn("idle with complete coverage", worklist)
+        self.assertNotIn("nothing to do in this session", worklist)
+        self.assertNotIn("This session is idle because", worklist)
+        # The page counts what it renders, everywhere it reports a count.
+        self.assertIn("1 observed work item", nodes["chrome"])
+        self.assertIn("1 recorded run;", nodes["participants"])
+        # The superseded snapshot's sources were still really contacted, so the
+        # Health view still inspects them on their own terms.
+        self.assertIn("<b>session</b>", nodes["sources"])
+
+    def test_change_tracking_reports_the_reconciled_set_and_nothing_else(self) -> None:
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        work = _observed_later(_named_work("alpha"), 20)
+        frames = _render_board_sequence(
+            [
+                # An idle session, then the same session with work observed
+                # after the snapshot, then the session quiet again.
+                {"payload": _observation_payload([idle])},
+                {"payload": _observation_payload([idle, work])},
+                {"payload": _observation_payload([idle, work, _observed_later(idle, 40)])},
+            ]
+        )
+        # Picking work up is the idle row going and the work row appearing.
+        self.assertIn("alpha appeared as provider run observed", frames[1]["announce"])
+        self.assertIn("is no longer recorded", frames[1]["announce"])
+        self.assertEqual(_work_keys(frames[1]["worklist"]), [_work_key("alpha")])
+        # Going quiet again is the reverse, and the work that is no longer
+        # current is reported as exactly that rather than restated as running.
+        self.assertEqual(_work_keys(frames[2]["worklist"]), [_idle_key()])
+        self.assertIn("alpha is no longer recorded", frames[2]["announce"])
+        self.assertIn("alpha is no longer recorded", frames[2]["changes"])
+        self.assertNotIn("alpha", frames[2]["worklist"])
+
+    def test_without_reconciliation_one_scope_claims_idle_and_active_at_once(self) -> None:
+        # The mutation is exactly the missing step: identity deduplication with
+        # no reconciliation after it, which is what the Board did before.
+        records = [
+            _observed_later(_observation_fixture("no_work"), 0),
+            _observed_later(_named_work("alpha"), 20),
+        ]
+        unreconciled = self._reconciled(
+            records,
+            mutate=(
+                "return reconcileSessionScopes(observationGroups(data), nowMs, coverage, authority);",
+                "return observationGroups(data);",
+            ),
+        )
+        # Both readings survive, and the Board states both at once.
+        self.assertEqual(
+            sorted(unreconciled["keys"]), sorted([_idle_key(), _work_key("alpha")])
+        )
+        self.assertIn("idle with complete coverage", unreconciled["headlines"])
+        self.assertIn("provider run observed", unreconciled["headlines"])
+        self.assertIn("nothing to do in this session", unreconciled["actions"])
+        # And the shipped view model, unmutated, states one of them.
+        shipped = self._reconciled(records)
+        self.assertEqual(shipped["keys"], [_work_key("alpha")])
+        self.assertEqual(shipped["headlines"], ["provider run observed"])
+        self.assertNotIn("nothing to do in this session", shipped["actions"])
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardObservationCoverageViewTests(TestCase):
+    """A bounded read that left files unread is stated, not quietly rendered.
+
+    The Board reads at most `MAX_OBSERVATION_FILES` observation files per
+    refresh. Before this, a larger directory produced a page that looked
+    exactly like a complete one: the API reported the records as available, the
+    work list rendered them as the local record set, and an idle snapshot among
+    them claimed the session had no work. These tests hold the opposite: the
+    shortfall is counted in `/api/status`, warned about in the work-first views,
+    and stated with its cap semantics in Health.
+    """
+
+    def _block(self, records: list[dict], *, candidates: int, cap: int | None = None) -> dict:
+        """The observations block the reader emits for `candidates` files."""
+
+        cap = board.MAX_OBSERVATION_FILES if cap is None else cap
+        read = min(candidates, cap)
+        omitted = candidates - read
+        return {
+            "schema": board.BOARD_OBSERVATIONS_SCHEMA,
+            "record_schema": board_observation.SCHEMA,
+            "available": True,
+            "path": lane_status.LOCAL_PATH_REDACTION,
+            "path_redacted": True,
+            "path_exists": True,
+            "records": records,
+            "warnings": [],
+            "rejected": 0,
+            "coverage": "partial" if omitted else "complete",
+            "truncated": bool(omitted),
+            "file_cap": cap,
+            "candidate_files": candidates,
+            "read_files": read,
+            "omitted_files": omitted,
+            "selection": board.OBSERVATION_SELECTION,
+            "message": (
+                f"{read} of {candidates} local Board observation files were read "
+                f"(cap {cap}), so this snapshot is incomplete"
+            )
+            if omitted
+            else "",
+        }
+
+    def test_api_truth_and_every_board_claim_come_from_one_read(self) -> None:
+        cap = board.MAX_OBSERVATION_FILES
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for index in range(cap + 9):
+                (directory / f"obs-{index:03d}.json").write_text(
+                    json.dumps(_referenced_record(f"work-{index:03d}")), encoding="utf-8"
+                )
+            block = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            )
+            local_path = str(directory)
+
+        # /api/status states the shortfall rather than reporting availability
+        # alone.
+        self.assertTrue(block["truncated"])
+        self.assertEqual(block["coverage"], "partial")
+        self.assertEqual(
+            [block["candidate_files"], block["read_files"], block["omitted_files"]],
+            [cap + 9, cap, 9],
+        )
+
+        nodes = _render_board_dom(_observation_payload([], observations=block))
+        # The work list warns above the rows, so nothing a row says can be read
+        # as the whole local record set.
+        self.assertIn("Incomplete snapshot", nodes["worklist"])
+        self.assertIn(f"{cap} of {cap + 9} observation files read (cap {cap})", nodes["worklist"])
+        self.assertIn("not the whole local record set", nodes["worklist"])
+        # Now says it beside "Do next", and the chrome carries it into every
+        # other view.
+        self.assertIn("Incomplete snapshot", nodes["worknow"])
+        self.assertIn("Observation files", nodes["summary"])
+        self.assertIn("incomplete snapshot", nodes["chrome"])
+        self.assertIn("in the files read", nodes["chrome"])
+        # Health states the cap, the counts and how the read set was chosen.
+        self.assertIn(f"{cap} of {cap + 9} observation files read (cap {cap})", nodes["diagnostics"])
+        self.assertIn("9 not read", nodes["diagnostics"])
+        self.assertIn(board.OBSERVATION_SELECTION, nodes["diagnostics"])
+        # None of that names a file or a local path.
+        rendered = json.dumps(nodes)
+        self.assertNotIn(local_path, rendered)
+        self.assertNotIn("obs-0", rendered)
+
+    def test_a_directory_inside_the_cap_renders_exactly_as_before(self) -> None:
+        cap = board.MAX_OBSERVATION_FILES
+        for candidates in (1, cap):
+            with self.subTest(files=candidates):
+                nodes = _render_board_dom(
+                    _observation_payload(
+                        [],
+                        observations=self._block(
+                            [_observation_fixture("no_work")], candidates=candidates
+                        ),
+                    )
+                )
+                self.assertNotIn("Incomplete snapshot", nodes["worklist"])
+                self.assertNotIn("Incomplete snapshot", nodes["worknow"])
+                self.assertNotIn("incomplete snapshot", nodes["chrome"])
+                self.assertIn("idle with complete coverage", nodes["worklist"])
+                self.assertIn("nothing to do in this session", nodes["worklist"])
+
+    def test_idle_is_not_claimed_when_candidate_files_went_unread(self) -> None:
+        """Exactly at the cap the session is idle; one file past it, it is not.
+
+        An unread file can record work in this very scope, so an idle snapshot
+        stops being authoritative about the session the moment the read is
+        incomplete. This is the mutation the P2 describes: the records are
+        identical in both readings, and only the file coverage differs.
+        """
+
+        cap = board.MAX_OBSERVATION_FILES
+        record = _observation_fixture("no_work")
+        complete = _render_board_dom(
+            _observation_payload([], observations=self._block([record], candidates=cap))
+        )["worklist"]
+        truncated = _render_board_dom(
+            _observation_payload([], observations=self._block([record], candidates=cap + 1))
+        )["worklist"]
+
+        self.assertIn("idle with complete coverage", complete)
+        self.assertNotIn("idle with complete coverage", truncated)
+        self.assertNotIn("nothing to do in this session", truncated)
+        self.assertIn("idle in the files read", truncated)
+        self.assertIn("before treating this session as idle", truncated)
+        # The record is still shown for what it is, with the reason its claim
+        # is not being repeated.
+        self.assertIn("recorded complete, not confirmed", truncated)
+        self.assertIn("went unread this refresh", truncated)
+
+    def test_an_empty_truncated_read_is_not_reported_as_nothing_recorded(self) -> None:
+        nodes = _render_board_dom(
+            _observation_payload(
+                [], observations=self._block([], candidates=board.MAX_OBSERVATION_FILES + 4)
+            )
+        )
+        worklist = nodes["worklist"]
+        self.assertIn("incomplete", worklist)
+        self.assertIn("evidence that there is no work", worklist)
+        self.assertNotIn("No local Board observation is recorded yet", worklist)
+        self.assertNotIn("No local Board observation passed", worklist)
+        # Health's own empty states stop reading as measured absences too, and
+        # they quote the one canonical coverage note rather than a restatement
+        # of it, so the reason an emptiness is not a finding is worded once.
+        self.assertIn("This snapshot is incomplete", nodes["participants"])
+        self.assertIn("evidence that there is no work", nodes["participants"])
+        self.assertIn("This snapshot is incomplete", nodes["sources"])
+        self.assertIn("evidence that there is no work", nodes["sources"])
+
+    def test_the_coverage_reading_states_cap_and_counts(self) -> None:
+        cap = board.MAX_OBSERVATION_FILES
+        at_cap, past_cap, unavailable = (
+            _eval_board_truth(
+                "observationCoverage(ARGS[0])",
+                {"observations": self._block([], candidates=cap)},
+            ),
+            _eval_board_truth(
+                "observationCoverage(ARGS[0])",
+                {"observations": self._block([], candidates=cap + 5)},
+            ),
+            _eval_board_truth(
+                "observationCoverage(ARGS[0])",
+                {
+                    "observations": {
+                        "coverage": "unavailable",
+                        "truncated": False,
+                        "file_cap": cap,
+                        "candidate_files": None,
+                        "read_files": 0,
+                        "omitted_files": None,
+                    }
+                },
+            ),
+        )
+
+        self.assertFalse(at_cap["truncated"])
+        self.assertEqual(at_cap["read"], cap)
+        self.assertEqual(at_cap["omitted"], 0)
+        self.assertEqual(at_cap["label"], f"{cap} of {cap} observation files read (cap {cap})")
+        self.assertEqual(at_cap["note"], "")
+
+        self.assertTrue(past_cap["truncated"])
+        self.assertEqual(past_cap["omitted"], 5)
+        self.assertEqual(past_cap["class"], "warn")
+        self.assertIn("incomplete", past_cap["note"])
+        self.assertIn("idle session", past_cap["note"])
+
+        # An unreadable directory is not a complete one: no total is invented,
+        # and nothing downstream may read it as coverage.
+        self.assertFalse(unavailable["truncated"])
+        self.assertEqual(unavailable["class"], "bad")
+        self.assertIsNone(unavailable["candidates"])
+        self.assertEqual(unavailable["label"], "observation file coverage unavailable")
+
+        # A payload carrying no coverage at all is neutral rather than good
+        # news: nothing here may render as a complete read.
+        unknown = _eval_board_truth("observationCoverage(ARGS[0])", {})
+        self.assertFalse(unknown["truncated"])
+        self.assertEqual(unknown["state"], "unknown")
+        self.assertEqual(unknown["class"], "muted")
+        self.assertEqual(unknown["label"], "observation file coverage unknown")
+
+
+# The instant the `no_work` fixture records itself at, so a test can name an
+# age directly rather than by an offset from an unrelated clock.
+FIXTURE_CREATED = datetime(2026, 9, 12, 20, 0, tzinfo=UTC)
+
+
+def _with_extra_source(record: dict, *, freshness: str, coverage: str) -> dict:
+    """The same accepted record, plus one source with the given reading.
+
+    The frozen contract requires a `no_work` record's session, work queue and
+    run registry to have been fresh and complete when it was written, so those
+    three are never weakened here. A producer may name further sources beside
+    them, and this adds exactly one -- which is how a real record comes to
+    carry partial or unreachable evidence at all.
+    """
+
+    extended = copy.deepcopy(record)
+    # Every instant is taken from the record itself, so a source added to a
+    # record recorded a day ago is still a source a producer could have
+    # written beside it.
+    checked = datetime.strptime(extended["created_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+
+    def stamp(seconds: int) -> str:
+        return (checked - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    unreachable = freshness == "unavailable"
+    extended["sources"].append(
+        {
+            "id": "extraobs",
+            "kind": "remote_session",
+            "freshness": freshness,
+            "coverage": coverage,
+            "event_at": None if unreachable else stamp(20),
+            "observed_at": None if unreachable else stamp(10),
+            "checked_at": stamp(0),
+            "heartbeat_at": None,
+        }
+    )
+    return board_observation.validate(extended)
+
+
+def _undated(record: dict) -> dict:
+    """The same record with an observation time nothing can read.
+
+    The frozen contract requires `created_at`, so no producer can emit this.
+    The view is handed it anyway, because a record whose age cannot be
+    computed is exactly the case in which a view must not guess: the classifier
+    has to be at least as conservative here as it is for evidence it can date.
+    """
+
+    undated_record = copy.deepcopy(record)
+    undated_record["created_at"] = ""
+    return undated_record
+
+
+def _truncated_observations(records: list[dict], *, omitted: int = 1) -> dict:
+    """The observations block a bounded read emits when it left files unread."""
+
+    cap = board.MAX_OBSERVATION_FILES
+    return {
+        "schema": board.BOARD_OBSERVATIONS_SCHEMA,
+        "record_schema": board_observation.SCHEMA,
+        "available": True,
+        "path": lane_status.LOCAL_PATH_REDACTION,
+        "path_redacted": True,
+        "path_exists": True,
+        "records": records,
+        "warnings": [],
+        "rejected": 0,
+        "coverage": "partial",
+        "truncated": True,
+        "file_cap": cap,
+        "candidate_files": cap + omitted,
+        "read_files": cap,
+        "omitted_files": omitted,
+        "selection": board.OBSERVATION_SELECTION,
+        "message": f"{cap} of {cap + omitted} local Board observation files were read",
+    }
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardIdleFreshnessTests(TestCase):
+    """An idle claim is a claim about now, so it needs current, whole evidence.
+
+    A `no_work` record states that when it was written, the session, work queue
+    and run registry were all observed complete and held no work. That is a
+    fact about an instant in the past. Repeating it as "nothing to do in this
+    session" turns it into a claim about the present, and that claim holds only
+    while two things are true together: the evidence behind the record is still
+    current, and the coverage behind it is whole -- every source covering all
+    of what it covers, and every candidate observation file read this refresh.
+
+    Before this, only the second half was checked. A record that was valid when
+    written went on rendering green, as `idle with complete coverage` with
+    `nothing to do in this session` beside it, for as long as the page was left
+    open -- a day later, a week later, with `recordFreshness().current` false
+    the whole time and the row's own age pill saying so. These tests hold the
+    two halves together, one reading at a time.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    # The shipped text cues, read off the page rather than restated here.
+    CUES = _eval_board_view("CUES")
+
+    # freshness x coverage for one `no_work` record, and what the shared
+    # classifier is allowed to say about each cell. Exactly one of the nine --
+    # current evidence under whole coverage -- may speak in the present tense
+    # or render as good news. Every other cell reports a prior observation.
+    #
+    # The third freshness reading covers both ways evidence stops being
+    # datable or reachable: a source the record could not reach, and an
+    # observation carrying no readable time at all. The contract ties an
+    # unreachable source to unavailable coverage, so an undated record is the
+    # only shape that reaches that row's complete-coverage column.
+    MATRIX = (
+        ("current", "complete", "current", "idle with complete coverage", "ok"),
+        ("current", "partial", "partial", "last observed idle, coverage incomplete", "warn"),
+        ("current", "truncated", "truncated", "idle in the files read", "warn"),
+        ("stale", "complete", "stale", "last observed idle", "warn"),
+        ("stale", "partial", "partial", "last observed idle, coverage incomplete", "warn"),
+        ("stale", "truncated", "truncated", "idle in the files read", "warn"),
+        (
+            "unavailable/unknown",
+            "complete",
+            "unknown",
+            "last observed idle at an unrecorded time",
+            "muted",
+        ),
+        (
+            "unavailable/unknown",
+            "partial",
+            "unavailable",
+            "last observed idle, source unavailable",
+            "bad",
+        ),
+        ("unavailable/unknown", "truncated", "truncated", "idle in the files read", "warn"),
+    )
+
+    # The two sentences that claim the session needs nothing right now, and the
+    # cue that renders such a claim as good news.
+    PRESENT_TENSE = ("idle with complete coverage", "nothing to do in this session")
+
+    @staticmethod
+    def _record(freshness: str, coverage: str) -> dict:
+        record = _observation_fixture("no_work")
+        if freshness == "stale":
+            # A day later: every source still says it was fresh when the record
+            # was written, and the record is far past the staleness threshold.
+            record = _observed_later(record, -86400)
+        if freshness == "unavailable/unknown":
+            record = (
+                _undated(record)
+                if coverage == "complete"
+                else _with_extra_source(record, freshness="unavailable", coverage="unavailable")
+            )
+        elif coverage == "partial":
+            record = _with_extra_source(record, freshness="fresh", coverage="partial")
+        return record
+
+    @classmethod
+    def _payload(cls, freshness: str, coverage: str) -> dict:
+        record = cls._record(freshness, coverage)
+        if coverage == "truncated":
+            return _observation_payload([], observations=_truncated_observations([record]))
+        return _observation_payload([record])
+
+    def _rows(self, payload: dict, now_ms: int | None = None) -> list[dict]:
+        return _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => ({"
+            "key: row.key, headline: row.headline, headline_class: row.headline_class,"
+            "action: row.action_label, states: row.states, idle: row.idle || null,"
+            "coverage: row.groups[0].items[0], freshness: row.freshness}))",
+            payload,
+            self.NOW_MS if now_ms is None else now_ms,
+        )
+
+    def test_only_current_evidence_under_whole_coverage_claims_idle_now(self) -> None:
+        for freshness, coverage, reason, label, cls in self.MATRIX:
+            with self.subTest(freshness=freshness, coverage=coverage):
+                row = self._rows(self._payload(freshness, coverage))[0]
+                affirmative = reason == "current"
+                self.assertEqual(row["idle"]["reason"], reason)
+                self.assertEqual(row["idle"]["affirmative"], affirmative)
+                self.assertEqual(row["idle"]["coverage_state"], coverage)
+
+                # One reading, read by the headline, the state cues, the next
+                # action and the coverage evidence alike.
+                self.assertEqual(row["headline"], label)
+                self.assertEqual(row["headline_class"], cls)
+                self.assertEqual(row["states"], [{"label": label, "class": cls, "cue": self.CUES[cls]}])
+
+                if affirmative:
+                    self.assertEqual(row["action"], "nothing to do in this session")
+                    self.assertEqual(row["coverage"]["class"], "ok")
+                    self.assertIn("This session is idle because", row["coverage"]["note"])
+                    continue
+
+                # Everything else reports a prior observation, says what is
+                # missing, and is never styled as good news.
+                self.assertIn("before treating", row["action"])
+                self.assertNotIn("nothing to do", row["action"])
+                self.assertNotEqual(row["coverage"]["class"], "ok")
+                self.assertIn("not shown as idle", row["coverage"]["note"])
+                self.assertIn("when it was written", row["coverage"]["note"])
+                # The idle surfaces themselves: the headline, the cues, the
+                # action and the coverage evidence. The age pill beside them
+                # reports the record's own age and stays what it is -- a
+                # recent record whose coverage is incomplete is recent.
+                claimed = json.dumps(
+                    [row["idle"], row["states"], row["coverage"], row["headline"], row["action"]]
+                )
+                for sentence in self.PRESENT_TENSE:
+                    self.assertNotIn(sentence, claimed)
+                self.assertNotIn('"ok"', claimed)
+
+    def test_every_withheld_reading_carries_its_age_or_source_caveat(self) -> None:
+        # A row that declines to repeat an idle claim has to say why, or an
+        # operator is left with a bare label and no way to judge it.
+        caveats = {
+            ("current", "partial"): "reported part of what it covers",
+            ("current", "truncated"): "went unread this refresh",
+            ("stale", "complete"): "old and nothing has confirmed it since",
+            ("stale", "partial"): "old and nothing has confirmed it since",
+            ("stale", "truncated"): "old and nothing has confirmed it since",
+            ("unavailable/unknown", "complete"): "No observation time is recorded",
+            ("unavailable/unknown", "partial"): "Source unavailable: remote_session",
+            ("unavailable/unknown", "truncated"): "Source unavailable: remote_session",
+        }
+        for (freshness, coverage), caveat in caveats.items():
+            with self.subTest(freshness=freshness, coverage=coverage):
+                row = self._rows(self._payload(freshness, coverage))[0]
+                self.assertIn(caveat, row["coverage"]["note"])
+
+    def test_the_freshness_threshold_decides_at_its_own_boundary(self) -> None:
+        # The record is one record; only the clock moves. An observation is
+        # current up to and including the threshold, and reports itself as a
+        # past observation the first second after it.
+        threshold = _eval_board_view("OBSERVATION_STALE_SECONDS")
+        payload = _observation_payload([_observation_fixture("no_work")])
+        for age, affirmative in (
+            (threshold - 1, True),
+            (threshold, True),
+            (threshold + 1, False),
+            (86400, False),
+        ):
+            with self.subTest(age=age):
+                now_ms = int((FIXTURE_CREATED + timedelta(seconds=age)).timestamp() * 1000)
+                row = self._rows(payload, now_ms)[0]
+                self.assertEqual(row["idle"]["affirmative"], affirmative)
+                self.assertEqual(
+                    row["headline"],
+                    "idle with complete coverage" if affirmative else "last observed idle",
+                )
+                self.assertEqual(row["freshness"]["current"], affirmative)
+
+    def test_a_day_later_the_same_valid_record_states_no_present_tense_claim(self) -> None:
+        # The P2 exactly: the page is left open, the producer stops writing,
+        # and the record that was valid a day ago is still on screen. What it
+        # may still say is that this session was observed idle, a day ago.
+        payload = _observation_payload([_observation_fixture("no_work")])
+        nodes = _render_board_dom(payload, now=OBSERVATION_NOW + timedelta(days=1))
+        rendered = json.dumps(nodes)
+        for sentence in self.PRESENT_TENSE:
+            self.assertNotIn(sentence, rendered)
+        worklist = nodes["worklist"]
+        self.assertIn("last observed idle", worklist)
+        self.assertIn("last observed 24.0h ago", worklist)
+        self.assertIn("re-observe this session before treating it as idle", worklist)
+        self.assertIn("so it is shown as last observed rather than current", worklist)
+        self.assertIn("This reading is 24.0h old and nothing has confirmed it since", worklist)
+
+        # And the same record read while it is current still says both.
+        current = _render_board_dom(payload, now=OBSERVATION_NOW)["worklist"]
+        for sentence in self.PRESENT_TENSE:
+            self.assertIn(sentence, current)
+
+    def test_a_prior_observation_never_outranks_work_that_is_moving(self) -> None:
+        # Two sessions: one observed idle a day ago, one with a run observed
+        # now. An operator who has chosen nothing is shown the work.
+        stale_idle = _in_session(
+            _observed_later(_observation_fixture("no_work"), -86400),
+            session=OTHER_SESSION,
+            worktree=OTHER_WORKTREE,
+        )
+        work = _named_work("alpha")
+        rows = self._rows(_observation_payload([stale_idle, work]))
+        self.assertEqual([row["key"] for row in rows], [_work_key("alpha"), _idle_key(OTHER_SESSION, OTHER_WORKTREE)])
+
+        # Order is a property of what the rows record, never of the order the
+        # directory happened to list them in.
+        reversed_rows = self._rows(_observation_payload([work, stale_idle]))
+        self.assertEqual(reversed_rows, rows)
+
+        # A current idle snapshot is finished business and sorts below the
+        # work; a prior observation sorts below the work too, and above the
+        # terminal band, because its caveat still has to be read.
+        ranks = _eval_board_view(
+            "[stateUrgency('provider run observed'), stateUrgency('last observed idle'),"
+            "stateUrgency('idle with complete coverage')]"
+        )
+        self.assertEqual(ranks, sorted(ranks))
+        self.assertEqual(len(set(ranks)), 3)
+
+    def test_a_snapshot_that_cannot_claim_the_present_retires_no_work(self) -> None:
+        # Reconciliation retires a work row by asserting that the session has
+        # since gone quiet. A snapshot that may not make a present-tense claim
+        # may not make that one either, however recently it was written.
+        work = _observed_later(_named_work("alpha"), 0)
+        unreachable = _with_extra_source(
+            _observed_later(_observation_fixture("no_work"), 20),
+            freshness="unavailable",
+            coverage="unavailable",
+        )
+        rows = self._rows(_observation_payload([work, unreachable]))
+        # Both readings stay, and they do not contradict each other: the
+        # snapshot's row claims only a past observation.
+        self.assertEqual([row["key"] for row in rows], [_work_key("alpha"), _idle_key()])
+        self.assertEqual(rows[1]["headline"], "last observed idle, source unavailable")
+        self.assertEqual(self._rows(_observation_payload([unreachable, work])), rows)
+
+        # The prior fix is untouched: a snapshot that can claim the present
+        # still retires the work it supersedes, in either input order.
+        quiet = _observed_later(_observation_fixture("no_work"), 20)
+        for records in ([work, quiet], [quiet, work]):
+            reconciled = self._rows(_observation_payload(records))
+            self.assertEqual([row["key"] for row in reconciled], [_idle_key()])
+            self.assertEqual(reconciled[0]["action"], "nothing to do in this session")
+
+    def test_without_the_freshness_gate_a_day_old_record_still_claims_idle(self) -> None:
+        # The mutation is exactly the missing condition: coverage alone decides
+        # whether the record may speak in the present tense, which is what the
+        # Board did before.
+        payload = _observation_payload([_observed_later(_observation_fixture("no_work"), -86400)])
+        ungated = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.headline_class, row.action_label])",
+            payload,
+            self.NOW_MS,
+            mutate=(
+                'const affirmative = coverageState === "complete" && freshnessState === "current";',
+                'const affirmative = coverageState === "complete";',
+            ),
+        )
+        self.assertEqual(
+            ungated,
+            [["idle with complete coverage", "ok", "nothing to do in this session"]],
+        )
+        # And the shipped classifier, unmutated, says none of that about the
+        # very same record.
+        shipped = self._rows(payload)[0]
+        self.assertEqual(shipped["headline"], "last observed idle")
+        self.assertEqual(shipped["headline_class"], "warn")
+        self.assertEqual(shipped["action"], "re-observe this session before treating it as idle")
+
+
+
+def _polled(record: dict, seconds: int) -> dict:
+    """The same record, written again by a poll that observed nothing new.
+
+    Only the instants a successful poll advances move: when the record was
+    written, when each source was last checked, when it was last seen, and the
+    heartbeat behind it. Every recorded event time stays exactly where it was,
+    because no event happened -- which is what makes this the refresh that must
+    reach neither the Timeline nor the live region.
+    """
+
+    polled = copy.deepcopy(record)
+    polled["created_at"] = _shift_instants(polled["created_at"], seconds)
+    for source in polled["sources"]:
+        for field in ("checked_at", "observed_at", "heartbeat_at"):
+            source[field] = _shift_instants(source[field], seconds)
+    return board_observation.validate(polled)
+
+
+def _accounted_observations(records: list[dict], **counters: object) -> dict:
+    """The observations block a read emits for these records.
+
+    The defaults describe a read that accounted for every candidate: each one
+    selected, read and accepted. A case states only the counters its own
+    refresh changed, so the only difference between two consecutive payloads is
+    the transition under test.
+    """
+
+    read = len(records)
+    block = {
+        "schema": board.BOARD_OBSERVATIONS_SCHEMA,
+        "record_schema": board_observation.SCHEMA,
+        "available": True,
+        "path": lane_status.LOCAL_PATH_REDACTION,
+        "path_redacted": True,
+        "path_exists": True,
+        "records": records,
+        "warnings": [],
+        "rejected": 0,
+        "coverage": "complete",
+        "coverage_complete": True,
+        "coverage_gaps": [],
+        "truncated": False,
+        "file_cap": board.MAX_OBSERVATION_FILES,
+        "candidate_files": read,
+        "selected_files": read,
+        "read_files": read,
+        "accepted_records": read,
+        "omitted_files": 0,
+        "unreadable_files": 0,
+        "invalid_records": 0,
+        "unaccounted_files": 0,
+        "selection": board.OBSERVATION_SELECTION,
+        "message": "",
+    }
+    block.update(counters)
+    return block
+
+
+# The file-level accounting behind each coverage reading, named once so a
+# transition below reads as the refresh it describes rather than as counters.
+# Every one of them leaves the accepted record itself untouched: what differs
+# is only what the read around it could account for.
+WHOLE_READ: dict = {}
+# A selected candidate that could not be read at all, and one the frozen record
+# contract rejected. Both are files whose contents the page does not know, so
+# both are reported as the same shortfall.
+CANDIDATE_UNREADABLE = dict(
+    coverage="partial",
+    coverage_complete=False,
+    coverage_gaps=["files_unreadable"],
+    candidate_files=2,
+    selected_files=2,
+    read_files=1,
+    unreadable_files=1,
+    unaccounted_files=1,
+)
+CANDIDATE_REJECTED = dict(
+    coverage="partial",
+    coverage_complete=False,
+    coverage_gaps=["records_invalid"],
+    candidate_files=2,
+    selected_files=2,
+    read_files=2,
+    invalid_records=1,
+    unaccounted_files=1,
+)
+# One candidate left past the cap, and then a second one.
+CANDIDATE_OMITTED = dict(
+    coverage="partial",
+    coverage_complete=False,
+    coverage_gaps=["files_omitted"],
+    truncated=True,
+    file_cap=1,
+    candidate_files=2,
+    selected_files=1,
+    read_files=1,
+    omitted_files=1,
+)
+TWO_CANDIDATES_OMITTED = dict(CANDIDATE_OMITTED, candidate_files=3, omitted_files=2)
+# The cap moved and a rejected candidate appeared beside the still-omitted one,
+# so the read got worse in a way the row's chosen reading -- worst evidence
+# first, and a file left unread is the worst -- already states unchanged.
+CANDIDATE_OMITTED_AND_REJECTED = dict(
+    CANDIDATE_OMITTED,
+    coverage_gaps=["files_omitted", "records_invalid"],
+    file_cap=2,
+    candidate_files=3,
+    selected_files=2,
+    read_files=2,
+    invalid_records=1,
+    unaccounted_files=1,
+)
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardEffectiveStateChangeTests(TestCase):
+    """A row changed when what it says changed, not only when its record did.
+
+    Half of what an idle row states is derived rather than recorded: whether
+    this refresh accounted for every candidate observation file, and whether
+    the observation behind it is still current. A refresh can lose a file while
+    the accepted `no_work` record beside it stays byte-identical, and the row
+    then moves from `idle with complete coverage` to `idle in the records read`
+    -- a withdrawn claim about the present, on screen, with a different label,
+    a different cue, a different next action and different coverage evidence.
+
+    Change tracking compared only the recorded half, so exactly that refresh
+    produced no Timeline entry and no announcement: the claim was withdrawn in
+    silence, and an operator reading the Timeline -- or listening to it -- was
+    left with the last thing it said, that the session was idle. These tests
+    hold both halves in one signature, and hold the other half of the bargain
+    too: a poll that only advances timestamps is still not news.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    IDLE_REFERENCE = "Board contract delivery"
+    COMPLETE = "idle with complete coverage"
+    IN_RECORDS = "idle in the records read"
+    IN_FILES = "idle in the files read"
+    PART_COVERED = "last observed idle, coverage incomplete"
+    QUIET = "No meaningful change has been observed since this page loaded."
+
+    # One refresh after another in one page lifetime, and the exact thing the
+    # Timeline and the live region must say about the second one. `None` means
+    # the refresh was not news: nothing is logged and the live region is left
+    # untouched rather than repeated.
+    #
+    # The first element of each pair names the accepted record on that refresh
+    # -- `idle` is the fixture unchanged -- and the second names what the read
+    # around it could account for. Where both refreshes name the same record,
+    # the record is byte-identical and the transition is carried entirely by
+    # the derived half of the row's state: the half that used to be invisible
+    # to change tracking.
+    TRANSITIONS = (
+        (
+            "complete idle -> partial idle: a candidate went unread",
+            ("idle", WHOLE_READ),
+            ("idle", CANDIDATE_UNREADABLE),
+            "moved from idle with complete coverage to idle in the records read",
+        ),
+        (
+            "partial idle -> complete idle: the lost candidate came back",
+            ("idle", CANDIDATE_UNREADABLE),
+            ("idle", WHOLE_READ),
+            "moved from idle in the records read to idle with complete coverage",
+        ),
+        (
+            "accepted no_work -> a candidate the contract rejected beside it",
+            ("idle", WHOLE_READ),
+            ("idle", CANDIDATE_REJECTED),
+            "moved from idle with complete coverage to idle in the records read",
+        ),
+        (
+            "accepted no_work -> a candidate left past the cap beside it",
+            ("idle", WHOLE_READ),
+            ("idle", CANDIDATE_OMITTED),
+            "moved from idle with complete coverage to idle in the files read",
+        ),
+        (
+            "coverage gap vocabulary changes, the reading does not",
+            ("idle", CANDIDATE_UNREADABLE),
+            ("idle", CANDIDATE_REJECTED),
+            None,
+        ),
+        (
+            "routine refresh: every polling instant advances, nothing moves",
+            ("idle", WHOLE_READ),
+            ("polled", WHOLE_READ),
+            None,
+        ),
+        (
+            "partial -> partial that moves the row: unread files to lost records",
+            ("idle", CANDIDATE_OMITTED),
+            ("idle", CANDIDATE_UNREADABLE),
+            "moved from idle in the files read to idle in the records read",
+        ),
+        (
+            "partial -> partial that moves the row: one more file left unread",
+            ("idle", CANDIDATE_OMITTED),
+            ("idle", TWO_CANDIDATES_OMITTED),
+            "changed while staying idle in the files read",
+        ),
+        (
+            "partial -> partial the row already states: a gap under the worst one",
+            ("idle", CANDIDATE_OMITTED),
+            ("idle", CANDIDATE_OMITTED_AND_REJECTED),
+            None,
+        ),
+        (
+            "complete idle -> partial idle: a source covers part of what it covers",
+            ("idle", WHOLE_READ),
+            ("partly_covered", WHOLE_READ),
+            "moved from idle with complete coverage to last observed idle, coverage incomplete",
+        ),
+        (
+            "partial idle -> complete idle: the source covers all of it again",
+            ("partly_covered", WHOLE_READ),
+            ("idle", WHOLE_READ),
+            "moved from last observed idle, coverage incomplete to idle with complete coverage",
+        ),
+    )
+
+    @staticmethod
+    def _record(name: str) -> dict:
+        record = _observation_fixture("no_work")
+        if name == "partly_covered":
+            return _with_extra_source(record, freshness="fresh", coverage="partial")
+        if name == "polled":
+            return _polled(record, 20)
+        return record
+
+    @classmethod
+    def _payload(cls, spec: tuple[str, dict]) -> dict:
+        name, counters = spec
+        return _observation_payload(
+            [], observations=_accounted_observations([cls._record(name)], **counters)
+        )
+
+    def _rows(self, payload: dict) -> list[dict]:
+        return _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => ({key: row.key, headline: row.headline,"
+            "signature: row.signature, recorded: workSignature(row.record),"
+            "action: row.action_label, idle: row.idle || null}))",
+            payload,
+            self.NOW_MS,
+        )
+
+    def test_every_transition_reports_exactly_what_moved(self) -> None:
+        for name, before, after, expected in self.TRANSITIONS:
+            with self.subTest(transition=name):
+                frames = _render_board_sequence(
+                    [{"payload": self._payload(before)}, {"payload": self._payload(after)}]
+                )
+                # The first snapshot of a page is never news: there is nothing
+                # for it to have changed from.
+                # The live region is only ever touched by a meaningful
+                # change, so an untouched one has no text node at all.
+                self.assertEqual(frames[0].get("announce", ""), "")
+                self.assertIn(self.QUIET, frames[0]["changes"])
+
+                if expected is None:
+                    # Not news: the live region is left exactly as it was
+                    # rather than repeated, and the Timeline stays empty.
+                    self.assertEqual(frames[1].get("announce", ""), "")
+                    self.assertIn(self.QUIET, frames[1]["changes"])
+                    self.assertEqual(frames[1]["changes"].count('class="row"'), 0)
+                    continue
+
+                sentence = f"{self.IDLE_REFERENCE} {expected}"
+                self.assertEqual(frames[1]["announce"], f"{sentence}.")
+                self.assertEqual(frames[1]["changes"].count('class="row"'), 1)
+                self.assertIn('<span class="pill">changed</span>', frames[1]["changes"])
+                self.assertIn(sentence, frames[1]["changes"])
+
+    def test_a_coverage_driven_transition_moves_only_the_derived_half(self) -> None:
+        """The finding exactly, at the signature it is decided by.
+
+        Where both refreshes carry the same accepted record, the record is
+        byte-identical and so is the recorded half of the signature. Everything
+        that moved is derived, so a signature built from the record alone
+        cannot see it -- which is why the derived half is part of that same
+        signature rather than one more condition beside it.
+        """
+
+        for name, before, after, expected in self.TRANSITIONS:
+            if before[0] != after[0]:
+                continue
+            with self.subTest(transition=name):
+                first, second = self._payload(before), self._payload(after)
+                self.assertEqual(
+                    first["observations"]["records"], second["observations"]["records"]
+                )
+                one, two = self._rows(first)[0], self._rows(second)[0]
+                # One work identity throughout, so this is a row changing
+                # rather than one row going and another appearing.
+                self.assertEqual(one["key"], two["key"])
+                self.assertEqual(one["recorded"], two["recorded"])
+                self.assertEqual(one["signature"] == two["signature"], expected is None)
+                # And the signature really is the recorded half plus a derived
+                # half, with the idle reading's own identity inside it.
+                for row in (one, two):
+                    recorded, marker, effective = row["signature"].rpartition("|effective:")
+                    self.assertEqual(recorded, row["recorded"])
+                    self.assertEqual(marker, "|effective:")
+                    self.assertIn(row["idle"]["signature"], effective)
+
+    def test_a_withdrawn_claim_keeps_the_row_the_operator_chose(self) -> None:
+        # A second session is recorded as working, so it -- not the idle row --
+        # is what an operator who has chosen nothing is shown, and choosing the
+        # idle row is a real choice with something to survive.
+        idle = _observation_fixture("no_work")
+        work = _in_session(_named_work("alpha"), session=OTHER_SESSION, worktree=OTHER_WORKTREE)
+        whole = _observation_payload([], observations=_accounted_observations([idle, work]))
+        lossy = _observation_payload(
+            [],
+            observations=_accounted_observations(
+                [idle, work],
+                coverage="partial",
+                coverage_complete=False,
+                coverage_gaps=["files_unreadable"],
+                candidate_files=3,
+                selected_files=3,
+                read_files=2,
+                unreadable_files=1,
+                unaccounted_files=1,
+            ),
+        )
+        frames = _render_board_sequence(
+            [
+                {"payload": whole},
+                {"select": _idle_key(), "payload": lossy},
+                {"payload": whole},
+            ]
+        )
+        # The default choice is the work, and the explicit choice of the idle
+        # row survives both the withdrawal and the restoration: the identity a
+        # selection is kept against is the record's session and worktree, and
+        # neither moved.
+        self.assertEqual(_selected_key(frames[0]["worklist"]), _work_key("alpha", OTHER_SESSION, OTHER_WORKTREE))
+        for frame in frames[1:]:
+            self.assertEqual(_selected_key(frame["worklist"]), _idle_key())
+
+        # Exactly one row moved, and it is the idle one. The session that is
+        # working says the same thing throughout and is not announced.
+        withdrawn = f"{self.IDLE_REFERENCE} moved from {self.COMPLETE} to {self.IN_RECORDS}."
+        self.assertEqual(frames[1]["announce"], withdrawn)
+        self.assertEqual(frames[1]["changes"].count('class="row"'), 1)
+        self.assertNotIn("alpha", frames[1]["changes"])
+
+        # Every idle surface moved together: the headline, the next action and
+        # the coverage evidence in the detail panel the operator has open.
+        panel = frames[1]["worklist"]
+        self.assertIn(self.IN_RECORDS, panel)
+        self.assertNotIn(self.COMPLETE, panel)
+        self.assertIn("produced no record this refresh", panel)
+        self.assertNotIn("nothing to do in this session", panel)
+
+        # And the restoration is announced as plainly as the withdrawal was.
+        self.assertEqual(
+            frames[2]["announce"],
+            f"{self.IDLE_REFERENCE} moved from {self.IN_RECORDS} to {self.COMPLETE}.",
+        )
+        self.assertIn(self.COMPLETE, frames[2]["worklist"])
+        self.assertIn("nothing to do in this session", frames[2]["worklist"])
+
+    def test_no_signature_quotes_an_age_that_only_the_clock_advances(self) -> None:
+        # One payload read at four instants inside the current window. The row
+        # states a different age at each of them and the signature states the
+        # same thing at all four, which is what keeps a page polling every few
+        # seconds out of the Timeline and out of the live region.
+        threshold = _eval_board_view("OBSERVATION_STALE_SECONDS")
+        payload = self._payload(("idle", WHOLE_READ))
+        signatures = _eval_board_view(
+            "ARGS[1].map(nowMs => workRows(ARGS[0], nowMs).map(row => row.signature))",
+            payload,
+            [
+                int((FIXTURE_CREATED + timedelta(seconds=age)).timestamp() * 1000)
+                for age in (1, 30, threshold - 1, threshold)
+            ],
+        )
+        self.assertEqual(len({json.dumps(item) for item in signatures}), 1)
+
+        # Crossing the threshold is not the clock advancing, though: the row
+        # stops claiming the present tense, so it is a change and is reported.
+        aged = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => [row.signature, row.headline])",
+            payload,
+            int((FIXTURE_CREATED + timedelta(seconds=threshold + 1)).timestamp() * 1000),
+        )
+        self.assertNotEqual(aged[0][0], signatures[0][0])
+        self.assertEqual(aged[0][1], "last observed idle")
+
+    def test_dropping_the_effective_state_would_leave_the_withdrawal_silent(self) -> None:
+        """Mutation: build the signature from the record alone, as it was.
+
+        The mutant is exactly the Board before this fix, and it produces
+        exactly the silence the assertions above forbid -- so those assertions
+        are load-bearing rather than decorative.
+        """
+
+        pair = [
+            {"payload": self._payload(("idle", WHOLE_READ))},
+            {"payload": self._payload(("idle", CANDIDATE_UNREADABLE))},
+        ]
+        mutated = _eval_board_view(
+            "(() => {"
+            f" const rows = ARGS.map(payload => workRows(payload, {self.NOW_MS})[0]);"
+            " return {signatures: rows.map(row => row.signature),"
+            " headlines: rows.map(row => row.headline)}; })()",
+            pair[0]["payload"],
+            pair[1]["payload"],
+            mutate=("`effective:${effectiveState(freshness, update, idle)}`", '""'),
+        )
+        # The row really does change what it says, and the mutant's signature
+        # really does not notice.
+        self.assertEqual(mutated["headlines"], [self.COMPLETE, self.IN_RECORDS])
+        self.assertEqual(mutated["signatures"][0], mutated["signatures"][1])
+        self.assertEqual(
+            _eval_board_view(
+                "meaningfulChanges("
+                "new Map([['k', {signature: ARGS[0], reference: 'r', headline: ARGS[2]}]]),"
+                "new Map([['k', {signature: ARGS[1], reference: 'r', headline: ARGS[3]}]]))",
+                mutated["signatures"][0],
+                mutated["signatures"][1],
+                mutated["headlines"][0],
+                mutated["headlines"][1],
+            ),
+            [],
+        )
+
+        # The shipped signature, unmutated, reports the very same refresh.
+        frames = _render_board_sequence(pair)
+        self.assertEqual(
+            frames[1]["announce"],
+            f"{self.IDLE_REFERENCE} moved from {self.COMPLETE} to {self.IN_RECORDS}.",
+        )
+
+
+# The cache metadata the Board server serves beside a snapshot. Only `fresh`
+# confirms what it served: the server answers a cold cache with metadata alone
+# and a stale one with the snapshot the last completed refresh produced, so
+# every other shape below is a delayed or failed refresh still serving old
+# data. Each is named once so a transition reads as the refresh it describes.
+# The record inside them is untouched and, at the test clock, comfortably
+# inside every record-level freshness threshold -- which is exactly the shape
+# that used to keep asserting green idleness for ten minutes.
+CONFIRMED_CACHE: dict = {}
+STALE_CACHE = dict(state="stale", age_seconds=140.0, refresh_in_progress=False)
+# The same stale cache with the refresh that will replace it actually running.
+STALE_CACHE_REFRESHING = dict(STALE_CACHE, refresh_in_progress=True)
+# A stale cache whose last refresh failed, so nothing is coming until the
+# server's retry window opens. The error text is the server's own code-defined
+# summary, never exception content.
+STALE_CACHE_FAILED = dict(
+    STALE_CACHE,
+    last_error="status refresh failed: TimeoutError",
+    retry_in_seconds=8.0,
+)
+# The same unconfirmed cache, one poll later: only the age moved.
+STALE_CACHE_AGED = dict(STALE_CACHE, age_seconds=305.0)
+# No completed snapshot at all, and a state this page has never heard of.
+# Neither is `fresh`, so neither confirms anything.
+COLD_CACHE = dict(state="cold", age_seconds=None, refresh_in_progress=True)
+UNKNOWN_CACHE = dict(state="reheating", age_seconds=140.0)
+
+
+def _cache_payload(records: list[dict], cache: dict, observations: dict | None = None) -> dict:
+    """One status payload whose cache metadata is the case under test.
+
+    Only `board.cache` moves: the observation records, the file accounting and
+    every other part of the payload are held fixed, so a transition between
+    two of these is carried by the snapshot's confirmation state alone.
+    """
+
+    payload = _observation_payload(
+        [], observations=_accounted_observations(records, **(observations or {}))
+    )
+    payload["board"]["cache"] = {**payload["board"]["cache"], **cache}
+    return payload
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardSnapshotAuthorityTests(TestCase):
+    """An idle claim is only as current as the snapshot that carried it.
+
+    `/api/status` answers a cold cache with metadata only and a stale one with
+    the snapshot the last completed refresh produced, so a delayed or failed
+    refresh leaves the page holding records that were written when that refresh
+    ran. Their own timestamps and their own source freshness are all still
+    inside the record-level thresholds -- a two-minute-old `no_work` record
+    reads as current by every measure it carries.
+
+    Before this, that was enough: a cached `no_work` record rendered green, as
+    `idle with complete coverage` with `nothing to do in this session` beside
+    it, for the whole ten minutes before its own age caught up -- while the
+    observation summary above it correctly reported an unconfirmed snapshot,
+    and while reconciliation went on retiring work rows on its authority.
+
+    These tests hold one rule: a snapshot the server has not confirmed may
+    still show its records as what was last observed, and may never assert
+    that anything is absent now or retire work beside it.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    CUES = _eval_board_view("CUES")
+    IDLE_REFERENCE = "Board contract delivery"
+    COMPLETE = "idle with complete coverage"
+    UNCONFIRMED = "idle in an unconfirmed snapshot"
+    PART_COVERED = "last observed idle, coverage incomplete"
+    IN_FILES = "idle in the files read"
+    QUIET = "No meaningful change has been observed since this page loaded."
+    # The two sentences that claim this session needs nothing right now.
+    PRESENT_TENSE = (COMPLETE, "nothing to do in this session")
+
+    # One refresh after another in one page lifetime, and exactly what the
+    # Timeline and the live region must say about the second. `None` means the
+    # refresh was not news: nothing is logged and the live region is left
+    # untouched rather than repeated.
+    #
+    # Each side names the accepted record, the cache metadata served with it,
+    # and what the read around it could account for. Every pair holds the
+    # record byte-identical, so each transition is carried entirely by facts
+    # about the payload rather than by anything a producer wrote.
+    TRANSITIONS = (
+        (
+            "confirmed -> unconfirmed: the same current, completely covered record",
+            ("idle", CONFIRMED_CACHE, WHOLE_READ),
+            ("idle", STALE_CACHE, WHOLE_READ),
+            f"moved from {COMPLETE} to {UNCONFIRMED}",
+        ),
+        (
+            "unconfirmed -> confirmed: a refresh landed and the claim returns",
+            ("idle", STALE_CACHE, WHOLE_READ),
+            ("idle", CONFIRMED_CACHE, WHOLE_READ),
+            f"moved from {UNCONFIRMED} to {COMPLETE}",
+        ),
+        (
+            "unconfirmed -> a refresh is now in progress: waiting is the next action",
+            ("idle", STALE_CACHE, WHOLE_READ),
+            ("idle", STALE_CACHE_REFRESHING, WHOLE_READ),
+            f"changed while staying {UNCONFIRMED}",
+        ),
+        (
+            "a refresh in progress -> a refresh that is not coming",
+            ("idle", STALE_CACHE_REFRESHING, WHOLE_READ),
+            ("idle", STALE_CACHE, WHOLE_READ),
+            f"changed while staying {UNCONFIRMED}",
+        ),
+        (
+            "timestamp-only refresh: the cache aged, the confirmation state did not",
+            ("idle", STALE_CACHE, WHOLE_READ),
+            ("idle", STALE_CACHE_AGED, WHOLE_READ),
+            None,
+        ),
+        (
+            "the last refresh failed: still unconfirmed, still not coming",
+            ("idle", STALE_CACHE, WHOLE_READ),
+            ("idle", STALE_CACHE_FAILED, WHOLE_READ),
+            None,
+        ),
+        (
+            "a cold cache confirms nothing either",
+            ("idle", CONFIRMED_CACHE, WHOLE_READ),
+            ("idle", COLD_CACHE, WHOLE_READ),
+            f"moved from {COMPLETE} to {UNCONFIRMED}",
+        ),
+        (
+            "nor does a state this page has never heard of",
+            ("idle", CONFIRMED_CACHE, WHOLE_READ),
+            ("idle", UNKNOWN_CACHE, WHOLE_READ),
+            f"moved from {COMPLETE} to {UNCONFIRMED}",
+        ),
+        (
+            "unconfirmed and a candidate left unread: the lost file is the worse gap",
+            ("idle", STALE_CACHE, WHOLE_READ),
+            ("idle", STALE_CACHE, CANDIDATE_OMITTED),
+            f"moved from {UNCONFIRMED} to {IN_FILES}",
+        ),
+        (
+            "partly covered and then unconfirmed too: the snapshot is the worse gap",
+            ("partly_covered", CONFIRMED_CACHE, WHOLE_READ),
+            ("partly_covered", STALE_CACHE, WHOLE_READ),
+            f"moved from {PART_COVERED} to {UNCONFIRMED}",
+        ),
+    )
+
+    @staticmethod
+    def _record(name: str) -> dict:
+        record = _observation_fixture("no_work")
+        if name == "partly_covered":
+            return _with_extra_source(record, freshness="fresh", coverage="partial")
+        return record
+
+    @classmethod
+    def _payload(cls, spec: tuple[str, dict, dict]) -> dict:
+        name, cache, counters = spec
+        return _cache_payload([cls._record(name)], cache, counters)
+
+    def _rows(self, payload: dict) -> list[dict]:
+        return _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => ({key: row.key, headline: row.headline,"
+            "headline_class: row.headline_class, states: row.states, signature: row.signature,"
+            "recorded: workSignature(row.record), action: row.action_label,"
+            "idle: row.idle || null, coverage: row.groups[0].items[0],"
+            "freshness: row.freshness}))",
+            payload,
+            self.NOW_MS,
+        )
+
+    def test_a_cached_current_record_states_no_present_tense_claim(self) -> None:
+        """The finding exactly: one record, two snapshots that carried it."""
+
+        confirmed = self._rows(_cache_payload([_observation_fixture("no_work")], CONFIRMED_CACHE))[0]
+        unconfirmed = self._rows(_cache_payload([_observation_fixture("no_work")], STALE_CACHE))[0]
+
+        # The record is the same record, and by its own evidence it is current
+        # in both: every source fresh, an observation time well inside the
+        # staleness threshold. That is what made the old reading look sound.
+        self.assertEqual(confirmed["recorded"], unconfirmed["recorded"])
+        self.assertEqual(confirmed["idle"]["coverage_state"], "complete")
+        self.assertEqual(unconfirmed["idle"]["coverage_state"], "complete")
+        self.assertEqual(confirmed["freshness"]["age_text"], "30s")
+        self.assertEqual(unconfirmed["freshness"]["age_text"], "30s")
+
+        # Confirmed: the claim stands, in full.
+        self.assertTrue(confirmed["idle"]["affirmative"])
+        self.assertEqual(confirmed["idle"]["authority_state"], "confirmed")
+        self.assertEqual(confirmed["headline"], self.COMPLETE)
+        self.assertEqual(confirmed["headline_class"], "ok")
+        self.assertEqual(confirmed["action"], "nothing to do in this session")
+        self.assertTrue(confirmed["freshness"]["current"])
+        self.assertEqual(confirmed["freshness"]["label"], "observed 30s ago")
+        self.assertEqual(confirmed["freshness"]["class"], "ok")
+
+        # Unconfirmed: label, colour, next action and coverage evidence all
+        # withdraw together, and the row still says what the record recorded.
+        self.assertFalse(unconfirmed["idle"]["affirmative"])
+        self.assertEqual(unconfirmed["idle"]["authority_state"], "unconfirmed")
+        self.assertEqual(unconfirmed["idle"]["reason"], "unconfirmed")
+        self.assertEqual(unconfirmed["headline"], self.UNCONFIRMED)
+        self.assertEqual(unconfirmed["headline_class"], "warn")
+        self.assertEqual(
+            unconfirmed["states"],
+            [{"label": self.UNCONFIRMED, "class": "warn", "cue": self.CUES["warn"]}],
+        )
+        self.assertEqual(
+            unconfirmed["action"],
+            "confirm this session with a completed refresh before treating it as idle",
+        )
+        self.assertEqual(unconfirmed["coverage"]["class"], "warn")
+        self.assertEqual(unconfirmed["coverage"]["label"], "recorded complete, snapshot unconfirmed")
+        self.assertIn("were observed complete when it was written", unconfirmed["coverage"]["note"])
+        self.assertIn("has not confirmed the snapshot", unconfirmed["coverage"]["note"])
+        self.assertIn("so this session is not shown as idle", unconfirmed["coverage"]["note"])
+
+        # The record's own age reading stops speaking in the present tense too,
+        # because the same gate decides it: a record inside an unconfirmed
+        # snapshot cannot be dated against now at all.
+        self.assertFalse(unconfirmed["freshness"]["current"])
+        self.assertFalse(unconfirmed["freshness"]["snapshot_confirmed"])
+        self.assertEqual(unconfirmed["freshness"]["label"], "last observed 30s ago")
+        self.assertEqual(unconfirmed["freshness"]["class"], "warn")
+        self.assertIn("has not confirmed", unconfirmed["freshness"]["detail"])
+
+        # And nothing anywhere in the withheld reading reads as good news.
+        claimed = json.dumps(
+            [unconfirmed["idle"], unconfirmed["states"], unconfirmed["coverage"], unconfirmed["action"]]
+        )
+        for sentence in self.PRESENT_TENSE:
+            self.assertNotIn(sentence, claimed)
+        self.assertNotIn('"ok"', claimed)
+
+    def test_refresh_in_progress_and_a_failed_refresh_are_both_stated(self) -> None:
+        # Neither changes whether the snapshot is confirmed, and both change
+        # what an operator should do about it, so both are reported.
+        running = self._rows(_cache_payload([_observation_fixture("no_work")], STALE_CACHE_REFRESHING))[0]
+        self.assertEqual(running["idle"]["authority_state"], "refreshing")
+        self.assertEqual(running["headline"], self.UNCONFIRMED)
+        self.assertEqual(running["headline_class"], "warn")
+        self.assertFalse(running["idle"]["affirmative"])
+        self.assertEqual(
+            running["action"],
+            "wait for the running refresh to confirm this session before treating it as idle",
+        )
+        self.assertIn("while a background refresh is still running", running["coverage"]["note"])
+
+        failed = self._rows(_cache_payload([_observation_fixture("no_work")], STALE_CACHE_FAILED))[0]
+        self.assertEqual(failed["idle"]["authority_state"], "unconfirmed")
+        self.assertFalse(failed["idle"]["affirmative"])
+        self.assertIn("its last refresh failed", failed["coverage"]["note"])
+        self.assertIn("status refresh failed: TimeoutError", failed["coverage"]["note"])
+        self.assertIn("next attempt in 8s", failed["coverage"]["note"])
+
+        # A cold cache with nothing behind it is the same verdict, and says so
+        # without inventing an age for a snapshot that does not exist.
+        cold = self._rows(_cache_payload([_observation_fixture("no_work")], COLD_CACHE))[0]
+        self.assertEqual(cold["idle"]["authority_state"], "refreshing")
+        self.assertFalse(cold["idle"]["affirmative"])
+        self.assertEqual(cold["headline"], self.UNCONFIRMED)
+
+    def test_every_transition_reports_exactly_what_moved(self) -> None:
+        for name, before, after, expected in self.TRANSITIONS:
+            with self.subTest(transition=name):
+                first, second = self._payload(before), self._payload(after)
+                # One record throughout: only the payload's own facts moved.
+                self.assertEqual(
+                    first["observations"]["records"], second["observations"]["records"]
+                )
+                frames = _render_board_sequence([{"payload": first}, {"payload": second}])
+                # The first snapshot of a page is never news.
+                self.assertEqual(frames[0].get("announce", ""), "")
+                self.assertIn(self.QUIET, frames[0]["changes"])
+
+                if expected is None:
+                    # Not news: the live region is left exactly as it was
+                    # rather than repeated, and the Timeline stays empty.
+                    self.assertEqual(frames[1].get("announce", ""), "")
+                    self.assertIn(self.QUIET, frames[1]["changes"])
+                    self.assertEqual(frames[1]["changes"].count('class="row"'), 0)
+                    continue
+
+                sentence = f"{self.IDLE_REFERENCE} {expected}"
+                self.assertEqual(frames[1]["announce"], f"{sentence}.")
+                self.assertEqual(frames[1]["changes"].count('class="row"'), 1)
+                self.assertIn('<span class="pill">changed</span>', frames[1]["changes"])
+                self.assertIn(sentence, frames[1]["changes"])
+
+    def test_the_signature_moves_with_the_snapshot_and_not_with_its_age(self) -> None:
+        # The recorded half cannot see any of this, so the derived half has to:
+        # the confirmation state is classified into it, and the cache age --
+        # which advances on every poll -- is kept out.
+        for name, before, after, expected in self.TRANSITIONS:
+            with self.subTest(transition=name):
+                one = self._rows(self._payload(before))[0]
+                two = self._rows(self._payload(after))[0]
+                self.assertEqual(one["key"], two["key"])
+                self.assertEqual(one["recorded"], two["recorded"])
+                self.assertEqual(one["signature"] == two["signature"], expected is None)
+                for row in (one, two):
+                    recorded, marker, effective = row["signature"].rpartition("|effective:")
+                    self.assertEqual(recorded, row["recorded"])
+                    self.assertEqual(marker, "|effective:")
+                    self.assertIn(row["idle"]["signature"], effective)
+                    self.assertIn(f"snapshot:{row['idle']['authority_state']}", effective)
+                # No signature anywhere quotes a cache age or an error string.
+                for value in ("140", "305", "TimeoutError", "8"):
+                    self.assertNotIn(value, one["signature"].rpartition("|effective:")[2])
+
+    def test_an_unconfirmed_snapshot_retires_no_work_beside_it(self) -> None:
+        # The other half of the finding. A `no_work` snapshot recorded after a
+        # work observation retires that work row, because it asserts the
+        # session has since gone quiet -- which is exactly the claim an
+        # unconfirmed snapshot may not make.
+        work = _observed_later(_named_work("alpha"), 0)
+        quiet = _observed_later(_observation_fixture("no_work"), 20)
+
+        confirmed = self._rows(_cache_payload([work, quiet], CONFIRMED_CACHE))
+        self.assertEqual([row["key"] for row in confirmed], [_idle_key()])
+        self.assertEqual(confirmed[0]["action"], "nothing to do in this session")
+
+        for cache in (STALE_CACHE, STALE_CACHE_REFRESHING, STALE_CACHE_FAILED, COLD_CACHE, UNKNOWN_CACHE):
+            with self.subTest(cache=cache.get("state", "fresh")):
+                for records in ([work, quiet], [quiet, work]):
+                    rows = self._rows(_cache_payload(records, cache))
+                    # Both readings stay, and they do not contradict each
+                    # other: the snapshot's row claims only a past observation.
+                    self.assertEqual(
+                        [row["key"] for row in rows], [_work_key("alpha"), _idle_key()]
+                    )
+                    self.assertEqual(rows[1]["headline"], self.UNCONFIRMED)
+                    self.assertNotIn("nothing to do", rows[1]["action"])
+
+        # The other direction is untouched: a work observation recorded after
+        # the snapshot still retires the snapshot's row, because that is the
+        # recorded order of two observations inside one payload rather than a
+        # claim about now.
+        picked_up = self._rows(
+            _cache_payload(
+                [_observed_later(_observation_fixture("no_work"), 0), _observed_later(_named_work("alpha"), 20)],
+                STALE_CACHE,
+            )
+        )
+        self.assertEqual([row["key"] for row in picked_up], [_work_key("alpha")])
+
+    def test_work_an_unconfirmed_snapshot_may_not_retire_comes_back(self) -> None:
+        # One page lifetime: a confirmed idle snapshot that legitimately
+        # retires the work observed before it, then the same two records
+        # served from a stale cache. The snapshot may no longer assert that
+        # the session went quiet, so the work row it was suppressing appears
+        # again -- and both the Timeline and the live region say so.
+        work = _observed_later(_named_work("alpha"), 0)
+        idle = _observed_later(_observation_fixture("no_work"), 20)
+        frames = _render_board_sequence(
+            [
+                {"payload": _cache_payload([work, idle], CONFIRMED_CACHE)},
+                {"payload": _cache_payload([work, idle], STALE_CACHE)},
+            ]
+        )
+        self.assertEqual(_work_keys(frames[0]["worklist"]), [_idle_key()])
+        self.assertEqual(
+            _work_keys(frames[1]["worklist"]), [_work_key("alpha"), _idle_key()]
+        )
+        self.assertIn("alpha appeared as provider run observed", frames[1]["announce"])
+        self.assertIn(f"{self.IDLE_REFERENCE} moved from {self.COMPLETE} to {self.UNCONFIRMED}", frames[1]["announce"])
+        self.assertIn("alpha appeared as provider run observed", frames[1]["changes"])
+
+    def test_the_whole_page_withholds_and_then_restores_the_claim(self) -> None:
+        # Every surface at once, across one page lifetime: the work list, the
+        # Now header, the chrome and the Health diagnostics.
+        confirmed = _cache_payload([_observation_fixture("no_work")], CONFIRMED_CACHE)
+        unconfirmed = _cache_payload([_observation_fixture("no_work")], STALE_CACHE_FAILED)
+        frames = _render_board_sequence(
+            [{"payload": confirmed}, {"payload": unconfirmed}, {"payload": confirmed}]
+        )
+
+        # Confirmed: the claim is made, and no warning is raised about it.
+        for sentence in self.PRESENT_TENSE:
+            self.assertIn(sentence, frames[0]["worklist"])
+        self.assertNotIn("Unconfirmed snapshot", json.dumps(frames[0]))
+
+        # Unconfirmed: not one surface repeats it, and every surface says why.
+        # The Timeline and the live region are excluded on purpose: they report
+        # what the row moved away from, which is history rather than a claim.
+        rendered = json.dumps(
+            {k: v for k, v in frames[1].items() if k not in ("changes", "announce")}
+        )
+        for sentence in self.PRESENT_TENSE:
+            self.assertNotIn(sentence, rendered)
+        self.assertIn(self.UNCONFIRMED, frames[1]["worklist"])
+        self.assertIn("last observed 30s ago", frames[1]["worklist"])
+        self.assertIn("Unconfirmed snapshot", frames[1]["worklist"])
+        self.assertIn("has not confirmed", frames[1]["worklist"])
+        # Now: beside the "Do next" line, which is read as the whole of what
+        # is waiting.
+        self.assertIn("Unconfirmed snapshot", frames[1]["worknow"])
+        self.assertIn("stale snapshot, unconfirmed", frames[1]["worknow"])
+        self.assertIn("has not confirmed", frames[1]["worknow"])
+        self.assertNotIn("live, observed", frames[1]["worknow"])
+        self.assertIn("last observed", frames[1]["summary"])
+        self.assertIn("unconfirmed snapshot", frames[1]["chrome"])
+        # Health: the cache row states the confirmation verdict, its colour is
+        # taken from that verdict, and the server's own error summary stays.
+        self.assertIn("has not confirmed", frames[1]["diagnostics"])
+        self.assertIn("status refresh failed: TimeoutError", frames[1]["diagnostics"])
+        self.assertIn('class="pill warn"><span class="cue" aria-hidden="true">~</span> stale', frames[1]["diagnostics"])
+
+        # Confirmed again: the claim returns, and so does the green.
+        for sentence in self.PRESENT_TENSE:
+            self.assertIn(sentence, frames[2]["worklist"])
+        self.assertNotIn("Unconfirmed snapshot", frames[2]["worklist"])
+        self.assertNotIn("Unconfirmed snapshot", frames[2]["worknow"])
+        self.assertNotIn("unconfirmed snapshot", frames[2]["chrome"])
+        self.assertEqual(
+            frames[2]["announce"],
+            f"{self.IDLE_REFERENCE} moved from {self.UNCONFIRMED} to {self.COMPLETE}.",
+        )
+
+    def test_an_unconfirmed_snapshot_reports_no_absence_when_it_is_empty(self) -> None:
+        # An empty list is an absence claim like any other, so it is not said
+        # of a snapshot the server never confirmed either.
+        nodes = _render_board_dom(_cache_payload([], STALE_CACHE), now=OBSERVATION_NOW)
+        for node in ("worklist", "participants", "sources"):
+            with self.subTest(node=node):
+                self.assertIn("has not confirmed", nodes[node])
+        self.assertNotIn("No local Board observation passed", nodes["worklist"])
+        self.assertNotIn("No local Board observation is recorded yet", nodes["worklist"])
+        self.assertNotIn("No participant run is recorded in any local observation", nodes["participants"])
+        self.assertNotIn("No observation source is recorded.", nodes["sources"])
+
+        # Confirmed and empty is a measured absence, and still reads as one.
+        confirmed = _render_board_dom(_cache_payload([], CONFIRMED_CACHE), now=OBSERVATION_NOW)
+        self.assertIn("No local Board observation passed", confirmed["worklist"])
+        self.assertNotIn("has not confirmed", json.dumps(confirmed))
+
+    def test_a_reading_withheld_for_another_reason_still_states_the_snapshot(self) -> None:
+        # Whatever decided the reading, an unconfirmed snapshot is stated on
+        # it, so a row held back for a lost file does not imply that what it
+        # did read is confirmed.
+        for counters, reading in (
+            (CANDIDATE_OMITTED, "truncated"),
+            (CANDIDATE_UNREADABLE, "unread"),
+        ):
+            with self.subTest(reading=reading):
+                row = self._rows(
+                    _cache_payload([_observation_fixture("no_work")], STALE_CACHE, counters)
+                )[0]
+                self.assertEqual(row["idle"]["reason"], reading)
+                self.assertEqual(row["idle"]["authority_state"], "unconfirmed")
+                self.assertFalse(row["idle"]["affirmative"])
+                self.assertIn("has not confirmed", row["coverage"]["note"])
+
+        # And an unreachable source keeps its own, more severe reading while
+        # the unconfirmed snapshot is still stated beside it.
+        unreachable = self._rows(
+            _cache_payload(
+                [_with_extra_source(_observation_fixture("no_work"), freshness="unavailable", coverage="unavailable")],
+                STALE_CACHE,
+            )
+        )[0]
+        self.assertEqual(unreachable["idle"]["reason"], "unavailable")
+        self.assertEqual(unreachable["headline_class"], "bad")
+        self.assertIn("cannot be reached now", unreachable["coverage"]["note"])
+        self.assertIn("has not confirmed", unreachable["coverage"]["note"])
+
+    def test_without_the_authority_reading_the_row_misattributes_the_cause(self) -> None:
+        # The mutation removes the idle classifier's whole reading of the
+        # confirmation state, so the cascade falls through to the record's
+        # own age.
+        payload = _cache_payload([_observation_fixture("no_work")], STALE_CACHE)
+        ungated = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.headline_class, row.action_label])",
+            payload,
+            self.NOW_MS,
+            mutate=(
+                'if (freshness?.snapshot_confirmed === false) {\n'
+                '        return text(freshness?.snapshot_reading) || "unconfirmed";\n'
+                '      }',
+                "",
+            ),
+        )
+        # The claim itself stays withheld, because the gate that withholds it
+        # lives one level down in `recordFreshness` and is tested once. What
+        # the mutant loses is the explanation: the row misattributes the cause
+        # to the record's own age and asks for the wrong thing back.
+        self.assertEqual(
+            ungated,
+            [["last observed idle", "warn", "re-observe this session before treating it as idle"]],
+        )
+
+        # And the shipped classifier, unmutated, names the real cause.
+        shipped = self._rows(payload)[0]
+        self.assertEqual(shipped["headline"], self.UNCONFIRMED)
+        self.assertEqual(shipped["headline_class"], "warn")
+        self.assertEqual(
+            shipped["action"],
+            "confirm this session with a completed refresh before treating it as idle",
+        )
+        self.assertNotIn("nothing to do", shipped["action"])
+
+    def test_without_the_freshness_gate_a_cached_record_still_reads_current(self) -> None:
+        # One gate below that: the record's own freshness is what the idle
+        # classification and the derived signature both consult, so ignoring
+        # the snapshot there restores the present tense everywhere at once.
+        payload = _cache_payload([_observation_fixture("no_work")], STALE_CACHE)
+        ungated = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.freshness.label,"
+            " row.freshness.class, row.freshness.current])",
+            payload,
+            self.NOW_MS,
+            mutate=(
+                'const current = worst === "fresh" && !aged && confirmed;',
+                'const current = worst === "fresh" && !aged;',
+            ),
+        )
+        self.assertEqual(ungated, [[self.COMPLETE, "observed 30s ago", "ok", True]])
+
+        shipped = self._rows(payload)[0]
+        self.assertEqual(shipped["freshness"]["label"], "last observed 30s ago")
+        self.assertEqual(shipped["freshness"]["class"], "warn")
+        self.assertFalse(shipped["freshness"]["current"])
+
+    def test_without_the_authority_gate_reconciliation_still_retires_work(self) -> None:
+        # The reconciliation half of the same mutation: an unconfirmed
+        # snapshot that may state a current idle claim goes on suppressing the
+        # work observed before it.
+        payload = _cache_payload(
+            [_observed_later(_named_work("alpha"), 0), _observed_later(_observation_fixture("no_work"), 20)],
+            STALE_CACHE,
+        )
+        ungated = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => row.key)",
+            payload,
+            self.NOW_MS,
+            mutate=(
+                "const current = idlePresentation(snapshot, recordFreshness(snapshot, nowMs, authority), coverage).affirmative;",
+                "const current = idlePresentation(snapshot, recordFreshness(snapshot, nowMs), coverage).affirmative;",
+            ),
+        )
+        self.assertEqual(ungated, [_idle_key()])
+
+        # And the shipped reconciliation, unmutated, retires nothing.
+        self.assertEqual(
+            [row["key"] for row in self._rows(payload)],
+            [_work_key("alpha"), _idle_key()],
+        )
+
+    def test_one_canonical_confirmation_reading_answers_the_whole_payload(self) -> None:
+        # The fact is derived once per payload and read everywhere, so the
+        # observation summary and the work rows can never disagree about it.
+        for cache, confirmed, reading in (
+            (CONFIRMED_CACHE, True, "confirmed"),
+            (STALE_CACHE, False, "unconfirmed"),
+            (STALE_CACHE_REFRESHING, False, "refreshing"),
+            (COLD_CACHE, False, "refreshing"),
+            (UNKNOWN_CACHE, False, "unconfirmed"),
+        ):
+            with self.subTest(cache=cache.get("state", "fresh")):
+                payload = _cache_payload([_observation_fixture("no_work")], cache)
+                authority = _eval_board_truth("snapshotAuthority(ARGS[0])", payload)
+                self.assertEqual(authority["confirmed"], confirmed)
+                self.assertEqual(authority["reading"], reading)
+                # The observation summary reports the same verdict.
+                obs = _eval_board_truth(
+                    "observation(ARGS[0], ARGS[1])", payload, self.NOW_MS
+                )
+                self.assertEqual(obs["unconfirmed"], not confirmed)
+                # And so does the row built from a record inside it.
+                row = self._rows(payload)[0]
+                self.assertEqual(row["freshness"]["snapshot_confirmed"], confirmed)
+                self.assertEqual(row["idle"]["affirmative"], confirmed)
+
+        # A payload carrying no cache metadata at all states nothing either
+        # way, so it is not read as unconfirmed: the record-level freshness and
+        # the file coverage are what qualify it.
+        silent = _eval_board_truth("snapshotAuthority(ARGS[0])", {})
+        self.assertTrue(silent["confirmed"])
+        self.assertFalse(silent["recorded"])
+        self.assertEqual(silent["note"], "")
+        self.assertEqual(silent["class"], "muted")
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardPollingAuthorityTests(TestCase):
+    """A rendered observation stops speaking for now when polling stops.
+
+    The snapshot cache answers whether the *server* had confirmed what it
+    served. It cannot answer the other half: whether this page has heard from
+    the server since. A page that rendered a fresh, completely covered
+    `no_work` record and then lost `/api/status` held a green `idle with
+    complete coverage` with `nothing to do in this session` beside it for as
+    long as the failures continued -- record freshness, the idle reading and
+    the reconciliation that retires work beside an idle snapshot were all
+    recalculated only by a successful `render()`, so the ten-minute observation
+    threshold never arrived either. A warning written into the summary does not
+    withdraw those claims; only rendering them again does.
+
+    These tests drive the shipped `load()` loop across one page lifetime, so
+    the transport state, the retained rerender and the arming of the next
+    timer are the shipped code rather than a restatement of it. The rule they
+    hold: a status poll that did not complete withdraws every current-state
+    claim on the page and retires nothing, and a poll that completes restores
+    exactly the server's own authority with no client state left behind.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    COMPLETE = "idle with complete coverage"
+    UNCONFIRMED = "idle in an unconfirmed snapshot"
+    WORKING = "provider run observed"
+    PRESENT_TENSE = (COMPLETE, "nothing to do in this session")
+    POLL_ACTION = "restore this page's status poll before treating this session as idle"
+    REFRESH_ACTION = "confirm this session with a completed refresh before treating it as idle"
+    # The payload every case starts from: one accepted, completely covered
+    # `no_work` record, 30s old at the test clock, inside a cache the server
+    # confirmed. Every measure the record itself carries says "current", which
+    # is what made the retained claim look sound.
+    FRESH_IDLE = _cache_payload([_observation_fixture("no_work")], CONFIRMED_CACHE)
+    STALE_IDLE = _cache_payload([_observation_fixture("no_work")], STALE_CACHE)
+    AGED_IDLE = _cache_payload([_observation_fixture("no_work")], STALE_CACHE_AGED)
+    FRESH_WORK = _cache_payload([_named_work("alpha")], CONFIRMED_CACHE)
+    # One poll after the last, far enough past the record-level staleness
+    # threshold that the retained observation ages out while the page is not
+    # being answered.
+    LATER_MS = NOW_MS + 11 * 60 * 1000
+
+    # The reference the two record shapes render under, so each case can state
+    # the whole sentence its last poll is allowed to produce.
+    IDLE_REFERENCE = "Board contract delivery"
+    WORK_REFERENCE = "alpha"
+
+    # Every case is one page lifetime: the polls it makes, then the Work
+    # headline the last poll leaves on screen and the one sentence the Timeline
+    # and the live region are allowed to carry for it. `None` means the poll
+    # was not a semantic transition -- nothing is logged and the live region is
+    # left untouched rather than repeated.
+    LIFETIMES = (
+        (
+            "the finding: a fresh, completely covered idle record, then a failed poll",
+            ({"status": FRESH_IDLE}, {"status": None}),
+            UNCONFIRMED,
+            f"{IDLE_REFERENCE} moved from {COMPLETE} to {UNCONFIRMED}",
+        ),
+        (
+            "repeated identical failures say nothing new",
+            ({"status": FRESH_IDLE}, {"status": None}, {"status": None}),
+            UNCONFIRMED,
+            None,
+        ),
+        (
+            "a failure after active work leaves the work row as the last observation",
+            ({"status": FRESH_WORK}, {"status": None}),
+            WORKING,
+            f"{WORK_REFERENCE} changed while staying {WORKING}",
+        ),
+        (
+            "a failure while the server snapshot was already stale: two reasons, one row",
+            ({"status": STALE_IDLE}, {"status": None}),
+            UNCONFIRMED,
+            f"{IDLE_REFERENCE} changed while staying {UNCONFIRMED}",
+        ),
+        (
+            "recovery with a fresh snapshot: the claim returns in full",
+            ({"status": FRESH_IDLE}, {"status": None}, {"status": FRESH_IDLE}),
+            COMPLETE,
+            f"{IDLE_REFERENCE} moved from {UNCONFIRMED} to {COMPLETE}",
+        ),
+        (
+            "recovery with a stale snapshot: the server's own reading, not the client's",
+            ({"status": FRESH_IDLE}, {"status": None}, {"status": STALE_IDLE}),
+            UNCONFIRMED,
+            f"{IDLE_REFERENCE} changed while staying {UNCONFIRMED}",
+        ),
+        (
+            "the freshness threshold elapsing under a failure is not a second transition",
+            ({"status": FRESH_IDLE}, {"status": None}, {"status": None, "now_ms": LATER_MS}),
+            UNCONFIRMED,
+            None,
+        ),
+        (
+            "a different error message under the same reading is not news",
+            (
+                {"status": FRESH_IDLE},
+                {"status": None, "status_error": "Failed to fetch"},
+                {"status": None, "status_error": "NetworkError when attempting to fetch resource"},
+            ),
+            UNCONFIRMED,
+            None,
+        ),
+        (
+            "nor is a cache timestamp that moved under the same reading, after recovery",
+            (
+                {"status": FRESH_IDLE},
+                {"status": None},
+                {"status": STALE_IDLE},
+                {"status": AGED_IDLE},
+            ),
+            UNCONFIRMED,
+            None,
+        ),
+    )
+
+    def test_every_polling_lifetime_states_one_truthful_reading(self) -> None:
+        for name, steps, headline, sentence in self.LIFETIMES:
+            with self.subTest(name):
+                frames = _run_board_lifetime(list(steps))
+                last = frames[-1]
+                # The headline the operator is left looking at.
+                self.assertIn(headline, last["nodes"]["worklist"])
+                # Exactly once per semantic transition, in both places a
+                # transition is reported: nothing is logged and nothing is
+                # spoken when the poll was not news.
+                self.assertEqual(last["announced"], [] if sentence is None else [f"{sentence}."])
+                self.assertEqual(
+                    last["timeline"].count(sentence) if sentence else 0,
+                    0 if sentence is None else 1,
+                )
+                # And one poll timer, however the poll went: armed once,
+                # clearing exactly the one it replaces, and still the pending
+                # one when the poll returns.
+                for index, frame in enumerate(frames):
+                    self.assertEqual(frame["armed"], 1)
+                    self.assertEqual(frame["cleared"], 1 if index else 0)
+                    self.assertEqual(frame["timers"], index + 1)
+                    self.assertTrue(frame["pending"])
+
+    def test_a_failed_poll_withdraws_the_idle_claim_everywhere_it_was_made(self) -> None:
+        """The finding exactly: one record, two transport states."""
+
+        rendered, failed = _run_board_lifetime([{"status": self.FRESH_IDLE}, {"status": None}])
+
+        # Rendered: the claim stands, in full, on every surface that makes it.
+        self.assertIn(self.COMPLETE, rendered["nodes"]["worklist"])
+        self.assertIn("nothing to do in this session", rendered["nodes"]["worklist"])
+        self.assertIn('<b class="ok">live, observed 30s ago</b>', rendered["nodes"]["summary"])
+        self.assertNotIn("Unconfirmed snapshot", rendered["nodes"]["worknow"])
+        self.assertIn("status polls answered", rendered["nodes"]["diagnostics"])
+
+        # Failed: nothing on the page still says this session needs nothing.
+        for surface in ("worklist", "worknow", "summary", "chrome", "diagnostics"):
+            for sentence in self.PRESENT_TENSE:
+                self.assertNotIn(sentence, failed["nodes"][surface])
+        self.assertIn(self.UNCONFIRMED, failed["nodes"]["worklist"])
+        self.assertIn(self.POLL_ACTION.replace("'", "&#39;"), failed["nodes"]["worklist"])
+        self.assertIn("Unconfirmed snapshot", failed["nodes"]["worklist"])
+        # The record's own freshness is recalculated and stops reading current,
+        # which is what a summary warning never did.
+        self.assertIn("last observed 30s ago", failed["nodes"]["worklist"])
+        self.assertNotIn('<span class="pill ok">', failed["nodes"]["worklist"])
+
+        # Summary: the recorded next action is not repeated as a current one.
+        self.assertIn('<b class="warn">reload board</b>', failed["nodes"]["summary"])
+        self.assertIn('<b class="warn">status poll failed</b>', failed["nodes"]["summary"])
+        self.assertIn('<b class="warn">last observed 30s ago</b>', failed["nodes"]["summary"])
+        # Now: the same, beside the banner that says why.
+        self.assertIn("Do next: <b>reload board</b>", failed["nodes"]["worknow"])
+        self.assertIn("Unconfirmed snapshot", failed["nodes"]["worknow"])
+        self.assertIn("nothing here is evidence of work running now", failed["nodes"]["worknow"])
+        # Health: the two halves of the confirmation on their own lines, with
+        # the count and the error text that belong to the client's half.
+        self.assertIn("<b>Board page transport</b>", failed["nodes"]["diagnostics"])
+        self.assertIn("status poll failed", failed["nodes"]["diagnostics"])
+        self.assertIn('<span class="pill">1 failed status poll</span>', failed["nodes"]["diagnostics"])
+        self.assertIn("(Failed to fetch)", failed["nodes"]["diagnostics"])
+        # The snapshot cache row keeps reporting what the server said, and is
+        # coloured by the composed reading the work views are withholding on.
+        self.assertIn('<b>Snapshot cache</b><span class="pill warn">', failed["nodes"]["diagnostics"])
+
+    def test_a_failed_poll_retires_nothing_and_keeps_the_evidence_on_screen(self) -> None:
+        # The session went quiet after working: under a confirmed snapshot the
+        # idle observation is the current reading and the superseded work row
+        # is retired on its authority. A failed poll may not keep exercising
+        # that authority -- it is the same "the session is quiet now" claim the
+        # row above withdrew -- so both readings stay and neither contradicts
+        # the other.
+        records = [_observed_later(_named_work("alpha"), 0), _observed_later(_observation_fixture("no_work"), 20)]
+        payload = _cache_payload(records, CONFIRMED_CACHE)
+        rendered, failed = _run_board_lifetime([{"status": payload}, {"status": None}])
+
+        self.assertEqual(_work_keys(rendered["nodes"]["worklist"]), [_idle_key()])
+        self.assertEqual(
+            sorted(_work_keys(failed["nodes"]["worklist"])),
+            sorted([_idle_key(), _work_key("alpha")]),
+        )
+        # The work row comes back as the last observation it always was, never
+        # restated as work running now.
+        self.assertIn(self.WORKING, failed["nodes"]["worklist"])
+        self.assertIn("last observed", failed["nodes"]["worklist"])
+        # And the historical evidence the payload carried is still rendered:
+        # the sources, the participants and the recorded generation time are
+        # what the page was given, and a failed poll does not delete them.
+        self.assertEqual(failed["nodes"]["sources"], rendered["nodes"]["sources"])
+        self.assertEqual(failed["nodes"]["generated"], rendered["nodes"]["generated"])
+        self.assertNotEqual(failed["nodes"]["sources"].strip(), "")
+
+    def test_a_failed_poll_keeps_the_operators_selection_and_the_events_view(self) -> None:
+        history = {"events": [{"created_at": "2026-09-12T19:59:00Z", "summary": {"next_action": "review"}}]}
+        chosen = _work_key("alpha")
+        frames = _run_board_lifetime(
+            [
+                {"status": _cache_payload([_named_work("alpha"), _named_work("beta")], CONFIRMED_CACHE), "events": history},
+                {"status": None, "events": history, "select": chosen},
+            ]
+        )
+        # The explicit choice survives the failure rerender, in the state the
+        # page keeps it in and in the row it renders as selected.
+        self.assertEqual(frames[1]["selected"], chosen)
+        self.assertIn(f'data-key="{chosen}" aria-expanded="true"', frames[1]["nodes"]["worklist"])
+        # /api/events is a record of what the server logged rather than a claim
+        # about now, so a failed status poll neither suppresses it nor is
+        # suppressed by it.
+        self.assertIn("next: <b>review</b>", frames[1]["nodes"]["history"])
+
+    def test_a_failed_events_poll_withdraws_nothing_a_good_status_poll_confirmed(self) -> None:
+        # Authority is applied only where a failed transport invalidates a
+        # current claim. /api/events feeds a view that never claims to be
+        # current, so its failure must leave the status payload's authority --
+        # and the poll pacing the status cache decided -- exactly alone.
+        frames = _run_board_lifetime(
+            [{"status": self.FRESH_IDLE}, {"status": self.FRESH_IDLE, "events": None}]
+        )
+        self.assertTrue(frames[1]["transport"]["confirmed"])
+        self.assertEqual(frames[1]["transport"]["failures"], 0)
+        self.assertIn(self.COMPLETE, frames[1]["nodes"]["worklist"])
+        self.assertIn("nothing to do in this session", frames[1]["nodes"]["worklist"])
+        self.assertIn("status polls answered", frames[1]["nodes"]["diagnostics"])
+        self.assertEqual(frames[1]["announced"], [])
+        self.assertEqual(frames[1]["delay"], frames[0]["delay"])
+
+    def test_recovery_clears_the_client_state_and_leaves_the_payload_untouched(self) -> None:
+        # Nothing the failure path writes may survive the poll that recovers:
+        # the retained payload is never mutated, so recovery renders exactly
+        # the new server authority and no trace of the local override.
+        fresh, failed, recovered = _run_board_lifetime(
+            [{"status": self.FRESH_IDLE}, {"status": None}, {"status": self.FRESH_IDLE}]
+        )
+        self.assertEqual(recovered["transport"], {"confirmed": True, "failures": 0, "error": ""})
+        # Every surface renders exactly what the first poll rendered. The two
+        # that record history rather than state -- the Timeline and the live
+        # region -- are the only ones that carry the failure forward, which is
+        # what they are for.
+        history = {"changes", "announce"}
+        self.assertEqual(
+            {id: html for id, html in recovered["nodes"].items() if id not in history},
+            {id: html for id, html in fresh["nodes"].items() if id not in history},
+        )
+        self.assertNotIn("status poll failed", recovered["nodes"]["diagnostics"])
+        self.assertNotIn("Failed to fetch", recovered["nodes"]["worklist"])
+
+        # And a recovery onto a snapshot the server itself has not confirmed
+        # reports the server's reason, never the client's.
+        stale = _run_board_lifetime(
+            [{"status": self.FRESH_IDLE}, {"status": None}, {"status": self.STALE_IDLE}]
+        )[-1]
+        self.assertTrue(stale["transport"]["confirmed"])
+        self.assertIn(self.UNCONFIRMED, stale["nodes"]["worklist"])
+        self.assertIn(self.REFRESH_ACTION, stale["nodes"]["worklist"])
+        self.assertNotIn(self.POLL_ACTION.replace("'", "&#39;"), stale["nodes"]["worklist"])
+        self.assertIn("has not completed a status poll", failed["nodes"]["worklist"])
+        self.assertNotIn("has not completed a status poll", stale["nodes"]["worklist"])
+
+    def test_a_page_that_never_loaded_withdraws_nothing_it_never_claimed(self) -> None:
+        # There is no retained payload to rerender and no claim to withdraw,
+        # only the fact that the page has not loaded -- so the summary says
+        # that and every other surface is left holding its own placeholder
+        # rather than being filled with an empty board.
+        first, second, recovered = _run_board_lifetime(
+            [{"status": None}, {"status": None}, {"status": self.FRESH_IDLE}]
+        )
+        for frame in (first, second):
+            self.assertFalse(frame["retained"])
+            self.assertEqual(
+                frame["nodes"]["summary"],
+                '<div class="metric"><span class="muted">Next action</span>'
+                '<b class="warn">reload board</b></div>',
+            )
+            self.assertEqual(frame["nodes"].get("worklist", ""), "")
+            self.assertEqual(frame["announced"], [])
+        # And the first poll that completes renders the whole board, with no
+        # trace of the failures that preceded it.
+        self.assertTrue(recovered["retained"])
+        self.assertIn(self.COMPLETE, recovered["nodes"]["worklist"])
+        self.assertIn("status polls answered", recovered["nodes"]["diagnostics"])
+        # A page that has never rendered a row has nothing to report as
+        # changed, so the first render is not announced as news either.
+        self.assertEqual(recovered["announced"], [])
+
+    def test_the_failure_count_is_bounded_and_never_reaches_a_signature(self) -> None:
+        steps = [{"status": self.FRESH_IDLE}] + [{"status": None}] * 12
+        frames = _run_board_lifetime(steps)
+        self.assertEqual([frame["transport"]["failures"] for frame in frames[1:]], list(range(1, 13)))
+        cap = _eval_board_truth(
+            "transportAuthority({confirmed: false, failures: ARGS[0], error: ARGS[1]})",
+            10_000,
+            "x" * 400,
+        )
+        self.assertEqual(cap["reading"], "unanswered")
+        # Twelve failures, one announcement and one Timeline entry: the count
+        # and the error text are reported and are in no signature.
+        self.assertEqual(sum(len(frame["announced"]) for frame in frames), 1)
+        self.assertEqual(len(frames[-1]["timeline"]), 1)
+        self.assertIn("12 failed status polls", frames[-1]["nodes"]["diagnostics"])
+
+    def test_a_summary_only_catch_handler_leaves_the_claim_asserted(self) -> None:
+        # The code this replaced, executed: the pre-fix handler wrote a warning
+        # into the summary and touched nothing else.
+        summary_only = _run_board_lifetime(
+            [{"status": self.FRESH_IDLE}, {"status": None}],
+            mutate=(
+                "        noteTransportFailure(error);\n        renderRetained();\n",
+                '        put("summary", `<div class="metric"><span class="muted">Next action</span>'
+                '<b class="warn">reload board</b></div>`);\n',
+            ),
+        )[-1]
+        self.assertIn("reload board", summary_only["nodes"]["summary"])
+        # And the Work section went on asserting green idleness beside it.
+        self.assertIn(self.COMPLETE, summary_only["nodes"]["worklist"])
+        self.assertIn("nothing to do in this session", summary_only["nodes"]["worklist"])
+        self.assertEqual(summary_only["announced"], [])
+
+    def test_rerendering_without_the_local_override_leaves_the_claim_asserted(self) -> None:
+        # One level in: rerendering the retained payload is not what withdraws
+        # the claim. Without the transport reading the rerender recomputes the
+        # record's age against the clock and still reports it as current,
+        # because the payload it came from says the server confirmed it.
+        ungated = _run_board_lifetime(
+            [{"status": self.FRESH_IDLE}, {"status": None}],
+            mutate=("      render(lastStatusData, transportState);\n", "      render(lastStatusData);\n"),
+        )[-1]
+        self.assertIn(self.COMPLETE, ungated["nodes"]["worklist"])
+        self.assertIn("nothing to do in this session", ungated["nodes"]["worklist"])
+        self.assertIn('<b class="ok">live, observed 30s ago</b>', ungated["nodes"]["summary"])
+        self.assertEqual(ungated["announced"], [])
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the board polling script")
+class BoardPollingContinuityTests(TestCase):
+    """The poll loop outlives everything one poll can do to this page.
+
+    `/api/events` answering with valid JSON is not the same as answering with
+    a shape this page can render: `events` arriving as a string, as an object
+    that merely has a `length`, or as a list holding a null all parse cleanly
+    and then throw inside `renderEvents`. That call sat outside the status
+    handler and inside no boundary of its own, so the throw escaped `load()`,
+    skipped `scheduleNextLoad()` and ended this page's status refreshes for
+    good -- leaving the last snapshot on screen indefinitely, still asserting
+    the present tense, with no transport warning anywhere, because the status
+    poll it came from had succeeded and nothing had failed to record.
+
+    The rules these hold, in the order they matter:
+
+    * exactly one timer is armed per `load()`, however that load went, and
+      arming it is the last thing every path does;
+    * the two halves of a poll fail independently -- an unrenderable events
+      payload withdraws nothing, because that view was never evidence of now,
+      and a status poll that did not complete does not suppress the history;
+    * a status response this page rendered still chooses the next delay, and
+      everything else still falls back to the configured interval;
+    * and nothing is swallowed on the way: a status render that throws is
+      recorded on the Health transport row with its own message, and a throw
+      that gets past every handler still reaches the caller.
+    """
+
+    COMPLETE = BoardPollingAuthorityTests.COMPLETE
+    UNCONFIRMED = BoardPollingAuthorityTests.UNCONFIRMED
+    PRESENT_TENSE = BoardPollingAuthorityTests.PRESENT_TENSE
+    REFRESH_MS = 15_000
+    FAST_POLL_MS = 750
+
+    GOOD_STATUS = _cache_payload([_observation_fixture("no_work")], CONFIRMED_CACHE)
+    # A status payload the server would serve while a refresh is still running,
+    # which is the one case the page paces itself faster than the configured
+    # interval. Used to prove the delay a *successful* status response chose is
+    # what the poll waits, whatever the events half did.
+    REFRESHING_STATUS = _cache_payload([_observation_fixture("no_work")], STALE_CACHE_REFRESHING)
+    # Valid JSON from /api/status whose shape `render()` cannot walk: the page
+    # reads `remote.pull_requests` as a list and calls `.map` on it, so this
+    # request succeeds, parses, and then throws inside the render.
+    UNRENDERABLE_STATUS = copy.deepcopy(GOOD_STATUS)
+    UNRENDERABLE_STATUS["remote"]["pull_requests"] = "one"
+    RENDER_ERROR = "prs.map is not a function"
+
+    HISTORY = {"events": [{"created_at": "2026-09-12T19:59:00Z", "summary": {"next_action": "review"}}]}
+    LATER_HISTORY = {"events": [{"created_at": "2026-09-12T19:59:30Z", "summary": {"next_action": "merge"}}]}
+    HISTORY_MARK = "next: <b>review</b>"
+    LATER_MARK = "next: <b>merge</b>"
+
+    # Valid JSON from /api/events that `renderEvents` cannot walk. Each one is
+    # a real shape a server or a proxy can produce, and each throws at a
+    # different point: on the copy, on the reverse, and inside the row builder.
+    UNRENDERABLE_EVENTS = (
+        ("events is a string", {"events": "two"}),
+        ("events is an object with a length", {"events": {"length": 1}}),
+        ("events holds a null entry", {"events": [None]}),
+    )
+    # Every way `/api/events` can fail to leave a renderable history: the two
+    # transport-level failures `fetchJson` reports as `ok: false`, and the
+    # three shapes it reports as success and cannot render.
+    EVENT_FAILURES = (
+        ("the request never arrived", None),
+        ("the body is not JSON", UNPARSABLE_BODY),
+    ) + UNRENDERABLE_EVENTS
+    # And the matching three for `/api/status`, which is the half that does
+    # carry authority over what this page claims about now.
+    STATUS_FAILURES = (
+        ("the request never arrived", None),
+        ("the body is not JSON", UNPARSABLE_BODY),
+        ("the payload does not render", UNRENDERABLE_STATUS),
+    )
+
+    # The shipped fragment each mutation below replaces, quoted once so a
+    # rename cannot leave a mutation silently matching nothing: the helper
+    # requires exactly one occurrence.
+    POLL_TAIL = (
+        "        delayMs = renderStatusOutcome(status);\n"
+        "        if (events.ok) renderEventsIsolated(events.data);\n"
+        "      } finally {\n"
+        "        scheduleNextLoad(delayMs);\n"
+        "      }\n"
+    )
+    # The code this replaced: the events render in no boundary of its own, and
+    # the next poll armed after the try rather than on the way out of it.
+    PRE_FIX_TAIL = (
+        POLL_TAIL,
+        "        delayMs = renderStatusOutcome(status);\n"
+        "        if (events.ok) renderEvents(events.data);\n"
+        "        scheduleNextLoad(delayMs);\n"
+        "      } finally {\n"
+        "      }\n",
+    )
+    # One half of it: the events render loses its boundary and the arming
+    # keeps its own.
+    UNISOLATED_EVENTS = (
+        POLL_TAIL,
+        "        delayMs = renderStatusOutcome(status);\n"
+        "        if (events.ok) renderEvents(events.data);\n"
+        "      } finally {\n"
+        "        scheduleNextLoad(delayMs);\n"
+        "      }\n",
+    )
+    # The other half: the events render keeps its boundary and the arming
+    # moves back outside the one that guarantees it.
+    SCHEDULING_OUTSIDE_FINALLY = (
+        "      } finally {\n        scheduleNextLoad(delayMs);\n      }\n",
+        "        scheduleNextLoad(delayMs);\n      } finally {\n      }\n",
+    )
+    # A retained rerender that fails outright -- the one throw the status
+    # handler itself cannot catch, because it happens inside the handler.
+    THROWING_RERENDER = (
+        "      render(lastStatusData, transportState);\n",
+        '      throw new Error("rerender failed");\n',
+    )
+
+    def _assert_one_timer(self, frames: list[dict], *, escapes: bool = False) -> None:
+        """One arming per load, clearing the one it replaces, never stacked."""
+
+        for index, frame in enumerate(frames):
+            self.assertEqual(frame["armed"], 1, f"poll {index} armed {frame['armed']} timers")
+            self.assertEqual(frame["cleared"], 1 if index else 0)
+            self.assertEqual(frame["timers"], index + 1)
+            self.assertTrue(frame["pending"])
+            if not escapes:
+                self.assertIsNone(frame["escaped"], f"poll {index} let {frame['escaped']} escape")
+
+    def test_an_unrenderable_events_payload_leaves_the_status_poll_untouched(self) -> None:
+        """The finding exactly, in every shape that produces it."""
+
+        for name, events in self.EVENT_FAILURES:
+            with self.subTest(name):
+                rendered, failed = _run_board_lifetime(
+                    [
+                        {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                        {"status": self.GOOD_STATUS, "events": events},
+                    ]
+                )
+                # The poll is still scheduled, which is the whole finding: the
+                # page goes on refreshing after a history it could not render.
+                self._assert_one_timer([rendered, failed])
+                # The status half is untouched in every respect an operator can
+                # see: the authority it confirmed, the claim it licensed, the
+                # Health row that says polls are arriving, and the pacing the
+                # status cache chose.
+                self.assertEqual(failed["transport"], {"confirmed": True, "failures": 0, "error": ""})
+                self.assertIn(self.COMPLETE, failed["nodes"]["worklist"])
+                self.assertIn("nothing to do in this session", failed["nodes"]["worklist"])
+                self.assertIn("status polls answered", failed["nodes"]["diagnostics"])
+                self.assertNotIn("status poll failed", failed["nodes"]["diagnostics"])
+                self.assertEqual(failed["delay"], rendered["delay"])
+                # An events payload is not news about this session, so nothing
+                # is announced and nothing is logged for it either.
+                self.assertEqual(failed["announced"], [])
+                # And the history card keeps the last events it could render,
+                # rather than being emptied or replaced by an error.
+                self.assertIn(self.HISTORY_MARK, failed["nodes"]["history"])
+                self.assertEqual(failed["nodes"]["history"], rendered["nodes"]["history"])
+
+    def test_each_half_of_a_poll_fails_without_the_other(self) -> None:
+        # The whole matrix: every status outcome against every events outcome,
+        # from one page that has already rendered both surfaces. The rule is
+        # the same in all sixteen cells -- authority follows the status half
+        # alone, the history follows the events half alone, and the poll is
+        # armed once whatever either of them did.
+        statuses = (("the payload renders", self.GOOD_STATUS),) + self.STATUS_FAILURES
+        events = (("the history renders", self.LATER_HISTORY),) + self.EVENT_FAILURES
+        for (status_name, status), (events_name, history) in itertools.product(statuses, events):
+            healthy = status is self.GOOD_STATUS
+            renderable = history is self.LATER_HISTORY
+            with self.subTest(status=status_name, events=events_name):
+                first, second = _run_board_lifetime(
+                    [
+                        {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                        {"status": status, "events": history},
+                    ]
+                )
+                self._assert_one_timer([first, second])
+                # Authority: confirmed if and only if the status half left a
+                # snapshot this page rendered.
+                self.assertEqual(second["transport"]["confirmed"], healthy)
+                self.assertEqual(second["transport"]["failures"], 0 if healthy else 1)
+                self.assertIn(
+                    self.COMPLETE if healthy else self.UNCONFIRMED, second["nodes"]["worklist"]
+                )
+                if not healthy:
+                    for sentence in self.PRESENT_TENSE:
+                        self.assertNotIn(sentence, second["nodes"]["worklist"])
+                # History: the new events if they rendered, the last ones it
+                # could render otherwise -- and never the other half's verdict.
+                self.assertIn(
+                    self.LATER_MARK if renderable else self.HISTORY_MARK,
+                    second["nodes"]["history"],
+                )
+                # Pacing: the delay a rendered status response chose, and the
+                # configured interval for every other outcome.
+                self.assertEqual(second["delay"], first["delay"] if healthy else self.REFRESH_MS)
+
+    def test_a_status_payload_that_cannot_render_is_reported_and_not_swallowed(self) -> None:
+        # A shape `render()` cannot walk is a status poll that did not complete:
+        # the claim is withdrawn, the retained payload is rerendered under the
+        # withdrawn authority, and the reason is stated on the Health transport
+        # row with the renderer's own message rather than discarded.
+        rendered, failed, recovered = _run_board_lifetime(
+            [
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                {"status": self.UNRENDERABLE_STATUS, "events": self.HISTORY},
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+            ]
+        )
+        self._assert_one_timer([rendered, failed, recovered])
+        self.assertIn(self.UNCONFIRMED, failed["nodes"]["worklist"])
+        self.assertIn("status poll failed", failed["nodes"]["diagnostics"])
+        self.assertIn(f"({self.RENDER_ERROR})", failed["nodes"]["diagnostics"])
+        self.assertIn('<span class="pill">1 failed status poll</span>', failed["nodes"]["diagnostics"])
+        # The payload that could not render never became the payload this page
+        # retains, so the rerender is of the snapshot that did render.
+        self.assertEqual(failed["nodes"]["sources"], rendered["nodes"]["sources"])
+        self.assertEqual(failed["nodes"]["generated"], rendered["nodes"]["generated"])
+        # Pacing falls back to the configured interval and returns to the
+        # cache's own delay on the poll that renders again.
+        self.assertEqual(failed["delay"], self.REFRESH_MS)
+        self.assertNotEqual(rendered["delay"], self.REFRESH_MS)
+        self.assertEqual(recovered["delay"], rendered["delay"])
+        self.assertEqual(recovered["transport"], {"confirmed": True, "failures": 0, "error": ""})
+        self.assertIn(self.COMPLETE, recovered["nodes"]["worklist"])
+
+    def test_the_delay_a_status_response_chose_survives_an_events_failure(self) -> None:
+        # Pacing belongs to the status half alone. A snapshot the server is
+        # still refreshing is polled at the fast interval, and an events
+        # payload that cannot be rendered beside it does not slow that to the
+        # configured fallback.
+        for name, events in self.EVENT_FAILURES:
+            with self.subTest(name):
+                frames = _run_board_lifetime(
+                    [
+                        {"status": self.REFRESHING_STATUS, "events": self.HISTORY},
+                        {"status": self.REFRESHING_STATUS, "events": events},
+                    ]
+                )
+                self._assert_one_timer(frames)
+                self.assertEqual([frame["delay"] for frame in frames], [self.FAST_POLL_MS] * 2)
+
+    def test_a_retained_rerender_that_throws_still_arms_the_next_poll(self) -> None:
+        # The one throw the status handler cannot catch, because it happens
+        # inside the handler: the rerender that withdraws the claim fails
+        # outright. The failure is recorded before the rerender is attempted,
+        # so the transport row still has the count and the reason; the throw
+        # still reaches the caller, so nothing is hidden; and the next poll is
+        # armed anyway, so the page recovers on its own.
+        rendered, failed, recovered = _run_board_lifetime(
+            [
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                {"status": None, "events": self.HISTORY},
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+            ],
+            mutate=self.THROWING_RERENDER,
+        )
+        self._assert_one_timer([rendered, failed, recovered], escapes=True)
+        self.assertEqual(failed["escaped"], "rerender failed")
+        self.assertIsNone(rendered["escaped"])
+        self.assertIsNone(recovered["escaped"])
+        self.assertEqual(failed["transport"]["confirmed"], False)
+        self.assertEqual(failed["transport"]["failures"], 1)
+        self.assertEqual(failed["delay"], self.REFRESH_MS)
+        # And the poll that follows renders the whole board again, with the
+        # server's own authority and no trace of the local override.
+        self.assertEqual(recovered["transport"], {"confirmed": True, "failures": 0, "error": ""})
+        self.assertIn(self.COMPLETE, recovered["nodes"]["worklist"])
+        self.assertIn(self.HISTORY_MARK, recovered["nodes"]["history"])
+
+    def test_a_healthy_poll_recovers_both_surfaces_after_both_halves_failed(self) -> None:
+        for name, events in self.EVENT_FAILURES:
+            with self.subTest(name):
+                rendered, failed, recovered = _run_board_lifetime(
+                    [
+                        {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                        {"status": None, "events": events},
+                        {"status": self.GOOD_STATUS, "events": self.LATER_HISTORY},
+                    ]
+                )
+                self._assert_one_timer([rendered, failed, recovered])
+                # Under the failure: the claim is withdrawn and the history is
+                # the last one that rendered, neither of them caused by the
+                # other.
+                self.assertIn(self.UNCONFIRMED, failed["nodes"]["worklist"])
+                self.assertIn(self.HISTORY_MARK, failed["nodes"]["history"])
+                # After it: the status surfaces are byte-for-byte what the
+                # first poll rendered, and the history is the new one.
+                past = {"changes", "announce", "history"}
+                self.assertEqual(
+                    {id: html for id, html in recovered["nodes"].items() if id not in past},
+                    {id: html for id, html in rendered["nodes"].items() if id not in past},
+                )
+                self.assertIn(self.LATER_MARK, recovered["nodes"]["history"])
+                self.assertNotIn(self.HISTORY_MARK, recovered["nodes"]["history"])
+
+    def test_one_timer_per_load_across_a_long_mixed_lifetime(self) -> None:
+        # Sixteen consecutive polls, every status outcome crossed with every
+        # events outcome in one page lifetime, so a path that arms twice or
+        # arms none is caught in sequence rather than only in isolation. The
+        # timer count is the assertion: it is the poll index, always, and the
+        # pending timer is always the one this poll armed.
+        steps = [{"status": self.GOOD_STATUS, "events": self.HISTORY}]
+        for (_, status), (_, events) in itertools.product(
+            (("renders", self.GOOD_STATUS),) + self.STATUS_FAILURES,
+            (("renders", self.LATER_HISTORY),) + self.EVENT_FAILURES,
+        ):
+            steps.append({"status": status, "events": events})
+        frames = _run_board_lifetime(steps)
+        self.assertEqual(len(frames), len(steps))
+        self._assert_one_timer(frames)
+        self.assertEqual(frames[-1]["timers"], len(steps))
+
+    def test_the_pre_fix_shape_stops_refreshing_on_an_unrenderable_history(self) -> None:
+        """The code this replaced, executed: the page stops polling, silently."""
+
+        for name, events in self.UNRENDERABLE_EVENTS:
+            with self.subTest(name):
+                rendered, frozen = _run_board_lifetime(
+                    [
+                        {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                        {"status": self.GOOD_STATUS, "events": events},
+                    ],
+                    mutate=self.PRE_FIX_TAIL,
+                )
+                self.assertEqual(rendered["armed"], 1)
+                # No timer at all: the throw escaped `load()` before it reached
+                # `scheduleNextLoad`, and in the page nothing would call
+                # `load()` again. The harness calls it directly, which is the
+                # only reason this lifetime has a next poll.
+                self.assertEqual(frozen["armed"], 0)
+                self.assertEqual(frozen["timers"], 1)
+                self.assertIsNotNone(frozen["escaped"])
+                # And what an operator is left looking at is the worst part of
+                # it: a green present-tense claim from the last status poll,
+                # with the transport row still reporting that polls arrive.
+                self.assertIn(self.COMPLETE, frozen["nodes"]["worklist"])
+                self.assertIn("nothing to do in this session", frozen["nodes"]["worklist"])
+                self.assertIn("status polls answered", frozen["nodes"]["diagnostics"])
+                self.assertNotIn("status poll failed", frozen["nodes"]["diagnostics"])
+
+    def test_event_rendering_outside_its_boundary_escapes_the_poll_it_no_longer_stops(self) -> None:
+        # One half of the fix at a time, so neither is load-bearing by
+        # accident. Without its own boundary the events throw reaches `load()`
+        # -- which in the page is an unhandled rejection -- and the `finally`
+        # is the only reason the next poll is still armed.
+        unisolated = _run_board_lifetime(
+            [
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                {"status": self.GOOD_STATUS, "events": {"events": "two"}},
+            ],
+            mutate=self.UNISOLATED_EVENTS,
+        )[-1]
+        self.assertIsNotNone(unisolated["escaped"])
+        self.assertEqual(unisolated["armed"], 1)
+        self.assertEqual(unisolated["timers"], 2)
+
+        # And with the boundary kept but the arming moved back outside the
+        # `finally`, the throw the status handler cannot catch ends the loop
+        # instead -- so the `finally` is doing work the boundary does not.
+        outside = _run_board_lifetime(
+            [
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                {"status": None, "events": self.HISTORY},
+            ],
+            mutate=(self.SCHEDULING_OUTSIDE_FINALLY, self.THROWING_RERENDER),
+        )[-1]
+        self.assertEqual(outside["escaped"], "rerender failed")
+        self.assertEqual(outside["armed"], 0)
+        self.assertEqual(outside["timers"], 1)
+
+
+class _FailingReadHandle:
+    """A handle that opens cleanly and raises when its contents are read.
+
+    The two ways a selected candidate can be lost are different code paths --
+    the ``open`` call and the ``read`` call -- and a reader that only guards
+    one of them would still lose files silently through the other.
+    """
+
+    def __init__(self, handle: object, reads: list[int] | None = None) -> None:
+        self._handle = handle
+        self._reads = reads
+
+    def __enter__(self) -> "_FailingReadHandle":
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *exc: object) -> object:
+        return self._handle.__exit__(*exc)
+
+    def read(self, size: int = -1) -> bytes:
+        # Recorded before it raises: a file lost on read was still asked for
+        # exactly one bounded request, and the bound is what is being proved.
+        if self._reads is not None:
+            self._reads.append(size)
+        raise OSError(5, "input/output error")
+
+
+@contextmanager
+def _observation_read_failures(
+    directory: Path,
+    open_failures: set[str] = frozenset(),
+    read_failures: set[str] = frozenset(),
+    reads: list[int] | None = None,
+):
+    """Make named candidate files raise, and optionally record read sizes."""
+
+    with _observation_opens(
+        directory,
+        reads,
+        open_failures=frozenset(open_failures),
+        read_failures=frozenset(read_failures),
+    ):
+        yield
+
+
+# Every outcome one candidate observation file can have. The Board decides what
+# it may claim from the whole set, so the set is enumerated rather than sampled.
+OBSERVATION_OUTCOMES = ("accepted", "invalid", "oversize", "unreadable_open", "unreadable_read")
+
+
+def _assert_observation_partition(case: TestCase, payload: dict) -> None:
+    """The counters partition the candidate set, and coverage follows them.
+
+    Stated once, at module scope, because it is the one accounting every read
+    has to satisfy however its candidates turned out -- a file that decoded, a
+    file that raised, and an entry that was refused before any open all land in
+    exactly one of these counts.
+    """
+
+    case.assertEqual(
+        payload["candidate_files"], payload["selected_files"] + payload["omitted_files"]
+    )
+    case.assertEqual(payload["attempted_files"], payload["selected_files"])
+    case.assertEqual(
+        payload["attempted_files"], payload["read_files"] + payload["unreadable_files"]
+    )
+    case.assertEqual(
+        payload["read_files"], payload["accepted_records"] + payload["invalid_records"]
+    )
+    case.assertEqual(payload["accepted_records"], len(payload["records"]))
+    case.assertEqual(
+        payload["unaccounted_files"],
+        payload["unreadable_files"] + payload["invalid_records"],
+    )
+    # The historical rejection count is every selected candidate the
+    # records do not account for, unreadable ones included.
+    case.assertEqual(payload["rejected"], payload["unaccounted_files"])
+    case.assertEqual(len(payload["warnings"]), payload["unaccounted_files"])
+    whole = payload["omitted_files"] == 0 and payload["unaccounted_files"] == 0
+    case.assertEqual(payload["coverage_complete"], whole)
+    case.assertEqual(payload["coverage"], "complete" if whole else "partial")
+    case.assertEqual(payload["truncated"], payload["omitted_files"] > 0)
+    case.assertEqual(payload["file_cap"], board.MAX_OBSERVATION_FILES)
+    case.assertLessEqual(payload["selected_files"], board.MAX_OBSERVATION_FILES)
+    case.assertTrue(set(payload["coverage_gaps"]) <= set(board.OBSERVATION_COVERAGE_GAPS))
+    case.assertEqual("files_omitted" in payload["coverage_gaps"], payload["omitted_files"] > 0)
+    case.assertEqual(
+        "files_unreadable" in payload["coverage_gaps"], payload["unreadable_files"] > 0
+    )
+    case.assertEqual(
+        "records_invalid" in payload["coverage_gaps"], payload["invalid_records"] > 0
+    )
+
+
+class BoardObservationOutcomeAccountingTests(TestCase):
+    """Every candidate file gets exactly one outcome, and every loss counts.
+
+    A bounded read can lose a candidate three ways: the cap never selects it,
+    it cannot be read at all, or the frozen record contract rejects it. None of
+    them is evidence that the file held nothing. The Board cannot know whether
+    the candidate it lost was the work record that contradicts a `no_work`
+    record beside it, so any loss makes file coverage partial and withdraws the
+    authority to state a current idle session or to retire observed work.
+    """
+
+    CAP = board.MAX_OBSERVATION_FILES
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+
+    def _write_outcomes(self, directory: Path, outcomes: list[str]) -> dict[str, set[str]]:
+        """Write one file per requested outcome, oldest first by name and time."""
+
+        by_outcome: dict[str, set[str]] = {}
+        for index, outcome in enumerate(outcomes):
+            name = f"obs-{index:03d}.json"
+            target = directory / name
+            if outcome == "invalid":
+                target.write_text("{not json", encoding="utf-8")
+            elif outcome == "oversize":
+                target.write_bytes(
+                    b'{"padding":"' + b"x" * (board_observation.MAX_BYTES * 2) + b'"}'
+                )
+            else:
+                # Accepted, and the unreadable cases too: a file that cannot be
+                # read is a real record the Board simply never got to see.
+                target.write_text(
+                    json.dumps(_referenced_record(f"work-{index:03d}")), encoding="utf-8"
+                )
+            # Modification time rises with the name, so which files the cap
+            # selects is fixed by the case rather than by the filesystem.
+            stamp = 1_600_000_000 + index
+            os.utime(target, (stamp, stamp))
+            by_outcome.setdefault(outcome, set()).add(name)
+        return by_outcome
+
+    def _read(self, outcomes: list[str], *, reads: list[int] | None = None) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            by_outcome = self._write_outcomes(directory, outcomes)
+            with _observation_read_failures(
+                directory,
+                by_outcome.get("unreadable_open", set()),
+                by_outcome.get("unreadable_read", set()),
+                reads,
+            ):
+                payload = board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+            payload["_local_path"] = str(directory)
+            return payload
+
+    def _block(self, readable: list[dict], *, unreadable: int = 0) -> dict:
+        """The block a real read emits for these records, with lost candidates.
+
+        The records are written and read back through the shipped reader, so
+        the views below are proved against the payload the Board really emits
+        rather than against a hand-built fixture of it.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for index, record in enumerate(readable):
+                (directory / f"r-{index:03d}.json").write_text(
+                    json.dumps(record), encoding="utf-8"
+                )
+            lost = {f"u-{index:03d}.json" for index in range(unreadable)}
+            for name in lost:
+                (directory / name).write_text(
+                    json.dumps(_named_work("lost")), encoding="utf-8"
+                )
+            self.block_path = str(directory)
+            with _observation_read_failures(directory, lost):
+                return board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+
+    def _assert_invariants(self, payload: dict) -> None:
+        """The counters partition the candidate set, and coverage follows them."""
+
+        _assert_observation_partition(self, payload)
+
+    # Every candidate-outcome mixture the reader has to account for, with the
+    # exact counters it must report. `omitted` is what the cap left, `read` is
+    # what was successfully read, and `accepted` is what became a record.
+    MATRIX = (
+        ("no candidate files at all", [], dict(candidates=0, omitted=0, read=0, accepted=0, invalid=0, unreadable=0)),
+        ("every candidate accepted", ["accepted", "accepted"], dict(candidates=2, omitted=0, read=2, accepted=2, invalid=0, unreadable=0)),
+        ("all invalid JSON", ["invalid", "invalid"], dict(candidates=2, omitted=0, read=2, accepted=0, invalid=2, unreadable=0)),
+        ("all oversize", ["oversize"], dict(candidates=1, omitted=0, read=1, accepted=0, invalid=1, unreadable=0)),
+        ("unreadable only, failing on open", ["unreadable_open"], dict(candidates=1, omitted=0, read=0, accepted=0, invalid=0, unreadable=1)),
+        ("unreadable only, failing on read", ["unreadable_read"], dict(candidates=1, omitted=0, read=0, accepted=0, invalid=0, unreadable=1)),
+        ("invalid and unreadable together", ["invalid", "unreadable_open"], dict(candidates=2, omitted=0, read=1, accepted=0, invalid=1, unreadable=1)),
+        ("an accepted record beside an unreadable one", ["accepted", "unreadable_open"], dict(candidates=2, omitted=0, read=1, accepted=1, invalid=0, unreadable=1)),
+        ("an accepted record beside an oversize one", ["accepted", "oversize"], dict(candidates=2, omitted=0, read=2, accepted=1, invalid=1, unreadable=0)),
+        (
+            "one of each outcome at once",
+            ["accepted", "invalid", "oversize", "unreadable_open", "unreadable_read"],
+            dict(candidates=5, omitted=0, read=3, accepted=1, invalid=2, unreadable=2),
+        ),
+        (
+            "overflow alone",
+            ["accepted"] * (board.MAX_OBSERVATION_FILES + 2),
+            dict(candidates=board.MAX_OBSERVATION_FILES + 2, omitted=2, read=board.MAX_OBSERVATION_FILES, accepted=board.MAX_OBSERVATION_FILES, invalid=0, unreadable=0),
+        ),
+        (
+            "overflow with an unreadable selected candidate",
+            ["accepted"] * (board.MAX_OBSERVATION_FILES + 1) + ["unreadable_open"],
+            dict(candidates=board.MAX_OBSERVATION_FILES + 2, omitted=2, read=board.MAX_OBSERVATION_FILES - 1, accepted=board.MAX_OBSERVATION_FILES - 1, invalid=0, unreadable=1),
+        ),
+        (
+            "overflow with invalid and unreadable selected candidates",
+            ["accepted"] * board.MAX_OBSERVATION_FILES + ["invalid", "unreadable_read"],
+            dict(candidates=board.MAX_OBSERVATION_FILES + 2, omitted=2, read=board.MAX_OBSERVATION_FILES - 1, accepted=board.MAX_OBSERVATION_FILES - 2, invalid=1, unreadable=1),
+        ),
+    )
+
+    def test_every_candidate_outcome_is_accounted_for_exactly_once(self) -> None:
+        for name, outcomes, expected in self.MATRIX:
+            with self.subTest(name):
+                payload = self._read(outcomes)
+                self._assert_invariants(payload)
+                self.assertEqual(payload["candidate_files"], expected["candidates"])
+                self.assertEqual(payload["omitted_files"], expected["omitted"])
+                self.assertEqual(payload["read_files"], expected["read"])
+                self.assertEqual(payload["accepted_records"], expected["accepted"])
+                self.assertEqual(payload["invalid_records"], expected["invalid"])
+                self.assertEqual(payload["unreadable_files"], expected["unreadable"])
+                self.assertEqual(
+                    payload["selected_files"], expected["candidates"] - expected["omitted"]
+                )
+
+    def test_only_an_all_accepted_untruncated_read_is_whole_coverage(self) -> None:
+        """The one case that may claim complete coverage, said as a rule."""
+
+        for name, outcomes, expected in self.MATRIX:
+            with self.subTest(name):
+                payload = self._read(outcomes)
+                lost = expected["omitted"] + expected["invalid"] + expected["unreadable"]
+                self.assertEqual(payload["coverage_complete"], lost == 0)
+                self.assertEqual(payload["coverage"], "complete" if lost == 0 else "partial")
+                if lost:
+                    # An incomplete read says so in its own message; it never
+                    # reports an absence as a measured one.
+                    self.assertIn("incomplete", payload["message"])
+                    self.assertNotEqual(payload["message"], "")
+                elif expected["accepted"]:
+                    self.assertEqual(payload["message"], "")
+                else:
+                    self.assertEqual(payload["message"], "no local Board observations recorded yet")
+
+    def test_diagnostics_distinguish_unreadable_from_invalid_and_expose_nothing(self) -> None:
+        """A closed vocabulary, with no path, no errno and no file content."""
+
+        payload = self._read(["accepted", "invalid", "oversize", "unreadable_open", "unreadable_read"])
+        local_path = payload.pop("_local_path")
+        messages = sorted(warning["message"] for warning in payload["warnings"])
+        self.assertEqual(messages, ["invalid_contract", "invalid_contract", "unreadable_file", "unreadable_file"])
+        self.assertEqual(
+            sum(message == "unreadable_file" for message in messages), payload["unreadable_files"]
+        )
+        encoded = json.dumps(payload)
+        self.assertNotIn(local_path, encoded)
+        # No errno, no OS message, and no byte of the oversize file's content.
+        for leak in ("permission denied", "input/output error", "Errno", "x" * 32):
+            self.assertNotIn(leak, encoded)
+        self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertTrue(payload["path_redacted"])
+
+        # The page states how many candidates failed and in which way, and
+        # names neither the files nor the directory they came from.
+        payload.pop("_local_path", None)
+        nodes = _render_board_dom(_observation_payload([], observations=payload))
+        rendered = json.dumps(nodes)
+        self.assertIn("Record diagnostics: invalid_contract x2; unreadable_file x2.", nodes["diagnostics"])
+        self.assertIn("2 unreadable", nodes["diagnostics"])
+        self.assertIn("2 rejected by the observation contract", nodes["diagnostics"])
+        for leak in (local_path, "obs-0", "permission denied", "input/output error", "x" * 32):
+            self.assertNotIn(leak, rendered)
+
+    def test_record_diagnostics_are_counted_per_fixed_vocabulary_term(self) -> None:
+        self.assertEqual(
+            _eval_board_truth(
+                "observationDiagnostics(ARGS[0])",
+                [
+                    {"file": "secret-session.json", "message": "unreadable_file"},
+                    {"file": "other.json", "message": "invalid_contract"},
+                    {"file": "third.json", "message": "unreadable_file"},
+                ],
+            ),
+            ["unreadable_file x2", "invalid_contract"],
+        )
+        # Nothing to say when nothing failed, and an unrecognised diagnostic is
+        # still counted rather than quietly dropped.
+        self.assertEqual(_eval_board_truth("observationDiagnostics(ARGS[0])", []), [])
+        self.assertEqual(
+            _eval_board_truth("observationDiagnostics(ARGS[0])", [{"file": "a.json"}]), ["unknown"]
+        )
+
+    def test_losing_candidates_never_widens_the_read(self) -> None:
+        """Bounded in files and in bytes however the candidates turn out."""
+
+        reads: list[int] = []
+        board_observation.schema()
+        payload = self._read(
+            ["accepted", "invalid", "oversize", "unreadable_read"] * 12, reads=reads
+        )
+        # The cap still decides how many files are opened, and every file that
+        # opened was asked for exactly one bounded request.
+        self.assertEqual(payload["selected_files"], self.CAP)
+        self.assertEqual(reads, [board_observation.MAX_BYTES + 1] * self.CAP)
+
+    def test_the_accounting_does_not_depend_on_directory_order(self) -> None:
+        outcomes = ["accepted", "invalid", "unreadable_open", "accepted", "oversize"] * 8
+        real_scandir = os.scandir
+
+        class _ReversedScan:
+            def __init__(self, entries: list[object]) -> None:
+                self._entries = entries
+
+            def __enter__(self) -> object:
+                return iter(self._entries)
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        def reversed_scandir(path: object) -> object:
+            with real_scandir(path) as entries:
+                return _ReversedScan(list(entries)[::-1])
+
+        forward = self._read(outcomes)
+        with patch.object(board.os, "scandir", reversed_scandir):
+            backward = self._read(outcomes)
+
+        for key in (
+            "candidate_files",
+            "selected_files",
+            "omitted_files",
+            "read_files",
+            "accepted_records",
+            "invalid_records",
+            "unreadable_files",
+            "coverage",
+            "coverage_complete",
+            "coverage_gaps",
+        ):
+            self.assertEqual(forward[key], backward[key], key)
+        self.assertEqual(
+            [record["work"]["reference"] for record in forward["records"]],
+            [record["work"]["reference"] for record in backward["records"]],
+        )
+
+    def test_an_unreadable_candidate_beside_a_current_no_work_record_withholds_idle(self) -> None:
+        """The finding exactly: a readable `no_work` and an unreadable file.
+
+        The idle record is current and states complete sources, so nothing
+        about the record itself withholds the claim. What withholds it is that
+        the file beside it was never read, and it could have recorded the work
+        that contradicts the snapshot.
+        """
+
+        block = self._block([_observation_fixture("no_work")], unreadable=1)
+        self.assertEqual(block["accepted_records"], 1)
+        self.assertEqual(block["unreadable_files"], 1)
+        self.assertFalse(block["coverage_complete"])
+        self.assertFalse(block["truncated"])
+
+        payload = _observation_payload([], observations=block)
+        row = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => ({headline: row.headline,"
+            "headline_class: row.headline_class, action: row.action_label,"
+            "idle: row.idle || null, coverage: row.groups[0].items[0]}))[0]",
+            payload,
+            self.NOW_MS,
+        )
+        self.assertFalse(row["idle"]["affirmative"])
+        self.assertEqual(row["idle"]["reason"], "unread")
+        self.assertEqual(row["idle"]["coverage_state"], "unread")
+        self.assertEqual(row["headline"], "idle in the records read")
+        self.assertEqual(row["headline_class"], "warn")
+        self.assertIn("produced no record this refresh", row["coverage"]["note"])
+        self.assertIn("before treating this session as idle", row["action"])
+
+        # The same block through the whole page: the claim is gone from every
+        # surface, and every surface says why.
+        nodes = _render_board_dom(payload, now=OBSERVATION_NOW)
+        rendered = json.dumps(nodes)
+        self.assertNotIn("idle with complete coverage", rendered)
+        self.assertNotIn("nothing to do in this session", rendered)
+        self.assertIn("idle in the records read", nodes["worklist"])
+        self.assertIn("Incomplete snapshot", nodes["worklist"])
+        self.assertIn("Incomplete snapshot", nodes["worknow"])
+        self.assertIn("Observation files", nodes["summary"])
+        self.assertIn("incomplete snapshot", nodes["chrome"])
+        self.assertIn("produced no record", nodes["worknow"])
+        self.assertIn("evidence that there is no work", nodes["worknow"])
+        # Health states the same accounting in its own terms, and names the
+        # kind of failure without naming the file it happened to.
+        self.assertIn("1 without a record", nodes["diagnostics"])
+        self.assertIn("1 unreadable", nodes["diagnostics"])
+        self.assertIn("Record diagnostics: unreadable_file.", nodes["diagnostics"])
+        # None of that names a file or the local directory the read came from.
+        self.assertNotIn(self.block_path, rendered)
+        self.assertNotIn("u-000", rendered)
+        self.assertNotIn("r-000", rendered)
+
+    def test_incomplete_evidence_never_retires_observed_work(self) -> None:
+        """Reconciliation is an absence claim too, so it needs whole coverage.
+
+        The session recorded work and then recorded itself idle. With every
+        candidate accounted for, the later idle snapshot retires the work row.
+        With one candidate lost, the snapshot may no longer state that the
+        session has gone quiet, so both readings stay on the page.
+        """
+
+        records = [_observed_later(_named_work("alpha"), 0), _observed_later(_observation_fixture("no_work"), 20)]
+        whole = self._block(records)
+        self.assertTrue(whole["coverage_complete"])
+        self.assertEqual(
+            _eval_board_view(RECONCILED_EXPRESSION, _observation_payload([], observations=whole), self.NOW_MS)["keys"],
+            [_idle_key()],
+        )
+
+        lossy = self._block(records, unreadable=1)
+        self.assertFalse(lossy["coverage_complete"])
+        reconciled = _eval_board_view(
+            RECONCILED_EXPRESSION, _observation_payload([], observations=lossy), self.NOW_MS
+        )
+        self.assertEqual(reconciled["keys"], [_work_key("alpha"), _idle_key()])
+        self.assertEqual(reconciled["headlines"][1], "idle in the records read")
+
+    def test_dropping_unreadable_files_from_incompleteness_would_be_caught(self) -> None:
+        """Mutation: make an unreadable candidate stop counting as a gap.
+
+        Both halves are mutated -- the reader's accounting and the view's gate
+        -- and each mutant produces exactly the claim the assertions above
+        forbid, so those assertions are load-bearing rather than decorative.
+        """
+
+        payload = _observation_payload([], observations=self._block([_observation_fixture("no_work")], unreadable=1))
+        self.assertFalse(payload["observations"]["coverage_complete"])
+
+        def without_unreadable(self: object) -> list[str]:
+            gaps = []
+            if self.omitted_files:
+                gaps.append("files_omitted")
+            if self.invalid_records:
+                gaps.append("records_invalid")
+            return gaps
+
+        with patch.object(board._ObservationAccounting, "gaps", property(without_unreadable)):
+            mutated = self._block([_observation_fixture("no_work")], unreadable=1)
+        # The mutant really does call a read with a lost candidate whole, which
+        # is exactly what the assertions above would fail on.
+        self.assertTrue(mutated["coverage_complete"])
+        self.assertEqual(mutated["coverage"], "complete")
+        self.assertEqual(mutated["unreadable_files"], 1)
+        # The view is not left depending on that one flag: it counts the
+        # unaccounted candidates itself, so it still withholds the claim.
+        self.assertEqual(
+            _eval_board_view(
+                "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label])",
+                _observation_payload([], observations=mutated),
+                self.NOW_MS,
+            ),
+            [[
+                "idle in the records read",
+                "recover the observation files that produced no record before treating this session as idle",
+            ]],
+        )
+
+        # And the view's own gate, mutated back to reading the cap alone: with
+        # it removed, the very same read renders the present-tense claim.
+        self.assertEqual(
+            _eval_board_view(
+                "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label])",
+                payload,
+                self.NOW_MS,
+                mutate=('if (coverage?.whole === false) return "unread";', ""),
+            ),
+            [["idle with complete coverage", "nothing to do in this session"]],
+        )
+
+        # The shipped code, unmutated, says none of that about the same read.
+        self.assertEqual(
+            _eval_board_view(
+                "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label])",
+                payload,
+                self.NOW_MS,
+            ),
+            [[
+                "idle in the records read",
+                "recover the observation files that produced no record before treating this session as idle",
+            ]],
+        )
+
+
+# Every kind of directory entry that ends in `.json` and is not a regular file.
+# The Board's read is bounded in files and in bytes, but neither bound applies
+# until the file is open: reading a named pipe with no writer blocks, and a
+# blocked refresh keeps serving the snapshot before it. These are the entries
+# that must be counted and then refused unread.
+NON_REGULAR_ENTRIES = ("fifo", "symlink", "directory", "socket")
+
+
+def _make_non_regular(kind: str, entry: Path, link_target: Path | None = None) -> None:
+    """Create one non-regular ``*.json`` entry, or skip where it cannot exist.
+
+    Every primitive here is optional. Named pipes and Unix sockets do not exist
+    on every platform the Board runs on, socket paths have a length limit a
+    temporary directory can exceed, and creating a symlink can need a privilege
+    the test does not have. A platform that cannot produce the entry skips that
+    case outright rather than quietly asserting something weaker about it.
+    """
+
+    if kind == "directory":
+        entry.mkdir()
+        return
+    if kind == "fifo":
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+        try:
+            os.mkfifo(entry)
+        except (OSError, NotImplementedError) as exc:
+            raise SkipTest("this platform cannot create a named pipe") from exc
+        return
+    if kind == "symlink":
+        assert link_target is not None
+        try:
+            entry.symlink_to(link_target)
+        except (OSError, NotImplementedError) as exc:
+            raise SkipTest("this platform cannot create a symlink") from exc
+        return
+    if kind == "socket":
+        if not hasattr(socket, "AF_UNIX"):
+            raise SkipTest("this platform has no Unix sockets")
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as bound:
+                # Binding creates the filesystem entry; it outlives the socket
+                # object, which is all this test needs it to do.
+                bound.bind(str(entry))
+        except (OSError, NotImplementedError) as exc:
+            raise SkipTest("this platform cannot bind a Unix socket here") from exc
+        return
+    raise AssertionError(f"unknown entry kind {kind!r}")  # pragma: no cover
+
+
+class BoardObservationNonRegularEntryTests(TestCase):
+    """A candidate that is not a regular file is counted, refused, and said.
+
+    The read is bounded in files and in bytes, but a bound only starts applying
+    once the file is open, and opening a named pipe with no writer does not
+    fail -- it waits. A refresh that waits there never finishes, so the page
+    keeps serving the snapshot before it and nothing on it is ever marked
+    stale. So the entry is classified before it is opened, and refused.
+
+    Refusing it is not the same as ignoring it. The Board cannot know what the
+    entry it declined to open would have said, so it stays a counted candidate
+    that produced no record: the read is partial, and the authority to call the
+    session idle or to retire work it already observed is withheld exactly as
+    it is for a file that raised.
+    """
+
+    CAP = board.MAX_OBSERVATION_FILES
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    # Long enough that a loaded machine is not mistaken for a wedged read, and
+    # short enough that a wedged read is not mistaken for a slow one.
+    DEADLINE = 20.0
+    # Distinctive and kind-neutral: the assertions below prove the page never
+    # names the entry, so the name must not be something the page could say by
+    # coincidence, and must not itself disclose what kind of entry it was.
+    ENTRY = "b-cm948-entry.json"
+    IDLE = "a-cm948-idle.json"
+
+    def _payload_within(self, directory: Path, limit: float | None = None) -> dict:
+        """Read the directory on a worker, and fail the test rather than hang.
+
+        A refusal that did not happen does not raise here -- it blocks -- so
+        the deadline is the assertion. The worker is a daemon, so even a read
+        that never returns cannot keep the suite from exiting.
+        """
+
+        config = board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+        done: list[dict] = []
+        failed: list[BaseException] = []
+
+        def read() -> None:
+            try:
+                done.append(board.observations_payload(config))
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                failed.append(exc)
+
+        worker = threading.Thread(target=read, daemon=True)
+        worker.start()
+        worker.join(self.DEADLINE if limit is None else limit)
+        self.assertFalse(
+            worker.is_alive(), "the observation read never returned; a candidate blocked it"
+        )
+        if failed:  # pragma: no cover - a raising read is a failure either way
+            raise failed[0]
+        return done[0]
+
+    def _directory(self, tmp: Path, kind: str) -> tuple[Path, str]:
+        """One current `no_work` record beside one non-regular candidate.
+
+        The symlink points at a regular record outside the observation
+        directory, so following it would be visible in the records rather than
+        indistinguishable from reading a file that was there anyway.
+        """
+
+        directory = tmp / "observations"
+        directory.mkdir()
+        (directory / self.IDLE).write_text(
+            json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+        )
+        outside = tmp / "outside.json"
+        outside.write_text(
+            json.dumps(_referenced_record("cm948-through-the-link")), encoding="utf-8"
+        )
+        _make_non_regular(kind, directory / self.ENTRY, outside)
+        return directory, str(directory)
+
+    def test_a_non_regular_candidate_is_counted_selected_and_never_opened(self) -> None:
+        """The finding itself, for every entry kind that can exist here.
+
+        The read returns, the entry is never opened, and it is accounted for as
+        a selected candidate that produced no record.
+        """
+
+        for kind in NON_REGULAR_ENTRIES:
+            with self.subTest(kind), tempfile.TemporaryDirectory() as tmp:
+                directory, _path = self._directory(Path(tmp), kind)
+                reads: list[int] = []
+                with _observation_opens(directory, reads) as opened:
+                    payload = self._payload_within(directory)
+
+                # Never opened, so no bound had to save the read from it.
+                self.assertEqual(opened, [self.IDLE])
+                self.assertNotIn(self.ENTRY, opened)
+                self.assertEqual(reads, [board_observation.MAX_BYTES + 1])
+
+                _assert_observation_partition(self, payload)
+                self.assertEqual(payload["candidate_files"], 2)
+                self.assertEqual(payload["selected_files"], 2)
+                self.assertEqual(payload["attempted_files"], 2)
+                self.assertEqual(payload["omitted_files"], 0)
+                self.assertEqual(payload["unreadable_files"], 1)
+                self.assertEqual(payload["read_files"], 1)
+                self.assertEqual(payload["accepted_records"], 1)
+                self.assertEqual(payload["invalid_records"], 0)
+                self.assertEqual(payload["unaccounted_files"], 1)
+                self.assertEqual(payload["rejected"], 1)
+
+                # Incomplete, warned, and not truncated: nothing was left past
+                # the cap, so the page may not retell this as a cap shortfall.
+                self.assertFalse(payload["coverage_complete"])
+                self.assertEqual(payload["coverage"], "partial")
+                self.assertEqual(payload["coverage_gaps"], ["files_unreadable"])
+                self.assertFalse(payload["truncated"])
+                self.assertEqual(
+                    payload["warnings"], [{"file": self.ENTRY, "message": "unreadable_file"}]
+                )
+                self.assertIn("could not be read", payload["message"])
+                self.assertIn("incomplete", payload["message"])
+
+                # The one readable record is still read, in full, unchanged.
+                self.assertEqual([record["kind"] for record in payload["records"]], ["no_work"])
+
+    def test_a_symlink_is_not_followed_even_to_a_regular_record(self) -> None:
+        """A link the Board never chose is not a file the Board may read.
+
+        Resolving one would reintroduce the same hazard through a target the
+        directory does not control, and through a target that can be swapped
+        between the classification and the open. So the link is refused on
+        being a link, not on where it happens to point today.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, local = self._directory(Path(tmp), "symlink")
+            with _observation_opens(directory) as opened:
+                payload = self._payload_within(directory)
+
+        self.assertEqual(opened, [self.IDLE])
+        self.assertEqual(payload["unreadable_files"], 1)
+        self.assertEqual(payload["accepted_records"], 1)
+        # The target is a perfectly valid record, and it is nowhere on the page.
+        encoded = json.dumps(payload)
+        self.assertNotIn("cm948-through-the-link", encoded)
+        self.assertNotIn(local, encoded)
+        self.assertEqual([record["kind"] for record in payload["records"]], ["no_work"])
+        self.assertEqual(
+            [record["work"]["reference"] for record in payload["records"] if record.get("work")],
+            [],
+        )
+
+    def test_a_refused_candidate_withholds_current_idle(self) -> None:
+        """A current, complete-source `no_work` record is no longer enough.
+
+        Nothing about the idle record withholds the claim; what withholds it is
+        the candidate beside it that the Board declined to open, which could
+        have held the work that contradicts it.
+        """
+
+        for kind in NON_REGULAR_ENTRIES:
+            with self.subTest(kind), tempfile.TemporaryDirectory() as tmp:
+                directory, _local = self._directory(Path(tmp), kind)
+                block = self._payload_within(directory)
+
+                self.assertEqual(block["accepted_records"], 1)
+                self.assertEqual(block["unreadable_files"], 1)
+                self.assertFalse(block["coverage_complete"])
+
+                row = _eval_board_view(
+                    "workRows(ARGS[0], ARGS[1]).map(row => ({headline: row.headline,"
+                    "headline_class: row.headline_class, action: row.action_label,"
+                    "idle: row.idle || null, coverage: row.groups[0].items[0]}))[0]",
+                    _observation_payload([], observations=block),
+                    self.NOW_MS,
+                )
+                self.assertFalse(row["idle"]["affirmative"])
+                self.assertEqual(row["idle"]["reason"], "unread")
+                self.assertEqual(row["idle"]["coverage_state"], "unread")
+                self.assertEqual(row["headline"], "idle in the records read")
+                self.assertEqual(row["headline_class"], "warn")
+                self.assertIn("produced no record this refresh", row["coverage"]["note"])
+                self.assertIn("before treating this session as idle", row["action"])
+
+    def test_a_refused_candidate_never_retires_observed_work(self) -> None:
+        """Reconciliation is an absence claim too, so it needs whole coverage.
+
+        The session recorded work and then recorded itself idle. With every
+        candidate read, the later idle record retires the work row. With one
+        candidate refused unread, both readings stay on the page.
+        """
+
+        records = [
+            _observed_later(_named_work("alpha"), 0),
+            _observed_later(_observation_fixture("no_work"), 20),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "observations"
+            directory.mkdir()
+            for index, record in enumerate(records):
+                (directory / f"a-cm948-{index:03d}.json").write_text(
+                    json.dumps(record), encoding="utf-8"
+                )
+            whole = self._payload_within(directory)
+            self.assertTrue(whole["coverage_complete"])
+            self.assertEqual(
+                _eval_board_view(
+                    RECONCILED_EXPRESSION,
+                    _observation_payload([], observations=whole),
+                    self.NOW_MS,
+                )["keys"],
+                [_idle_key()],
+            )
+
+            _make_non_regular("directory", directory / self.ENTRY)
+            lossy = self._payload_within(directory)
+
+        self.assertFalse(lossy["coverage_complete"])
+        self.assertEqual(lossy["unreadable_files"], 1)
+        reconciled = _eval_board_view(
+            RECONCILED_EXPRESSION, _observation_payload([], observations=lossy), self.NOW_MS
+        )
+        self.assertEqual(reconciled["keys"], [_work_key("alpha"), _idle_key()])
+        self.assertEqual(reconciled["headlines"][1], "idle in the records read")
+
+    def test_the_refusal_names_no_entry_no_kind_and_no_errno(self) -> None:
+        """The same closed diagnostic an ordinary unreadable file gets.
+
+        A page that said a pipe was a pipe would be describing the contents of
+        a local directory to whoever is looking at the Board. It says a
+        candidate produced no record, and stops there.
+        """
+
+        for kind in NON_REGULAR_ENTRIES:
+            with self.subTest(kind), tempfile.TemporaryDirectory() as tmp:
+                directory, local = self._directory(Path(tmp), kind)
+                payload = self._payload_within(directory)
+
+                encoded = json.dumps(payload)
+                self.assertNotIn(local, encoded)
+                for leak in (
+                    "fifo",
+                    "pipe",
+                    "socket",
+                    "symlink",
+                    "S_ISREG",
+                    "regular",
+                    "Errno",
+                    "Is a directory",
+                    "permission denied",
+                ):
+                    self.assertNotIn(leak, encoded)
+                self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+                self.assertTrue(payload["path_redacted"])
+                self.assertEqual(
+                    {warning["message"] for warning in payload["warnings"]}, {"unreadable_file"}
+                )
+
+                nodes = _render_board_dom(
+                    _observation_payload([], observations=payload), now=OBSERVATION_NOW
+                )
+                rendered = json.dumps(nodes)
+                self.assertNotIn(self.ENTRY, rendered)
+                self.assertNotIn("cm948", rendered)
+                self.assertNotIn(local, rendered)
+                self.assertIn("Record diagnostics: unreadable_file.", nodes["diagnostics"])
+                self.assertIn("1 unreadable", nodes["diagnostics"])
+                self.assertIn("Incomplete snapshot", nodes["worklist"])
+                self.assertNotIn("idle with complete coverage", rendered)
+                self.assertNotIn("nothing to do in this session", rendered)
+
+    def test_refused_candidates_do_not_widen_or_reorder_the_bounded_read(self) -> None:
+        """Bounded in files and in bytes, and independent of directory order.
+
+        Non-regular entries are candidates like any other: they are counted,
+        they occupy a slot under the cap, and which candidates the cap keeps
+        does not depend on the order the filesystem listed them in.
+        """
+
+        real_scandir = os.scandir
+
+        class _ReversedScan:
+            def __init__(self, entries: list[object]) -> None:
+                self._entries = entries
+
+            def __enter__(self) -> object:
+                return iter(self._entries)
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        def reversed_scandir(path: object) -> object:
+            with real_scandir(path) as entries:
+                return _ReversedScan(list(entries)[::-1])
+
+        board_observation.schema()
+        payloads = []
+        for reverse in (False, True):
+            with tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                refused = set()
+                for index in range(self.CAP + 6):
+                    name = f"obs-{index:03d}.json"
+                    if index % 5 == 4:
+                        _make_non_regular("directory", directory / name)
+                        refused.add(name)
+                    else:
+                        (directory / name).write_text(
+                            json.dumps(_referenced_record(f"work-{index:03d}")), encoding="utf-8"
+                        )
+                    # Modification time rises with the name, so the cap keeps a
+                    # fixed set whatever order the entries are handed back in.
+                    stamp = 1_600_000_000 + index
+                    os.utime(directory / name, (stamp, stamp), follow_symlinks=True)
+
+                reads: list[int] = []
+                with _observation_opens(directory, reads) as opened:
+                    if reverse:
+                        with patch.object(board.os, "scandir", reversed_scandir):
+                            payload = self._payload_within(directory)
+                    else:
+                        payload = self._payload_within(directory)
+
+                _assert_observation_partition(self, payload)
+                # The cap still decides how many candidates are selected, and
+                # every candidate that was opened asked for one bounded read.
+                self.assertEqual(payload["selected_files"], self.CAP)
+                self.assertEqual(payload["candidate_files"], self.CAP + 6)
+                self.assertEqual(payload["omitted_files"], 6)
+                self.assertEqual(reads, [board_observation.MAX_BYTES + 1] * len(opened))
+                self.assertEqual(len(opened), payload["read_files"])
+                self.assertFalse(set(opened) & refused)
+                self.assertEqual(
+                    payload["read_files"] + payload["unreadable_files"], self.CAP
+                )
+                # Two kinds of loss at once, each named and neither absorbing
+                # the other.
+                self.assertEqual(
+                    payload["coverage_gaps"], ["files_omitted", "files_unreadable"]
+                )
+                payloads.append(payload)
+
+        forward, backward = payloads
+        for key in (
+            "candidate_files",
+            "selected_files",
+            "omitted_files",
+            "read_files",
+            "accepted_records",
+            "invalid_records",
+            "unreadable_files",
+            "coverage",
+            "coverage_complete",
+            "coverage_gaps",
+        ):
+            self.assertEqual(forward[key], backward[key], key)
+        self.assertEqual(
+            [record["work"]["reference"] for record in forward["records"]],
+            [record["work"]["reference"] for record in backward["records"]],
+        )
+
+    def test_an_entry_that_changes_after_classification_is_still_accounted_for(self) -> None:
+        """Classification is a decision about a moment, not a guarantee.
+
+        A candidate classified as a regular file can be gone, replaced or
+        unreadable by the time the read opens it. The bounded open and read
+        already route that through the same unreadable accounting, so a lost
+        race is a counted gap rather than a silently shorter record set.
+        """
+
+        for failure in ("open", "read"):
+            with self.subTest(failure), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                for name in (self.IDLE, self.ENTRY):
+                    (directory / name).write_text(
+                        json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+                    )
+                raced = {self.ENTRY}
+                with _observation_read_failures(
+                    directory,
+                    raced if failure == "open" else frozenset(),
+                    raced if failure == "read" else frozenset(),
+                ):
+                    payload = self._payload_within(directory)
+
+                _assert_observation_partition(self, payload)
+                self.assertEqual(payload["candidate_files"], 2)
+                self.assertEqual(payload["unreadable_files"], 1)
+                self.assertEqual(payload["accepted_records"], 1)
+                self.assertFalse(payload["coverage_complete"])
+                self.assertEqual(payload["coverage_gaps"], ["files_unreadable"])
+                self.assertEqual(
+                    payload["warnings"], [{"file": self.ENTRY, "message": "unreadable_file"}]
+                )
+
+    def test_an_unclassifiable_candidate_is_refused_rather_than_risked(self) -> None:
+        """A candidate whose own metadata will not read is never opened.
+
+        The Board cannot tell from a failed `lstat` whether the entry is a
+        record or a pipe, and the cost of being wrong is a refresh that never
+        returns. So it keeps the candidate, drops the recency preference it can
+        no longer compute, and accounts for it as one that produced no record.
+        """
+
+        real_stat = os.DirEntry.stat
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for name in (self.IDLE, self.ENTRY):
+                (directory / name).write_text(
+                    json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+                )
+
+            def failing_stat(entry: os.DirEntry, **kwargs: object) -> object:
+                if entry.name == self.ENTRY:
+                    raise OSError(13, "permission denied")
+                return real_stat(entry, **kwargs)
+
+            with patch.object(os.DirEntry, "stat", failing_stat, create=False):
+                with _observation_opens(directory) as opened:
+                    payload = self._payload_within(directory)
+
+        self.assertEqual(opened, [self.IDLE])
+        _assert_observation_partition(self, payload)
+        self.assertEqual(payload["candidate_files"], 2)
+        self.assertEqual(payload["selected_files"], 2)
+        self.assertEqual(payload["unreadable_files"], 1)
+        self.assertEqual(payload["accepted_records"], 1)
+        self.assertFalse(payload["coverage_complete"])
+        self.assertNotIn("permission denied", json.dumps(payload))
+
+    def test_dropping_a_refused_candidate_from_the_count_would_be_caught(self) -> None:
+        """Mutation: refuse the entry, but stop counting it as a candidate.
+
+        This is the tempting wrong fix -- skip what cannot be read and report
+        what is left as the whole local record set. It produces exactly the
+        present-tense idle claim the assertions above forbid, so those
+        assertions are load-bearing rather than decorative.
+        """
+
+        real_select = board._select_observation_files
+
+        def dropping_the_entry(path: Path) -> tuple[list[tuple[str, bool]], int]:
+            selected, _total = real_select(path)
+            kept = [(name, regular) for name, regular in selected if regular]
+            return kept, len(kept)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _local = self._directory(Path(tmp), "directory")
+            shipped = self._payload_within(directory)
+            with patch.object(board, "_select_observation_files", dropping_the_entry):
+                mutated = self._payload_within(directory)
+
+        # The mutant really does call a read that lost a candidate whole.
+        self.assertTrue(mutated["coverage_complete"])
+        self.assertEqual(mutated["coverage"], "complete")
+        self.assertEqual(mutated["candidate_files"], 1)
+        self.assertEqual(mutated["unreadable_files"], 0)
+        self.assertEqual(mutated["message"], "")
+        self.assertEqual(
+            _eval_board_view(
+                "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label])",
+                _observation_payload([], observations=mutated),
+                self.NOW_MS,
+            ),
+            [["idle with complete coverage", "nothing to do in this session"]],
+        )
+
+        # The shipped code, unmutated, says none of that about the same read.
+        self.assertFalse(shipped["coverage_complete"])
+        self.assertEqual(shipped["candidate_files"], 2)
+        self.assertEqual(shipped["unreadable_files"], 1)
+        self.assertEqual(
+            _eval_board_view(
+                "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label])",
+                _observation_payload([], observations=shipped),
+                self.NOW_MS,
+            ),
+            [[
+                "idle in the records read",
+                "recover the observation files that produced no record before treating this session as idle",
+            ]],
+        )
+
+    def _classified_regular(self):
+        """The shipped classification, with every candidate called regular.
+
+        The race in one function: the reader is told a name is a regular file
+        and then has to decide for itself, on the descriptor, whether it is.
+        """
+
+        real_select = board._select_observation_files
+
+        def select(path: Path) -> tuple[list[tuple[str, bool]], int]:
+            selected, total = real_select(path)
+            return [(name, True) for name, _regular in selected], total
+
+        return select
+
+    def test_classifying_every_candidate_as_regular_no_longer_wedges_the_refresh(self) -> None:
+        """Mutation: classify every selected candidate as a regular file.
+
+        The classification is a filter over names, and a name is not a promise
+        about the entry behind it, so it cannot be the thing that keeps the
+        read prompt. Removing it entirely must therefore cost one refused
+        descriptor and nothing else: the same deadline, the same accounting,
+        the same page. What actually keeps the read prompt is the open, proved
+        by the mutants below.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+
+        without_the_filter = self._classified_regular()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _local = self._directory(Path(tmp), "fifo")
+            shipped = self._payload_within(directory)
+            with patch.object(board, "_select_observation_files", without_the_filter):
+                mutated = self._payload_within(directory)
+                # The mutant really does open the pipe the filter would have
+                # refused unread, and still returns inside the deadline.
+                with _observation_opens(directory) as opened:
+                    self._payload_within(directory)
+
+        self.assertEqual(sorted(opened), sorted([self.IDLE, self.ENTRY]))
+        for payload in (shipped, mutated):
+            _assert_observation_partition(self, payload)
+            self.assertEqual(payload["unreadable_files"], 1)
+            self.assertEqual(payload["accepted_records"], 1)
+            self.assertEqual(payload["invalid_records"], 0)
+            self.assertFalse(payload["coverage_complete"])
+            self.assertEqual(
+                payload["warnings"], [{"file": self.ENTRY, "message": "unreadable_file"}]
+            )
+
+    def test_removing_the_nonblocking_open_guard_would_wedge_the_refresh(self) -> None:
+        """Mutation: open the candidate the way an ordinary ``open()`` would.
+
+        This is the claim the reader used to rest on -- that an entry which
+        changed kind after classification would simply raise. It does not.
+        Opening a named pipe for blocking read with no writer waits, for as
+        long as no writer arrives, and the refresh waits with it. The deadline
+        every test above meets comfortably is the one this mutant cannot meet.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+        if not hasattr(os, "O_NONBLOCK"):  # pragma: no cover - POSIX everywhere supported
+            raise SkipTest("this platform has no non-blocking open")
+
+        without_the_filter = self._classified_regular()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _local = self._directory(Path(tmp), "fifo")
+            fifo = directory / self.ENTRY
+            config = board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            done: list[dict] = []
+            worker = threading.Thread(
+                target=lambda: done.append(board.observations_payload(config)), daemon=True
+            )
+            try:
+                with patch.object(board, "_select_observation_files", without_the_filter), patch.object(
+                    board, "OBSERVATION_OPEN_FLAGS", board.OBSERVATION_OPEN_FLAGS & ~os.O_NONBLOCK
+                ):
+                    worker.start()
+                    # Short on purpose: the only way to finish inside it is to
+                    # never have blocked, which is the guard this mutant removed.
+                    worker.join(2.0)
+                    self.assertTrue(
+                        worker.is_alive(),
+                        "the mutant returned, so the pipe never blocked and this proves nothing",
+                    )
+                    self.assertEqual(done, [])
+            finally:
+                # Release it: opening a pipe read-write never blocks and gives
+                # the wedged reader a writer, and closing that writer ends its
+                # read at end of file.
+                try:
+                    os.close(os.open(fifo, os.O_RDWR | os.O_NONBLOCK))
+                except OSError:  # pragma: no cover - only if the pipe went away
+                    pass
+                worker.join(self.DEADLINE)
+
+            # And the shipped code, against the very same pipe, returns.
+            shipped = self._payload_within(directory)
+
+        self.assertEqual(shipped["unreadable_files"], 1)
+        self.assertEqual(shipped["accepted_records"], 1)
+        self.assertFalse(shipped["coverage_complete"])
+
+    def test_the_open_succeeds_and_the_descriptor_check_is_what_refuses(self) -> None:
+        """The refusal comes from ``fstat``, not from the open failing.
+
+        Worth stating because the two are easy to confuse and only one of them
+        is true: with the shipped flags the pipe opens perfectly well, and it
+        is the kind of the descriptor -- the one question nothing can race --
+        that refuses it.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fifo = Path(tmp) / self.ENTRY
+            _make_non_regular("fifo", fifo)
+
+            # The open itself does not object, and does not wait.
+            descriptor = os.open(fifo, board.OBSERVATION_OPEN_FLAGS)
+            os.close(descriptor)
+
+            with self.assertRaises(OSError):
+                board._open_observation_file(fifo)
+
+    def test_removing_the_descriptor_type_check_would_read_the_replacement(self) -> None:
+        """Mutation: trust the classification and skip the ``fstat``.
+
+        Without it the pipe is not refused, it is *read*: a non-blocking read
+        of a pipe with no writer returns no bytes at all, so the candidate is
+        mis-accounted as a record the contract rejected rather than as one the
+        Board never got to see. Both are partial coverage, which is why the
+        counters -- not the coverage flag -- are what this has to assert.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _local = self._directory(Path(tmp), "fifo")
+            shipped = self._payload_within(directory)
+            with patch.object(board, "_select_observation_files", self._classified_regular()), (
+                patch.object(board.stat, "S_ISREG", lambda mode: True)
+            ):
+                mutated = self._payload_within(directory)
+
+        # The mutant read the pipe and blamed the contract for what came back.
+        self.assertEqual(mutated["unreadable_files"], 0)
+        self.assertEqual(mutated["invalid_records"], 1)
+        self.assertEqual(mutated["coverage_gaps"], ["records_invalid"])
+
+        # The shipped code never read it, and says so as a file it could not read.
+        self.assertEqual(shipped["unreadable_files"], 1)
+        self.assertEqual(shipped["invalid_records"], 0)
+        self.assertEqual(shipped["coverage_gaps"], ["files_unreadable"])
+
+    def test_the_open_guards_are_in_force_on_every_supported_platform(self) -> None:
+        """Platform handling is explicit, and never silently drops a guard.
+
+        macOS and Linux are the platforms the Board supports, and both are
+        POSIX: every guard is present there and every guard must be set. An
+        interpreter without one still imports -- the descriptor check is what
+        makes the open safe -- but it may not be quietly dropped where it
+        exists, because that is the difference between a refresh that returns
+        and a refresh that never does.
+        """
+
+        self.assertEqual(board.OBSERVATION_OPEN_GUARDS, ("O_NONBLOCK", "O_NOFOLLOW"))
+        self.assertTrue(board.OBSERVATION_OPEN_FLAGS & os.O_RDONLY == os.O_RDONLY)
+        for guard in board.OBSERVATION_OPEN_GUARDS:
+            flag = getattr(os, guard, None)
+            if flag is None:  # pragma: no cover - not POSIX
+                self.assertNotEqual(os.name, "posix", f"{guard} is missing on a POSIX platform")
+                continue
+            self.assertEqual(board.OBSERVATION_OPEN_FLAGS & flag, flag, guard)
+        # Writes are never opened for, on any platform.
+        for forbidden in ("O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"):
+            flag = getattr(os, forbidden, 0)
+            if flag:
+                self.assertEqual(board.OBSERVATION_OPEN_FLAGS & flag, 0, forbidden)
+
+
+class BoardObservationClassificationRaceTests(TestCase):
+    """A candidate can change kind between being classified and being opened.
+
+    The classification reads a name; the open resolves it again. Between the
+    two, anything with write access to the observation directory can replace a
+    regular file with a named pipe or a symlink, and the reader has to survive
+    that without ever waiting on it and without ever following it.
+
+    These drive the race for real: the shipped classifier runs against a
+    directory that genuinely holds a regular file, the entry is replaced after
+    it has been classified, and the read that follows opens the replacement.
+    """
+
+    CAP = board.MAX_OBSERVATION_FILES
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    DEADLINE = BoardObservationNonRegularEntryTests.DEADLINE
+    ENTRY = BoardObservationNonRegularEntryTests.ENTRY
+    IDLE = BoardObservationNonRegularEntryTests.IDLE
+
+    _payload_within = BoardObservationNonRegularEntryTests._payload_within
+
+    def _directory(self, tmp: Path) -> tuple[Path, Path]:
+        """One current `no_work` record beside one ordinary regular candidate.
+
+        Both are regular files here, so the classification the race defeats is
+        a real one: the shipped classifier sees a regular file and says so.
+        """
+
+        directory = tmp / "observations"
+        directory.mkdir()
+        (directory / self.IDLE).write_text(
+            json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+        )
+        (directory / self.ENTRY).write_text(
+            json.dumps(_referenced_record("cm948-before-the-swap")), encoding="utf-8"
+        )
+        outside = tmp / "outside.json"
+        outside.write_text(
+            json.dumps(_referenced_record("cm948-through-the-link")), encoding="utf-8"
+        )
+        return directory, outside
+
+    def _swapping_select(self, entry: Path, replace: Callable[[Path], None]) -> Callable:
+        """Run the shipped classifier, then replace the entry it classified."""
+
+        real_select = board._select_observation_files
+        seen: list[list[tuple[str, bool]]] = []
+
+        def select(path: Path) -> tuple[list[tuple[str, bool]], int]:
+            selected, total = real_select(path)
+            seen.append(selected)
+            # Classified as a regular file a moment ago; something else now.
+            entry.unlink()
+            replace(entry)
+            return selected, total
+
+        select.seen = seen  # type: ignore[attr-defined]
+        return select
+
+    def test_a_candidate_replaced_by_a_named_pipe_is_refused_not_awaited(self) -> None:
+        """The finding: a regular file swapped for a pipe under a live read.
+
+        An ordinary ``open()`` here does not raise, it waits -- for a writer
+        that never comes -- and the refresh never returns. The shipped read
+        returns inside the deadline with the swapped candidate accounted for as
+        one that produced no record.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _outside = self._directory(Path(tmp))
+            entry = directory / self.ENTRY
+            select = self._swapping_select(entry, lambda path: _make_non_regular("fifo", path))
+            started = time.monotonic()
+            with patch.object(board, "_select_observation_files", select):
+                payload = self._payload_within(directory)
+            elapsed = time.monotonic() - started
+
+        # The race was real: the shipped classifier saw a regular file.
+        self.assertEqual(
+            sorted(select.seen[0]), sorted([(self.IDLE, True), (self.ENTRY, True)])
+        )
+        # And the read did not wait on the pipe that replaced it.
+        self.assertLess(elapsed, self.DEADLINE)
+
+        _assert_observation_partition(self, payload)
+        self.assertEqual(payload["candidate_files"], 2)
+        self.assertEqual(payload["selected_files"], 2)
+        self.assertEqual(payload["attempted_files"], 2)
+        self.assertEqual(payload["unreadable_files"], 1)
+        self.assertEqual(payload["invalid_records"], 0)
+        self.assertEqual(payload["accepted_records"], 1)
+        self.assertFalse(payload["coverage_complete"])
+        self.assertEqual(payload["coverage"], "partial")
+        self.assertEqual(payload["coverage_gaps"], ["files_unreadable"])
+        self.assertFalse(payload["truncated"])
+        self.assertEqual(payload["warnings"], [{"file": self.ENTRY, "message": "unreadable_file"}])
+        self.assertEqual([record["kind"] for record in payload["records"]], ["no_work"])
+        # The refusal says a candidate produced no record, and nothing about
+        # what the entry turned out to be.
+        self.assertNotIn("fifo", json.dumps(payload).lower())
+        self.assertNotIn("cm948-before-the-swap", json.dumps(payload))
+
+    def test_a_candidate_replaced_by_a_symlink_is_refused_not_followed(self) -> None:
+        """A link that appears after classification is still a link the Board never chose.
+
+        The target is a perfectly valid record, which is exactly why following
+        it would be invisible in the counters and visible only here: its
+        reference must appear nowhere on the page.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, outside = self._directory(Path(tmp))
+            entry = directory / self.ENTRY
+            select = self._swapping_select(
+                entry, lambda path: _make_non_regular("symlink", path, outside)
+            )
+            with patch.object(board, "_select_observation_files", select):
+                payload = self._payload_within(directory)
+
+        self.assertEqual(
+            sorted(select.seen[0]), sorted([(self.IDLE, True), (self.ENTRY, True)])
+        )
+        self.assertEqual(payload["unreadable_files"], 1)
+        self.assertEqual(payload["accepted_records"], 1)
+        self.assertEqual(payload["invalid_records"], 0)
+        self.assertFalse(payload["coverage_complete"])
+        self.assertEqual([record["kind"] for record in payload["records"]], ["no_work"])
+        encoded = json.dumps(payload)
+        self.assertNotIn("cm948-through-the-link", encoded)
+        self.assertNotIn(str(outside), encoded)
+
+    def test_a_refused_candidate_leaks_no_descriptor(self) -> None:
+        """Every path out of the open closes what it opened, exactly once.
+
+        The refusal happens after the descriptor exists, so the reader owns it
+        and has to give it back -- on the refusal, and on a read that raises.
+        A leak here is invisible in every assertion above and fatal to a page
+        that refreshes on a timer.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+        try:
+            os.listdir("/dev/fd")
+        except OSError as exc:  # pragma: no cover - platform without /dev/fd
+            raise SkipTest("this platform does not expose open descriptors") from exc
+
+        def descriptors() -> int:
+            return len(os.listdir("/dev/fd"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _outside = self._directory(Path(tmp))
+            entry = directory / self.ENTRY
+            _make_non_regular("fifo", entry.with_name("c-cm948-pipe.json"))
+            config = board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            # One read first, so a lazy import or a cached schema read is not
+            # mistaken for a descriptor this leaked.
+            board.observations_payload(config)
+            before = descriptors()
+            for _ in range(8):
+                board.observations_payload(config)
+            after = descriptors()
+
+        self.assertEqual(after, before)
+
+
+@contextmanager
+def _node_invocations():
+    """Record every Node command line this block runs, and how it got its program."""
+
+    calls: list[tuple[list[str], str | None]] = []
+    real_run = subprocess.run
+
+    def recording(command, *args, **kwargs):
+        if isinstance(command, list) and command and str(command[0]).endswith("node"):
+            calls.append(([str(part) for part in command], kwargs.get("input")))
+        return real_run(command, *args, **kwargs)
+
+    with patch.object(subprocess, "run", recording):
+        yield calls
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardNodeHelperArgvTests(TestCase):
+    """No Board helper hands Node a generated program on the command line.
+
+    The shipped page script is over 140 KiB. Linux caps a *single* argument at
+    ``MAX_ARG_STRLEN`` -- a fixed 32 pages, 128 KiB, unrelated to ``ARG_MAX``
+    and not raisable -- so passing that script with ``node -e`` raises
+    ``OSError: [Errno 7] Argument list too long`` before Node is ever reached.
+    macOS applies a much larger whole-command-line limit instead, so the same
+    helper passes locally and fails every Linux job in the package matrix.
+
+    The program therefore goes in on stdin, which is bounded by a pipe and not
+    by argv, and only the small JSON arguments stay on the command line.
+    """
+
+    def test_no_helper_puts_its_generated_program_in_argv(self) -> None:
+        """Drive the helpers and inspect the command lines they actually built."""
+
+        with _node_invocations() as calls:
+            _eval_board_truth("1 + 1")
+            _eval_board_view("1 + 1")
+            _eval_board_page("1 + 1")
+            _render_board_sequence([{}])
+            _render_board_focus([{}])
+            _run_board_poll_script([None])
+
+        self.assertEqual(len(calls), 6)
+        for command, program in calls:
+            # The program arrived on stdin, and `-` is what stands in for it.
+            self.assertIsNotNone(program, command[:2])
+            self.assertEqual(command[1], "-")
+            self.assertNotIn("-e", command)
+            for argument in command:
+                self.assertLess(
+                    len(argument.encode("utf-8")),
+                    LINUX_MAX_ARG_STRLEN,
+                    f"{argument[:60]!r}... would not survive a Linux exec",
+                )
+            # Nothing recognisably the page script is on the command line.
+            self.assertNotIn("function render(", " ".join(command))
+
+        # At least one of those programs is past the limit, so this is a
+        # statement about the helpers rather than about small scripts.
+        self.assertTrue(
+            any(len(program.encode("utf-8")) > LINUX_MAX_ARG_STRLEN for _c, program in calls),
+            "no helper ran a program large enough for argv to have refused it",
+        )
+
+    def test_every_node_command_in_this_module_is_built_in_one_place(self) -> None:
+        """The runner is the only place a Node command line is assembled.
+
+        A behavioural test can only cover the helpers it calls; this covers the
+        next one somebody adds. ``skipUnless`` decorators mention Node without
+        running it, so they are excluded by shape rather than by count.
+        """
+
+        # Assembled rather than written out, so this test's own source is not
+        # one of the lines it goes looking for.
+        needle = "shutil.which(" + '"node")'
+        source = Path(__file__).read_text(encoding="utf-8")
+        built = [
+            line.strip()
+            for line in source.splitlines()
+            if needle in line and "skipUnless" not in line
+        ]
+        self.assertEqual(built, ["[" + needle + ' or "node", "-", *args],'])
+
+    def test_a_program_past_the_linux_argv_limit_runs_and_keeps_its_arguments(self) -> None:
+        """The fix, stated as the thing it has to do.
+
+        A program larger than any argument Linux would accept still runs, and
+        the JSON arguments still arrive -- one place later, at ``argv[2]``,
+        because ``-`` now occupies ``argv[1]``.
+        """
+
+        script = (
+            "// " + "x" * LINUX_MAX_ARG_STRLEN + "\n"
+            "console.log(JSON.stringify(process.argv.slice(2).map(JSON.parse)));\n"
+        )
+        self.assertGreater(len(script.encode("utf-8")), LINUX_MAX_ARG_STRLEN)
+        self.assertEqual(
+            json.loads(_run_node(script, json.dumps("first"), json.dumps({"second": 2}))),
+            ["first", {"second": 2}],
+        )
+
+    def test_argv_has_a_ceiling_on_this_platform_that_stdin_does_not(self) -> None:
+        """Find this platform's argv ceiling for real, then clear it on stdin.
+
+        The ceiling is not the same number everywhere -- Linux refuses a single
+        128 KiB argument, macOS accepts one and refuses the command line near a
+        megabyte -- and that difference is the whole reason a green local run
+        proved nothing about the package matrix. So this measures the ceiling
+        rather than assuming it, and then runs a program that large through the
+        runner every Board helper uses.
+        """
+
+        size = LINUX_MAX_ARG_STRLEN
+        ceiling = 0
+        while size <= 16 * 1024 * 1024:
+            try:
+                # Any exec will do: the kernel refuses the command line before
+                # the program on the other end of it is ever consulted.
+                subprocess.run([sys.executable, "-c", "pass", "x" * size], capture_output=True)
+            except OSError as exc:
+                self.assertEqual(exc.errno, errno.E2BIG)
+                ceiling = size
+                break
+            size *= 2
+        if not ceiling:  # pragma: no cover - a platform with no reachable ceiling
+            raise SkipTest("this platform accepts arguments larger than any script here")
+
+        # The same size, as a program rather than as an argument, runs.
+        script = "// " + "x" * ceiling + "\nconsole.log(JSON.stringify(process.argv[2]));\n"
+        self.assertGreater(len(script.encode("utf-8")), ceiling)
+        self.assertEqual(json.loads(_run_node(script, "measured")), "measured")
