@@ -64,7 +64,18 @@ None of these change any local state:
 | `external_supervisor` | the port is held by a process a different supervisor owns |
 | `port_conflict` | the port is held by an unrelated local process |
 | `ambiguous_repository` | the selector matches more than one managed service |
-| `rollback_failed` | an apply failed *and* the previous definition could not be restored |
+| `rollback_failed` | an apply failed *and* the previous definition could not be restored, or the definition it wrote could not be taken back off the host |
+
+`--host` is validated against the same loopback rule `board serve` enforces,
+before any lifecycle mutation: a service naming a non-loopback host describes a
+Board that can never come up, and installing it would leave launchd restarting a
+failing process forever.
+
+A definition that is not UTF-8 text -- a binary plist, or one that has been
+corrupted -- is reported as unreadable rather than parsed. Rollback restores a
+previous definition by writing its text back, so a definition with no text has no
+recoverable backup; `--replace` is the only takeover, and it discards those
+contents knowingly.
 
 The argument list comes from launchd, which prints one argument per line, rather
 than from `ps -o command=`, which renders an argv as a single unquoted line. A
@@ -75,7 +86,10 @@ healthy service would fail the gate. If launchd reports no argument list at all,
 Port ownership is proved against the pid launchd is supervising, not against a
 definition that happens to name the port: a stopped or crashed managed job leaves
 its definition installed, and whatever takes the port it vacated is not ours.
-Every listener on the port has to clear that bar.
+Every listener on the port has to clear that bar. `board list` and the `board
+stop` keepalive guard apply the same rule: a listener is managed only when its
+pid is the one launchd supervises for that label, so a transient Board that took
+a stopped service's port is labelled transient and can still be stopped.
 
 `remove` will not delete a definition while launchd still holds its job. Managed
 services are discovered by scanning definition files, so deleting one whose job

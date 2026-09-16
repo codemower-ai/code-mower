@@ -201,7 +201,9 @@ def resolved_metadata_paths(config: BoardConfig) -> dict[str, str]:
 
 
 def _is_loopback(host: str) -> bool:
-    return host in {"localhost", "::1"} or host.startswith("127.")
+    # One rule, defined once: `board service` validates the host it is asked to
+    # install against exactly what `serve` will accept at runtime.
+    return board_service.is_loopback_host(host)
 
 
 def _host_header_allowed(value: str | None) -> bool:
@@ -5106,6 +5108,33 @@ def _managed_service_index(
     return index
 
 
+def _managed_listener_service(listener: Mapping[str, Any], index: Mapping[int, Any]) -> Any | None:
+    """The managed service actually serving this listener, or None.
+
+    An installed definition names a port; it does not prove that whatever holds
+    that port is the process launchd supervises. A booted-out service leaves its
+    plist in place, and a transient Board is free to take the port it vacated.
+    Calling that listener managed would make `board list` label it with a service
+    that is not running it, and make `board stop --yes` refuse to stop a Board
+    nothing would restart. Ownership is the launchd runtime pid, matched against
+    the discovered listener -- the same bar `board service` applies before it
+    claims a port.
+    """
+
+    try:
+        port = int(listener.get("port") or -1)
+        pid = int(listener.get("pid") or 0)
+    except (TypeError, ValueError):
+        return None
+    service = index.get(port)
+    if service is None or pid <= 0 or not getattr(service, "loaded", False):
+        return None
+    service_pid = getattr(service, "pid", None)
+    if not isinstance(service_pid, int) or service_pid != pid:
+        return None
+    return service
+
+
 def _default_pid_alive(pid: int) -> bool:
     """Best-effort liveness probe that never signals the target process."""
 
@@ -5136,7 +5165,7 @@ def board_inventory_payload(
         if not isinstance(discovered, Mapping):
             continue
         item = dict(discovered)
-        managed = services.get(int(item.get("port") or -1))
+        managed = _managed_listener_service(item, services)
         item["managed"] = managed is not None
         item["service_label"] = getattr(managed, "label", "") if managed is not None else ""
         probed = status_probe(item) if status_probe else {}
@@ -5376,14 +5405,11 @@ def stop_board(
         "errors": [],
     }
     managed_index = _managed_service_index(command_runner, service_probe)
-    managed_match = next(
-        (
-            managed_index[int(item.get("port") or -1)]
-            for item in matches
-            if int(item.get("port") or -1) in managed_index
-        ),
-        None,
-    )
+    managed_match = None
+    for item in matches:
+        managed_match = _managed_listener_service(item, managed_index)
+        if managed_match is not None:
+            break
     if matches and managed_match is not None:
         label = getattr(managed_match, "label", "")
         managed_port = getattr(managed_match, "port", None)

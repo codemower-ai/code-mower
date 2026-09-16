@@ -570,6 +570,110 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertEqual(payload["status"], "apply_failed")
         self.assertFalse((self.root / "ai.codemower.board.5332.plist").exists())
 
+    def test_a_failed_first_install_that_cannot_be_cleaned_up_is_a_failed_rollback(self) -> None:
+        # Nothing was installed before, so rolling back means leaving nothing
+        # behind. A definition that survives its failed apply starts the service
+        # again at the next login, so reporting `apply_failed` -- and rendering
+        # "Rollback: ok" -- would describe a host other than the one we left.
+        self.host.bootstrap_failures.add("ai.codemower.board.5332")
+
+        class KeepsDefinition(board_service.LaunchdProvider):
+            def delete_definition(self, label: str) -> bool:
+                return False
+
+        payload = board_service.install_service(
+            self.spec(),
+            provider=KeepsDefinition(
+                command_runner=self.host.run, root=self.root, uid=self.host.uid, platform="darwin"
+            ),
+            command_runner=self.host.run,
+            identity_probe=self.host.identity_probe,
+            settle_seconds=0.0,
+            refresh_seconds=0.1,
+            timeout_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+
+        self.assertEqual(payload["status"], "rollback_failed")
+        self.assertFalse(payload["rollback"]["ok"])
+        self.assertFalse(payload["rollback"]["deleted"])
+        self.assertIn("next login", payload["rollback"]["detail"])
+        self.assertTrue((self.root / "ai.codemower.board.5332.plist").exists())
+        self.assertIn("Rollback: failed", board_service.render_operation_text(payload))
+
+    def test_a_definition_that_cannot_be_decoded_is_unreadable_not_a_traceback(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        path = self.root / "ai.codemower.board.5332.plist"
+        # Invalid UTF-8. Decoding raises `UnicodeDecodeError`, which is a
+        # `ValueError` and so escapes an `OSError` handler entirely: enumeration
+        # and everything built on it must report the definition as unreadable
+        # rather than ending in a traceback.
+        path.write_bytes(b"\xff\xfe not a plist \x00")
+
+        service = self.host.provider().read_service(spec.label)
+        services = self.host.provider().list_services()
+        refused = self.restart(self.spec())
+
+        self.assertFalse(service.readable)
+        self.assertEqual(service.port, 5332)
+        # Still installed, still supervised: runtime state survives a definition
+        # that cannot be parsed, which is what ownership is decided on.
+        self.assertTrue(service.loaded)
+        self.assertEqual([item.label for item in services], [spec.label])
+        self.assertEqual(refused["status"], "stale_arguments")
+        self.assertEqual(path.read_bytes(), b"\xff\xfe not a plist \x00")
+
+    def test_a_binary_definition_is_refused_rather_than_crashing_enumeration(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        path = self.root / "ai.codemower.board.5332.plist"
+        # A binary plist parses, but it is not UTF-8 text -- and the rollback
+        # that protects a replacement restores the previous definition by
+        # writing its text back, so a definition with no text has no
+        # recoverable backup. It is refused like any other definition that
+        # cannot be read, and `--replace` is the only takeover.
+        path.write_bytes(plistlib.dumps(board_service.launchd_definition(spec), fmt=plistlib.FMT_BINARY))
+
+        service = self.host.provider().read_service(spec.label)
+        services = self.host.provider().list_services()
+        refused = self.restart(spec)
+
+        self.assertFalse(service.readable)
+        self.assertEqual(service.port, 5332)
+        self.assertEqual([item.label for item in services], [spec.label])
+        self.assertEqual(refused["status"], "stale_arguments")
+        self.assertFalse(refused["installed_readable"])
+
+        taken_over = self.restart(spec, replace=True)
+
+        self.assertEqual(taken_over["status"], "restarted")
+        self.assertTrue(self.host.provider().read_service(spec.label).readable)
+
+    def test_a_service_may_not_bind_a_host_board_serve_would_refuse(self) -> None:
+        # `board serve` refuses a non-loopback host, so a service that names one
+        # describes a Board that can never come up: launchd would restart the
+        # failing process forever, and a replacement would stop the working
+        # service first and leave the invalid definition installed once the
+        # health window expired. The refusal has to happen before any mutation.
+        for host in ("0.0.0.0", "::", "192.168.1.10", "example.com"):
+            with self.subTest(host=host):
+                with self.assertRaises(board_service.ServiceRequestError) as caught:
+                    board_service.build_spec(
+                        repo="codemower-ai/code-mower", repo_path=self.checkout, port=5332, host=host
+                    )
+                self.assertIn("loopback", str(caught.exception))
+        self.assertEqual(list(self.root.iterdir()), [])
+        for host in ("127.0.0.1", "127.0.0.53", "localhost", "::1"):
+            with self.subTest(host=host):
+                spec = board_service.build_spec(
+                    repo="codemower-ai/code-mower", repo_path=self.checkout, port=5332, host=host
+                )
+                self.assertEqual(spec.host, host)
+        # One rule: `board serve` and `board service` agree by construction.
+        self.assertTrue(board._is_loopback("127.0.0.1"))
+        self.assertFalse(board._is_loopback("0.0.0.0"))
+
     def test_delayed_health_refreshes_until_the_binding_settles(self) -> None:
         clock = iter([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
         spec = self.spec()
@@ -1235,6 +1339,32 @@ class BoardStopSelectorTest(ServiceHarness):
         rendered = board.render_inventory_text(payload)
         self.assertIn("service=ai.codemower.board.5332", rendered)
         self.assertIn("service=none (transient)", rendered)
+
+    def test_a_transient_board_on_a_stopped_services_port_is_not_managed(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        # The job is booted out, but its definition stays installed -- and a
+        # transient Board is then free to take the port it vacated. An installed
+        # definition names a port; it does not prove who holds it. Calling this
+        # listener managed would label it in `board list` with a service that is
+        # not running it, and make `board stop --yes` refuse to stop a Board
+        # nothing would restart.
+        self.host.provider().bootout(spec.label)
+        pid = self._transient_board(5332, "codemower-ai/code-mower", self.checkout)
+
+        inventory = board.board_inventory_payload(
+            command_runner=self.host.run,
+            status_probe=None,
+            service_probe=lambda: self.host.provider().list_services(),
+        )
+        rows = {row["port"]: row for row in inventory["boards"]}
+        payload = self._stop(port=5332, yes=True)
+
+        self.assertFalse(rows[5332]["managed"])
+        self.assertEqual(rows[5332]["service_label"], "")
+        self.assertIn("service=none (transient)", board.render_inventory_text(inventory))
+        self.assertEqual(payload["status"], "stopped")
+        self.assertEqual([entry[0] for entry in payload["_signalled"]], [pid])
 
     def test_stop_exit_codes_separate_refusals_from_selector_errors(self) -> None:
         self.assertEqual(board._stop_exit_code("stopped"), 0)

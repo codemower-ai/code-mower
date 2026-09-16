@@ -217,6 +217,21 @@ def _looks_like_path(value: str) -> bool:
     return value.startswith("/") or value.startswith("~")
 
 
+def is_loopback_host(host: str) -> bool:
+    """The one loopback rule, shared with `board serve`.
+
+    `board serve` refuses a non-loopback host outright, so a service that names
+    one describes a Board that can never come up: launchd would restart the
+    failing process forever, and a replacement would additionally stop the
+    working service and leave the invalid definition installed once the health
+    window expired. The rule lives here and `board` defers to it so the two can
+    never drift into disagreeing about what this service is allowed to bind.
+    """
+
+    value = _text(host)
+    return value in {"localhost", "::1"} or value.startswith("127.")
+
+
 def redact_path(value: object, *, show_local_paths: bool) -> str:
     text = _text(value)
     if not text:
@@ -242,7 +257,19 @@ def redact_arguments(arguments: Sequence[str], *, show_local_paths: bool) -> lis
 def definition_digest(text: str) -> str:
     """A stable name for a definition that reveals none of its contents."""
 
-    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return definition_digest_bytes(text.encode("utf-8"))
+
+
+def definition_digest_bytes(raw: bytes) -> str:
+    """The same name, computed from the bytes actually on disk.
+
+    For a UTF-8 definition this is identical to the digest of its text, since
+    re-encoding a decoded definition reproduces those bytes exactly. For one
+    that cannot be decoded at all it is still a stable, distinct name, which is
+    what lets an unreadable definition be compared rather than crash.
+    """
+
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
 def build_spec(
@@ -269,6 +296,8 @@ def build_spec(
     if not 1 <= port_value <= 65535:
         raise ServiceRequestError("--port must be between 1 and 65535")
     host_value = _text(host) or DEFAULT_HOST
+    if not is_loopback_host(host_value):
+        raise ServiceRequestError("--host must be loopback; use 127.0.0.1 or localhost")
     canonical = Path(repo_path).expanduser().resolve()
     if not canonical.is_dir():
         raise ServiceRequestError("--repo-path must be an existing directory")
@@ -423,7 +452,7 @@ def binding_from_arguments(arguments: Sequence[str]) -> dict[str, Any]:
     return binding
 
 
-def _service_from_definition(path: Path, data: Mapping[str, Any], text: str) -> ManagedService:
+def _service_from_definition(path: Path, data: Mapping[str, Any], *, digest: str) -> ManagedService:
     arguments = tuple(str(item) for item in (data.get("ProgramArguments") or []))
     binding = binding_from_arguments(arguments)
     keepalive_value = data.get("KeepAlive")
@@ -437,7 +466,7 @@ def _service_from_definition(path: Path, data: Mapping[str, Any], text: str) -> 
         host=str(binding["host"]) or DEFAULT_HOST,
         port=binding["port"],
         keepalive=keepalive,
-        digest=definition_digest(text),
+        digest=digest,
     )
 
 
@@ -544,8 +573,14 @@ class LaunchdProvider:
             loaded, pid = self.runtime(label)
             return dataclasses.replace(service, loaded=loaded, pid=pid)
 
+        # Read bytes, not text. A binary plist -- or a definition corrupted into
+        # invalid UTF-8 -- makes `read_text` raise `UnicodeDecodeError`, which is
+        # a `ValueError` and so escapes an `OSError` handler entirely: enumeration
+        # and everything built on it (`board list`, `board stop`, service status
+        # and removal) would end in a traceback instead of reporting the one fact
+        # that matters, which is that this definition cannot be understood.
         try:
-            text = path.read_text(encoding="utf-8")
+            raw = path.read_bytes()
         except FileNotFoundError:
             return None
         except OSError as exc:
@@ -557,14 +592,32 @@ class LaunchdProvider:
                     message=f"service definition could not be read ({exc.__class__.__name__})",
                 )
             )
+        digest = definition_digest_bytes(raw)
         try:
-            data = plistlib.loads(text.encode("utf-8"))
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            # Parseable or not, a definition that is not UTF-8 text is one this
+            # lane cannot round-trip: the rollback that protects a replacement
+            # restores the previous definition by writing its text back, so a
+            # definition with no text has no recoverable backup. That is exactly
+            # what `readable=False` means here, and it is what makes `--replace`
+            # the only way to take this one over.
+            return with_runtime(
+                _unreadable_service(
+                    label,
+                    path,
+                    digest=digest,
+                    message="service definition is not UTF-8 text",
+                )
+            )
+        try:
+            data = plistlib.loads(raw)
         except Exception:  # noqa: BLE001 - any malformed plist is the same fact
             return with_runtime(
                 _unreadable_service(
                     label,
                     path,
-                    digest=definition_digest(text),
+                    digest=digest,
                     message="service definition is not a readable plist",
                 )
             )
@@ -573,11 +626,11 @@ class LaunchdProvider:
                 _unreadable_service(
                     label,
                     path,
-                    digest=definition_digest(text),
+                    digest=digest,
                     message="service definition is not a plist dictionary",
                 )
             )
-        return with_runtime(_service_from_definition(path, data, text))
+        return with_runtime(_service_from_definition(path, data, digest=digest))
 
     def list_services(self) -> list[ManagedService]:
         try:
@@ -1562,9 +1615,35 @@ def _rollback(provider: Any, spec: ServiceSpec, previous_text: str) -> dict[str,
     """Put back exactly what was there, or say plainly that we could not."""
 
     if not previous_text:
-        provider.bootout(spec.label)
-        removed = provider.delete_definition(spec.label)
-        return {"ok": True, "detail": "removed the definition that failed to apply", "restored": False, "deleted": removed}
+        # Nothing was here before, so rolling back means leaving nothing behind
+        # -- and whether that happened is a fact about the host, not about two
+        # return values. A job launchd still holds keeps restarting the service
+        # that just failed to apply, and a definition that survives starts it
+        # again at the next login. Either one means the rollback did not happen,
+        # and the caller must say `rollback_failed` rather than `apply_failed`.
+        unloaded, unload_detail = provider.bootout(spec.label)
+        deleted = provider.delete_definition(spec.label)
+        still_loaded, _pid = _job_load_state(provider, spec.label)
+        present = bool(getattr(provider, "definition_exists", lambda _label: not deleted)(spec.label))
+        if still_loaded or present:
+            reasons = []
+            if still_loaded:
+                reasons.append(unload_detail or "launchd still holds the job")
+            if present:
+                reasons.append("its definition is still installed and would start it again at the next login")
+            return {
+                "ok": False,
+                "detail": "could not remove the definition that failed to apply: " + "; ".join(reasons),
+                "restored": False,
+                "deleted": False,
+            }
+        return {
+            "ok": True,
+            "detail": "removed the definition that failed to apply",
+            "restored": False,
+            "deleted": True,
+            "unloaded": unloaded,
+        }
     try:
         provider.write_definition(spec.label, previous_text)
     except OSError as exc:
