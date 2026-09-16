@@ -7741,7 +7741,7 @@ class BoardSessionScopeReconciliationTests(TestCase):
         unreconciled = self._reconciled(
             records,
             mutate=(
-                "return reconcileSessionScopes(observationGroups(data), nowMs, coverage);",
+                "return reconcileSessionScopes(observationGroups(data), nowMs, coverage, authority);",
                 "return observationGroups(data);",
             ),
         )
@@ -7903,9 +7903,13 @@ class BoardObservationCoverageViewTests(TestCase):
         self.assertIn("evidence that there is no work", worklist)
         self.assertNotIn("No local Board observation is recorded yet", worklist)
         self.assertNotIn("No local Board observation passed", worklist)
-        # Health's own empty states stop reading as measured absences too.
-        self.assertIn("this snapshot is incomplete", nodes["participants"])
-        self.assertIn("this snapshot is incomplete", nodes["sources"])
+        # Health's own empty states stop reading as measured absences too, and
+        # they quote the one canonical coverage note rather than a restatement
+        # of it, so the reason an emptiness is not a finding is worded once.
+        self.assertIn("This snapshot is incomplete", nodes["participants"])
+        self.assertIn("evidence that there is no work", nodes["participants"])
+        self.assertIn("This snapshot is incomplete", nodes["sources"])
+        self.assertIn("evidence that there is no work", nodes["sources"])
 
     def test_the_coverage_reading_states_cap_and_counts(self) -> None:
         cap = board.MAX_OBSERVATION_FILES
@@ -8751,6 +8755,590 @@ class BoardEffectiveStateChangeTests(TestCase):
             frames[1]["announce"],
             f"{self.IDLE_REFERENCE} moved from {self.COMPLETE} to {self.IN_RECORDS}.",
         )
+
+
+# The cache metadata the Board server serves beside a snapshot. Only `fresh`
+# confirms what it served: the server answers a cold cache with metadata alone
+# and a stale one with the snapshot the last completed refresh produced, so
+# every other shape below is a delayed or failed refresh still serving old
+# data. Each is named once so a transition reads as the refresh it describes.
+# The record inside them is untouched and, at the test clock, comfortably
+# inside every record-level freshness threshold -- which is exactly the shape
+# that used to keep asserting green idleness for ten minutes.
+CONFIRMED_CACHE: dict = {}
+STALE_CACHE = dict(state="stale", age_seconds=140.0, refresh_in_progress=False)
+# The same stale cache with the refresh that will replace it actually running.
+STALE_CACHE_REFRESHING = dict(STALE_CACHE, refresh_in_progress=True)
+# A stale cache whose last refresh failed, so nothing is coming until the
+# server's retry window opens. The error text is the server's own code-defined
+# summary, never exception content.
+STALE_CACHE_FAILED = dict(
+    STALE_CACHE,
+    last_error="status refresh failed: TimeoutError",
+    retry_in_seconds=8.0,
+)
+# The same unconfirmed cache, one poll later: only the age moved.
+STALE_CACHE_AGED = dict(STALE_CACHE, age_seconds=305.0)
+# No completed snapshot at all, and a state this page has never heard of.
+# Neither is `fresh`, so neither confirms anything.
+COLD_CACHE = dict(state="cold", age_seconds=None, refresh_in_progress=True)
+UNKNOWN_CACHE = dict(state="reheating", age_seconds=140.0)
+
+
+def _cache_payload(records: list[dict], cache: dict, observations: dict | None = None) -> dict:
+    """One status payload whose cache metadata is the case under test.
+
+    Only `board.cache` moves: the observation records, the file accounting and
+    every other part of the payload are held fixed, so a transition between
+    two of these is carried by the snapshot's confirmation state alone.
+    """
+
+    payload = _observation_payload(
+        [], observations=_accounted_observations(records, **(observations or {}))
+    )
+    payload["board"]["cache"] = {**payload["board"]["cache"], **cache}
+    return payload
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardSnapshotAuthorityTests(TestCase):
+    """An idle claim is only as current as the snapshot that carried it.
+
+    `/api/status` answers a cold cache with metadata only and a stale one with
+    the snapshot the last completed refresh produced, so a delayed or failed
+    refresh leaves the page holding records that were written when that refresh
+    ran. Their own timestamps and their own source freshness are all still
+    inside the record-level thresholds -- a two-minute-old `no_work` record
+    reads as current by every measure it carries.
+
+    Before this, that was enough: a cached `no_work` record rendered green, as
+    `idle with complete coverage` with `nothing to do in this session` beside
+    it, for the whole ten minutes before its own age caught up -- while the
+    observation summary above it correctly reported an unconfirmed snapshot,
+    and while reconciliation went on retiring work rows on its authority.
+
+    These tests hold one rule: a snapshot the server has not confirmed may
+    still show its records as what was last observed, and may never assert
+    that anything is absent now or retire work beside it.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    CUES = _eval_board_view("CUES")
+    IDLE_REFERENCE = "Board contract delivery"
+    COMPLETE = "idle with complete coverage"
+    UNCONFIRMED = "idle in an unconfirmed snapshot"
+    PART_COVERED = "last observed idle, coverage incomplete"
+    IN_FILES = "idle in the files read"
+    QUIET = "No meaningful change has been observed since this page loaded."
+    # The two sentences that claim this session needs nothing right now.
+    PRESENT_TENSE = (COMPLETE, "nothing to do in this session")
+
+    # One refresh after another in one page lifetime, and exactly what the
+    # Timeline and the live region must say about the second. `None` means the
+    # refresh was not news: nothing is logged and the live region is left
+    # untouched rather than repeated.
+    #
+    # Each side names the accepted record, the cache metadata served with it,
+    # and what the read around it could account for. Every pair holds the
+    # record byte-identical, so each transition is carried entirely by facts
+    # about the payload rather than by anything a producer wrote.
+    TRANSITIONS = (
+        (
+            "confirmed -> unconfirmed: the same current, completely covered record",
+            ("idle", CONFIRMED_CACHE, WHOLE_READ),
+            ("idle", STALE_CACHE, WHOLE_READ),
+            f"moved from {COMPLETE} to {UNCONFIRMED}",
+        ),
+        (
+            "unconfirmed -> confirmed: a refresh landed and the claim returns",
+            ("idle", STALE_CACHE, WHOLE_READ),
+            ("idle", CONFIRMED_CACHE, WHOLE_READ),
+            f"moved from {UNCONFIRMED} to {COMPLETE}",
+        ),
+        (
+            "unconfirmed -> a refresh is now in progress: waiting is the next action",
+            ("idle", STALE_CACHE, WHOLE_READ),
+            ("idle", STALE_CACHE_REFRESHING, WHOLE_READ),
+            f"changed while staying {UNCONFIRMED}",
+        ),
+        (
+            "a refresh in progress -> a refresh that is not coming",
+            ("idle", STALE_CACHE_REFRESHING, WHOLE_READ),
+            ("idle", STALE_CACHE, WHOLE_READ),
+            f"changed while staying {UNCONFIRMED}",
+        ),
+        (
+            "timestamp-only refresh: the cache aged, the confirmation state did not",
+            ("idle", STALE_CACHE, WHOLE_READ),
+            ("idle", STALE_CACHE_AGED, WHOLE_READ),
+            None,
+        ),
+        (
+            "the last refresh failed: still unconfirmed, still not coming",
+            ("idle", STALE_CACHE, WHOLE_READ),
+            ("idle", STALE_CACHE_FAILED, WHOLE_READ),
+            None,
+        ),
+        (
+            "a cold cache confirms nothing either",
+            ("idle", CONFIRMED_CACHE, WHOLE_READ),
+            ("idle", COLD_CACHE, WHOLE_READ),
+            f"moved from {COMPLETE} to {UNCONFIRMED}",
+        ),
+        (
+            "nor does a state this page has never heard of",
+            ("idle", CONFIRMED_CACHE, WHOLE_READ),
+            ("idle", UNKNOWN_CACHE, WHOLE_READ),
+            f"moved from {COMPLETE} to {UNCONFIRMED}",
+        ),
+        (
+            "unconfirmed and a candidate left unread: the lost file is the worse gap",
+            ("idle", STALE_CACHE, WHOLE_READ),
+            ("idle", STALE_CACHE, CANDIDATE_OMITTED),
+            f"moved from {UNCONFIRMED} to {IN_FILES}",
+        ),
+        (
+            "partly covered and then unconfirmed too: the snapshot is the worse gap",
+            ("partly_covered", CONFIRMED_CACHE, WHOLE_READ),
+            ("partly_covered", STALE_CACHE, WHOLE_READ),
+            f"moved from {PART_COVERED} to {UNCONFIRMED}",
+        ),
+    )
+
+    @staticmethod
+    def _record(name: str) -> dict:
+        record = _observation_fixture("no_work")
+        if name == "partly_covered":
+            return _with_extra_source(record, freshness="fresh", coverage="partial")
+        return record
+
+    @classmethod
+    def _payload(cls, spec: tuple[str, dict, dict]) -> dict:
+        name, cache, counters = spec
+        return _cache_payload([cls._record(name)], cache, counters)
+
+    def _rows(self, payload: dict) -> list[dict]:
+        return _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => ({key: row.key, headline: row.headline,"
+            "headline_class: row.headline_class, states: row.states, signature: row.signature,"
+            "recorded: workSignature(row.record), action: row.action_label,"
+            "idle: row.idle || null, coverage: row.groups[0].items[0],"
+            "freshness: row.freshness}))",
+            payload,
+            self.NOW_MS,
+        )
+
+    def test_a_cached_current_record_states_no_present_tense_claim(self) -> None:
+        """The finding exactly: one record, two snapshots that carried it."""
+
+        confirmed = self._rows(_cache_payload([_observation_fixture("no_work")], CONFIRMED_CACHE))[0]
+        unconfirmed = self._rows(_cache_payload([_observation_fixture("no_work")], STALE_CACHE))[0]
+
+        # The record is the same record, and by its own evidence it is current
+        # in both: every source fresh, an observation time well inside the
+        # staleness threshold. That is what made the old reading look sound.
+        self.assertEqual(confirmed["recorded"], unconfirmed["recorded"])
+        self.assertEqual(confirmed["idle"]["coverage_state"], "complete")
+        self.assertEqual(unconfirmed["idle"]["coverage_state"], "complete")
+        self.assertEqual(confirmed["freshness"]["age_text"], "30s")
+        self.assertEqual(unconfirmed["freshness"]["age_text"], "30s")
+
+        # Confirmed: the claim stands, in full.
+        self.assertTrue(confirmed["idle"]["affirmative"])
+        self.assertEqual(confirmed["idle"]["authority_state"], "confirmed")
+        self.assertEqual(confirmed["headline"], self.COMPLETE)
+        self.assertEqual(confirmed["headline_class"], "ok")
+        self.assertEqual(confirmed["action"], "nothing to do in this session")
+        self.assertTrue(confirmed["freshness"]["current"])
+        self.assertEqual(confirmed["freshness"]["label"], "observed 30s ago")
+        self.assertEqual(confirmed["freshness"]["class"], "ok")
+
+        # Unconfirmed: label, colour, next action and coverage evidence all
+        # withdraw together, and the row still says what the record recorded.
+        self.assertFalse(unconfirmed["idle"]["affirmative"])
+        self.assertEqual(unconfirmed["idle"]["authority_state"], "unconfirmed")
+        self.assertEqual(unconfirmed["idle"]["reason"], "unconfirmed")
+        self.assertEqual(unconfirmed["headline"], self.UNCONFIRMED)
+        self.assertEqual(unconfirmed["headline_class"], "warn")
+        self.assertEqual(
+            unconfirmed["states"],
+            [{"label": self.UNCONFIRMED, "class": "warn", "cue": self.CUES["warn"]}],
+        )
+        self.assertEqual(
+            unconfirmed["action"],
+            "confirm this session with a completed refresh before treating it as idle",
+        )
+        self.assertEqual(unconfirmed["coverage"]["class"], "warn")
+        self.assertEqual(unconfirmed["coverage"]["label"], "recorded complete, snapshot unconfirmed")
+        self.assertIn("were observed complete when it was written", unconfirmed["coverage"]["note"])
+        self.assertIn("has not confirmed the snapshot", unconfirmed["coverage"]["note"])
+        self.assertIn("so this session is not shown as idle", unconfirmed["coverage"]["note"])
+
+        # The record's own age reading stops speaking in the present tense too,
+        # because the same gate decides it: a record inside an unconfirmed
+        # snapshot cannot be dated against now at all.
+        self.assertFalse(unconfirmed["freshness"]["current"])
+        self.assertFalse(unconfirmed["freshness"]["snapshot_confirmed"])
+        self.assertEqual(unconfirmed["freshness"]["label"], "last observed 30s ago")
+        self.assertEqual(unconfirmed["freshness"]["class"], "warn")
+        self.assertIn("has not confirmed", unconfirmed["freshness"]["detail"])
+
+        # And nothing anywhere in the withheld reading reads as good news.
+        claimed = json.dumps(
+            [unconfirmed["idle"], unconfirmed["states"], unconfirmed["coverage"], unconfirmed["action"]]
+        )
+        for sentence in self.PRESENT_TENSE:
+            self.assertNotIn(sentence, claimed)
+        self.assertNotIn('"ok"', claimed)
+
+    def test_refresh_in_progress_and_a_failed_refresh_are_both_stated(self) -> None:
+        # Neither changes whether the snapshot is confirmed, and both change
+        # what an operator should do about it, so both are reported.
+        running = self._rows(_cache_payload([_observation_fixture("no_work")], STALE_CACHE_REFRESHING))[0]
+        self.assertEqual(running["idle"]["authority_state"], "refreshing")
+        self.assertEqual(running["headline"], self.UNCONFIRMED)
+        self.assertEqual(running["headline_class"], "warn")
+        self.assertFalse(running["idle"]["affirmative"])
+        self.assertEqual(
+            running["action"],
+            "wait for the running refresh to confirm this session before treating it as idle",
+        )
+        self.assertIn("while a background refresh is still running", running["coverage"]["note"])
+
+        failed = self._rows(_cache_payload([_observation_fixture("no_work")], STALE_CACHE_FAILED))[0]
+        self.assertEqual(failed["idle"]["authority_state"], "unconfirmed")
+        self.assertFalse(failed["idle"]["affirmative"])
+        self.assertIn("its last refresh failed", failed["coverage"]["note"])
+        self.assertIn("status refresh failed: TimeoutError", failed["coverage"]["note"])
+        self.assertIn("next attempt in 8s", failed["coverage"]["note"])
+
+        # A cold cache with nothing behind it is the same verdict, and says so
+        # without inventing an age for a snapshot that does not exist.
+        cold = self._rows(_cache_payload([_observation_fixture("no_work")], COLD_CACHE))[0]
+        self.assertEqual(cold["idle"]["authority_state"], "refreshing")
+        self.assertFalse(cold["idle"]["affirmative"])
+        self.assertEqual(cold["headline"], self.UNCONFIRMED)
+
+    def test_every_transition_reports_exactly_what_moved(self) -> None:
+        for name, before, after, expected in self.TRANSITIONS:
+            with self.subTest(transition=name):
+                first, second = self._payload(before), self._payload(after)
+                # One record throughout: only the payload's own facts moved.
+                self.assertEqual(
+                    first["observations"]["records"], second["observations"]["records"]
+                )
+                frames = _render_board_sequence([{"payload": first}, {"payload": second}])
+                # The first snapshot of a page is never news.
+                self.assertEqual(frames[0].get("announce", ""), "")
+                self.assertIn(self.QUIET, frames[0]["changes"])
+
+                if expected is None:
+                    # Not news: the live region is left exactly as it was
+                    # rather than repeated, and the Timeline stays empty.
+                    self.assertEqual(frames[1].get("announce", ""), "")
+                    self.assertIn(self.QUIET, frames[1]["changes"])
+                    self.assertEqual(frames[1]["changes"].count('class="row"'), 0)
+                    continue
+
+                sentence = f"{self.IDLE_REFERENCE} {expected}"
+                self.assertEqual(frames[1]["announce"], f"{sentence}.")
+                self.assertEqual(frames[1]["changes"].count('class="row"'), 1)
+                self.assertIn('<span class="pill">changed</span>', frames[1]["changes"])
+                self.assertIn(sentence, frames[1]["changes"])
+
+    def test_the_signature_moves_with_the_snapshot_and_not_with_its_age(self) -> None:
+        # The recorded half cannot see any of this, so the derived half has to:
+        # the confirmation state is classified into it, and the cache age --
+        # which advances on every poll -- is kept out.
+        for name, before, after, expected in self.TRANSITIONS:
+            with self.subTest(transition=name):
+                one = self._rows(self._payload(before))[0]
+                two = self._rows(self._payload(after))[0]
+                self.assertEqual(one["key"], two["key"])
+                self.assertEqual(one["recorded"], two["recorded"])
+                self.assertEqual(one["signature"] == two["signature"], expected is None)
+                for row in (one, two):
+                    recorded, marker, effective = row["signature"].rpartition("|effective:")
+                    self.assertEqual(recorded, row["recorded"])
+                    self.assertEqual(marker, "|effective:")
+                    self.assertIn(row["idle"]["signature"], effective)
+                    self.assertIn(f"snapshot:{row['idle']['authority_state']}", effective)
+                # No signature anywhere quotes a cache age or an error string.
+                for value in ("140", "305", "TimeoutError", "8"):
+                    self.assertNotIn(value, one["signature"].rpartition("|effective:")[2])
+
+    def test_an_unconfirmed_snapshot_retires_no_work_beside_it(self) -> None:
+        # The other half of the finding. A `no_work` snapshot recorded after a
+        # work observation retires that work row, because it asserts the
+        # session has since gone quiet -- which is exactly the claim an
+        # unconfirmed snapshot may not make.
+        work = _observed_later(_named_work("alpha"), 0)
+        quiet = _observed_later(_observation_fixture("no_work"), 20)
+
+        confirmed = self._rows(_cache_payload([work, quiet], CONFIRMED_CACHE))
+        self.assertEqual([row["key"] for row in confirmed], [_idle_key()])
+        self.assertEqual(confirmed[0]["action"], "nothing to do in this session")
+
+        for cache in (STALE_CACHE, STALE_CACHE_REFRESHING, STALE_CACHE_FAILED, COLD_CACHE, UNKNOWN_CACHE):
+            with self.subTest(cache=cache.get("state", "fresh")):
+                for records in ([work, quiet], [quiet, work]):
+                    rows = self._rows(_cache_payload(records, cache))
+                    # Both readings stay, and they do not contradict each
+                    # other: the snapshot's row claims only a past observation.
+                    self.assertEqual(
+                        [row["key"] for row in rows], [_work_key("alpha"), _idle_key()]
+                    )
+                    self.assertEqual(rows[1]["headline"], self.UNCONFIRMED)
+                    self.assertNotIn("nothing to do", rows[1]["action"])
+
+        # The other direction is untouched: a work observation recorded after
+        # the snapshot still retires the snapshot's row, because that is the
+        # recorded order of two observations inside one payload rather than a
+        # claim about now.
+        picked_up = self._rows(
+            _cache_payload(
+                [_observed_later(_observation_fixture("no_work"), 0), _observed_later(_named_work("alpha"), 20)],
+                STALE_CACHE,
+            )
+        )
+        self.assertEqual([row["key"] for row in picked_up], [_work_key("alpha")])
+
+    def test_work_an_unconfirmed_snapshot_may_not_retire_comes_back(self) -> None:
+        # One page lifetime: a confirmed idle snapshot that legitimately
+        # retires the work observed before it, then the same two records
+        # served from a stale cache. The snapshot may no longer assert that
+        # the session went quiet, so the work row it was suppressing appears
+        # again -- and both the Timeline and the live region say so.
+        work = _observed_later(_named_work("alpha"), 0)
+        idle = _observed_later(_observation_fixture("no_work"), 20)
+        frames = _render_board_sequence(
+            [
+                {"payload": _cache_payload([work, idle], CONFIRMED_CACHE)},
+                {"payload": _cache_payload([work, idle], STALE_CACHE)},
+            ]
+        )
+        self.assertEqual(_work_keys(frames[0]["worklist"]), [_idle_key()])
+        self.assertEqual(
+            _work_keys(frames[1]["worklist"]), [_work_key("alpha"), _idle_key()]
+        )
+        self.assertIn("alpha appeared as provider run observed", frames[1]["announce"])
+        self.assertIn(f"{self.IDLE_REFERENCE} moved from {self.COMPLETE} to {self.UNCONFIRMED}", frames[1]["announce"])
+        self.assertIn("alpha appeared as provider run observed", frames[1]["changes"])
+
+    def test_the_whole_page_withholds_and_then_restores_the_claim(self) -> None:
+        # Every surface at once, across one page lifetime: the work list, the
+        # Now header, the chrome and the Health diagnostics.
+        confirmed = _cache_payload([_observation_fixture("no_work")], CONFIRMED_CACHE)
+        unconfirmed = _cache_payload([_observation_fixture("no_work")], STALE_CACHE_FAILED)
+        frames = _render_board_sequence(
+            [{"payload": confirmed}, {"payload": unconfirmed}, {"payload": confirmed}]
+        )
+
+        # Confirmed: the claim is made, and no warning is raised about it.
+        for sentence in self.PRESENT_TENSE:
+            self.assertIn(sentence, frames[0]["worklist"])
+        self.assertNotIn("Unconfirmed snapshot", json.dumps(frames[0]))
+
+        # Unconfirmed: not one surface repeats it, and every surface says why.
+        # The Timeline and the live region are excluded on purpose: they report
+        # what the row moved away from, which is history rather than a claim.
+        rendered = json.dumps(
+            {k: v for k, v in frames[1].items() if k not in ("changes", "announce")}
+        )
+        for sentence in self.PRESENT_TENSE:
+            self.assertNotIn(sentence, rendered)
+        self.assertIn(self.UNCONFIRMED, frames[1]["worklist"])
+        self.assertIn("last observed 30s ago", frames[1]["worklist"])
+        self.assertIn("Unconfirmed snapshot", frames[1]["worklist"])
+        self.assertIn("has not confirmed", frames[1]["worklist"])
+        # Now: beside the "Do next" line, which is read as the whole of what
+        # is waiting.
+        self.assertIn("Unconfirmed snapshot", frames[1]["worknow"])
+        self.assertIn("stale snapshot, unconfirmed", frames[1]["worknow"])
+        self.assertIn("has not confirmed", frames[1]["worknow"])
+        self.assertNotIn("live, observed", frames[1]["worknow"])
+        self.assertIn("last observed", frames[1]["summary"])
+        self.assertIn("unconfirmed snapshot", frames[1]["chrome"])
+        # Health: the cache row states the confirmation verdict, its colour is
+        # taken from that verdict, and the server's own error summary stays.
+        self.assertIn("has not confirmed", frames[1]["diagnostics"])
+        self.assertIn("status refresh failed: TimeoutError", frames[1]["diagnostics"])
+        self.assertIn('class="pill warn"><span class="cue" aria-hidden="true">~</span> stale', frames[1]["diagnostics"])
+
+        # Confirmed again: the claim returns, and so does the green.
+        for sentence in self.PRESENT_TENSE:
+            self.assertIn(sentence, frames[2]["worklist"])
+        self.assertNotIn("Unconfirmed snapshot", frames[2]["worklist"])
+        self.assertNotIn("Unconfirmed snapshot", frames[2]["worknow"])
+        self.assertNotIn("unconfirmed snapshot", frames[2]["chrome"])
+        self.assertEqual(
+            frames[2]["announce"],
+            f"{self.IDLE_REFERENCE} moved from {self.UNCONFIRMED} to {self.COMPLETE}.",
+        )
+
+    def test_an_unconfirmed_snapshot_reports_no_absence_when_it_is_empty(self) -> None:
+        # An empty list is an absence claim like any other, so it is not said
+        # of a snapshot the server never confirmed either.
+        nodes = _render_board_dom(_cache_payload([], STALE_CACHE), now=OBSERVATION_NOW)
+        for node in ("worklist", "participants", "sources"):
+            with self.subTest(node=node):
+                self.assertIn("has not confirmed", nodes[node])
+        self.assertNotIn("No local Board observation passed", nodes["worklist"])
+        self.assertNotIn("No local Board observation is recorded yet", nodes["worklist"])
+        self.assertNotIn("No participant run is recorded in any local observation", nodes["participants"])
+        self.assertNotIn("No observation source is recorded.", nodes["sources"])
+
+        # Confirmed and empty is a measured absence, and still reads as one.
+        confirmed = _render_board_dom(_cache_payload([], CONFIRMED_CACHE), now=OBSERVATION_NOW)
+        self.assertIn("No local Board observation passed", confirmed["worklist"])
+        self.assertNotIn("has not confirmed", json.dumps(confirmed))
+
+    def test_a_reading_withheld_for_another_reason_still_states_the_snapshot(self) -> None:
+        # Whatever decided the reading, an unconfirmed snapshot is stated on
+        # it, so a row held back for a lost file does not imply that what it
+        # did read is confirmed.
+        for counters, reading in (
+            (CANDIDATE_OMITTED, "truncated"),
+            (CANDIDATE_UNREADABLE, "unread"),
+        ):
+            with self.subTest(reading=reading):
+                row = self._rows(
+                    _cache_payload([_observation_fixture("no_work")], STALE_CACHE, counters)
+                )[0]
+                self.assertEqual(row["idle"]["reason"], reading)
+                self.assertEqual(row["idle"]["authority_state"], "unconfirmed")
+                self.assertFalse(row["idle"]["affirmative"])
+                self.assertIn("has not confirmed", row["coverage"]["note"])
+
+        # And an unreachable source keeps its own, more severe reading while
+        # the unconfirmed snapshot is still stated beside it.
+        unreachable = self._rows(
+            _cache_payload(
+                [_with_extra_source(_observation_fixture("no_work"), freshness="unavailable", coverage="unavailable")],
+                STALE_CACHE,
+            )
+        )[0]
+        self.assertEqual(unreachable["idle"]["reason"], "unavailable")
+        self.assertEqual(unreachable["headline_class"], "bad")
+        self.assertIn("cannot be reached now", unreachable["coverage"]["note"])
+        self.assertIn("has not confirmed", unreachable["coverage"]["note"])
+
+    def test_without_the_authority_reading_the_row_misattributes_the_cause(self) -> None:
+        # The mutation removes the idle classifier's whole reading of the
+        # confirmation state, so the cascade falls through to the record's
+        # own age.
+        payload = _cache_payload([_observation_fixture("no_work")], STALE_CACHE)
+        ungated = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.headline_class, row.action_label])",
+            payload,
+            self.NOW_MS,
+            mutate=(
+                'if (freshness?.snapshot_confirmed === false) {\n'
+                '        return freshness?.snapshot_refreshing === true ? "refreshing" : "unconfirmed";\n'
+                '      }',
+                "",
+            ),
+        )
+        # The claim itself stays withheld, because the gate that withholds it
+        # lives one level down in `recordFreshness` and is tested once. What
+        # the mutant loses is the explanation: the row misattributes the cause
+        # to the record's own age and asks for the wrong thing back.
+        self.assertEqual(
+            ungated,
+            [["last observed idle", "warn", "re-observe this session before treating it as idle"]],
+        )
+
+        # And the shipped classifier, unmutated, names the real cause.
+        shipped = self._rows(payload)[0]
+        self.assertEqual(shipped["headline"], self.UNCONFIRMED)
+        self.assertEqual(shipped["headline_class"], "warn")
+        self.assertEqual(
+            shipped["action"],
+            "confirm this session with a completed refresh before treating it as idle",
+        )
+        self.assertNotIn("nothing to do", shipped["action"])
+
+    def test_without_the_freshness_gate_a_cached_record_still_reads_current(self) -> None:
+        # One gate below that: the record's own freshness is what the idle
+        # classification and the derived signature both consult, so ignoring
+        # the snapshot there restores the present tense everywhere at once.
+        payload = _cache_payload([_observation_fixture("no_work")], STALE_CACHE)
+        ungated = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.freshness.label,"
+            " row.freshness.class, row.freshness.current])",
+            payload,
+            self.NOW_MS,
+            mutate=(
+                'const current = worst === "fresh" && !aged && confirmed;',
+                'const current = worst === "fresh" && !aged;',
+            ),
+        )
+        self.assertEqual(ungated, [[self.COMPLETE, "observed 30s ago", "ok", True]])
+
+        shipped = self._rows(payload)[0]
+        self.assertEqual(shipped["freshness"]["label"], "last observed 30s ago")
+        self.assertEqual(shipped["freshness"]["class"], "warn")
+        self.assertFalse(shipped["freshness"]["current"])
+
+    def test_without_the_authority_gate_reconciliation_still_retires_work(self) -> None:
+        # The reconciliation half of the same mutation: an unconfirmed
+        # snapshot that may state a current idle claim goes on suppressing the
+        # work observed before it.
+        payload = _cache_payload(
+            [_observed_later(_named_work("alpha"), 0), _observed_later(_observation_fixture("no_work"), 20)],
+            STALE_CACHE,
+        )
+        ungated = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => row.key)",
+            payload,
+            self.NOW_MS,
+            mutate=(
+                "const current = idlePresentation(snapshot, recordFreshness(snapshot, nowMs, authority), coverage).affirmative;",
+                "const current = idlePresentation(snapshot, recordFreshness(snapshot, nowMs), coverage).affirmative;",
+            ),
+        )
+        self.assertEqual(ungated, [_idle_key()])
+
+        # And the shipped reconciliation, unmutated, retires nothing.
+        self.assertEqual(
+            [row["key"] for row in self._rows(payload)],
+            [_work_key("alpha"), _idle_key()],
+        )
+
+    def test_one_canonical_confirmation_reading_answers_the_whole_payload(self) -> None:
+        # The fact is derived once per payload and read everywhere, so the
+        # observation summary and the work rows can never disagree about it.
+        for cache, confirmed, reading in (
+            (CONFIRMED_CACHE, True, "confirmed"),
+            (STALE_CACHE, False, "unconfirmed"),
+            (STALE_CACHE_REFRESHING, False, "refreshing"),
+            (COLD_CACHE, False, "refreshing"),
+            (UNKNOWN_CACHE, False, "unconfirmed"),
+        ):
+            with self.subTest(cache=cache.get("state", "fresh")):
+                payload = _cache_payload([_observation_fixture("no_work")], cache)
+                authority = _eval_board_truth("snapshotAuthority(ARGS[0])", payload)
+                self.assertEqual(authority["confirmed"], confirmed)
+                self.assertEqual(authority["reading"], reading)
+                # The observation summary reports the same verdict.
+                obs = _eval_board_truth(
+                    "observation(ARGS[0], ARGS[1])", payload, self.NOW_MS
+                )
+                self.assertEqual(obs["unconfirmed"], not confirmed)
+                # And so does the row built from a record inside it.
+                row = self._rows(payload)[0]
+                self.assertEqual(row["freshness"]["snapshot_confirmed"], confirmed)
+                self.assertEqual(row["idle"]["affirmative"], confirmed)
+
+        # A payload carrying no cache metadata at all states nothing either
+        # way, so it is not read as unconfirmed: the record-level freshness and
+        # the file coverage are what qualify it.
+        silent = _eval_board_truth("snapshotAuthority(ARGS[0])", {})
+        self.assertTrue(silent["confirmed"])
+        self.assertFalse(silent["recorded"])
+        self.assertEqual(silent["note"], "")
+        self.assertEqual(silent["class"], "muted")
+
 
 
 class _FailingReadHandle:

@@ -2248,6 +2248,63 @@ _BOARD_HTML = """<!doctype html>
         || a.rank - b.rank
         || (a.pr_number ?? 0) - (b.pr_number ?? 0));
     }
+    // Whether the snapshot this page was handed is one the server confirmed as
+    // current. This is the single canonical reading of that fact: every
+    // surface that would otherwise assert something about *now* -- the
+    // observation summary, one record's freshness, an idle claim, the
+    // reconciliation that retires work beside one, and every "nothing is
+    // recorded" message -- consults this and nothing else, so the page cannot
+    // hold two opinions about the currency of one payload.
+    //
+    // Only `fresh` is confirmed. The server answers a cold cache with metadata
+    // only and a stale cache with the previous snapshot, so any other reported
+    // state -- including a future one this page does not know -- is unconfirmed
+    // data however recent the timestamps embedded in it look. A record inside
+    // a stale cached snapshot was written when the refresh that produced it
+    // ran, which can be well inside every record-level freshness threshold
+    // while the world has moved on since.
+    //
+    // A payload carrying no cache metadata at all states nothing either way,
+    // so it is not read as unconfirmed: what qualifies it is the record-level
+    // freshness and the file coverage, which are answered elsewhere.
+    //
+    // Why the refresh failed, or that one is still running, changes what an
+    // operator should do about it but never whether the snapshot is confirmed,
+    // so both are reported alongside the verdict rather than folded into it.
+    function snapshotAuthority(data) {
+      const cache = data?.board?.cache || {};
+      const state = normalized(cache.state);
+      const recorded = state !== "";
+      const confirmed = !recorded || state === "fresh";
+      const refreshing = cache.refresh_in_progress === true;
+      const error = text(cache.last_error);
+      const retry = measured(cache.retry_in_seconds);
+      const served = `The Board server is serving a ${state} cached snapshot it has not confirmed`;
+      return {
+        state,
+        recorded,
+        confirmed,
+        refresh_in_progress: refreshing,
+        error,
+        // The classified reading, and the whole of what change tracking takes
+        // from this object: the cache age advances on every poll and is never
+        // quoted here, so an unchanged confirmation state is never news.
+        reading: confirmed ? "confirmed" : refreshing ? "refreshing" : "unconfirmed",
+        label: confirmed
+          ? `snapshot ${recorded ? state : "confirmation not recorded"}`
+          : refreshing
+            ? `${state} snapshot, refresh in progress`
+            : `${state} snapshot, unconfirmed`,
+        class: confirmed ? (recorded ? "ok" : "muted") : "warn",
+        note: confirmed
+          ? ""
+          : refreshing
+            ? `${served} while a background refresh is still running, so nothing here is evidence of work running now.`
+            : error
+              ? `${served} and its last refresh failed (${error})${retry === null ? "" : `, with the next attempt in ${ageText(retry)}`}, so nothing here is evidence of work running now.`
+              : `${served} and no refresh is running, so nothing here is evidence of work running now.`
+      };
+    }
     // Board snapshots can be replayed from local history, served from a cache
     // the server has not confirmed, or carry no observation time at all. Each
     // of those may only report what was last observed; none of them may claim
@@ -2258,13 +2315,10 @@ _BOARD_HTML = """<!doctype html>
       const observedAt = text(current.observed_at) || text(data?.generated_at);
       const observedAge = ageSeconds(observedAt, nowMs);
       const cacheAge = measured(cache.age_seconds);
-      // Only `fresh` is a snapshot the server has confirmed as current. It
-      // answers a cold cache with metadata only and a stale one with the
-      // previous snapshot, so any other reported state -- including a future
-      // one this page does not know -- is serving unconfirmed data, however
-      // recent the embedded observation time looks.
-      const cacheState = normalized(cache.state);
-      const unconfirmed = cacheState !== "" && cacheState !== "fresh";
+      // The one canonical confirmation reading, not a second opinion on the
+      // cache state.
+      const authority = snapshotAuthority(data);
+      const unconfirmed = !authority.confirmed;
       // Take the older of the two recorded ages so an unconfirmed snapshot can
       // never understate how old what is on screen actually is.
       const age = observedAge === null
@@ -2290,7 +2344,7 @@ _BOARD_HTML = """<!doctype html>
         detail: historical
           ? "Replayed from the last recorded local Board snapshot; nothing here is evidence of work running now."
           : unconfirmed
-            ? `The Board server is serving a ${cacheState} cached snapshot it has not confirmed; nothing here is evidence of work running now.`
+            ? authority.note
             : unknownAge
               ? "No observation time is recorded, so this snapshot cannot be shown as current."
               : remoteAvailable
@@ -2623,15 +2677,29 @@ _BOARD_HTML = """<!doctype html>
       return worst;
     }
     // How current one record is. A record is only allowed to read as current
-    // when every source behind it is fresh and the record itself is recent;
-    // anything else is reported as the last observation it is.
-    function recordFreshness(record, nowMs) {
+    // when every source behind it is fresh, the record itself is recent, and
+    // the snapshot that carried it is one the server confirmed; anything else
+    // is reported as the last observation it is.
+    //
+    // `authority` is the containing snapshot's confirmation reading from
+    // `snapshotAuthority`, and it is the third condition rather than a note
+    // beside the first two. A record inside a stale cached snapshot was
+    // written by the refresh that produced that snapshot, so its own
+    // timestamps and its own source freshness can all sit well inside the
+    // record-level thresholds while the server has not confirmed anything
+    // about the world since. Reading `current` off the record alone is what
+    // let a cached `no_work` record go on asserting green idleness for ten
+    // minutes after a failed refresh. The record still says what it said --
+    // it is shown as the last observation it is -- but nothing derived from
+    // it may speak in the present tense.
+    function recordFreshness(record, nowMs, authority) {
       const sources = arrayOf(record?.sources);
       const createdAt = parseMs(record?.created_at);
       const ageSeconds = createdAt === null ? null : Math.max((nowMs - createdAt) / 1000, 0);
       const worst = worstFreshness(sources);
       const aged = ageSeconds === null || ageSeconds > OBSERVATION_STALE_SECONDS;
-      const current = worst === "fresh" && !aged;
+      const confirmed = authority?.confirmed !== false;
+      const current = worst === "fresh" && !aged && confirmed;
       const unavailable = sources.filter(item => text(item?.freshness) === "unavailable").map(item => text(item?.kind));
       const stale = sources.filter(item => text(item?.freshness) === "stale").map(item => text(item?.kind));
       const partial = sources.filter(item => text(item?.coverage) === "partial").map(item => text(item?.kind));
@@ -2641,9 +2709,21 @@ _BOARD_HTML = """<!doctype html>
       if (partial.length) notes.push(`Partial coverage: ${partial.join(", ")} reported part of what it covers, so counts below are what was observed, not a total.`);
       if (ageSeconds === null) notes.push("No observation time is recorded, so this record cannot be shown as current.");
       else if (aged) notes.push(`This observation is ${ageText(ageSeconds)} old, so it is shown as last observed rather than current.`);
+      // Stated whatever else withheld the present tense, so the reason the
+      // record is shown as a past observation is never left out.
+      if (!confirmed) notes.push(text(authority?.note));
       return {
         state: worst,
         current,
+        // The containing snapshot's confirmation reading, carried on the
+        // freshness object so every classification below it -- the idle
+        // reading, the derived half of the row signature, the row's own
+        // freshness display -- reads the one canonical answer off the record
+        // it already has in hand rather than taking a second copy of it.
+        snapshot_confirmed: confirmed,
+        snapshot_reading: text(authority?.reading) || "confirmed",
+        snapshot_refreshing: authority?.refresh_in_progress === true,
+        snapshot_note: confirmed ? "" : text(authority?.note),
         // Whether the record carried a readable observation time at all. An
         // age that cannot be computed is its own reading, not a stale one.
         age_recorded: ageSeconds !== null,
@@ -2919,21 +2999,34 @@ _BOARD_HTML = """<!doctype html>
     //
     // "Nothing to do in this session" is a claim about now, and a record is
     // only ever evidence about when it was written. It may be repeated as a
-    // current claim on two conditions together: the evidence behind it is
-    // current -- every source fresh and the observation itself recent -- and
-    // the coverage behind it is whole -- every source covering all of what it
-    // covers, and every candidate observation file read this refresh. Miss
-    // either and the record still says something true, but a weaker thing:
-    // that this session was observed idle once, at a stated age, from stated
-    // evidence. It never says that nothing is needed now, and it is never
-    // styled as good news.
+    // current claim on three conditions together: the evidence behind it is
+    // current -- every source fresh and the observation itself recent -- the
+    // coverage behind it is whole -- every source covering all of what it
+    // covers, and every candidate observation file read this refresh -- and
+    // the snapshot that carried it is one the server confirmed. Miss any and
+    // the record still says something true, but a weaker thing: that this
+    // session was observed idle once, at a stated age, from stated evidence.
+    // It never says that nothing is needed now, and it is never styled as
+    // good news.
+    //
+    // The third condition is a fact about the payload rather than the record,
+    // and it is the one a record cannot carry: a cached `no_work` record whose
+    // own sources are all fresh and whose own timestamp is a minute old still
+    // came out of a snapshot the server has not confirmed since, and there is
+    // nothing inside it that says so.
     const IDLE_CURRENT_LABEL = "idle with complete coverage";
     const IDLE_CURRENT_ACTION = "nothing to do in this session";
     // Every prior-observation reading, ordered as the row list ranks them.
+    // An unconfirmed snapshot sits below a source that cannot be reached at
+    // all -- an unreachable source is a hard fact about right now, where an
+    // unconfirmed snapshot is an unknown -- and above the record's own
+    // partial coverage and age, which it subsumes: nothing inside a snapshot
+    // the server has not confirmed can be dated relative to now at all.
     const IDLE_PRIOR_LABELS = [
       "idle in the files read",
       "idle in the records read",
       "last observed idle, source unavailable",
+      "idle in an unconfirmed snapshot",
       "last observed idle, coverage incomplete",
       "last observed idle at an unrecorded time",
       "last observed idle"
@@ -2963,9 +3056,30 @@ _BOARD_HTML = """<!doctype html>
       if (freshness?.age_recorded !== true) return "unknown";
       return freshness?.current === true ? "current" : "stale";
     }
+    // Whether the snapshot this record arrived in is one the server confirmed,
+    // read off the freshness object that already resolved it so this is a
+    // consumer of the canonical answer rather than a second opinion on the
+    // cache metadata. A refresh that is still running and one that is not
+    // coming are different things to ask of an operator, so they are separate
+    // readings rather than one "unconfirmed".
+    function idleAuthorityState(freshness) {
+      if (freshness?.snapshot_confirmed === false) {
+        return freshness?.snapshot_refreshing === true ? "refreshing" : "unconfirmed";
+      }
+      return "confirmed";
+    }
     function idlePresentation(record, freshness, coverage) {
       const coverageState = idleCoverageState(record, coverage);
       const freshnessState = idleFreshnessState(freshness);
+      const authorityState = idleAuthorityState(freshness);
+      // One gate, not two. `recordFreshness` already refuses to call a record
+      // current when the snapshot that carried it is unconfirmed, so the
+      // confirmation state is inside `freshnessState` here rather than
+      // re-tested beside it -- two tests of one fact could disagree, and only
+      // one of them would be the answer the rest of the page reads. What
+      // `authorityState` decides is which reading explains the withholding,
+      // so an operator is told to wait for a refresh rather than to re-observe
+      // a session whose own evidence is fine.
       const affirmative = coverageState === "complete" && freshnessState === "current";
       const sources = arrayOf(record?.sources);
       const covered = sources
@@ -2986,8 +3100,16 @@ _BOARD_HTML = """<!doctype html>
           : freshnessState === "unknown"
             ? " No observation time is recorded, so how old this reading is cannot be stated."
             : ` This reading is ${text(freshness?.age_text)} old and nothing has confirmed it since.`;
+      // An unconfirmed snapshot is stated on every reading it touches, not
+      // only on the one it decided, so a row withheld for a lost file still
+      // says that what it did read is unconfirmed too. Like the caveat above
+      // it, this is deliberately outside the signature: it carries the cache
+      // state's own wording, and the classification it came from is in the
+      // signature already.
+      const authorityCaveat = authorityState === "confirmed" ? "" : ` ${text(freshness?.snapshot_note)}`;
       // First match decides, worst evidence first: what the read missed, then
-      // what the record's own sources could not supply, then how old it is.
+      // what the record's own sources could not supply, then whether the
+      // snapshot carrying it was confirmed, then how old it is.
       const reading = affirmative
         ? {
             key: "current",
@@ -3032,38 +3154,56 @@ _BOARD_HTML = """<!doctype html>
                   coverage_value: "unavailable",
                   note: `${IDLE_RECORDED}, but ${named(unavailable)} cannot be reached now, ${IDLE_WITHHELD}.`
                 }
-              : coverageState === "partial"
+              : authorityState !== "confirmed"
                 ? {
-                    key: "partial",
-                    label: "last observed idle, coverage incomplete",
+                    // A refresh that is still running and one that is not
+                    // coming ask different things of an operator, so they are
+                    // different readings under one label: the row says the
+                    // same honest thing either way, and the next action says
+                    // whether waiting is enough.
+                    key: authorityState,
+                    label: "idle in an unconfirmed snapshot",
                     class: "warn",
-                    action: "confirm the partly covered sources before treating this session as idle",
-                    coverage_label: "recorded complete, coverage incomplete",
+                    action: authorityState === "refreshing"
+                      ? "wait for the running refresh to confirm this session before treating it as idle"
+                      : "confirm this session with a completed refresh before treating it as idle",
+                    coverage_label: "recorded complete, snapshot unconfirmed",
                     coverage_class: "warn",
-                    coverage_value: "partial",
-                    note: `${IDLE_RECORDED}, but ${named(partial)} reported part of what it covers, ${IDLE_WITHHELD}.`
+                    coverage_value: "complete",
+                    note: `${IDLE_RECORDED}, but the Board server has not confirmed the snapshot it was read from, ${IDLE_WITHHELD}.`
                   }
-                : freshnessState === "unknown"
+                : coverageState === "partial"
                   ? {
-                      key: "unknown",
-                      label: "last observed idle at an unrecorded time",
-                      class: "muted",
-                      action: "record an observation time before treating this session as idle",
-                      coverage_label: "recorded complete at an unrecorded time",
-                      coverage_class: "muted",
-                      coverage_value: "complete",
-                      note: `${IDLE_RECORDED}, ${IDLE_WITHHELD}.`
-                    }
-                  : {
-                      key: "stale",
-                      label: "last observed idle",
+                      key: "partial",
+                      label: "last observed idle, coverage incomplete",
                       class: "warn",
-                      action: "re-observe this session before treating it as idle",
-                      coverage_label: "recorded complete when written",
+                      action: "confirm the partly covered sources before treating this session as idle",
+                      coverage_label: "recorded complete, coverage incomplete",
                       coverage_class: "warn",
-                      coverage_value: "complete",
-                      note: `${IDLE_RECORDED}, ${IDLE_WITHHELD}.`
-                    };
+                      coverage_value: "partial",
+                      note: `${IDLE_RECORDED}, but ${named(partial)} reported part of what it covers, ${IDLE_WITHHELD}.`
+                    }
+                  : freshnessState === "unknown"
+                    ? {
+                        key: "unknown",
+                        label: "last observed idle at an unrecorded time",
+                        class: "muted",
+                        action: "record an observation time before treating this session as idle",
+                        coverage_label: "recorded complete at an unrecorded time",
+                        coverage_class: "muted",
+                        coverage_value: "complete",
+                        note: `${IDLE_RECORDED}, ${IDLE_WITHHELD}.`
+                      }
+                    : {
+                        key: "stale",
+                        label: "last observed idle",
+                        class: "warn",
+                        action: "re-observe this session before treating it as idle",
+                        coverage_label: "recorded complete when written",
+                        coverage_class: "warn",
+                        coverage_value: "complete",
+                        note: `${IDLE_RECORDED}, ${IDLE_WITHHELD}.`
+                      };
       // The semantic identity of this reading, and the whole of what change
       // tracking needs from it. Everything the classification puts on screen
       // is in it -- which reading was chosen, how it is labelled and coloured,
@@ -3077,6 +3217,10 @@ _BOARD_HTML = """<!doctype html>
         reading.key,
         coverageState,
         freshnessState,
+        // The classification, never the cache age or the error wording: a
+        // confirmation state that has not moved is not news, so a poll that
+        // only advances the cache age produces no change here.
+        authorityState,
         reading.label,
         reading.class,
         reading.action,
@@ -3092,6 +3236,7 @@ _BOARD_HTML = """<!doctype html>
         signature,
         freshness_state: freshnessState,
         coverage_state: coverageState,
+        authority_state: authorityState,
         label: reading.label,
         class: reading.class,
         action: reading.action,
@@ -3106,7 +3251,7 @@ _BOARD_HTML = """<!doctype html>
           source: "session sources",
           head: "",
           coverage: reading.coverage_value,
-          note: `${reading.note}${caveat}`
+          note: `${reading.note}${caveat}${authorityCaveat}`
         }
       };
     }
@@ -3130,7 +3275,16 @@ _BOARD_HTML = """<!doctype html>
       const age = freshness?.age_recorded === true
         ? (freshness?.current === true ? "current" : "aged")
         : "unrecorded";
-      return `age:${age};update:${text(update?.basis)};idle:${idle === null ? "" : idle.signature}`;
+      // Why the row speaks in the past tense is part of what it says: a row
+      // held back because its snapshot is unconfirmed renders a different
+      // explanation from one held back by its own age, and a refresh that
+      // confirms the snapshot restores the present tense. Classified, so the
+      // cache age advancing under an unchanged confirmation state is not a
+      // change -- the same rule the age above follows.
+      const snapshot = freshness?.snapshot_confirmed === false
+        ? (freshness?.snapshot_refreshing === true ? "refreshing" : "unconfirmed")
+        : "confirmed";
+      return `age:${age};snapshot:${snapshot};update:${text(update?.basis)};idle:${idle === null ? "" : idle.signature}`;
     }
     // One row, one signature, both halves of it: the record it was read off
     // and the readings this page derived for it. Change detection and the
@@ -3141,13 +3295,15 @@ _BOARD_HTML = """<!doctype html>
     function rowSignature(record, freshness, update, idle) {
       return [workSignature(record), `effective:${effectiveState(freshness, update, idle)}`].join("|");
     }
-    // `coverage` is the file-level reading from observationCoverage: a row is
-    // built from one record, but whether the record set behind it is complete
-    // is a fact about the read, and an idle claim depends on it.
-    function workRow(record, nowMs, coverage) {
+    // `coverage` is the file-level reading from observationCoverage and
+    // `authority` the snapshot-level one from snapshotAuthority: a row is built
+    // from one record, but whether the record set behind it is complete and
+    // whether the snapshot carrying it was confirmed are facts about the
+    // payload, and an idle claim depends on both.
+    function workRow(record, nowMs, coverage, authority) {
       const kind = text(record?.kind);
       const key = workKey(record);
-      const freshness = recordFreshness(record, nowMs);
+      const freshness = recordFreshness(record, nowMs, authority);
       const update = lastMeaningfulUpdate(record);
       // Every run this row is built from, with the freshness of the source
       // behind it resolved here, where that record's source index is already in
@@ -3515,7 +3671,7 @@ _BOARD_HTML = """<!doctype html>
     // The Health view still reads every record on disk on purpose: a source
     // behind a superseded observation was really contacted, and its connection
     // is inspected there on its own terms rather than as a claim about work.
-    function reconcileSessionScopes(groups, nowMs, coverage) {
+    function reconcileSessionScopes(groups, nowMs, coverage, authority) {
       const idle = new Map();
       const work = new Map();
       for (const group of groups) {
@@ -3529,12 +3685,18 @@ _BOARD_HTML = """<!doctype html>
         const snapshot = idleGroup.records[0];
         // Only a snapshot this page may state as a current idle claim can
         // retire work: retiring a work row asserts that the session has since
-        // gone quiet, which is exactly the claim a stale, partly covered or
-        // unreachable snapshot is not allowed to make. When it cannot, both
-        // readings stay -- and they no longer contradict each other, because
-        // the row built from that snapshot says only that the session was
-        // observed idle once, at its stated age.
-        const current = idlePresentation(snapshot, recordFreshness(snapshot, nowMs), coverage).affirmative;
+        // gone quiet, which is exactly the claim a stale, partly covered,
+        // unreachable or server-unconfirmed snapshot is not allowed to make.
+        // When it cannot, both readings stay -- and they no longer contradict
+        // each other, because the row built from that snapshot says only that
+        // the session was observed idle once, at its stated age.
+        //
+        // The other direction is unaffected: a work observation recorded after
+        // the snapshot retires the snapshot's own row whatever the cache says,
+        // because that is not a claim about now but the recorded order of two
+        // observations inside one payload, which an unconfirmed cache does not
+        // put in doubt.
+        const current = idlePresentation(snapshot, recordFreshness(snapshot, nowMs, authority), coverage).affirmative;
         for (const workGroup of work.get(scope) || []) {
           if (workSupersedesIdle(workGroup.records[0], snapshot)) superseded.add(idleGroup);
           else if (current) superseded.add(workGroup);
@@ -3546,8 +3708,8 @@ _BOARD_HTML = """<!doctype html>
     // list, the participant summary, change tracking, selection and the
     // announcement region all descend from this call and from no other, so the
     // pre-reconciliation set cannot reach any of them.
-    function reconciledObservationGroups(data, nowMs, coverage) {
-      return reconcileSessionScopes(observationGroups(data), nowMs, coverage);
+    function reconciledObservationGroups(data, nowMs, coverage, authority) {
+      return reconcileSessionScopes(observationGroups(data), nowMs, coverage, authority);
     }
     // One source id names one source, so a source observed in several retained
     // files is one source here too. Its consolidated reading is the
@@ -3613,8 +3775,12 @@ _BOARD_HTML = """<!doctype html>
     // reshuffles the list.
     function workRows(data, nowMs) {
       const coverage = observationCoverage(data);
-      return reconciledObservationGroups(data, nowMs, coverage)
-        .map(group => workRow(consolidatedRecord(group), nowMs, coverage))
+      // Derived once for the whole payload and handed to every row and to
+      // reconciliation, so one snapshot cannot be confirmed for one row and
+      // unconfirmed for the next.
+      const authority = snapshotAuthority(data);
+      return reconciledObservationGroups(data, nowMs, coverage, authority)
+        .map(group => workRow(consolidatedRecord(group), nowMs, coverage, authority))
         .sort((a, b) =>
           rowUrgency(a) - rowUrgency(b)
           || a.reference.localeCompare(b.reference)
@@ -4073,11 +4239,15 @@ _BOARD_HTML = """<!doctype html>
     function renderWork() {
       const rows = workState.rows;
       const activeKey = resolveSelection(rows, selectedWorkKey);
-      // An incomplete read is stated above the rows, before anything a row
-      // says can be mistaken for the whole picture.
-      const coverageWarning = workState.coverage?.incomplete
+      // An incomplete read and an unconfirmed snapshot are both stated above
+      // the rows, before anything a row says can be mistaken for the whole
+      // picture. They are independent facts, so both appear when both hold.
+      const coverageWarning = (workState.coverage?.incomplete
         ? `<div class="row warn" role="status"><div class="line"><b>Incomplete snapshot</b>${cuePill(workState.coverage.label, "warn")}</div><div class="muted">${esc(workState.coverage.note)}</div></div>`
-        : "";
+        : "")
+        + (workState.authority && workState.authority.confirmed === false
+          ? `<div class="row warn" role="status"><div class="line"><b>Unconfirmed snapshot</b>${cuePill(workState.authority.label, "warn")}</div><div class="muted">${esc(workState.authority.note)}</div></div>`
+          : "");
       // One refresh has to carry both pieces of ephemeral state at once, so
       // they are composed rather than alternatives. The scroll offset is
       // restored after focus is: focus restoration asks not to scroll, and
@@ -4205,6 +4375,18 @@ _BOARD_HTML = """<!doctype html>
       // the chrome and the Health diagnostics all have to agree about whether
       // this page saw the whole local record set.
       const observationCover = observationCoverage(data);
+      // The same once-and-carried treatment for the other payload-level fact
+      // an absence claim depends on: whether the server confirmed the snapshot
+      // it served. `observation` above and every work row below descend from
+      // this one reading.
+      const snapshot = snapshotAuthority(data);
+      // The one place the page composes "and here is why this emptiness is not
+      // a finding", so every absence claim on it is qualified the same way and
+      // by the same two facts.
+      const evidenceCaveat = [
+        observationCover.incomplete ? observationCover.note : "",
+        snapshot.confirmed ? "" : snapshot.note
+      ].filter(Boolean).join(" ");
       const sources = localSources(data);
       const attention = attentionItems(ownerQueue, prs);
       const ownerItems = attention.filter(item => item.role === "owner");
@@ -4237,6 +4419,12 @@ _BOARD_HTML = """<!doctype html>
         observationCover.incomplete
           ? `<div class="row warn" role="status"><div class="line"><b>Incomplete snapshot</b>${cuePill(observationCover.label, "warn")}</div><div class="muted">${esc(observationCover.note)}</div></div>`
           : "",
+        // And beside it for the same reason: "Do next" read off a snapshot the
+        // server never confirmed is what was waiting when that snapshot was
+        // taken, not what is waiting now.
+        snapshot.confirmed
+          ? ""
+          : `<div class="row warn" role="status"><div class="line"><b>Unconfirmed snapshot</b>${cuePill(snapshot.label, "warn")}</div><div class="muted">${esc(snapshot.note)}</div></div>`,
         `<div class="row muted">${esc(sources.message)}</div>`
       ].filter(Boolean).join(""));
       const reviewerOutcomes = supervisedDecision.reviewer_outcomes || [];
@@ -4326,6 +4514,7 @@ _BOARD_HTML = """<!doctype html>
         rows: observationRows,
         prs,
         coverage: observationCover,
+        authority: snapshot,
         // empty() escapes what it is given, so these stay plain text here.
         message: observations.available === false
           ? text(observations.message) || "Local Board observations could not be read."
@@ -4333,9 +4522,15 @@ _BOARD_HTML = """<!doctype html>
             // Never "no work" and never "nothing recorded": a candidate the
             // read lost is a gap in the evidence, not an empty queue.
             ? `${text(observations.message) || "This snapshot is incomplete."} ${observationCover.note}`
-            : observations.path_exists === true
-              ? text(observations.message) || "No local Board observation passed the observation contract."
-              : "No local Board observation is recorded yet, so no work row is shown. The queues below still summarize the GitHub snapshot."
+            : snapshot.confirmed
+              ? observations.path_exists === true
+                ? text(observations.message) || "No local Board observation passed the observation contract."
+                : "No local Board observation is recorded yet, so no work row is shown. The queues below still summarize the GitHub snapshot."
+              // An empty list is an absence claim like any other, so it is not
+              // said of a snapshot the server never confirmed either: what is
+              // reported is that this page has no rows from the snapshot it
+              // was given, not that there is no work.
+              : `${text(observations.message) || "No local Board observation is recorded in this snapshot."} ${snapshot.note}`
       };
       renderWork();
       wire();
@@ -4349,25 +4544,31 @@ _BOARD_HTML = """<!doctype html>
         // the read left files behind.
         `<span class="pill wide">${esc(observationRows.length)} observed work item${observationRows.length === 1 ? "" : "s"}${observationCover.incomplete ? " in the files read" : ""}</span>`,
         observationCover.incomplete ? `<span class="pill warn wide"><span class="cue" aria-hidden="true">~</span> incomplete snapshot</span>` : "",
+        snapshot.confirmed ? "" : `<span class="pill warn wide"><span class="cue" aria-hidden="true">~</span> unconfirmed snapshot</span>`,
         attentionRows.length ? `<span class="pill warn wide"><span class="cue" aria-hidden="true">~</span> ${esc(attentionRows.length)} awaiting a named role</span>` : ""
       ].filter(Boolean).join(""));
       const participants = participantSummary(observationRows);
       put("participants", participants.length
         ? participants.map(participant => `<div class="row"><div class="line"><b>${esc(participant.provider)}</b>${pill(participant.role)}${cuePill(`worst source ${participant.freshness}`, participant.class)}</div><div class="line">${participant.states.map(state => pill(`${state.label} ${state.count}`)).join("")}</div><div class="muted">${esc(participant.count)} recorded run${participant.count === 1 ? "" : "s"}; run states are what the records state, not a claim that anything is running now.</div></div>`).join("")
-        : empty(observationCover.incomplete
-          ? "No participant run is recorded in the observation files that were read, and this snapshot is incomplete."
+        : empty(evidenceCaveat
+          ? `No participant run is recorded in the observation data this page was given. ${evidenceCaveat}`
           : "No participant run is recorded in any local observation."));
       const sourceList = sourceRows(data, nowMs);
       put("sources", sourceList.length
         ? sourceList.map(source => `<div class="row"><div class="line"><b>${esc(source.kind)}</b>${cuePill(source.freshness, source.class)}${pill(`coverage ${source.coverage}`)}${source.records > 1 ? pill(`${source.records} records`) : ""}</div><div class="muted">last event ${source.event_at ? localTime(source.event_at) : esc(NOT_RECORDED)}; last observed ${source.observed_at ? localTime(source.observed_at) : esc(NOT_RECORDED)}; heartbeat ${source.heartbeat_at ? localTime(source.heartbeat_at) : esc(NOT_RECORDED)}; checked ${esc(source.checked_text)}</div></div>`).join("")
-        : empty(observationCover.incomplete
-          ? "No observation source is recorded in the observation files that were read, and this snapshot is incomplete. Connection state below is from the GitHub snapshot only."
+        : empty(evidenceCaveat
+          ? `No observation source is recorded in the observation data this page was given. ${evidenceCaveat} Connection state below is from the GitHub snapshot only.`
           : "No observation source is recorded. Connection state below is from the GitHub snapshot only."));
       const cache = data.board?.cache || {};
       const observationDiagnosticList = observationDiagnostics(observations.warnings);
       put("diagnostics", [
         `<div class="row"><div class="line"><b>Board version</b>${pill(`serving ${servingVersion}`)}${pill(`installed ${installedVersion}`)}${version.restart_recommended ? cuePill("restart recommended", "warn") : ""}</div></div>`,
-        `<div class="row"><div class="line"><b>Snapshot cache</b>${cuePill(display(cache.state), stateClass(cache.state))}${pill(`generation ${display(cache.generation)}`)}${pill(`age ${ageText(cache.age_seconds)}`)}${cache.refresh_in_progress === true ? pill("refresh in progress") : ""}${measured(cache.retry_in_seconds) === null ? "" : pill(`retry in ${ageText(cache.retry_in_seconds)}`)}</div>${cache.last_error ? `<div class="muted">${esc(cache.last_error)}</div>` : ""}</div>`,
+        // The cache state is coloured by the one confirmation reading rather
+        // than by a text match on its name, so a state this page does not know
+        // -- and `cold`, which no keyword matches -- is never neutral while the
+        // work views are withholding their claims because of it. The note says
+        // what the state means for everything else on the page.
+        `<div class="row"><div class="line"><b>Snapshot cache</b>${cuePill(display(cache.state), snapshot.class)}${pill(`generation ${display(cache.generation)}`)}${pill(`age ${ageText(cache.age_seconds)}`)}${cache.refresh_in_progress === true ? pill("refresh in progress") : ""}${measured(cache.retry_in_seconds) === null ? "" : pill(`retry in ${ageText(cache.retry_in_seconds)}`)}</div>${snapshot.note ? `<div class="muted">${esc(snapshot.note)}</div>` : ""}${cache.last_error ? `<div class="muted">${esc(cache.last_error)}</div>` : ""}</div>`,
         `<div class="row"><div class="line"><b>GitHub</b>${cuePill(remoteAvailable ? "available" : "unavailable", remoteAvailable ? "ok" : "warn")}</div></div>`,
         // Cap and counts with their semantics: how many files were candidates,
         // how many were read, how many the cap left unread, and how the read
