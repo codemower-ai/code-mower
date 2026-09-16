@@ -1683,7 +1683,17 @@ def _with_local_observation(
         return payload
     payload["records"].append(validated)
     payload["produced_records"] = 1
-    if payload.get("message") == "no local Board observations recorded yet":
+    if payload.get("available") is False:
+        # `available` describes whether this observation block has trustworthy
+        # evidence to show.  File coverage stays unavailable below -- the
+        # producer cannot repair a directory it never read -- but its validated
+        # in-memory record is independently available and must not be orphaned
+        # behind a block-level false value or the file-only failure message.
+        payload["available"] = True
+        payload["message"] = (
+            "local observation available; recorded observation files could not be read"
+        )
+    elif payload.get("message") == "no local Board observations recorded yet":
         payload["message"] = ""
     return payload
 

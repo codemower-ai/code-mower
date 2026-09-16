@@ -793,7 +793,13 @@ The block carries:
   diagnostic (`observation path is not a directory`, `could not check the local
   Board observation path`, and `could not list local Board observations` for a
   directory lost between that check and the enumeration). None of them names a
-  path, an errno or an OS message.
+  path, an errno or an OS message. Those file failures set `available: false`
+  only when there is no independently validated in-memory producer record. If
+  the producer did return one, `available` remains true and the fixed message
+  states that the local observation is available while recorded observation
+  files could not be read; file `coverage` remains `unavailable` with the
+  `directory_unreadable` gap because the producer cannot repair evidence the
+  file reader never saw.
 
 Nothing in this block may raise on the filesystem. It is assembled as one step
 of the whole `/api/status` snapshot, so an exception at this boundary would not

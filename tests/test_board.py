@@ -4733,6 +4733,65 @@ class BoardObservationReaderTests(TestCase):
             self.assertEqual(payload["produced_records"], 0)
             self.assertNotIn("private path", json.dumps(payload))
 
+    def test_produced_record_remains_available_when_file_source_is_unavailable(self) -> None:
+        snapshot = board_local_observation.LocalObservationInput()
+        produced = _observation_fixture("observed_running")
+
+        def producer(**_kwargs: object) -> dict:
+            return produced
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            not_directory = root / "not-a-directory"
+            not_directory.write_text("not observation data", encoding="utf-8")
+            wrong_kind = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(not_directory)),
+                local_observation=snapshot,
+                local_observation_producer=producer,
+            )
+
+            with patch.object(board, "_classify_observation_path", return_value="unreadable"):
+                unreadable = board.observations_payload(
+                    board.BoardConfig(
+                        repo="owner/repo",
+                        observations_path=str(root / "unreadable"),
+                    ),
+                    local_observation=snapshot,
+                    local_observation_producer=producer,
+                )
+
+            lost_during_listing = root / "lost-during-listing"
+            lost_during_listing.mkdir()
+            with patch.object(board, "_select_observation_files", side_effect=OSError("gone")):
+                listing_error = board.observations_payload(
+                    board.BoardConfig(
+                        repo="owner/repo",
+                        observations_path=str(lost_during_listing),
+                    ),
+                    local_observation=snapshot,
+                    local_observation_producer=producer,
+                )
+
+        for name, payload in (
+            ("not_directory", wrong_kind),
+            ("unreadable", unreadable),
+            ("listing_error", listing_error),
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(payload["available"])
+                self.assertEqual(payload["coverage"], "unavailable")
+                self.assertFalse(payload["coverage_complete"])
+                self.assertEqual(payload["coverage_gaps"], ["directory_unreadable"])
+                self.assertEqual(payload["records"], [produced])
+                self.assertEqual(payload["produced_records"], 1)
+                self.assertEqual(payload["accepted_records"], 0)
+                self.assertEqual(
+                    payload["message"],
+                    "local observation available; recorded observation files could not be read",
+                )
+                self.assertTrue(payload["warnings"])
+
     def test_status_payload_forwards_the_typed_local_observation_hook(self) -> None:
         snapshot = board_local_observation.LocalObservationInput()
         produced = _observation_fixture("provider_reported_progress")
