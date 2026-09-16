@@ -25,6 +25,9 @@ if __package__ and __package__.startswith("code_mower"):
         GitHubRequestError,
         apply_label_decision,
         author_exclusion_reason,
+        lineage_from_environment,
+        lineage_core,
+        lineage_history,
         fetch_pull_request,
         github_request_with_fallback,
         load_json,
@@ -40,6 +43,9 @@ else:
             GitHubRequestError,
             apply_label_decision,
             author_exclusion_reason,
+        lineage_from_environment,
+        lineage_core,
+        lineage_history,
             fetch_pull_request,
             github_request_with_fallback,
             load_json,
@@ -54,6 +60,9 @@ else:
             GitHubRequestError,
             apply_label_decision,
             author_exclusion_reason,
+        lineage_from_environment,
+        lineage_core,
+        lineage_history,
             fetch_pull_request,
             github_request_with_fallback,
             load_json,
@@ -540,7 +549,15 @@ def _apply_or_log(
     *,
     tokens: Sequence[GitHubToken],
     lane_name: str,
+    lineage,
 ) -> None:
+    if (not isinstance(lineage, lineage_core.Lineage)
+            or lineage.target is None or lineage.target.repo != repo.lower()
+            or lineage.target.pr_number != decision.issue_number
+            or not lineage_core.admit(lineage, lane_name.lower())):
+        print("skip: lineage " + (lineage.reason if isinstance(lineage, lineage_core.Lineage) else "unreadable"))
+        return
+
     try:
         apply_label_decision(repo, decision, tokens=tokens)
         print(
@@ -581,6 +598,13 @@ def _github_event_type(adapter: SaaSReviewerAdapter) -> str:
     return adapter.event_type
 
 
+
+def _lineage_for_pr(repo, number, current, adapter, tokens):
+    history = lineage_history(lambda page, size: github_request_with_fallback(
+        "GET", f"/repos/{repo}/issues/{number}/comments?per_page={size}&page={page}", tokens=tokens))
+    return lineage_from_environment(repo, number, current, history,
+        reviewer=adapter.name.lower(), accounts=tuple(adapter.review_authors()))
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -610,6 +634,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pr_number = _event_pr_number(event, adapter, event_type)
     pr_author = ""
     pr_body = ""
+    lineage = None
 
     if dry_run:
         if event_type == "pull_request_review":
@@ -681,6 +706,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if pr_current.get("state") != "open":
                 print(f"skip: PR #{candidate_number} is not open")
                 continue
+            try:
+                lineage = _lineage_for_pr(repo, candidate_number, pr_current, adapter, tokens)
+            except (ValueError, KeyError, RuntimeError):
+                print("skip: lineage unreadable; owner action required")
+                continue
             candidate_labels = [
                 label.get("name", "") for label in pr_current.get("labels") or []
             ]
@@ -739,7 +769,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         reviewed_sha=str(check_run.get("head_sha") or "") or None,
                         reason=adapter.review_lookup_failed_reason(exc),
                     )
-            _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name)
+            _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name, lineage=lineage)
             applied += 1
         if applied == 0:
             if considered:
@@ -749,6 +779,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     elif event_type == "pull_request_review" and pr_number:
         pr_current = fetch_pull_request(repo, pr_number, tokens=tokens)
+        try:
+            lineage = _lineage_for_pr(repo, pr_number, pr_current, adapter, tokens)
+        except (ValueError, KeyError, RuntimeError):
+            print("skip: lineage unreadable; owner action required")
+            return 0
         pr_labels = [label.get("name", "") for label in pr_current.get("labels") or []]
         pr_author = str(((pr_current.get("user") or {}).get("login") or ""))
         pr_body = str(pr_current.get("body") or "")
@@ -766,7 +801,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if decision is None:
                     print(f"skip: {reason}")
                     return 0
-                _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name)
+                _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name, lineage=lineage)
                 return 0
             try:
                 review_comments = fetch_review_comments(
@@ -786,14 +821,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 if decision is None:
                     print(f"skip: {reason}")
                     return 0
-                _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name)
+                _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name, lineage=lineage)
                 return 0
-    elif event_type == "issue_comment" and pr_number and adapter.opt_in_required:
+    elif event_type == "issue_comment" and pr_number:
         issue = event.get("issue") or {}
         comment = event.get("comment") or {}
         author = (comment.get("user") or {}).get("login", "")
         if "pull_request" in issue and adapter.is_review_author(author):
             pr_current = fetch_pull_request(repo, pr_number, tokens=tokens)
+            try:
+                lineage = _lineage_for_pr(repo, pr_number, pr_current, adapter, tokens)
+            except (ValueError, KeyError, RuntimeError):
+                print("skip: lineage unreadable; owner action required")
+                return 0
+            current_head_sha = pr_current.get("head", {}).get("sha")
             pr_labels = [label.get("name", "") for label in pr_current.get("labels") or []]
             pr_author = str(((pr_current.get("user") or {}).get("login") or ""))
             pr_body = str(pr_current.get("body") or "")
@@ -813,6 +854,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             return 0
         pr_current = fetch_pull_request(repo, pr_number, tokens=tokens)
+        try:
+            lineage = _lineage_for_pr(repo, pr_number, pr_current, adapter, tokens)
+        except (ValueError, KeyError, RuntimeError):
+            print("skip: lineage unreadable; owner action required")
+            return 0
         pr_labels = [label.get("name", "") for label in pr_current.get("labels") or []]
         pr_author = str(((pr_current.get("user") or {}).get("login") or ""))
         pr_body = str(pr_current.get("body") or "")
@@ -847,7 +893,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             if decision is None:
                 continue
-            _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name)
+            _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name, lineage=lineage)
             return 0
         print("skip: no existing issue comment produced a label update")
         return 0
@@ -872,7 +918,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps({"decision": decision.__dict__, "reason": reason}, sort_keys=True))
         return 0
 
-    _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name)
+    _apply_or_log(repo, decision, tokens=tokens, lane_name=adapter.name, lineage=lineage)
     return 0
 
 

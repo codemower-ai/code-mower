@@ -247,7 +247,7 @@ def observe_lineage_source(source, handoff):
 
 
 def lineage_handoff(handoff, root, round_observer, after, *, source_branch_prefixes,
-                    sequence=1):
+                    sequence=1, source_ownership=None):
     """Convert accepted #962 launch binding plus independently observed exits."""
     from .builder_lineage import Episode
     from .builder_lineage_producer import ProducerRefusal, _delivery
@@ -257,7 +257,7 @@ def lineage_handoff(handoff, root, round_observer, after, *, source_branch_prefi
     observed = round_observer.observed(after)
     validated = validate_handoff(**handoff.as_dict(), running_lane=observed.transport.lane,
         repo=after.repo, observed_head=observed.before.head_sha,
-        source_branch_prefixes=source_branch_prefixes)
+        source_branch_prefixes=source_branch_prefixes, source_ownership=source_ownership)
     if (validated != handoff or handoff.target_pr.lower() != f"{after.repo}#{after.pr_number}"
             or handoff.target_branch != after.branch):
         raise ProducerRefusal("Exact accepted handoff target differs.")

@@ -1,5 +1,6 @@
 """Real private-store handoff through both audit wrappers; no provider calls."""
 
+from lineage_consumer_fixtures import complete_pr, pinned_repo
 import io
 import json
 import os
@@ -31,9 +32,11 @@ class ContextAuditTests(unittest.TestCase):
         f = self.fixture
         cap = claude if host == 'claude' else codex
         config_type = claude.ClaudeAuditConfig if host == 'claude' else codex.AuditConfig
-        config = config_type('test-authorization', {'owner/repo': f.store.root},
+        checkout = f.store.root.parent / "audit-checkout"
+        base = pinned_repo(checkout)
+        config = config_type('test-authorization', {'owner/repo': checkout},
                              include_plan_context=False, include_decision_context=False)
-        pr = {'head': {'sha': f.head, 'ref': 'human/fix'}, 'title': 'Fix'}
+        pr = complete_pr({'head': {'sha': f.head, 'ref': 'human/fix'}, 'title': 'Fix'})
         expected = f.delivery(self.current).text
         if unavailable:
             self.current = {**self.current, 'state': 'required_unavailable'}
@@ -68,7 +71,7 @@ class ContextAuditTests(unittest.TestCase):
             post = stack.enter_context(mock.patch.object(cap, 'post_pr_comment', return_value={'html_url': 'https://github.test/comment/1'}))
             if host == 'claude':
                 diff = claude.DiffContext('src/app.py | 1 +', 'diff --git a/src/app.py b/src/app.py',
-                    ('src/app.py',), truncated, 1000, 1000, 40, 40)
+                    ('src/app.py',), truncated, 1000, 1000, 40, 40, fetched_base_ref=base)
                 stack.enter_context(mock.patch.object(claude, '_build_diff_context', return_value=diff))
                 stack.enter_context(mock.patch.object(claude.code_mower_prompts, 'load_review_prompt', return_value=''))
                 stack.enter_context(mock.patch.object(claude, 'run_claude_audit', side_effect=review))
@@ -81,7 +84,7 @@ class ContextAuditTests(unittest.TestCase):
                     effective_budget_usd='2')
                 for name, value in (('preflight_codex_cli', 'test-cli'), ('_discover_venv', None),
                     ('_fetch_pr_head', None), ('_fetch_base_ref', None), ('_remove_worktree', None),
-                    ('_create_temp_worktree', f.store.root), ('_build_review_context_diagnostics', diag)):
+                    ('_create_temp_worktree', checkout), ('_build_review_context_diagnostics', diag)):
                     stack.enter_context(mock.patch.object(codex, name, return_value=value))
                 stack.enter_context(mock.patch.object(codex, 'run_codex_review', side_effect=review))
                 structure = stack.enter_context(mock.patch.object(codex, 'run_codex_verdict_structuring',

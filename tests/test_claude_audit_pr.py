@@ -1,4 +1,5 @@
 from __future__ import annotations
+from lineage_consumer_fixtures import complete_pr, pinned_repo
 
 import io
 import json
@@ -212,8 +213,10 @@ class ClaudeAuditPrTests(unittest.TestCase):
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
             repo.mkdir()
+            pinned_repo(repo)
             head_sha = "a" * 40
             pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+            pr_payload = complete_pr(pr_payload)
             placeholder = cap.parse_structured_claude_verdict(
                 _payload(summary="test", findings=[_finding(title="test")])
             )
@@ -235,6 +238,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 40,
                 40,
             )
+            diff_context = __import__("dataclasses").replace(diff_context, fetched_base_ref=pinned_repo(repo))
             config = cap.ClaudeAuditConfig(
                 "token",
                 {"owner/repo": repo},
@@ -243,6 +247,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
             )
 
             with (
+                mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
                 mock.patch.dict(
                     "os.environ",
                     {
@@ -307,8 +312,10 @@ class ClaudeAuditPrTests(unittest.TestCase):
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
             repo.mkdir()
+            pinned_repo(repo)
             head_sha = "b" * 40
             pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+            pr_payload = complete_pr(pr_payload)
             clean = cap.parse_structured_claude_verdict(
                 {
                     "schema": cap.CLAUDE_AUDIT_SCHEMA_ID,
@@ -327,6 +334,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 40,
                 40,
             )
+            diff_context = __import__("dataclasses").replace(diff_context, fetched_base_ref=pinned_repo(repo))
             config = cap.ClaudeAuditConfig(
                 "token",
                 {"owner/repo": repo},
@@ -335,6 +343,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
             )
 
             with (
+                mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
                 mock.patch.dict(
                     "os.environ",
                     {
@@ -379,8 +388,10 @@ class ClaudeAuditPrTests(unittest.TestCase):
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
             repo.mkdir()
+            pinned_repo(repo)
             head_sha = "c" * 40
             pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+            pr_payload = complete_pr(pr_payload)
             placeholder = cap.parse_structured_claude_verdict(
                 _payload(summary="test", findings=[_finding(title="test", file="a.py")])
             )
@@ -394,6 +405,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 40,
                 40,
             )
+            diff_context = __import__("dataclasses").replace(diff_context, fetched_base_ref=pinned_repo(repo))
             config = cap.ClaudeAuditConfig(
                 "token",
                 {"owner/repo": repo},
@@ -402,6 +414,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
             )
 
             with (
+                mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
                 mock.patch.dict(
                     "os.environ",
                     {
@@ -464,8 +477,10 @@ class ClaudeAuditPrTests(unittest.TestCase):
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
             repo.mkdir()
+            pinned_repo(repo)
             head_sha = "d" * 40
             pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+            pr_payload = complete_pr(pr_payload)
             diff_context = cap.DiffContext(
                 "src/app.py | 1 +",
                 "diff --git a/src/app.py b/src/app.py",
@@ -476,6 +491,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 40,
                 40,
             )
+            diff_context = __import__("dataclasses").replace(diff_context, fetched_base_ref=pinned_repo(repo))
             cli_json = json.dumps(
                 {
                     "is_error": True,
@@ -492,6 +508,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
             )
 
             with (
+                mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
                 mock.patch.dict(
                     "os.environ",
                     {
@@ -538,8 +555,10 @@ class ClaudeAuditPrTests(unittest.TestCase):
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
             repo.mkdir()
+            pinned_repo(repo)
             head_sha = "e" * 40
             pr_payload = {"head": {"sha": head_sha, "ref": "human/large"}, "title": "Fix"}
+            pr_payload = complete_pr(pr_payload)
             clean = cap.parse_structured_claude_verdict(
                 {
                     "schema": cap.CLAUDE_AUDIT_SCHEMA_ID,
@@ -559,6 +578,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 1_000_000,
                 True,
             )
+            diff_context = __import__("dataclasses").replace(diff_context, fetched_base_ref=pinned_repo(repo))
             config = cap.ClaudeAuditConfig(
                 "token",
                 {"owner/repo": repo},
@@ -574,6 +594,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 return clean, '{"structured_output":"pass"}', ""
 
             with (
+                mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
                 mock.patch.dict(
                     "os.environ",
                     {
@@ -610,8 +631,10 @@ class ClaudeAuditPrTests(unittest.TestCase):
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
             repo.mkdir()
+            pinned_repo(repo)
             head_sha = "f" * 40
             pr_payload = {"head": {"sha": head_sha, "ref": "human/huge"}, "title": "Fix"}
+            pr_payload = complete_pr(pr_payload)
             diff_context = cap.DiffContext(
                 "src/huge.py | 2000 +",
                 "diff --git a/src/huge.py b/src/huge.py\n[diff truncated]",
@@ -623,6 +646,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
                 cap.DEFAULT_MAX_DIFF_HARD_LIMIT_BYTES,
                 False,
             )
+            diff_context = __import__("dataclasses").replace(diff_context, fetched_base_ref=pinned_repo(repo))
             config = cap.ClaudeAuditConfig(
                 "token",
                 {"owner/repo": repo},
@@ -631,6 +655,7 @@ class ClaudeAuditPrTests(unittest.TestCase):
             )
 
             with (
+                mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
                 mock.patch.dict(
                     "os.environ",
                     {

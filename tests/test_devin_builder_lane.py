@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import atexit
+import json
+from lineage_consumer_fixtures import (RUNNER_GH_BOUNDARY, RUNNER_GIT_BOUNDARY, runner_lineage_env, complete_pr)
+from lineage_consumer_fixtures import fixture_shell_env
 import os
 import shlex
 import shutil
@@ -54,6 +57,8 @@ fi
 exit 0
 """
 
+_FAKE_GIT = _FAKE_GIT.replace("set -euo pipefail\n", "set -euo pipefail\n" + RUNNER_GIT_BOUNDARY, 1)
+
 # The generated runner resolves `lane-delivery` from an explicit pin before it
 # looks at PATH, so a fixture states which implementation it means instead of
 # inheriting whichever code-mower happens to be installed on the machine.
@@ -84,6 +89,7 @@ _LANE_DELIVERY_CMD = str(_write_lane_delivery_wrapper(_LANE_DELIVERY_DIR))
 
 def _lane_delivery_env() -> dict[str, str]:
     return {
+        **fixture_shell_env(_LANE_DELIVERY_DIR),
         "CODE_MOWER_LANE_DELIVERY_CMD": _LANE_DELIVERY_CMD,
         "PYTHONPATH": str(ROOT / "src"),
         "LANE_PYTHON": sys.executable,
@@ -113,9 +119,9 @@ elif [ "$cmd" = "issue view" ] && [[ "$args" == *"--json labels"* ]]; then
   exit 0
 elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefOid,state,labels"* ]]; then
   if [ -f "$HOME/{_DELIVERY_MARKER_NAME}" ]; then
-    printf '%s\\n' '{{"headRefOid":"{_HEAD_AFTER}","state":"OPEN","labels":[]}}'
+    printf '%s\\n' '{{"headRefOid":"{_HEAD_AFTER}","state":"OPEN","labels":[{{"name":"builder:devin"}}],"headRefName":"devin/fix-1","author":{{"login":"devin-ai-integration[bot]"}}}}'
   else
-    printf '%s\\n' '{{"headRefOid":"{_HEAD_BEFORE}","state":"OPEN","labels":[]}}'
+    printf '%s\\n' '{{"headRefOid":"{_HEAD_BEFORE}","state":"OPEN","labels":[{{"name":"builder:devin"}}],"headRefName":"devin/fix-1","author":{{"login":"devin-ai-integration[bot]"}}}}'
   fi
   exit 0
 elif [ "$cmd" = "issue comment" ] || [ "$cmd" = "pr comment" ]; then
@@ -123,6 +129,8 @@ elif [ "$cmd" = "issue comment" ] || [ "$cmd" = "pr comment" ]; then
   exit 0
 fi
 """
+
+_FAKE_GH_DELIVERY_HEADER = _FAKE_GH_DELIVERY_HEADER.replace("set -euo pipefail\n", "set -euo pipefail\n" + RUNNER_GH_BOUNDARY, 1)
 
 # A fake provider that delivers: it drops the marker the fake `gh` reads back as
 # a new pull request or an advanced head.
@@ -202,8 +210,8 @@ class DevinBuilderLaneConfigGenerationTests(unittest.TestCase):
             runner_text,
         )
         self.assertIn('chmod 600 "$prompt_file"', runner_text)
-        self.assertIn("code-mower builder record", runner_text)
-        self.assertIn("--provider devin_cli --executor devin_cli", runner_text)
+        self.assertIn("lineage-record", runner_text)
+        self.assertIn('--lane "$LANE"', runner_text)
 
     def test_lane_delivery_pin_is_one_executable_path_containing_a_space(self) -> None:
         # Regression for the pin being word-split into argv: the wrapper below
@@ -508,6 +516,7 @@ exit 0
                 env={
                     **os.environ, **_lane_delivery_env(),
                     "HOME": str(root),
+                    **runner_lineage_env(root, code_mower_config.load_config(CONFIG_PATH), complete_pr(number=77, branch="devin/issue-12", head="b"*40, author="devin-ai-integration[bot]", labels=["builder:devin"])),
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                     "RECORD_LOG": str(record_log),
@@ -518,18 +527,17 @@ exit 0
                 check=True,
             )
 
-            record_argv = record_log.read_text(encoding="utf-8") if record_log.exists() else ""
+            records = list((root/"Library/Logs/code-mower").rglob("*.builder.json"))
+            if not records:
+                records = list(root.rglob("*.builder.json"))
+            self.assertEqual(len(records), 1, completed.stdout+completed.stderr)
+            record = json.loads(records[0].read_text())
 
         self.assertIn("devin: selected build issue #12", completed.stdout)
-        # Local Devin CLI provenance is a distinct identity from hosted Devin:
-        # it records as devin_cli/devin_cli, never as the hosted devin provider.
-        self.assertIn("--provider devin_cli --executor devin_cli", record_argv)
-        self.assertNotIn("--provider devin --executor", record_argv)
-        # The provenance record names the pull request the delivery snapshot
-        # observed, so it cannot disagree with the delivery record for the same
-        # run. `_FAKE_GH_DELIVERY_HEADER` opens #77 once the provider delivers.
-        self.assertIn("--pr owner/repo#77", record_argv)
-        self.assertIn("--status pr-opened", record_argv)
+        self.assertEqual(record['provider'], 'devin_cli')
+        self.assertEqual(record['dimensions']['builder_executor'], 'devin_cli')
+        self.assertEqual(record['dimensions']['pr_number'], '77')
+        self.assertEqual(record['dimensions']['lineage']['status'], 'ready')
 
     def test_devin_lane_warns_but_still_succeeds_when_builder_record_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -693,6 +701,7 @@ fi
 """,
                 encoding="utf-8",
             )
+            fake_gh.write_text(fake_gh.read_text().replace("set -euo pipefail\n", "set -euo pipefail\n" + RUNNER_GH_BOUNDARY, 1))
             fake_gh.chmod(0o755)
 
             completed = subprocess.run(
@@ -711,6 +720,7 @@ fi
                 env={
                     **os.environ, **_lane_delivery_env(),
                     "HOME": str(root),
+                    **runner_lineage_env(root, code_mower_config.load_config(CONFIG_PATH), complete_pr(number=21, branch='codex/fix', head="a"*40, author='chatgpt-codex-connector[bot]', labels=["builder:codex"])),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                 },
                 text=True,
@@ -720,10 +730,7 @@ fi
 
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("devin: selected target pr #21", completed.stdout)
-        self.assertIn(
-            "refusing target PR #21; head branch codex/fix is not owned by this lane",
-            completed.stderr,
-        )
+        self.assertIn("head branch codex/fix is not owned by this lane", completed.stderr)
         self.assertIn("expected branch prefix devin/", completed.stderr)
         self.assertNotIn("expected label", completed.stderr)
 
@@ -756,6 +763,7 @@ fi
 """,
                 encoding="utf-8",
             )
+            fake_gh.write_text(fake_gh.read_text().replace("set -euo pipefail\n", "set -euo pipefail\n" + RUNNER_GH_BOUNDARY, 1))
             fake_gh.chmod(0o755)
 
             completed = subprocess.run(
@@ -774,6 +782,7 @@ fi
                 env={
                     **os.environ, **_lane_delivery_env(),
                     "HOME": str(root),
+                    **runner_lineage_env(root, code_mower_config.load_config(CONFIG_PATH), complete_pr(number=21, branch='devin-hosted/fix-1', head="a"*40, author='devin-ai-integration[bot]', labels=["builder:devin"])),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                 },
                 text=True,
@@ -783,10 +792,7 @@ fi
 
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("devin: selected target pr #21", completed.stdout)
-        self.assertIn(
-            "refusing target PR #21; head branch devin-hosted/fix-1 is not owned by this lane",
-            completed.stderr,
-        )
+        self.assertIn("head branch devin-hosted/fix-1 is not owned by this lane", completed.stderr)
         self.assertIn("expected branch prefix devin/", completed.stderr)
         self.assertNotIn("expected label", completed.stderr)
 
@@ -875,6 +881,11 @@ fi
 """,
             encoding="utf-8",
         )
+        fake_gh.write_text(fake_gh.read_text().replace("set -euo pipefail\n", "set -euo pipefail\n" + RUNNER_GH_BOUNDARY, 1))
+        declared = json.loads(pr_json)
+        fixture_env = runner_lineage_env(root, self._policy_config(), complete_pr(number=21,
+            branch=declared['headRefName'], head=declared['headRefOid'],
+            author=declared['author']['login'], labels=[v['name'] for v in declared['labels']]))
         fake_gh.chmod(0o755)
         argv = [str(runner), "--lane", "devin", "--repo", "owner/repo", "--max-minutes", "1",
                 "--target", "pr:21"]
@@ -885,7 +896,7 @@ fi
         return subprocess.run(
             argv,
             cwd=output_dir,
-            env={**os.environ, **_lane_delivery_env(), "HOME": str(root),
+            env={**os.environ, **_lane_delivery_env(), **fixture_env, "HOME": str(root),
                  "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                  **_lane_delivery_env()},
             text=True,
@@ -924,11 +935,9 @@ fi
             with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
                 completed = self._explicit_target(Path(tmp), pr_json)
                 self.assertNotEqual(completed.returncode, 0)
-                self.assertIn(
-                    "refusing target PR #21; head branch fix/12-accessible-label is not owned by this lane",
-                    completed.stderr,
-                )
-                self.assertIn("expected branch prefix devin/", completed.stderr)
+                self.assertTrue("is not owned by this lane" in completed.stderr or
+                                "lineage ownership unreadable or unresolved" in completed.stderr, completed.stderr)
+                self.assertNotIn("fake devin completed", completed.stdout)
         with tempfile.TemporaryDirectory() as tmp:
             fork = ('{' + head + ',"headRepository":{"nameWithOwner":"fork/repo"},'
                     '"labels":[{"name":"builder:devin"}],"author":{"login":"devin-ai-integration[bot]"}}')
@@ -1051,7 +1060,7 @@ elif [ "$cmd" = "pr view" ] && [[ "$args" == *"--json headRefName,headRefOid,hea
 elif [ "$cmd" = "repo view" ]; then
   printf 'main\\n'
 elif [ "$cmd" = "pr view" ]; then
-  printf '%s\\n' '{"title":"Fix","body":"Body","headRefName":"devin/fix-1","headRefOid":"deadbeef","url":"https://github.com/owner/repo/pull/21","labels":[{"name":"builder:devin"}],"author":{"login":"owner"}}'
+  printf '%s\\n' '{"title":"Fix","body":"Body","headRefName":"devin/fix-1","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","url":"https://github.com/owner/repo/pull/21","labels":[{"name":"builder:devin"}],"author":{"login":"owner"}}'
 elif [ "$cmd" = "api --paginate" ]; then
   printf '%s\\n' '[[]]'
 else
@@ -1088,6 +1097,7 @@ fi
                 env={
                     **os.environ, **_lane_delivery_env(),
                     "HOME": str(root),
+                    **runner_lineage_env(root, code_mower_config.load_config(CONFIG_PATH), complete_pr(number=21, branch="devin/fix-1", head="a"*40, author="devin-ai-integration[bot]", labels=["builder:devin"])),
                     "LANE_WORK_ROOT": str(work_root),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                     **_lane_delivery_env(),

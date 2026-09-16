@@ -1,4 +1,5 @@
 from __future__ import annotations
+from lineage_consumer_fixtures import status_lineage
 
 import json
 import subprocess
@@ -117,11 +118,11 @@ def _pr(
     next_action: str = "ready for merge or auto-merge",
     next_detail: str = "",
 ) -> dict[str, object]:
-    return {
+    pr = {
         "number": number,
         "url": f"https://github.com/owner/repo/pull/{number}",
         "branch": f"codex/pr-{number}",
-        "head_sha": "abcdef0123456789",
+        "head_sha": "abcdef01abcdef01abcdef01abcdef01abcdef01",
         "author": "bot",
         "is_draft": draft,
         "merge_state": merge_state,
@@ -138,6 +139,9 @@ def _pr(
         "next_action": next_action,
         "next_detail": next_detail,
     }
+
+    pr["lineage"] = status_lineage(pr, _config())
+    return pr
 
 
 def _options(mode: str = "dry_run", **overrides: object) -> controller.ControllerOptions:

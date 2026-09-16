@@ -692,68 +692,33 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Issue: {event['dimensions']['issue_url']}")
             return 0
         if args.command == "auto-record":
-            metadata = load_pull_request_metadata(args.pr_json, repo=args.repo)
-            event, inference = build_auto_builder_run_event(
-                metadata,
-                created_at=args.created_at,
-                lens=args.lens,
-                status=args.status,
-            )
-            if event is None or inference is None:
-                payload = {
-                    "mode": "builder-auto-record",
-                    "status": "skipped",
-                    "reason": "no_supported_builder_markers",
-                    "repo_slug": metadata.repo,
-                    "pr_number": metadata.number,
-                    "branch": metadata.branch,
-                }
-                if args.json:
-                    print(json.dumps(payload, indent=2, sort_keys=True))
-                else:
-                    print("No supported builder markers found; skipped builder_run sidecar.")
-                return 0
-            output = args.output or _default_output_path(
-                provider=inference.provider,
-                executor=inference.executor,
-                run_suffix="auto",
-                issue_number="",
-                pr_number=event["dimensions"]["pr_number"],
-                work_order=None,
-                branch=metadata.branch,
-            )
-            output_path = write_builder_run_event(event, output, force=args.force)
-            payload = {
-                "mode": "builder-auto-record",
-                "status": "recorded",
-                "event_path": str(output_path),
-                "event_type": event["event_type"],
-                "provider": event["provider"],
-                "executor": event["dimensions"]["builder_executor"],
-                "repo_slug": event["repo_slug"],
-                "pr_url": event["dimensions"]["pr_url"],
-                "branch": event["dimensions"]["branch"],
-                "confidence": inference.confidence,
-                "signals": list(inference.signals),
-            }
-            if args.json:
-                print(json.dumps(payload, indent=2, sort_keys=True))
-            else:
-                print("Code Mower builder run metadata")
-                print(f"Event: {output_path}")
-                print(f"Provider: {event['provider']}")
-                print(f"Executor: {event['dimensions']['builder_executor']}")
-                print(f"PR: {event['dimensions']['pr_url']}")
+            from .provider_runners.lineage import installed_record
+            import os
+            environ = dict(os.environ)
+            if args.output is not None:
+                environ["LINEAGE_OUTPUT"] = str(args.output)
+            from .builder_lineage import Target
+            from .builder_lineage_producer import decode_transport
+            from .audit_labeler_lib import lineage_snapshot
+            selected = Target.from_mapping(decode_transport(environ["LINEAGE_TARGET_JSON"]))
+            raw = decode_transport(args.pr_json.read_text())
+            raw = raw.get("pull_request", raw)
+            observed, _, _ = lineage_snapshot(args.repo or selected.repo, selected.pr_number, raw)
+            if observed != selected:
+                raise ValueError("Attribution input differs from exact selected target")
+            event = installed_record(environ)
+            payload = {"mode": "builder-auto-record", "status": "recorded",
+                       "provider": event["provider"], "executor": event["dimensions"]["builder_executor"],
+                       "event_path": environ["LINEAGE_OUTPUT"]}
+            print(json.dumps(payload, sort_keys=True))
             return 0
-    except ValueError as exc:
+    except (ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     raise AssertionError(f"unhandled builder command: {args.command}")
 
 
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
 
 
 def record_lineage_builder(observation, transport, output, *, created_at):
@@ -772,3 +737,7 @@ def record_lineage_builder(observation, transport, output, *, created_at):
     event["dimensions"]["lineage"] = projection(observation)
     write_builder_run_event(event, output)
     return event
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from lineage_consumer_fixtures import policy
 
 import json
 import subprocess
@@ -57,9 +58,12 @@ class LaneStatusTests(TestCase):
                 ]
             if args[:2] == ["run", "list"]:
                 return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                return []
             raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
         report = lane_status.collect_status(
+            lineage_config=policy({}),
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=lambda _args: _completed(""),
@@ -148,9 +152,12 @@ class LaneStatusTests(TestCase):
                         "url": "https://github.com/owner/repo/actions/runs/99",
                     }
                 ]
+            if args[0] == "api" and "/comments?" in args[1]:
+                return []
             raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
         report = lane_status.collect_status(
+            lineage_config=policy({}),
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=lambda _args: _completed(""),
@@ -189,9 +196,12 @@ class LaneStatusTests(TestCase):
                 ]
             if args[:2] == ["run", "list"]:
                 return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                return []
             raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
         report = lane_status.collect_status(
+            lineage_config=policy({}),
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=lambda _args: _completed(""),
@@ -228,9 +238,12 @@ class LaneStatusTests(TestCase):
                 ]
             if args[:2] == ["run", "list"]:
                 return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                return []
             raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
         report = lane_status.collect_status(
+            lineage_config=policy({}),
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=lambda _args: _completed(""),
@@ -269,9 +282,12 @@ class LaneStatusTests(TestCase):
                 ]
             if args[:2] == ["run", "list"]:
                 return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                return []
             raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
         report = lane_status.collect_status(
+            lineage_config=policy({}),
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=lambda _args: _completed(""),
@@ -305,6 +321,7 @@ class LaneStatusTests(TestCase):
             return _completed("", returncode=1)
 
         report = lane_status.collect_status(
+            lineage_config=policy({}),
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=command_runner,
@@ -349,6 +366,7 @@ class LaneStatusTests(TestCase):
             return _completed("", returncode=1)
 
         report = lane_status.collect_status(
+            lineage_config=policy({}),
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=command_runner,
@@ -385,6 +403,7 @@ class LaneStatusTests(TestCase):
             return _completed("", returncode=1)
 
         report = lane_status.collect_status(
+            lineage_config=policy({}),
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=command_runner,
@@ -403,6 +422,7 @@ class LaneStatusTests(TestCase):
             raise lane_status.LaneStatusUnavailable("gh pr failed")
 
         report = lane_status.collect_status(
+            lineage_config=policy({}),
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=lambda _args: _completed(""),
@@ -436,6 +456,7 @@ class LaneStatusTests(TestCase):
             return _completed("", returncode=1)
 
         report = lane_status.collect_status(
+            lineage_config=policy({}),
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=command_runner,
@@ -484,6 +505,8 @@ class LaneStatusTests(TestCase):
             if args[:2] == ["pr", "list"]:
                 return []
             if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
                 return []
             raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
@@ -627,6 +650,7 @@ class LaneStatusTests(TestCase):
             return _completed("", returncode=1)
 
         report = lane_status.collect_status(
+            lineage_config=policy({}),
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=command_runner,
