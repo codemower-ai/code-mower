@@ -37,7 +37,7 @@ env:
   CODE_MOWER_GATE_OVERRIDE_LABEL: "gate:override"
   CODE_MOWER_DECISION_AUTHORITIES: ""
   CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE: ${{ vars.CODE_MOWER_DECISION_AUTHORITIES || '' }}
-  CODE_MOWER_AUTHOR_EXCLUSION_JSON: "{\"authors\":{\"chatgpt-codex-connector[bot]\":\"codex\",\"claude[bot]\":\"claude\",\"cursor[bot]\":\"cursor\",\"grok-bot[bot]\":\"cursor\"},\"enabled\":true,\"labels\":{\"builder:claude\":\"claude\",\"builder:codex\":\"codex\",\"builder:cursor\":\"cursor\",\"builder:gitar\":\"gitar\",\"builder:grok-bot\":\"cursor\"},\"trailers\":{\"CODE_MOWER_BUILDER:claude\":\"claude\",\"CODE_MOWER_BUILDER:codex\":\"codex\",\"CODE_MOWER_BUILDER:cursor\":\"cursor\",\"CODE_MOWER_BUILDER:grok-bot\":\"cursor\"}}"
+  CODE_MOWER_AUTHOR_EXCLUSION_JSON: "{\"authors\":{\"chatgpt-codex-connector[bot]\":\"codex\",\"claude[bot]\":\"claude\",\"cursor[bot]\":\"cursor\",\"devin-ai-integration\":\"devin\",\"devin-ai-integration[bot]\":\"devin\",\"grok-bot[bot]\":\"cursor\"},\"branch_prefixes\":{\"cursor/\":\"cursor\",\"devin/\":\"devin\"},\"enabled\":true,\"labels\":{\"builder:claude\":\"claude\",\"builder:codex\":\"codex\",\"builder:cursor\":\"cursor\",\"builder:devin\":\"devin\",\"builder:gitar\":\"gitar\",\"builder:grok-bot\":\"cursor\",\"builder:muse\":\"muse\"},\"require_verified_lineage\":true}"
   CODE_MOWER_GATE_LANES_JSON: "[{\"author_lane\":\"codex\",\"authors_env\":\"CODEX_BOT_AUTHORS\",\"blocked\":\"codex-audit-blocked\",\"bot_authors\":\"codex-audit-bot,codex-audit-bot[bot],github-actions[bot]\",\"builder_label\":\"builder:codex\",\"decision_coverage\":true,\"display_name\":\"Codex\",\"done\":\"codex-audit-done\",\"github_actions_workflows\":\".github/workflows/local-cli-audit.yml\",\"id\":\"codex\"},{\"author_lane\":\"claude\",\"authors_env\":\"CLAUDE_AUDIT_BOT_AUTHORS\",\"blocked\":\"claude-audit-blocked\",\"bot_authors\":\"claude-audit-bot,claude-audit-bot[bot],github-actions[bot]\",\"builder_label\":\"builder:claude\",\"decision_coverage\":true,\"display_name\":\"Claude\",\"done\":\"claude-audit-done\",\"github_actions_workflows\":\".github/workflows/local-cli-audit.yml\",\"id\":\"claude_audit\"}]"
 
 jobs:
@@ -287,6 +287,9 @@ jobs:
                   audit_run_in_flight_detail_for_lane,
                   audit_verdict_newer_than_in_flight,
                   flatten_paginated_items,
+                  lineage_core,
+                  lineage_decision,
+                  lineage_snapshot,
                   github_actions_comment_attested,
                   latest_current_audit_verdict,
                   latest_current_audit_verdict_detail,
@@ -299,6 +302,9 @@ jobs:
                   audit_run_in_flight_detail_for_lane,
                   audit_verdict_newer_than_in_flight,
                   flatten_paginated_items,
+                  lineage_core,
+                  lineage_decision,
+                  lineage_snapshot,
                   github_actions_comment_attested,
                   latest_current_audit_verdict,
                   latest_current_audit_verdict_detail,
@@ -315,15 +321,15 @@ jobs:
 
           try:
               lanes = json.loads(os.environ.get("CODE_MOWER_GATE_LANES_JSON", "[]"))
-              exclusion = json.loads(os.environ.get("CODE_MOWER_AUTHOR_EXCLUSION_JSON", '{"enabled":false}'))
+              exclusion = lineage_core.Identity.from_text(os.environ["CODE_MOWER_AUTHOR_EXCLUSION_JSON"])
               with open(sys.argv[1], encoding="utf-8") as labels_handle:
                   labels_payload = json.load(labels_handle)
               with open(sys.argv[2], encoding="utf-8") as comments_handle:
-                  comments_payload = json.load(comments_handle)
+                  comments_payload = lineage_core._json(comments_handle.read())
               with open(sys.argv[3], encoding="utf-8") as events_handle:
                   events_payload = json.load(events_handle)
               with open(sys.argv[4], encoding="utf-8") as pr_handle:
-                  pr_payload = json.load(pr_handle)
+                  pr_payload = lineage_core._json(pr_handle.read())
               with open(sys.argv[5], encoding="utf-8") as audit_runs_handle:
                   audit_runs_payload = json.load(audit_runs_handle)
           except Exception:
@@ -342,6 +348,11 @@ jobs:
               if isinstance(item, dict)
           }
           lanes = [lane for lane in lanes if isinstance(lane, dict)]
+          try:
+              history = lineage_core.History.from_pages(comments_payload)
+          except ValueError:
+              emit("failure", "Code Mower lineage history unreadable")
+              raise SystemExit(0)
           comments = flatten_paginated_items(comments_payload)
           events = flatten_paginated_items(events_payload)
           audit_runs = audit_runs_payload if isinstance(audit_runs_payload, list) else []
@@ -432,16 +443,21 @@ jobs:
                   context_required=context_required,
               )
 
-          builder_matches = []
-          if isinstance(exclusion, dict) and exclusion.get("enabled"):
-              label_map = mapping("labels")
-              for label in labels:
-                  if label in label_map:
-                      builder_matches.append(str(label_map[label]))
-              author_map = {str(k).lower(): str(v) for k, v in mapping("authors").items()}
-              if pr_author.lower() in author_map:
-                  builder_matches.append(author_map[pr_author.lower()])
-          builder_matches = list(dict.fromkeys(builder_matches))
+          try:
+              target, observed_author, observed_labels = lineage_snapshot(
+                  os.environ["GITHUB_REPOSITORY"], int(pr_number), pr_payload)
+              if set(observed_labels) != labels:
+                  raise lineage_core.ContractError("Fetched label snapshots differ")
+              _, lineage = lineage_decision(target, exclusion,
+                  lineage_core.Authorities(decision_authorities), history,
+                  author=observed_author, labels=observed_labels)
+          except (ValueError, KeyError, TypeError):
+              emit("failure", "Code Mower lineage contract unreadable; owner action required")
+              raise SystemExit(0)
+          if lineage.status != "ready":
+              emit("failure" if lineage.status == "conflict" else "pending", "lineage " + lineage.reason)
+              raise SystemExit(0)
+          builder_matches = list(lineage.contributors)
 
           def lane_display(lane):
               return str(lane.get("display_name") or lane.get("id") or lane.get("done") or "")
@@ -531,9 +547,7 @@ jobs:
               )
           )
 
-          if len(builder_matches) > 1:
-              emit("failure", "conflicting Code Mower builder identity")
-          elif owner_label in labels:
+          if owner_label in labels:
               emit("pending", owner_label + ": waiting on owner")
           elif owner_sitting_label and owner_sitting_label in labels:
               emit("pending", owner_sitting_label + ": waiting on owner")
@@ -552,7 +566,7 @@ jobs:
               required = [
                   lane
                   for lane in lanes
-                  if str(lane.get("author_lane") or lane.get("id") or "") != excluded_builder
+                  if lineage_core.admit(lineage, str(lane.get("author_lane") or lane.get("id") or ""))
               ]
               in_flight = in_flight_lanes(required)
               missing = [

@@ -4,7 +4,8 @@
 This wrapper runs the installed Devin CLI as a non-interactive, bounded,
 read-only reviewer against a separately checked-out PR head. It validates the
 exact head, parses a normalized verdict JSON, and posts an authoritative
-trailer-bearing PR comment plus an audit verdict artifact.
+trailer-bearing PR comment plus an audit verdict artifact. A target-bound lineage
+refusal emits only UNKNOWN/needs metadata and does not perform a review.
 
 Exit codes:
     0  PASS, BLOCKED, or stale-head requeue comment posted (or dry-run printed)
@@ -39,6 +40,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 if __package__ in {None, ""}:
     module_dir = Path(__file__).resolve().parent
     sys.path.insert(0, str(module_dir.parent))
+    from code_mower.builder_lineage import ContractError
     from code_mower import audit_limits as code_mower_audit_limits
     from code_mower import prompts as code_mower_prompts
     from code_mower.provider_runners import (
@@ -65,6 +67,7 @@ if __package__ in {None, ""}:
         write_audit_verdict_artifact,
     )
 elif __package__ == "tools":  # pragma: no cover - direct helper execution
+    from builder_lineage import ContractError  # type: ignore
     import audit_limits as code_mower_audit_limits  # type: ignore
     import prompts as code_mower_prompts  # type: ignore
     from provider_runners import (  # type: ignore
@@ -91,6 +94,7 @@ elif __package__ == "tools":  # pragma: no cover - direct helper execution
         write_audit_verdict_artifact,
     )
 else:  # pragma: no cover - exercised after package extraction
+    from .builder_lineage import ContractError
     from . import audit_limits as code_mower_audit_limits
     from . import prompts as code_mower_prompts
     from .provider_runners import (
@@ -161,6 +165,20 @@ class StaleHeadError(RuntimeError):
 
 class AuthorExcludedError(RuntimeError):
     """Raised when the PR author is the same as the reviewer lane."""
+
+
+class LineageRefusalError(ContractError):
+    """A refusal after trusted policy/target acquisition, never review evidence."""
+
+    def __init__(self, target, base_sha: str, observed_base, checkout: Path):
+        super().__init__(
+            "Review not performed. Owner action: select an eligible noncontributor "
+            "reviewer lane or reconcile the PR identity and complete trusted lineage history."
+        )
+        self.target = target
+        self.base_sha = base_sha
+        self.observed_base = observed_base
+        self.checkout = checkout
 
 
 class MalformedOutputError(RuntimeError):
@@ -476,6 +494,7 @@ def _resolve_diff(
     expected_head_sha: str,
     max_diff_bytes: int,
     max_diff_hard_limit_bytes: int,
+    *, fetched_base_ref: str | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     """Build a bounded diff and changed-files list from exact base/head SHAs."""
 
@@ -491,7 +510,7 @@ def _resolve_diff(
             f"local checkout head changed before diff: {expected_head_sha} -> {fetched_head_ref}"
         )
 
-    fetched_base_ref = _resolve_base_ref(repo_path, base_ref)
+    fetched_base_ref = fetched_base_ref or _resolve_base_ref(repo_path, base_ref)
     diff_range = f"{fetched_base_ref}...{fetched_head_ref}"
 
     # The changed-file list goes through the same bounded primitive as the diff
@@ -1181,6 +1200,32 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
     )
     head_sha_start = verify["local_head_sha"]
 
+    fetched_base = _resolve_base_ref(repo_path, config.base_ref)
+    from .provider_runners.github_pr import fetch_issue_comments
+    from .provider_runners.lineage import acquire
+    from .audit_labeler_lib import lineage_snapshot
+    admission_target = None
+
+    def fetch_lineage_history():
+        nonlocal admission_target
+        # acquire calls this only after validating immutable policy, reviewer
+        # configuration and the complete fetched target. Earlier errors stay hard.
+        admission_target, _, _ = lineage_snapshot(config.repo, config.pr_number, pr_meta)
+        try:
+            return fetch_issue_comments(config.repo, config.pr_number, token=config.github_token)
+        except (RuntimeError, OSError) as exc:
+            raise ContractError("Authoritative lineage history unreadable") from exc
+
+    try:
+        acquire(config.repo, config.pr_number, pr_meta, checkout=repo_path, base_sha=fetched_base,
+            fetch_comments=fetch_lineage_history,
+            reviewer="devin", reviewer_accounts=("devin-ai-integration", "devin-ai-integration[bot]",
+                                                 "devin-cli-audit-bot", "devin-cli-audit-bot[bot]"))
+    except ContractError:
+        if admission_target is None:
+            raise
+        raise LineageRefusalError(admission_target, fetched_base,
+            pr_meta.get("base", {}).get("sha"), repo_path) from None
     diff, changed_files_tuple = _resolve_diff(
         repo_path,
         config.pr_number,
@@ -1188,6 +1233,7 @@ def _do_audit_pr(config: AuditConfig) -> AuditResult:
         head_sha_start,
         config.max_diff_bytes,
         config.max_diff_hard_limit_bytes,
+        fetched_base_ref=fetched_base,
     )
 
     prompt, diagnostics = build_prompt(
@@ -1333,6 +1379,7 @@ def audit_pr(config: AuditConfig) -> AuditResult:
     try:
         return _do_audit_pr(config)
     except (
+        LineageRefusalError,
         AuthorExcludedError,
         StaleHeadError,
         NoTrustworthyVerdictError,
@@ -1341,11 +1388,29 @@ def audit_pr(config: AuditConfig) -> AuditResult:
     ) as exc:
         reason = str(exc)
         head_sha = ""
-        try:
-            pr_meta = fetch_pull_request(config.repo, config.pr_number, token=config.github_token)
-            head_sha = str(pr_meta.get("head", {}).get("sha") or "")
-        except Exception:
-            head_sha = ""
+        if isinstance(exc, LineageRefusalError):
+            from .audit_labeler_lib import lineage_snapshot
+            try:
+                current = fetch_pull_request(config.repo, config.pr_number, token=config.github_token)
+                target, _, _ = lineage_snapshot(config.repo, config.pr_number, current)
+                pinned_base = run_git(exc.checkout,
+                    ["rev-parse", "--verify", f"{exc.base_sha}^{{commit}}"], timeout=30).stdout.strip()
+                if (target != exc.target or exc.observed_base != exc.base_sha
+                        or current.get("base", {}).get("sha") != exc.base_sha
+                        or current.get("head", {}).get("repo", {}).get("full_name") != config.repo
+                        or pinned_base != exc.base_sha):
+                    raise ContractError("Refusal target or pinned base changed")
+                verify_checkout_at_head(exc.checkout, expected_head_sha=target.head_sha,
+                    purpose="Devin CLI refusal diagnostic", dirty_remediation="restore the exact checkout")
+            except (ContractError, RuntimeError, OSError, subprocess.SubprocessError):
+                raise ContractError("Lineage refusal target or pinned base unavailable or changed; no diagnostic published") from None
+            head_sha = target.head_sha
+        else:
+            try:
+                pr_meta = fetch_pull_request(config.repo, config.pr_number, token=config.github_token)
+                head_sha = str(pr_meta.get("head", {}).get("sha") or "")
+            except Exception:
+                head_sha = ""
         if not head_sha:
             # Without a trusted PR-head context no comment can be posted
             # safely; surface a hard configuration error instead.

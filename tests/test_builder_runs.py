@@ -559,236 +559,108 @@ def _write_pr_event(
     )
 
 
-def test_builder_auto_record_infers_codex_connector_author() -> None:
+
+def _auto_record_case(root, *, lane="codex", author="chatgpt-codex-connector", body="", trusted=True, head=None):
+    import base64
+    import os
+    from unittest.mock import patch
+    from code_mower.audit_labeler_lib import lineage_identity
+    from code_mower.builder_lineage import History
+    from code_mower.builder_lineage_producer import Snapshot
+    from lineage_consumer_fixtures import AUTHORS, BASE, HEAD, REPO, complete_pr, policy, policy_text
+    config = policy()
+    config['builder_identity']['authors'][author] = lane
+    config['builder_identity']['branch_prefixes'][lane+'/'] = lane
+    pr = complete_pr(number=52, branch=lane+'/task', head=head or HEAD, author=author, labels=['builder:'+lane])
+    pr['body'] = body
+    pr_json, output = root/'event.json', root/'builder-run.cloud-event.json'
+    pr_json.write_text(json.dumps({'pull_request': pr}))
+    effects = []
+    class IO:
+        def _json(self, endpoint):
+            effects.append(endpoint)
+            if '/pulls/' in endpoint:
+                return pr
+            if '/git/trees/' in endpoint:
+                return {'truncated': False, 'tree': [{'path': 'code-mower.yml', 'type': 'blob', 'sha': 'd'*40}]}
+            assert '/git/blobs/' in endpoint
+            return {'encoding': 'base64', 'content': base64.b64encode(policy_text(config).encode()).decode()}
+        def snapshot(self, target):
+            return Snapshot(target, author, ('builder:'+lane,))
+        def history(self, target): return History([])
+    env = {
+        'LINEAGE_TARGET_JSON': json.dumps(dict(repo=REPO, pr_number=52, branch=lane+'/task', head_sha=HEAD)),
+        'LINEAGE_POLICY_JSON': json.dumps(dict(base_sha=BASE, identity=lineage_identity(config).to_mapping(), roles=config)),
+        'LINEAGE_AUTHORITY_JSON': json.dumps(AUTHORS),
+        'LINEAGE_TRANSPORT_JSON': json.dumps(dict(lane=lane, provider=lane, executor=lane+'_cli', integration='local_cli')),
+    } if trusted else {}
+    with patch.dict(os.environ, env, clear=True), patch('code_mower.builder_lineage_producer.GitHub', return_value=IO()):
+        code = builder_runs.main(['auto-record', '--pr-json', str(pr_json), '--output', str(output), '--json'])
+    assert not any('/comments' in call or '/labels' in call for call in effects)
+    return code, output
+
+
+def test_builder_auto_record_requires_actual_transport_despite_connector_author():
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        pr_json = root / "event.json"
-        output = root / "builder-run.cloud-event.json"
-        _write_pr_event(pr_json, author="chatgpt-codex-connector", branch="codex/cm-1")
-
-        stdout = StringIO()
-        with redirect_stdout(stdout):
-            code = builder_runs.main(
-                [
-                    "auto-record",
-                    "--pr-json",
-                    str(pr_json),
-                    "--output",
-                    str(output),
-                    "--json",
-                ]
-            )
-
-        payload = json.loads(stdout.getvalue())
-        event = json.loads(output.read_text(encoding="utf-8"))
+        code, output = _auto_record_case(Path(tmp))
+        event = json.loads(output.read_text())
         assert code == 0
-        assert payload["status"] == "recorded"
-        assert event["provider"] == "codex"
-        assert event["dimensions"]["builder_executor"] == "chatgpt-codex-connector"
-        assert event["dimensions"]["pr_number"] == "52"
-        assert event["dimensions"]["branch"] == "codex/cm-1"
-        assert event["dimensions"]["auto_inferred"] is True
-        assert "author:chatgpt-codex-connector" in event["dimensions"]["builder_inference_signals"]
+        assert event['provider'] == 'codex'
+        assert event['dimensions']['builder_executor'] == 'codex_cli'
+        assert event['dimensions']['pr_number'] == '52'
+        assert event['dimensions']['lineage']['status'] == 'ready'
 
 
-def test_builder_auto_record_infers_cursor_agent_link_without_storing_body() -> None:
+def test_builder_auto_record_cursor_agent_link_cannot_supply_trusted_evidence():
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        pr_json = root / "event.json"
-        output = root / "builder-run.cloud-event.json"
-        _write_pr_event(
-            pr_json,
-            branch="cursor/bidding-panel",
-            body=(
-                "Implemented the task.\n\n"
-                "View agent run: https://cursor.com/agents/run_abc123\n"
-                "Do not store this body text."
-            ),
-        )
-
-        stdout = StringIO()
-        with redirect_stdout(stdout):
-            code = builder_runs.main(
-                [
-                    "auto-record",
-                    "--pr-json",
-                    str(pr_json),
-                    "--output",
-                    str(output),
-                    "--json",
-                ]
-            )
-
-        event_text = output.read_text(encoding="utf-8")
-        event = json.loads(event_text)
-        assert code == 0
-        assert event["provider"] == "cursor_cloud_agent"
-        assert event["dimensions"]["builder_run_url"] == "https://cursor.com/agents/run_abc123"
-        assert event["dimensions"]["builder_id"] == "run_abc123"
-        assert event["dimensions"]["builder_inference_confidence"] == "high"
-        assert "cursor_agent_url" in event["dimensions"]["builder_inference_signals"]
-        assert "Do not store this body text" not in event_text
-
-
-def test_builder_auto_record_skips_generic_cursor_links() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        pr_json = root / "event.json"
-        output = root / "builder-run.cloud-event.json"
-        _write_pr_event(
-            pr_json,
-            body="See https://cursor.com/pricing for developer tooling notes.",
-        )
-
-        stdout = StringIO()
-        with redirect_stdout(stdout):
-            code = builder_runs.main(
-                [
-                    "auto-record",
-                    "--pr-json",
-                    str(pr_json),
-                    "--output",
-                    str(output),
-                    "--json",
-                ]
-            )
-
-        payload = json.loads(stdout.getvalue())
-        assert code == 0
-        assert payload["status"] == "skipped"
+        code, output = _auto_record_case(Path(tmp), trusted=False,
+            body='View agent run: https://cursor.com/agents/run_abc123\nDo not store this body text.')
+        assert code == 1
         assert not output.exists()
 
 
-def test_builder_auto_record_skips_incidental_cursor_agent_words() -> None:
+def test_builder_auto_record_generic_cursor_links_do_not_establish_provenance():
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        pr_json = root / "event.json"
-        output = root / "builder-run.cloud-event.json"
-        _write_pr_event(
-            pr_json,
-            body="This human PR compares Cursor setup with an unrelated release agent.",
-        )
-
-        stdout = StringIO()
-        with redirect_stdout(stdout):
-            code = builder_runs.main(
-                [
-                    "auto-record",
-                    "--pr-json",
-                    str(pr_json),
-                    "--output",
-                    str(output),
-                    "--json",
-                ]
-            )
-
-        payload = json.loads(stdout.getvalue())
-        assert code == 0
-        assert payload["status"] == "skipped"
+        code, output = _auto_record_case(Path(tmp), trusted=False, body='See https://cursor.com/pricing')
+        assert code == 1
         assert not output.exists()
 
 
-def test_builder_auto_record_accepts_cursor_agent_footer_marker() -> None:
+def test_builder_auto_record_incidental_cursor_words_do_not_establish_provenance():
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        pr_json = root / "event.json"
-        output = root / "builder-run.cloud-event.json"
-        _write_pr_event(pr_json, body="Cursor agent completed this change.")
-
-        code = builder_runs.main(
-            [
-                "auto-record",
-                "--pr-json",
-                str(pr_json),
-                "--output",
-                str(output),
-                "--json",
-            ]
-        )
-
-        event = json.loads(output.read_text(encoding="utf-8"))
-        assert code == 0
-        assert event["provider"] == "cursor_cloud_agent"
-        assert event["dimensions"]["builder_inference_confidence"] == "medium"
-        assert "cursor_agent_footer" in event["dimensions"]["builder_inference_signals"]
+        code, output = _auto_record_case(Path(tmp), trusted=False, body='Cursor setup with an unrelated release agent')
+        assert code == 1
+        assert not output.exists()
 
 
-def test_builder_auto_record_does_not_attach_cursor_url_to_claude_author() -> None:
+def test_builder_auto_record_cursor_footer_cannot_supply_trusted_evidence():
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        pr_json = root / "event.json"
-        output = root / "builder-run.cloud-event.json"
-        _write_pr_event(
-            pr_json,
-            author="claude[bot]",
-            branch="claude/bridge-copy",
-            body="Related run: https://cursor.com/agents/run_unrelated",
-        )
-
-        code = builder_runs.main(
-            [
-                "auto-record",
-                "--pr-json",
-                str(pr_json),
-                "--output",
-                str(output),
-                "--json",
-            ]
-        )
-
-        event = json.loads(output.read_text(encoding="utf-8"))
-        assert code == 0
-        assert event["provider"] == "claude"
-        assert event["dimensions"]["builder_executor"] == "claude_code_action"
-        assert event["dimensions"]["builder_run_url"] == ""
-        assert event["dimensions"]["builder_id"].startswith("claude-")
+        code, output = _auto_record_case(Path(tmp), trusted=False, body='Cursor agent completed this change.')
+        assert code == 1
+        assert not output.exists()
 
 
-def test_builder_auto_record_infers_claude_bot_author() -> None:
+def test_builder_auto_record_does_not_attach_cursor_url_to_claude_author():
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        pr_json = root / "event.json"
-        output = root / "builder-run.cloud-event.json"
-        _write_pr_event(pr_json, author="claude[bot]", branch="claude/bridge-copy")
-
-        code = builder_runs.main(
-            [
-                "auto-record",
-                "--pr-json",
-                str(pr_json),
-                "--output",
-                str(output),
-                "--json",
-            ]
-        )
-
-        event = json.loads(output.read_text(encoding="utf-8"))
+        code, output = _auto_record_case(Path(tmp), lane='claude', author='claude[bot]',
+            body='Related run: https://cursor.com/agents/run_unrelated')
+        event = json.loads(output.read_text())
         assert code == 0
-        assert event["provider"] == "claude"
-        assert event["dimensions"]["builder_executor"] == "claude_code_action"
+        assert event['provider'] == 'claude'
+        assert event['dimensions']['builder_executor'] == 'claude_cli'
+        assert event['dimensions']['builder_run_url'] == ''
+        assert 'run_unrelated' not in output.read_text()
 
 
-def test_builder_auto_record_skips_unrecognized_pr_metadata() -> None:
+def test_builder_auto_record_claude_requires_exact_selected_head():
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        pr_json = root / "event.json"
-        output = root / "builder-run.cloud-event.json"
-        _write_pr_event(pr_json)
+        code, output = _auto_record_case(Path(tmp), lane='claude', author='claude[bot]', head='c'*40)
+        assert code == 1
+        assert not output.exists()
 
-        stdout = StringIO()
-        with redirect_stdout(stdout):
-            code = builder_runs.main(
-                [
-                    "auto-record",
-                    "--pr-json",
-                    str(pr_json),
-                    "--output",
-                    str(output),
-                    "--json",
-                ]
-            )
 
-        payload = json.loads(stdout.getvalue())
-        assert code == 0
-        assert payload["status"] == "skipped"
+def test_builder_auto_record_unrecognized_metadata_has_no_attribution():
+    with tempfile.TemporaryDirectory() as tmp:
+        code, output = _auto_record_case(Path(tmp), author='human', trusted=False)
+        assert code == 1
         assert not output.exists()

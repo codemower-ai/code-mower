@@ -24,11 +24,12 @@ if __package__ and __package__.startswith("code_mower"):
         LabelDecision,
         apply_label_decision,
         author_exclusion_reason,
+        lineage_from_environment,
+        lineage_core,
         extract_reviewed_sha,
         fetch_pull_request,
         fetch_issue_comments,
         github_actions_comment_attested,
-        IssueCommentPaginationLimitExceeded,
         load_json,
         parse_csv_set,
         sha_matches_reviewed_head,
@@ -43,11 +44,12 @@ else:
             LabelDecision,
             apply_label_decision,
             author_exclusion_reason,
+        lineage_from_environment,
+        lineage_core,
             extract_reviewed_sha,
             fetch_pull_request,
             fetch_issue_comments,
             github_actions_comment_attested,
-            IssueCommentPaginationLimitExceeded,
             load_json,
             parse_csv_set,
             sha_matches_reviewed_head,
@@ -61,11 +63,12 @@ else:
             LabelDecision,
             apply_label_decision,
             author_exclusion_reason,
+        lineage_from_environment,
+        lineage_core,
             extract_reviewed_sha,
             fetch_pull_request,
             fetch_issue_comments,
             github_actions_comment_attested,
-            IssueCommentPaginationLimitExceeded,
             load_json,
             parse_csv_set,
             sha_matches_reviewed_head,
@@ -373,6 +376,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     current_head_sha = os.environ.get("DRY_RUN_HEAD_SHA")
     issue_comments: Sequence[Mapping[str, Any]] | None = None
     comment_history_complete = True
+    lineage = None
     tokens = config.github_tokens_from_env()
     if not os.environ.get("DRY_RUN"):
         if not tokens:
@@ -382,7 +386,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         issue = event.get("issue") or {}
         issue_number = int(issue.get("number", 0))
         if issue_number and "pull_request" in issue:
-            current_head_sha = fetch_pull_request(repo, issue_number, tokens=tokens)["head"]["sha"]
+            pr_current = fetch_pull_request(repo, issue_number, tokens=tokens)
+            current_head_sha = pr_current["head"]["sha"]
             page_cap = int(os.environ.get("CODE_MOWER_LABELER_COMMENT_PAGE_CAP", "10"))
             try:
                 issue_comments = fetch_issue_comments(
@@ -391,12 +396,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     tokens=tokens,
                     page_cap=page_cap,
                 )
-            except IssueCommentPaginationLimitExceeded as exc:
+                lineage = lineage_from_environment(repo, issue_number, pr_current,
+                    lineage_core.History(issue_comments), reviewer=args.lane,
+                    accounts=tuple(config.comment_authors()))
+            except (ValueError, KeyError, RuntimeError) as exc:
                 comment_history_complete = False
                 print(
                     f"warning: {exc}; skipping label update because latest verdict cannot be established",
                     file=sys.stderr,
                 )
+
+    if not comment_history_complete:
+        print("skip: comment history pagination cap exceeded; label state unchanged")
+        return 0
 
     github_actions_workflows = tuple(
         parse_csv_set(os.environ.get("CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS") or "")
@@ -422,6 +434,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps({"decision": decision.__dict__, "reason": reason}, sort_keys=True))
         return 0
 
+    if lineage is None or not lineage_core.admit(lineage, args.lane):
+        print("skip: lineage " + (lineage.reason if lineage is not None else "unreadable"))
+        return 0
     apply_label_decision(repo, decision, tokens=tokens)
     print(
         f"applied: add {decision.add_label}; remove {', '.join(decision.remove_labels)} "

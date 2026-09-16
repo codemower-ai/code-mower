@@ -1,4 +1,5 @@
 from __future__ import annotations
+from lineage_consumer_fixtures import complete_pr, pinned_repo
 
 import json
 import tempfile
@@ -15,10 +16,12 @@ class DecisionAuditIntegrationTests(unittest.TestCase):
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
             repo.mkdir()
+            pinned_repo(repo)
             worktree = tmp_path / "worktree"
             worktree.mkdir()
             head_sha = "a" * 40
             pr_payload = {"head": {"sha": head_sha, "ref": "human/fix"}, "title": "Fix"}
+            pr_payload = complete_pr(pr_payload)
             marker_body = decisions.render_decision_comment(
                 decisions.DecisionRecord(
                     id="ADR-007",
@@ -167,6 +170,7 @@ class DecisionAuditIntegrationTests(unittest.TestCase):
                 40,
                 40,
             )
+            diff_context = __import__("dataclasses").replace(diff_context, fetched_base_ref=pinned_repo(repo))
             with (
                 mock.patch.dict(
                     "os.environ",

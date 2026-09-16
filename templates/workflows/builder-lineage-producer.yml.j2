@@ -27,6 +27,8 @@ jobs:
   attribute:
     runs-on: ubuntu-latest
     steps:
+      - name: Install released Code Mower
+        run: python -m pip install 'code-mower==1.4.0'
       - name: Retrieve complete lineage and record attribution
         env:
           GH_TOKEN: ${{ github.token }}
@@ -39,6 +41,9 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import os
-          from code_mower.builder_lineage_producer import staged_record
-          staged_record(os.environ)
+          try:
+              from code_mower.provider_runners.lineage import installed_record
+          except ImportError:
+              raise SystemExit("Unsupported installed lineage capability; release activation requires #915")
+          installed_record(os.environ)
           PY

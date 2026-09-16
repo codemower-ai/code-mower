@@ -1534,6 +1534,14 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
         config.decision_authorities,
         trusted_ref=config.base_ref,
     )
+    from code_mower.provider_runners.lineage import acquire as acquire_lineage
+    acquire_lineage(repo, pr_number, pr_meta, checkout=local_repo,
+        base_sha=config.base_ref,
+        fetch_comments=lambda: fetch_issue_comments(repo, pr_number, token=config.github_token),
+        reviewer="claude", reviewer_accounts=tuple(item.strip() for item in
+            os.environ.get("CLAUDE_AUDIT_BOT_AUTHORS", "claude-audit-bot,claude-audit-bot[bot]").split(",") if item.strip()),
+        extra_authorities=decision_authorities)
+
     budget_was_explicit = bool(str(config.max_budget_usd or "").strip())
     effective_budget_usd = code_mower_audit_limits.resolve_audit_budget_usd(
         diff_context.included_diff_bytes,

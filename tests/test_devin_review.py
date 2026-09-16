@@ -1,4 +1,4 @@
-"""Deterministic, no-network/no-Git transport calibration and acceptance controls."""
+"""Deterministic review lifecycle and admission with fake provider boundaries."""
 
 from dataclasses import replace
 import json
@@ -85,6 +85,7 @@ def make_review():
             expires_at="2099-01-01T00:00:00Z",
         ),
         ("handler.py",),
+        branch="human/fix", policy={}, authorities=(), history=[], labels=(), base_sha="b" * 40,
     )
 
 
@@ -410,6 +411,170 @@ class DevinReviewTests(unittest.TestCase):
             remote.collect(apply=True)
             with self.assertRaisesRegex(RemoteError, "review_not_ready"):
                 remote.accept()
+
+
+
+
+class LineageReviewLifecycleTests(unittest.TestCase):
+    """Row A: the real local/hosted lifecycle with immutable-base acquisition."""
+
+    def review(self, root, case='ordinary'):
+        from code_mower.builder_lineage import Chain, Episode, Target, render
+        from code_mower.provider_runners.lineage import trusted_policy
+        from lineage_consumer_fixtures import AUTHORS, HEAD, REPO, pinned_repo, policy
+        cfg = policy({} if case == 'no-contract' else None)
+        if case == 'floor-conflict':
+            cfg['builder_identity']['authors']['devin-cli-audit-bot'] = 'claude'
+        base = pinned_repo(root/'policy-repo', cfg)
+        trusted, _, authority = trusted_policy(root/'policy-repo', base)
+        branch = 'feature/cx-topic' if case == 'custom-prefix' else 'codex/topic'
+        labels = ('builder:claude',) if case in ('conflict', 'no-contract', 'takeover', 'prior-devin') else ('builder:codex',)
+        history = []
+        if case in ('takeover', 'prior-devin'):
+            episodes = [Episode(sequence=1, repo=REPO, pr_number=9, branch=branch,
+                source_lane='codex', destination_lane='devin' if case == 'prior-devin' else 'claude',
+                expected_head='a'*40, resulting_head='c'*40 if case == 'prior-devin' else HEAD,
+                writer_state='terminated', kind='handoff')]
+            if case == 'prior-devin':
+                episodes.append(Episode(sequence=2, repo=REPO, pr_number=9, branch=branch,
+                    source_lane='devin', destination_lane='claude', expected_head='c'*40,
+                    resulting_head=HEAD, writer_state='terminated', kind='handoff'))
+            history = [{'user': {'login': AUTHORS[0]}, 'body': render(Chain.from_arrivals(
+                Target(REPO, 9, branch, HEAD), episodes))}]
+        if case in ('malformed-marker', 'reviewer-is-not-authority'):
+            history = [{'user': {'login': 'devin-cli-audit-bot' if case == 'reviewer-is-not-authority' else AUTHORS[0]},
+                        'body': '<!-- CODE_MOWER_BUILDER_LINEAGE: broken -->'}]
+        if case == 'raw-null':
+            history = None
+        if case == 'raw-mixed':
+            history = [{'user': None}, None]
+        review = make_review()
+        return replace(review, head=HEAD, context=review.context | {'head': HEAD}, branch=branch,
+            policy=trusted, authorities=tuple(sorted(authority.accounts)), history=history,
+            labels=labels, base_sha=base)
+
+    def test_local_and_hosted_admit_the_same_complete_lineage_controls(self):
+        allowed = {'ordinary', 'custom-prefix', 'no-contract', 'takeover', 'reviewer-is-not-authority'}
+        for case in (*sorted(allowed), 'conflict', 'prior-devin', 'malformed-marker', 'raw-null', 'raw-mixed', 'floor-conflict'):
+            with self.subTest(case=case), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                review = self.review(root, case)
+                def current(review=review):
+                    return review
+                run = Mock(return_value=(json.dumps(CONTROLS[0][2]), 0))
+                if case not in allowed:
+                    with self.assertRaisesRegex(RemoteError, 'review_binding_mismatch'):
+                        local_review(review, current, run)
+                    run.assert_not_called()
+                    api = Mock(side_effect=AssertionError('provider must not run'))
+                    client = DevinClient('org-example', 'test-key', api_runner=api)
+                    with self.assertRaisesRegex(RemoteError, 'review_binding_mismatch'):
+                        HostedReview.devin(root/'state', client, review, current)
+                    api.assert_not_called()
+                    self.assertFalse((root/'state').exists())
+                    continue
+                local = local_review(review, current, run)
+                self.assertEqual(run.call_count, 1)
+                remote, state, calls = hosted(root, review, current, CONTROLS[0][2])
+                remote.dispatch('approved bounded review', apply=True)
+                state.update(status='exit', status_detail='finished')
+                remote.collect(apply=True)
+                saved = remote.accept()
+                self.assertEqual(local.accept(current).verdict, 'PASS')
+                self.assertEqual(saved.accept(current).verdict, 'PASS')
+                self.assertFalse(saved.merge_authority)
+                self.assertFalse(local.merge_authority)
+                self.assertEqual(sum(method == 'POST' for method, _ in calls), 1)
+
+    def test_current_target_policy_authority_and_history_changes_revoke_all_entrypoints(self):
+        from copy import deepcopy
+        from functools import partial
+        changes = ('branch', 'head', 'base', 'policy', 'authority', 'history', 'labels')
+        for change in changes:
+            with self.subTest(change=change), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                review = self.review(root, 'takeover')
+                latest = [review]
+                def current(latest=latest):
+                    return latest[0]
+                local = local_review(review, current, lambda: (json.dumps(CONTROLS[0][2]), 0))
+                remote, state, calls = hosted(root, review, current, CONTROLS[0][2])
+                remote.dispatch('approved', apply=True)
+                state.update(status='exit', status_detail='finished')
+                remote.collect(apply=True)
+                saved = remote.accept()
+                if change == 'branch':
+                    changed = replace(review, branch='codex/other')
+                elif change == 'head':
+                    changed = replace(review, head='d'*40)
+                elif change == 'base':
+                    changed = replace(review, base_sha='e'*40)
+                elif change == 'policy':
+                    cfg = deepcopy(review.policy)
+                    cfg['builder_identity']['authors']['independent-human'] = 'devin'
+                    changed = replace(review, policy=cfg)
+                elif change == 'authority':
+                    changed = replace(review, authorities=())
+                elif change == 'labels':
+                    changed = replace(review, labels=('builder:devin',))
+                else:
+                    changed = replace(review, history=[])
+                latest[0] = changed
+                count = len(calls)
+                actions = (partial(local.accept, current), partial(saved.accept, current), remote.accept,
+                    partial(remote.dispatch, 'approved', apply=True), partial(remote.collect, apply=True))
+                for action in actions:
+                    with self.assertRaisesRegex(RemoteError, 'review_binding_mismatch'):
+                        action()
+                    self.assertEqual(len(calls), count)
+                run = Mock(side_effect=AssertionError('provider must not execute'))
+                with self.assertRaisesRegex(RemoteError, 'review_binding_mismatch'):
+                    local_review(review, current, run)
+                run.assert_not_called()
+
+    def test_unreadable_malformed_and_capped_current_history_refuse_before_lifecycle_io(self):
+        from functools import partial
+        from code_mower.provider_runners import github_pr
+        from lineage_consumer_fixtures import REPO
+        for mode in ('unreadable', 'malformed', 'cap'):
+            with self.subTest(mode=mode), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                review = self.review(root)
+                def current_good(review=review):
+                    return review
+                local = local_review(review, current_good, lambda: (json.dumps(CONTROLS[0][2]), 0))
+                remote, state, calls = hosted(root, review, current_good, CONTROLS[0][2])
+                remote.dispatch('approved', apply=True)
+                state.update(status='exit', status_detail='finished')
+                remote.collect(apply=True)
+                saved = remote.accept()
+                def current(review=review):
+                    raw = github_pr.fetch_issue_comments(REPO, 9, token='fixture', page_cap=8)
+                    return replace(review, history=raw)
+                remote.current = current
+                requests = []
+                def request(*args, requests=requests, mode=mode, **kwargs):
+                    requests.append(args)
+                    if mode == 'unreadable':
+                        raise RuntimeError('authenticated history unavailable')
+                    return [None] if mode == 'malformed' else [{}]*100
+                run = Mock(side_effect=AssertionError('provider must not execute'))
+                count = len(calls)
+                api = Mock(side_effect=AssertionError('provider must not execute'))
+                client = DevinClient('org-example', 'test-key', api_runner=api)
+                with patch.object(github_pr, '_gh_request', side_effect=request):
+                    for action in (partial(local_review, review, current, run),
+                            partial(HostedReview.devin, root/'new-state', client, review, current),
+                            partial(remote.dispatch, 'approved', apply=True), partial(remote.collect, apply=True),
+                            remote.accept, partial(saved.accept, current), partial(local.accept, current)):
+                        before = len(requests)
+                        with self.assertRaisesRegex(RemoteError, 'review_binding_mismatch'):
+                            action()
+                        self.assertEqual(len(requests)-before, 9 if mode == 'cap' else 1)
+                        self.assertEqual(len(calls), count)
+                run.assert_not_called()
+                api.assert_not_called()
+                self.assertFalse((root/'new-state').exists())
 
 
 if __name__ == "__main__":

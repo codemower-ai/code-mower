@@ -1,6 +1,8 @@
 from __future__ import annotations
+from lineage_consumer_fixtures import RUNNER_GH_BOUNDARY, runner_lineage_env, complete_pr
 
 import atexit
+from lineage_consumer_fixtures import fixture_shell_env
 import copy
 import io
 import json
@@ -51,6 +53,7 @@ def _write_lane_delivery_wrapper(directory: Path) -> Path:
 _LANE_DELIVERY_DIR = Path(tempfile.mkdtemp(prefix="code mower lane delivery "))
 atexit.register(shutil.rmtree, _LANE_DELIVERY_DIR, ignore_errors=True)
 _LANE_DELIVERY_ENV = {
+    **fixture_shell_env(_LANE_DELIVERY_DIR),
     "CODE_MOWER_LANE_DELIVERY_CMD": str(_write_lane_delivery_wrapper(_LANE_DELIVERY_DIR)),
     "PYTHONPATH": str(ROOT / "src"),
 }
@@ -1468,6 +1471,7 @@ fi
 """,
                 encoding="utf-8",
             )
+            fake_gh.write_text(fake_gh.read_text().replace("set -euo pipefail\n", "set -euo pipefail\n" + RUNNER_GH_BOUNDARY, 1))
             fake_gh.chmod(0o755)
 
             completed = subprocess.run(
@@ -1484,8 +1488,9 @@ fi
                 ],
                 cwd=ROOT,
                 env={
-                    **os.environ,
+                    **os.environ, **_LANE_DELIVERY_ENV,
                     "HOME": str(root),
+                    **runner_lineage_env(root, code_mower_config.load_config(CONFIG_PATH), complete_pr(number=21, branch='claude/fix', head="a"*40, author='claude[bot]', labels=["builder:claude"])),
                     "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                 },
                 text=True,
@@ -1496,7 +1501,7 @@ fi
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("codex: selected target pr #21", completed.stdout)
         self.assertIn(
-            "refusing target PR #21; head branch claude/fix is not owned by this lane",
+            "head branch claude/fix is not owned by this lane",
             completed.stderr,
         )
         self.assertIn(

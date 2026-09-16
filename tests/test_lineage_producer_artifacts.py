@@ -14,7 +14,9 @@ from urllib.parse import parse_qs, urlsplit
 import yaml
 from code_mower import init, package
 from code_mower.config import load_config
-from lineage_producer_fixtures import ACCEPTED_BASELINE, AUTHORITY, POLICY, TRANSPORT, comments, episode, target
+from lineage_producer_fixtures import ACCEPTED_BASELINE, AUTHORITY, TRANSPORT, comments, episode, target
+from lineage_consumer_fixtures import policy, policy_text
+from code_mower.audit_labeler_lib import lineage_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = "e818a3b639dfe903bdc16aff3674af98a5a08233"
@@ -121,7 +123,7 @@ with patch('datetime.datetime', Clock):
         gh = cls.bin / "gh"
         gh_code = cls.bin / "gh_fixture.py"
         gh_code.write_text( '''
-import json, os, sys
+import base64, json, os, sys
 from pathlib import Path
 fixture = json.loads(Path(os.environ['FIXTURE']).read_text())
 endpoint = sys.argv[2]
@@ -129,7 +131,11 @@ with Path(os.environ['EFFECTS']).open('a') as sink:
     sink.write(json.dumps(sys.argv[1:]) + '\\n')
 assert sys.argv[1] == 'api' and len(sys.argv) == 3
 mode = fixture['mode']
-if '/pulls/' in endpoint:
+if '/git/trees/' in endpoint:
+    raw = {'truncated': False, 'tree': [{'path': 'code-mower.yml', 'type': 'blob', 'sha': 'c' * 40}]}
+elif '/git/blobs/' in endpoint:
+    raw = {'encoding': 'base64', 'content': base64.b64encode(fixture['policy'].encode()).decode()}
+elif '/pulls/' in endpoint:
     raw = fixture['pr']
     if mode == 'target-failed': sys.exit(1)
     if mode == 'target-null': raw = None
@@ -169,7 +175,7 @@ print(json.dumps(raw))
     def test_real_rendered_workflow_and_runner_failure_rows(self):
         workflow = yaml.safe_load(self.materialized(ASSETS[0]))
         self.assertEqual(set(workflow["permissions"].values()), {"read"})
-        body = workflow["jobs"]["attribute"]["steps"][0]["run"]
+        body = workflow["jobs"]["attribute"]["steps"][-1]["run"]
         scripts = [body, self.materialized(ASSETS[1])]
         for index, script in enumerate(scripts):
             for mode in ("success", "target-failed", "target-null", "branch-missing", "branch-case",
@@ -181,15 +187,17 @@ print(json.dumps(raw))
                     case.mkdir()
                     fixture = case / "fixture.json"
                     observed = target()
-                    fixture.write_text(json.dumps({"mode": mode, "comments": comments([episode()]),
-                        "pr": {"state": "open", "number": 42, "base": {"repo": {"full_name": observed.repo}},
+                    roles = policy()
+                    if mode == "policy-denied":
+                        roles["role_policy"] = {"claude": {"builder": {"enabled": False}}}
+                    fixture.write_text(json.dumps({"mode": mode, "policy": policy_text(roles), "comments": comments([episode()]),
+                        "pr": {"state": "open", "number": 42, "base": {"repo": {"full_name": observed.repo}, "sha": BASE}, "labels": [{"name": "builder:codex"}],
                                "head": {"ref": observed.branch, "sha": observed.head_sha}, "user": {"login": "source-bot"}}}))
-                    roles = {"role_policy": {"claude": {"builder": {"enabled": False}}}} if mode == "policy-denied" else {}
                     env = os.environ | {"PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
                         "FIXTURE": str(fixture), "EFFECTS": str(case / "effects.jsonl"),
                         "LINEAGE_TARGET_JSON": json.dumps(observed.__dict__) if hasattr(observed, '__dict__') else json.dumps(
                             {"repo": observed.repo, "pr_number": observed.pr_number, "branch": observed.branch, "head_sha": observed.head_sha}),
-                        "LINEAGE_POLICY_JSON": json.dumps({"base_sha": BASE, "identity": POLICY.to_mapping(), "roles": roles}),
+                        "LINEAGE_POLICY_JSON": json.dumps({"base_sha": BASE, "identity": lineage_identity(roles).to_mapping(), "roles": roles}),
                         "LINEAGE_AUTHORITY_JSON": json.dumps([] if mode == "no-authority" else sorted(AUTHORITY.accounts)),
                         "LINEAGE_TRANSPORT_JSON": json.dumps(TRANSPORT.__dict__), "LINEAGE_OUTPUT": str(case/"event.json")}
                     result = subprocess.run(["bash", "-c", script], cwd=case, env=env,
@@ -219,29 +227,43 @@ print(json.dumps(raw))
             definitions, live_segments = self.module_source_hashes(path)
             self.assertFalse(set(baseline['definitions']) - set(definitions),
                              f'{path}: missing accepted definitions: {sorted(set(baseline["definitions"]) - set(definitions))}')
+            activated = {
+                'src/code_mower/builder_runs.py': {'main'},
+                'src/code_mower/lane_delivery.py': {'validate_handoff', 'main', '_add_handoff_parser', '_add_supervise_parser', '_handoff_main', '_supervise_main'},
+                'src/code_mower/lane_handoff.py': {'lineage_handoff'},
+            }
             for name, digest in baseline['definitions'].items():
-                self.assertEqual(definitions[name], digest, f'{path}: accepted definition source changed: {name}')
-            self.assertEqual(live_segments, baseline['live_segments'],
-                             f'{path}: ordered module-level live source changed')
+                if name not in activated[path]:
+                    self.assertEqual(definitions[name], digest, f'{path}: frozen definition changed: {name}')
+            # Stage 3 activates main after the imported producer definitions.
+            tree = ast.parse((ROOT/path).read_text())
+            if path != 'src/code_mower/lane_handoff.py':
+                self.assertIsInstance(tree.body[-1], ast.If)
+
         expected = package.committed_package_manifest_text(package.generate_committed_package_manifest(ROOT))
         self.assertEqual(expected, (ROOT/"code-mower-package-manifest.json").read_text())
 
-    def test_default_init_emitted_helper_isolated_without_producer(self):
+    def test_default_init_emits_activation_with_standalone_pure_helper(self):
         config = load_config(ROOT / "src/code_mower/templates/code-mower.example.yml")
         plan = init.render_init_plan(config, package_mode=True, repo_root=ROOT)
         output = self.root / "default-init"
         init.apply_init_plan(plan, output, source_root=ROOT)
         all_paths = [p.relative_to(output).as_posix() for p in output.rglob('*') if p.is_file()]
-        self.assertFalse(any('lineage-producer' in p or 'builder_lineage_producer' in p for p in all_paths))
+        self.assertIn('.github/workflows/builder-lineage-producer.yml', all_paths)
+        self.assertIn('tools/lanes/lineage-producer.sh', all_paths)
         # Existing live init/runner/workflow inputs are byte-identical to accepted base.
         paths = ['src/code_mower/init.py', 'tools/lanes/run_mac_lane.sh',
                  'templates/lanes/run_mac_lane.sh', 'src/code_mower/templates/lanes/run_mac_lane.sh']
         paths.extend(p.relative_to(ROOT).as_posix() for p in (ROOT/'.github/workflows').glob('*'))
         baseline = self.accepted_baseline()['unchanged_files']
         self.assertCountEqual(paths, baseline, 'Actual init/runner/workflow inventory differs from accepted baseline')
+        activated = {'src/code_mower/init.py', 'tools/lanes/run_mac_lane.sh',
+            'templates/lanes/run_mac_lane.sh', 'src/code_mower/templates/lanes/run_mac_lane.sh',
+            '.github/workflows/code-mower-gate.yml'}
         for path in paths:
-            self.assertEqual(hashlib.sha256((ROOT/path).read_bytes()).hexdigest(), baseline[path],
-                             f'{path}: unchanged accepted file bytes differ')
+            if path not in activated:
+                self.assertEqual(hashlib.sha256((ROOT/path).read_bytes()).hexdigest(), baseline[path],
+                                 f'{path}: frozen accepted file bytes differ')
         # Normal init emits the pure tools helper, not the package delivery modules.
         helper = output/'tools/builder_lineage.py'
         self.assertTrue(helper.is_file())
@@ -265,3 +287,79 @@ assert not (Path.cwd()/'src/code_mower/builder_lineage_producer.py').exists()
         result = subprocess.run([sys.executable, '-I', '-S', '-c', program], cwd=output,
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_published_140_refuses_emitted_artifact_before_any_effect(self):
+        """#915 closeout must replace this refusal with installed published 1.4.1
+        takeover/continuation/third-writer/readback plus consumer admission evidence.
+        Source merge alone does not qualify installed release activation.
+        """
+        legacy = self.root/'legacy-140'
+        result = subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-deps', '--no-compile',
+            '--target', str(legacy), 'code-mower==1.4.0'], capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        import importlib.metadata
+        distributions = list(importlib.metadata.distributions(path=[str(legacy)]))
+        self.assertEqual([(d.metadata['Name'], d.version) for d in distributions], [('code-mower', '1.4.0')])
+        legacy_bin = self.root/'legacy-bin'
+        legacy_bin.mkdir()
+        bootstrap = f'''
+import sys
+from pathlib import Path
+sys.path.insert(0, {str(legacy)!r})
+import code_mower
+assert Path(code_mower.__file__).resolve().is_relative_to(Path({str(legacy)!r}))
+assert {str(ROOT/'src')!r} not in sys.path
+exec(compile(sys.stdin.read(), '<emitted-installed-artifact>', 'exec'))
+'''
+        wrapper = legacy_bin/'python'
+        wrapper.write_text('#!/bin/sh\nexec '+shlex.quote(sys.executable)+' -I -S -c '+shlex.quote(bootstrap)+'\n')
+        wrapper.chmod(0o755)
+        effects = self.root/'legacy-effects'
+        gh = legacy_bin/'gh'
+        gh.write_text('#!/bin/sh\nprintf effect >> '+shlex.quote(str(effects))+'\nexit 99\n')
+        gh.chmod(0o755)
+        output = self.root/'legacy-event.json'
+        workflow = yaml.safe_load(self.materialized(ASSETS[0]))
+        for script in (workflow['jobs']['attribute']['steps'][-1]['run'], self.materialized(ASSETS[1])):
+            result = subprocess.run(['bash', '-c', script], cwd=self.root,
+                env=os.environ | {'PATH': str(legacy_bin)+os.pathsep+os.environ['PATH'], 'LINEAGE_OUTPUT': str(output)},
+                capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('unsupported installed lineage capability', result.stderr.lower())
+            self.assertFalse(effects.exists())
+            self.assertFalse(output.exists())
+        lane_wrapper = legacy_bin/'lane-delivery'
+        launcher = f"import sys; sys.path.insert(0, {str(legacy)!r}); from code_mower.lane_delivery import main; raise SystemExit(main())"
+        lane_wrapper.write_text('#!/bin/sh\nexec '+shlex.quote(sys.executable)+' -I -c '+shlex.quote(launcher)+' "$@"\n')
+        lane_wrapper.chmod(0o755)
+        from lineage_consumer_fixtures import fixture_shell_env
+        runner_env = os.environ | fixture_shell_env(legacy_bin) | {
+            'PATH': str(legacy_bin)+os.pathsep+os.environ['PATH'],
+            'CODE_MOWER_LANE_DELIVERY_CMD': str(lane_wrapper)}
+        result = subprocess.run(['bash', str(ROOT/'tools/lanes/run_mac_lane.sh'),
+            '--lane', 'codex', '--repo', 'owner/repo', '--target', 'pr:42', '--max-minutes', '1'],
+            cwd=self.root, env=runner_env, capture_output=True, text=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('unsupported installed lineage capability', result.stderr.lower())
+        self.assertFalse(effects.exists())
+
+    def test_installed_candidate_supervisor_and_public_readback_business(self):
+        program = f'''
+import sys, unittest
+from pathlib import Path
+sys.path = [p for p in sys.path if p != {str(ROOT/'src')!r}]
+sys.meta_path = [finder for finder in sys.meta_path if '__editable__' not in str(finder)]
+sys.path.insert(0, {str(self.installed)!r})
+sys.path.insert(1, {str(ROOT/'tests')!r})
+import code_mower.lane_delivery as delivery
+assert Path(delivery.__file__).resolve().is_relative_to(Path({str(self.installed)!r}))
+from test_lineage_consumer_activation import ProducerActivation
+suite = unittest.TestSuite(ProducerActivation(name) for name in (
+ 'test_actual_entrypoint_takeover_continuation_then_third_writer',
+ 'test_public_readback_failure_keeps_post_but_no_labels_or_attribution'))
+result = unittest.TextTestRunner().run(suite)
+raise SystemExit(not result.wasSuccessful())
+'''
+        result = subprocess.run([sys.executable, '-I', '-c', program], cwd=self.root,
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)

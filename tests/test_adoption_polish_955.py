@@ -1,6 +1,7 @@
 """Adoption polish: effective review authority, superseded bridge, concise doctor."""
 
 from __future__ import annotations
+from lineage_consumer_fixtures import complete_pr
 
 import contextlib
 import io
@@ -155,7 +156,7 @@ class NonWideningOverrideTests(unittest.TestCase):
             "lanes:\n"
             "  claude_audit:\n"
             "    type: review\n"
-            "    driver: claude_cli\n"
+            "    driver: local_cli\n"
             "    provider: claude\n"
             "    merge_authority: false\n"
             "    informational: true\n"
@@ -234,7 +235,7 @@ class TrustedBaseAuthorityTests(unittest.TestCase):
         "lanes:\n"
         "  claude_audit:\n"
         "    type: review\n"
-        "    driver: claude_cli\n"
+        "    driver: local_cli\n"
         "    provider: claude\n"
         "    merge_authority: {authority}\n"
         "    informational: {informational}\n"
@@ -414,10 +415,12 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
 
     LANES = (
         "version: 1\n"
+        "project:\n  name: fixture\n  state_dir: .code-mower\n"
+        "repositories:\n  - slug: owner/repo\n    default_branch: main\n"
         "lanes:\n"
         "  claude_audit:\n"
         "    type: review\n"
-        "    driver: claude_cli\n"
+        "    driver: local_cli\n"
         "    provider: claude\n"
         "    merge_authority: {authority}\n"
         "    informational: {informational}\n"
@@ -491,6 +494,7 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
         worktree.mkdir(exist_ok=True)
         head = "d" * 40
         pr_payload = {"head": {"sha": head, "ref": "human/fix"}, "title": "Fix"}
+        pr_payload = complete_pr(pr_payload)
         parsed = cap.CodexVerdict(verdict="PASS", prose="Summary:\n\nNone.")
         diagnostics = cap.ReviewContextDiagnostics(
             base_ref=config.base_ref,
@@ -506,6 +510,7 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
             effective_budget_usd=config.max_budget_usd or cap.DEFAULT_MAX_BUDGET_USD,
         )
         with (
+            mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
             mock.patch.dict(
                 "os.environ",
                 {
@@ -586,6 +591,7 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
 
         head = "d" * 40
         pr_payload = {"head": {"sha": head, "ref": "human/fix"}, "title": "Fix"}
+        pr_payload = complete_pr(pr_payload)
         parsed = cap.ClaudeVerdict(verdict="PASS", prose="Summary:\n\nNone.")
         advance = self._fetch_effect()
 
@@ -598,6 +604,7 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
             )
 
         with (
+            mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
             mock.patch.dict(
                 "os.environ",
                 {
@@ -706,6 +713,7 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
         worktree.mkdir(exist_ok=True)
         head = "d" * 40
         pr_payload = {"head": {"sha": head, "ref": "human/fix"}, "title": "Fix"}
+        pr_payload = complete_pr(pr_payload)
         parsed = cap.CodexVerdict(verdict="PASS", prose="Summary:\n\nNone.")
 
         def prepare(**kwargs):
@@ -733,6 +741,7 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
             merge_authority=True, authority_request=self._request("codex")
         )
         with (
+            mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
             mock.patch.dict(
                 "os.environ",
                 {
@@ -777,6 +786,7 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
         observed: dict[str, str] = {}
         head = "d" * 40
         pr_payload = {"head": {"sha": head, "ref": "human/fix"}, "title": "Fix"}
+        pr_payload = complete_pr(pr_payload)
         parsed = cap.ClaudeVerdict(verdict="PASS", prose="Summary:\n\nNone.")
         advance = self._fetch_effect()
 
@@ -804,6 +814,7 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
             merge_authority=True, authority_request=self._request("claude")
         )
         with (
+            mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
             mock.patch.dict(
                 "os.environ",
                 {
@@ -839,6 +850,7 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
         fetched = self._git("rev-parse", "main")
         head = "d" * 40
         pr_payload = {"head": {"sha": head, "ref": "human/fix"}, "title": "Fix"}
+        pr_payload = complete_pr(pr_payload)
         advance = self._fetch_effect()
 
         def build_diff_context(*args, **kwargs):
@@ -850,6 +862,7 @@ class FetchedBaseAuthorityTests(unittest.TestCase):
             merge_authority=True, authority_request=self._request("claude")
         )
         with (
+            mock.patch.object(cap, "fetch_issue_comments", return_value=[]),
             mock.patch.dict(
                 "os.environ",
                 {

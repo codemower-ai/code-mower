@@ -9,6 +9,7 @@ from __future__ import annotations
 DEFAULT_PACKAGE_CONFIG = "code-mower.example.yml"
 
 PACKAGE_FILES = (
+    ("src/code_mower/provider_runners/lineage.py", "src/code_mower/provider_runners/lineage.py", "core"),
     ("src/code_mower/builder_lineage_producer.py", "src/code_mower/builder_lineage_producer.py", "core"),
     ("templates/workflows/builder-lineage-producer.yml.j2", "templates/workflows/builder-lineage-producer.yml.j2", "template"),
     ("src/code_mower/templates/workflows/builder-lineage-producer.yml.j2", "src/code_mower/templates/workflows/builder-lineage-producer.yml.j2", "template"),
@@ -635,6 +636,7 @@ PACKAGE_FILES = (
 )
 
 DEFERRED_PACKAGE_FILES = (
+    ("src/code_mower/provider_runners/lineage.py", "src/code_mower/provider_runners/lineage.py", "core"),
     (
         "tools/local_llm_audit_bridge.py",
         "src/code_mower/local_llm_audit_bridge.py",

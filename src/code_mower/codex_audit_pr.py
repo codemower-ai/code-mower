@@ -1941,6 +1941,14 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
         config.decision_authorities,
         trusted_ref=config.base_ref,
     )
+    from code_mower.provider_runners.lineage import acquire as acquire_lineage
+    acquire_lineage(repo, pr_number, pr_meta, checkout=local_repo,
+        base_sha=config.base_ref,
+        fetch_comments=lambda: fetch_issue_comments(repo, pr_number, token=config.github_token),
+        reviewer="codex", reviewer_accounts=tuple(item.strip() for item in
+            os.environ.get("CODEX_BOT_AUTHORS", "codex-audit-bot,codex-audit-bot[bot]").split(",") if item.strip()),
+        extra_authorities=decision_authorities)
+
     private_context = context_audit.prepare(
         repository=repo, pr=pr_number, head=head_sha_start, host="codex",
         authorities=decision_authorities, revision=config.context_revision,
