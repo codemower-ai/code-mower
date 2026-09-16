@@ -27,7 +27,6 @@ import json
 import os
 import plistlib
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -94,6 +93,8 @@ ORIGIN_SLUG_RE = re.compile(
 _LABEL_PORT_RE = re.compile(rf"^{re.escape(SERVICE_LABEL_PREFIX)}\.(\d+)$")
 _LAUNCHCTL_PID_RE = re.compile(r"^\s*pid\s*=\s*(\d+)", re.MULTILINE)
 _LAUNCHCTL_STATE_RE = re.compile(r"^\s*state\s*=\s*(\S+)", re.MULTILINE)
+_LAUNCHCTL_ARGUMENTS_OPEN_RE = re.compile(r"^\s*arguments\s*=\s*\{\s*$")
+_LAUNCHCTL_BLOCK_CLOSE_RE = re.compile(r"^\s*\}\s*$")
 _PYTHON_EXECUTABLE_RE = re.compile(r"^python(?:\d+(?:\.\d+)?)?$")
 
 # The binding checks that make up the serving gate. Named here so a runbook can
@@ -440,6 +441,29 @@ def _service_from_definition(path: Path, data: Mapping[str, Any], text: str) -> 
     )
 
 
+def parse_launchctl_arguments(stdout: str) -> tuple[str, ...] | None:
+    """The `arguments = { ... }` block of a `launchctl print` dump.
+
+    launchd prints one argument per line, so an argument containing spaces
+    arrives whole. None distinguishes "launchd did not report an argument
+    list" from "the job was exec'd with no arguments".
+    """
+
+    lines = (stdout or "").splitlines()
+    for index, line in enumerate(lines):
+        if not _LAUNCHCTL_ARGUMENTS_OPEN_RE.match(line):
+            continue
+        arguments: list[str] = []
+        for entry in lines[index + 1 :]:
+            if _LAUNCHCTL_BLOCK_CLOSE_RE.match(entry):
+                return tuple(arguments)
+            arguments.append(entry.strip())
+        # An unterminated block is a dump we do not understand; say so rather
+        # than validating against half an argument list.
+        return None
+    return None
+
+
 class LaunchdProvider:
     """macOS provider. Every mutation goes through `launchctl`."""
 
@@ -551,6 +575,14 @@ class LaunchdProvider:
                 services.append(service)
         return services
 
+    def _print(self, label: str) -> str | None:
+        """The launchd job dump, or None when launchd does not hold the job."""
+
+        completed = self._run(["launchctl", "print", f"{self.domain}/{label}"])
+        if completed is None or completed.returncode != 0:
+            return None
+        return completed.stdout or ""
+
     def runtime(self, label: str) -> tuple[bool, int | None]:
         """Whether launchd holds the job, and the pid it is supervising.
 
@@ -559,16 +591,32 @@ class LaunchdProvider:
         reports `(True, None)` rather than being called healthy.
         """
 
-        completed = self._run(["launchctl", "print", f"{self.domain}/{label}"])
-        if completed is None or completed.returncode != 0:
+        stdout = self._print(label)
+        if stdout is None:
             return False, None
-        stdout = completed.stdout or ""
         pid_match = _LAUNCHCTL_PID_RE.search(stdout)
         state_match = _LAUNCHCTL_STATE_RE.search(stdout)
         pid = int(pid_match.group(1)) if pid_match else None
         if pid is None and state_match and "running" not in state_match.group(1).lower():
             return True, None
         return True, pid
+
+    def job_arguments(self, label: str) -> tuple[str, ...] | None:
+        """The argument vector launchd actually exec'd, with its boundaries.
+
+        `ps -o command=` renders an argv as one space-joined string with no
+        quoting, so a checkout or executable path containing a space cannot be
+        split back into the original arguments -- `shlex.split()` would turn one
+        argument into two and fail a healthy service. launchd is the platform's
+        own record of the job it forked and prints one argument per line, so the
+        boundaries survive. None means launchd did not report them, which the
+        gate treats as a failure rather than guessing.
+        """
+
+        stdout = self._print(label)
+        if stdout is None:
+            return None
+        return parse_launchctl_arguments(stdout)
 
     # -- writes -------------------------------------------------------------
     def write_definition(self, label: str, text: str) -> Path:
@@ -657,6 +705,9 @@ class UnsupportedProvider:
     def list_services(self) -> list[ManagedService]:
         return []
 
+    def job_arguments(self, label: str) -> tuple[str, ...] | None:
+        return None
+
     def runtime(self, label: str) -> tuple[bool, int | None]:
         return False, None
 
@@ -693,14 +744,6 @@ def repository_origin_slug(
         return ""
     match = ORIGIN_SLUG_RE.match(_text(completed.stdout))
     return match.group("slug").strip().lower() if match else ""
-
-
-def process_command(pid: int, command_runner: lane_status.CommandRunner) -> str:
-    try:
-        completed = command_runner(["ps", "-p", str(int(pid)), "-o", "command="])
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return ""
-    return _text(completed.stdout) if completed.returncode == 0 else ""
 
 
 def process_parent_pid(pid: int, command_runner: lane_status.CommandRunner) -> int | None:
@@ -778,31 +821,52 @@ def port_ownership(
     `external_supervisor` (a supervised process that is not ours), or
     `foreign` (a process we cannot claim). Only `free` and `managed_self` may
     be replaced.
+
+    Ownership is proved against the pid launchd is supervising, never against a
+    definition that merely names the port. A managed job that is stopped or
+    crashed leaves its definition installed, and an unrelated process is free to
+    take the port it vacated: calling that listener ours would let a restart
+    mutate the service instead of refusing, and leave a keepalive job trying
+    forever to bind an occupied port. Every listener has to clear that bar --
+    one unowned listener on the port is enough to refuse.
     """
 
     listeners = port_listeners(port, command_runner)
     if not listeners:
         return {"state": "free", "pid": None, "label": ""}
-    managed_ports = {
-        service.port: service
+    supervised = {
+        int(service.pid): service
         for service in provider.list_services()
-        if service.port is not None
+        if service.loaded and service.pid
     }
-    owner = managed_ports.get(int(port))
-    listener = listeners[0]
-    pid = int(listener.get("pid") or 0) or None
-    if owner is not None:
-        state = "managed_self" if owner.label == label else "managed_other"
-        return {"state": state, "pid": pid, "label": owner.label, "repo": owner.repo}
-    parent = process_parent_pid(pid, command_runner) if pid else None
-    if parent == 1:
-        return {
-            "state": "external_supervisor",
-            "pid": pid,
-            "label": "",
-            "detail": "the listening process is supervised by launchd under a definition Code Mower does not own",
-        }
-    return {"state": "foreign", "pid": pid, "label": ""}
+    verdicts: list[dict[str, Any]] = []
+    for listener in listeners:
+        pid = int(listener.get("pid") or 0) or None
+        owner = supervised.get(pid) if pid else None
+        if owner is not None:
+            state = "managed_self" if owner.label == label else "managed_other"
+            verdicts.append({"state": state, "pid": pid, "label": owner.label, "repo": owner.repo})
+            continue
+        parent = process_parent_pid(pid, command_runner) if pid else None
+        if parent == 1:
+            verdicts.append(
+                {
+                    "state": "external_supervisor",
+                    "pid": pid,
+                    "label": "",
+                    "detail": (
+                        "the listening process is supervised by launchd under a definition "
+                        "Code Mower does not own"
+                    ),
+                }
+            )
+            continue
+        verdicts.append({"state": "foreign", "pid": pid, "label": ""})
+    for state in ("managed_other", "external_supervisor", "foreign"):
+        for verdict in verdicts:
+            if verdict["state"] == state:
+                return verdict
+    return verdicts[0]
 
 
 # -- binding validation -----------------------------------------------------
@@ -921,24 +985,29 @@ def validate_binding(
 
     pid = service.pid
     if pid:
-        live_command = process_command(pid, command_runner)
-        try:
-            live_arguments = tuple(shlex.split(live_command))
-        except ValueError:
-            live_arguments = ()
+        # From launchd, not from `ps`: the argument boundaries have to survive a
+        # checkout or executable path containing a space, and a space-joined
+        # `ps -o command=` line cannot be split back into the original argv.
+        reported = provider.job_arguments(spec.label) if hasattr(provider, "job_arguments") else None
+        live_arguments = tuple(reported or ())
         compared_arguments = normalize_live_arguments(live_arguments, wanted_arguments)
-        arguments_match = compared_arguments == wanted_arguments
+        arguments_match = reported is not None and compared_arguments == wanted_arguments
+        if reported is None:
+            arguments_message = "launchd did not report the argument list of the running job"
+        elif arguments_match:
+            arguments_message = "running process argument list matches the definition exactly"
+        else:
+            arguments_message = "running process was started with different arguments than the definition"
         checks.append(
             _check(
                 "process.arguments",
                 "pass" if arguments_match else "fail",
-                "running process argument list matches the definition exactly"
-                if arguments_match
-                else "running process was started with different arguments than the definition",
+                arguments_message,
                 # The observed list, not the normalized one: a reviewer reading a
-                # failure needs what `ps` actually said.
+                # failure needs what launchd actually reported.
                 arguments=redact_arguments(live_arguments, show_local_paths=show_local_paths),
                 arguments_redacted=not show_local_paths,
+                arguments_reported=reported is not None,
                 interpreter_prefix_normalized=compared_arguments != live_arguments,
             )
         )
@@ -1623,6 +1692,24 @@ def resolve_service(
     return {"status": "ok", "message": "", "service": candidates[0], "matches": [candidates[0].label]}
 
 
+def _job_load_state(provider: Any, label: str) -> tuple[bool, int | None]:
+    """Whether launchd still holds a job, erring towards "it does".
+
+    A provider that cannot answer, or an answer that fails, leaves the job
+    unconfirmed -- and an unconfirmed job is treated as still loaded so nothing
+    destructive proceeds on a guess.
+    """
+
+    runtime = getattr(provider, "runtime", None)
+    if runtime is None:
+        return True, None
+    try:
+        loaded, pid = runtime(label)
+    except (OSError, subprocess.SubprocessError):
+        return True, None
+    return bool(loaded), pid
+
+
 def remove_service(
     *,
     provider: Any,
@@ -1647,6 +1734,29 @@ def remove_service(
         }
     service = resolved["service"]
     ok, detail = provider.bootout(service.label)
+    if not ok:
+        # The definition is how this service is discovered at all: `status`,
+        # `remove` and the `board stop` keepalive guard all scan definition
+        # files. Deleting it while launchd still holds the job would strand a
+        # running, self-restarting service with nothing left to manage it by,
+        # and let `board stop` signal a process launchd immediately replaces.
+        # Only an independently confirmed-absent job permits deletion.
+        still_loaded, _pid = _job_load_state(provider, service.label)
+        if still_loaded:
+            return {
+                "schema": BOARD_SERVICE_SCHEMA,
+                "status": "remove_incomplete",
+                "label": service.label,
+                "repo": service.repo,
+                "port": service.port,
+                "definition_deleted": False,
+                "definition_present": True,
+                "message": (
+                    f"{detail or 'the service could not be unloaded'}; its definition was kept so the "
+                    "still-loaded job stays discoverable by board service status, remove and the "
+                    "board stop keepalive guard"
+                ),
+            }
     deleted = provider.delete_definition(service.label)
     # The authority is the filesystem, not the return value: a definition still
     # in LaunchAgents starts the service again at the next login, so removal has
@@ -1664,8 +1774,14 @@ def remove_service(
         "definition_present": definition_present,
     }
     if not ok:
+        # Reached only when the unload reported a failure but launchd no longer
+        # holds the job, so deleting the definition was safe. Still not
+        # `removed`: the operator asked for a clean unload and did not get one.
         payload["status"] = "remove_incomplete"
-        payload["message"] = detail or "the service could not be unloaded"
+        payload["message"] = (
+            f"{detail or 'the service could not be unloaded'}; launchd no longer holds the job, "
+            "so its definition was removed"
+        )
         return payload
     if definition_present:
         payload["status"] = "remove_incomplete"

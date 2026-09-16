@@ -36,7 +36,7 @@ must pass before an operation reports success:
 | `service.definition` | the installed definition matches the rendered one (no stale arguments) |
 | `service.keepalive` | the service is supervised, not one-shot |
 | `service.loaded` | the supervisor holds the job and it is running |
-| `process.arguments` | the running process argument list equals the definition exactly |
+| `process.arguments` | the running job's argument list, as launchd reports it, equals the definition exactly |
 | `process.repo_path` | the running process is bound to the exact private repository path |
 | `process.supervisor` | the process is supervised, so it survives the invoking shell |
 | `binding.port` | the service process, and not something else, holds the port |
@@ -65,6 +65,23 @@ None of these change any local state:
 | `port_conflict` | the port is held by an unrelated local process |
 | `ambiguous_repository` | the selector matches more than one managed service |
 | `rollback_failed` | an apply failed *and* the previous definition could not be restored |
+
+The argument list comes from launchd, which prints one argument per line, rather
+than from `ps -o command=`, which renders an argv as a single unquoted line. A
+checkout path containing a space cannot be split back out of that line, so a
+healthy service would fail the gate. If launchd reports no argument list at all,
+`process.arguments` fails rather than being assumed to match.
+
+Port ownership is proved against the pid launchd is supervising, not against a
+definition that happens to name the port: a stopped or crashed managed job leaves
+its definition installed, and whatever takes the port it vacated is not ours.
+Every listener on the port has to clear that bar.
+
+`remove` will not delete a definition while launchd still holds its job. Managed
+services are discovered by scanning definition files, so deleting one whose job
+survived would strand a running, self-restarting service where `status`, `remove`
+and the `board stop` keepalive guard could no longer see it. That case reports
+`remove_incomplete` and leaves the definition in place.
 | `delayed_health_failed` | the service applied but its binding never validated |
 
 `--replace` is the only way to take over an existing definition for a port, and

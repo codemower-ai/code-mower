@@ -36,8 +36,12 @@ class FakeHost:
         self.root = root
         self.uid = 501
         self.loaded: dict[str, int | None] = {}
+        self.job_arguments: dict[str, list[str]] = {}
         self.processes: dict[int, dict[str, object]] = {}
         self.listeners: dict[int, int] = {}
+        # A port can genuinely be held by more than one process; the primary
+        # mapping holds one per port, this holds the rest.
+        self.extra_listeners: list[tuple[int, int]] = []
         self.origins: dict[str, str] = {}
         self.identities: dict[int, dict[str, object]] = {}
         self.bootstrap_failures: set[str] = set()
@@ -66,10 +70,11 @@ class FakeHost:
         pid = self.next_pid
         self.next_pid += 1
         self.processes[pid] = {
-            "command": shlex.join(arguments),
+            "argv": list(arguments),
             "cwd": str(data.get("WorkingDirectory") or ""),
             "ppid": 1,
         }
+        self.job_arguments[label] = list(arguments)
         port = int(binding["port"] or 0)
         self.listeners[port] = pid
         self.identities[port] = {
@@ -87,6 +92,7 @@ class FakeHost:
 
     def _stop(self, label: str) -> None:
         pid = self.loaded.pop(label, None)
+        self.job_arguments.pop(label, None)
         if pid is None:
             return
         self.processes.pop(pid, None)
@@ -98,8 +104,40 @@ class FakeHost:
     def add_foreign_listener(self, port: int, *, command: str, ppid: int) -> int:
         pid = self.next_pid
         self.next_pid += 1
-        self.processes[pid] = {"command": command, "cwd": "/tmp/foreign", "ppid": ppid}
+        self.processes[pid] = {"argv": shlex.split(command), "cwd": "/tmp/foreign", "ppid": ppid}
         self.listeners[port] = pid
+        return pid
+
+    def relaunch_on(self, label: str, arguments: Sequence[str]) -> int:
+        """Bring a job back with an argument list of the caller's choosing.
+
+        launchd is the authority on the argv of a job it supervises, so a test
+        that wants the running process to disagree with its definition has to
+        say so here rather than by rewriting a `ps` line.
+        """
+
+        self._stop(label)
+        pid = self.next_pid
+        self.next_pid += 1
+        argv = [str(item) for item in arguments]
+        binding = board_service.binding_from_arguments(argv)
+        self.processes[pid] = {"argv": argv, "cwd": str(binding["repo_path"] or ""), "ppid": 1}
+        self.job_arguments[label] = argv
+        self.loaded[label] = pid
+        port = int(binding["port"] or 0)
+        if port:
+            self.listeners[port] = pid
+            self.identities[port] = {
+                "schema": "code_mower.boardIdentity.v1",
+                "repo": binding["repo"],
+                "board": {
+                    "version": {
+                        "serving_version": VERSION,
+                        "installed_version": VERSION,
+                        "restart_recommended": False,
+                    }
+                },
+            }
         return pid
 
     # -- command surface ------------------------------------------------
@@ -126,6 +164,12 @@ class FakeHost:
                 return _completed("", returncode=1, stderr="Could not find service\n")
             pid = self.loaded[label]
             body = "\tstate = running\n" + (f"\tpid = {pid}\n" if pid else "")
+            # launchd prints the job's argv one argument per line, which is the
+            # only local source that keeps argument boundaries intact.
+            arguments = self.job_arguments.get(label)
+            if arguments is not None:
+                lines = "".join(f"\t\t{item}\n" for item in arguments)
+                body += f"\targuments = {{\n{lines}\t}}\n"
             return _completed(body)
         if action == "bootstrap":
             label = Path(argv[2]).name[: -len(".plist")]
@@ -149,11 +193,7 @@ class FakeHost:
         return _completed("", returncode=1)
 
     def _process_name(self, pid: int) -> str:
-        command = str((self.processes.get(pid) or {}).get("command") or "")
-        try:
-            argv = shlex.split(command)
-        except ValueError:
-            argv = []
+        argv = [str(item) for item in (self.processes.get(pid) or {}).get("argv") or []]
         return Path(argv[0]).name if argv else "unknown"
 
     def _ps(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
@@ -162,17 +202,21 @@ class FakeHost:
         if process is None:
             return _completed("", returncode=1)
         if "command=" in argv:
-            return _completed(str(process["command"]) + "\n")
+            # Exactly what the real `ps` renders: one space-joined line with no
+            # quoting, so an argument containing a space is indistinguishable
+            # from two arguments. Nothing may reconstruct an argv from this.
+            return _completed(" ".join(str(item) for item in process["argv"]) + "\n")
         if "ppid=" in argv:
             return _completed(f"  {process['ppid']}\n")
         return _completed("", returncode=1)
 
     def _lsof(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         if "-iTCP" in argv:
-            if not self.listeners:
+            if not self.listeners and not self.extra_listeners:
                 return _completed("", returncode=1)
             lines = []
-            for port, pid in sorted(self.listeners.items()):
+            held = sorted([*self.listeners.items(), *self.extra_listeners])
+            for port, pid in held:
                 # The real `lsof` names the executable that holds the port, which
                 # is how a listener gets classified. Reporting every listener as
                 # `code-mower` would make a Node server on 5332 look Board-shaped
@@ -565,8 +609,10 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.install(spec)
         # launchd restarted the job, but the process it brought back carries an
         # older argument list than the definition it was applied from.
-        pid = self.host.loaded["ai.codemower.board.5332"]
-        self.host.processes[pid]["command"] = "/usr/local/bin/code-mower board serve --repo codemower-ai/code-mower --port 5332"
+        self.host.relaunch_on(
+            "ai.codemower.board.5332",
+            ["/usr/local/bin/code-mower", "board", "serve", "--repo", "codemower-ai/code-mower", "--port", "5332"],
+        )
 
         binding = board_service.validate_binding(
             spec,
@@ -714,11 +760,12 @@ class BoardServiceLifecycleTest(ServiceHarness):
     def test_a_console_script_reported_with_its_interpreter_is_still_healthy(self) -> None:
         spec = self.spec()
         self.install(spec)
-        pid = self.host.loaded["ai.codemower.board.5332"]
-        definition_argv = shlex.split(str(self.host.processes[pid]["command"]))
-        # What `ps` reports for a `#!`-headed console script: the interpreter,
-        # then the script, then the script's own arguments.
-        self.host.processes[pid]["command"] = shlex.join(["/usr/local/bin/python3.12", *definition_argv])
+        definition_argv = list(self.host.job_arguments["ai.codemower.board.5332"])
+        # What a `#!`-headed console script is actually exec'd as: the
+        # interpreter, then the script, then the script's own arguments.
+        self.host.relaunch_on(
+            "ai.codemower.board.5332", ["/usr/local/bin/python3.12", *definition_argv]
+        )
 
         binding = board_service.validate_binding(
             spec,
@@ -736,10 +783,10 @@ class BoardServiceLifecycleTest(ServiceHarness):
         # not turn a genuinely different program into a match.
         spec = self.spec()
         self.install(spec)
-        pid = self.host.loaded["ai.codemower.board.5332"]
-        definition_argv = shlex.split(str(self.host.processes[pid]["command"]))
-        self.host.processes[pid]["command"] = shlex.join(
-            ["/usr/local/bin/python3.12", "/usr/local/bin/some-other-tool", *definition_argv[1:]]
+        definition_argv = list(self.host.job_arguments["ai.codemower.board.5332"])
+        self.host.relaunch_on(
+            "ai.codemower.board.5332",
+            ["/usr/local/bin/python3.12", "/usr/local/bin/some-other-tool", *definition_argv[1:]],
         )
 
         binding = board_service.validate_binding(
@@ -865,6 +912,132 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertFalse(payload["definition_deleted"])
         self.assertIn("next login", payload["message"])
         self.assertTrue((self.root / "ai.codemower.board.5332.plist").exists())
+
+    def test_a_checkout_path_containing_a_space_still_validates(self) -> None:
+        # `ps -o command=` renders an argv as one unquoted line, so a path with
+        # a space in it cannot be split back into the arguments it came from --
+        # splitting would turn "My Checkout" into two arguments and fail a
+        # perfectly healthy service. launchd reports the boundaries.
+        spaced = self.tmp / "My Checkout"
+        spaced.mkdir()
+        self.host.origins[str(spaced)] = "git@github.com:codemower-ai/code-mower.git"
+        spec = self.spec(repo_path=spaced)
+
+        payload = self.install(spec)
+
+        self.assertEqual(payload["status"], "installed")
+        self.assertEqual(payload["delayed_health"]["binding"]["failing_checks"], [])
+        # One argument, not the two a `ps` line would have been split into.
+        self.assertIn(str(spaced), self.host.job_arguments["ai.codemower.board.5332"])
+        self.assertNotIn(str(spaced), json.dumps(payload))
+
+    def test_arguments_launchd_does_not_report_fail_the_gate(self) -> None:
+        # No argument list is not the same fact as a matching one; a gate that
+        # cannot see the argv must not pass it.
+        spec = self.spec()
+        self.install(spec)
+        self.host.job_arguments.pop("ai.codemower.board.5332")
+
+        binding = board_service.validate_binding(
+            spec,
+            provider=self.host.provider(),
+            command_runner=self.host.run,
+            identity_probe=self.host.identity_probe,
+        )
+
+        self.assertIn("process.arguments", binding["failing_checks"])
+        check = next(item for item in binding["checks"] if item["id"] == "process.arguments")
+        self.assertFalse(check["arguments_reported"])
+
+    def test_a_stopped_service_does_not_lend_its_port_to_an_unrelated_process(self) -> None:
+        # The definition stays installed when the job stops, and an unrelated
+        # process is free to take the port it vacated. Ownership is the
+        # supervised pid, not a definition that merely names the port.
+        spec = self.spec()
+        self.install(spec)
+        self.host.provider().bootout(spec.label)
+        self.host.add_foreign_listener(5332, command="/usr/local/bin/node /srv/dashboard/server.js", ppid=4242)
+
+        ownership = board_service.port_ownership(
+            5332, provider=self.host.provider(), label=spec.label, command_runner=self.host.run
+        )
+        payload = self.restart(spec)
+
+        self.assertEqual(ownership["state"], "foreign")
+        self.assertEqual(payload["status"], "port_conflict")
+        self.assertEqual(self.host.loaded, {})
+
+    def test_a_second_listener_on_the_port_is_never_hidden_by_the_first(self) -> None:
+        # One owned listener does not make the port ours: every listener has to
+        # clear the bar, or the keepalive job fights whatever else is bound.
+        spec = self.spec()
+        self.install(spec)
+        managed_pid = self.host.loaded["ai.codemower.board.5332"]
+        foreign_pid = self.host.add_foreign_listener(
+            5332, command="/usr/local/bin/node /srv/dashboard/server.js", ppid=4242
+        )
+        self.host.listeners[5332] = managed_pid
+        self.host.extra_listeners.append((5332, foreign_pid))
+
+        ownership = board_service.port_ownership(
+            5332, provider=self.host.provider(), label=spec.label, command_runner=self.host.run
+        )
+
+        self.assertEqual(ownership["state"], "foreign")
+        self.assertEqual(ownership["pid"], foreign_pid)
+
+    def test_removal_that_cannot_unload_the_job_keeps_the_definition(self) -> None:
+        # Deleting the definition of a job launchd still holds would strand a
+        # running, self-restarting service: discovery scans definition files, so
+        # status, remove and the `board stop` keepalive guard would all lose it.
+        self.install(self.spec())
+
+        class RefusesBootout(board_service.LaunchdProvider):
+            def bootout(self, label: str) -> tuple[bool, str]:
+                return False, "launchctl bootout failed: Operation not permitted"
+
+        payload = board_service.remove_service(
+            provider=RefusesBootout(
+                command_runner=self.host.run, root=self.root, uid=self.host.uid, platform="darwin"
+            ),
+            port=5332,
+            command_runner=self.host.run,
+            settle_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+
+        self.assertEqual(payload["status"], "remove_incomplete")
+        self.assertTrue(payload["definition_present"])
+        self.assertFalse(payload["definition_deleted"])
+        self.assertTrue((self.root / "ai.codemower.board.5332.plist").exists())
+        # Still discoverable, and still running.
+        self.assertIn("ai.codemower.board.5332", self.host.loaded)
+        resolved = board_service.resolve_service(provider=self.host.provider(), port=5332)
+        self.assertEqual(resolved["status"], "ok")
+
+    def test_removal_whose_job_is_already_gone_still_deletes_the_definition(self) -> None:
+        # The unload reported a failure, but launchd does not hold the job:
+        # deleting the definition is safe, and saying `removed` is not honest.
+        self.install(self.spec())
+        self.host.provider().bootout("ai.codemower.board.5332")
+
+        class NoisyBootout(board_service.LaunchdProvider):
+            def bootout(self, label: str) -> tuple[bool, str]:
+                return False, "launchctl bootout failed: exit 3"
+
+        payload = board_service.remove_service(
+            provider=NoisyBootout(
+                command_runner=self.host.run, root=self.root, uid=self.host.uid, platform="darwin"
+            ),
+            port=5332,
+            command_runner=self.host.run,
+            settle_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+
+        self.assertEqual(payload["status"], "remove_incomplete")
+        self.assertTrue(payload["definition_deleted"])
+        self.assertFalse((self.root / "ai.codemower.board.5332.plist").exists())
 
     def test_remove_reports_a_port_reclaimed_by_a_process_that_is_not_a_board(self) -> None:
         self.install(self.spec())
