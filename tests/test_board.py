@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import copy
+import errno
 import http.client
 import itertools
 import json
@@ -12,6 +14,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -26,6 +29,37 @@ from code_mower import board, board_observation, board_store, lane_status, revie
 
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+
+
+# The per-argument ceiling Linux enforces on every element of a command line
+# (``MAX_ARG_STRLEN``: a fixed 32 pages, independent of ``ARG_MAX``). The
+# shipped Board page script is comfortably past it, so handing it to ``node -e``
+# fails every Linux job with ``OSError: [Errno 7] Argument list too long`` while
+# passing locally on macOS, whose ceiling is a much larger whole-command-line
+# one. Kept as a named number because the assertions below are about the limit,
+# not about today's page size.
+LINUX_MAX_ARG_STRLEN = 32 * 4096
+
+
+def _run_node(script: str, *args: str) -> str:
+    """Run one generated program through Node, with the program on stdin.
+
+    ``node -`` reads the program from standard input, which is bounded by a
+    pipe rather than by argv, so a generated script of any size runs and only
+    the small JSON arguments are ever on the command line. Every Board helper
+    goes through here, so no helper can reintroduce the argv ceiling on its own.
+
+    Because the program is no longer an argument, ``process.argv`` carries the
+    ``-`` at index 1 and the first JSON argument is ``process.argv[2]``.
+    """
+
+    return subprocess.run(
+        [shutil.which("node") or "node", "-", *args],
+        input=script,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
 
 
 BOARD_POLL_HARNESS = """
@@ -100,16 +134,7 @@ def _run_board_poll_script(steps: list[dict[str, object] | str | None]) -> list[
     script = BOARD_POLL_HARNESS.replace("__CONSTANTS__", constants.group(0)).replace(
         "__SCHEDULING__", scheduling.group(0)
     )
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "poll.js"
-        path.write_text(script, encoding="utf-8")
-        completed = subprocess.run(
-            [shutil.which("node") or "node", str(path), json.dumps(steps)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    return json.loads(completed.stdout)
+    return json.loads(_run_node(script, json.dumps(steps)))
 
 
 TRUTH_HELPERS_END = "// --- presentation truth helpers (END) ---"
@@ -122,8 +147,8 @@ const NODES = {};
 const document = {getElementById: (id) => (NODES[id] = NODES[id] || {innerHTML: "", textContent: ""})};
 Date.now = () => __NOW_MS__;
 __SCRIPT__
-render(JSON.parse(process.argv[1]));
-renderEvents(JSON.parse(process.argv[2]));
+render(JSON.parse(process.argv[2]));
+renderEvents(JSON.parse(process.argv[3]));
 console.log(JSON.stringify(Object.fromEntries(Object.entries(NODES).map(([id, node]) => [id, node.innerHTML || node.textContent]))));
 """
 
@@ -148,16 +173,10 @@ def _eval_board_truth(expression: str, *args: object) -> object:
 
     script = (
         _board_truth_helpers()
-        + "\nconst ARGS = process.argv.slice(1).map(value => JSON.parse(value));\n"
+        + "\nconst ARGS = process.argv.slice(2).map(value => JSON.parse(value));\n"
         + f"console.log(JSON.stringify({expression}));\n"
     )
-    completed = subprocess.run(
-        [shutil.which("node") or "node", "-e", script, *(json.dumps(arg) for arg in args)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return json.loads(completed.stdout)
+    return json.loads(_run_node(script, *(json.dumps(arg) for arg in args)))
 
 
 def _render_board_dom(
@@ -179,19 +198,13 @@ def _render_board_dom(
         BOARD_DOM_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000)))
         .replace("__SCRIPT__", "".join(trimmed))
     )
-    completed = subprocess.run(
-        [
-            shutil.which("node") or "node",
-            "-e",
+    return json.loads(
+        _run_node(
             script,
             json.dumps(payload),
             json.dumps(history if history is not None else {"events": []}),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
+        )
     )
-    return json.loads(completed.stdout)
 
 
 def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -3617,7 +3630,7 @@ const document = {getElementById: (id) => (NODES[id] = NODES[id] || {innerHTML: 
 Date.now = () => __NOW_MS__;
 __SCRIPT__
 const frames = [];
-for (const step of JSON.parse(process.argv[1])) {
+for (const step of JSON.parse(process.argv[2])) {
   if (step.select !== null) selectWork(step.select);
   if (step.payload !== null) render(step.payload);
   frames.push(Object.fromEntries(Object.entries(NODES).map(([id, node]) => [id, node.innerHTML || node.textContent])));
@@ -3669,16 +3682,10 @@ def _eval_board_view(expression: str, *args: object, mutate: tuple[str, str] | N
         model = model.replace(original, replacement)
     script = (
         model
-        + "\nconst ARGS = process.argv.slice(1).map(value => JSON.parse(value));\n"
+        + "\nconst ARGS = process.argv.slice(2).map(value => JSON.parse(value));\n"
         + f"console.log(JSON.stringify({expression}));\n"
     )
-    completed = subprocess.run(
-        [shutil.which("node") or "node", "-e", script, *(json.dumps(arg) for arg in args)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return json.loads(completed.stdout)
+    return json.loads(_run_node(script, *(json.dumps(arg) for arg in args)))
 
 
 def _render_board_sequence(
@@ -3692,13 +3699,7 @@ def _render_board_sequence(
         "__SCRIPT__", _board_script()
     )
     normalized = [{"select": step.get("select"), "payload": step.get("payload")} for step in steps]
-    completed = subprocess.run(
-        [shutil.which("node") or "node", "-e", script, json.dumps(normalized)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return json.loads(completed.stdout)
+    return json.loads(_run_node(script, json.dumps(normalized)))
 
 
 def _observation_fixture(name: str) -> dict:
@@ -4098,7 +4099,7 @@ const element = (id) => {
   return node;
 };
 const frames = [];
-for (const step of JSON.parse(process.argv[1])) {
+for (const step of JSON.parse(process.argv[2])) {
   if (step.metrics) Object.assign(document.metrics, step.metrics);
   if (step.focus) element(step.focus).focus();
   if (step.click) element(step.on || "worklist").onclick({target: element(step.click)});
@@ -4174,13 +4175,7 @@ def _render_board_focus(
         .replace("__PANEL_OF__", json.dumps(_board_panel_of()))
         .replace("__SCRIPT__", _board_script())
     )
-    completed = subprocess.run(
-        [shutil.which("node") or "node", "-e", script, json.dumps(steps)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return json.loads(completed.stdout)
+    return json.loads(_run_node(script, json.dumps(steps)))
 
 
 # Evaluate one expression against the whole shipped page script, so the id
@@ -4191,7 +4186,7 @@ const NODES = {};
 const document = {getElementById: (id) => (NODES[id] = NODES[id] || {innerHTML: "", textContent: ""})};
 Date.now = () => __NOW_MS__;
 __SCRIPT__
-const ARGS = process.argv.slice(1).map(value => JSON.parse(value));
+const ARGS = process.argv.slice(2).map(value => JSON.parse(value));
 console.log(JSON.stringify(__EXPRESSION__));
 """
 
@@ -4204,13 +4199,7 @@ def _eval_board_page(expression: str, *args: object) -> object:
         .replace("__SCRIPT__", _board_script())
         .replace("__EXPRESSION__", expression)
     )
-    completed = subprocess.run(
-        [shutil.which("node") or "node", "-e", script, *(json.dumps(arg) for arg in args)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return json.loads(completed.stdout)
+    return json.loads(_run_node(script, *(json.dumps(arg) for arg in args)))
 
 
 # The desktop width at which the work list gains its second column.
@@ -4439,6 +4428,65 @@ class _RecordingHandle:
         return self._handle.read(size)
 
 
+@contextmanager
+def _observation_opens(
+    directory: Path,
+    reads: list[int] | None = None,
+    *,
+    open_failures: frozenset[str] = frozenset(),
+    read_failures: frozenset[str] = frozenset(),
+):
+    """Watch -- and optionally break -- the descriptor opens one Board read makes.
+
+    The observation read does not go through ``Path.open``: an entry can change
+    kind between being classified and being opened, so it opens a descriptor
+    non-blocking and without following a link and then re-checks the kind on
+    that descriptor. This therefore patches ``os.open``, which is the syscall a
+    refusal has to come *before*, and ``os.fdopen``, which is where the read's
+    handle is built. Both are scoped -- only candidates directly inside
+    ``directory``, and only descriptors this call opened -- so nothing else the
+    interpreter is doing is wrapped.
+
+    Yields the candidate names the read opened, in order.
+    """
+
+    opened: list[str] = []
+    # One slot. The read opens a descriptor and wraps it immediately, so a slot
+    # that is never consumed belonged to a candidate that was refused on its
+    # descriptor and closed, and is simply replaced by the next open.
+    pending: list[tuple[int, str]] = []
+    real_open = os.open
+    real_fdopen = os.fdopen
+
+    def patched_open(path: object, *args: object, **kwargs: object) -> int:
+        try:
+            candidate = Path(os.fsdecode(path))  # type: ignore[arg-type]
+        except TypeError:  # pragma: no cover - a descriptor-relative open
+            return real_open(path, *args, **kwargs)
+        if candidate.parent != directory:
+            return real_open(path, *args, **kwargs)
+        # Recorded before the call, so a candidate that is refused without ever
+        # being opened shows up as an absence rather than as a silent success.
+        opened.append(candidate.name)
+        if candidate.name in open_failures:
+            raise OSError(13, "permission denied")
+        descriptor = real_open(path, *args, **kwargs)
+        pending[:] = [(descriptor, candidate.name)]
+        return descriptor
+
+    def patched_fdopen(descriptor: int, *args: object, **kwargs: object) -> object:
+        handle = real_fdopen(descriptor, *args, **kwargs)
+        if not pending or pending[0][0] != descriptor:
+            return handle
+        _descriptor, name = pending.pop()
+        if name in read_failures:
+            return _FailingReadHandle(handle, reads)
+        return _RecordingHandle(handle, reads) if reads is not None else handle
+
+    with patch.object(os, "open", patched_open), patch.object(os, "fdopen", patched_fdopen):
+        yield opened
+
+
 class BoardObservationReaderTests(TestCase):
     """The Board consumes the frozen observation contract; it never writes one."""
 
@@ -4551,17 +4599,12 @@ class BoardObservationReaderTests(TestCase):
         cap = board_observation.MAX_BYTES
         board_observation.schema()
         reads: list[int] = []
-        real_open = Path.open
 
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             self._fill(directory, board.MAX_OBSERVATION_FILES * 3 + 4)
 
-            def recording_open(self: Path, *args: object, **kwargs: object) -> object:
-                handle = real_open(self, *args, **kwargs)
-                return _RecordingHandle(handle, reads) if self.parent == directory else handle
-
-            with patch.object(Path, "open", recording_open):
+            with _observation_opens(directory, reads):
                 payload = board.observations_payload(
                     board.BoardConfig(repo="owner/repo", observations_path=str(directory))
                 )
@@ -4678,7 +4721,6 @@ class BoardObservationReaderTests(TestCase):
         board_observation.schema()
         reads: list[int] = []
         decoded: list[int] = []
-        real_open = Path.open
         real_decode = board_observation.decode
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -4688,15 +4730,11 @@ class BoardObservationReaderTests(TestCase):
             # must never be pulled into memory.
             (directory / "b-huge.json").write_bytes(b'{"padding":"' + b"x" * (cap * 4) + b'"}')
 
-            def recording_open(self: Path, *args: object, **kwargs: object) -> object:
-                handle = real_open(self, *args, **kwargs)
-                return _RecordingHandle(handle, reads) if self.parent == directory else handle
-
             def recording_decode(raw: bytes) -> object:
                 decoded.append(len(raw))
                 return real_decode(raw)
 
-            with patch.object(Path, "open", recording_open), patch.object(
+            with _observation_opens(directory, reads), patch.object(
                 board.board_observation, "decode", recording_decode
             ):
                 payload = board.observations_payload(
@@ -7857,19 +7895,12 @@ def _observation_read_failures(
 ):
     """Make named candidate files raise, and optionally record read sizes."""
 
-    real_open = Path.open
-
-    def patched(self: Path, *args: object, **kwargs: object) -> object:
-        if self.parent != directory:
-            return real_open(self, *args, **kwargs)
-        if self.name in open_failures:
-            raise OSError(13, "permission denied")
-        handle = real_open(self, *args, **kwargs)
-        if self.name in read_failures:
-            return _FailingReadHandle(handle, reads)
-        return _RecordingHandle(handle, reads) if reads is not None else handle
-
-    with patch.object(Path, "open", patched):
+    with _observation_opens(
+        directory,
+        reads,
+        open_failures=frozenset(open_failures),
+        read_failures=frozenset(read_failures),
+    ):
         yield
 
 
@@ -8373,24 +8404,6 @@ def _make_non_regular(kind: str, entry: Path, link_target: Path | None = None) -
     raise AssertionError(f"unknown entry kind {kind!r}")  # pragma: no cover
 
 
-@contextmanager
-def _observation_opens(directory: Path, reads: list[int] | None = None):
-    """Record which candidate names the read opened, and what it asked them for."""
-
-    opened: list[str] = []
-    real_open = Path.open
-
-    def patched(self: Path, *args: object, **kwargs: object) -> object:
-        if self.parent != directory:
-            return real_open(self, *args, **kwargs)
-        opened.append(self.name)
-        handle = real_open(self, *args, **kwargs)
-        return _RecordingHandle(handle, reads) if reads is not None else handle
-
-    with patch.object(Path, "open", patched):
-        yield opened
-
-
 class BoardObservationNonRegularEntryTests(TestCase):
     """A candidate that is not a regular file is counted, refused, and said.
 
@@ -8871,23 +8884,74 @@ class BoardObservationNonRegularEntryTests(TestCase):
             ]],
         )
 
-    def test_removing_the_regular_file_guard_would_wedge_the_refresh(self) -> None:
+    def _classified_regular(self):
+        """The shipped classification, with every candidate called regular.
+
+        The race in one function: the reader is told a name is a regular file
+        and then has to decide for itself, on the descriptor, whether it is.
+        """
+
+        real_select = board._select_observation_files
+
+        def select(path: Path) -> tuple[list[tuple[str, bool]], int]:
+            selected, total = real_select(path)
+            return [(name, True) for name, _regular in selected], total
+
+        return select
+
+    def test_classifying_every_candidate_as_regular_no_longer_wedges_the_refresh(self) -> None:
         """Mutation: classify every selected candidate as a regular file.
 
-        That is the code before this guard existed, and against a real named
-        pipe it does not return. The deadline the tests above pass comfortably
-        is the one this mutant cannot meet, which is what makes those tests a
-        proof about blocking rather than about counters alone.
+        The classification is a filter over names, and a name is not a promise
+        about the entry behind it, so it cannot be the thing that keeps the
+        read prompt. Removing it entirely must therefore cost one refused
+        descriptor and nothing else: the same deadline, the same accounting,
+        the same page. What actually keeps the read prompt is the open, proved
+        by the mutants below.
         """
 
         if not hasattr(os, "mkfifo"):
             raise SkipTest("this platform has no named pipes")
 
-        real_select = board._select_observation_files
+        without_the_filter = self._classified_regular()
 
-        def without_the_guard(path: Path) -> tuple[list[tuple[str, bool]], int]:
-            selected, total = real_select(path)
-            return [(name, True) for name, _regular in selected], total
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _local = self._directory(Path(tmp), "fifo")
+            shipped = self._payload_within(directory)
+            with patch.object(board, "_select_observation_files", without_the_filter):
+                mutated = self._payload_within(directory)
+                # The mutant really does open the pipe the filter would have
+                # refused unread, and still returns inside the deadline.
+                with _observation_opens(directory) as opened:
+                    self._payload_within(directory)
+
+        self.assertEqual(sorted(opened), sorted([self.IDLE, self.ENTRY]))
+        for payload in (shipped, mutated):
+            _assert_observation_partition(self, payload)
+            self.assertEqual(payload["unreadable_files"], 1)
+            self.assertEqual(payload["accepted_records"], 1)
+            self.assertEqual(payload["invalid_records"], 0)
+            self.assertFalse(payload["coverage_complete"])
+            self.assertEqual(
+                payload["warnings"], [{"file": self.ENTRY, "message": "unreadable_file"}]
+            )
+
+    def test_removing_the_nonblocking_open_guard_would_wedge_the_refresh(self) -> None:
+        """Mutation: open the candidate the way an ordinary ``open()`` would.
+
+        This is the claim the reader used to rest on -- that an entry which
+        changed kind after classification would simply raise. It does not.
+        Opening a named pipe for blocking read with no writer waits, for as
+        long as no writer arrives, and the refresh waits with it. The deadline
+        every test above meets comfortably is the one this mutant cannot meet.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+        if not hasattr(os, "O_NONBLOCK"):  # pragma: no cover - POSIX everywhere supported
+            raise SkipTest("this platform has no non-blocking open")
+
+        without_the_filter = self._classified_regular()
 
         with tempfile.TemporaryDirectory() as tmp:
             directory, _local = self._directory(Path(tmp), "fifo")
@@ -8898,11 +8962,12 @@ class BoardObservationNonRegularEntryTests(TestCase):
                 target=lambda: done.append(board.observations_payload(config)), daemon=True
             )
             try:
-                with patch.object(board, "_select_observation_files", without_the_guard):
+                with patch.object(board, "_select_observation_files", without_the_filter), patch.object(
+                    board, "OBSERVATION_OPEN_FLAGS", board.OBSERVATION_OPEN_FLAGS & ~os.O_NONBLOCK
+                ):
                     worker.start()
                     # Short on purpose: the only way to finish inside it is to
-                    # have never opened the pipe, which is the guard this
-                    # mutant removed.
+                    # never have blocked, which is the guard this mutant removed.
                     worker.join(2.0)
                     self.assertTrue(
                         worker.is_alive(),
@@ -8914,7 +8979,7 @@ class BoardObservationNonRegularEntryTests(TestCase):
                 # the wedged reader a writer, and closing that writer ends its
                 # read at end of file.
                 try:
-                    os.close(os.open(fifo, os.O_RDWR | getattr(os, "O_NONBLOCK", 0)))
+                    os.close(os.open(fifo, os.O_RDWR | os.O_NONBLOCK))
                 except OSError:  # pragma: no cover - only if the pipe went away
                     pass
                 worker.join(self.DEADLINE)
@@ -8925,3 +8990,384 @@ class BoardObservationNonRegularEntryTests(TestCase):
         self.assertEqual(shipped["unreadable_files"], 1)
         self.assertEqual(shipped["accepted_records"], 1)
         self.assertFalse(shipped["coverage_complete"])
+
+    def test_the_open_succeeds_and_the_descriptor_check_is_what_refuses(self) -> None:
+        """The refusal comes from ``fstat``, not from the open failing.
+
+        Worth stating because the two are easy to confuse and only one of them
+        is true: with the shipped flags the pipe opens perfectly well, and it
+        is the kind of the descriptor -- the one question nothing can race --
+        that refuses it.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fifo = Path(tmp) / self.ENTRY
+            _make_non_regular("fifo", fifo)
+
+            # The open itself does not object, and does not wait.
+            descriptor = os.open(fifo, board.OBSERVATION_OPEN_FLAGS)
+            os.close(descriptor)
+
+            with self.assertRaises(OSError):
+                board._open_observation_file(fifo)
+
+    def test_removing_the_descriptor_type_check_would_read_the_replacement(self) -> None:
+        """Mutation: trust the classification and skip the ``fstat``.
+
+        Without it the pipe is not refused, it is *read*: a non-blocking read
+        of a pipe with no writer returns no bytes at all, so the candidate is
+        mis-accounted as a record the contract rejected rather than as one the
+        Board never got to see. Both are partial coverage, which is why the
+        counters -- not the coverage flag -- are what this has to assert.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _local = self._directory(Path(tmp), "fifo")
+            shipped = self._payload_within(directory)
+            with patch.object(board, "_select_observation_files", self._classified_regular()), (
+                patch.object(board.stat, "S_ISREG", lambda mode: True)
+            ):
+                mutated = self._payload_within(directory)
+
+        # The mutant read the pipe and blamed the contract for what came back.
+        self.assertEqual(mutated["unreadable_files"], 0)
+        self.assertEqual(mutated["invalid_records"], 1)
+        self.assertEqual(mutated["coverage_gaps"], ["records_invalid"])
+
+        # The shipped code never read it, and says so as a file it could not read.
+        self.assertEqual(shipped["unreadable_files"], 1)
+        self.assertEqual(shipped["invalid_records"], 0)
+        self.assertEqual(shipped["coverage_gaps"], ["files_unreadable"])
+
+    def test_the_open_guards_are_in_force_on_every_supported_platform(self) -> None:
+        """Platform handling is explicit, and never silently drops a guard.
+
+        macOS and Linux are the platforms the Board supports, and both are
+        POSIX: every guard is present there and every guard must be set. An
+        interpreter without one still imports -- the descriptor check is what
+        makes the open safe -- but it may not be quietly dropped where it
+        exists, because that is the difference between a refresh that returns
+        and a refresh that never does.
+        """
+
+        self.assertEqual(board.OBSERVATION_OPEN_GUARDS, ("O_NONBLOCK", "O_NOFOLLOW"))
+        self.assertTrue(board.OBSERVATION_OPEN_FLAGS & os.O_RDONLY == os.O_RDONLY)
+        for guard in board.OBSERVATION_OPEN_GUARDS:
+            flag = getattr(os, guard, None)
+            if flag is None:  # pragma: no cover - not POSIX
+                self.assertNotEqual(os.name, "posix", f"{guard} is missing on a POSIX platform")
+                continue
+            self.assertEqual(board.OBSERVATION_OPEN_FLAGS & flag, flag, guard)
+        # Writes are never opened for, on any platform.
+        for forbidden in ("O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"):
+            flag = getattr(os, forbidden, 0)
+            if flag:
+                self.assertEqual(board.OBSERVATION_OPEN_FLAGS & flag, 0, forbidden)
+
+
+class BoardObservationClassificationRaceTests(TestCase):
+    """A candidate can change kind between being classified and being opened.
+
+    The classification reads a name; the open resolves it again. Between the
+    two, anything with write access to the observation directory can replace a
+    regular file with a named pipe or a symlink, and the reader has to survive
+    that without ever waiting on it and without ever following it.
+
+    These drive the race for real: the shipped classifier runs against a
+    directory that genuinely holds a regular file, the entry is replaced after
+    it has been classified, and the read that follows opens the replacement.
+    """
+
+    CAP = board.MAX_OBSERVATION_FILES
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    DEADLINE = BoardObservationNonRegularEntryTests.DEADLINE
+    ENTRY = BoardObservationNonRegularEntryTests.ENTRY
+    IDLE = BoardObservationNonRegularEntryTests.IDLE
+
+    _payload_within = BoardObservationNonRegularEntryTests._payload_within
+
+    def _directory(self, tmp: Path) -> tuple[Path, Path]:
+        """One current `no_work` record beside one ordinary regular candidate.
+
+        Both are regular files here, so the classification the race defeats is
+        a real one: the shipped classifier sees a regular file and says so.
+        """
+
+        directory = tmp / "observations"
+        directory.mkdir()
+        (directory / self.IDLE).write_text(
+            json.dumps(_observation_fixture("no_work")), encoding="utf-8"
+        )
+        (directory / self.ENTRY).write_text(
+            json.dumps(_referenced_record("cm948-before-the-swap")), encoding="utf-8"
+        )
+        outside = tmp / "outside.json"
+        outside.write_text(
+            json.dumps(_referenced_record("cm948-through-the-link")), encoding="utf-8"
+        )
+        return directory, outside
+
+    def _swapping_select(self, entry: Path, replace: Callable[[Path], None]) -> Callable:
+        """Run the shipped classifier, then replace the entry it classified."""
+
+        real_select = board._select_observation_files
+        seen: list[list[tuple[str, bool]]] = []
+
+        def select(path: Path) -> tuple[list[tuple[str, bool]], int]:
+            selected, total = real_select(path)
+            seen.append(selected)
+            # Classified as a regular file a moment ago; something else now.
+            entry.unlink()
+            replace(entry)
+            return selected, total
+
+        select.seen = seen  # type: ignore[attr-defined]
+        return select
+
+    def test_a_candidate_replaced_by_a_named_pipe_is_refused_not_awaited(self) -> None:
+        """The finding: a regular file swapped for a pipe under a live read.
+
+        An ordinary ``open()`` here does not raise, it waits -- for a writer
+        that never comes -- and the refresh never returns. The shipped read
+        returns inside the deadline with the swapped candidate accounted for as
+        one that produced no record.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _outside = self._directory(Path(tmp))
+            entry = directory / self.ENTRY
+            select = self._swapping_select(entry, lambda path: _make_non_regular("fifo", path))
+            started = time.monotonic()
+            with patch.object(board, "_select_observation_files", select):
+                payload = self._payload_within(directory)
+            elapsed = time.monotonic() - started
+
+        # The race was real: the shipped classifier saw a regular file.
+        self.assertEqual(
+            sorted(select.seen[0]), sorted([(self.IDLE, True), (self.ENTRY, True)])
+        )
+        # And the read did not wait on the pipe that replaced it.
+        self.assertLess(elapsed, self.DEADLINE)
+
+        _assert_observation_partition(self, payload)
+        self.assertEqual(payload["candidate_files"], 2)
+        self.assertEqual(payload["selected_files"], 2)
+        self.assertEqual(payload["attempted_files"], 2)
+        self.assertEqual(payload["unreadable_files"], 1)
+        self.assertEqual(payload["invalid_records"], 0)
+        self.assertEqual(payload["accepted_records"], 1)
+        self.assertFalse(payload["coverage_complete"])
+        self.assertEqual(payload["coverage"], "partial")
+        self.assertEqual(payload["coverage_gaps"], ["files_unreadable"])
+        self.assertFalse(payload["truncated"])
+        self.assertEqual(payload["warnings"], [{"file": self.ENTRY, "message": "unreadable_file"}])
+        self.assertEqual([record["kind"] for record in payload["records"]], ["no_work"])
+        # The refusal says a candidate produced no record, and nothing about
+        # what the entry turned out to be.
+        self.assertNotIn("fifo", json.dumps(payload).lower())
+        self.assertNotIn("cm948-before-the-swap", json.dumps(payload))
+
+    def test_a_candidate_replaced_by_a_symlink_is_refused_not_followed(self) -> None:
+        """A link that appears after classification is still a link the Board never chose.
+
+        The target is a perfectly valid record, which is exactly why following
+        it would be invisible in the counters and visible only here: its
+        reference must appear nowhere on the page.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, outside = self._directory(Path(tmp))
+            entry = directory / self.ENTRY
+            select = self._swapping_select(
+                entry, lambda path: _make_non_regular("symlink", path, outside)
+            )
+            with patch.object(board, "_select_observation_files", select):
+                payload = self._payload_within(directory)
+
+        self.assertEqual(
+            sorted(select.seen[0]), sorted([(self.IDLE, True), (self.ENTRY, True)])
+        )
+        self.assertEqual(payload["unreadable_files"], 1)
+        self.assertEqual(payload["accepted_records"], 1)
+        self.assertEqual(payload["invalid_records"], 0)
+        self.assertFalse(payload["coverage_complete"])
+        self.assertEqual([record["kind"] for record in payload["records"]], ["no_work"])
+        encoded = json.dumps(payload)
+        self.assertNotIn("cm948-through-the-link", encoded)
+        self.assertNotIn(str(outside), encoded)
+
+    def test_a_refused_candidate_leaks_no_descriptor(self) -> None:
+        """Every path out of the open closes what it opened, exactly once.
+
+        The refusal happens after the descriptor exists, so the reader owns it
+        and has to give it back -- on the refusal, and on a read that raises.
+        A leak here is invisible in every assertion above and fatal to a page
+        that refreshes on a timer.
+        """
+
+        if not hasattr(os, "mkfifo"):
+            raise SkipTest("this platform has no named pipes")
+        try:
+            os.listdir("/dev/fd")
+        except OSError as exc:  # pragma: no cover - platform without /dev/fd
+            raise SkipTest("this platform does not expose open descriptors") from exc
+
+        def descriptors() -> int:
+            return len(os.listdir("/dev/fd"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _outside = self._directory(Path(tmp))
+            entry = directory / self.ENTRY
+            _make_non_regular("fifo", entry.with_name("c-cm948-pipe.json"))
+            config = board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            # One read first, so a lazy import or a cached schema read is not
+            # mistaken for a descriptor this leaked.
+            board.observations_payload(config)
+            before = descriptors()
+            for _ in range(8):
+                board.observations_payload(config)
+            after = descriptors()
+
+        self.assertEqual(after, before)
+
+
+@contextmanager
+def _node_invocations():
+    """Record every Node command line this block runs, and how it got its program."""
+
+    calls: list[tuple[list[str], str | None]] = []
+    real_run = subprocess.run
+
+    def recording(command, *args, **kwargs):
+        if isinstance(command, list) and command and str(command[0]).endswith("node"):
+            calls.append(([str(part) for part in command], kwargs.get("input")))
+        return real_run(command, *args, **kwargs)
+
+    with patch.object(subprocess, "run", recording):
+        yield calls
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardNodeHelperArgvTests(TestCase):
+    """No Board helper hands Node a generated program on the command line.
+
+    The shipped page script is over 140 KiB. Linux caps a *single* argument at
+    ``MAX_ARG_STRLEN`` -- a fixed 32 pages, 128 KiB, unrelated to ``ARG_MAX``
+    and not raisable -- so passing that script with ``node -e`` raises
+    ``OSError: [Errno 7] Argument list too long`` before Node is ever reached.
+    macOS applies a much larger whole-command-line limit instead, so the same
+    helper passes locally and fails every Linux job in the package matrix.
+
+    The program therefore goes in on stdin, which is bounded by a pipe and not
+    by argv, and only the small JSON arguments stay on the command line.
+    """
+
+    def test_no_helper_puts_its_generated_program_in_argv(self) -> None:
+        """Drive the helpers and inspect the command lines they actually built."""
+
+        with _node_invocations() as calls:
+            _eval_board_truth("1 + 1")
+            _eval_board_view("1 + 1")
+            _eval_board_page("1 + 1")
+            _render_board_sequence([{}])
+            _render_board_focus([{}])
+            _run_board_poll_script([None])
+
+        self.assertEqual(len(calls), 6)
+        for command, program in calls:
+            # The program arrived on stdin, and `-` is what stands in for it.
+            self.assertIsNotNone(program, command[:2])
+            self.assertEqual(command[1], "-")
+            self.assertNotIn("-e", command)
+            for argument in command:
+                self.assertLess(
+                    len(argument.encode("utf-8")),
+                    LINUX_MAX_ARG_STRLEN,
+                    f"{argument[:60]!r}... would not survive a Linux exec",
+                )
+            # Nothing recognisably the page script is on the command line.
+            self.assertNotIn("function render(", " ".join(command))
+
+        # At least one of those programs is past the limit, so this is a
+        # statement about the helpers rather than about small scripts.
+        self.assertTrue(
+            any(len(program.encode("utf-8")) > LINUX_MAX_ARG_STRLEN for _c, program in calls),
+            "no helper ran a program large enough for argv to have refused it",
+        )
+
+    def test_every_node_command_in_this_module_is_built_in_one_place(self) -> None:
+        """The runner is the only place a Node command line is assembled.
+
+        A behavioural test can only cover the helpers it calls; this covers the
+        next one somebody adds. ``skipUnless`` decorators mention Node without
+        running it, so they are excluded by shape rather than by count.
+        """
+
+        # Assembled rather than written out, so this test's own source is not
+        # one of the lines it goes looking for.
+        needle = "shutil.which(" + '"node")'
+        source = Path(__file__).read_text(encoding="utf-8")
+        built = [
+            line.strip()
+            for line in source.splitlines()
+            if needle in line and "skipUnless" not in line
+        ]
+        self.assertEqual(built, ["[" + needle + ' or "node", "-", *args],'])
+
+    def test_a_program_past_the_linux_argv_limit_runs_and_keeps_its_arguments(self) -> None:
+        """The fix, stated as the thing it has to do.
+
+        A program larger than any argument Linux would accept still runs, and
+        the JSON arguments still arrive -- one place later, at ``argv[2]``,
+        because ``-`` now occupies ``argv[1]``.
+        """
+
+        script = (
+            "// " + "x" * LINUX_MAX_ARG_STRLEN + "\n"
+            "console.log(JSON.stringify(process.argv.slice(2).map(JSON.parse)));\n"
+        )
+        self.assertGreater(len(script.encode("utf-8")), LINUX_MAX_ARG_STRLEN)
+        self.assertEqual(
+            json.loads(_run_node(script, json.dumps("first"), json.dumps({"second": 2}))),
+            ["first", {"second": 2}],
+        )
+
+    def test_argv_has_a_ceiling_on_this_platform_that_stdin_does_not(self) -> None:
+        """Find this platform's argv ceiling for real, then clear it on stdin.
+
+        The ceiling is not the same number everywhere -- Linux refuses a single
+        128 KiB argument, macOS accepts one and refuses the command line near a
+        megabyte -- and that difference is the whole reason a green local run
+        proved nothing about the package matrix. So this measures the ceiling
+        rather than assuming it, and then runs a program that large through the
+        runner every Board helper uses.
+        """
+
+        size = LINUX_MAX_ARG_STRLEN
+        ceiling = 0
+        while size <= 16 * 1024 * 1024:
+            try:
+                # Any exec will do: the kernel refuses the command line before
+                # the program on the other end of it is ever consulted.
+                subprocess.run([sys.executable, "-c", "pass", "x" * size], capture_output=True)
+            except OSError as exc:
+                self.assertEqual(exc.errno, errno.E2BIG)
+                ceiling = size
+                break
+            size *= 2
+        if not ceiling:  # pragma: no cover - a platform with no reachable ceiling
+            raise SkipTest("this platform accepts arguments larger than any script here")
+
+        # The same size, as a program rather than as an argument, runs.
+        script = "// " + "x" * ceiling + "\nconsole.log(JSON.stringify(process.argv[2]));\n"
+        self.assertGreater(len(script.encode("utf-8")), ceiling)
+        self.assertEqual(json.loads(_run_node(script, "measured")), "measured")

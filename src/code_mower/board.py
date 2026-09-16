@@ -78,6 +78,27 @@ OBSERVATION_COVERAGE_GAPS = (
     "files_unreadable",
     "records_invalid",
 )
+# The guards that make opening an observation candidate safe even though the
+# entry can change kind between being classified and being opened. They are
+# named here rather than inlined so a test can assert they are still in force.
+#
+# `O_NONBLOCK` is the one that cannot be recovered from after the fact: opening
+# a named pipe for blocking read with no writer does not fail, it waits, and a
+# refresh that waits there never returns. `O_NOFOLLOW` refuses a final
+# component that became a symlink, so a link the Board never chose can never be
+# resolved for it. Both are POSIX and are present on every platform the Board
+# supports; the descriptor-type check in `_open_observation_file` is what makes
+# the open safe, and it does not depend on either flag being available.
+OBSERVATION_OPEN_GUARDS = ("O_NONBLOCK", "O_NOFOLLOW")
+# `O_CLOEXEC` (`O_NOINHERIT` on Windows) keeps the descriptor out of any child
+# process, and `O_BINARY` is the Windows flag for untranslated bytes and does
+# not exist elsewhere. Every flag is looked up rather than named so an
+# interpreter missing one still imports; a missing guard weakens nothing that
+# `fstat` does not re-check on the descriptor actually opened.
+OBSERVATION_OPEN_FLAGS = os.O_RDONLY
+for _flag_name in (*OBSERVATION_OPEN_GUARDS, "O_CLOEXEC", "O_NOINHERIT", "O_BINARY"):
+    OBSERVATION_OPEN_FLAGS |= getattr(os, _flag_name, 0)
+del _flag_name
 SECRET_VALUE_RE = re.compile(
     r"(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})"
 )
@@ -1227,6 +1248,14 @@ def _select_observation_files(path: Path) -> tuple[list[tuple[str, bool]], int]:
     chose, and whose target can change between this classification and the
     open. Nothing here is dropped for being non-regular: it stays a counted
     candidate, and the read accounts for it as one that produced no record.
+
+    This classification is a filter, not a guarantee. It reads a name, and the
+    entry that name refers to can change kind before the open that follows, so
+    nothing downstream may treat "classified regular" as "is regular":
+    :func:`_open_observation_file` re-decides it on the descriptor it actually
+    opened. What this filter buys is that the common non-regular entry is never
+    opened at all, and that the open which does happen has something safe to
+    re-check.
     """
 
     total = 0
@@ -1254,6 +1283,58 @@ def _select_observation_files(path: Path) -> tuple[list[tuple[str, bool]], int]:
 
     selected = heapq.nsmallest(MAX_OBSERVATION_FILES, candidates())
     return sorted((name, regular) for _key, name, regular in selected), total
+
+
+class _ObservationNotRegular(OSError):
+    """An opened observation candidate turned out not to be a regular file.
+
+    An ``OSError`` on purpose: refusing the descriptor is the same outcome for
+    the caller as failing to open it, and the caller has exactly one place that
+    turns either into the one ``unreadable_file`` accounting.
+    """
+
+
+def _open_observation_file(record_file: Path) -> Any:
+    """Open one classified candidate, refusing anything but a regular file.
+
+    The ``lstat`` that classified this name is not a promise about the entry
+    the open resolves: the name can be replaced between the two, and replacing
+    a regular file with a named pipe is enough to wedge a refresh forever if
+    the open blocks. So the open itself carries the guards
+    (``OBSERVATION_OPEN_FLAGS``) rather than relying on the earlier look --
+    ``O_NONBLOCK`` so opening a pipe with no writer returns instead of waiting,
+    ``O_NOFOLLOW`` so a name that became a symlink is refused rather than
+    resolved -- and then ``fstat`` re-decides the kind on the descriptor that
+    is actually open, which is the one question no later change can race.
+
+    ``O_NONBLOCK`` stays set for the read. It has no effect on a regular file
+    on any supported platform, and by the time a read happens ``fstat`` has
+    already established that this descriptor is one; a descriptor that is
+    anything else never reaches a read at all.
+
+    Returns an open binary handle that owns the descriptor. Raises ``OSError``
+    -- including :class:`_ObservationNotRegular` -- if the entry cannot be
+    opened or is not a regular file, and never leaves a descriptor open on any
+    failing path, including a failure inside ``fdopen`` itself.
+    """
+
+    descriptor = os.open(record_file, OBSERVATION_OPEN_FLAGS)
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise _ObservationNotRegular(
+                errno.EINVAL, "observation candidate is not a regular file"
+            )
+        handle = os.fdopen(descriptor, "rb")
+    except BaseException:
+        # Nothing has taken the descriptor yet, so this is the only owner and
+        # closes it exactly once -- on a refusal, on an `fstat` that raised,
+        # and on an `fdopen` that failed after consuming nothing.
+        os.close(descriptor)
+        raise
+    # Ownership has transferred: `handle.close()` is now the one close.
+    return handle
+
 
 @dataclass(frozen=True)
 class _ObservationAccounting:
@@ -1390,8 +1471,15 @@ def _read_observation_records(
     rather than failing it. It is refused, not dropped -- the Board cannot know
     what the entry it declined to open would have said, so it is one more
     candidate that produced no record and one more reason this read is partial.
-    An entry that changes between that classification and this open is no
-    different: the open or the read raises, and lands in the same count.
+
+    An entry that changes kind between that classification and this open lands
+    in the same count, but not because an ordinary open would have raised on it
+    -- it would not. Opening a pipe for blocking read with no writer waits, so
+    :func:`_open_observation_file` opens non-blocking and without following a
+    link, then re-decides the kind on the descriptor itself and refuses
+    anything that is not a regular file. Every one of those refusals, and every
+    genuine open or read error, is caught in one place below and accounted for
+    as the same single ``unreadable_file`` outcome.
     """
 
     records: list[dict[str, Any]] = []
@@ -1411,11 +1499,14 @@ def _read_observation_records(
         # that bound is ever read: an oversize file is rejected on the length
         # of what was asked for, without the remainder being loaded or decoded.
         try:
-            with record_file.open("rb") as handle:
+            with _open_observation_file(record_file) as handle:
                 raw = handle.read(board_observation.MAX_BYTES + 1)
         except OSError:
+            # The one place any open, refusal or read failure is accounted for.
             # Its own fixed diagnostic: an unreadable file is a different fact
-            # from a record the contract refused, and neither names an errno.
+            # from a record the contract refused, and neither names an errno --
+            # nor whether the descriptor was refused for its kind, which would
+            # describe the entry the page is forbidden to describe.
             unreadable += 1
             warnings.append({"file": record_file.name, "message": "unreadable_file"})
             continue
@@ -1492,12 +1583,19 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
     That coverage describes the files, not a record's own source coverage, and
     it is carried separately from the contract's closed record diagnostics.
 
-    Only regular files are ever opened. A directory entry that is a named pipe,
+    Only regular files are ever read. A directory entry that is a named pipe,
     a socket, a directory or a symlink is counted as a candidate and then
     refused unread, because a bounded read is only bounded once the file is
     open: reading a named pipe with no writer blocks, and a refresh that blocks
     keeps serving the snapshot before it. Refusing one is a loss of evidence
     like any other and is reported as one.
+
+    The kind is decided twice, and the second time is the one that binds. An
+    entry can be replaced between being classified and being opened, so the
+    open is non-blocking and does not follow a link, and the descriptor it
+    returns is what ``fstat`` re-decides the kind on. That is why a candidate
+    swapped for a named pipe under a live read costs one refused candidate
+    rather than a refresh that never returns.
 
     Every candidate outcome is accounted for by :class:`_ObservationAccounting`
     and reported here: what was omitted by the cap, what could not be read at
