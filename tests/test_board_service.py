@@ -181,7 +181,13 @@ class ServiceHarness(TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
+        # Resolved, because `build_spec` resolves the requested checkout and the
+        # whole binding contract is stated in that one canonical spelling. On
+        # macOS the temporary root is `/var/...` for `/private/var/...`, so an
+        # unresolved fixture would register its origins and assert its rendered
+        # argv under a spelling the product never produces -- the checkout would
+        # look originless and the ownership guard would be tested vacuously.
+        self.tmp = Path(self._tmp.name).resolve()
         self.addCleanup(self._tmp.cleanup)
         self.root = self.tmp / "LaunchAgents"
         self.root.mkdir()
@@ -279,6 +285,13 @@ class BoardServiceContractTest(ServiceHarness):
             ],
         )
         self.assertEqual(data["WorkingDirectory"], str(self.checkout))
+        # One canonical spelling: what is rendered is what `build_spec` resolved,
+        # so the argv, the working directory and every later binding comparison
+        # are stated in the same path.
+        canonical = str(self.checkout.resolve())
+        self.assertEqual(data["WorkingDirectory"], canonical)
+        rendered_binding = board_service.binding_from_arguments(data["ProgramArguments"])
+        self.assertEqual(rendered_binding["repo_path"], canonical)
 
     def test_a_different_binding_renders_a_different_digest(self) -> None:
         one = board_service.definition_digest(board_service.render_definition(self.spec()))
@@ -340,7 +353,35 @@ class BoardServiceContractTest(ServiceHarness):
         payload = self.install(self.spec(repo="codemower-ai/private-repo", repo_path=self.checkout))
 
         self.assertEqual(payload["status"], "ownership_mismatch")
+        self.assertEqual(payload["ownership"], "mismatch")
         self.assertEqual(list(self.root.glob("*.plist")), [])
+        self.assertEqual(self.host.loaded, {})
+
+    def test_a_path_with_no_readable_origin_is_refused_before_anything_is_applied(self) -> None:
+        # Ownership is proven from the checkout's origin. A path whose origin
+        # cannot be read is unprovable, not implicitly ours, so it refuses on the
+        # same terms as a path that names another repository.
+        unproven = self.tmp / "unproven"
+        unproven.mkdir()
+
+        payload = self.install(self.spec(repo_path=unproven))
+
+        self.assertEqual(payload["status"], "ownership_mismatch")
+        self.assertEqual(payload["ownership"], "unverified")
+        self.assertEqual(list(self.root.glob("*.plist")), [])
+        self.assertEqual(self.host.loaded, {})
+        self.assertNotIn(str(unproven), json.dumps(payload))
+
+    def test_an_unprovable_path_is_refused_on_restart_too(self) -> None:
+        unproven = self.tmp / "unproven-restart"
+        unproven.mkdir()
+
+        payload = self.restart(self.spec(repo_path=unproven))
+
+        self.assertEqual(payload["status"], "ownership_mismatch")
+        self.assertEqual(payload["ownership"], "unverified")
+        self.assertEqual(list(self.root.glob("*.plist")), [])
+        self.assertEqual(self.host.loaded, {})
 
 
 class BoardServiceLifecycleTest(ServiceHarness):

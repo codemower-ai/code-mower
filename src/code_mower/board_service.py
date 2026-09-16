@@ -941,9 +941,20 @@ def validate_binding(
 
 
 def _same_path(left: str, right: str) -> bool:
+    """Compare two local paths on one canonical spelling.
+
+    `build_spec` resolves the requested checkout, so every rendered argv and
+    every stored definition already carries the canonical path. A live process
+    can still report a symlinked spelling for the same directory -- on macOS
+    `/var/...` is `/private/var/...` -- and comparing those lexically would
+    fail a healthy binding. Both sides are resolved so the comparison is the
+    one the rest of the module already makes. Local only: the verdict leaves,
+    the paths do not.
+    """
+
     try:
-        return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
-    except (TypeError, ValueError):
+        return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
+    except (TypeError, ValueError, OSError):
         return False
 
 
@@ -1057,22 +1068,53 @@ def _unsupported(provider: Any, message: str) -> dict[str, Any]:
     }
 
 
+def _ownership_refusal(spec: ServiceSpec, ownership: str, message: str) -> dict[str, Any]:
+    """An ownership refusal, reported before anything is applied.
+
+    `ownership` discriminates the two ways proving ownership fails without
+    widening `SERVICE_STATUSES`; a caller that only branches on `status` keeps
+    treating both as the same refusal. No digest and no definition: nothing was
+    rendered against this path, and nothing local changed.
+    """
+
+    return {
+        "schema": BOARD_SERVICE_SCHEMA,
+        "status": "ownership_mismatch",
+        "ownership": ownership,
+        "message": message,
+        "label": spec.label,
+        "repo": spec.repo,
+        "port": spec.port,
+    }
+
+
 def _origin_guard(
     spec: ServiceSpec,
     command_runner: lane_status.CommandRunner,
 ) -> dict[str, Any] | None:
-    """Refuse a path that is demonstrably another repository's checkout."""
+    """Refuse a path this lane cannot prove is a checkout of `--repo`.
+
+    Ownership is established from the checkout's own origin slug, so the two
+    ways it fails are symmetric and both refuse: an origin naming a different
+    repository, and an origin that cannot be read at all. Treating an unreadable
+    origin as consent is the exact failure this module exists to remove -- the
+    v1.4.0 inventory gate accepted a reclaimed port because it checked the slug
+    and the versions but never proved which checkout was being served.
+    """
 
     origin = repository_origin_slug(spec.repo_path, command_runner)
-    if origin and origin != spec.repo.lower():
-        return {
-            "schema": BOARD_SERVICE_SCHEMA,
-            "status": "ownership_mismatch",
-            "message": "the repository path is a checkout of a different repository than --repo",
-            "label": spec.label,
-            "repo": spec.repo,
-            "port": spec.port,
-        }
+    if not origin:
+        return _ownership_refusal(
+            spec,
+            "unverified",
+            "the repository path has no readable git origin, so it cannot be proven to be a checkout of --repo",
+        )
+    if origin != spec.repo.lower():
+        return _ownership_refusal(
+            spec,
+            "mismatch",
+            "the repository path is a checkout of a different repository than --repo",
+        )
     return None
 
 

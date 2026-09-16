@@ -60,7 +60,7 @@ None of these change any local state:
 | Status | Cause |
 | --- | --- |
 | `stale_arguments` | a different definition is installed for this port; rerun with `--replace` |
-| `ownership_mismatch` | another managed label owns the port, or the path is another repository's checkout |
+| `ownership_mismatch` | another managed label owns the port, or `--repo-path` was not proven to be a checkout of `--repo` |
 | `external_supervisor` | the port is held by a process a different supervisor owns |
 | `port_conflict` | the port is held by an unrelated local process |
 | `ambiguous_repository` | the selector matches more than one managed service |
@@ -71,6 +71,25 @@ None of these change any local state:
 the replacement is atomic: the definition file is swapped with `os.replace`, and
 a failed bootstrap restores exactly the previous definition or reports
 `rollback_failed`.
+
+### Proving the checkout
+
+`install` and `restart` both establish ownership before anything is applied, by
+reading the origin slug of `--repo-path` locally and comparing it to `--repo`.
+Both ways of failing refuse, and the payload's `ownership` field says which:
+`mismatch` for an origin naming a different repository, `unverified` for an
+origin that cannot be read at all. An unreadable origin is not consent, because
+a path whose repository identity cannot be proven is exactly what let a
+keepalive job reclaim port 5332 from an older checkout. A Board therefore has to
+be served from a checkout with a readable `remote.origin.url` for that
+repository. `--replace` takes over a *definition*, not ownership: the origin
+guard runs first and refuses either way.
+
+Ownership is compared on one canonical spelling. `build_spec` resolves
+`--repo-path`, so the rendered argv, the working directory, and every later
+binding comparison all use the resolved path. A live process reporting a
+symlinked spelling of the same directory (on macOS `/var/...` for
+`/private/var/...`) still matches.
 
 ## Stop, transient and managed
 
