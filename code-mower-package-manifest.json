@@ -384,6 +384,16 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/board_observation.py",
+      "target": "src/code_mower/board_observation.py"
+    },
+    {
+      "kind": "schema",
+      "source": "src/code_mower/board_observation.schema.json",
+      "target": "src/code_mower/board_observation.schema.json"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/board_store.py",
       "target": "src/code_mower/board_store.py"
     },
