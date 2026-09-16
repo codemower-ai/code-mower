@@ -4813,22 +4813,42 @@ _BOARD_HTML = """<!doctype html>
       fastPollAttempts = 0;
       return freshDelayMs(cache) ?? REFRESH_MS;
     }
-    async function load() {
-      // A failed fetch, a malformed payload, and cache metadata that is absent
-      // or unusable all fall back to the configured interval. Pacing and
-      // backoff are decided exactly as before: a failure is a normal-interval
-      // tick, and only a response that is no longer awaiting a refresh resets
-      // the fast-poll budget.
-      let delayMs = REFRESH_MS;
-      // The two requests are settled independently. Only /api/status carries
-      // the observations whose currency this page asserts, so only its failure
-      // withdraws that authority -- and a failed /api/events, which feeds a
-      // view that never claims to be current, must neither withdraw a claim it
-      // does not touch nor stop a good status payload from rendering.
-      const [status, events] = await Promise.all([
-        fetchJson("/api/status"),
-        fetchJson("/api/events")
-      ]);
+    // The events view, rendered inside its own failure boundary.
+    //
+    // `/api/events` answering with valid JSON is not the same as answering
+    // with a shape this page can walk: `events` arriving as a string, as an
+    // object that merely has a `length`, or as a list holding something other
+    // than event objects all parse cleanly and then throw inside renderEvents.
+    // That is a loss of one history view, and it is deliberately given the
+    // smallest possible meaning -- the same one a request that never arrived
+    // has.
+    //
+    // Nothing is written on failure, in either direction. The history card
+    // keeps exactly what it last rendered, because the alternative is
+    // destroying readable history over a payload that is unreadable now. The
+    // transport row is not touched either: it reports whether *status* polls
+    // are arriving, which is what every current-state claim on this page is
+    // gated on, and an events failure recorded there would withdraw a snapshot
+    // that rendered perfectly well. And the throw stops here rather than at
+    // load(), so a history view this page cannot render can never be the
+    // reason its status polling stopped.
+    function renderEventsIsolated(history) {
+      try {
+        renderEvents(history);
+      } catch (error) {
+        // Deliberately nothing: see above. The one surface that could report
+        // this is the history card itself, and overwriting it is the loss this
+        // boundary exists to prevent.
+      }
+    }
+    // The status half of one poll, settled: the outcome of the /api/status
+    // request goes in, the delay the next poll should wait goes out, and every
+    // claim this page makes about *now* is decided on the way through.
+    //
+    // Only a status response this page actually rendered yields a delay it
+    // chose; every other outcome returns the configured interval, which is the
+    // fallback the loop has always used for a failure.
+    function renderStatusOutcome(status) {
       try {
         if (!status.ok) throw status.error;
         // The confirmation is handed to the render that speaks with it, and
@@ -4839,7 +4859,7 @@ _BOARD_HTML = """<!doctype html>
         render(status.data, confirmed);
         transportState = confirmed;
         lastStatusData = status.data;
-        delayMs = nextDelayMs(status.data?.board?.cache);
+        return nextDelayMs(status.data?.board?.cache);
       } catch (error) {
         // Every way a status poll can fail to leave a usable current snapshot
         // ends here, and all of them mean one thing for what is on screen: it
@@ -4847,11 +4867,51 @@ _BOARD_HTML = """<!doctype html>
         // since. Withdrawing that is a rerender of the retained payload under
         // the local transport state, not a warning written beside claims that
         // go on asserting the present tense.
+        //
+        // The failure is recorded before the rerender, so a rerender that
+        // fails too still leaves the count and the error text for the Health
+        // transport row to report: this handler never swallows the reason a
+        // status poll stopped speaking for now.
         noteTransportFailure(error);
         renderRetained();
+        return REFRESH_MS;
       }
-      if (events.ok) renderEvents(events.data);
-      scheduleNextLoad(delayMs);
+    }
+    async function load() {
+      // A failed fetch, a malformed payload, and cache metadata that is absent
+      // or unusable all fall back to the configured interval. Pacing and
+      // backoff are decided exactly as before: a failure is a normal-interval
+      // tick, and only a response that is no longer awaiting a refresh resets
+      // the fast-poll budget.
+      let delayMs = REFRESH_MS;
+      // Arming the next poll is the one thing that survives everything else
+      // this function does, which is why it is in a `finally` and why it is
+      // the function's only exit. Anything that throws past the handlers
+      // inside -- a retained rerender that fails, a renderer with a plain bug
+      // in it, a handler that fails unexpectedly -- used to escape here and
+      // take this page's polling with it, leaving the last snapshot on screen
+      // indefinitely with nothing on the page to say it had stopped being
+      // refreshed. It still reaches the caller, so no failure is hidden and
+      // the Health transport row still reports what the handlers recorded;
+      // what it can no longer do is end the loop.
+      try {
+        // The two requests are settled independently. Only /api/status carries
+        // the observations whose currency this page asserts, so only its
+        // failure withdraws that authority -- and a failed /api/events, which
+        // feeds a view that never claims to be current, must neither withdraw
+        // a claim it does not touch nor stop a good status payload from
+        // rendering. Rendering them is separated the same way: a history
+        // this page cannot render is contained where it happens, so it can
+        // neither replace a status snapshot that rendered nor end this loop.
+        const [status, events] = await Promise.all([
+          fetchJson("/api/status"),
+          fetchJson("/api/events")
+        ]);
+        delayMs = renderStatusOutcome(status);
+        if (events.ok) renderEventsIsolated(events.data);
+      } finally {
+        scheduleNextLoad(delayMs);
+      }
     }
     load();
   </script>

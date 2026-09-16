@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import copy
 import errno
@@ -425,10 +425,12 @@ class BoardTests(TestCase):
         self.assertIn("pollTimer = setTimeout(load, delayMs);", html)
         self.assertIn("clearTimeout(pollTimer);", html)
         self.assertLess(html.index("clearTimeout(pollTimer);"), html.index("pollTimer = setTimeout(load, delayMs);"))
-        # Definition plus exactly one call site, on the single path every
-        # load() takes whether it succeeded or threw.
+        # Definition plus exactly one call site, and that call site is the
+        # `finally` that closes load(): not a statement after the try, which a
+        # throw from either half of a poll skips, but the boundary every path
+        # out of load() crosses whether it returned or threw.
         self.assertEqual(html.count("scheduleNextLoad("), 2)
-        self.assertIn("      scheduleNextLoad(delayMs);\n    }", html)
+        self.assertIn("      } finally {\n        scheduleNextLoad(delayMs);\n      }\n    }", html)
 
     @skipUnless(shutil.which("node"), "node is required to execute the board polling script")
     def test_board_poll_delay_for_each_cache_state(self) -> None:
@@ -3745,10 +3747,18 @@ const clearTimeout = () => {
   clearedCount += 1;
 };
 let STEP = null;
+// The three outcomes one request can have, which are the three this page has
+// to tell apart: a request that never arrived (the fetch itself rejects), a
+// response whose body is not JSON (the fetch resolves and `json()` rejects),
+// and a response that parsed -- into whatever shape it parsed into, which the
+// step supplies verbatim and is under no obligation to make renderable.
+const UNPARSABLE = "__UNPARSABLE_MARKER__";
 const fetch = async (url) => {
   const status = url === "/api/status";
   const outcome = status ? STEP.status : STEP.events;
-  if (outcome === null) throw new Error(status ? STEP.status_error : STEP.events_error);
+  const message = status ? STEP.status_error : STEP.events_error;
+  if (outcome === null) throw new Error(message);
+  if (outcome === UNPARSABLE) return {json: async () => { throw new Error(message); }};
   return {json: async () => outcome};
 };
 __SCRIPT__
@@ -3761,12 +3771,24 @@ __SCRIPT__
     const armedBefore = timers.length;
     const clearedBefore = clearedCount;
     announced.length = 0;
-    await load();
+    // In the page nothing awaits load(): it is called once and then rearmed
+    // from a timer, so anything that escapes it is an unhandled rejection with
+    // no one to see it. Recorded here rather than allowed to abort the run, so
+    // a test can assert both halves of the invariant separately -- that the
+    // shipped code lets nothing escape, and that the timer is armed even when
+    // something does.
+    let escaped = null;
+    try {
+      await load();
+    } catch (error) {
+      escaped = String((error && error.message) || error);
+    }
     const armed = timers[timers.length - 1];
     frames.push({
       nodes: Object.fromEntries(Object.entries(NODES).map(([id, node]) => [id, node.innerHTML || node.textContent])),
       announced: [...announced],
       timeline: changeLog.map(entry => entry.sentence),
+      escaped,
       delay: armed === undefined ? null : armed.ms,
       armed: timers.length - armedBefore,
       cleared: clearedCount - clearedBefore,
@@ -3782,11 +3804,17 @@ __SCRIPT__
 """
 
 
+# What a step supplies for a request whose response arrives and whose body is
+# not JSON. `None` is already "the request never arrived"; this is the other
+# transport-level failure, and the two reach `fetchJson` differently.
+UNPARSABLE_BODY = "__UNPARSABLE_BODY__"
+
+
 def _run_board_lifetime(
     steps: list[dict[str, object]],
     *,
     now: datetime = OBSERVATION_NOW,
-    mutate: tuple[str, str] | None = None,
+    mutate: tuple[str, str] | Sequence[tuple[str, str]] | None = None,
 ) -> list[dict[str, object]]:
     """Replay a sequence of polls through the shipped ``load()`` loop.
 
@@ -3797,18 +3825,27 @@ def _run_board_lifetime(
     identity first, the way an operator would before a refresh lands.
 
     ``mutate`` replaces one exact fragment of the shipped page before it runs,
-    so a test can execute the code this replaced and prove the assertions it
-    makes would actually catch its return.
+    or several, so a test can execute the code this replaced and prove the
+    assertions it makes would actually catch its return. Each fragment must
+    appear exactly once, and each is applied to the page the one before it
+    produced, so a set of them can reconstruct a whole earlier shape.
     """
 
     page = _board_script()
-    if mutate is not None:
-        original, replacement = mutate
-        if page.count(original) != 1:  # pragma: no cover - guards the mutation
-            raise AssertionError(f"board page script no longer contains exactly one {original!r}")
-        page = page.replace(original, replacement)
-    script = BOARD_LIFETIME_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000))).replace(
-        "__SCRIPT__", page
+    if mutate:
+        edits = [mutate] if isinstance(mutate[0], str) else list(mutate)
+        for original, replacement in edits:
+            if page.count(original) != 1:  # pragma: no cover - guards the mutation
+                raise AssertionError(
+                    f"board page script no longer contains exactly one {original!r}"
+                )
+            page = page.replace(original, replacement)
+    # The marker first: the page script is substituted last so nothing in it
+    # can be expanded again.
+    script = (
+        BOARD_LIFETIME_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000)))
+        .replace("__UNPARSABLE_MARKER__", UNPARSABLE_BODY)
+        .replace("__SCRIPT__", page)
     )
     normalized = [
         {
@@ -9818,6 +9855,381 @@ class BoardPollingAuthorityTests(TestCase):
         self.assertIn("nothing to do in this session", ungated["nodes"]["worklist"])
         self.assertIn('<b class="ok">live, observed 30s ago</b>', ungated["nodes"]["summary"])
         self.assertEqual(ungated["announced"], [])
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the board polling script")
+class BoardPollingContinuityTests(TestCase):
+    """The poll loop outlives everything one poll can do to this page.
+
+    `/api/events` answering with valid JSON is not the same as answering with
+    a shape this page can render: `events` arriving as a string, as an object
+    that merely has a `length`, or as a list holding a null all parse cleanly
+    and then throw inside `renderEvents`. That call sat outside the status
+    handler and inside no boundary of its own, so the throw escaped `load()`,
+    skipped `scheduleNextLoad()` and ended this page's status refreshes for
+    good -- leaving the last snapshot on screen indefinitely, still asserting
+    the present tense, with no transport warning anywhere, because the status
+    poll it came from had succeeded and nothing had failed to record.
+
+    The rules these hold, in the order they matter:
+
+    * exactly one timer is armed per `load()`, however that load went, and
+      arming it is the last thing every path does;
+    * the two halves of a poll fail independently -- an unrenderable events
+      payload withdraws nothing, because that view was never evidence of now,
+      and a status poll that did not complete does not suppress the history;
+    * a status response this page rendered still chooses the next delay, and
+      everything else still falls back to the configured interval;
+    * and nothing is swallowed on the way: a status render that throws is
+      recorded on the Health transport row with its own message, and a throw
+      that gets past every handler still reaches the caller.
+    """
+
+    COMPLETE = BoardPollingAuthorityTests.COMPLETE
+    UNCONFIRMED = BoardPollingAuthorityTests.UNCONFIRMED
+    PRESENT_TENSE = BoardPollingAuthorityTests.PRESENT_TENSE
+    REFRESH_MS = 15_000
+    FAST_POLL_MS = 750
+
+    GOOD_STATUS = _cache_payload([_observation_fixture("no_work")], CONFIRMED_CACHE)
+    # A status payload the server would serve while a refresh is still running,
+    # which is the one case the page paces itself faster than the configured
+    # interval. Used to prove the delay a *successful* status response chose is
+    # what the poll waits, whatever the events half did.
+    REFRESHING_STATUS = _cache_payload([_observation_fixture("no_work")], STALE_CACHE_REFRESHING)
+    # Valid JSON from /api/status whose shape `render()` cannot walk: the page
+    # reads `remote.pull_requests` as a list and calls `.map` on it, so this
+    # request succeeds, parses, and then throws inside the render.
+    UNRENDERABLE_STATUS = copy.deepcopy(GOOD_STATUS)
+    UNRENDERABLE_STATUS["remote"]["pull_requests"] = "one"
+    RENDER_ERROR = "prs.map is not a function"
+
+    HISTORY = {"events": [{"created_at": "2026-09-12T19:59:00Z", "summary": {"next_action": "review"}}]}
+    LATER_HISTORY = {"events": [{"created_at": "2026-09-12T19:59:30Z", "summary": {"next_action": "merge"}}]}
+    HISTORY_MARK = "next: <b>review</b>"
+    LATER_MARK = "next: <b>merge</b>"
+
+    # Valid JSON from /api/events that `renderEvents` cannot walk. Each one is
+    # a real shape a server or a proxy can produce, and each throws at a
+    # different point: on the copy, on the reverse, and inside the row builder.
+    UNRENDERABLE_EVENTS = (
+        ("events is a string", {"events": "two"}),
+        ("events is an object with a length", {"events": {"length": 1}}),
+        ("events holds a null entry", {"events": [None]}),
+    )
+    # Every way `/api/events` can fail to leave a renderable history: the two
+    # transport-level failures `fetchJson` reports as `ok: false`, and the
+    # three shapes it reports as success and cannot render.
+    EVENT_FAILURES = (
+        ("the request never arrived", None),
+        ("the body is not JSON", UNPARSABLE_BODY),
+    ) + UNRENDERABLE_EVENTS
+    # And the matching three for `/api/status`, which is the half that does
+    # carry authority over what this page claims about now.
+    STATUS_FAILURES = (
+        ("the request never arrived", None),
+        ("the body is not JSON", UNPARSABLE_BODY),
+        ("the payload does not render", UNRENDERABLE_STATUS),
+    )
+
+    # The shipped fragment each mutation below replaces, quoted once so a
+    # rename cannot leave a mutation silently matching nothing: the helper
+    # requires exactly one occurrence.
+    POLL_TAIL = (
+        "        delayMs = renderStatusOutcome(status);\n"
+        "        if (events.ok) renderEventsIsolated(events.data);\n"
+        "      } finally {\n"
+        "        scheduleNextLoad(delayMs);\n"
+        "      }\n"
+    )
+    # The code this replaced: the events render in no boundary of its own, and
+    # the next poll armed after the try rather than on the way out of it.
+    PRE_FIX_TAIL = (
+        POLL_TAIL,
+        "        delayMs = renderStatusOutcome(status);\n"
+        "        if (events.ok) renderEvents(events.data);\n"
+        "        scheduleNextLoad(delayMs);\n"
+        "      } finally {\n"
+        "      }\n",
+    )
+    # One half of it: the events render loses its boundary and the arming
+    # keeps its own.
+    UNISOLATED_EVENTS = (
+        POLL_TAIL,
+        "        delayMs = renderStatusOutcome(status);\n"
+        "        if (events.ok) renderEvents(events.data);\n"
+        "      } finally {\n"
+        "        scheduleNextLoad(delayMs);\n"
+        "      }\n",
+    )
+    # The other half: the events render keeps its boundary and the arming
+    # moves back outside the one that guarantees it.
+    SCHEDULING_OUTSIDE_FINALLY = (
+        "      } finally {\n        scheduleNextLoad(delayMs);\n      }\n",
+        "        scheduleNextLoad(delayMs);\n      } finally {\n      }\n",
+    )
+    # A retained rerender that fails outright -- the one throw the status
+    # handler itself cannot catch, because it happens inside the handler.
+    THROWING_RERENDER = (
+        "      render(lastStatusData, transportState);\n",
+        '      throw new Error("rerender failed");\n',
+    )
+
+    def _assert_one_timer(self, frames: list[dict], *, escapes: bool = False) -> None:
+        """One arming per load, clearing the one it replaces, never stacked."""
+
+        for index, frame in enumerate(frames):
+            self.assertEqual(frame["armed"], 1, f"poll {index} armed {frame['armed']} timers")
+            self.assertEqual(frame["cleared"], 1 if index else 0)
+            self.assertEqual(frame["timers"], index + 1)
+            self.assertTrue(frame["pending"])
+            if not escapes:
+                self.assertIsNone(frame["escaped"], f"poll {index} let {frame['escaped']} escape")
+
+    def test_an_unrenderable_events_payload_leaves_the_status_poll_untouched(self) -> None:
+        """The finding exactly, in every shape that produces it."""
+
+        for name, events in self.EVENT_FAILURES:
+            with self.subTest(name):
+                rendered, failed = _run_board_lifetime(
+                    [
+                        {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                        {"status": self.GOOD_STATUS, "events": events},
+                    ]
+                )
+                # The poll is still scheduled, which is the whole finding: the
+                # page goes on refreshing after a history it could not render.
+                self._assert_one_timer([rendered, failed])
+                # The status half is untouched in every respect an operator can
+                # see: the authority it confirmed, the claim it licensed, the
+                # Health row that says polls are arriving, and the pacing the
+                # status cache chose.
+                self.assertEqual(failed["transport"], {"confirmed": True, "failures": 0, "error": ""})
+                self.assertIn(self.COMPLETE, failed["nodes"]["worklist"])
+                self.assertIn("nothing to do in this session", failed["nodes"]["worklist"])
+                self.assertIn("status polls answered", failed["nodes"]["diagnostics"])
+                self.assertNotIn("status poll failed", failed["nodes"]["diagnostics"])
+                self.assertEqual(failed["delay"], rendered["delay"])
+                # An events payload is not news about this session, so nothing
+                # is announced and nothing is logged for it either.
+                self.assertEqual(failed["announced"], [])
+                # And the history card keeps the last events it could render,
+                # rather than being emptied or replaced by an error.
+                self.assertIn(self.HISTORY_MARK, failed["nodes"]["history"])
+                self.assertEqual(failed["nodes"]["history"], rendered["nodes"]["history"])
+
+    def test_each_half_of_a_poll_fails_without_the_other(self) -> None:
+        # The whole matrix: every status outcome against every events outcome,
+        # from one page that has already rendered both surfaces. The rule is
+        # the same in all sixteen cells -- authority follows the status half
+        # alone, the history follows the events half alone, and the poll is
+        # armed once whatever either of them did.
+        statuses = (("the payload renders", self.GOOD_STATUS),) + self.STATUS_FAILURES
+        events = (("the history renders", self.LATER_HISTORY),) + self.EVENT_FAILURES
+        for (status_name, status), (events_name, history) in itertools.product(statuses, events):
+            healthy = status is self.GOOD_STATUS
+            renderable = history is self.LATER_HISTORY
+            with self.subTest(status=status_name, events=events_name):
+                first, second = _run_board_lifetime(
+                    [
+                        {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                        {"status": status, "events": history},
+                    ]
+                )
+                self._assert_one_timer([first, second])
+                # Authority: confirmed if and only if the status half left a
+                # snapshot this page rendered.
+                self.assertEqual(second["transport"]["confirmed"], healthy)
+                self.assertEqual(second["transport"]["failures"], 0 if healthy else 1)
+                self.assertIn(
+                    self.COMPLETE if healthy else self.UNCONFIRMED, second["nodes"]["worklist"]
+                )
+                if not healthy:
+                    for sentence in self.PRESENT_TENSE:
+                        self.assertNotIn(sentence, second["nodes"]["worklist"])
+                # History: the new events if they rendered, the last ones it
+                # could render otherwise -- and never the other half's verdict.
+                self.assertIn(
+                    self.LATER_MARK if renderable else self.HISTORY_MARK,
+                    second["nodes"]["history"],
+                )
+                # Pacing: the delay a rendered status response chose, and the
+                # configured interval for every other outcome.
+                self.assertEqual(second["delay"], first["delay"] if healthy else self.REFRESH_MS)
+
+    def test_a_status_payload_that_cannot_render_is_reported_and_not_swallowed(self) -> None:
+        # A shape `render()` cannot walk is a status poll that did not complete:
+        # the claim is withdrawn, the retained payload is rerendered under the
+        # withdrawn authority, and the reason is stated on the Health transport
+        # row with the renderer's own message rather than discarded.
+        rendered, failed, recovered = _run_board_lifetime(
+            [
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                {"status": self.UNRENDERABLE_STATUS, "events": self.HISTORY},
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+            ]
+        )
+        self._assert_one_timer([rendered, failed, recovered])
+        self.assertIn(self.UNCONFIRMED, failed["nodes"]["worklist"])
+        self.assertIn("status poll failed", failed["nodes"]["diagnostics"])
+        self.assertIn(f"({self.RENDER_ERROR})", failed["nodes"]["diagnostics"])
+        self.assertIn('<span class="pill">1 failed status poll</span>', failed["nodes"]["diagnostics"])
+        # The payload that could not render never became the payload this page
+        # retains, so the rerender is of the snapshot that did render.
+        self.assertEqual(failed["nodes"]["sources"], rendered["nodes"]["sources"])
+        self.assertEqual(failed["nodes"]["generated"], rendered["nodes"]["generated"])
+        # Pacing falls back to the configured interval and returns to the
+        # cache's own delay on the poll that renders again.
+        self.assertEqual(failed["delay"], self.REFRESH_MS)
+        self.assertNotEqual(rendered["delay"], self.REFRESH_MS)
+        self.assertEqual(recovered["delay"], rendered["delay"])
+        self.assertEqual(recovered["transport"], {"confirmed": True, "failures": 0, "error": ""})
+        self.assertIn(self.COMPLETE, recovered["nodes"]["worklist"])
+
+    def test_the_delay_a_status_response_chose_survives_an_events_failure(self) -> None:
+        # Pacing belongs to the status half alone. A snapshot the server is
+        # still refreshing is polled at the fast interval, and an events
+        # payload that cannot be rendered beside it does not slow that to the
+        # configured fallback.
+        for name, events in self.EVENT_FAILURES:
+            with self.subTest(name):
+                frames = _run_board_lifetime(
+                    [
+                        {"status": self.REFRESHING_STATUS, "events": self.HISTORY},
+                        {"status": self.REFRESHING_STATUS, "events": events},
+                    ]
+                )
+                self._assert_one_timer(frames)
+                self.assertEqual([frame["delay"] for frame in frames], [self.FAST_POLL_MS] * 2)
+
+    def test_a_retained_rerender_that_throws_still_arms_the_next_poll(self) -> None:
+        # The one throw the status handler cannot catch, because it happens
+        # inside the handler: the rerender that withdraws the claim fails
+        # outright. The failure is recorded before the rerender is attempted,
+        # so the transport row still has the count and the reason; the throw
+        # still reaches the caller, so nothing is hidden; and the next poll is
+        # armed anyway, so the page recovers on its own.
+        rendered, failed, recovered = _run_board_lifetime(
+            [
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                {"status": None, "events": self.HISTORY},
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+            ],
+            mutate=self.THROWING_RERENDER,
+        )
+        self._assert_one_timer([rendered, failed, recovered], escapes=True)
+        self.assertEqual(failed["escaped"], "rerender failed")
+        self.assertIsNone(rendered["escaped"])
+        self.assertIsNone(recovered["escaped"])
+        self.assertEqual(failed["transport"]["confirmed"], False)
+        self.assertEqual(failed["transport"]["failures"], 1)
+        self.assertEqual(failed["delay"], self.REFRESH_MS)
+        # And the poll that follows renders the whole board again, with the
+        # server's own authority and no trace of the local override.
+        self.assertEqual(recovered["transport"], {"confirmed": True, "failures": 0, "error": ""})
+        self.assertIn(self.COMPLETE, recovered["nodes"]["worklist"])
+        self.assertIn(self.HISTORY_MARK, recovered["nodes"]["history"])
+
+    def test_a_healthy_poll_recovers_both_surfaces_after_both_halves_failed(self) -> None:
+        for name, events in self.EVENT_FAILURES:
+            with self.subTest(name):
+                rendered, failed, recovered = _run_board_lifetime(
+                    [
+                        {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                        {"status": None, "events": events},
+                        {"status": self.GOOD_STATUS, "events": self.LATER_HISTORY},
+                    ]
+                )
+                self._assert_one_timer([rendered, failed, recovered])
+                # Under the failure: the claim is withdrawn and the history is
+                # the last one that rendered, neither of them caused by the
+                # other.
+                self.assertIn(self.UNCONFIRMED, failed["nodes"]["worklist"])
+                self.assertIn(self.HISTORY_MARK, failed["nodes"]["history"])
+                # After it: the status surfaces are byte-for-byte what the
+                # first poll rendered, and the history is the new one.
+                past = {"changes", "announce", "history"}
+                self.assertEqual(
+                    {id: html for id, html in recovered["nodes"].items() if id not in past},
+                    {id: html for id, html in rendered["nodes"].items() if id not in past},
+                )
+                self.assertIn(self.LATER_MARK, recovered["nodes"]["history"])
+                self.assertNotIn(self.HISTORY_MARK, recovered["nodes"]["history"])
+
+    def test_one_timer_per_load_across_a_long_mixed_lifetime(self) -> None:
+        # Sixteen consecutive polls, every status outcome crossed with every
+        # events outcome in one page lifetime, so a path that arms twice or
+        # arms none is caught in sequence rather than only in isolation. The
+        # timer count is the assertion: it is the poll index, always, and the
+        # pending timer is always the one this poll armed.
+        steps = [{"status": self.GOOD_STATUS, "events": self.HISTORY}]
+        for (_, status), (_, events) in itertools.product(
+            (("renders", self.GOOD_STATUS),) + self.STATUS_FAILURES,
+            (("renders", self.LATER_HISTORY),) + self.EVENT_FAILURES,
+        ):
+            steps.append({"status": status, "events": events})
+        frames = _run_board_lifetime(steps)
+        self.assertEqual(len(frames), len(steps))
+        self._assert_one_timer(frames)
+        self.assertEqual(frames[-1]["timers"], len(steps))
+
+    def test_the_pre_fix_shape_stops_refreshing_on_an_unrenderable_history(self) -> None:
+        """The code this replaced, executed: the page stops polling, silently."""
+
+        for name, events in self.UNRENDERABLE_EVENTS:
+            with self.subTest(name):
+                rendered, frozen = _run_board_lifetime(
+                    [
+                        {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                        {"status": self.GOOD_STATUS, "events": events},
+                    ],
+                    mutate=self.PRE_FIX_TAIL,
+                )
+                self.assertEqual(rendered["armed"], 1)
+                # No timer at all: the throw escaped `load()` before it reached
+                # `scheduleNextLoad`, and in the page nothing would call
+                # `load()` again. The harness calls it directly, which is the
+                # only reason this lifetime has a next poll.
+                self.assertEqual(frozen["armed"], 0)
+                self.assertEqual(frozen["timers"], 1)
+                self.assertIsNotNone(frozen["escaped"])
+                # And what an operator is left looking at is the worst part of
+                # it: a green present-tense claim from the last status poll,
+                # with the transport row still reporting that polls arrive.
+                self.assertIn(self.COMPLETE, frozen["nodes"]["worklist"])
+                self.assertIn("nothing to do in this session", frozen["nodes"]["worklist"])
+                self.assertIn("status polls answered", frozen["nodes"]["diagnostics"])
+                self.assertNotIn("status poll failed", frozen["nodes"]["diagnostics"])
+
+    def test_event_rendering_outside_its_boundary_escapes_the_poll_it_no_longer_stops(self) -> None:
+        # One half of the fix at a time, so neither is load-bearing by
+        # accident. Without its own boundary the events throw reaches `load()`
+        # -- which in the page is an unhandled rejection -- and the `finally`
+        # is the only reason the next poll is still armed.
+        unisolated = _run_board_lifetime(
+            [
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                {"status": self.GOOD_STATUS, "events": {"events": "two"}},
+            ],
+            mutate=self.UNISOLATED_EVENTS,
+        )[-1]
+        self.assertIsNotNone(unisolated["escaped"])
+        self.assertEqual(unisolated["armed"], 1)
+        self.assertEqual(unisolated["timers"], 2)
+
+        # And with the boundary kept but the arming moved back outside the
+        # `finally`, the throw the status handler cannot catch ends the loop
+        # instead -- so the `finally` is doing work the boundary does not.
+        outside = _run_board_lifetime(
+            [
+                {"status": self.GOOD_STATUS, "events": self.HISTORY},
+                {"status": None, "events": self.HISTORY},
+            ],
+            mutate=(self.SCHEDULING_OUTSIDE_FINALLY, self.THROWING_RERENDER),
+        )[-1]
+        self.assertEqual(outside["escaped"], "rerender failed")
+        self.assertEqual(outside["armed"], 0)
+        self.assertEqual(outside["timers"], 1)
 
 
 class _FailingReadHandle:
