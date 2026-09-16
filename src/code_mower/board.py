@@ -62,6 +62,19 @@ MAX_OBSERVATION_FILES = 32
 # time is used only as a best-effort recency preference -- never as evidence --
 # and a directory that overflows the cap is always reported as incomplete.
 OBSERVATION_SELECTION = "newest_modified_then_name"
+# Why a bounded read may not be read as the whole local record set. This is a
+# fixed closed vocabulary so a consumer can state which kind of gap it has
+# without a file name, a local path, an errno or any record content reaching
+# the page. `files_omitted` is the cap leaving candidates unread,
+# `files_unreadable` is a selected candidate that could not be read at all,
+# `records_invalid` is a candidate the frozen record contract rejected, and
+# `directory_unreadable` is a directory that could not be listed.
+OBSERVATION_COVERAGE_GAPS = (
+    "directory_unreadable",
+    "files_omitted",
+    "files_unreadable",
+    "records_invalid",
+)
 SECRET_VALUE_RE = re.compile(
     r"(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})"
 )
@@ -1222,6 +1235,196 @@ def _select_observation_files(path: Path) -> tuple[list[str], int]:
     selected = heapq.nsmallest(MAX_OBSERVATION_FILES, candidates())
     return sorted(name for _key, name in selected), total
 
+@dataclass(frozen=True)
+class _ObservationAccounting:
+    """Every candidate observation file one read saw, and what became of each.
+
+    Exactly one outcome is recorded per candidate, so these counts partition
+    the candidate set rather than describing it loosely: every candidate is
+    either omitted by the file cap or attempted; every attempted file is either
+    read or unreadable; and every file that was read either produced an
+    accepted record or was rejected by the frozen record contract.
+
+    Coverage is whole only when none of those partitions lost anything -- no
+    omission, no unreadable file, and no rejected record. A dropped candidate
+    is not a candidate that said nothing: the Board cannot know whether the
+    file it failed to read or decode held a work record contradicting a
+    ``no_work`` record beside it, so every kind of loss makes the coverage
+    partial and withdraws the authority to claim a current idle session or to
+    retire observed work. This is the single accounting every consumer of
+    coverage completeness reads; no surface recomputes it from a record list.
+    """
+
+    candidate_files: int
+    selected_files: int
+    unreadable_files: int
+    invalid_records: int
+    records: tuple[dict[str, Any], ...]
+    warnings: tuple[dict[str, str], ...]
+
+    @property
+    def omitted_files(self) -> int:
+        """Candidates the file cap never selected."""
+
+        return self.candidate_files - self.selected_files
+
+    @property
+    def attempted_files(self) -> int:
+        """Selected candidates the read actually opened."""
+
+        return self.selected_files
+
+    @property
+    def read_files(self) -> int:
+        """Attempted candidates whose bytes were successfully read."""
+
+        return self.attempted_files - self.unreadable_files
+
+    @property
+    def accepted_records(self) -> int:
+        return len(self.records)
+
+    @property
+    def unaccounted_files(self) -> int:
+        """Selected candidates that produced no record, for any reason."""
+
+        return self.unreadable_files + self.invalid_records
+
+    @property
+    def rejected(self) -> int:
+        """Every selected candidate the records below do not account for.
+
+        Kept under its original name because consumers already read it, and
+        deliberately inclusive of unreadable files: a file that could not be
+        read is no more accounted for than one the contract refused.
+        """
+
+        return self.unaccounted_files
+
+    @property
+    def gaps(self) -> list[str]:
+        """Which kinds of loss this read had, from ``OBSERVATION_COVERAGE_GAPS``."""
+
+        gaps = []
+        if self.omitted_files:
+            gaps.append("files_omitted")
+        if self.unreadable_files:
+            gaps.append("files_unreadable")
+        if self.invalid_records:
+            gaps.append("records_invalid")
+        return gaps
+
+    @property
+    def complete(self) -> bool:
+        return not self.gaps
+
+    def payload(self) -> dict[str, Any]:
+        """The file-level coverage block, counts only -- no name, path or errno."""
+
+        return {
+            "records": list(self.records),
+            "warnings": list(self.warnings),
+            "rejected": self.rejected,
+            "coverage": "complete" if self.complete else "partial",
+            "coverage_complete": self.complete,
+            "coverage_gaps": self.gaps,
+            "truncated": self.omitted_files > 0,
+            "candidate_files": self.candidate_files,
+            "selected_files": self.selected_files,
+            "omitted_files": self.omitted_files,
+            "attempted_files": self.attempted_files,
+            "read_files": self.read_files,
+            "accepted_records": self.accepted_records,
+            "invalid_records": self.invalid_records,
+            "unreadable_files": self.unreadable_files,
+            "unaccounted_files": self.unaccounted_files,
+        }
+
+
+def _read_observation_records(
+    path: Path,
+    selected: list[str],
+    candidate_count: int,
+) -> _ObservationAccounting:
+    """Read the selected candidates and account for every one of them.
+
+    A file that raises on open or on read is counted as unreadable rather than
+    skipped: it was selected for coverage and produced nothing, which is a hole
+    in the evidence and not an absence of work. A file the contract rejects --
+    for being oversize or for failing to decode -- is counted separately, so
+    the two are distinguishable without either being lost.
+    """
+
+    records: list[dict[str, Any]] = []
+    warnings: list[dict[str, str]] = []
+    unreadable = 0
+    invalid = 0
+    for record_file in (path / name for name in selected):
+        # The contract bounds a record to MAX_BYTES, so at most one byte past
+        # that bound is ever read: an oversize file is rejected on the length
+        # of what was asked for, without the remainder being loaded or decoded.
+        try:
+            with record_file.open("rb") as handle:
+                raw = handle.read(board_observation.MAX_BYTES + 1)
+        except OSError:
+            # Its own fixed diagnostic: an unreadable file is a different fact
+            # from a record the contract refused, and neither names an errno.
+            unreadable += 1
+            warnings.append({"file": record_file.name, "message": "unreadable_file"})
+            continue
+        if len(raw) > board_observation.MAX_BYTES:
+            # The same closed diagnostic the contract itself raises for an
+            # over-long record; it names no path and repeats no value.
+            invalid += 1
+            warnings.append({"file": record_file.name, "message": "invalid_contract"})
+            continue
+        try:
+            records.append(board_observation.decode(raw))
+        except board_observation.BoardObservationError as exc:
+            # The contract's diagnostics are a fixed closed vocabulary that
+            # deliberately omits observed values and local paths.
+            invalid += 1
+            warnings.append({"file": record_file.name, "message": str(exc)})
+    return _ObservationAccounting(
+        candidate_files=candidate_count,
+        selected_files=len(selected),
+        unreadable_files=unreadable,
+        invalid_records=invalid,
+        records=tuple(records),
+        warnings=tuple(warnings),
+    )
+
+
+def _observation_message(accounting: _ObservationAccounting) -> str:
+    """The safe summary line, worst gap first, incompleteness said out loud."""
+
+    if accounting.omitted_files:
+        # Said first and unconditionally: whatever the records turned out to
+        # be, they are not all of them, and that is the fact a reader has to
+        # carry into everything else on the page.
+        return (
+            f"{accounting.read_files} of {accounting.candidate_files} local Board observation "
+            f"files were read (cap {MAX_OBSERVATION_FILES}), so this snapshot is incomplete"
+        )
+    if accounting.unreadable_files:
+        return (
+            f"{accounting.unreadable_files} of {accounting.attempted_files} local Board "
+            "observation files could not be read, so this snapshot is incomplete"
+        )
+    if accounting.invalid_records and not accounting.accepted_records:
+        return (
+            "no local Board observation passed the observation contract, "
+            "so this snapshot is incomplete"
+        )
+    if accounting.invalid_records:
+        return (
+            f"{accounting.invalid_records} of {accounting.read_files} local Board observation "
+            "files did not satisfy the observation contract, so this snapshot is incomplete"
+        )
+    if accounting.accepted_records:
+        return ""
+    return "no local Board observations recorded yet"
+
 
 def observations_payload(config: BoardConfig) -> dict[str, Any]:
     """Read locally recorded Board observations without producing any.
@@ -1241,6 +1444,12 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
     no consumer can read a truncated snapshot as the whole local record set.
     That coverage describes the files, not a record's own source coverage, and
     it is carried separately from the contract's closed record diagnostics.
+
+    Every candidate outcome is accounted for by :class:`_ObservationAccounting`
+    and reported here: what was omitted by the cap, what could not be read at
+    all, and what the contract rejected. Coverage is ``complete`` only when the
+    read lost none of them, because a candidate that produced no record might
+    have been the work record that contradicts an idle one beside it.
     """
 
     path = _observations_path(config)
@@ -1257,21 +1466,41 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
         # File-level coverage of this read. `coverage` is a closed vocabulary
         # -- complete, partial, unavailable -- and states how much of the
         # candidate file set the records below were built from; it is not a
-        # record's source coverage and says nothing about work.
+        # record's source coverage and says nothing about work. The counters
+        # beside it partition the candidate set, and `coverage_complete` is the
+        # single fact every consumer gates an absence claim on.
         "coverage": "complete",
+        "coverage_complete": True,
+        "coverage_gaps": [],
         "truncated": False,
         "file_cap": MAX_OBSERVATION_FILES,
         "candidate_files": 0,
-        "read_files": 0,
+        "selected_files": 0,
         "omitted_files": 0,
+        "attempted_files": 0,
+        "read_files": 0,
+        "accepted_records": 0,
+        "invalid_records": 0,
+        "unreadable_files": 0,
+        "unaccounted_files": 0,
         "selection": OBSERVATION_SELECTION,
         "message": "no local Board observations recorded yet",
     }
+    # A directory that could not be listed has no candidate set at all, so no
+    # total is invented for it and nothing downstream may read it as coverage.
     unreadable = {
         "coverage": "unavailable",
+        "coverage_complete": False,
+        "coverage_gaps": ["directory_unreadable"],
         "candidate_files": None,
-        "read_files": 0,
+        "selected_files": 0,
         "omitted_files": None,
+        "attempted_files": 0,
+        "read_files": 0,
+        "accepted_records": 0,
+        "invalid_records": 0,
+        "unreadable_files": 0,
+        "unaccounted_files": None,
         "message": "could not read local Board observations",
         "available": False,
     }
@@ -1287,47 +1516,9 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
         payload.update(unreadable)
         payload["warnings"].append({"file": "", "message": "could not list local Board observations"})
         return payload
-    payload["candidate_files"] = candidate_count
-    payload["read_files"] = len(selected)
-    payload["omitted_files"] = candidate_count - len(selected)
-    payload["truncated"] = payload["omitted_files"] > 0
-    payload["coverage"] = "partial" if payload["truncated"] else "complete"
-    for record_file in (path / name for name in selected):
-        # The contract bounds a record to MAX_BYTES, so at most one byte past
-        # that bound is ever read: an oversize file is rejected on the length
-        # of what was asked for, without the remainder being loaded or decoded.
-        try:
-            with record_file.open("rb") as handle:
-                raw = handle.read(board_observation.MAX_BYTES + 1)
-        except OSError:
-            payload["rejected"] += 1
-            payload["warnings"].append({"file": record_file.name, "message": "could not read observation file"})
-            continue
-        if len(raw) > board_observation.MAX_BYTES:
-            # The same closed diagnostic the contract itself raises for an
-            # over-long record; it names no path and repeats no value.
-            payload["rejected"] += 1
-            payload["warnings"].append({"file": record_file.name, "message": "invalid_contract"})
-            continue
-        try:
-            payload["records"].append(board_observation.decode(raw))
-        except board_observation.BoardObservationError as exc:
-            # The contract's diagnostics are a fixed closed vocabulary that
-            # deliberately omits observed values and local paths.
-            payload["rejected"] += 1
-            payload["warnings"].append({"file": record_file.name, "message": str(exc)})
-    if payload["truncated"]:
-        # Said first and unconditionally: whatever the records below turned out
-        # to be, they are not all of them, and that is the fact a reader has to
-        # carry into everything else on the page.
-        payload["message"] = (
-            f"{payload['read_files']} of {payload['candidate_files']} local Board observation "
-            f"files were read (cap {MAX_OBSERVATION_FILES}), so this snapshot is incomplete"
-        )
-    elif payload["records"]:
-        payload["message"] = ""
-    elif payload["rejected"]:
-        payload["message"] = "no local Board observation passed the observation contract"
+    accounting = _read_observation_records(path, selected, candidate_count)
+    payload.update(accounting.payload())
+    payload["message"] = _observation_message(accounting)
     return payload
 
 
@@ -1922,29 +2113,72 @@ _BOARD_HTML = """<!doctype html>
       const candidates = measured(observations.candidate_files);
       const read = measured(observations.read_files);
       const omitted = measured(observations.omitted_files);
-      // Either signal alone is enough to stop claiming completeness; neither is
-      // required to trust the other.
-      const truncated = observations.truncated === true || state === "partial";
+      const unreadable = measured(observations.unreadable_files);
+      const invalid = measured(observations.invalid_records);
+      const unaccounted = measured(observations.unaccounted_files);
+      const gaps = (Array.isArray(observations.coverage_gaps) ? observations.coverage_gaps : []).map(text).filter(Boolean);
+      // Either signal alone is enough to stop claiming the cap read everything;
+      // neither is required to trust the other. A reader that states
+      // `truncated` is believed about it, so a partial coverage reported for a
+      // different kind of gap is not retold as files left past the cap.
+      const truncated = observations.truncated === true
+        || (observations.truncated === undefined && state === "partial");
+      // Selected candidates that produced no record: unreadable or rejected.
+      // Both are holes in the evidence -- the page cannot know whether the
+      // file it lost held work -- so both count against completeness.
+      const missing = unaccounted === null ? 0 : unaccounted;
       const counted = candidates !== null && read !== null;
+      // One reading of whether this page saw the whole local record set, and
+      // the only one any absence claim below is allowed to consult.
+      const incomplete = truncated
+        || missing > 0
+        || gaps.length > 0
+        || observations.coverage_complete === false;
+      const reasons = [];
+      if (truncated) reasons.push(`${omitted === null ? "some" : omitted} observation file${omitted === 1 ? "" : "s"} past the ${cap === null ? "read" : `${cap}-file`} cap ${omitted === 1 ? "was" : "were"} not read`);
+      if (missing > 0) reasons.push(`${missing} selected observation file${missing === 1 ? "" : "s"} produced no record (${unreadable === null ? 0 : unreadable} unreadable, ${invalid === null ? 0 : invalid} rejected by the observation contract)`);
+      if (incomplete && !reasons.length) reasons.push("part of the local record set could not be accounted for");
       return {
         truncated,
+        incomplete,
+        whole: !incomplete,
+        gaps,
         state,
         cap,
         candidates,
         read,
         omitted,
+        unreadable,
+        invalid,
+        unaccounted: missing,
         // Cap and counts, said in one place so the Health view states the
         // semantics rather than a bare number.
         label: counted
-          ? `${read} of ${candidates} observation file${candidates === 1 ? "" : "s"} read${cap === null ? "" : ` (cap ${cap})`}`
+          ? `${read} of ${candidates} observation file${candidates === 1 ? "" : "s"} read${cap === null ? "" : ` (cap ${cap})`}${missing > 0 ? `, ${missing} without a record` : ""}`
           : `observation file coverage ${state}`,
-        // Only a read that covered every candidate reads as complete; a
+        // Only a read that accounted for every candidate reads as complete; a
         // coverage this page cannot account for is neutral, not good news.
-        class: truncated ? "warn" : state === "complete" ? "ok" : state === "unavailable" ? "bad" : "muted",
-        note: truncated
-          ? `This snapshot is incomplete: ${omitted === null ? "some" : omitted} observation file${omitted === 1 ? "" : "s"} past the ${cap === null ? "read" : `${cap}-file`} cap ${omitted === 1 ? "was" : "were"} not read, so what is shown is not the whole local record set. Nothing here can be read as complete coverage, as an idle session, or as evidence that there is no work.`
+        class: incomplete ? (state === "unavailable" ? "bad" : "warn") : state === "complete" ? "ok" : state === "unavailable" ? "bad" : "muted",
+        note: incomplete
+          ? `This snapshot is incomplete: ${reasons.join("; ")}, so what is shown is not the whole local record set. Nothing here can be read as complete coverage, as an idle session, or as evidence that there is no work.`
           : ""
       };
+    }
+    // The contract's own record diagnostics, said as a count per fixed
+    // diagnostic. Which kind of failure happened, and how often, is the whole
+    // of what a reader needs; the name of the local file it happened to is
+    // detail this page has no reason to publish, so it never leaves the
+    // payload. A diagnostic outside the closed vocabulary is still counted
+    // rather than dropped, because an unrecognised failure is still a failure.
+    function observationDiagnostics(warnings) {
+      const counts = new Map();
+      for (const warning of Array.isArray(warnings) ? warnings : []) {
+        const message = text(warning?.message).trim() || "unknown";
+        counts.set(message, (counts.get(message) || 0) + 1);
+      }
+      return [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([message, count]) => (count === 1 ? message : `${message} x${count}`));
     }
     // --- presentation truth helpers (END) ---
     // --- work view model (BEGIN) ---
@@ -2427,6 +2661,7 @@ _BOARD_HTML = """<!doctype html>
     // Every prior-observation reading, ordered as the row list ranks them.
     const IDLE_PRIOR_LABELS = [
       "idle in the files read",
+      "idle in the records read",
       "last observed idle, source unavailable",
       "last observed idle, coverage incomplete",
       "last observed idle at an unrecorded time",
@@ -2435,11 +2670,16 @@ _BOARD_HTML = """<!doctype html>
     const IDLE_RECORDED = "This record states the session, work queue and run registry were observed complete when it was written";
     const IDLE_WITHHELD = "so this session is not shown as idle";
     // How whole the coverage behind an idle claim is. Both halves count: what
-    // the record's own sources covered, and whether this refresh read every
-    // candidate observation file. A record naming no source at all covers
+    // the record's own sources covered, and whether this refresh accounted for
+    // every candidate observation file -- read it and got a record out of it.
+    // A candidate left unread past the cap, one that could not be read at all,
+    // and one the contract rejected are all files whose contents this page
+    // does not know, and any of them could have been the work record that
+    // contradicts this snapshot. A record naming no source at all covers
     // nothing, so it is not complete either.
     function idleCoverageState(record, coverage) {
       if (coverage?.truncated === true) return "truncated";
+      if (coverage?.whole === false) return "unread";
       const sources = arrayOf(record?.sources);
       if (!sources.length) return "partial";
       return sources.every(source => text(source?.coverage) === "complete") ? "complete" : "partial";
@@ -2464,6 +2704,7 @@ _BOARD_HTML = """<!doctype html>
       const unavailable = arrayOf(freshness?.unavailable_sources);
       const partial = sources.filter(source => text(source?.coverage) !== "complete").map(source => text(source?.kind));
       const omitted = coverage?.omitted === null || coverage?.omitted === undefined ? "some" : coverage.omitted;
+      const unaccounted = coverage?.unaccounted === null || coverage?.unaccounted === undefined ? "some" : coverage.unaccounted;
       // Whatever withheld the claim, the age or the unreachable source is
       // still stated, so a reading is never left without the caveat that
       // makes it honest.
@@ -2498,49 +2739,60 @@ _BOARD_HTML = """<!doctype html>
               coverage_value: "partial",
               note: `${IDLE_RECORDED}, but ${omitted} observation file${omitted === 1 ? "" : "s"} went unread this refresh, ${IDLE_WITHHELD}.`
             }
-          : freshnessState === "unavailable"
+          : coverageState === "unread"
             ? {
-                key: "unavailable",
-                label: "last observed idle, source unavailable",
-                class: "bad",
-                action: "restore the unavailable source before treating this session as idle",
-                coverage_label: "recorded complete, source unavailable",
-                coverage_class: "bad",
-                coverage_value: "unavailable",
-                note: `${IDLE_RECORDED}, but ${named(unavailable)} cannot be reached now, ${IDLE_WITHHELD}.`
+                key: "unread",
+                label: "idle in the records read",
+                class: "warn",
+                action: "recover the observation files that produced no record before treating this session as idle",
+                coverage_label: "recorded complete, not confirmed",
+                coverage_class: "warn",
+                coverage_value: "partial",
+                note: `${IDLE_RECORDED}, but ${unaccounted} selected observation file${unaccounted === 1 ? "" : "s"} produced no record this refresh, ${IDLE_WITHHELD}.`
               }
-            : coverageState === "partial"
+            : freshnessState === "unavailable"
               ? {
-                  key: "partial",
-                  label: "last observed idle, coverage incomplete",
-                  class: "warn",
-                  action: "confirm the partly covered sources before treating this session as idle",
-                  coverage_label: "recorded complete, coverage incomplete",
-                  coverage_class: "warn",
-                  coverage_value: "partial",
-                  note: `${IDLE_RECORDED}, but ${named(partial)} reported part of what it covers, ${IDLE_WITHHELD}.`
+                  key: "unavailable",
+                  label: "last observed idle, source unavailable",
+                  class: "bad",
+                  action: "restore the unavailable source before treating this session as idle",
+                  coverage_label: "recorded complete, source unavailable",
+                  coverage_class: "bad",
+                  coverage_value: "unavailable",
+                  note: `${IDLE_RECORDED}, but ${named(unavailable)} cannot be reached now, ${IDLE_WITHHELD}.`
                 }
-              : freshnessState === "unknown"
+              : coverageState === "partial"
                 ? {
-                    key: "unknown",
-                    label: "last observed idle at an unrecorded time",
-                    class: "muted",
-                    action: "record an observation time before treating this session as idle",
-                    coverage_label: "recorded complete at an unrecorded time",
-                    coverage_class: "muted",
-                    coverage_value: "complete",
-                    note: `${IDLE_RECORDED}, ${IDLE_WITHHELD}.`
-                  }
-                : {
-                    key: "stale",
-                    label: "last observed idle",
+                    key: "partial",
+                    label: "last observed idle, coverage incomplete",
                     class: "warn",
-                    action: "re-observe this session before treating it as idle",
-                    coverage_label: "recorded complete when written",
+                    action: "confirm the partly covered sources before treating this session as idle",
+                    coverage_label: "recorded complete, coverage incomplete",
                     coverage_class: "warn",
-                    coverage_value: "complete",
-                    note: `${IDLE_RECORDED}, ${IDLE_WITHHELD}.`
-                  };
+                    coverage_value: "partial",
+                    note: `${IDLE_RECORDED}, but ${named(partial)} reported part of what it covers, ${IDLE_WITHHELD}.`
+                  }
+                : freshnessState === "unknown"
+                  ? {
+                      key: "unknown",
+                      label: "last observed idle at an unrecorded time",
+                      class: "muted",
+                      action: "record an observation time before treating this session as idle",
+                      coverage_label: "recorded complete at an unrecorded time",
+                      coverage_class: "muted",
+                      coverage_value: "complete",
+                      note: `${IDLE_RECORDED}, ${IDLE_WITHHELD}.`
+                    }
+                  : {
+                      key: "stale",
+                      label: "last observed idle",
+                      class: "warn",
+                      action: "re-observe this session before treating it as idle",
+                      coverage_label: "recorded complete when written",
+                      coverage_class: "warn",
+                      coverage_value: "complete",
+                      note: `${IDLE_RECORDED}, ${IDLE_WITHHELD}.`
+                    };
       return {
         affirmative,
         reason: reading.key,
@@ -3494,7 +3746,7 @@ _BOARD_HTML = """<!doctype html>
       const activeKey = resolveSelection(rows, selectedWorkKey);
       // An incomplete read is stated above the rows, before anything a row
       // says can be mistaken for the whole picture.
-      const coverageWarning = workState.coverage?.truncated
+      const coverageWarning = workState.coverage?.incomplete
         ? `<div class="row warn" role="status"><div class="line"><b>Incomplete snapshot</b>${cuePill(workState.coverage.label, "warn")}</div><div class="muted">${esc(workState.coverage.note)}</div></div>`
         : "";
       // One refresh has to carry both pieces of ephemeral state at once, so
@@ -3633,7 +3885,7 @@ _BOARD_HTML = """<!doctype html>
         `<div class="metric"><span class="muted">Next action</span><b>${esc(data.next_action || "inspect")}</b></div>`,
         data.next_detail ? `<div class="metric"><span class="muted">Detail</span><b>${esc(data.next_detail)}</b></div>` : "",
         `<div class="metric"><span class="muted">Observation</span><b class="${obs.class}">${esc(obs.label)}</b></div>`,
-        observationCover.truncated
+        observationCover.incomplete
           ? `<div class="metric"><span class="muted">Observation files</span><b class="warn">${esc(observationCover.label)}</b></div>`
           : "",
         `<div class="metric"><span class="muted">GitHub</span><b class="${remoteAvailable ? "ok" : "warn"}">${remoteAvailable ? "available" : "unavailable"}</b></div>`,
@@ -3653,7 +3905,7 @@ _BOARD_HTML = """<!doctype html>
         `<div class="row"><div class="line">${pill(`owner decisions ${countOf(remoteAvailable, ownerItems.length)}`)}${pill(`lane work ${countOf(remoteAvailable, laneItems.length)}`)}${pill(`open PRs ${countOf(remoteAvailable, prs.length)}`)}${statePill(obs.label, obs.class)}</div>${obs.detail ? `<div class="muted">${esc(obs.detail)}</div>` : ""}</div>`,
         // Said in the Now header too, because the "Do next" line above it is
         // read as the whole of what is waiting.
-        observationCover.truncated
+        observationCover.incomplete
           ? `<div class="row warn" role="status"><div class="line"><b>Incomplete snapshot</b>${cuePill(observationCover.label, "warn")}</div><div class="muted">${esc(observationCover.note)}</div></div>`
           : "",
         `<div class="row muted">${esc(sources.message)}</div>`
@@ -3748,9 +4000,9 @@ _BOARD_HTML = """<!doctype html>
         // empty() escapes what it is given, so these stay plain text here.
         message: observations.available === false
           ? text(observations.message) || "Local Board observations could not be read."
-          : observationCover.truncated
-            // Never "no work" and never "nothing recorded": files went unread,
-            // so an empty list is a gap in the read, not an empty queue.
+          : observationCover.incomplete
+            // Never "no work" and never "nothing recorded": a candidate the
+            // read lost is a gap in the evidence, not an empty queue.
             ? `${text(observations.message) || "This snapshot is incomplete."} ${observationCover.note}`
             : observations.path_exists === true
               ? text(observations.message) || "No local Board observation passed the observation contract."
@@ -3766,23 +4018,24 @@ _BOARD_HTML = """<!doctype html>
         `<span class="pill wide">${esc(countOf(remoteAvailable, prs.length))} open PRs</span>`,
         // The count is of what was read, so it is labelled as such whenever
         // the read left files behind.
-        `<span class="pill wide">${esc(observationRows.length)} observed work item${observationRows.length === 1 ? "" : "s"}${observationCover.truncated ? " in the files read" : ""}</span>`,
-        observationCover.truncated ? `<span class="pill warn wide"><span class="cue" aria-hidden="true">~</span> incomplete snapshot</span>` : "",
+        `<span class="pill wide">${esc(observationRows.length)} observed work item${observationRows.length === 1 ? "" : "s"}${observationCover.incomplete ? " in the files read" : ""}</span>`,
+        observationCover.incomplete ? `<span class="pill warn wide"><span class="cue" aria-hidden="true">~</span> incomplete snapshot</span>` : "",
         attentionRows.length ? `<span class="pill warn wide"><span class="cue" aria-hidden="true">~</span> ${esc(attentionRows.length)} awaiting a named role</span>` : ""
       ].filter(Boolean).join(""));
       const participants = participantSummary(observationRows);
       put("participants", participants.length
         ? participants.map(participant => `<div class="row"><div class="line"><b>${esc(participant.provider)}</b>${pill(participant.role)}${cuePill(`worst source ${participant.freshness}`, participant.class)}</div><div class="line">${participant.states.map(state => pill(`${state.label} ${state.count}`)).join("")}</div><div class="muted">${esc(participant.count)} recorded run${participant.count === 1 ? "" : "s"}; run states are what the records state, not a claim that anything is running now.</div></div>`).join("")
-        : empty(observationCover.truncated
+        : empty(observationCover.incomplete
           ? "No participant run is recorded in the observation files that were read, and this snapshot is incomplete."
           : "No participant run is recorded in any local observation."));
       const sourceList = sourceRows(data, nowMs);
       put("sources", sourceList.length
         ? sourceList.map(source => `<div class="row"><div class="line"><b>${esc(source.kind)}</b>${cuePill(source.freshness, source.class)}${pill(`coverage ${source.coverage}`)}${source.records > 1 ? pill(`${source.records} records`) : ""}</div><div class="muted">last event ${source.event_at ? localTime(source.event_at) : esc(NOT_RECORDED)}; last observed ${source.observed_at ? localTime(source.observed_at) : esc(NOT_RECORDED)}; heartbeat ${source.heartbeat_at ? localTime(source.heartbeat_at) : esc(NOT_RECORDED)}; checked ${esc(source.checked_text)}</div></div>`).join("")
-        : empty(observationCover.truncated
+        : empty(observationCover.incomplete
           ? "No observation source is recorded in the observation files that were read, and this snapshot is incomplete. Connection state below is from the GitHub snapshot only."
           : "No observation source is recorded. Connection state below is from the GitHub snapshot only."));
       const cache = data.board?.cache || {};
+      const observationDiagnosticList = observationDiagnostics(observations.warnings);
       put("diagnostics", [
         `<div class="row"><div class="line"><b>Board version</b>${pill(`serving ${servingVersion}`)}${pill(`installed ${installedVersion}`)}${version.restart_recommended ? cuePill("restart recommended", "warn") : ""}</div></div>`,
         `<div class="row"><div class="line"><b>Snapshot cache</b>${cuePill(display(cache.state), stateClass(cache.state))}${pill(`generation ${display(cache.generation)}`)}${pill(`age ${ageText(cache.age_seconds)}`)}${cache.refresh_in_progress === true ? pill("refresh in progress") : ""}${measured(cache.retry_in_seconds) === null ? "" : pill(`retry in ${ageText(cache.retry_in_seconds)}`)}</div>${cache.last_error ? `<div class="muted">${esc(cache.last_error)}</div>` : ""}</div>`,
@@ -3792,7 +4045,7 @@ _BOARD_HTML = """<!doctype html>
         // set was chosen. Counts only -- no file name and no local path. The
         // contract's own record diagnostics stay on their own line, because a
         // rejected record and an unread file are different facts.
-        `<div class="row"><div class="line"><b>Observations</b>${pill(`${observationRows.length} recorded`)}${cuePill(observationCover.label, observationCover.class)}${observationCover.truncated ? cuePill(`${observationCover.omitted === null ? "some" : observationCover.omitted} not read`, "warn") : ""}${measured(observations.rejected) ? cuePill(`${observations.rejected} rejected by the observation contract`, "warn") : ""}</div>${observationCover.truncated ? `<div class="muted">${esc(observationCover.note)} Selection: ${esc(text(observations.selection) || "not recorded")}.</div>` : ""}${observations.message ? `<div class="muted">${esc(observations.message)}</div>` : ""}${(observations.warnings || []).length ? `<div class="muted">${esc((observations.warnings || []).slice(0, 3).map(warning => `${warning.file}: ${warning.message}`).join("; "))}</div>` : ""}</div>`,
+        `<div class="row"><div class="line"><b>Observations</b>${pill(`${observationRows.length} recorded`)}${cuePill(observationCover.label, observationCover.class)}${observationCover.truncated ? cuePill(`${observationCover.omitted === null ? "some" : observationCover.omitted} not read`, "warn") : ""}${observationCover.unreadable ? cuePill(`${observationCover.unreadable} unreadable`, "warn") : ""}${measured(observations.invalid_records ?? observations.rejected) ? cuePill(`${observations.invalid_records ?? observations.rejected} rejected by the observation contract`, "warn") : ""}</div>${observationCover.incomplete ? `<div class="muted">${esc(observationCover.note)} Selection: ${esc(text(observations.selection) || "not recorded")}.</div>` : ""}${observations.message ? `<div class="muted">${esc(observations.message)}</div>` : ""}${observationDiagnosticList.length ? `<div class="muted">Record diagnostics: ${esc(observationDiagnosticList.slice(0, 4).join("; "))}.</div>` : ""}</div>`,
         `<div class="row muted">${esc(sources.message)}</div>`
       ].join(""));
       noteChanges(observationRows, nowMs);

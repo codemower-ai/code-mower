@@ -660,6 +660,15 @@ Slack-specific control, no form, and no non-GET request.
   coverage, an idle session, or that there is no work. An idle `no_work`
   snapshot reads as *idle in the files read* rather than *idle with complete
   coverage*, because an unread file could record work in exactly that scope.
+- **A lost candidate is not a candidate that said nothing.** The same applies
+  to a selected file the Board could not read and to one the record contract
+  rejected: the Board cannot know whether it held the work record that
+  contradicts a `no_work` record beside it. Any loss makes file coverage
+  partial, warns on every surface, and reads as *idle in the records read*
+  rather than *idle with complete coverage*. Reconciliation obeys the same
+  rule: retiring an observed work row asserts that its session has since gone
+  quiet, so an idle snapshot read under incomplete coverage never retires work
+  — both readings stay on the page.
 
 ## Board Observations
 
@@ -700,20 +709,44 @@ The block carries:
 
 - `records[]` — validated `code_mower.boardObservation.v1` records, in file-name
   order.
-- `coverage`, `truncated`, `file_cap`, `candidate_files`, `read_files`,
-  `omitted_files` and `selection` — how much of the candidate file set those
-  records were built from. `coverage` is a closed vocabulary: `complete` when
-  every candidate file was read, `partial` when the cap left files unread, and
-  `unavailable` when the directory could not be listed at all (where
-  `candidate_files` and `omitted_files` are `null` rather than an invented
-  total). This is file coverage and is deliberately separate from a record's own
-  source `coverage`, and from the contract's record diagnostics: a rejected
-  record and an unread file are different facts. The metadata is counts only —
-  it names no file and no local path.
-- `rejected` and `warnings[]` — the count of records that failed, with the
-  contract's own fixed diagnostic (`invalid_contract`, `invalid_route`,
-  `identity_mismatch`, and so on). Those diagnostics deliberately omit observed
-  values and local paths.
+- `coverage`, `coverage_complete`, `coverage_gaps[]`, `truncated`, `file_cap`,
+  `selection` and the candidate counters below — how much of the candidate file
+  set those records were built from. `coverage` is a closed vocabulary:
+  `complete` when every candidate was read *and* produced an accepted record,
+  `partial` when any candidate was lost, and `unavailable` when the directory
+  could not be listed at all (where `candidate_files`, `omitted_files` and
+  `unaccounted_files` are `null` rather than an invented total).
+  `coverage_complete` is the same fact as a boolean and is what every consumer
+  gates an absence claim on; `coverage_gaps[]` says which kinds of loss
+  occurred, from the fixed vocabulary `directory_unreadable`, `files_omitted`,
+  `files_unreadable`, `records_invalid`. This is file coverage and is
+  deliberately separate from a record's own source `coverage`: a rejected
+  record and an unread file are different facts, and both are reported.
+- The candidate counters partition the candidate set exactly, and the
+  partitions are the accounting invariants:
+  - `candidate_files` = `selected_files` + `omitted_files` — every `*.json`
+    candidate was either selected by the bounded read or omitted by the cap.
+  - `attempted_files` = `selected_files` — every selected candidate is opened.
+  - `attempted_files` = `read_files` + `unreadable_files` — an attempted file
+    either yielded its bytes or raised on open or on read.
+  - `read_files` = `accepted_records` + `invalid_records` — a file that was
+    read either decoded into a record or was rejected by the frozen record
+    contract (including for exceeding `MAX_BYTES`).
+  - `accepted_records` = `len(records)`.
+  - `unaccounted_files` = `unreadable_files` + `invalid_records` — every
+    selected candidate the records do not account for.
+  - `coverage_complete` is true only when `omitted_files` and
+    `unaccounted_files` are both zero.
+- `rejected` and `warnings[]` — `rejected` is `unaccounted_files`: every
+  selected candidate that produced no record, deliberately including unreadable
+  ones, because a file that could not be read is no more accounted for than one
+  the contract refused. Each has one warning carrying a fixed diagnostic:
+  `unreadable_file` for a file that could not be read, and the contract's own
+  vocabulary (`invalid_contract`, `invalid_route`, `identity_mismatch`, and so
+  on) for a record it rejected. Those diagnostics carry no errno, no OS message,
+  no local path and no byte of file content; the `file` field carries the bare
+  candidate name inside the Board's own observations directory and nothing else,
+  and the page renders the diagnostics as counts per term without it.
 - `path`, redacted as `[local path hidden]`, `path_exists`, `available`, and a
   safe `message`.
 

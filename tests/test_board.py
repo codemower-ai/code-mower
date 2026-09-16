@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import copy
 import http.client
 import itertools
@@ -7819,3 +7819,493 @@ class BoardIdleFreshnessTests(TestCase):
         self.assertEqual(shipped["headline"], "last observed idle")
         self.assertEqual(shipped["headline_class"], "warn")
         self.assertEqual(shipped["action"], "re-observe this session before treating it as idle")
+
+
+class _FailingReadHandle:
+    """A handle that opens cleanly and raises when its contents are read.
+
+    The two ways a selected candidate can be lost are different code paths --
+    the ``open`` call and the ``read`` call -- and a reader that only guards
+    one of them would still lose files silently through the other.
+    """
+
+    def __init__(self, handle: object, reads: list[int] | None = None) -> None:
+        self._handle = handle
+        self._reads = reads
+
+    def __enter__(self) -> "_FailingReadHandle":
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *exc: object) -> object:
+        return self._handle.__exit__(*exc)
+
+    def read(self, size: int = -1) -> bytes:
+        # Recorded before it raises: a file lost on read was still asked for
+        # exactly one bounded request, and the bound is what is being proved.
+        if self._reads is not None:
+            self._reads.append(size)
+        raise OSError(5, "input/output error")
+
+
+@contextmanager
+def _observation_read_failures(
+    directory: Path,
+    open_failures: set[str] = frozenset(),
+    read_failures: set[str] = frozenset(),
+    reads: list[int] | None = None,
+):
+    """Make named candidate files raise, and optionally record read sizes."""
+
+    real_open = Path.open
+
+    def patched(self: Path, *args: object, **kwargs: object) -> object:
+        if self.parent != directory:
+            return real_open(self, *args, **kwargs)
+        if self.name in open_failures:
+            raise OSError(13, "permission denied")
+        handle = real_open(self, *args, **kwargs)
+        if self.name in read_failures:
+            return _FailingReadHandle(handle, reads)
+        return _RecordingHandle(handle, reads) if reads is not None else handle
+
+    with patch.object(Path, "open", patched):
+        yield
+
+
+# Every outcome one candidate observation file can have. The Board decides what
+# it may claim from the whole set, so the set is enumerated rather than sampled.
+OBSERVATION_OUTCOMES = ("accepted", "invalid", "oversize", "unreadable_open", "unreadable_read")
+
+
+class BoardObservationOutcomeAccountingTests(TestCase):
+    """Every candidate file gets exactly one outcome, and every loss counts.
+
+    A bounded read can lose a candidate three ways: the cap never selects it,
+    it cannot be read at all, or the frozen record contract rejects it. None of
+    them is evidence that the file held nothing. The Board cannot know whether
+    the candidate it lost was the work record that contradicts a `no_work`
+    record beside it, so any loss makes file coverage partial and withdraws the
+    authority to state a current idle session or to retire observed work.
+    """
+
+    CAP = board.MAX_OBSERVATION_FILES
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+
+    def _write_outcomes(self, directory: Path, outcomes: list[str]) -> dict[str, set[str]]:
+        """Write one file per requested outcome, oldest first by name and time."""
+
+        by_outcome: dict[str, set[str]] = {}
+        for index, outcome in enumerate(outcomes):
+            name = f"obs-{index:03d}.json"
+            target = directory / name
+            if outcome == "invalid":
+                target.write_text("{not json", encoding="utf-8")
+            elif outcome == "oversize":
+                target.write_bytes(
+                    b'{"padding":"' + b"x" * (board_observation.MAX_BYTES * 2) + b'"}'
+                )
+            else:
+                # Accepted, and the unreadable cases too: a file that cannot be
+                # read is a real record the Board simply never got to see.
+                target.write_text(
+                    json.dumps(_referenced_record(f"work-{index:03d}")), encoding="utf-8"
+                )
+            # Modification time rises with the name, so which files the cap
+            # selects is fixed by the case rather than by the filesystem.
+            stamp = 1_600_000_000 + index
+            os.utime(target, (stamp, stamp))
+            by_outcome.setdefault(outcome, set()).add(name)
+        return by_outcome
+
+    def _read(self, outcomes: list[str], *, reads: list[int] | None = None) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            by_outcome = self._write_outcomes(directory, outcomes)
+            with _observation_read_failures(
+                directory,
+                by_outcome.get("unreadable_open", set()),
+                by_outcome.get("unreadable_read", set()),
+                reads,
+            ):
+                payload = board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+            payload["_local_path"] = str(directory)
+            return payload
+
+    def _block(self, readable: list[dict], *, unreadable: int = 0) -> dict:
+        """The block a real read emits for these records, with lost candidates.
+
+        The records are written and read back through the shipped reader, so
+        the views below are proved against the payload the Board really emits
+        rather than against a hand-built fixture of it.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for index, record in enumerate(readable):
+                (directory / f"r-{index:03d}.json").write_text(
+                    json.dumps(record), encoding="utf-8"
+                )
+            lost = {f"u-{index:03d}.json" for index in range(unreadable)}
+            for name in lost:
+                (directory / name).write_text(
+                    json.dumps(_named_work("lost")), encoding="utf-8"
+                )
+            self.block_path = str(directory)
+            with _observation_read_failures(directory, lost):
+                return board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+
+    def _assert_invariants(self, payload: dict) -> None:
+        """The counters partition the candidate set, and coverage follows them."""
+
+        self.assertEqual(
+            payload["candidate_files"], payload["selected_files"] + payload["omitted_files"]
+        )
+        self.assertEqual(payload["attempted_files"], payload["selected_files"])
+        self.assertEqual(
+            payload["attempted_files"], payload["read_files"] + payload["unreadable_files"]
+        )
+        self.assertEqual(
+            payload["read_files"], payload["accepted_records"] + payload["invalid_records"]
+        )
+        self.assertEqual(payload["accepted_records"], len(payload["records"]))
+        self.assertEqual(
+            payload["unaccounted_files"],
+            payload["unreadable_files"] + payload["invalid_records"],
+        )
+        # The historical rejection count is every selected candidate the
+        # records do not account for, unreadable ones included.
+        self.assertEqual(payload["rejected"], payload["unaccounted_files"])
+        self.assertEqual(len(payload["warnings"]), payload["unaccounted_files"])
+        whole = payload["omitted_files"] == 0 and payload["unaccounted_files"] == 0
+        self.assertEqual(payload["coverage_complete"], whole)
+        self.assertEqual(payload["coverage"], "complete" if whole else "partial")
+        self.assertEqual(payload["truncated"], payload["omitted_files"] > 0)
+        self.assertEqual(payload["file_cap"], self.CAP)
+        self.assertLessEqual(payload["selected_files"], self.CAP)
+        self.assertTrue(set(payload["coverage_gaps"]) <= set(board.OBSERVATION_COVERAGE_GAPS))
+        self.assertEqual("files_omitted" in payload["coverage_gaps"], payload["omitted_files"] > 0)
+        self.assertEqual(
+            "files_unreadable" in payload["coverage_gaps"], payload["unreadable_files"] > 0
+        )
+        self.assertEqual(
+            "records_invalid" in payload["coverage_gaps"], payload["invalid_records"] > 0
+        )
+
+    # Every candidate-outcome mixture the reader has to account for, with the
+    # exact counters it must report. `omitted` is what the cap left, `read` is
+    # what was successfully read, and `accepted` is what became a record.
+    MATRIX = (
+        ("no candidate files at all", [], dict(candidates=0, omitted=0, read=0, accepted=0, invalid=0, unreadable=0)),
+        ("every candidate accepted", ["accepted", "accepted"], dict(candidates=2, omitted=0, read=2, accepted=2, invalid=0, unreadable=0)),
+        ("all invalid JSON", ["invalid", "invalid"], dict(candidates=2, omitted=0, read=2, accepted=0, invalid=2, unreadable=0)),
+        ("all oversize", ["oversize"], dict(candidates=1, omitted=0, read=1, accepted=0, invalid=1, unreadable=0)),
+        ("unreadable only, failing on open", ["unreadable_open"], dict(candidates=1, omitted=0, read=0, accepted=0, invalid=0, unreadable=1)),
+        ("unreadable only, failing on read", ["unreadable_read"], dict(candidates=1, omitted=0, read=0, accepted=0, invalid=0, unreadable=1)),
+        ("invalid and unreadable together", ["invalid", "unreadable_open"], dict(candidates=2, omitted=0, read=1, accepted=0, invalid=1, unreadable=1)),
+        ("an accepted record beside an unreadable one", ["accepted", "unreadable_open"], dict(candidates=2, omitted=0, read=1, accepted=1, invalid=0, unreadable=1)),
+        ("an accepted record beside an oversize one", ["accepted", "oversize"], dict(candidates=2, omitted=0, read=2, accepted=1, invalid=1, unreadable=0)),
+        (
+            "one of each outcome at once",
+            ["accepted", "invalid", "oversize", "unreadable_open", "unreadable_read"],
+            dict(candidates=5, omitted=0, read=3, accepted=1, invalid=2, unreadable=2),
+        ),
+        (
+            "overflow alone",
+            ["accepted"] * (board.MAX_OBSERVATION_FILES + 2),
+            dict(candidates=board.MAX_OBSERVATION_FILES + 2, omitted=2, read=board.MAX_OBSERVATION_FILES, accepted=board.MAX_OBSERVATION_FILES, invalid=0, unreadable=0),
+        ),
+        (
+            "overflow with an unreadable selected candidate",
+            ["accepted"] * (board.MAX_OBSERVATION_FILES + 1) + ["unreadable_open"],
+            dict(candidates=board.MAX_OBSERVATION_FILES + 2, omitted=2, read=board.MAX_OBSERVATION_FILES - 1, accepted=board.MAX_OBSERVATION_FILES - 1, invalid=0, unreadable=1),
+        ),
+        (
+            "overflow with invalid and unreadable selected candidates",
+            ["accepted"] * board.MAX_OBSERVATION_FILES + ["invalid", "unreadable_read"],
+            dict(candidates=board.MAX_OBSERVATION_FILES + 2, omitted=2, read=board.MAX_OBSERVATION_FILES - 1, accepted=board.MAX_OBSERVATION_FILES - 2, invalid=1, unreadable=1),
+        ),
+    )
+
+    def test_every_candidate_outcome_is_accounted_for_exactly_once(self) -> None:
+        for name, outcomes, expected in self.MATRIX:
+            with self.subTest(name):
+                payload = self._read(outcomes)
+                self._assert_invariants(payload)
+                self.assertEqual(payload["candidate_files"], expected["candidates"])
+                self.assertEqual(payload["omitted_files"], expected["omitted"])
+                self.assertEqual(payload["read_files"], expected["read"])
+                self.assertEqual(payload["accepted_records"], expected["accepted"])
+                self.assertEqual(payload["invalid_records"], expected["invalid"])
+                self.assertEqual(payload["unreadable_files"], expected["unreadable"])
+                self.assertEqual(
+                    payload["selected_files"], expected["candidates"] - expected["omitted"]
+                )
+
+    def test_only_an_all_accepted_untruncated_read_is_whole_coverage(self) -> None:
+        """The one case that may claim complete coverage, said as a rule."""
+
+        for name, outcomes, expected in self.MATRIX:
+            with self.subTest(name):
+                payload = self._read(outcomes)
+                lost = expected["omitted"] + expected["invalid"] + expected["unreadable"]
+                self.assertEqual(payload["coverage_complete"], lost == 0)
+                self.assertEqual(payload["coverage"], "complete" if lost == 0 else "partial")
+                if lost:
+                    # An incomplete read says so in its own message; it never
+                    # reports an absence as a measured one.
+                    self.assertIn("incomplete", payload["message"])
+                    self.assertNotEqual(payload["message"], "")
+                elif expected["accepted"]:
+                    self.assertEqual(payload["message"], "")
+                else:
+                    self.assertEqual(payload["message"], "no local Board observations recorded yet")
+
+    def test_diagnostics_distinguish_unreadable_from_invalid_and_expose_nothing(self) -> None:
+        """A closed vocabulary, with no path, no errno and no file content."""
+
+        payload = self._read(["accepted", "invalid", "oversize", "unreadable_open", "unreadable_read"])
+        local_path = payload.pop("_local_path")
+        messages = sorted(warning["message"] for warning in payload["warnings"])
+        self.assertEqual(messages, ["invalid_contract", "invalid_contract", "unreadable_file", "unreadable_file"])
+        self.assertEqual(
+            sum(message == "unreadable_file" for message in messages), payload["unreadable_files"]
+        )
+        encoded = json.dumps(payload)
+        self.assertNotIn(local_path, encoded)
+        # No errno, no OS message, and no byte of the oversize file's content.
+        for leak in ("permission denied", "input/output error", "Errno", "x" * 32):
+            self.assertNotIn(leak, encoded)
+        self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertTrue(payload["path_redacted"])
+
+        # The page states how many candidates failed and in which way, and
+        # names neither the files nor the directory they came from.
+        payload.pop("_local_path", None)
+        nodes = _render_board_dom(_observation_payload([], observations=payload))
+        rendered = json.dumps(nodes)
+        self.assertIn("Record diagnostics: invalid_contract x2; unreadable_file x2.", nodes["diagnostics"])
+        self.assertIn("2 unreadable", nodes["diagnostics"])
+        self.assertIn("2 rejected by the observation contract", nodes["diagnostics"])
+        for leak in (local_path, "obs-0", "permission denied", "input/output error", "x" * 32):
+            self.assertNotIn(leak, rendered)
+
+    def test_record_diagnostics_are_counted_per_fixed_vocabulary_term(self) -> None:
+        self.assertEqual(
+            _eval_board_truth(
+                "observationDiagnostics(ARGS[0])",
+                [
+                    {"file": "secret-session.json", "message": "unreadable_file"},
+                    {"file": "other.json", "message": "invalid_contract"},
+                    {"file": "third.json", "message": "unreadable_file"},
+                ],
+            ),
+            ["unreadable_file x2", "invalid_contract"],
+        )
+        # Nothing to say when nothing failed, and an unrecognised diagnostic is
+        # still counted rather than quietly dropped.
+        self.assertEqual(_eval_board_truth("observationDiagnostics(ARGS[0])", []), [])
+        self.assertEqual(
+            _eval_board_truth("observationDiagnostics(ARGS[0])", [{"file": "a.json"}]), ["unknown"]
+        )
+
+    def test_losing_candidates_never_widens_the_read(self) -> None:
+        """Bounded in files and in bytes however the candidates turn out."""
+
+        reads: list[int] = []
+        board_observation.schema()
+        payload = self._read(
+            ["accepted", "invalid", "oversize", "unreadable_read"] * 12, reads=reads
+        )
+        # The cap still decides how many files are opened, and every file that
+        # opened was asked for exactly one bounded request.
+        self.assertEqual(payload["selected_files"], self.CAP)
+        self.assertEqual(reads, [board_observation.MAX_BYTES + 1] * self.CAP)
+
+    def test_the_accounting_does_not_depend_on_directory_order(self) -> None:
+        outcomes = ["accepted", "invalid", "unreadable_open", "accepted", "oversize"] * 8
+        real_scandir = os.scandir
+
+        class _ReversedScan:
+            def __init__(self, entries: list[object]) -> None:
+                self._entries = entries
+
+            def __enter__(self) -> object:
+                return iter(self._entries)
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        def reversed_scandir(path: object) -> object:
+            with real_scandir(path) as entries:
+                return _ReversedScan(list(entries)[::-1])
+
+        forward = self._read(outcomes)
+        with patch.object(board.os, "scandir", reversed_scandir):
+            backward = self._read(outcomes)
+
+        for key in (
+            "candidate_files",
+            "selected_files",
+            "omitted_files",
+            "read_files",
+            "accepted_records",
+            "invalid_records",
+            "unreadable_files",
+            "coverage",
+            "coverage_complete",
+            "coverage_gaps",
+        ):
+            self.assertEqual(forward[key], backward[key], key)
+        self.assertEqual(
+            [record["work"]["reference"] for record in forward["records"]],
+            [record["work"]["reference"] for record in backward["records"]],
+        )
+
+    def test_an_unreadable_candidate_beside_a_current_no_work_record_withholds_idle(self) -> None:
+        """The finding exactly: a readable `no_work` and an unreadable file.
+
+        The idle record is current and states complete sources, so nothing
+        about the record itself withholds the claim. What withholds it is that
+        the file beside it was never read, and it could have recorded the work
+        that contradicts the snapshot.
+        """
+
+        block = self._block([_observation_fixture("no_work")], unreadable=1)
+        self.assertEqual(block["accepted_records"], 1)
+        self.assertEqual(block["unreadable_files"], 1)
+        self.assertFalse(block["coverage_complete"])
+        self.assertFalse(block["truncated"])
+
+        payload = _observation_payload([], observations=block)
+        row = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => ({headline: row.headline,"
+            "headline_class: row.headline_class, action: row.action_label,"
+            "idle: row.idle || null, coverage: row.groups[0].items[0]}))[0]",
+            payload,
+            self.NOW_MS,
+        )
+        self.assertFalse(row["idle"]["affirmative"])
+        self.assertEqual(row["idle"]["reason"], "unread")
+        self.assertEqual(row["idle"]["coverage_state"], "unread")
+        self.assertEqual(row["headline"], "idle in the records read")
+        self.assertEqual(row["headline_class"], "warn")
+        self.assertIn("produced no record this refresh", row["coverage"]["note"])
+        self.assertIn("before treating this session as idle", row["action"])
+
+        # The same block through the whole page: the claim is gone from every
+        # surface, and every surface says why.
+        nodes = _render_board_dom(payload, now=OBSERVATION_NOW)
+        rendered = json.dumps(nodes)
+        self.assertNotIn("idle with complete coverage", rendered)
+        self.assertNotIn("nothing to do in this session", rendered)
+        self.assertIn("idle in the records read", nodes["worklist"])
+        self.assertIn("Incomplete snapshot", nodes["worklist"])
+        self.assertIn("Incomplete snapshot", nodes["worknow"])
+        self.assertIn("Observation files", nodes["summary"])
+        self.assertIn("incomplete snapshot", nodes["chrome"])
+        self.assertIn("produced no record", nodes["worknow"])
+        self.assertIn("evidence that there is no work", nodes["worknow"])
+        # Health states the same accounting in its own terms, and names the
+        # kind of failure without naming the file it happened to.
+        self.assertIn("1 without a record", nodes["diagnostics"])
+        self.assertIn("1 unreadable", nodes["diagnostics"])
+        self.assertIn("Record diagnostics: unreadable_file.", nodes["diagnostics"])
+        # None of that names a file or the local directory the read came from.
+        self.assertNotIn(self.block_path, rendered)
+        self.assertNotIn("u-000", rendered)
+        self.assertNotIn("r-000", rendered)
+
+    def test_incomplete_evidence_never_retires_observed_work(self) -> None:
+        """Reconciliation is an absence claim too, so it needs whole coverage.
+
+        The session recorded work and then recorded itself idle. With every
+        candidate accounted for, the later idle snapshot retires the work row.
+        With one candidate lost, the snapshot may no longer state that the
+        session has gone quiet, so both readings stay on the page.
+        """
+
+        records = [_observed_later(_named_work("alpha"), 0), _observed_later(_observation_fixture("no_work"), 20)]
+        whole = self._block(records)
+        self.assertTrue(whole["coverage_complete"])
+        self.assertEqual(
+            _eval_board_view(RECONCILED_EXPRESSION, _observation_payload([], observations=whole), self.NOW_MS)["keys"],
+            [_idle_key()],
+        )
+
+        lossy = self._block(records, unreadable=1)
+        self.assertFalse(lossy["coverage_complete"])
+        reconciled = _eval_board_view(
+            RECONCILED_EXPRESSION, _observation_payload([], observations=lossy), self.NOW_MS
+        )
+        self.assertEqual(reconciled["keys"], [_work_key("alpha"), _idle_key()])
+        self.assertEqual(reconciled["headlines"][1], "idle in the records read")
+
+    def test_dropping_unreadable_files_from_incompleteness_would_be_caught(self) -> None:
+        """Mutation: make an unreadable candidate stop counting as a gap.
+
+        Both halves are mutated -- the reader's accounting and the view's gate
+        -- and each mutant produces exactly the claim the assertions above
+        forbid, so those assertions are load-bearing rather than decorative.
+        """
+
+        payload = _observation_payload([], observations=self._block([_observation_fixture("no_work")], unreadable=1))
+        self.assertFalse(payload["observations"]["coverage_complete"])
+
+        def without_unreadable(self: object) -> list[str]:
+            gaps = []
+            if self.omitted_files:
+                gaps.append("files_omitted")
+            if self.invalid_records:
+                gaps.append("records_invalid")
+            return gaps
+
+        with patch.object(board._ObservationAccounting, "gaps", property(without_unreadable)):
+            mutated = self._block([_observation_fixture("no_work")], unreadable=1)
+        # The mutant really does call a read with a lost candidate whole, which
+        # is exactly what the assertions above would fail on.
+        self.assertTrue(mutated["coverage_complete"])
+        self.assertEqual(mutated["coverage"], "complete")
+        self.assertEqual(mutated["unreadable_files"], 1)
+        # The view is not left depending on that one flag: it counts the
+        # unaccounted candidates itself, so it still withholds the claim.
+        self.assertEqual(
+            _eval_board_view(
+                "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label])",
+                _observation_payload([], observations=mutated),
+                self.NOW_MS,
+            ),
+            [[
+                "idle in the records read",
+                "recover the observation files that produced no record before treating this session as idle",
+            ]],
+        )
+
+        # And the view's own gate, mutated back to reading the cap alone: with
+        # it removed, the very same read renders the present-tense claim.
+        self.assertEqual(
+            _eval_board_view(
+                "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label])",
+                payload,
+                self.NOW_MS,
+                mutate=('if (coverage?.whole === false) return "unread";', ""),
+            ),
+            [["idle with complete coverage", "nothing to do in this session"]],
+        )
+
+        # The shipped code, unmutated, says none of that about the same read.
+        self.assertEqual(
+            _eval_board_view(
+                "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label])",
+                payload,
+                self.NOW_MS,
+            ),
+            [[
+                "idle in the records read",
+                "recover the observation files that produced no record before treating this session as idle",
+            ]],
+        )
