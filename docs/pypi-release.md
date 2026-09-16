@@ -11,7 +11,11 @@ pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.1
 
 The v1.4.1 source candidate is not yet published or qualified. All mutating
 steps below require the supervisor and the recorded owner release decision.
-The [historical v1.4.0 runbook](v140-release-runbook.md) is preserved unchanged.
+
+<a id="v140-post-merge-release-runbook"></a>
+
+The [historical v1.4.0 post-merge release runbook](v140-release-runbook.md#v140-post-merge-release-runbook)
+is preserved unchanged.
 
 ## Current Status
 

@@ -7923,7 +7923,7 @@ def main():
                 outputs=outputs,
                 version="code-mower 1.4.1",
                 distribution_version="1.4.1",
-                requested_version="1.4.1",
+                requested_version="1.4.0",
                 steps=steps,
             )
             missing_metadata = code_mower_migration._first_user_readiness_scorecard(
