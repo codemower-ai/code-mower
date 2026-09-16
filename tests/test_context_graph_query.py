@@ -547,6 +547,76 @@ class GraphSchemaTests(unittest.TestCase):
             self.load(document)
 
 
+class EdgeLocationTests(unittest.TestCase):
+    """The call site's own path and line, held to the same rules as a node's.
+
+    ``source_file`` is a required provider field and every fixture edge carries
+    a real one; what varies here is ``source_location``, which is optional the
+    same way a node's is, and the path itself, which is held to the same
+    repository-scope rules ``test_refuses_a_node_outside_the_indexed_checkout``
+    holds a node's ``source_file`` to.
+    """
+
+    def load(self, document: dict) -> query.CodeGraph:
+        return query.load_graph(document, generation="a" * 32, commit="b" * 40)
+
+    def touched(self, graph: query.CodeGraph) -> query.GraphEdge:
+        """The one edge these tests mutate: ``n-load`` calls ``n-config``."""
+        return next(item for item in graph.edges
+                    if item.source == "n-load" and item.target == "n-config")
+
+    def test_missing_null_and_empty_locations_stay_traversable_and_uncitable(self) -> None:
+        for mutate in (
+            lambda doc: doc["edges"][0].pop("source_location"),
+            lambda doc: doc["edges"][0].update(source_location=None),
+            lambda doc: doc["edges"][0].update(source_location=""),
+        ):
+            with self.subTest(mutate=mutate):
+                document = graph_document()
+                mutate(document)
+                edge = self.touched(self.load(document))
+                self.assertIsNone(edge.line)
+                # Still traversable, and its citation names the file alone --
+                # never a line the provider did not state.
+                self.assertEqual(edge.citation, "example_pkg/config.py")
+
+    def test_a_malformed_location_type_is_refused(self) -> None:
+        for value in ([], {}, ["L1"], 12, True):
+            with self.subTest(value=value):
+                document = graph_document()
+                document["edges"][0]["source_location"] = value
+                with self.assertRaises(ContextError):
+                    self.load(document)
+
+    def test_non_ascii_digits_are_refused_rather_than_crashing(self) -> None:
+        """``str.isdigit()`` accepts a superscript two; ``int()`` cannot parse it.
+
+        Before this correction ``L²`` escaped as an unhandled
+        ``ValueError`` instead of the bounded ``ContextError`` every other
+        unsupported location shape raises.
+        """
+        document = graph_document()
+        document["edges"][0]["source_location"] = "L²"
+        with self.assertRaises(ContextError):
+            self.load(document)
+
+    def test_invalid_line_numbers_are_refused(self) -> None:
+        for location in ("12", "line 12", "L", "L0", "L-4", "L99999999999"):
+            with self.subTest(location=location):
+                document = graph_document()
+                document["edges"][0]["source_location"] = location
+                with self.assertRaises(ContextError):
+                    self.load(document)
+
+    def test_an_absolute_traversing_or_private_call_site_path_is_refused(self) -> None:
+        for path in ("/etc/passwd", "../sibling/config.py", ".git/config", ".graphify/nodes.bin"):
+            with self.subTest(path=path):
+                document = graph_document()
+                document["edges"][0]["source_file"] = path
+                with self.assertRaises(ContextError):
+                    self.load(document)
+
+
 class NodeLinkFormatTests(unittest.TestCase):
     """The other document that can appear under ``graph.json``, read on its own terms.
 
@@ -564,6 +634,10 @@ class NodeLinkFormatTests(unittest.TestCase):
         graph = self.load(node_link_document())
         self.assertEqual(len(graph.nodes), 5)
         self.assertEqual(len(graph.edges), 4)
+        # The supported node-link document carries the same edge call sites as
+        # the raw extraction, read by the same ``_edge`` logic.
+        contains = next(item for item in graph.edges if item.relation == "contains")
+        self.assertEqual((contains.path, contains.line), ("example_pkg/config.py", 12))
 
     def test_reads_the_renamed_edges_key_of_a_node_link_export(self) -> None:
         """NetworkX renamed ``links`` to ``edges``; the pinned validator takes either.
@@ -821,6 +895,182 @@ class RetainedRelationshipTests(unittest.TestCase):
         self.assertEqual(self.stated(result), {("n-b", "calls", "n-a")})
 
 
+class CallSiteIdentityTests(unittest.TestCase):
+    """Two calls to the same relationship, recorded at two places, are two.
+
+    ``edge()`` gives every edge the same call site unless a test overrides it,
+    so these override it directly. This is the finding's own case: a provider
+    that records more than one call site for one relationship, and a reader
+    that dropped the call site from the identity reported one when the
+    document stated several.
+    """
+
+    def load(self, *nodes, edges=()) -> query.CodeGraph:
+        document = graph_document(nodes=list(nodes), edges=list(edges))
+        return query.load_graph(document, generation="a" * 32, commit="b" * 40)
+
+    def sites(self, result: query.QueryResult) -> set:
+        return {(item.via.path, item.via.line) for item in result.relations}
+
+    def test_same_endpoints_relation_and_confidence_at_different_lines_are_distinct(self) -> None:
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[
+                edge("n-a", "n-b", "calls", source_location="L5"),
+                edge("n-a", "n-b", "calls", source_location="L9"),
+            ],
+        )
+        result = query.run_query(graph, question="dependency", target="alpha")
+        self.assertEqual(len(result.relations), 2)
+        self.assertEqual(
+            self.sites(result),
+            {("example_pkg/config.py", 5), ("example_pkg/config.py", 9)},
+        )
+        self.assertFalse(result.truncated)
+
+    def test_the_same_line_in_different_files_is_distinct(self) -> None:
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[
+                edge("n-a", "n-b", "calls", source_file="example_pkg/config.py", source_location="L5"),
+                edge("n-a", "n-b", "calls", source_file="example_pkg/loader.py", source_location="L5"),
+            ],
+        )
+        result = query.run_query(graph, question="dependency", target="alpha")
+        self.assertEqual(len(result.relations), 2)
+        self.assertEqual(
+            self.sites(result),
+            {("example_pkg/config.py", 5), ("example_pkg/loader.py", 5)},
+        )
+
+    def test_an_exact_duplicate_record_still_collapses(self) -> None:
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[
+                edge("n-a", "n-b", "calls", source_location="L5"),
+                edge("n-a", "n-b", "calls", source_location="L5"),
+            ],
+        )
+        result = query.run_query(graph, question="dependency", target="alpha")
+        self.assertEqual(len(result.relations), 1)
+        self.assertFalse(result.truncated)
+        self.assertNotIn("provider_has_more", result.omissions)
+
+    def test_a_duplicate_plus_one_distinct_location_yields_two(self) -> None:
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[
+                edge("n-a", "n-b", "calls", source_location="L5"),
+                edge("n-a", "n-b", "calls", source_location="L5"),
+                edge("n-a", "n-b", "calls", source_location="L9"),
+            ],
+        )
+        result = query.run_query(graph, question="dependency", target="alpha")
+        self.assertEqual(len(result.relations), 2)
+        self.assertEqual(
+            self.sites(result),
+            {("example_pkg/config.py", 5), ("example_pkg/config.py", 9)},
+        )
+
+    def test_different_relations_or_confidences_at_one_call_site_stay_distinct(self) -> None:
+        """One call site, two different provider claims about it: both survive."""
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[
+                edge("n-a", "n-b", "calls", source_location="L5"),
+                edge("n-a", "n-b", "references", source_location="L5"),
+                edge("n-a", "n-b", "calls", "INFERRED", source_location="L5"),
+            ],
+        )
+        result = query.run_query(graph, question="symbol", target="alpha")
+        self.assertEqual(len(result.relations), 3)
+
+    def test_reversed_edge_input_yields_identical_identities_and_order(self) -> None:
+        """A permutation of the provider's own edge list must not change the answer."""
+        edges = [
+            edge("n-a", "n-b", "calls", source_location="L5"),
+            edge("n-a", "n-b", "calls", source_location="L9"),
+            edge("n-a", "n-b", "references", source_location="L5"),
+        ]
+        forward = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=edges,
+        )
+        reversed_graph = self.load(
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            edges=list(reversed(edges)),
+        )
+        def identity(item: query.GraphEdge) -> tuple:
+            return (item.source, item.target, item.relation, item.path, item.line)
+
+        self.assertEqual(
+            [identity(item) for item in forward.edges],
+            [identity(item) for item in reversed_graph.edges],
+        )
+        first = query.run_query(forward, question="dependency", target="alpha")
+        second = query.run_query(reversed_graph, question="dependency", target="alpha")
+        self.assertEqual(
+            [(item.via.relation, item.via.path, item.via.line) for item in first.relations],
+            [(item.via.relation, item.via.path, item.via.line) for item in second.relations],
+        )
+
+    def test_incoming_outgoing_and_symbol_traversal_use_the_full_identity(self) -> None:
+        """Two distinct call sites survive whichever direction reaches them."""
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[
+                edge("n-a", "n-b", "calls", source_location="L5"),
+                edge("n-a", "n-b", "calls", source_location="L9"),
+            ],
+        )
+        self.assertEqual(len(query.run_query(graph, question="dependency", target="alpha").relations), 2)
+        self.assertEqual(len(query.run_query(graph, question="impact", target="beta").relations), 2)
+        self.assertEqual(len(query.run_query(graph, question="symbol", target="alpha").relations), 2)
+
+    def test_a_self_loop_at_distinct_call_sites_is_two_relationships(self) -> None:
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            edges=[
+                edge("n-a", "n-a", "calls", source_location="L5"),
+                edge("n-a", "n-a", "calls", source_location="L9"),
+            ],
+        )
+        result = query.run_query(graph, question="symbol", target="alpha")
+        self.assertEqual(len(result.relations), 2)
+
+    def test_a_cycle_at_distinct_call_sites_reports_every_record(self) -> None:
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+            edges=[
+                edge("n-a", "n-b", "calls", source_location="L5"),
+                edge("n-b", "n-a", "calls", source_location="L9"),
+            ],
+        )
+        result = query.run_query(graph, question="symbol", target="alpha")
+        self.assertEqual(len(result.relations), 2)
+        self.assertFalse(result.truncated)
+
+    def test_relationships_among_path_seeds_stay_one_when_the_call_site_repeats(self) -> None:
+        """Every endpoint is a seed and the record is not repeated: still one."""
+        graph = self.load(
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/config.py", 20),
+            edges=[edge("n-a", "n-b", "calls", source_location="L5")],
+        )
+        result = query.run_query(graph, question="dependency", target="example_pkg/config.py")
+        self.assertEqual({item.id for item in result.seeds}, {"n-a", "n-b"})
+        self.assertEqual(len(result.relations), 1)
+
+
 class DepthBoundaryTests(unittest.TestCase):
     """What the requested depth left behind, said out loud.
 
@@ -918,6 +1168,15 @@ class DepthBoundaryTests(unittest.TestCase):
         self.assertTrue(result.truncated)
         self.assertIn("provider_has_more", result.omissions)
 
+    def test_a_boundary_relationship_that_differs_only_by_call_site_is_still_an_omission(self) -> None:
+        """Same endpoints and relation, two recorded call sites: two identities."""
+        graph = self.chain(tail=[edge("n-c", "n-a", "calls", source_location="L1"),
+                                 edge("n-c", "n-a", "calls", source_location="L2")])
+        result = query.run_query(graph, question="dependency", target="alpha")
+        self.assertEqual(len(result.relations), 2)
+        self.assertTrue(result.truncated)
+        self.assertIn("provider_has_more", result.omissions)
+
     def test_direction_decides_what_the_boundary_counts(self) -> None:
         """One graph, two questions: the boundary edge points the wrong way for one."""
         graph = self.chain(tail=[edge("n-d", "n-c", "calls")])
@@ -980,6 +1239,109 @@ class RetainedRelationshipPacketTests(GraphWorkspace):
         self.assertTrue(any("render calls load" in item and "reached from parse_config" in item
                             for item in documents))
         self.assertNotIn("provider_has_more", self.context().summary["omissions"])
+
+
+def call_site_document(*sites: tuple, relation: str = "calls") -> dict:
+    """``alpha`` and ``beta``, connected once per call site in ``sites``.
+
+    Each entry is a distinct ``(path, line)`` the same relationship was
+    recorded at -- the finding's own case, where a provider stating one
+    relationship at more than one call site had all but one silently dropped.
+    """
+    return graph_document(
+        nodes=[
+            node("n-a", "alpha", "example_pkg/config.py", 12),
+            node("n-b", "beta", "example_pkg/loader.py", 40),
+        ],
+        edges=[
+            edge("n-a", "n-b", relation, source_file=path, source_location=f"L{line}")
+            for path, line in sites
+        ],
+    )
+
+
+class CallSitePacketTests(GraphWorkspace):
+    """What a recipient reads when the provider records more than one call site."""
+
+    document = call_site_document(("example_pkg/config.py", 5), ("example_pkg/config.py", 9))
+
+    def query(self, **overrides) -> query.GraphContext:
+        arguments = {"question": "dependency", "target": "alpha"}
+        arguments.update(overrides)
+        return self.context(**arguments)
+
+    def test_distinct_call_sites_produce_distinguishable_documents_and_citations(self) -> None:
+        outcome = self.query()
+        self.assertEqual(outcome.status, query.AVAILABLE)
+        self.assertEqual(len(outcome.packet["documents"]), 2)
+        citations = [
+            {citation["source"] for citation in item["citations"]}
+            for item in outcome.packet["documents"]
+        ]
+        every_source = {source for group in citations for source in group}
+        self.assertIn("example_pkg/config.py#L5", every_source)
+        self.assertIn("example_pkg/config.py#L9", every_source)
+        # Each document names the call site its own relationship record was
+        # actually written at, not the other one -- that is what makes them
+        # distinguishable evidence rather than the same document twice.
+        self.assertNotEqual(citations[0], citations[1])
+        self.assertFalse(outcome.packet["truncated"])
+
+    def test_reversed_edge_input_produces_identical_packet_documents(self) -> None:
+        forward = self.query().packet["documents"]
+        reversed_document = call_site_document(
+            ("example_pkg/config.py", 9), ("example_pkg/config.py", 5))
+        reversed_document["nodes"] = list(reversed(reversed_document["nodes"]))
+        reversed_document["edges"] = list(reversed(reversed_document["edges"]))
+        self.publish(reversed_document)
+        reversed_documents = self.query().packet["documents"]
+        self.assertEqual(
+            [item["text"] for item in forward],
+            [item["text"] for item in reversed_documents],
+        )
+        self.assertEqual(
+            [{c["source"] for c in item["citations"]} for item in forward],
+            [{c["source"] for c in item["citations"]} for item in reversed_documents],
+        )
+
+    def test_a_real_second_call_site_beyond_the_relationship_budget_sets_provider_has_more(self) -> None:
+        outcome = self.query(node_budget=1)
+        self.assertEqual(len(outcome.packet["documents"]), 1)
+        self.assertTrue(outcome.packet["truncated"])
+        self.assertIn("provider_has_more", outcome.packet["omissions"])
+
+    def test_a_document_budget_below_the_call_site_count_sets_document_limit(self) -> None:
+        outcome = self.query(policy=policy(max_documents=1))
+        self.assertEqual(len(outcome.packet["documents"]), 1)
+        self.assertTrue(outcome.packet["truncated"])
+        self.assertIn("document_limit", outcome.packet["omissions"])
+
+    def test_duplicate_only_input_does_not_falsely_truncate(self) -> None:
+        self.publish(call_site_document(
+            ("example_pkg/config.py", 5), ("example_pkg/config.py", 5)))
+        outcome = self.query()
+        self.assertEqual(len(outcome.packet["documents"]), 1)
+        self.assertFalse(outcome.packet["truncated"])
+        self.assertNotIn("provider_has_more", outcome.packet["omissions"])
+
+    def test_an_unresolved_call_site_citation_is_omitted_and_warned(self) -> None:
+        """A stated call site past the end of a tracked file is never verified."""
+        self.publish(call_site_document(("example_pkg/config.py", 999)))
+        outcome = self.query()
+        self.assertEqual(outcome.status, query.AVAILABLE)
+        [document] = outcome.packet["documents"]
+        sources = {citation["source"] for citation in document["citations"]}
+        self.assertNotIn("example_pkg/config.py#L999", sources)
+        self.assertEqual(sources, {"example_pkg/config.py#L12", "example_pkg/loader.py#L40"})
+        self.assertIn("provider_warning", outcome.packet["omissions"])
+
+    def test_an_untracked_call_site_path_is_never_cited(self) -> None:
+        self.publish(call_site_document(("example_pkg/untracked.py", 1)))
+        outcome = self.query()
+        [document] = outcome.packet["documents"]
+        sources = {citation["source"] for citation in document["citations"]}
+        self.assertNotIn("example_pkg/untracked.py#L1", sources)
+        self.assertIn("provider_warning", outcome.packet["omissions"])
 
 
 def missing_endpoint_document() -> dict:
@@ -1336,15 +1698,18 @@ class PacketTests(GraphWorkspace):
         [text] = [item for item in documents if "render" in item]
         self.assertIn("render calls load", text)
         self.assertIn("reached from parse_config", text)
+        # The two endpoints, plus the edge's own call site -- ``edge()``'s own
+        # location, distinct from both endpoints in this fixture.
         self.assertEqual(
             {citation["source"] for citation in documents[text]["citations"]},
-            {"example_pkg/report.py#L5", "example_pkg/loader.py#L40"},
+            {"example_pkg/report.py#L5", "example_pkg/loader.py#L40", "example_pkg/config.py#L12"},
         )
-        # Each citation is titled with the node it points at, not with the node
-        # the relationship happened to reach.
+        # Each endpoint citation is titled with the node it points at, not with
+        # the node the relationship happened to reach; the call site is titled
+        # apart from either.
         self.assertEqual(
             {citation["title"] for citation in documents[text]["citations"]},
-            {"symbol render", "symbol load"},
+            {"symbol render", "symbol load", "call site: calls"},
         )
 
     def test_packet_text_carries_no_indexed_content(self) -> None:

@@ -150,10 +150,12 @@ CODE_FILE_TYPE = "code"
 #: this is the whole of the difference.
 GRAPH_CONFIDENCES = {"EXTRACTED": "extracted", "INFERRED": "inferred", "AMBIGUOUS": "ambiguous"}
 
-#: A node's location in the pinned export is ``source_location``, a string of
-#: the form ``L<line>`` written by the extractor's ``add_node``/``add_edge``.
-#: Cross-file stubs carry ``""`` -- a real node with no location, which this
-#: module keeps traversable and refuses to cite.
+#: A node's or an edge's location in the pinned export is ``source_location``,
+#: a string of the form ``L<line>`` written by the extractor's
+#: ``add_node``/``add_edge``. Cross-file stubs carry ``""`` -- a real node with
+#: no location, which this module keeps traversable and refuses to cite -- and
+#: an edge's own ``source_location`` is optional the same way: a call site with
+#: no recorded line stays traversable and uncitable rather than refused.
 _LOCATION_MAX_LINE = 10_000_000
 
 #: The pinned extractor's relation vocabulary, normalized onto the
@@ -305,6 +307,21 @@ def _callable_base(label: str) -> str:
     return ""
 
 
+def _location_citation(path: str, line: int | None) -> str | None:
+    """A path and an optional line as a citation, or ``None`` with no path.
+
+    Shared by ``GraphNode`` and ``GraphEdge``: the pinned export records a
+    single line per node or call site, not a span, so a located citation
+    states one line. Claiming a span the provider never stated would be this
+    adapter inventing the extent of a definition or a call.
+    """
+    if not path:
+        return None
+    if line is None:
+        return path
+    return f"{path}#L{line}"
+
+
 @dataclass(frozen=True)
 class GraphNode:
     """One node of the pinned export, narrowed and held to the citation rules.
@@ -326,17 +343,8 @@ class GraphNode:
 
     @property
     def citation(self) -> str | None:
-        """The node's location as a citation, or ``None`` if it has no location.
-
-        The pinned export records a single line per node, not a span, so a
-        located node cites one line. Claiming a span the provider never stated
-        would be this adapter inventing the extent of a definition.
-        """
-        if not self.path:
-            return None
-        if self.line is None:
-            return self.path
-        return f"{self.path}#L{self.line}"
+        """The node's location as a citation, or ``None`` if it has no location."""
+        return _location_citation(self.path, self.line)
 
 
 @dataclass(frozen=True)
@@ -347,6 +355,14 @@ class GraphEdge:
     normalized onto ``GRAPH_RELATIONS`` for filtering. A packet sentence states
     ``relation``, so a recipient reads the provider's claim and not this
     module's grouping of it.
+
+    ``path`` and ``line`` are the provider's own ``source_file`` and
+    ``source_location`` for this call site, held to the same citation rules as
+    a node's. Two edges that agree on every other field but were written at
+    different call sites are two distinct relationships, not one repeated:
+    without the call site, ``run_query`` had no way to tell "the same claim,
+    twice" from "the same claim, from two different places in the code" and
+    silently kept only one.
     """
 
     source: str
@@ -354,6 +370,39 @@ class GraphEdge:
     relation: str
     kind: str
     evidence: str
+    path: str
+    line: int | None
+
+    @property
+    def citation(self) -> str | None:
+        """The call site's location as a citation, or ``None`` if it has none."""
+        return _location_citation(self.path, self.line)
+
+
+#: Sorts below every real provider line, which is always ``>= 1``, so a call
+#: site with no line still has a total order against one that has it -- and
+#: does so without giving ``line`` a type that mixes ``None`` into a sort key.
+_NO_LINE = -1
+
+
+def _edge_identity(edge: GraphEdge) -> tuple[str, str, str, str, str, str, int]:
+    """The one identity a retained edge is deduplicated and ordered by.
+
+    Source, target, the provider's own relation word, the normalized kind,
+    the normalized confidence, and the call site's path and line, together.
+    Two call-site records that agree on everything else but were written at
+    different lines -- or in different files -- are two relationships, and
+    dropping either the path or the line back onto ``None`` is how a reader
+    would silently collapse them back into one. This is the single identity
+    ``run_query`` deduplicates and reports truncation against, and the single
+    key ``load_graph`` and ``_grouped`` sort by, so a permutation of the
+    provider's node or edge order can never change what a bounded traversal
+    reports.
+    """
+    return (
+        edge.source, edge.target, edge.relation, edge.kind, edge.evidence,
+        edge.path, edge.line if edge.line is not None else _NO_LINE,
+    )
 
 
 @dataclass(frozen=True)
@@ -470,9 +519,15 @@ def _location(value: Any) -> int | None:
     if value is None or value == "":
         return None
     text = _text(value, maximum=32)
-    if not text.startswith("L") or not text[1:].isdigit():
+    suffix = text[1:]
+    # ``str.isdigit()`` accepts Unicode digits ``int()`` cannot parse (a
+    # superscript ``\u00b2`` is a digit and not a decimal), which would let a
+    # value like ``"L\u00b2"`` escape this refusal as an unhandled
+    # ``ValueError`` instead of the bounded ``ContextError`` every other
+    # unsupported location shape raises. Requiring ASCII first closes that.
+    if not text.startswith("L") or not suffix.isascii() or not suffix.isdigit():
         raise ContextError("local graph source location is not a supported provider location")
-    line = int(text[1:])
+    line = int(suffix)
     if not 1 <= line <= _LOCATION_MAX_LINE:
         raise ContextError("local graph line number is out of range")
     return line
@@ -625,16 +680,21 @@ def _edge(
     target = _text(record["target"], maximum=512)
     endpoints = ((source, source in nodes), (target, target in nodes))
     if all(present for _, present in endpoints):
-        return _ParsedEdge(
-            edge=GraphEdge(
-                source=source,
-                target=target,
-                relation=relation,
-                kind=GRAPH_RELATIONS.get(relation, OTHER_RELATION),
-                evidence=GRAPH_CONFIDENCES[confidence],
-            ),
-            incomplete=(),
+        built = GraphEdge(
+            source=source,
+            target=target,
+            relation=relation,
+            kind=GRAPH_RELATIONS.get(relation, OTHER_RELATION),
+            evidence=GRAPH_CONFIDENCES[confidence],
+            path=_maybe_text(record["source_file"], maximum=1024),
+            line=_location(record.get("source_location")),
         )
+        # Held to the same citation rules as a node's, at parse time: a call
+        # site this adapter could never point at inside the indexed checkout
+        # must not stay traversable as though it were verified evidence.
+        if built.citation is not None:
+            parse_graph_citation(built.citation)
+        return _ParsedEdge(edge=built, incomplete=())
     if all(present or endpoint in excluded for endpoint, present in endpoints):
         # Every absent end was a node the document declared and this module
         # deliberately does not query. A stated scope, not missing evidence.
@@ -668,7 +728,7 @@ def _grouped(edges: Iterable[GraphEdge], *, by: str) -> dict[str, tuple[GraphEdg
     for edge in edges:
         buckets.setdefault(getattr(edge, by), []).append(edge)
     return {
-        key: tuple(sorted(group, key=lambda edge: (edge.kind, edge.target, edge.source)))
+        key: tuple(sorted(group, key=_edge_identity))
         for key, group in buckets.items()
     }
 
@@ -747,7 +807,7 @@ def load_graph(payload: Mapping[str, Any], *, generation: str, commit: str) -> C
     parsed_edges = [_edge(value, nodes, frozen) for value in raw_edges]
     edges = tuple(sorted(
         (item.edge for item in parsed_edges if item.edge is not None),
-        key=lambda edge: (edge.kind, edge.source, edge.target),
+        key=_edge_identity,
     ))
     # Attributed to the surviving endpoint rather than counted: a traversal that
     # never reaches one of these nodes is not answering over missing evidence
@@ -928,7 +988,7 @@ def run_query(
     # repository is not a hole in *this* answer, and marking every query partial
     # because of one would make the flag mean nothing.
     incomplete = any(node.id in graph.incomplete for node in seeds)
-    reported: set[tuple[str, str, str, str, str]] = set()
+    reported: set[tuple[str, str, str, str, str, str, int]] = set()
     relations: list[Relation] = []
     over_budget = False
     frontier: list[tuple[GraphNode, GraphNode, int]] = [(node, node, 0) for node in seeds]
@@ -959,17 +1019,18 @@ def run_query(
             # boundary has already been expanded by the time the first
             # boundary node is popped. ``reported`` is final here.
             if not beyond_depth and any(
-                (edge.source, edge.target, edge.relation, edge.kind, edge.evidence) not in reported
+                _edge_identity(edge) not in reported
                 for edge, _ in _neighbours(graph, node.id, direction, kinds)
             ):
                 beyond_depth = True
             continue
         for edge, other_id in _neighbours(graph, node.id, direction, kinds):
-            # The provider's own record, endpoints and wording together: two
-            # parallel edges that say different things about the same pair are
-            # two relationships, a self-loop reached from both sides is one,
-            # and a byte-identical duplicate record is one.
-            identity = (edge.source, edge.target, edge.relation, edge.kind, edge.evidence)
+            # The provider's own record, endpoints, wording and call site
+            # together: two parallel edges that say different things about the
+            # same pair -- or say the same thing from two different call sites
+            # -- are two relationships, a self-loop reached from both sides is
+            # one, and a byte-identical duplicate record is one.
+            identity = _edge_identity(edge)
             if identity in reported:
                 continue
             if len(relations) >= node_budget:
@@ -1196,14 +1257,28 @@ def _documents(
                 continue
             located += 1
             endpoints.setdefault(citation, endpoint)
-        cited = [(citation, endpoint) for citation, endpoint in endpoints.items()
-                 if validator.validate(citation)]
+        cited = [(citation, f"{endpoint.kind} {endpoint.name}")
+                 for citation, endpoint in endpoints.items() if validator.validate(citation)]
         if len(cited) != len(endpoints) or located < 2:
             # The graph claimed a location the bound commit does not carry.
             # That is the provider disagreeing with the immutable tree, which
             # a recipient must be told about even when the relationship keeps
             # a second citation that does check out.
             unvalidated = True
+        # The call site itself, titled apart from either endpoint so a
+        # recipient can tell where the relationship was written from the two
+        # places it connects. Missing is not unvalidated -- a call site with no
+        # location is the provider stating none, exactly like a sourceless
+        # stub's endpoint citation above -- but a stated one the bound commit
+        # does not carry is the same disagreement an endpoint's is, and must
+        # never appear as though it were verified.
+        call_site = item.via.citation
+        if call_site is not None:
+            if validator.validate(call_site):
+                if call_site not in {source for source, _ in cited}:
+                    cited.append((call_site, f"call site: {item.via.relation}"))
+            else:
+                unvalidated = True
         cited = cited[:MAX_CITATIONS_PER_DOCUMENT]
         if not cited:
             dropped = True
@@ -1220,8 +1295,7 @@ def _documents(
             # two-endpoint relationship does not label the endpoint it came
             # from with the name of the one it reached.
             "citations": [
-                {"source": citation, "title": f"{endpoint.kind} {endpoint.name}"}
-                for citation, endpoint in cited
+                {"source": source, "title": title} for source, title in cited
             ],
         })
     if unvalidated:

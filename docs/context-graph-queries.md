@@ -59,6 +59,24 @@ unchanged, so reading the edge record reads the provider's semantics. Permuting
 the node list cannot reverse a relationship, because nothing about the endpoint
 order is derived from node order.
 
+An edge's own `source_file` and `source_location` are that call site — the file
+and, where the extractor recorded one, the line the relationship was written
+at. This adapter retains both, holds them to the same citation rules as a
+node's location, and carries a resolvable one into the packet, so two call
+sites of one relationship are two distinguishable pieces of evidence rather
+than one relationship with the second one's location discarded.
+
+**Upstream limitation.** The pinned release's `--no-cluster` branch itself
+calls `build.dedupe_edges`, keyed by `(source, target, relation)`, before
+`graph.json` is written, so two call sites the extractor found while walking
+the source may already be down to one record by the time this module reads the
+artifact. What this adapter guarantees is narrower and still real: every edge
+record the artifact actually carries — including two that differ only by call
+site, which the supported directed node-link input carries the same way — is
+preserved as a distinct relationship rather than collapsed a second time on the
+way to a packet. It does not establish exhaustive live-provider call-site
+coverage upstream of that dedupe step.
+
 ### The other document: a NetworkX node-link export
 
 A generation built through the clustered path instead carries
@@ -99,11 +117,17 @@ same for both documents:
   `confidence` must be uppercase `EXTRACTED`/`INFERRED`/`AMBIGUOUS`. Lowercase
   is the *packet* vocabulary, and a graph using it was not written by the
   pinned provider.
-- Its locations. `source_location` is `L<line>` or empty; anything else is a
-  location this module could not check against the bound commit, so it refuses
-  rather than traversing past it. One line per node, never a span: neither
-  document records an extent, and claiming one would be this adapter inventing
-  it.
+- Its locations, on a node's `source_location` and an edge's own. Each is
+  `L<line>` or empty; anything else — including a non-ASCII digit shape such as
+  `L²`, which reads as a digit but is not one `int()` can parse — is a location
+  this module could not check against the bound commit, so it refuses rather
+  than traversing past it or letting the shape escape as an unhandled error.
+  One line per node or call site, never a span: neither document records an
+  extent, and claiming one would be this adapter inventing it. A citable path —
+  a node's `source_file` or an edge's own — is held to the same repository-
+  scope rules either way: absolute, parent-traversing, and indexer-private
+  paths are refused, and a record whose path fails that check is not
+  traversable at all.
 
 Three things are deliberately *not* refusals, because a real generation carries
 them and rejecting them would reject every ordinary one:
@@ -164,9 +188,12 @@ product constraint is that default traversals in the evaluated provider returned
 
 Each traversal is symbol-first: a target resolves to the symbols carrying that
 name, and only a target that names no symbol at all is read as a path. Each is
-breadth-first over adjacency sorted by `(kind, target, source)`, so one
-generation and one question produce one answer, every time, and a budget cut
-removes the furthest relationships rather than arbitrary ones.
+breadth-first over adjacency sorted by the full relationship identity described
+below — source, target, the provider's relation word, its normalized kind and
+confidence, and the call site's path and line — so one generation and one
+question produce one answer, every time; permuting the provider's own node or
+edge order changes nothing about it; and a budget cut removes the furthest
+relationships rather than arbitrary ones.
 
 A target resolves in three ordered tiers, and a later tier is consulted only
 when every earlier one is empty:
@@ -216,16 +243,21 @@ hops away, which the graph does not carry.
 What bounds the walk and what bounds the answer are two different things. A node
 is stepped through once, which is what keeps a traversal linear and terminating.
 A *relationship* is reported once per distinct provider edge record — its two
-endpoints and its own wording together — including when both endpoints have
-already been seen. So if `a` calls `b` and `b` calls `a`, both directions are
-reported; relationships among the definitions a path target selects as seeds are
-reported rather than dropped for having no unseen endpoint; a walk that
-reconverges keeps both edges into the node it reached twice; and a self-loop
-reached from both sides of a `symbol` neighbourhood, or an edge the provider
-recorded twice, is one relationship. Nothing about the bound changes: a
-relationship that does not fit the node budget still sets `truncated` and raises
-`provider_has_more`, and the depth limit still applies and still reports what it
-stopped.
+endpoints, its own wording, its normalized confidence, and its own call site
+(path and, where the provider recorded one, line) together — including when
+both endpoints have already been seen. So if `a` calls `b` and `b` calls `a`,
+both directions are reported; relationships among the definitions a path target
+selects as seeds are reported rather than dropped for having no unseen
+endpoint; a walk that reconverges keeps both edges into the node it reached
+twice; a self-loop reached from both sides of a `symbol` neighbourhood, or an
+edge the provider recorded twice at the same call site, is one relationship;
+and the same relationship recorded at two different call sites — two lines, or
+the same line in two different files — is two, because the call site is part
+of the identity rather than a detail dropped on the way to reporting it.
+Nothing about the bound changes: a relationship that does not fit the node
+budget still sets `truncated` and raises `provider_has_more`, and the depth
+limit still applies and still reports what it stopped, including when what it
+stopped on differs from an already-reported relationship only by call site.
 
 ## Citations are validated against the bound commit
 
@@ -247,7 +279,8 @@ drop is reported as `provider_warning`, and a relationship left with no citation
 at all is reported as `document_limit`.
 
 The scope rules are `context_graph`'s, applied twice: at parse time, so a node
-that could never be cited is not traversable either, and again at citation time.
+or an edge's own call site that could never be cited is not traversable either,
+and again at citation time.
 
 ## A dropped relationship is two different facts
 
@@ -296,6 +329,16 @@ Confidence maps the provider's own qualification onto the contract's vocabulary:
 `ambiguous` also raises `unresolved_entities` on the packet, so a recipient sees
 the uncertainty at the packet level and not only per document. A target name
 that matches more than one definition does the same.
+
+A document's citations are both endpoints of the relationship it states plus,
+where the provider recorded a call-site location and it resolves against the
+bound commit, the edge's own — titled `call site: <relation>` so a recipient
+can tell it apart from either endpoint. A relationship whose call site carries
+no location leaves the endpoint citations exactly as before; one whose stated
+call site the bound commit does not carry — an untracked path, or a line past
+the end of the file — is never presented as verified evidence: the citation is
+dropped and the packet still raises `provider_warning`, the same signal an
+unresolved endpoint raises.
 
 Document text is metadata about relationships — names, paths, relationship
 kinds, hop counts — and never indexed content. Everything in it is already in
