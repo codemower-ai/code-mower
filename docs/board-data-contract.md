@@ -496,6 +496,21 @@ never reshuffles the list. Because the first row is what an operator who has
 chosen nothing is shown, the Board opens on work that still needs someone
 rather than on work that is finished.
 
+Every reason the frozen observation contract accepts has its own display state
+and its own explicit place in that ranking, so no supported reason falls
+through to "state not recorded" or sorts as something nobody ranked. The
+blocked band carries `source_unavailable`, `changes_requested`,
+`update_required`, `ci_failed`, `gate_failed`, `provider_failed`,
+`provider_suspended` and `cancelled`; the waiting-on-a-person band carries
+`approval_required`, `user_input_required`, `ready_to_merge`,
+`human_review_required` and `review_requested`; `stale_observation`,
+`review_stale` and `identity_unlinked` are evidence that cannot be trusted; and
+`review_in_progress`, `ci_pending` and `gate_pending` are recorded as in
+flight. A suspended session is reported as suspended rather than as a failure:
+the contract records suspension as the `suspended` lifecycle state and allows
+it only alongside the `failed` phase, so the failure state is read from runs
+that are not suspended and neither claim is ever made on the other's evidence.
+
 Selection is kept by opaque work identity — session, worktree, and work id —
 not by row position, so a refresh that reorders, adds, or drops rows leaves the
 operator's choice where it was. One identity is one row: where the directory
@@ -539,6 +554,18 @@ and if that row is gone too the Board leaves focus where the browser put it
 rather than handing the keyboard to an unrelated control. Activating a detail
 action that opens another view moves focus to that view's tab, because the
 control that was activated is inside the panel the switch has just hidden.
+
+The detail region scrolls independently of the row list at desktop widths, and
+a poll replaces it along with everything else, so the offset an operator
+scrolled to is preserved across the refresh and restored afterwards. It is kept
+against the same opaque work identity the selection is kept against: a refresh
+that changed the evidence of the work item being read returns to the same
+position, a different work item opens at the top of its own evidence rather
+than inheriting someone else's position, and a selection that stops being
+rendered has nothing to restore onto. Restoring is clamped to what the
+replacement can actually scroll, so a refresh that shortens the evidence lands
+at the end of what is now there. Focus and the offset are carried across one
+refresh together, the offset restored last, so neither undoes the other.
 
 Meaningful changes are announced once through a polite live region and listed
 in Timeline. A change is meaningful when a recorded fact differs: stage,

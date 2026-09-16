@@ -3734,6 +3734,32 @@ def _record_with_reasons(fixture: str, reference: str, reasons: list[str]) -> di
     return board_observation.validate(record)
 
 
+def _record_with_suspended_run(reference: str, *, reasons: list[str] | None = None) -> dict:
+    """One accepted record whose run the provider suspended rather than failed.
+
+    The contract allows the `suspended` lifecycle state only alongside the
+    `failed` phase, so this is the shape a producer must emit for a paused
+    session -- and the shape that reading the phase alone would misreport.
+    """
+
+    record = copy.deepcopy(_observation_fixture("failed"))
+    ordered = board_observation.ordered_reasons(reasons or [])
+    record["work"]["id"] = reference
+    record["work"]["reference"] = reference
+    record["work"]["reasons"] = ordered
+    record["work"]["primary"] = board_observation.derive_primary(ordered)
+    for index, run in enumerate(record["work"]["runs"]):
+        run["id"] = f"run{index}-{reference}"
+        run["binding"]["work_id"] = reference
+        run["lifecycle"] = {
+            **run["lifecycle"],
+            "state": "suspended",
+            "reason": "session_suspended",
+            "next_action": "inspect_provider",
+        }
+    return board_observation.validate(record)
+
+
 def _observation_payload(records: list[dict], **overrides: object) -> dict:
     payload: dict[str, object] = {
         "generated_at": "2026-09-12T20:00:00Z",
@@ -3795,7 +3821,14 @@ class FakeElement {
     this.hidden = false;
     this.textContent = "";
     this._html = "";
+    // A freshly created element starts at the top, exactly as a replacement
+    // node does in a browser: this is the reset the page has to undo. The
+    // assignment itself is deliberately dumb -- nothing here clamps it -- so a
+    // restored offset is only ever in range because the page put it in range.
+    this.scrollTop = 0;
   }
+  get scrollHeight() { return (this.doc.metrics[this.id] || {}).scrollHeight || 0; }
+  get clientHeight() { return (this.doc.metrics[this.id] || {}).clientHeight || 0; }
   get innerHTML() { return this._html; }
   set innerHTML(value) {
     this.doc.replaceChildren(this, value);
@@ -3822,6 +3855,10 @@ class FakeElement {
 const document = {
   activeElement: null,
   body: null,
+  // Content geometry the shim cannot compute, declared per element id by the
+  // step that needs it, so a test can shrink the detail region between two
+  // refreshes the way changed evidence really would.
+  metrics: {},
   roots: new Map(),
   owned: new Map(),
   index: new Map(),
@@ -3858,6 +3895,7 @@ const element = (id) => {
 };
 const frames = [];
 for (const step of JSON.parse(process.argv[1])) {
+  if (step.metrics) Object.assign(document.metrics, step.metrics);
   if (step.focus) element(step.focus).focus();
   if (step.click) element(step.on || "worklist").onclick({target: element(step.click)});
   if (step.key) {
@@ -3868,9 +3906,12 @@ for (const step of JSON.parse(process.argv[1])) {
     });
   }
   if (step.select) selectWork(step.select);
+  if (step.scroll) element(step.scroll.id || "workdetail").scrollTop = step.scroll.top;
   if (step.payload) render(step.payload);
+  const detail = document.getElementById("workdetail");
   frames.push({
     active: document.activeElement === document.body ? "" : document.activeElement.id,
+    detail: detail === null ? null : {key: detail.attrs["data-key"] || "", top: detail.scrollTop},
     worklist: document.getElementById("worklist").innerHTML,
     tabs: document.getElementById("tabs").innerHTML,
     hidden: Object.fromEntries(["now", "timeline", "releases", "health"]
@@ -4304,7 +4345,18 @@ class BoardWorkFirstViewTests(TestCase):
         # The detail region is labelled by the row it belongs to, and the row's
         # element id is derived from its opaque identity rather than its index.
         row_id = re.search(r'class="rowbtn" id="([^"]+)"', nodes["worklist"]).group(1)
-        self.assertIn(f'id="workdetail" role="region" aria-labelledby="{row_id}"', nodes["worklist"])
+        detail_key = re.search(r'id="workdetail" data-key="([^"]+)"', nodes["worklist"]).group(1)
+        self.assertIn(
+            f'id="workdetail" data-key="{detail_key}" role="region" aria-labelledby="{row_id}"',
+            nodes["worklist"],
+        )
+        # The identity the detail is rendered for is the selected row's own
+        # opaque key, which is what a refresh matches a preserved scroll
+        # offset against.
+        self.assertEqual(
+            detail_key,
+            re.search(r'class="rowbtn" id="[^"]+" data-key="([^"]+)"', nodes["worklist"]).group(1),
+        )
         self.assertIn("runningwork", row_id)
 
     def test_keyboard_movement_rules_wrap_for_tabs_and_clamp_for_rows(self) -> None:
@@ -4666,6 +4718,542 @@ class BoardWorkFirstViewTests(TestCase):
         )
         self.assertEqual(result["shipped"][0], "merged-unavailable")
         self.assertNotEqual(result["shippedSelected"], result["headlineOnlySelected"])
+
+    # Every reason the frozen B0 contract accepts, with the state the Board
+    # must display for it and the urgency band that state is ranked in. The
+    # vocabulary is not restated here: the test asserts this table covers
+    # exactly ``board_observation.REASON_ROUTES``, so a reason added to the
+    # contract without a Board classification fails rather than silently
+    # falling through to the neutral "state not recorded".
+    REASON_CLASSIFICATION = {
+        "approval_required": ("waiting for approval", "actionable"),
+        "user_input_required": ("waiting for an answer", "actionable"),
+        "source_unavailable": ("source unavailable", "blocked"),
+        "identity_unlinked": ("identity unlinked", "untrusted"),
+        "stale_observation": ("stale observation", "untrusted"),
+        "provider_failed": ("provider run failed", "blocked"),
+        "provider_suspended": ("provider run suspended", "blocked"),
+        "cancelled": ("provider run cancelled", "blocked"),
+        "changes_requested": ("changes requested", "blocked"),
+        "update_required": ("branch update required", "blocked"),
+        "ci_failed": ("CI failed", "blocked"),
+        "gate_failed": ("gate failed", "blocked"),
+        "review_stale": ("stale review", "untrusted"),
+        "review_requested": ("review requested", "actionable"),
+        "review_in_progress": ("review observed running", "in_flight"),
+        "ci_pending": ("CI pending", "in_flight"),
+        "gate_pending": ("gate pending", "in_flight"),
+        "human_review_required": ("ready for human review", "actionable"),
+        "ready_to_merge": ("ready to merge", "actionable"),
+    }
+
+    def test_every_reason_the_contract_accepts_is_displayed_and_ranked(self) -> None:
+        # The vocabulary comes from the frozen contract, not from a subset
+        # chosen by hand.
+        reasons = sorted(board_observation.REASON_ROUTES)
+        self.assertEqual(set(self.REASON_CLASSIFICATION), set(reasons))
+
+        result = _eval_board_view(
+            "(() => {"
+            " const [reasons] = ARGS;"
+            " const band = new Map(ROW_URGENCY_BANDS.flatMap("
+            "   b => b.labels.map(label => [label, b.name])));"
+            " const demanding = new Map(ROW_URGENCY_BANDS.flatMap("
+            "   b => b.labels.map(label => [label, b.demanding])));"
+            " return {"
+            "  neutral: workStates({}).map(state => state.label),"
+            "  unranked: UNRANKED_ROW_URGENCY,"
+            "  reasons: Object.fromEntries(reasons.map(reason => {"
+            "    const states = workStates({reasons: [reason]});"
+            "    const labels = states.map(state => state.label);"
+            "    return [reason, {"
+            "      labels,"
+            "      classes: states.map(state => state.class),"
+            "      band: band.get(labels[0]) ?? null,"
+            "      declaredDemanding: demanding.get(labels[0]) ?? null,"
+            "      urgency: stateUrgency(labels[0]),"
+            "      demanding: isDemandingState(labels[0])"
+            "    }];"
+            "  }))"
+            " };"
+            "})()",
+            reasons,
+        )
+
+        # The neutral classification exists and is reachable: a record that
+        # states nothing reads as nothing.
+        self.assertEqual(result["neutral"], ["state not recorded"])
+        for reason in reasons:
+            with self.subTest(reason=reason):
+                label, band = self.REASON_CLASSIFICATION[reason]
+                observed = result["reasons"][reason]
+                # One reason on its own produces exactly the one state it
+                # names -- never the neutral fallback, and never a second
+                # state the record did not record.
+                self.assertEqual(observed["labels"], [label])
+                self.assertIn(observed["classes"][0], {"ok", "warn", "bad", "muted"})
+                # And that state is explicitly ranked, in the band this table
+                # declares, rather than sorting as something nobody ranked.
+                self.assertEqual(observed["band"], band)
+                self.assertLess(observed["urgency"], result["unranked"])
+                self.assertEqual(observed["demanding"], observed["declaredDemanding"])
+
+        # Every reason whose contract route names an actor who has to act on a
+        # blocked change is ranked as demanding, so none of them can sort below
+        # work that is merely progressing.
+        for reason in reasons:
+            band = self.REASON_CLASSIFICATION[reason][1]
+            self.assertEqual(
+                result["reasons"][reason]["demanding"], band in {"blocked", "actionable"}, reason
+            )
+
+        # The rest of the closed vocabulary the same routes carry is covered
+        # too, and again against the contract rather than a hand-picked list:
+        # every actor and every next action a route can name has its own
+        # phrasing, so no route can be displayed as an unlabelled token.
+        labels = _eval_board_view("[Object.keys(ACTION_LABELS), Object.keys(ACTOR_LABELS)]")
+        self.assertEqual(set(labels[0]), set(board_observation.ACTIONS))
+        self.assertEqual(set(labels[1]), set(board_observation.ACTORS))
+
+        # The two reasons this pass added are ranked with the blockers, and
+        # both outrank ordinary progressing, CI and ready-to-merge work.
+        ranking = {
+            reason: result["reasons"][reason]["urgency"]
+            for reason in ("provider_suspended", "update_required")
+        }
+        for ordinary in ("ci_pending", "gate_pending", "review_in_progress", "ready_to_merge"):
+            for reason, urgency in ranking.items():
+                self.assertLess(urgency, result["reasons"][ordinary]["urgency"], reason)
+
+    def test_a_suspended_session_is_never_reported_as_a_failed_one(self) -> None:
+        # The contract records a suspended session as the `suspended`
+        # lifecycle state and only ever alongside the `failed` phase, so
+        # reading the phase alone reports a paused session as a failure.
+        suspended = _eval_board_view(
+            "workStates(ARGS[0]).map(state => state.label)",
+            {"runs": [{"phase": "failed", "lifecycle": {"state": "suspended"}}]},
+        )
+        self.assertEqual(suspended, ["provider run suspended"])
+        # A run that really failed is still reported as one.
+        failed = _eval_board_view(
+            "workStates(ARGS[0]).map(state => state.label)",
+            {"runs": [{"phase": "failed", "lifecycle": {"state": "failed"}}]},
+        )
+        self.assertEqual(failed, ["provider run failed"])
+        # A run with no lifecycle recorded at all is read from its phase.
+        bare = _eval_board_view(
+            "workStates(ARGS[0]).map(state => state.label)", {"runs": [{"phase": "failed"}]}
+        )
+        self.assertEqual(bare, ["provider run failed"])
+        # One work item with both records both, and reads as the failure --
+        # which is also the precedence the contract's own route table gives
+        # `provider_failed` over `provider_suspended`.
+        both = _eval_board_view(
+            "workStates(ARGS[0]).map(state => state.label)",
+            {
+                "runs": [
+                    {"phase": "failed", "lifecycle": {"state": "failed"}},
+                    {"phase": "failed", "lifecycle": {"state": "suspended"}},
+                ]
+            },
+        )
+        self.assertEqual(both, ["provider run failed", "provider run suspended"])
+        self.assertLess(
+            board_observation.REASON_ROUTES["provider_failed"][0],
+            board_observation.REASON_ROUTES["provider_suspended"][0],
+        )
+
+        # Proved once more through a record the frozen contract accepts and
+        # the page the browser is served.
+        record = _record_with_suspended_run("suspended-session")
+        worklist = _render_board_sequence(
+            [{"payload": _observation_payload([record])}]
+        )[0]["worklist"]
+        self.assertIn("provider run suspended", worklist)
+        self.assertNotIn("provider run failed", worklist)
+        # And when the reason is recorded alongside the suspended lifecycle,
+        # the row reports the contract's own route for it rather than the
+        # failure route.
+        routed = _record_with_suspended_run("suspended-routed", reasons=["provider_suspended"])
+        rows = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => [row.headline, row.action_label, row.actor_label])",
+            _observation_payload([routed]),
+            int(OBSERVATION_NOW.timestamp() * 1000),
+        )
+        self.assertEqual(rows, [["provider run suspended", "inspect the provider", "orchestrator"]])
+
+    # The two reasons that had no state rules at all, stated on their own and
+    # alongside the states they used to be invisible next to.
+    BLOCKER_MATRIX = (
+        ("ready", "a-suspended-ready", ["ready_to_merge", "provider_suspended"],
+         "ready to merge", "provider run suspended"),
+        ("ready", "b-update-ready", ["ready_to_merge", "update_required"],
+         "ready to merge", "branch update required"),
+        ("merged", "c-suspended-merged", ["provider_suspended"],
+         "merged", "provider run suspended"),
+        ("merged", "d-update-merged", ["update_required"],
+         "merged", "branch update required"),
+        ("observed_running", "e-suspended-running", ["provider_suspended"],
+         "provider run suspended", "provider run suspended"),
+        ("observed_running", "f-update-running", ["update_required"],
+         "branch update required", "branch update required"),
+        # Ordinary work, which every row above has to outrank.
+        ("observed_running", "g-running", [], "provider run observed", "provider run observed"),
+        ("ready", "h-ci-pending", ["ci_pending"], "ready to merge", "ready to merge"),
+        ("ready", "i-ready", ["ready_to_merge"], "ready to merge", "ready to merge"),
+    )
+
+    def test_the_two_unranked_blockers_outrank_ordinary_work_in_every_state_order(self) -> None:
+        records = [
+            _record_with_reasons(fixture, reference, list(reasons))
+            for fixture, reference, reasons, _, _ in self.BLOCKER_MATRIX
+        ]
+        # The state order inside one record must not matter either, so every
+        # permutation of each recorded state set is ranked.
+        permutations = [
+            ["ready to merge", "provider run suspended"],
+            ["ready to merge", "branch update required"],
+            ["merged", "provider run suspended"],
+            ["merged", "branch update required", "review passed"],
+            ["provider run suspended", "branch update required", "CI pending"],
+        ]
+        permuted = [
+            {"case": index, "states": list(order)}
+            for index, labels in enumerate(permutations)
+            for order in itertools.permutations(labels)
+        ]
+        payloads = [
+            _observation_payload(records),
+            _observation_payload(list(reversed(records))),
+            _observation_payload(records[4:] + records[:4]),
+        ]
+        result = _eval_board_view(
+            "(() => {"
+            " const [payloads, nowMs, permuted] = ARGS;"
+            " return {"
+            "  ranking: Object.fromEntries("
+            "    [...ROW_URGENCY_ORDER, ...TERMINAL_ROW_HEADLINES].map(l => [l, stateUrgency(l)])),"
+            "  boards: payloads.map(payload => {"
+            "    const rows = workRows(payload, nowMs);"
+            "    return {"
+            "      references: rows.map(row => row.reference),"
+            "      headlines: rows.map(row => row.headline),"
+            "      urgency: rows.map(row => rowUrgency(row)),"
+            "      selected: resolveSelection(rows, null),"
+            "      keys: rows.map(row => row.key)"
+            "    };"
+            "  }),"
+            "  permuted: permuted.map(item =>"
+            "    rowUrgency({states: item.states.map(label => ({label}))}))"
+            " };"
+            "})()",
+            payloads,
+            int(OBSERVATION_NOW.timestamp() * 1000),
+            permuted,
+        )
+
+        ranking = result["ranking"]
+        expected = {
+            reference: (ranking[ordering], headline)
+            for _, reference, _, headline, ordering in self.BLOCKER_MATRIX
+        }
+        blockers = [reference for reference in expected if reference[0] in "abcdef"]
+        ordinary = [reference for reference in expected if reference[0] in "ghi"]
+        for index, board_rows in enumerate(result["boards"]):
+            with self.subTest(input_order=index):
+                urgency = dict(zip(board_rows["references"], board_rows["urgency"], strict=True))
+                headlines = dict(
+                    zip(board_rows["references"], board_rows["headlines"], strict=True)
+                )
+                for reference, (rank, headline) in expected.items():
+                    # Ordering reports what the row owes; the headline keeps
+                    # reporting the truth that describes it best. The two
+                    # responsibilities stay distinct.
+                    self.assertEqual(urgency[reference], rank, reference)
+                    self.assertEqual(headlines[reference], headline, reference)
+                self.assertEqual(board_rows["urgency"], sorted(board_rows["urgency"]))
+                # Every row carrying one of the two blockers sorts above every
+                # ordinary progressing, CI-pending or ready-to-merge row.
+                self.assertLess(
+                    max(urgency[reference] for reference in blockers),
+                    min(urgency[reference] for reference in ordinary),
+                )
+                # An operator who has chosen nothing opens on a blocker.
+                self.assertEqual(board_rows["selected"], board_rows["keys"][0])
+                # "branch update required" is the most urgent state on this
+                # board, so its row is the one the Board opens on.
+                self.assertEqual(board_rows["references"][0], "b-update-ready")
+
+        # The ranking of one recorded state set never depends on the order the
+        # states were recorded in.
+        by_case: dict[int, set[int]] = {}
+        for item, value in zip(permuted, result["permuted"], strict=True):
+            by_case.setdefault(item["case"], set()).add(value)
+        self.assertEqual(
+            [sorted(values) for _, values in sorted(by_case.items())],
+            [
+                [ranking["provider run suspended"]],
+                [ranking["branch update required"]],
+                [ranking["provider run suspended"]],
+                [ranking["branch update required"]],
+                [ranking["branch update required"]],
+            ],
+        )
+
+    def test_the_blocked_rows_are_selected_by_the_rendered_page(self) -> None:
+        # The same ranking, through the page the browser is served rather than
+        # through the model.
+        records = [
+            _record_with_reasons(fixture, reference, list(reasons))
+            for fixture, reference, reasons, _, _ in self.BLOCKER_MATRIX
+        ]
+        worklist = _render_board_sequence([{"payload": _observation_payload(records)}])[0][
+            "worklist"
+        ]
+        references = re.findall(r'<span class="ref">([^<]+)</span>', worklist)
+        headlines = re.findall(
+            r'aria-hidden="true">[^<]*</span> ([^<]+)</span><span class="pill">stage', worklist
+        )
+        # The six rows carrying a blocker come first, in any order among
+        # themselves, and the three ordinary rows follow.
+        self.assertEqual(
+            sorted(references[:6]), sorted(r for r in references if r[0] in "abcdef")
+        )
+        self.assertEqual(sorted(references[6:]), sorted(r for r in references if r[0] in "ghi"))
+        self.assertTrue(_selected_key(worklist).endswith("b-update-ready"))
+        self.assertEqual(
+            dict(zip(references, headlines, strict=True)),
+            {reference: headline for _, reference, _, headline, _ in self.BLOCKER_MATRIX},
+        )
+        # Both new states are shown with a text cue as well as a colour, like
+        # every other state the Board reports.
+        for label in ("provider run suspended", "branch update required"):
+            self.assertIn(f'aria-hidden="true">~</span> {label}</span>', worklist)
+
+    # Room for the detail region to scroll: 900px of evidence in a 300px
+    # panel, so 600px of travel.
+    DETAIL_METRICS = {"workdetail": {"scrollHeight": 900, "clientHeight": 300}}
+
+    def _scroll_case(self) -> tuple[dict, dict, str]:
+        """One payload, the same payload with changed evidence, and a key."""
+
+        first = _record_with_reasons("ready", "alpha", ["ready_to_merge"])
+        second = _record_with_reasons("observed_running", "beta", [])
+        changed = _record_with_reasons("ready", "alpha", ["ready_to_merge", "ci_pending"])
+        payload = _observation_payload([first, second])
+        refreshed = _observation_payload([changed, second])
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        key = next(item for item in _work_keys(worklist) if item.endswith("alpha"))
+        return payload, refreshed, key
+
+    def test_the_selected_detail_keeps_its_reading_position_across_a_refresh(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        steps = [
+            {"payload": payload},
+            {"select": key, "metrics": self.DETAIL_METRICS},
+            {"scroll": {"top": 240}},
+        ]
+        # A poll that observed nothing new must not move the panel at all.
+        unchanged = _render_board_focus([*steps, {"payload": payload}])
+        self.assertEqual(unchanged[-2]["detail"], {"key": key, "top": 240})
+        self.assertEqual(unchanged[-1]["detail"], {"key": key, "top": 240})
+
+        # Neither must a poll that changed the evidence of the very work item
+        # being read: the identity survived, so the reading position does too.
+        changed = _render_board_focus([*steps, {"payload": refreshed}])
+        self.assertEqual(changed[-1]["detail"], {"key": key, "top": 240})
+        self.assertIn("CI pending", changed[-1]["worklist"])
+        self.assertNotIn("CI pending", unchanged[-1]["worklist"])
+
+        # Without the offset being carried across, the replacement starts at
+        # the top -- which is the reset this test exists to catch.
+        self.assertEqual(
+            _render_board_focus(
+                [{"payload": payload}, {"select": key, "metrics": self.DETAIL_METRICS}]
+            )[-1]["detail"],
+            {"key": key, "top": 0},
+        )
+
+    def test_a_refresh_that_shortens_the_detail_clamps_the_restored_position(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        opened = [
+            {"payload": payload},
+            {"select": key, "metrics": self.DETAIL_METRICS},
+            {"scroll": {"top": 560}},
+        ]
+        # Evidence that shrinks to 400px in the same 300px panel can only
+        # scroll 100px, so the restored position is the end of what is now
+        # there rather than an offset that no longer exists.
+        shrunk = _render_board_focus(
+            [
+                *opened,
+                {
+                    "metrics": {"workdetail": {"scrollHeight": 400, "clientHeight": 300}},
+                    "payload": refreshed,
+                },
+            ]
+        )
+        self.assertEqual(shrunk[-2]["detail"], {"key": key, "top": 560})
+        self.assertEqual(shrunk[-1]["detail"], {"key": key, "top": 100})
+
+        # Evidence that no longer overflows at all cannot scroll, and the
+        # panel is left at the top rather than at a negative offset.
+        flattened = _render_board_focus(
+            [
+                *opened,
+                {
+                    "metrics": {"workdetail": {"scrollHeight": 200, "clientHeight": 300}},
+                    "payload": refreshed,
+                },
+            ]
+        )
+        self.assertEqual(flattened[-1]["detail"], {"key": key, "top": 0})
+
+    def test_a_scroll_position_is_never_inherited_by_a_different_work_item(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        other = next(item for item in _work_keys(worklist) if item != key)
+        opened = [
+            {"payload": payload},
+            {"select": key, "metrics": self.DETAIL_METRICS},
+            {"scroll": {"top": 240}},
+        ]
+
+        # Choosing another work item opens its evidence at the top. Its
+        # detail is a different identity, so it inherits nothing.
+        moved = _render_board_focus([*opened, {"select": other}])
+        self.assertEqual(moved[-1]["detail"], {"key": other, "top": 0})
+        # And coming back does not resurrect the old position either: the
+        # offset belongs to the panel that was on screen, not to a history.
+        returned = _render_board_focus([*opened, {"select": other}, {"select": key}])
+        self.assertEqual(returned[-1]["detail"], {"key": key, "top": 0})
+
+        # A refresh that drops the selected record entirely selects another
+        # row, which also starts at the top.
+        without = _observation_payload([_record_with_reasons("observed_running", "beta", [])])
+        dropped = _render_board_focus([*opened, {"payload": without}])
+        self.assertEqual(dropped[-1]["detail"]["top"], 0)
+        self.assertNotEqual(dropped[-1]["detail"]["key"], key)
+
+        # A refresh with nothing to show at all removes the detail region.
+        # Restoring has nowhere to land and does not fail trying.
+        emptied = _render_board_focus([*opened, {"payload": _observation_payload([])}])
+        self.assertIsNone(emptied[-1]["detail"])
+        self.assertIn("No local Board observation", emptied[-1]["worklist"])
+
+    def test_keyboard_focus_and_the_reading_position_survive_one_refresh_together(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        row_id = _row_element_id(worklist, key)
+        opened = _render_board_focus(
+            [{"payload": payload}, {"select": key, "metrics": self.DETAIL_METRICS}]
+        )[-1]["worklist"]
+        action = re.search(r'id="(workaction-inspect-[^"]+)"', opened).group(1)
+
+        # The keyboard is on an action inside the panel and the panel is
+        # scrolled. One refresh has to carry both.
+        both = _render_board_focus(
+            [
+                {"payload": payload},
+                {"select": key, "metrics": self.DETAIL_METRICS},
+                {"focus": action},
+                {"scroll": {"top": 240}},
+                {"payload": refreshed},
+            ]
+        )
+        self.assertEqual(both[-1]["active"], action)
+        self.assertEqual(both[-1]["detail"], {"key": key, "top": 240})
+
+        # When the action the keyboard was on stops being offered, focus falls
+        # back to the row it belonged to -- and the reading position is still
+        # kept, because the identity being read did not change.
+        self.assertEqual(
+            _render_board_focus(
+                [
+                    {"payload": payload},
+                    {"select": key, "metrics": self.DETAIL_METRICS},
+                    {"focus": row_id},
+                    {"scroll": {"top": 240}},
+                    {"payload": refreshed},
+                ]
+            )[-1],
+            {**both[-1], "active": row_id, "worklist": both[-1]["worklist"]},
+        )
+
+    # Every piece of ephemeral UI state that lives inside the subtree
+    # `put("worklist", ...)` replaces on every poll: state the operator
+    # created that the payload does not contain and a re-render therefore
+    # cannot reconstruct. Each is named with where the page keeps it and what
+    # is proved about it, so nothing in this subtree is handled by accident.
+    #
+    #   selection             kept outside the subtree, in `selectedWorkKey`,
+    #                         as the opaque identity, so a refresh that
+    #                         reorders, adds or drops rows keeps the choice;
+    #   keyboard focus        read off the element about to be destroyed and
+    #                         restored by id, with the row named as the
+    #                         fallback when the control is not offered again;
+    #   detail scroll offset  read off the detail region about to be destroyed
+    #                         and restored against the identity it was
+    #                         rendered for, clamped to what the replacement
+    #                         can actually scroll.
+
+    def test_every_ephemeral_state_the_work_list_replaces_is_accounted_for(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        opened = _render_board_focus(
+            [{"payload": payload}, {"select": key, "metrics": self.DETAIL_METRICS}]
+        )[-1]["worklist"]
+
+        # The subtree holds nothing that carries state of its own beyond the
+        # three named above: no field with a value, no disclosure with an open
+        # state, no editable region. Anything the payload does not describe is
+        # therefore one of the three.
+        for tag in ("<input", "<textarea", "<select", "<details", "<summary", "contenteditable"):
+            self.assertNotIn(tag, opened)
+
+        # And exactly one element inside it scrolls independently of the page,
+        # which is the one the offset is kept for. The stylesheet is read for
+        # this rather than assumed.
+        scrollers = sorted(
+            {
+                selector
+                for _, selector, declarations in _css_rules(_board_css())
+                if declarations.get("overflow") in {"auto", "scroll"}
+            }
+        )
+        self.assertEqual(scrollers, [".workdetail"])
+        self.assertEqual(opened.count('class="workdetail"'), 1)
+
+        # Each of the three, through one lifecycle: preserved when the
+        # identity survives, and reset deliberately when it does not.
+        row_id = _row_element_id(opened, key)
+        survived = _render_board_focus(
+            [
+                {"payload": payload},
+                {"select": key, "metrics": self.DETAIL_METRICS},
+                {"focus": row_id},
+                {"scroll": {"top": 240}},
+                {"payload": refreshed},
+            ]
+        )[-1]
+        self.assertEqual(_selected_key(survived["worklist"]), key)
+        self.assertEqual(survived["active"], row_id)
+        self.assertEqual(survived["detail"], {"key": key, "top": 240})
+
+        gone = _render_board_focus(
+            [
+                {"payload": payload},
+                {"select": key, "metrics": self.DETAIL_METRICS},
+                {"focus": row_id},
+                {"scroll": {"top": 240}},
+                {"payload": _observation_payload([_record_with_reasons("observed_running", "beta", [])])},
+            ]
+        )[-1]
+        self.assertNotEqual(_selected_key(gone["worklist"]), key)
+        # The row the keyboard was on is gone, so focus is left where the
+        # browser put it rather than moved to an unrelated control, and the
+        # reading position starts again with the work item now shown.
+        self.assertEqual(gone["active"], "")
+        self.assertEqual(gone["detail"]["top"], 0)
 
     def test_detail_actions_keep_keyboard_focus_across_a_refresh(self) -> None:
         payload = _observation_payload([_observation_fixture("ready")])
@@ -5385,7 +5973,14 @@ class BoardWorkFirstViewTests(TestCase):
         selected_key = _selected_key(worklist)
         selected_id = _row_element_id(worklist, selected_key)
         self.assertEqual(worklist.count('id="workdetail"'), 1)
-        self.assertIn(f'id="workdetail" role="region" aria-labelledby="{selected_id}"', worklist)
+        # The detail region also carries the opaque identity it is rendered
+        # for, which is what a refresh matches its preserved scroll offset
+        # against, so two keys that differ only in punctuation cannot inherit
+        # one another's reading position either.
+        self.assertIn(
+            f'id="workdetail" data-key="{selected_key}" role="region" aria-labelledby="{selected_id}"',
+            worklist,
+        )
         self.assertEqual(worklist.count('aria-expanded="true"'), 1)
 
         # Selecting its neighbour moves the detail, and the label with it.
@@ -5395,7 +5990,10 @@ class BoardWorkFirstViewTests(TestCase):
         self.assertNotEqual(other_id, selected_id)
         self.assertEqual(_selected_key(moved), other_key)
         self.assertEqual(moved.count('id="workdetail"'), 1)
-        self.assertIn(f'id="workdetail" role="region" aria-labelledby="{other_id}"', moved)
+        self.assertIn(
+            f'id="workdetail" data-key="{other_key}" role="region" aria-labelledby="{other_id}"',
+            moved,
+        )
         # The detail's actions belong to the work that is selected, so no
         # action id is shared between the two rows' detail regions.
         first_actions = set(re.findall(r'id="(workaction-[^"]+)"', worklist))

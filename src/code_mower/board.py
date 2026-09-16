@@ -2010,36 +2010,50 @@ _BOARD_HTML = """<!doctype html>
       {rank: 0, label: "merged", cls: "ok", when: (w) => w.stage === "merged" || w.merge === "merged"},
       {rank: 1, label: "ready to merge", cls: "ok", when: (w) => w.stage === "ready_to_merge" || w.reasons.includes("ready_to_merge")},
       {rank: 2, label: "changes requested", cls: "bad", when: (w) => w.stage === "changes_requested" || w.reasons.includes("changes_requested") || w.review === "blocked"},
-      {rank: 3, label: "CI failed", cls: "bad", when: (w) => w.ci === "failed" || w.reasons.includes("ci_failed")},
-      {rank: 4, label: "gate failed", cls: "bad", when: (w) => w.gate === "failed" || w.reasons.includes("gate_failed")},
-      {rank: 5, label: "provider run failed", cls: "bad", when: (w) => w.phases.includes("failed") || w.reasons.includes("provider_failed")},
-      {rank: 6, label: "provider run cancelled", cls: "warn", when: (w) => w.phases.includes("cancelled") || w.reasons.includes("cancelled")},
-      {rank: 7, label: "source unavailable", cls: "bad", when: (w) => w.reasons.includes("source_unavailable")},
-      {rank: 8, label: "waiting for approval", cls: "warn", when: (w) => w.reasons.includes("approval_required") || w.phases.includes("waiting_for_approval")},
-      {rank: 9, label: "waiting for an answer", cls: "warn", when: (w) => w.reasons.includes("user_input_required") || w.phases.includes("waiting_for_user")},
-      {rank: 10, label: "stale observation", cls: "warn", when: (w) => w.reasons.includes("stale_observation")},
-      {rank: 11, label: "stale review", cls: "warn", when: (w) => w.review === "stale" || w.reasons.includes("review_stale")},
-      {rank: 12, label: "ready for human review", cls: "warn", when: (w) => w.stage === "ready_for_human_review" || w.reasons.includes("human_review_required")},
-      {rank: 13, label: "review observed running", cls: "warn", when: (w) => w.review === "running" || w.reasons.includes("review_in_progress")},
-      {rank: 14, label: "implementation complete", cls: "ok", when: (w) => w.phases.includes("implementation_complete")},
+      // The branch cannot merge until it is updated. Nothing has failed, so
+      // this is not reported as a failure, but the builder still owes the
+      // update before anything else about this work can move.
+      {rank: 3, label: "branch update required", cls: "warn", when: (w) => w.reasons.includes("update_required")},
+      {rank: 4, label: "CI failed", cls: "bad", when: (w) => w.ci === "failed" || w.reasons.includes("ci_failed")},
+      {rank: 5, label: "gate failed", cls: "bad", when: (w) => w.gate === "failed" || w.reasons.includes("gate_failed")},
+      {rank: 6, label: "provider run failed", cls: "bad", when: (w) => w.failed || w.reasons.includes("provider_failed")},
+      // The contract records a suspended session as the `suspended` lifecycle
+      // state, and only ever alongside the `failed` phase -- so reading the
+      // phase alone would report a session the provider paused as a session
+      // that failed. Suspension is reported as itself, and the failure rule
+      // above is narrowed to runs that are not suspended, so neither claim is
+      // ever made on the other's evidence.
+      {rank: 7, label: "provider run suspended", cls: "warn", when: (w) => w.suspended || w.reasons.includes("provider_suspended")},
+      {rank: 8, label: "provider run cancelled", cls: "warn", when: (w) => w.phases.includes("cancelled") || w.reasons.includes("cancelled")},
+      {rank: 9, label: "source unavailable", cls: "bad", when: (w) => w.reasons.includes("source_unavailable")},
+      {rank: 10, label: "waiting for approval", cls: "warn", when: (w) => w.reasons.includes("approval_required") || w.phases.includes("waiting_for_approval")},
+      {rank: 11, label: "waiting for an answer", cls: "warn", when: (w) => w.reasons.includes("user_input_required") || w.phases.includes("waiting_for_user")},
+      {rank: 12, label: "stale observation", cls: "warn", when: (w) => w.reasons.includes("stale_observation")},
+      {rank: 13, label: "stale review", cls: "warn", when: (w) => w.review === "stale" || w.reasons.includes("review_stale")},
+      {rank: 14, label: "ready for human review", cls: "warn", when: (w) => w.stage === "ready_for_human_review" || w.reasons.includes("human_review_required")},
+      {rank: 15, label: "review observed running", cls: "warn", when: (w) => w.review === "running" || w.reasons.includes("review_in_progress")},
+      {rank: 16, label: "implementation complete", cls: "ok", when: (w) => w.phases.includes("implementation_complete")},
       // A requested review that already has a verdict is no longer waiting on
       // one, so the request stops being reported as an outstanding state.
-      {rank: 15, label: "review requested", cls: "warn", when: (w) => (w.request === "requested" || w.reasons.includes("review_requested")) && !["pass", "blocked", "stale", "running"].includes(w.review)},
-      {rank: 16, label: "CI pending", cls: "warn", when: (w) => w.ci === "pending" || w.reasons.includes("ci_pending")},
-      {rank: 17, label: "gate pending", cls: "warn", when: (w) => w.gate === "pending" || w.reasons.includes("gate_pending")},
-      {rank: 18, label: "review passed", cls: "ok", when: (w) => w.review === "pass"},
-      {rank: 19, label: "provider reported progress", cls: "warn", when: (w) => w.phases.includes("provider_progress")},
-      {rank: 20, label: "provider run observed", cls: "warn", when: (w) => w.phases.includes("observed_running")},
-      {rank: 21, label: "dispatched", cls: "warn", when: (w) => w.phases.includes("dispatched")},
-      {rank: 22, label: "assigned", cls: "muted", when: (w) => w.phases.includes("assigned") || w.assignment === "assigned"},
-      {rank: 23, label: "identity unlinked", cls: "warn", when: (w) => w.reasons.includes("identity_unlinked")}
+      {rank: 17, label: "review requested", cls: "warn", when: (w) => (w.request === "requested" || w.reasons.includes("review_requested")) && !["pass", "blocked", "stale", "running"].includes(w.review)},
+      {rank: 18, label: "CI pending", cls: "warn", when: (w) => w.ci === "pending" || w.reasons.includes("ci_pending")},
+      {rank: 19, label: "gate pending", cls: "warn", when: (w) => w.gate === "pending" || w.reasons.includes("gate_pending")},
+      {rank: 20, label: "review passed", cls: "ok", when: (w) => w.review === "pass"},
+      {rank: 21, label: "provider reported progress", cls: "warn", when: (w) => w.phases.includes("provider_progress")},
+      {rank: 22, label: "provider run observed", cls: "warn", when: (w) => w.phases.includes("observed_running")},
+      {rank: 23, label: "dispatched", cls: "warn", when: (w) => w.phases.includes("dispatched")},
+      {rank: 24, label: "assigned", cls: "muted", when: (w) => w.phases.includes("assigned") || w.assignment === "assigned"},
+      {rank: 25, label: "identity unlinked", cls: "warn", when: (w) => w.reasons.includes("identity_unlinked")}
     ];
     function workStates(work) {
       const evidence = work?.evidence || {};
+      const runs = arrayOf(work?.runs);
       const facts = {
         stage: text(work?.stage),
         reasons: arrayOf(work?.reasons).map(text),
-        phases: arrayOf(work?.runs).map(run => text(run?.phase)),
+        phases: runs.map(run => text(run?.phase)),
+        suspended: runs.some(run => text(run?.lifecycle?.state) === "suspended"),
+        failed: runs.some(run => text(run?.phase) === "failed" && text(run?.lifecycle?.state) !== "suspended"),
         review: text(evidence.review?.state),
         request: text(evidence.review_request?.state),
         ci: text(evidence.ci?.state),
@@ -2369,9 +2383,17 @@ _BOARD_HTML = """<!doctype html>
       {name: "blocked", demanding: true, labels: [
         "source unavailable",
         "changes requested",
+        // A branch that has to be updated and a session the provider paused
+        // are blockers like the ones they sit beside: nothing about the work
+        // moves until someone acts, so neither may sort below work that is
+        // merely progressing or waiting on checks. Each is placed next to the
+        // state it is closest to -- the builder's own rework, and the other
+        // two provider-run outcomes -- rather than at the band's edge.
+        "branch update required",
         "CI failed",
         "gate failed",
         "provider run failed",
+        "provider run suspended",
         "provider run cancelled"
       ]},
       // Actionable: a named person is the only thing this is waiting on.
@@ -2795,6 +2817,37 @@ _BOARD_HTML = """<!doctype html>
       const owner = document.getElementById(fallbackId);
       if (owner && typeof owner.focus === "function") owner.focus({preventScroll: true});
     }
+    // The other piece of ephemeral state a refresh destroys. On the desktop
+    // layout the detail region scrolls on its own, and every poll replaces it
+    // -- so an operator reading down the evidence of one work item was sent
+    // back to the top of the panel on the next poll, including the polls that
+    // observed nothing new at all.
+    //
+    // The offset is kept against the same opaque work identity the selection
+    // is kept against, never against a row position, so it is restored only
+    // while the operator is still reading the same work item. A different
+    // identity starts at the top of its own evidence rather than inheriting
+    // someone else's position, and a selection that stops being rendered has
+    // nothing to restore onto.
+    const detailKey = (detail) => (detail && detail.dataset ? text(detail.dataset.key) : "");
+    function detailScrollState() {
+      const detail = document.getElementById("workdetail");
+      if (!detail) return null;
+      const top = Number(detail.scrollTop);
+      return {key: detailKey(detail), top: Number.isFinite(top) && top > 0 ? top : 0};
+    }
+    function withDetailScrollPreserved(update) {
+      const before = detailScrollState();
+      update();
+      if (before === null || !before.top) return;
+      const detail = document.getElementById("workdetail");
+      if (detail === null || detailKey(detail) !== before.key) return;
+      // Restoring is clamped to what the replacement can actually scroll, so a
+      // refresh that shortens the evidence lands at the end of what is now
+      // there instead of at an offset that no longer exists.
+      const overflow = Number(detail.scrollHeight) - Number(detail.clientHeight);
+      detail.scrollTop = Math.min(before.top, Number.isFinite(overflow) && overflow > 0 ? overflow : 0);
+    }
     const cuePill = (label, cls) => `<span class="pill ${esc(cls || "muted")}"><span class="cue" aria-hidden="true">${esc(cueFor(cls))}</span> ${esc(label)}</span>`;
     const stateCue = (state) => cuePill(state.label, state.class);
     function tabsHtml() {
@@ -2856,7 +2909,7 @@ _BOARD_HTML = """<!doctype html>
       const reasons = row.reasons.length
         ? `<div class="line">${row.reasons.map(reason => pill(reason.replace(/_/g, " "))).join("")}</div>`
         : "";
-      return `<div class="workdetail" id="workdetail" role="region" aria-labelledby="${esc(labelId)}">
+      return `<div class="workdetail" id="workdetail" data-key="${esc(row.key)}" role="region" aria-labelledby="${esc(labelId)}">
         <h3>${esc(row.reference)}</h3>
         <div class="line">${row.states.map(stateCue).join("")}</div>
         <div>next: <b>${esc(row.action_label)}</b> <span class="muted">responsible: ${esc(row.actor_label)}</span></div>
@@ -2885,9 +2938,14 @@ _BOARD_HTML = """<!doctype html>
     function renderWork() {
       const rows = workState.rows;
       const activeKey = resolveSelection(rows, selectedWorkKey);
-      withFocusPreserved(() => put("worklist", rows.length
+      // One refresh has to carry both pieces of ephemeral state at once, so
+      // they are composed rather than alternatives. The scroll offset is
+      // restored after focus is: focus restoration asks not to scroll, and
+      // restoring the offset last means a browser that ignores that request
+      // still cannot leave the panel somewhere the operator did not put it.
+      withDetailScrollPreserved(() => withFocusPreserved(() => put("worklist", rows.length
         ? `<ul class="workrows" role="list" aria-labelledby="work-heading">${rows.map(row => workRowHtml(row, row.key === activeKey, workState.prs)).join("")}</ul>`
-        : empty(workState.message)));
+        : empty(workState.message))));
     }
     function selectWork(key) {
       if (!key) return;
