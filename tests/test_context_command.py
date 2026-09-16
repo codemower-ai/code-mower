@@ -88,6 +88,15 @@ class ContextCommandTests(unittest.TestCase):
         self.assertEqual(text, texts[0])
         self.assertEqual(self.fixture.backend.searches, 1)
 
+    def test_attach_succeeds_for_organization_evidence_from_a_non_git_directory(self):
+        """Organization evidence never depends on a code revision (codex:65a17212478a56416b1c)."""
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        code, out, err, _ = self.invoke(['attach', '--connection', 'example', '--host', 'codex',
+            '--request-stdin', '--repo-path', outside.name], self.attach_spec)
+        self.assertEqual(code, 0, err)
+        self.assertIn('"status": "attached"', out)
+
     def test_explicit_unavailable_input_requires_fresh_review_and_never_reads_provider(self):
         from code_mower import audit_labeler_lib
         spec = {key: value for key, value in self.attach_spec.items() if key != 'packet'}
@@ -196,7 +205,7 @@ class GraphContextCommandTests(unittest.TestCase):
         self.head = self.manifest.commit
         self.comments = []
 
-    def invoke(self, args, spec=None, *, actor='controller'):
+    def invoke(self, args, spec=None, *, actor='controller', remote_head=None):
         def github(method, path, **kwargs):
             if path == '/user':
                 return {'login': actor}
@@ -212,22 +221,62 @@ class GraphContextCommandTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(command, '_github', return_value='test-authorization'))
             stack.enter_context(mock.patch.object(command, '_gh_request', side_effect=github))
             stack.enter_context(mock.patch.object(command, 'post_pr_comment', side_effect=publish))
-            stack.enter_context(mock.patch.object(command, 'fetch_pull_request', return_value={'head': {'sha': self.head}}))
+            stack.enter_context(mock.patch.object(command, 'fetch_pull_request',
+                return_value={'head': {'sha': remote_head if remote_head is not None else self.head}}))
             stack.enter_context(mock.patch.object(command, 'fetch_issue_comments', return_value=self.comments))
             stack.enter_context(mock.patch.object(command.sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(spec).encode()))))
             code = work_orders.context_main(args)
         return code, stdout.getvalue(), stderr.getvalue()
 
-    def attach(self):
+    def _attach_spec(self, pr=7):
         packet_spec = {'repository': 'owner/repo', 'work_item': 'WORK-1', 'recipient': 'codex:orchestrator',
                        'query': 'parse_config', 'source': 'impact', 'policy': GRAPH_POLICY}
         result = context_packets.fetch(self.store, 'local-graph', packet_spec, revision=self.head)
-        spec = {'repository': 'owner/repo', 'work_item': 'WORK-1', 'pr': 7, 'policy': GRAPH_POLICY,
+        return {'repository': 'owner/repo', 'work_item': 'WORK-1', 'pr': pr, 'policy': GRAPH_POLICY,
                 'packet': result['packet_handle']}
+
+    def attach(self, *, repo_path=None, remote_head=None):
+        spec = self._attach_spec()
         code, out, err = self.invoke(
-            ['attach', '--connection', 'local-graph', '--host', 'codex', '--request-stdin'], spec)
+            ['attach', '--connection', 'local-graph', '--host', 'codex', '--request-stdin',
+             '--repo-path', str(repo_path if repo_path is not None else self.repository)],
+            spec, remote_head=remote_head)
         self.assertEqual(code, 0, err)
         return json.loads(out)['revision']
+
+    def test_attachment_succeeds_when_the_checkout_matches_the_pr_head(self):
+        revision = self.attach()
+        self.assertTrue(revision)
+        self.assertEqual(len(self.comments), 1)
+
+    def test_attachment_refuses_a_checkout_that_has_moved_before_publication(self):
+        """Checkout B must not enable a binding for a PR still reporting head A."""
+        spec = self._attach_spec()
+        graph_fixtures.git(self.repository, 'commit', '--allow-empty', '-q', '-m', 'checkout moved to B')
+        code, out, err = self.invoke(
+            ['attach', '--connection', 'local-graph', '--host', 'codex', '--request-stdin',
+             '--repo-path', str(self.repository)], spec)
+        self.assertEqual((code, out), (1, ''))
+        self.assertEqual(self.comments, [])
+
+    def test_attachment_refuses_a_non_git_directory_before_publication(self):
+        spec = self._attach_spec()
+        outside = self.repository.parent / 'not-a-checkout'
+        outside.mkdir()
+        code, out, err = self.invoke(
+            ['attach', '--connection', 'local-graph', '--host', 'codex', '--request-stdin',
+             '--repo-path', str(outside)], spec)
+        self.assertEqual((code, out), (1, ''))
+        self.assertEqual(self.comments, [])
+
+    def test_attachment_refuses_a_pull_request_head_that_differs_from_the_packet_even_when_the_checkout_matches(self):
+        """Packet A versus PR B is refused even though the consuming checkout is A."""
+        spec = self._attach_spec()
+        code, out, err = self.invoke(
+            ['attach', '--connection', 'local-graph', '--host', 'codex', '--request-stdin',
+             '--repo-path', str(self.repository)], spec, remote_head='b' * 40)
+        self.assertEqual((code, out), (1, ''))
+        self.assertEqual(self.comments, [])
 
     def test_replay_succeeds_from_the_actual_consuming_checkout(self):
         revision = self.attach()

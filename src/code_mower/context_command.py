@@ -108,9 +108,14 @@ def main(argv=None):
                 # The current trusted gate independently rejects policy downgrade.
                 publish(metadata)
             else:
+                # The actual consuming checkout, derived from --repo-path, not
+                # the remote PR head: a checkout at a different commit, or a
+                # directory that is not a Git checkout at all, must fail
+                # before any evidence is reserved or published.
                 metadata = attach(store, args.connection, spec["packet"], spec["policy"],
                     ContextRequest(spec["repository"], spec["work_item"], args.host + ":orchestrator"),
-                    pr=spec["pr"], head=head, publish=publish)
+                    pr=spec["pr"], head=head, publish=publish,
+                    consuming_revision=consuming_revision(args.repo_path))
             print(json.dumps({"status": "attached", **metadata}, sort_keys=True))
             return 0
         if not args.revision or args.packet:

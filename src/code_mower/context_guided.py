@@ -112,6 +112,7 @@ def _reserve_for_record(
     packet_store: ContextStore,
     record: Mapping[str, Any],
     *,
+    repo_path: Path,
     backend: Any,
 ) -> dict[str, Any]:
     try:
@@ -126,6 +127,10 @@ def _reserve_for_record(
             pr=record["pr"],
             head=record["head"],
             revision=record["revision"],
+            # This checkout's actual consuming revision, not the remote head
+            # alone; a repository connection fails closed if the checkout has
+            # moved, both for a fresh reservation and a pending/uncertain retry.
+            consuming_revision=consuming_revision(repo_path),
             backend=backend,
         )
     except ContextError as exc:
@@ -245,7 +250,7 @@ def attach_session(
             if record["pr"] != pr:
                 raise ContextError("a saved attachment intent targets a different pull request")
             metadata = _reserve_for_record(
-                association_store, packet_store, record, backend=backend,
+                association_store, packet_store, record, repo_path=repo_path, backend=backend,
             )
             if current == metadata:
                 if record["head"] == head:
@@ -290,7 +295,7 @@ def attach_session(
             },
         )
         metadata = _reserve_for_record(
-            association_store, packet_store, record, backend=backend,
+            association_store, packet_store, record, repo_path=repo_path, backend=backend,
         )
         return _finish_publication(
             association_store,

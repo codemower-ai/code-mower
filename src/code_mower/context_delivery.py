@@ -102,6 +102,7 @@ def reserve_attachment(
     pr,
     head,
     revision=None,
+    consuming_revision=None,
     backend=None,
 ):
     """Reserve one unpublished binding before any remote publication.
@@ -110,19 +111,26 @@ def reserve_attachment(
     touching GitHub and resume that exact intent after a crash. Repeating the
     same reservation is idempotent; a conflicting reuse fails closed.
 
-    ``revision`` here is that attachment handle, not a Git revision. The Git
-    revision an attachment binds is ``head``: the PR head the caller read from
-    the trusted remote. Repository-kind evidence is authorized and checked
-    against that commit, so a packet prepared while the checkout sat at commit A
-    cannot be attached to a PR whose head is commit B.
+    ``revision`` here is that attachment handle, not a Git revision. ``head``
+    is attachment metadata: the PR head the caller read from the trusted
+    remote. ``consuming_revision`` is the caller's actual consuming checkout
+    revision, or ``None`` when the caller cannot name one; it is never
+    defaulted to ``head``, because a caller that knows only the trusted
+    remote head, not the local checkout doing the work, must say so
+    explicitly rather than let a repository-kind connection be silently
+    authorized against a revision it never held. Repository-kind evidence is
+    authorized against that consuming revision and separately checked against
+    ``head``, so a packet prepared while the checkout sat at commit A cannot
+    be attached to a PR whose head is commit B, and a checkout that has
+    itself moved to commit B cannot attach evidence for commit A.
     """
     if request.recipient not in SUPPORTED_RECIPIENTS or not request.recipient.endswith(":orchestrator"):
         raise ContextError("an approved orchestrator must attach context")
     policy = normalize_policy(policy)
     packet = load_authorized(
         store, name, handle, policy,
-        ContextRequest(request.repository, request.work_item, request.recipient, head),
-        backend=backend, revision=head,
+        ContextRequest(request.repository, request.work_item, request.recipient, consuming_revision),
+        backend=backend, revision=consuming_revision,
     )
     payload = packet.private_payload()
     revision = revision or uuid.uuid4().hex
@@ -137,8 +145,10 @@ def reserve_attachment(
             # The local graph's "authorization changed" is a rebuild: the
             # published generation is what a packet binds, so a graph rebuilt
             # between preparation and attachment fails the same check a revoked
-            # organization authorization does.
-            generation = graph_connection.current_generation(state, root=store.root, revision=head)
+            # organization authorization does. ``consuming_revision`` cannot be
+            # ``None`` here: a graph connection already refused the load above
+            # when it was missing.
+            generation = graph_connection.current_generation(state, root=store.root, revision=consuming_revision)
             # Stated here as well as enforced on the load, because this is the
             # line an attachment is read off: repository evidence describes one
             # commit's code, and the commit this PR is at is the only one it may
@@ -227,14 +237,17 @@ def retire_attachment(store, name, handle, revision):
     _remove_attachment(store, name, handle, revision, published=True)
 
 
-def attach(store, name, handle, policy, request: ContextRequest, *, pr, head, publish, backend=None):
+def attach(store, name, handle, policy, request: ContextRequest, *, pr, head, publish,
+          consuming_revision=None, backend=None):
     """Publish a new input revision before any participant can use that binding.
 
     ``publish`` is a trusted runtime callback for the selected repository/PR,
     never provider code. A failed publication leaves the local binding unusable.
+    ``consuming_revision`` is forwarded to ``reserve_attachment`` unchanged.
     """
     metadata = reserve_attachment(
-        store, name, handle, policy, request, pr=pr, head=head, backend=backend,
+        store, name, handle, policy, request, pr=pr, head=head,
+        consuming_revision=consuming_revision, backend=backend,
     )
     revision = metadata["revision"]
     try:

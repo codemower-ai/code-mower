@@ -396,27 +396,46 @@ class GuidedGraphSessionTests(unittest.TestCase):
             len(self.load(saved["packet"], "claude:builder").private_payload()["documents"]), 5,
         )
 
-    def _attach(self, handle: str, head: str):
+    def _attach(self, handle: str, head: str, *, consuming_revision=None):
         return context_delivery.reserve_attachment(
             self.store, "local-graph", handle, POLICY,
             ContextRequest("owner/repo", "WORK-1", "codex:orchestrator"),
-            pr=1, head=head,
+            pr=1, head=head, consuming_revision=consuming_revision,
         )
 
     def test_attachment_refuses_a_packet_whose_graph_was_rebuilt(self) -> None:
         handle = self.fetch()["packet_handle"]
         self.publish()
         with self.assertRaises(ContextError):
-            self._attach(handle, self.manifest.commit)
+            self._attach(handle, self.manifest.commit, consuming_revision=self.manifest.commit)
 
-    def test_attachment_binds_the_pull_requests_head_not_the_checkouts(self) -> None:
-        """A PR at another commit cannot carry this commit's graph evidence."""
+    def test_attachment_succeeds_when_packet_pr_and_consumer_all_match(self) -> None:
         handle = self.fetch()["packet_handle"]
-        # The head the graph *is* for attaches.
-        self.assertEqual(self._attach(handle, self.manifest.commit)["head"], self.manifest.commit)
+        # The head the graph *is* for, and the checkout it is actually on, both attach.
+        self.assertEqual(
+            self._attach(handle, self.manifest.commit, consuming_revision=self.manifest.commit)["head"],
+            self.manifest.commit,
+        )
+
+    def test_attachment_refuses_a_pull_request_head_that_differs_from_the_packets_revision(self) -> None:
+        """Packet A versus PR B is refused even though the consumer is A."""
+        handle = self.fetch()["packet_handle"]
         consuming = self._second_commit_the_checkout_is_not_on()
         with self.assertRaises(ContextError):
-            self._attach(handle, consuming)
+            self._attach(handle, consuming, consuming_revision=self.manifest.commit)
+
+    def test_attachment_refuses_a_consumer_the_checkout_is_not_actually_on(self) -> None:
+        """A checkout at another commit must not enable a binding for this PR head."""
+        handle = self.fetch()["packet_handle"]
+        consuming = self._second_commit_the_checkout_is_not_on()
+        with self.assertRaises(ContextError):
+            self._attach(handle, self.manifest.commit, consuming_revision=consuming)
+
+    def test_attachment_never_substitutes_the_pr_head_for_an_unknown_consumer(self) -> None:
+        """A caller that cannot name its consuming revision (e.g. non-Git) fails closed."""
+        handle = self.fetch()["packet_handle"]
+        with self.assertRaises(ContextError):
+            self._attach(handle, self.manifest.commit)
 
 
 @unittest.skipUnless(os.name == "posix", "private context needs POSIX protections")

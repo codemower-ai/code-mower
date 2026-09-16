@@ -232,9 +232,13 @@ class GraphIndependentReviewTargetTests(unittest.TestCase):
         spec = {'repository': 'owner/repo', 'work_item': 'WORK-1', 'recipient': 'codex:orchestrator',
                 'query': 'parse_config', 'source': 'impact', 'policy': self.policy}
         result = context_packets.fetch(self.store, 'local-graph', spec, revision=self.head)
+        # The fixture's own actual revision -- this checkout is genuinely at
+        # ``self.head`` when the packet is attached -- never the immutable
+        # review-target head that ``context_audit`` is separately exercised
+        # against below.
         self.current = context_delivery.attach(self.store, 'local-graph', result['packet_handle'],
             self.policy, ContextRequest('owner/repo', 'WORK-1', 'codex:orchestrator'), pr=42, head=self.head,
-            publish=lambda metadata: None)
+            publish=lambda metadata: None, consuming_revision=self.head)
         self.comments = [{'user': {'login': 'controller'}, 'body': INPUT_HEADER + '\n\n' + marker(self.current)}]
         self.root = root
 

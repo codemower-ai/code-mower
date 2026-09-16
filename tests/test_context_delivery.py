@@ -204,7 +204,7 @@ class GraphDeliveryBindingTests(unittest.TestCase):
         result = fetch(self.store, 'local-graph', spec, revision=self.head)
         self.current = attach(self.store, 'local-graph', result['packet_handle'], self.policy,
             ContextRequest('owner/repo', 'WORK-1', 'codex:orchestrator'), pr=42, head=self.head,
-            publish=lambda metadata: None)
+            publish=lambda metadata: None, consuming_revision=self.head)
 
     def delivery(self, **kwargs):
         return deliver(self.store, self.current['revision'], repository='owner/repo', pr=42, head=self.head,
@@ -224,3 +224,67 @@ class GraphDeliveryBindingTests(unittest.TestCase):
             self.delivery()
         with self.assertRaises(ContextError):
             self.delivery(consuming_revision=None)
+
+
+@unittest.skipUnless(os.name == 'posix', 'private store requires POSIX')
+class GraphAttachmentBindingTests(unittest.TestCase):
+    """A fresh attachment must bind repository evidence to the actual consuming
+    checkout, never merely to the PR head a caller happens to report
+    (codex:65a17212478a56416b1c)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        self.repository = graph_fixtures.make_repository(root)
+        private = root / 'private'
+        private.mkdir(mode=0o700)
+        self.manifest = lifecycle.build_graph(
+            self.repository, pin=graph_fixtures.PIN,
+            indexer=graph_fixtures.indexer(graph_fixtures.graph_document()), root=private,
+        )
+        self.store = ContextStore(private, vault=MemoryVault())
+        self.recipients = [f'{host}:{role}' for host in ('claude', 'codex', 'devin')
+                           for role in ('orchestrator', 'builder', 'reviewer')]
+        graph_connection.connect(self.store, 'local-graph', {
+            'repository_root': str(self.repository), 'repositories': ['owner/repo'],
+            'recipients': self.recipients,
+        })
+        self.head = self.manifest.commit  # checkout A
+        self.other = 'b' * 40  # a different checkout, B
+        self.policy = {'schema': 'code_mower.contextPolicy.v1', 'connection': 'local-graph',
+                       'policy_version': 'v1', 'required': True}
+        spec = {'repository': 'owner/repo', 'work_item': 'WORK-1', 'recipient': 'codex:orchestrator',
+                'query': 'parse_config', 'source': 'impact', 'policy': self.policy}
+        self.handle = fetch(self.store, 'local-graph', spec, revision=self.head)['packet_handle']
+        self.published = []
+
+    def attach(self, *, head, **kwargs):
+        return attach(self.store, 'local-graph', self.handle, self.policy,
+            ContextRequest('owner/repo', 'WORK-1', 'codex:orchestrator'), pr=42, head=head,
+            publish=self.published.append, **kwargs)
+
+    def test_attachment_succeeds_when_packet_pr_and_consumer_all_match(self):
+        current = self.attach(head=self.head, consuming_revision=self.head)
+        self.assertEqual(current['head'], self.head)
+        self.assertEqual(len(self.published), 1)
+
+    def test_attachment_refuses_a_consumer_the_checkout_is_not_actually_on(self):
+        """Checkout B must not enable a binding authorized for checkout A."""
+        with self.assertRaises(ContextError):
+            self.attach(head=self.head, consuming_revision=self.other)
+        self.assertEqual(self.published, [])
+
+    def test_attachment_refuses_a_pull_request_head_that_differs_from_the_packet_even_when_the_consumer_matches(self):
+        """Packet A versus PR B is refused even though the consumer is A."""
+        with self.assertRaises(ContextError):
+            self.attach(head=self.other, consuming_revision=self.head)
+        self.assertEqual(self.published, [])
+
+    def test_attachment_never_silently_substitutes_the_pr_head_for_an_unknown_consumer(self):
+        """A caller that cannot name its consuming revision (e.g. non-Git) fails closed."""
+        with self.assertRaises(ContextError):
+            self.attach(head=self.head)
+        with self.assertRaises(ContextError):
+            self.attach(head=self.head, consuming_revision=None)
+        self.assertEqual(self.published, [])

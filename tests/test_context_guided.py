@@ -645,6 +645,43 @@ class GuidedRepositoryDeliveryTests(unittest.TestCase):
                 self.associations, self.store, moved, repo_path=self.repository, backend=None,
             )
 
+    def test_fresh_attachment_refuses_a_moved_checkout_before_any_publication(self):
+        """A fresh reservation must bind the actual consumer, not merely the
+        remote PR head (codex:65a17212478a56416b1c)."""
+        self._advance_the_checkout()
+        with self.assertRaises(ContextError):
+            self.attach()
+        self.assertEqual(self.comments, [])
+        pending = context_session.read(self.associations, self.SESSION_ID)
+        self.assertEqual(pending["attachment_state"], "pending")
+        self.assertNotEqual(pending["context_state"], "ready")
+
+    def test_pending_retry_revalidates_the_actual_consumer_before_publication(self):
+        """A resumed pending/uncertain attachment must revalidate the current
+        consumer rather than replay a stale reservation, while preserving the
+        saved intent and its failure diagnostics (codex:65a17212478a56416b1c)."""
+        with (
+            self.patches()[0], self.patches()[1], self.patches()[2],
+            self.patches()[3], self.patches()[4],
+            mock.patch.object(context_guided, "reserve_attachment", side_effect=KeyboardInterrupt()),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                context_guided.attach_session(
+                    self.associations, self.store, self.record, repo_path=self.repository,
+                    pr=1, backend=None,
+                )
+        pending = context_session.read(self.associations, self.SESSION_ID)
+        self.assertEqual(pending["attachment_state"], "pending")
+        revision = pending["revision"]
+        self._advance_the_checkout()
+        with self.assertRaises(ContextError):
+            self.attach()
+        after = context_session.read(self.associations, self.SESSION_ID)
+        self.assertEqual(after["attachment_state"], "pending")
+        self.assertEqual(after["revision"], revision)
+        self.assertNotEqual(after["context_state"], "ready")
+        self.assertEqual(self.comments, [])
+
 
 if __name__ == "__main__":
     unittest.main()
