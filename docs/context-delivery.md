@@ -161,7 +161,21 @@ that exact revision from the trusted current comment. If a write returns an
 uncertain result and the revision is not current, status pauses the workflow;
 after independently checking the PR, `attach --retry-uncertain` republishes the
 same revision rather than creating another one. No uncertain or unpublished
-binding can deliver evidence.
+binding can deliver evidence. A saved uncertain or pending intent is never
+cleared just because a later attach was asked for: it may already be the
+GitHub-accepted state a lost response only looked like it missed.
+
+A reservation that fails before publication -- for example because the actual
+consuming checkout has moved past the evidence it was prepared from, or the
+local graph was rebuilt in the meantime -- rolls the session back to its prior
+prepared, unattached state on its own, keeping the failure reason visible in
+status. The same session can then explicitly rebuild or rerun `prepare
+--refresh` and attach again; it is never left pointing at a saved intent that
+every retry would only re-fail. Once the trusted current pull request head has
+genuinely moved past a saved intent, that old identity is retired before any
+new evidence is authorized, so a checkout that has since moved on cannot block
+its own recovery. This retirement, like the rollback above, is safe to retry
+after an interruption partway through.
 
 The lower-level expert form remains available for scripts that intentionally
 manage request files and revisions:

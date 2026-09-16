@@ -11,9 +11,10 @@ from code_mower import context_graph_connection as graph_connection
 from code_mower import context_graph_lifecycle as lifecycle
 from code_mower.context_connections import connect, disconnect
 from code_mower.context_contract import ContextError, ContextRequest, load_packet
-from code_mower.context_delivery import (SUPPORTED_HOSTS, SUPPORTED_RECIPIENTS, attach, deliver, public_verdict,
-                                         read_binding, render_evidence, save_feedback)
-from code_mower.context_packets import fetch
+from code_mower.context_delivery import (SUPPORTED_HOSTS, SUPPORTED_RECIPIENTS, abandon_attachment, attach,
+                                         deliver, public_verdict, read_binding, render_evidence,
+                                         retire_attachment, save_feedback)
+from code_mower.context_packets import _index, fetch
 from code_mower.context_store import ContextStore
 from test_context_connections import MemoryVault
 from test_context_packets import RetrievalBackend
@@ -170,6 +171,62 @@ class ContextDeliveryTests(unittest.TestCase):
         self.assertIn('Synthetic evidence: parser calls validator.', texts[0])
         self.assertNotIn('/example/repository', texts[0])
         self.assertNotIn('principal', texts[0])
+
+    def test_retirement_completes_after_an_interrupted_index_write(self):
+        """Delivery removal writes the index without the revision before
+        deleting the artifact; a crash between those writes must resolve on
+        retry rather than report an inconsistent index (codex:1a4bc7b34687da726908)."""
+        current = self.attach()
+        revision = current['revision']
+        handle = self.result['packet_handle']
+        with self.store.locked('example') as locked:
+            index_file, index = _index(locked)
+            entry = next(item for item in index['entries'] if item['handle'] == handle)
+            entry['deliveries'].remove(revision)
+            index_file.write(index)
+        # The artifact is still present; only the index write completed.
+        retire_attachment(self.store, 'example', handle, revision)
+        with self.assertRaises(ContextError):
+            read_binding(self.store, revision)
+        # Retrying the exact same removal is idempotent.
+        retire_attachment(self.store, 'example', handle, revision)
+
+    def test_abandon_still_refuses_a_published_binding(self):
+        current = self.attach()
+        with self.assertRaises(ContextError):
+            abandon_attachment(self.store, 'example', self.result['packet_handle'], current['revision'])
+        self.assertTrue(read_binding(self.store, current['revision'])['published'])
+
+    def test_removal_refuses_a_binding_whose_identity_does_not_match(self):
+        """The targeted binding is identity checked; a mismatched handle or
+        revision inside the stored binding must still fail closed even
+        though the artifact exists (codex:1a4bc7b34687da726908)."""
+        current = self.attach()
+        revision = current['revision']
+        handle = self.result['packet_handle']
+        with self.store.locked('example') as locked:
+            artifact = locked.artifact('d-' + revision)
+            corrupted = {**artifact.read(), 'handle': 'f' * 32}
+            artifact.write(corrupted)
+        with self.assertRaises(ContextError):
+            retire_attachment(self.store, 'example', handle, revision)
+        with self.assertRaises(ContextError):
+            abandon_attachment(self.store, 'example', handle, revision)
+
+    def test_removal_refuses_when_the_index_entry_is_missing(self):
+        """A missing index entry is not the same state an interrupted
+        cleanup leaves -- that only ever drops the revision from an
+        existing entry's deliveries -- so it still fails closed rather than
+        completing as if it were (codex:1a4bc7b34687da726908)."""
+        current = self.attach()
+        revision = current['revision']
+        handle = self.result['packet_handle']
+        with self.store.locked('example') as locked:
+            index_file, index = _index(locked)
+            index['entries'] = [item for item in index['entries'] if item['handle'] != handle]
+            index_file.write(index)
+        with self.assertRaises(ContextError):
+            retire_attachment(self.store, 'example', handle, revision)
 
 
 @unittest.skipUnless(os.name == 'posix', 'private store requires POSIX')

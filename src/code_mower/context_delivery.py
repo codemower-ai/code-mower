@@ -205,6 +205,16 @@ def mark_published(store, name, revision):
 
 
 def _remove_attachment(store, name, handle, revision, *, published):
+    """Remove one identity-checked binding, idempotent for its own interrupted cleanup.
+
+    The index is written without ``revision`` before the artifact is deleted,
+    so a crash between those two writes leaves an artifact whose index entry
+    already omits it. Retrying with the exact same ``handle``/``revision``
+    recognizes that state -- the artifact's own binding still names them --
+    and finishes deleting the artifact rather than reporting an inconsistent
+    index. A missing or mismatched identity, or a missing index entry, is
+    never treated as that same interrupted cleanup and still fails closed.
+    """
     _handle(handle)
     _handle(revision)
     with store.locked(name) as locked:
@@ -218,12 +228,16 @@ def _remove_attachment(store, name, handle, revision, *, published):
                 index_file.write(index)
             return
         binding = _binding(saved)
+        if binding["handle"] != handle or binding["revision"] != revision:
+            raise ContextError("context attachment index is inconsistent")
         if binding["published"] and not published:
             raise ContextError("published context attachment cannot be abandoned")
-        if entry is None or revision not in entry.setdefault("deliveries", []):
+        if entry is None:
             raise ContextError("context attachment index is inconsistent")
-        entry["deliveries"].remove(revision)
-        index_file.write(index)
+        deliveries = entry.setdefault("deliveries", [])
+        if revision in deliveries:
+            deliveries.remove(revision)
+            index_file.write(index)
         artifact.delete()
 
 

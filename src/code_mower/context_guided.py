@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
@@ -31,6 +32,7 @@ from .provider_runners.github_pr import _gh_request
 
 
 ATTACH_SCHEMA = "code_mower.contextSessionAttach.v1"
+_HEAD_SHA = re.compile(r"[a-f0-9]{40}\Z")
 
 
 def _workflow_key(record: Mapping[str, Any]) -> str:
@@ -64,6 +66,12 @@ def _remote_input(
         head = pull["head"]["sha"]
     except (KeyError, TypeError):
         raise ContextError("GitHub did not return a valid pull request head") from None
+    # Malformed remote data (missing, null, wrong-type, shortened, or
+    # non-hex) is not authoritative head movement: refuse before any
+    # comparison or cleanup ever sees it, rather than let it masquerade as a
+    # moved or matching head.
+    if not isinstance(head, str) or not _HEAD_SHA.fullmatch(head):
+        raise ContextError("GitHub did not return a valid pull request head")
     current = context_review.latest_input(
         fetch_issue_comments(repository, pr, token=token), authorities=authorities,
     )
@@ -172,7 +180,13 @@ def _discard_stale_attachment(
     packet_store: ContextStore,
     record: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Clear one binding only after the live PR head has moved beyond it."""
+    """Clear one binding only after the live PR head has moved beyond it.
+
+    Retiring the packet-store binding and updating the association are two
+    separate writes; either alone is retry-safe (a missing binding is a
+    no-op for ``retire_attachment``), so an interruption between them is
+    resolved by simply calling this again with the still-saved record.
+    """
     retire_attachment(
         packet_store, record["connection"], record["packet"], record["revision"],
     )
@@ -185,6 +199,48 @@ def _discard_stale_attachment(
             "attachment_state": "none",
         },
     )
+
+
+def _abandon_and_clear(
+    association_store: ContextStore,
+    packet_store: ContextStore,
+    record: Mapping[str, Any],
+) -> None:
+    """Best-effort return of a not-yet-published intent to prepared/none.
+
+    Used only when ``record["revision"]`` is known to have not reached
+    ``_finish_publication``'s remote publication check, so any stored
+    delivery binding for it is never published and safe to abandon. Never
+    used to blanket-clear a pre-existing pending/uncertain retry.
+    ``record_failure`` may already have advanced the association generation,
+    so the session is re-read here rather than trusting a stale one; if a
+    concurrent operation has already moved the saved revision on, cleanup is
+    skipped rather than overwriting that operation's result. A
+    ``ContextError`` or storage exception from either step does not prove no
+    local write occurred, so on failure the saved intent is left in place
+    instead of being claimed cleared -- the caller's own error still reports
+    the original failure.
+    """
+    try:
+        current = context_session.read(association_store, record["session_id"])
+        if current is None or current["revision"] != record["revision"]:
+            return
+        abandon_attachment(
+            packet_store, current["connection"], current["packet"], current["revision"],
+        )
+        context_session.update(
+            association_store,
+            current["session_id"],
+            expected_generation=current["generation"],
+            changes={
+                "stage": "prepared", "pr": None, "head": None, "revision": None,
+                "attachment_state": "none",
+            },
+        )
+    except (ContextError, OSError):
+        pass
+
+
 def attach_session(
     association_store: ContextStore,
     packet_store: ContextStore,
@@ -219,8 +275,13 @@ def attach_session(
         if record["attachment_state"] == "published":
             if record["pr"] != pr:
                 raise ContextError("this session is already attached to a different pull request")
-            binding = read_binding(packet_store, record["revision"])
             if record["head"] == head:
+                # Only the same-head path needs the existing binding read.
+                # A moved head retires by identity below without ever
+                # reading it, so an interrupted prior retirement's missing
+                # binding is not read here as current evidence; a same-head
+                # missing binding still fails closed.
+                binding = read_binding(packet_store, record["revision"])
                 if current != binding["metadata"]:
                     raise ContextError(
                         "the trusted current input changed; inspect the pull request before replacing it"
@@ -249,11 +310,20 @@ def attach_session(
         if record["attachment_state"] in {"pending", "uncertain"}:
             if record["pr"] != pr:
                 raise ContextError("a saved attachment intent targets a different pull request")
-            metadata = _reserve_for_record(
-                association_store, packet_store, record, repo_path=repo_path, backend=backend,
-            )
-            if current == metadata:
-                if record["head"] == head:
+            if record["head"] != head:
+                # Retire the old identity before ever reauthorizing its
+                # evidence. Reserving first, as below, reauthorizes the
+                # stale saved head's evidence; a checkout that has since
+                # moved on could fail that reauthorization before this
+                # already-safe retirement path ever ran.
+                record = _discard_stale_attachment(
+                    association_store, packet_store, record,
+                )
+            else:
+                metadata = _reserve_for_record(
+                    association_store, packet_store, record, repo_path=repo_path, backend=backend,
+                )
+                if current == metadata:
                     mark_published(packet_store, record["connection"], record["revision"])
                     record = context_session.update(
                         association_store,
@@ -265,16 +335,8 @@ def attach_session(
                         },
                     )
                     return _report("attached", reused=True, reconciled=True), 0
-                record = _discard_stale_attachment(
-                    association_store, packet_store, record,
-                )
-            elif record["attachment_state"] == "uncertain" and not retry_uncertain:
-                return _report("attachment_uncertain", reused=True), 1
-            elif record["head"] != head:
-                record = _discard_stale_attachment(
-                    association_store, packet_store, record,
-                )
-            elif record["attachment_state"] in {"pending", "uncertain"}:
+                if record["attachment_state"] == "uncertain" and not retry_uncertain:
+                    return _report("attachment_uncertain", reused=True), 1
                 return _finish_publication(
                     association_store,
                     packet_store,
@@ -294,9 +356,17 @@ def attach_session(
                 "attachment_state": "pending",
             },
         )
-        metadata = _reserve_for_record(
-            association_store, packet_store, record, repo_path=repo_path, backend=backend,
-        )
+        try:
+            metadata = _reserve_for_record(
+                association_store, packet_store, record, repo_path=repo_path, backend=backend,
+            )
+        except ContextError:
+            # This exact intent was just minted in this same call and never
+            # reached publication, so it is safe to abandon; a pre-existing
+            # pending/uncertain intent retried above is never cleared this
+            # way.
+            _abandon_and_clear(association_store, packet_store, record)
+            raise
         return _finish_publication(
             association_store,
             packet_store,
@@ -318,17 +388,7 @@ def _finish_publication(
 ) -> tuple[dict[str, Any], int]:
     head, current = _remote_input(record["repo"], record["pr"], token=token, authorities=authorities)
     if head != record["head"]:
-        abandon_attachment(
-            packet_store, record["connection"], record["packet"], record["revision"],
-        )
-        context_session.update(
-            association_store,
-            record["session_id"],
-            expected_generation=record["generation"],
-            changes={
-                "pr": None, "head": None, "revision": None, "attachment_state": "none",
-            },
-        )
+        _abandon_and_clear(association_store, packet_store, record)
         raise ContextError("pull request head changed before publication; rerun attach")
     if current == metadata:
         mark_published(packet_store, record["connection"], record["revision"])

@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -13,7 +14,8 @@ from code_mower import context_audit, context_guided, context_prepare, context_s
 from code_mower import context_graph_connection as graph_connection
 from code_mower import context_graph_lifecycle as lifecycle
 from code_mower.context_contract import ContextError
-from code_mower.context_delivery import deliver, read_binding, save_feedback
+from code_mower.context_delivery import deliver, read_binding, retire_attachment, save_feedback
+from code_mower.context_packets import _index
 from code_mower.context_review import INPUT_HEADER
 from code_mower.context_store import ContextStore
 import test_context_delivery as fixtures
@@ -406,6 +408,175 @@ class GuidedContextTests(unittest.TestCase):
         for private in (saved["revision"], saved["packet"], "EXAMPLE-1", "owner/repo"):
             self.assertNotIn(private, encoded)
 
+    def test_stale_pending_intent_retires_before_reauthorizing_its_own_evidence(self):
+        """When the trusted remote head has moved beyond a saved pending
+        intent, the old identity must be retired before the state machine
+        ever calls ``reserve_attachment`` again for that stale evidence
+        (codex:1a4bc7b34687da726908)."""
+        self.fail_comment = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            self.attach()
+        pending = context_session.read(self.associations, self.session["id"])
+        old_revision = pending["revision"]
+        old_head = pending["head"]
+        self.head = "d" * 40
+
+        real_reserve = context_guided.reserve_attachment
+
+        def spying_reserve(*args, **kwargs):
+            if kwargs.get("head") == old_head:
+                raise AssertionError("stale evidence was reauthorized before retirement")
+            return real_reserve(*args, **kwargs)
+
+        with (
+            self.patches()[0], self.patches()[1], self.patches()[2],
+            self.patches()[3], self.patches()[4],
+            mock.patch.object(context_guided, "reserve_attachment", side_effect=spying_reserve),
+        ):
+            current = context_session.read(self.associations, self.session["id"])
+            report, code = context_guided.attach_session(
+                self.associations, self.fixture.store, current, repo_path=self.root, pr=42,
+                backend=self.fixture.backend,
+            )
+        self.assertEqual((report["status"], code), ("attached", 0))
+        with self.assertRaises(ContextError):
+            read_binding(self.fixture.store, old_revision)
+        self.assertNotEqual(
+            context_session.read(self.associations, self.session["id"])["revision"], old_revision,
+        )
+
+    def test_interrupted_association_update_recovers_after_stale_retirement(self):
+        """A crash between retiring a stale published binding and updating
+        the session association must be retry-safe: the next call finishes
+        the same identity-checked cleanup rather than reading the now-missing
+        binding as current evidence (codex:1a4bc7b34687da726908)."""
+        self.attach()
+        published = context_session.read(self.associations, self.session["id"])
+        old_revision = published["revision"]
+        retire_attachment(
+            self.fixture.store, published["connection"], published["packet"], old_revision,
+        )
+        self.head = "d" * 40
+        report, code = self.attach()
+        self.assertEqual((report["status"], code), ("attached", 0))
+        saved = context_session.read(self.associations, self.session["id"])
+        self.assertNotEqual(saved["revision"], old_revision)
+        with self.assertRaises(ContextError):
+            read_binding(self.fixture.store, old_revision)
+        self.assertEqual(len(self.comments), 2)
+
+    def test_interrupted_index_write_during_retirement_completes_on_retry(self):
+        """A crash between the index write and the artifact delete inside
+        delivery cleanup must complete on the next attach rather than
+        report an inconsistent index (codex:1a4bc7b34687da726908)."""
+        self.attach()
+        published = context_session.read(self.associations, self.session["id"])
+        old_revision = published["revision"]
+        with self.fixture.store.locked(published["connection"]) as locked:
+            index_file, index = _index(locked)
+            entry = next(item for item in index["entries"] if item["handle"] == published["packet"])
+            entry["deliveries"].remove(old_revision)
+            index_file.write(index)
+        self.head = "d" * 40
+        report, code = self.attach()
+        self.assertEqual((report["status"], code), ("attached", 0))
+        saved = context_session.read(self.associations, self.session["id"])
+        self.assertNotEqual(saved["revision"], old_revision)
+        with self.assertRaises(ContextError):
+            read_binding(self.fixture.store, old_revision)
+
+    def test_malformed_remote_head_cannot_retire_or_clear_a_published_binding(self):
+        """Missing, null, wrong-type, shortened, and non-hex ``head.sha``
+        values are not authoritative head movement and must never retire or
+        clear an existing binding or session (codex:1a4bc7b34687da726908)."""
+        self.attach()
+        published = context_session.read(self.associations, self.session["id"])
+        missing = object()
+        for malformed in (missing, None, 123, ["d" * 40], "d" * 39, "d" * 41, "g" * 40, "D" * 40):
+            with self.subTest(head=malformed):
+                def _pull(*_a, _sha=malformed, **_k):
+                    return {"head": {}} if _sha is missing else {"head": {"sha": _sha}}
+                with self.patches()[0], mock.patch.object(
+                    context_guided, "fetch_pull_request", side_effect=_pull,
+                ), self.patches()[2], self.patches()[3], self.patches()[4]:
+                    with self.assertRaises(ContextError):
+                        context_guided.attach_session(
+                            self.associations, self.fixture.store, published, repo_path=self.root,
+                            pr=42, backend=self.fixture.backend,
+                        )
+        unchanged = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(unchanged, published)
+        self.assertTrue(read_binding(self.fixture.store, published["revision"])["published"])
+
+    def test_malformed_remote_head_cannot_disturb_a_pending_intent(self):
+        self.fail_comment = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            self.attach()
+        pending = context_session.read(self.associations, self.session["id"])
+        with self.patches()[0], mock.patch.object(
+            context_guided, "fetch_pull_request", side_effect=lambda *_a, **_k: {"head": {"sha": None}},
+        ), self.patches()[2], self.patches()[3], self.patches()[4]:
+            with self.assertRaises(ContextError):
+                context_guided.attach_session(
+                    self.associations, self.fixture.store, pending, repo_path=self.root,
+                    pr=42, backend=self.fixture.backend,
+                )
+        unchanged = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(unchanged, pending)
+
+    def test_concurrent_reconciliation_is_not_overwritten_by_the_rollback(self):
+        """If another operation already reconciled the exact freshly minted
+        intent before the rollback runs, the rollback must not overwrite that
+        result or claim it cleared anything (codex:1a4bc7b34687da726908)."""
+        real_record_failure = context_session.record_failure
+
+        def racing_record_failure(store, record, error):
+            updated = real_record_failure(store, record, error)
+            # A concurrent operation reconciles the exact same intent first.
+            return context_session.update(
+                store, record["session_id"], expected_generation=updated["generation"],
+                changes={
+                    "stage": "prepared", "pr": None, "head": None, "revision": None,
+                    "attachment_state": "none",
+                },
+            )
+
+        with (
+            self.patches()[0], self.patches()[1], self.patches()[2],
+            self.patches()[3], self.patches()[4],
+            mock.patch.object(context_session, "record_failure", side_effect=racing_record_failure),
+            mock.patch.object(context_guided, "reserve_attachment", side_effect=ContextError("boom")),
+        ):
+            with self.assertRaisesRegex(ContextError, "boom"):
+                context_guided.attach_session(
+                    self.associations, self.fixture.store, self.record, repo_path=self.root,
+                    pr=42, backend=self.fixture.backend,
+                )
+        after = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(
+            (after["attachment_state"], after["pr"], after["head"], after["revision"]),
+            ("none", None, None, None),
+        )
+
+    def test_rollback_failure_retains_the_pending_intent_rather_than_claiming_success(self):
+        """If the abandon step itself fails, the saved pending intent is left
+        in place rather than reported as cleared -- a ``ContextError`` there
+        does not prove no local write occurred (codex:1a4bc7b34687da726908)."""
+        with (
+            self.patches()[0], self.patches()[1], self.patches()[2],
+            self.patches()[3], self.patches()[4],
+            mock.patch.object(context_guided, "reserve_attachment", side_effect=ContextError("boom")),
+            mock.patch.object(context_guided, "abandon_attachment", side_effect=ContextError("cleanup failed")),
+        ):
+            with self.assertRaisesRegex(ContextError, "boom"):
+                context_guided.attach_session(
+                    self.associations, self.fixture.store, self.record, repo_path=self.root,
+                    pr=42, backend=self.fixture.backend,
+                )
+        pending = context_session.read(self.associations, self.session["id"])
+        self.assertEqual(pending["attachment_state"], "pending")
+        self.assertIsNotNone(pending["revision"])
+
     def test_provider_free_cross_process_qualification_is_symmetric_for_both_hosts(self):
         delivered = []
 
@@ -587,6 +758,14 @@ class GuidedRepositoryDeliveryTests(unittest.TestCase):
         graph_fixtures.git(self.repository, "add", ".")
         graph_fixtures.git(self.repository, "commit", "-q", "-m", "second")
 
+    def _advance_without_disturbing_citations(self):
+        """Move HEAD to a new commit without touching any file the fixture's
+        synthetic graph cites, so a graph rebuilt at the new commit still
+        validates the same citations."""
+        (self.repository / "NOTES.md").write_text("advance\n", encoding="utf-8")
+        graph_fixtures.git(self.repository, "add", ".")
+        graph_fixtures.git(self.repository, "commit", "-q", "-m", "advance")
+
     def test_repository_delivery_matches_the_actual_consuming_checkout(self):
         report, code = self.attach()
         self.assertEqual((report["status"], code), ("attached", 0))
@@ -653,8 +832,96 @@ class GuidedRepositoryDeliveryTests(unittest.TestCase):
             self.attach()
         self.assertEqual(self.comments, [])
         pending = context_session.read(self.associations, self.SESSION_ID)
-        self.assertEqual(pending["attachment_state"], "pending")
+        self.assertEqual(pending["attachment_state"], "none")
         self.assertNotEqual(pending["context_state"], "ready")
+
+    def test_fresh_attachment_recovers_after_checkout_and_pr_advance(self):
+        """A fresh reservation that fails before publication must roll back
+        to a refreshable prepared/none state -- with zero public writes and
+        no leaked usable binding -- rather than stranding a permanently
+        pending intent that every retry reauthorizes and that
+        ``prepare --refresh`` alone could never clear
+        (codex:1a4bc7b34687da726908)."""
+        self._advance_without_disturbing_citations()
+        self.head = lifecycle.resolve_revision(self.repository)[0]
+        fixed = uuid.UUID(hex="1" * 32)
+        with mock.patch.object(context_guided.uuid, "uuid4", return_value=fixed):
+            with self.assertRaises(ContextError):
+                self.attach()
+        self.assertEqual(self.comments, [])
+        with self.assertRaises(ContextError):
+            read_binding(self.store, fixed.hex)
+        recovered = context_session.read(self.associations, self.SESSION_ID)
+        self.assertEqual(recovered["attachment_state"], "none")
+        self.assertEqual(
+            (recovered["pr"], recovered["head"], recovered["revision"]), (None, None, None),
+        )
+        self.assertEqual(recovered["stage"], "prepared")
+        self.assertNotEqual(recovered["context_state"], "ready")
+
+        self.manifest = lifecycle.build_graph(
+            self.repository, pin=graph_fixtures.PIN,
+            indexer=graph_fixtures.indexer(graph_fixtures.graph_document()), root=self.private,
+        )
+        report, code = context_prepare.prepare(
+            self.associations, recovered, repo_root=self.repository, context_root=self.private,
+            packet_store=self.store, query="parse_config", source="impact", builder="codex",
+            refresh=True,
+        )
+        self.assertEqual((code, report["status"]), (0, "prepared"))
+        report, code = self.attach()
+        self.assertEqual((report["status"], code), ("attached", 0))
+        attached = context_session.read(self.associations, self.SESSION_ID)
+        self.assertIsNotNone(attached["revision"])
+        self.assertNotEqual(attached["revision"], fixed.hex)
+
+    def test_same_head_failures_recover_without_stranding_refresh(self):
+        """A same-head graph generation replacement, or an unresolvable
+        consuming revision, must roll back exactly like a moved checkout --
+        never stranding the session on a permanently pending intent
+        (codex:1a4bc7b34687da726908)."""
+        # The graph is rebuilt for the same commit, minting a new generation
+        # the saved packet was never authorized against.
+        lifecycle.build_graph(
+            self.repository, pin=graph_fixtures.PIN,
+            indexer=graph_fixtures.indexer(graph_fixtures.graph_document()), root=self.private,
+        )
+        with self.assertRaises(ContextError):
+            self.attach()
+        recovered = context_session.read(self.associations, self.SESSION_ID)
+        self.assertEqual(recovered["attachment_state"], "none")
+        self.assertEqual(
+            (recovered["pr"], recovered["head"], recovered["revision"]), (None, None, None),
+        )
+
+        # The consuming checkout cannot be resolved at all.
+        outside = self.root / "not-a-checkout"
+        outside.mkdir()
+        with (
+            self.patches()[0], self.patches()[1], self.patches()[2],
+            self.patches()[3], self.patches()[4],
+        ):
+            current = context_session.read(self.associations, self.SESSION_ID)
+            with self.assertRaises(ContextError):
+                context_guided.attach_session(
+                    self.associations, self.store, current, repo_path=outside, pr=1, backend=None,
+                )
+        recovered = context_session.read(self.associations, self.SESSION_ID)
+        self.assertEqual(recovered["attachment_state"], "none")
+
+        # The same session can still explicitly refresh and later attach.
+        self.manifest = lifecycle.build_graph(
+            self.repository, pin=graph_fixtures.PIN,
+            indexer=graph_fixtures.indexer(graph_fixtures.graph_document()), root=self.private,
+        )
+        report, code = context_prepare.prepare(
+            self.associations, recovered, repo_root=self.repository, context_root=self.private,
+            packet_store=self.store, query="parse_config", source="impact", builder="codex",
+            refresh=True,
+        )
+        self.assertEqual((code, report["status"]), (0, "prepared"))
+        report, code = self.attach()
+        self.assertEqual((report["status"], code), ("attached", 0))
 
     def test_pending_retry_revalidates_the_actual_consumer_before_publication(self):
         """A resumed pending/uncertain attachment must revalidate the current
