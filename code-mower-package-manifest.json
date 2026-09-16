@@ -384,6 +384,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/board_local_observation.py",
+      "target": "src/code_mower/board_local_observation.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/board_observation.py",
       "target": "src/code_mower/board_observation.py"
     },

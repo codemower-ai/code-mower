@@ -30,6 +30,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from . import __version__ as CODE_MOWER_VERSION
+from . import board_local_observation
 from . import board_observation
 from . import board_store
 from . import config as code_mower_config
@@ -312,6 +313,8 @@ def status_payload(
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     jira_reader: controller.tracker_queue.JiraQueueReader | None = None,
     tracker_links: Mapping[tuple[str, str, str], int] | None = None,
+    local_observation: board_local_observation.LocalObservationInput | None = None,
+    local_observation_producer: Callable[..., dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     policy = None
     try:
@@ -343,7 +346,11 @@ def status_payload(
     }
     payload["orchestrator_lease"] = session_lease.observe_lease(start=config.repo_path)
     payload["agent_adapters"] = agent_adapters_payload(config)
-    payload["observations"] = observations_payload(config)
+    payload["observations"] = observations_payload(
+        config,
+        local_observation=local_observation,
+        local_observation_producer=local_observation_producer,
+    )
     payload["release_campaigns"] = release_campaigns_payload(config)
     payload["owner_queue"] = owner_queue_payload(payload)
     payload["supervised_pilot"] = supervised_pilot_payload(
@@ -1643,15 +1650,71 @@ def _observation_message(accounting: _ObservationAccounting) -> str:
     return "no local Board observations recorded yet"
 
 
-def observations_payload(config: BoardConfig) -> dict[str, Any]:
-    """Read locally recorded Board observations without producing any.
+def _with_local_observation(
+    payload: dict[str, Any],
+    config: BoardConfig,
+    *,
+    snapshot: board_local_observation.LocalObservationInput | None,
+    producer: Callable[..., dict[str, Any] | None] | None,
+) -> dict[str, Any]:
+    """Append one validated in-memory producer record without changing file coverage.
+
+    The producer owns the exact session/worktree correlation.  Board supplies
+    only its checkout scope and an immutable snapshot captured by a maintained
+    execution adapter.  A refusal or failure yields no record and cannot abort
+    the rest of the status refresh.  The returned record is validated again at
+    this trust boundary, then consumed through the same ``records`` list as
+    file-backed B0 observations; it is never persisted here.
+    """
+
+    if snapshot is None:
+        return payload
+    observe = producer or board_local_observation.observe_local_work
+    try:
+        record = observe(
+            repository=config.repo,
+            start=config.repo_path,
+            snapshot=snapshot,
+        )
+        if record is None:
+            return payload
+        validated = board_observation.validate(record)
+    except (Exception, SystemExit):  # noqa: BLE001 - optional evidence cannot abort Board
+        return payload
+    payload["records"].append(validated)
+    payload["produced_records"] = 1
+    if payload.get("available") is False:
+        # `available` describes whether this observation block has trustworthy
+        # evidence to show.  File coverage stays unavailable below -- the
+        # producer cannot repair a directory it never read -- but its validated
+        # in-memory record is independently available and must not be orphaned
+        # behind a block-level false value or the file-only failure message.
+        payload["available"] = True
+        payload["message"] = (
+            "local observation available; recorded observation files could not be read"
+        )
+    elif payload.get("message") == "no local Board observations recorded yet":
+        payload["message"] = ""
+    return payload
+
+
+def observations_payload(
+    config: BoardConfig,
+    *,
+    local_observation: board_local_observation.LocalObservationInput | None = None,
+    local_observation_producer: Callable[..., dict[str, Any] | None] | None = None,
+) -> dict[str, Any]:
+    """Read recorded observations and consume one optional local producer record.
 
     This is a consumer of the frozen ``code_mower.boardObservation.v1``
-    contract: every record is decoded by :mod:`board_observation` and a record
-    that fails that contract is dropped with its own bounded diagnostic instead
-    of being repaired, widened, or rendered. The Board never writes these
-    files, never resolves a session, and never contacts a provider to fill one
-    in; an empty directory is reported as "nothing recorded yet", which is a
+    contract: every file record is decoded by :mod:`board_observation` and a
+    record that fails that contract is dropped with its own bounded diagnostic
+    instead of being repaired, widened, or rendered.  A maintained execution
+    adapter may also supply one immutable :class:`LocalObservationInput`; the
+    pure producer resolves and binds it, and this boundary validates the result
+    once more before adding it in memory.  The Board never writes an
+    observation or contacts a provider to fill one in. An empty directory with
+    no produced record is reported as "nothing recorded yet", which is a
     different statement from "no work".
 
     Reading is bounded to ``MAX_OBSERVATION_FILES`` files. A directory holding
@@ -1731,6 +1794,10 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
         "attempted_files": 0,
         "read_files": 0,
         "accepted_records": 0,
+        # Produced records are not files and therefore never change the file
+        # accounting above.  At most one can be supplied by the checkout's
+        # typed local-observation hook during one refresh.
+        "produced_records": 0,
         "invalid_records": 0,
         "unreadable_files": 0,
         "unaccounted_files": 0,
@@ -1755,12 +1822,21 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
         "message": "could not read local Board observations",
         "available": False,
     }
+
+    def complete() -> dict[str, Any]:
+        return _with_local_observation(
+            payload,
+            config,
+            snapshot=local_observation,
+            producer=local_observation_producer,
+        )
+
     if path_state == "missing":
-        return payload
+        return complete()
     if path_state == "not_directory":
         payload.update(unreadable)
         payload["warnings"].append({"file": "", "message": "observation path is not a directory"})
-        return payload
+        return complete()
     if path_state == "unreadable":
         # Its own diagnostic, because it is its own fact: the path could not be
         # examined, which is neither "not there" nor "there but wrong kind".
@@ -1769,7 +1845,7 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
         payload["warnings"].append(
             {"file": "", "message": "could not check the local Board observation path"}
         )
-        return payload
+        return complete()
     try:
         selected, candidate_count = _select_observation_files(path)
     except OSError:
@@ -1780,11 +1856,11 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
         # entries it never listed would have said.
         payload.update(unreadable)
         payload["warnings"].append({"file": "", "message": "could not list local Board observations"})
-        return payload
+        return complete()
     accounting = _read_observation_records(path, selected, candidate_count)
     payload.update(accounting.payload())
     payload["message"] = _observation_message(accounting)
-    return payload
+    return complete()
 
 
 def release_campaigns_payload(
