@@ -511,6 +511,19 @@ the contract records suspension as the `suspended` lifecycle state and allows
 it only alongside the `failed` phase, so the failure state is read from runs
 that are not suspended and neither claim is ever made on the other's evidence.
 
+One run has one lifecycle-aware state, and every display that names, colours,
+groups, counts, or summarizes that run reads it from one place — the row
+headline and its state cues, the assignments line, the selected-work evidence
+panel, and the participant summary all agree by construction. A lifecycle state
+overrides the recorded phase only where it means something the phase cannot
+say, which in this contract is `suspended` alone: a suspended run reads as
+suspended everywhere, a cancelled run stays distinct from a failed one, an
+actual lifecycle failure still reads as failed, and complete, implementation
+complete, and running keep reading as themselves. The recorded phase survives
+only as raw contract evidence in the change signature, where it is compared
+alongside the recorded lifecycle state so a run that moves between the two is
+still detected as a change.
+
 Selection is kept by opaque work identity — session, worktree, and work id —
 not by row position, so a refresh that reorders, adds, or drops rows leaves the
 operator's choice where it was. One identity is one row: where the directory
@@ -526,8 +539,8 @@ the age of the oldest retained observation, the newest recorded event or
 observation as the last meaningful update, and one entry per run however many
 files observed it, kept as the worst-attested of those observations. The
 participant summary is built from this same deduplicated set, so a run that has
-moved phase is counted once, in the phase the newest observation records, and
-never again in the phase it has left. There is exactly one detail region. It is
+moved on is counted once, under the lifecycle-aware state the newest
+observation records, and never again under the state it has left. There is exactly one detail region. It is
 rendered inside the selected row, so at phone widths it follows the row it
 belongs to, and at desktop widths CSS places that same region in a second
 column of the row's own grid. It stays in normal flow at both widths, so the

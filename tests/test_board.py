@@ -3652,11 +3652,22 @@ def _board_view_model() -> str:
     return html[start : end + len(WORK_MODEL_END)]
 
 
-def _eval_board_view(expression: str, *args: object) -> object:
-    """Evaluate one shipped view-model expression against JSON arguments."""
+def _eval_board_view(expression: str, *args: object, mutate: tuple[str, str] | None = None) -> object:
+    """Evaluate one shipped view-model expression against JSON arguments.
 
+    ``mutate`` replaces one exact fragment of the shipped view model before it
+    runs, so a test can execute the code this replaced and prove that the
+    assertions it makes would actually catch its return.
+    """
+
+    model = _board_view_model()
+    if mutate is not None:
+        original, replacement = mutate
+        if model.count(original) != 1:  # pragma: no cover - guards the mutation
+            raise AssertionError(f"board view model no longer contains exactly one {original!r}")
+        model = model.replace(original, replacement)
     script = (
-        _board_view_model()
+        model
         + "\nconst ARGS = process.argv.slice(1).map(value => JSON.parse(value));\n"
         + f"console.log(JSON.stringify({expression}));\n"
     )
@@ -3756,6 +3767,102 @@ def _record_with_suspended_run(reference: str, *, reasons: list[str] | None = No
             "state": "suspended",
             "reason": "session_suspended",
             "next_action": "inspect_provider",
+        }
+    return board_observation.validate(record)
+
+
+# One accepted fixture per run phase the frozen contract allows, so a record
+# carrying that phase is always built from a shape the contract has already
+# accepted rather than assembled by hand.
+PHASE_FIXTURES = {
+    "assigned": "assigned",
+    "dispatched": "dispatched",
+    "observed_running": "observed_running",
+    "provider_progress": "provider_reported_progress",
+    "waiting_for_user": "waiting_for_user",
+    "waiting_for_approval": "waiting_for_approval",
+    "implementation_complete": "implementation_complete",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
+
+# A reason and next action the remote-session projection accepts for each
+# lifecycle state, so every combination below is a record a producer could
+# really emit.
+LIFECYCLE_ROUTES = {
+    "pending": ("none", "none"),
+    "running": ("none", "status"),
+    "waiting_for_user": ("user_input_required", "none"),
+    "waiting_for_approval": ("approval_required", "none"),
+    "complete": ("none", "none"),
+    "failed": ("session_failed", "inspect_provider"),
+    "suspended": ("session_suspended", "inspect_provider"),
+    "terminated": ("none", "none"),
+    "archived": ("none", "none"),
+    "uncertain": ("reconcile_dispatch", "status"),
+}
+
+# Every lifecycle state the frozen B0 contract accepts, against every phase it
+# allows that state to carry, plus the no-lifecycle case for each phase. The
+# expected label, class and cue are the operator meaning of the pair: the one
+# state whose truthful meaning is not its phase is `suspended`, which the
+# contract requires to carry the `failed` phase.
+LIFECYCLE_DISPLAY_MATRIX = (
+    (None, "assigned", "assigned", "muted", "?"),
+    (None, "dispatched", "dispatched", "warn", "~"),
+    (None, "observed_running", "observed running", "warn", "~"),
+    (None, "provider_progress", "provider reported progress", "warn", "~"),
+    (None, "waiting_for_user", "waiting for an answer", "warn", "~"),
+    (None, "waiting_for_approval", "waiting for approval", "warn", "~"),
+    (None, "implementation_complete", "implementation complete", "ok", "+"),
+    (None, "failed", "failed", "bad", "!"),
+    (None, "cancelled", "cancelled", "warn", "~"),
+    ("pending", "dispatched", "dispatched", "warn", "~"),
+    ("running", "observed_running", "observed running", "warn", "~"),
+    ("running", "provider_progress", "provider reported progress", "warn", "~"),
+    ("waiting_for_user", "waiting_for_user", "waiting for an answer", "warn", "~"),
+    ("waiting_for_approval", "waiting_for_approval", "waiting for approval", "warn", "~"),
+    ("complete", "implementation_complete", "implementation complete", "ok", "+"),
+    ("failed", "failed", "failed", "bad", "!"),
+    ("suspended", "failed", "suspended", "warn", "~"),
+    ("terminated", "cancelled", "cancelled", "warn", "~"),
+    ("archived", "implementation_complete", "implementation complete", "ok", "+"),
+    ("archived", "cancelled", "cancelled", "warn", "~"),
+    ("uncertain", "dispatched", "dispatched", "warn", "~"),
+)
+
+
+def _record_with_run_lifecycle(reference: str, phase: str, state: str | None) -> dict:
+    """One accepted record whose single run carries ``phase`` under ``state``.
+
+    The record is built from the accepted fixture for that phase and only its
+    lifecycle is rewritten, so the contract's own phase/basis, liveness and
+    lifecycle rules still decide whether the result is a record at all. No
+    reason is recorded, so what the views say about the run is decided by the
+    run rather than by a recorded blocker.
+    """
+
+    record = copy.deepcopy(_observation_fixture(PHASE_FIXTURES[phase]))
+    record["work"]["id"] = reference
+    record["work"]["reference"] = reference
+    record["work"]["reasons"] = []
+    record["work"]["primary"] = board_observation.derive_primary([])
+    for index, run in enumerate(record["work"]["runs"]):
+        run["id"] = f"run{index}-{reference}"
+        run["binding"]["work_id"] = reference
+        if state is None:
+            run["lifecycle"] = None
+            continue
+        reason, next_action = LIFECYCLE_ROUTES[state]
+        counts = (run["lifecycle"] or {}).get(
+            "counts", {"dispatch": 0, "message": 0, "cancel": 0, "collect": 0}
+        )
+        run["lifecycle"] = {
+            "schema": "code_mower.remote_session.v1",
+            "state": state,
+            "reason": reason,
+            "next_action": next_action,
+            "counts": counts,
         }
     return board_observation.validate(record)
 
@@ -6139,3 +6246,165 @@ class BoardWorkFirstViewTests(TestCase):
         rejected_nodes = _render_board_sequence([{"payload": rejected}])[0]
         self.assertIn("passed the observation contract", rejected_nodes["worklist"])
         self.assertIn("1 rejected by the observation contract", rejected_nodes["diagnostics"])
+
+
+# One expression over the shipped view model returning every run-level display
+# at once -- the row's own states, the assignments line, the selected-work
+# evidence panel and the participant summary -- so the displays are compared
+# against each other rather than each against its own expectation.
+RUN_DISPLAY_EXPRESSION = """(() => {
+  const rows = workRows(ARGS[0], ARGS[1]);
+  const summary = participantSummary(rows);
+  return {
+    rows: rows.map(row => ({
+      reference: row.reference,
+      states: row.states.map(state => [state.label, state.class, state.cue]),
+      assignments: row.assignments,
+      builder: (row.groups.find(group => group.name === "builder") || {items: []}).items
+        .map(item => [item.state, item.class, item.cue])
+    })),
+    participants: summary.map(entry => [
+      entry.provider,
+      entry.role,
+      entry.states.map(state => [state.label, state.count])
+    ])
+  };
+})()"""
+
+
+class BoardRunLifecycleDisplayTests(TestCase):
+    """Every run-level display names one run the same lifecycle-aware way.
+
+    The frozen contract requires the `suspended` lifecycle state to carry the
+    `failed` phase, so any display built from the phase alone reports a paused
+    provider session as a failed one. These tests execute the shipped page
+    JavaScript over every lifecycle state the contract accepts, against every
+    phase it allows that state to carry.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+
+    def _run_displays(self, records: list[dict], **kwargs: object) -> dict:
+        return _eval_board_view(
+            RUN_DISPLAY_EXPRESSION,
+            _observation_payload(records),
+            self.NOW_MS,
+            **kwargs,
+        )
+
+    def test_every_lifecycle_state_displays_one_run_the_same_way_everywhere(self) -> None:
+        vocabulary = {label for _, _, label, _, _ in LIFECYCLE_DISPLAY_MATRIX}
+        for state, phase, label, cls, cue in LIFECYCLE_DISPLAY_MATRIX:
+            with self.subTest(lifecycle=state, phase=phase):
+                reference = f"lifecycle-{state or 'none'}-{phase}"
+                record = _record_with_run_lifecycle(reference, phase, state)
+                view = self._run_displays([record])
+                row = view["rows"][0]
+                self.assertEqual(row["reference"], reference)
+                # The selected-work evidence panel, the assignments line and
+                # the participant summary all name and colour the one recorded
+                # run identically, and all three count it exactly once.
+                self.assertEqual(row["builder"], [[label, cls, cue]])
+                self.assertEqual(row["assignments"], [f"codex builder {label}"])
+                self.assertEqual(
+                    view["participants"], [["codex", "builder", [[label, 1]]]]
+                )
+                # No other run state in the contract's vocabulary is named by
+                # any of those displays, so a suspended run never reads as
+                # failed, a cancelled one never reads as failed, and an actual
+                # lifecycle failure never reads as either.
+                rendered = json.dumps([row["builder"], row["assignments"], view["participants"]])
+                for other in vocabulary - {label}:
+                    self.assertNotIn(other, rendered)
+
+    def test_a_suspended_run_never_carries_a_failed_row_state(self) -> None:
+        for state, phase, label, _, _ in LIFECYCLE_DISPLAY_MATRIX:
+            with self.subTest(lifecycle=state, phase=phase):
+                record = _record_with_run_lifecycle(f"states-{state or 'none'}-{phase}", phase, state)
+                states = [
+                    entry[0] for entry in self._run_displays([record])["rows"][0]["states"]
+                ]
+                if label == "suspended":
+                    self.assertIn("provider run suspended", states)
+                    self.assertNotIn("provider run failed", states)
+                    self.assertNotIn("provider run cancelled", states)
+                elif label == "failed":
+                    self.assertIn("provider run failed", states)
+                    self.assertNotIn("provider run suspended", states)
+                elif label == "cancelled":
+                    self.assertIn("provider run cancelled", states)
+                    self.assertNotIn("provider run failed", states)
+                else:
+                    self.assertNotIn("provider run failed", states)
+                    self.assertNotIn("provider run suspended", states)
+
+    def test_the_suspended_fixture_renders_no_failure_anywhere_on_the_page(self) -> None:
+        # The fixture the audit reproduced with: an accepted record whose run
+        # the provider suspended, which the contract records as the `failed`
+        # phase under the `suspended` lifecycle state.
+        record = _record_with_suspended_run("suspended-session")
+        frame = _render_board_sequence([{"payload": _observation_payload([record])}])[0]
+        worklist = frame["worklist"]
+        self.assertIn("provider run suspended", worklist)
+        self.assertIn("assignments: codex builder suspended", worklist)
+        # The detail is open on the first row, so this is the evidence panel.
+        self.assertIn("suspended", worklist)
+        self.assertIn("suspended 1", frame["participants"])
+        # Not one label, class or count on the whole page reports a failure.
+        for node, html in frame.items():
+            self.assertNotIn("failed", html, f"{node} reports a failure for a suspended run")
+
+    def test_one_suspended_run_and_one_failed_run_are_one_of_each(self) -> None:
+        suspended = _record_with_run_lifecycle("mixed-suspended", "failed", "suspended")
+        failed = _record_with_run_lifecycle("mixed-failed", "failed", "failed")
+        cancelled = _record_with_run_lifecycle("mixed-cancelled", "cancelled", "terminated")
+        view = self._run_displays([suspended, failed, cancelled])
+        # One entry for the one provider and role, counting each run under the
+        # state its own lifecycle records: one suspended, one failed and one
+        # cancelled, never three failures.
+        self.assertEqual(
+            view["participants"],
+            [["codex", "builder", [["cancelled", 1], ["failed", 1], ["suspended", 1]]]],
+        )
+        by_reference = {row["reference"]: row for row in view["rows"]}
+        self.assertEqual(by_reference["mixed-suspended"]["builder"], [["suspended", "warn", "~"]])
+        self.assertEqual(by_reference["mixed-failed"]["builder"], [["failed", "bad", "!"]])
+        self.assertEqual(by_reference["mixed-cancelled"]["builder"], [["cancelled", "warn", "~"]])
+
+    def test_the_timeline_reports_a_run_moving_from_suspended_to_failure(self) -> None:
+        suspended = _record_with_run_lifecycle("moving-run", "failed", "suspended")
+        failed = _record_with_run_lifecycle("moving-run", "failed", "failed")
+        frames = _render_board_sequence(
+            [
+                {"payload": _observation_payload([suspended])},
+                {"payload": _observation_payload([failed])},
+            ]
+        )
+        self.assertNotIn("failed", frames[0]["worklist"])
+        self.assertIn(
+            "moving-run moved from provider run suspended to provider run failed",
+            frames[1]["changes"],
+        )
+        self.assertIn("provider run failed", frames[1]["worklist"])
+        self.assertNotIn("suspended", frames[1]["worklist"])
+
+    def test_labelling_a_run_from_its_raw_phase_would_report_suspended_as_failed(self) -> None:
+        """The mutation the fix replaced, executed, so these checks have teeth."""
+
+        record = _record_with_run_lifecycle("mutation-suspended", "failed", "suspended")
+        raw_phase = self._run_displays(
+            [record],
+            # Emptying the lifecycle mapping is exactly raw-phase labelling:
+            # every run state becomes the phase the contract recorded.
+            mutate=('const LIFECYCLE_RUN_STATES = {suspended: "suspended"};',
+                    "const LIFECYCLE_RUN_STATES = {};"),
+        )
+        row = raw_phase["rows"][0]
+        self.assertEqual(row["builder"], [["failed", "bad", "!"]])
+        self.assertEqual(row["assignments"], ["codex builder failed"])
+        self.assertEqual(raw_phase["participants"], [["codex", "builder", [["failed", 1]]]])
+        self.assertIn("provider run failed", [entry[0] for entry in row["states"]])
+        # And the shipped view model, unmutated, says none of that.
+        shipped = self._run_displays([record])
+        self.assertEqual(shipped["rows"][0]["builder"], [["suspended", "warn", "~"]])
+        self.assertEqual(shipped["participants"], [["codex", "builder", [["suspended", 1]]]])

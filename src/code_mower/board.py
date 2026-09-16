@@ -1870,6 +1870,9 @@ _BOARD_HTML = """<!doctype html>
       automation: "automation",
       maintainer: "maintainer"
     };
+    // The contract's own phase vocabulary. Nothing renders from these two
+    // tables directly: they are the base the lifecycle-aware run-state tables
+    // below are derived from, and every display reads those instead.
     const PHASE_LABELS = {
       assigned: "assigned",
       dispatched: "dispatched",
@@ -1892,6 +1895,35 @@ _BOARD_HTML = """<!doctype html>
       failed: "bad",
       cancelled: "warn"
     };
+    // The frozen contract records a session the provider paused as the
+    // `suspended` lifecycle state, and it requires that state to carry the
+    // `failed` phase -- so any display built from the phase alone reports a
+    // paused session as a failed one. A lifecycle state is mapped here only
+    // where it means something its phase cannot say; every other state is
+    // already told truthfully by its own phase and is used unchanged, so
+    // cancelled stays cancelled, an actual lifecycle failure stays failed,
+    // and complete and running keep reading as themselves.
+    const LIFECYCLE_RUN_STATES = {suspended: "suspended"};
+    const RUN_STATE_LABELS = {...PHASE_LABELS, suspended: "suspended"};
+    const RUN_STATE_CLASSES = {...PHASE_CLASSES, suspended: "warn"};
+    // The one lifecycle-aware reading of one run. Everything that names,
+    // colours, groups, counts or summarizes a run reads this, so a run can
+    // never be called one thing in the headline and another in the evidence,
+    // the assignments or the participant summary. Raw `phase` survives only
+    // where it is labelled as contract evidence rather than operator status.
+    function runState(run) {
+      return lookup(LIFECYCLE_RUN_STATES, run?.lifecycle?.state, text(run?.phase));
+    }
+    function runDisplay(run, fallback) {
+      const state = runState(run);
+      const cls = lookup(RUN_STATE_CLASSES, state, "muted");
+      return {
+        state,
+        label: lookup(RUN_STATE_LABELS, state, state || text(fallback) || "unknown"),
+        class: cls,
+        cue: cueFor(cls)
+      };
+    }
     const BASIS_LABELS = {
       configured: "from configuration",
       requested: "from a request",
@@ -2048,12 +2080,16 @@ _BOARD_HTML = """<!doctype html>
     function workStates(work) {
       const evidence = work?.evidence || {};
       const runs = arrayOf(work?.runs);
+      // The same lifecycle-aware reading the run-level displays use, so the
+      // headline and the evidence, assignment and participant displays can
+      // only ever agree about what one run is.
+      const runStates = runs.map(runState);
       const facts = {
         stage: text(work?.stage),
         reasons: arrayOf(work?.reasons).map(text),
-        phases: runs.map(run => text(run?.phase)),
-        suspended: runs.some(run => text(run?.lifecycle?.state) === "suspended"),
-        failed: runs.some(run => text(run?.phase) === "failed" && text(run?.lifecycle?.state) !== "suspended"),
+        phases: runStates,
+        suspended: runStates.includes("suspended"),
+        failed: runStates.includes("failed"),
         review: text(evidence.review?.state),
         request: text(evidence.review_request?.state),
         ci: text(evidence.ci?.state),
@@ -2101,6 +2137,10 @@ _BOARD_HTML = """<!doctype html>
           const item = measurements[name] || {};
           parts.push(`${name}=${text(item.value)}:${text(item.coverage)}:${text(item.observed)}:${text(item.total)}`);
         }
+        // Raw contract evidence, not operator status: the recorded phase and
+        // the recorded lifecycle state are both included so a run that moves
+        // between them -- suspended to failed, or back -- is detected as a
+        // change even though neither reading is rendered from here.
         for (const run of arrayOf(work.runs).slice().sort((a, b) => text(a?.id).localeCompare(text(b?.id)))) {
           parts.push(`run:${text(run?.id)}=${text(run?.provider)}:${text(run?.role)}:${text(run?.phase)}:${text(run?.basis)}:${text(run?.reported_stage)}:${text(run?.event_at)}:${text(run?.lifecycle?.state)}:${text(run?.lifecycle?.reason)}`);
         }
@@ -2187,17 +2227,20 @@ _BOARD_HTML = """<!doctype html>
       const runs = arrayOf(work.runs);
       const reasons = arrayOf(work.reasons).map(text);
       const builder = runs.length
-        ? runs.map(run => ({
-            name: "run",
-            label: `${text(run?.provider) || "provider"} ${text(run?.role) || "role"}`,
-            state: lookup(PHASE_LABELS, run?.phase, text(run?.phase) || "unknown"),
-            class: lookup(PHASE_CLASSES, run?.phase, "muted"),
-            cue: cueFor(lookup(PHASE_CLASSES, run?.phase, "muted")),
-            source: sourceNote(sources[text(run?.source_id)]),
-            head: "",
-            coverage: "",
-            note: `${lookup(BASIS_LABELS, run?.basis, text(run?.basis))}${text(run?.reported_stage) ? `; provider reported stage ${text(run.reported_stage)}` : ""}${run?.heartbeat_at ? "; heartbeat recorded" : "; no heartbeat recorded"}`
-          }))
+        ? runs.map(run => {
+            const presentation = runDisplay(run);
+            return {
+              name: "run",
+              label: `${text(run?.provider) || "provider"} ${text(run?.role) || "role"}`,
+              state: presentation.label,
+              class: presentation.class,
+              cue: presentation.cue,
+              source: sourceNote(sources[text(run?.source_id)]),
+              head: "",
+              coverage: "",
+              note: `${lookup(BASIS_LABELS, run?.basis, text(run?.basis))}${text(run?.reported_stage) ? `; provider reported stage ${text(run.reported_stage)}` : ""}${run?.heartbeat_at ? "; heartbeat recorded" : "; no heartbeat recorded"}`
+            };
+          })
         : [{name: "run", label: "provider run", state: NOT_RECORDED, class: "muted", cue: CUES.muted, source: "no run recorded", head: "", coverage: "", note: "No provider run is recorded for this work item."}];
       const policyItems = [
         evidenceItem("lease", "orchestrator lease", evidence.lease, sources[text(evidence.lease?.source_id)]),
@@ -2251,7 +2294,10 @@ _BOARD_HTML = """<!doctype html>
       const participants = [...arrayOf(record?.work?.runs), ...arrayOf(record?.unlinked)].map(run => ({
         provider: text(run?.provider) || "unknown",
         role: text(run?.role) || "unknown",
-        phase: text(run?.phase) || "not linked to a session",
+        // The lifecycle-aware run state, not the raw phase, so a participant
+        // is summarized as exactly what its row and its evidence panel say.
+        // An unlinked run records no phase at all and claims none here.
+        state: runState(run) || "not linked to a session",
         freshness: text(runSources[text(run?.source_id)]?.freshness) || "unavailable"
       }));
       const base = {
@@ -2281,7 +2327,7 @@ _BOARD_HTML = """<!doctype html>
           head_sha: text(work.pull_request?.head_sha),
           action_label: lookup(ACTION_LABELS, work.primary?.action, "no next action recorded"),
           actor_label: lookup(ACTOR_LABELS, work.primary?.actor, "no responsible role recorded"),
-          assignments: arrayOf(work.runs).map(run => `${text(run?.provider)} ${text(run?.role)} ${lookup(PHASE_LABELS, run?.phase, text(run?.phase))}`),
+          assignments: arrayOf(work.runs).map(run => `${text(run?.provider)} ${text(run?.role)} ${runDisplay(run).label}`),
           reasons: arrayOf(work.reasons).map(text),
           groups: evidenceGroups(record),
           measurements: [
@@ -2596,19 +2642,21 @@ _BOARD_HTML = """<!doctype html>
           || a.reference.localeCompare(b.reference)
           || a.key.localeCompare(b.key));
     }
-    // Who is recorded as taking part, and in what phase. Nothing is inferred:
-    // a participant is only ever reported in the phases its own runs record,
+    // Who is recorded as taking part, and in what state. Nothing is inferred:
+    // a participant is only ever reported in the states its own runs record,
     // alongside how fresh the source behind them is. The summary is built from
     // the same deduplicated rows the work list renders, so an observation a
     // newer file has replaced can neither count its runs a second time nor keep
-    // reporting a phase the work has already moved past.
+    // reporting a state the work has already moved past. Each run is counted
+    // under its lifecycle-aware state, so one suspended run and one failed run
+    // are one of each and never two failures.
     function participantSummary(rows) {
       const summary = new Map();
       for (const row of rows) {
         for (const run of row.participants) {
           const key = `${run.provider}/${run.role}`;
-          const entry = summary.get(key) || {provider: run.provider, role: run.role, count: 0, freshness: "fresh", phases: new Map()};
-          entry.phases.set(run.phase, (entry.phases.get(run.phase) || 0) + 1);
+          const entry = summary.get(key) || {provider: run.provider, role: run.role, count: 0, freshness: "fresh", states: new Map()};
+          entry.states.set(run.state, (entry.states.get(run.state) || 0) + 1);
           entry.count += 1;
           if ((FRESHNESS_RANK[run.freshness] ?? 3) > (FRESHNESS_RANK[entry.freshness] ?? 3)) entry.freshness = run.freshness;
           summary.set(key, entry);
@@ -2621,9 +2669,9 @@ _BOARD_HTML = """<!doctype html>
           count: entry.count,
           freshness: entry.freshness,
           class: FRESHNESS_CLASSES[entry.freshness] || "muted",
-          phases: [...entry.phases.entries()]
+          states: [...entry.states.entries()]
             .sort((a, b) => a[0].localeCompare(b[0]))
-            .map(([phase, count]) => ({phase, count, label: lookup(PHASE_LABELS, phase, phase)}))
+            .map(([state, count]) => ({state, count, label: lookup(RUN_STATE_LABELS, state, state)}))
         }))
         .sort((a, b) => a.provider.localeCompare(b.provider) || a.role.localeCompare(b.role));
     }
@@ -3187,7 +3235,7 @@ _BOARD_HTML = """<!doctype html>
       ].filter(Boolean).join(""));
       const participants = participantSummary(observationRows);
       put("participants", participants.length
-        ? participants.map(participant => `<div class="row"><div class="line"><b>${esc(participant.provider)}</b>${pill(participant.role)}${cuePill(`worst source ${participant.freshness}`, participant.class)}</div><div class="line">${participant.phases.map(phase => pill(`${phase.label} ${phase.count}`)).join("")}</div><div class="muted">${esc(participant.count)} recorded run${participant.count === 1 ? "" : "s"}; phases are what the records state, not a claim that anything is running now.</div></div>`).join("")
+        ? participants.map(participant => `<div class="row"><div class="line"><b>${esc(participant.provider)}</b>${pill(participant.role)}${cuePill(`worst source ${participant.freshness}`, participant.class)}</div><div class="line">${participant.states.map(state => pill(`${state.label} ${state.count}`)).join("")}</div><div class="muted">${esc(participant.count)} recorded run${participant.count === 1 ? "" : "s"}; run states are what the records state, not a claim that anything is running now.</div></div>`).join("")
         : empty("No participant run is recorded in any local observation."));
       const sourceList = sourceRows(data, nowMs);
       put("sources", sourceList.length
