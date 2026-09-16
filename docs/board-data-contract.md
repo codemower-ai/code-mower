@@ -56,8 +56,9 @@ the board's `/api/status` response. It reads opt-in metadata files from
 board's `/api/status` response as `observations`. It carries validated
 `code_mower.boardObservation.v1` records read from
 `.code-mower/board/observations/*.json` by default, plus bounded diagnostics for
-records the observation contract rejected. The Board only consumes that
-contract; it never produces an observation.
+records the observation contract rejected and the file-level coverage of that
+bounded read. The Board only consumes that contract; it never produces an
+observation.
 
 `code_mower.supervisedPilot.v1` is the local supervised-pilot payload embedded
 as `supervised_pilot` in the board's `/api/status` response when
@@ -652,6 +653,13 @@ Slack-specific control, no form, and no non-GET request.
 - **An empty directory is not an empty queue.** With no observation recorded,
   the work list says so rather than reporting no work, and the GitHub-derived
   queues below it still render.
+- **A bounded read is not the whole record set.** The Board reads at most 32
+  observation files per refresh. When more candidates exist, the work list
+  warns above its rows that the snapshot is incomplete, the Now header and the
+  chrome carry that warning into every view, and no row may claim complete
+  coverage, an idle session, or that there is no work. An idle `no_work`
+  snapshot reads as *idle in the files read* rather than *idle with complete
+  coverage*, because an unread file could record work in exactly that scope.
 
 ## Board Observations
 
@@ -672,10 +680,36 @@ per refresh, and the observation contract itself bounds each record to
 what was asked for, with the contract's own `invalid_contract` diagnostic, and
 its remainder is never loaded or decoded.
 
+A directory holding more than 32 `*.json` files is **not** silently reduced to
+whichever 32 happened to be reached. Every candidate is counted, the bounded
+subset is chosen deterministically, and the shortfall is reported as file-level
+coverage so no consumer can read a truncated snapshot as the whole local record
+set. Selection is a total order over *(modification time descending, file name
+ascending)*, which is deterministic whatever order the filesystem lists entries
+in and prefers the most recently written files, so a current record is not
+starved by an alphabetically earlier stale one. The frozen record contract
+guarantees nothing about file names or file times, so that preference is a
+conservative best effort and never evidence: an overflowing directory is
+reported as incomplete however it was selected, and a file whose time cannot be
+read simply loses the preference. Emission order stays file-name order, so a
+directory inside the cap reads exactly as it did before. Counting the candidate
+set never widens the read — at most 32 files are opened, each with one bounded
+`MAX_BYTES + 1` request.
+
 The block carries:
 
 - `records[]` — validated `code_mower.boardObservation.v1` records, in file-name
   order.
+- `coverage`, `truncated`, `file_cap`, `candidate_files`, `read_files`,
+  `omitted_files` and `selection` — how much of the candidate file set those
+  records were built from. `coverage` is a closed vocabulary: `complete` when
+  every candidate file was read, `partial` when the cap left files unread, and
+  `unavailable` when the directory could not be listed at all (where
+  `candidate_files` and `omitted_files` are `null` rather than an invented
+  total). This is file coverage and is deliberately separate from a record's own
+  source `coverage`, and from the contract's record diagnostics: a rejected
+  record and an unread file are different facts. The metadata is counts only —
+  it names no file and no local path.
 - `rejected` and `warnings[]` — the count of records that failed, with the
   contract's own fixed diagnostic (`invalid_contract`, `invalid_route`,
   `identity_mismatch`, and so on). Those diagnostics deliberately omit observed

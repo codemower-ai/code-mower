@@ -6,6 +6,7 @@ import http.client
 import itertools
 import json
 import math
+import os
 import re
 import shutil
 import signal
@@ -3745,6 +3746,13 @@ def _record_with_reasons(fixture: str, reference: str, reasons: list[str]) -> di
     return board_observation.validate(record)
 
 
+def _referenced_record(reference: str) -> dict:
+    """One accepted record distinguishable from every other by its reference."""
+
+    fixture = _observation_fixture("observed_running")
+    return _record_with_reasons("observed_running", reference, fixture["work"]["reasons"])
+
+
 def _record_with_suspended_run(reference: str, *, reasons: list[str] | None = None) -> dict:
     """One accepted record whose run the provider suspended rather than failed.
 
@@ -4480,6 +4488,188 @@ class BoardObservationReaderTests(TestCase):
                 board.BoardConfig(repo="owner/repo", observations_path=str(directory))
             )
         self.assertEqual(len(payload["records"]), board.MAX_OBSERVATION_FILES)
+
+    def _fill(self, directory: Path, count: int, *, ages: bool = False) -> list[str]:
+        """Write ``count`` distinguishable accepted records, newest name last."""
+
+        names = []
+        for index in range(count):
+            name = f"obs-{index:03d}.json"
+            self._write(directory, name, _referenced_record(f"work-{index:03d}"))
+            if ages:
+                # Modification time rises with the name, so the alphabetically
+                # first files are the oldest ones -- exactly the arrangement in
+                # which an alphabetical cap would keep the stalest records and
+                # drop every current one.
+                stamp = 1_600_000_000 + index
+                os.utime(directory / name, (stamp, stamp))
+            names.append(name)
+        return names
+
+    def _references(self, payload: dict) -> list[str]:
+        return [record["work"]["reference"] for record in payload["records"]]
+
+    def test_file_coverage_is_reported_at_every_cap_boundary(self) -> None:
+        """Exactly at the cap is complete; one file past it is not.
+
+        A directory larger than the cap is still read bounded, but the shortfall
+        is counted and stated rather than disappearing into a snapshot that
+        looks whole.
+        """
+
+        cap = board.MAX_OBSERVATION_FILES
+        for count in (0, cap - 1, cap, cap + 1, cap + 9):
+            with self.subTest(files=count), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                self._fill(directory, count)
+                payload = board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+                read = min(count, cap)
+                self.assertTrue(payload["available"])
+                self.assertEqual(payload["file_cap"], cap)
+                self.assertEqual(payload["candidate_files"], count)
+                self.assertEqual(payload["read_files"], read)
+                self.assertEqual(payload["omitted_files"], count - read)
+                self.assertEqual(len(payload["records"]), read)
+                self.assertEqual(payload["rejected"], 0)
+                self.assertEqual(payload["truncated"], count > cap)
+                self.assertEqual(payload["coverage"], "partial" if count > cap else "complete")
+                self.assertEqual(payload["selection"], board.OBSERVATION_SELECTION)
+                if count > cap:
+                    self.assertIn(f"{read} of {count}", payload["message"])
+                    self.assertIn("incomplete", payload["message"])
+                elif count:
+                    # A directory inside the cap reads exactly as it did
+                    # before: every record, in file-name order, no message.
+                    self.assertEqual(payload["message"], "")
+                    self.assertEqual(
+                        self._references(payload), [f"work-{index:03d}" for index in range(count)]
+                    )
+
+    def test_an_overflowing_directory_stays_bounded_in_files_and_in_bytes(self) -> None:
+        cap = board_observation.MAX_BYTES
+        board_observation.schema()
+        reads: list[int] = []
+        real_open = Path.open
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._fill(directory, board.MAX_OBSERVATION_FILES * 3 + 4)
+
+            def recording_open(self: Path, *args: object, **kwargs: object) -> object:
+                handle = real_open(self, *args, **kwargs)
+                return _RecordingHandle(handle, reads) if self.parent == directory else handle
+
+            with patch.object(Path, "open", recording_open):
+                payload = board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+
+        # Counting the whole candidate set never widens the read: at most the
+        # cap many files are opened, each with one bounded request.
+        self.assertEqual(reads, [cap + 1] * board.MAX_OBSERVATION_FILES)
+        self.assertEqual(payload["candidate_files"], board.MAX_OBSERVATION_FILES * 3 + 4)
+        self.assertEqual(payload["read_files"], board.MAX_OBSERVATION_FILES)
+        self.assertTrue(payload["truncated"])
+
+    def test_selection_is_deterministic_under_reversed_directory_iteration(self) -> None:
+        """Directory order is not an input to which files are read."""
+
+        real_scandir = os.scandir
+
+        class _ReversedScan:
+            def __init__(self, entries: list[object]) -> None:
+                self._entries = entries
+
+            def __enter__(self) -> object:
+                return iter(self._entries)
+
+            def __exit__(self, *exc: object) -> bool:
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._fill(directory, board.MAX_OBSERVATION_FILES + 7, ages=True)
+            config = board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            forward = board.observations_payload(config)
+
+            def reversed_scandir(path: object) -> object:
+                with real_scandir(path) as entries:
+                    return _ReversedScan(list(entries)[::-1])
+
+            with patch.object(board.os, "scandir", reversed_scandir):
+                backward = board.observations_payload(config)
+
+        self.assertEqual(self._references(forward), self._references(backward))
+        self.assertEqual(forward["candidate_files"], backward["candidate_files"])
+        self.assertEqual(forward["omitted_files"], backward["omitted_files"])
+
+    def test_the_bounded_set_does_not_systematically_starve_current_records(self) -> None:
+        """The cap keeps the most recently written files, not the first names.
+
+        File times are not part of the frozen record contract, so this is a
+        best-effort preference rather than evidence -- which is why the read is
+        reported as incomplete either way.
+        """
+
+        cap = board.MAX_OBSERVATION_FILES
+        extra = 8
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._fill(directory, cap + extra, ages=True)
+            payload = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            )
+
+        self.assertEqual(
+            self._references(payload),
+            [f"work-{index:03d}" for index in range(extra, cap + extra)],
+        )
+        # Alphabetically first is exactly what is dropped here, so the newest
+        # records survive the cap instead of being starved by it.
+        self.assertNotIn("work-000", self._references(payload))
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["omitted_files"], extra)
+
+    def test_truncation_metadata_names_no_file_and_no_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for index in range(board.MAX_OBSERVATION_FILES + 3):
+                self._write(
+                    directory,
+                    f"private-session-{index:03d}.json",
+                    _referenced_record(f"work-{index:03d}"),
+                )
+            payload = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            )
+
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["warnings"], [])
+        encoded = json.dumps(payload)
+        self.assertNotIn("private-session", encoded)
+        self.assertNotIn(str(directory), encoded)
+        self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+        # Truncation is counted metadata; the contract's record diagnostics stay
+        # their own closed vocabulary and say nothing about unread files.
+        self.assertNotIn("truncat", json.dumps(payload["warnings"]))
+
+    def test_an_unlistable_directory_reports_unavailable_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            with patch.object(board.os, "scandir", side_effect=OSError("denied")):
+                payload = board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["coverage"], "unavailable")
+        self.assertFalse(payload["truncated"])
+        # Nothing was counted, so no total is invented for it.
+        self.assertIsNone(payload["candidate_files"])
+        self.assertIsNone(payload["omitted_files"])
+        self.assertEqual(payload["read_files"], 0)
 
     def test_an_oversize_file_is_read_bounded_and_rejected_before_it_is_decoded(self) -> None:
         cap = board_observation.MAX_BYTES
@@ -7074,3 +7264,205 @@ class BoardSessionScopeReconciliationTests(TestCase):
         self.assertEqual(shipped["keys"], [_work_key("alpha")])
         self.assertEqual(shipped["headlines"], ["provider run observed"])
         self.assertNotIn("nothing to do in this session", shipped["actions"])
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardObservationCoverageViewTests(TestCase):
+    """A bounded read that left files unread is stated, not quietly rendered.
+
+    The Board reads at most `MAX_OBSERVATION_FILES` observation files per
+    refresh. Before this, a larger directory produced a page that looked
+    exactly like a complete one: the API reported the records as available, the
+    work list rendered them as the local record set, and an idle snapshot among
+    them claimed the session had no work. These tests hold the opposite: the
+    shortfall is counted in `/api/status`, warned about in the work-first views,
+    and stated with its cap semantics in Health.
+    """
+
+    def _block(self, records: list[dict], *, candidates: int, cap: int | None = None) -> dict:
+        """The observations block the reader emits for `candidates` files."""
+
+        cap = board.MAX_OBSERVATION_FILES if cap is None else cap
+        read = min(candidates, cap)
+        omitted = candidates - read
+        return {
+            "schema": board.BOARD_OBSERVATIONS_SCHEMA,
+            "record_schema": board_observation.SCHEMA,
+            "available": True,
+            "path": lane_status.LOCAL_PATH_REDACTION,
+            "path_redacted": True,
+            "path_exists": True,
+            "records": records,
+            "warnings": [],
+            "rejected": 0,
+            "coverage": "partial" if omitted else "complete",
+            "truncated": bool(omitted),
+            "file_cap": cap,
+            "candidate_files": candidates,
+            "read_files": read,
+            "omitted_files": omitted,
+            "selection": board.OBSERVATION_SELECTION,
+            "message": (
+                f"{read} of {candidates} local Board observation files were read "
+                f"(cap {cap}), so this snapshot is incomplete"
+            )
+            if omitted
+            else "",
+        }
+
+    def test_api_truth_and_every_board_claim_come_from_one_read(self) -> None:
+        cap = board.MAX_OBSERVATION_FILES
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for index in range(cap + 9):
+                (directory / f"obs-{index:03d}.json").write_text(
+                    json.dumps(_referenced_record(f"work-{index:03d}")), encoding="utf-8"
+                )
+            block = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            )
+            local_path = str(directory)
+
+        # /api/status states the shortfall rather than reporting availability
+        # alone.
+        self.assertTrue(block["truncated"])
+        self.assertEqual(block["coverage"], "partial")
+        self.assertEqual(
+            [block["candidate_files"], block["read_files"], block["omitted_files"]],
+            [cap + 9, cap, 9],
+        )
+
+        nodes = _render_board_dom(_observation_payload([], observations=block))
+        # The work list warns above the rows, so nothing a row says can be read
+        # as the whole local record set.
+        self.assertIn("Incomplete snapshot", nodes["worklist"])
+        self.assertIn(f"{cap} of {cap + 9} observation files read (cap {cap})", nodes["worklist"])
+        self.assertIn("not the whole local record set", nodes["worklist"])
+        # Now says it beside "Do next", and the chrome carries it into every
+        # other view.
+        self.assertIn("Incomplete snapshot", nodes["worknow"])
+        self.assertIn("Observation files", nodes["summary"])
+        self.assertIn("incomplete snapshot", nodes["chrome"])
+        self.assertIn("in the files read", nodes["chrome"])
+        # Health states the cap, the counts and how the read set was chosen.
+        self.assertIn(f"{cap} of {cap + 9} observation files read (cap {cap})", nodes["diagnostics"])
+        self.assertIn("9 not read", nodes["diagnostics"])
+        self.assertIn(board.OBSERVATION_SELECTION, nodes["diagnostics"])
+        # None of that names a file or a local path.
+        rendered = json.dumps(nodes)
+        self.assertNotIn(local_path, rendered)
+        self.assertNotIn("obs-0", rendered)
+
+    def test_a_directory_inside_the_cap_renders_exactly_as_before(self) -> None:
+        cap = board.MAX_OBSERVATION_FILES
+        for candidates in (1, cap):
+            with self.subTest(files=candidates):
+                nodes = _render_board_dom(
+                    _observation_payload(
+                        [],
+                        observations=self._block(
+                            [_observation_fixture("no_work")], candidates=candidates
+                        ),
+                    )
+                )
+                self.assertNotIn("Incomplete snapshot", nodes["worklist"])
+                self.assertNotIn("Incomplete snapshot", nodes["worknow"])
+                self.assertNotIn("incomplete snapshot", nodes["chrome"])
+                self.assertIn("idle with complete coverage", nodes["worklist"])
+                self.assertIn("nothing to do in this session", nodes["worklist"])
+
+    def test_idle_is_not_claimed_when_candidate_files_went_unread(self) -> None:
+        """Exactly at the cap the session is idle; one file past it, it is not.
+
+        An unread file can record work in this very scope, so an idle snapshot
+        stops being authoritative about the session the moment the read is
+        incomplete. This is the mutation the P2 describes: the records are
+        identical in both readings, and only the file coverage differs.
+        """
+
+        cap = board.MAX_OBSERVATION_FILES
+        record = _observation_fixture("no_work")
+        complete = _render_board_dom(
+            _observation_payload([], observations=self._block([record], candidates=cap))
+        )["worklist"]
+        truncated = _render_board_dom(
+            _observation_payload([], observations=self._block([record], candidates=cap + 1))
+        )["worklist"]
+
+        self.assertIn("idle with complete coverage", complete)
+        self.assertNotIn("idle with complete coverage", truncated)
+        self.assertNotIn("nothing to do in this session", truncated)
+        self.assertIn("idle in the files read", truncated)
+        self.assertIn("before treating this session as idle", truncated)
+        # The record is still shown for what it is, with the reason its claim
+        # is not being repeated.
+        self.assertIn("recorded complete, not confirmed", truncated)
+        self.assertIn("went unread this refresh", truncated)
+
+    def test_an_empty_truncated_read_is_not_reported_as_nothing_recorded(self) -> None:
+        nodes = _render_board_dom(
+            _observation_payload(
+                [], observations=self._block([], candidates=board.MAX_OBSERVATION_FILES + 4)
+            )
+        )
+        worklist = nodes["worklist"]
+        self.assertIn("incomplete", worklist)
+        self.assertIn("evidence that there is no work", worklist)
+        self.assertNotIn("No local Board observation is recorded yet", worklist)
+        self.assertNotIn("No local Board observation passed", worklist)
+        # Health's own empty states stop reading as measured absences too.
+        self.assertIn("this snapshot is incomplete", nodes["participants"])
+        self.assertIn("this snapshot is incomplete", nodes["sources"])
+
+    def test_the_coverage_reading_states_cap_and_counts(self) -> None:
+        cap = board.MAX_OBSERVATION_FILES
+        at_cap, past_cap, unavailable = (
+            _eval_board_truth(
+                "observationCoverage(ARGS[0])",
+                {"observations": self._block([], candidates=cap)},
+            ),
+            _eval_board_truth(
+                "observationCoverage(ARGS[0])",
+                {"observations": self._block([], candidates=cap + 5)},
+            ),
+            _eval_board_truth(
+                "observationCoverage(ARGS[0])",
+                {
+                    "observations": {
+                        "coverage": "unavailable",
+                        "truncated": False,
+                        "file_cap": cap,
+                        "candidate_files": None,
+                        "read_files": 0,
+                        "omitted_files": None,
+                    }
+                },
+            ),
+        )
+
+        self.assertFalse(at_cap["truncated"])
+        self.assertEqual(at_cap["read"], cap)
+        self.assertEqual(at_cap["omitted"], 0)
+        self.assertEqual(at_cap["label"], f"{cap} of {cap} observation files read (cap {cap})")
+        self.assertEqual(at_cap["note"], "")
+
+        self.assertTrue(past_cap["truncated"])
+        self.assertEqual(past_cap["omitted"], 5)
+        self.assertEqual(past_cap["class"], "warn")
+        self.assertIn("incomplete", past_cap["note"])
+        self.assertIn("idle session", past_cap["note"])
+
+        # An unreadable directory is not a complete one: no total is invented,
+        # and nothing downstream may read it as coverage.
+        self.assertFalse(unavailable["truncated"])
+        self.assertEqual(unavailable["class"], "bad")
+        self.assertIsNone(unavailable["candidates"])
+        self.assertEqual(unavailable["label"], "observation file coverage unavailable")
+
+        # A payload carrying no coverage at all is neutral rather than good
+        # news: nothing here may render as a complete read.
+        unknown = _eval_board_truth("observationCoverage(ARGS[0])", {})
+        self.assertFalse(unknown["truncated"])
+        self.assertEqual(unknown["state"], "unknown")
+        self.assertEqual(unknown["class"], "muted")
+        self.assertEqual(unknown["label"], "observation file coverage unknown")

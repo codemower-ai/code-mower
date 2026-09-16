@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import errno
+import heapq
 import json
 import os
 import re
@@ -55,6 +56,12 @@ DEFAULT_CAMPAIGNS_RELATIVE_PATH = Path(".code-mower") / "campaigns"
 # Bounded so a directory left full of records cannot turn one page load into an
 # unbounded read. The contract itself bounds each record to MAX_BYTES.
 MAX_OBSERVATION_FILES = 32
+# Which bounded subset of a larger directory is read, named as a fixed token so
+# a consumer can state the policy without restating it. The frozen record
+# contract guarantees nothing about file names or file times, so modification
+# time is used only as a best-effort recency preference -- never as evidence --
+# and a directory that overflows the cap is always reported as incomplete.
+OBSERVATION_SELECTION = "newest_modified_then_name"
 SECRET_VALUE_RE = re.compile(
     r"(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})"
 )
@@ -1176,6 +1183,46 @@ def prune_stale_agent_adapters(
     return result
 
 
+def _select_observation_files(path: Path) -> tuple[list[str], int]:
+    """Choose the bounded file set to read, and count every candidate.
+
+    The whole candidate set is counted so truncation can be reported, but only
+    ``MAX_OBSERVATION_FILES`` entries are ever retained, so a directory left
+    full of records costs one bounded selection rather than an unbounded list.
+
+    Selection is a total order over ``(modification time descending, file name
+    ascending)``: it is therefore deterministic whatever order the filesystem
+    hands entries back in, and it prefers the most recently written files so a
+    newer record is not starved by an alphabetically earlier one. The frozen
+    record contract guarantees nothing about file names or file times, so that
+    preference is a conservative best effort and never an assertion -- a file
+    whose time cannot be read sorts last by name, and an overflowing directory
+    is reported as incomplete however it was selected. Emission order stays
+    file-name order, unchanged from a directory that fits inside the cap.
+    """
+
+    total = 0
+
+    def candidates() -> Any:
+        nonlocal total
+        with os.scandir(path) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".json"):
+                    continue
+                try:
+                    modified = entry.stat().st_mtime_ns
+                except OSError:
+                    # Unreadable metadata is not evidence of anything; the file
+                    # stays a candidate and simply loses the recency
+                    # preference.
+                    modified = 0
+                total += 1
+                yield (-modified, entry.name)
+
+    selected = heapq.nsmallest(MAX_OBSERVATION_FILES, candidates())
+    return sorted(name for _key, name in selected), total
+
+
 def observations_payload(config: BoardConfig) -> dict[str, Any]:
     """Read locally recorded Board observations without producing any.
 
@@ -1186,6 +1233,14 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
     files, never resolves a session, and never contacts a provider to fill one
     in; an empty directory is reported as "nothing recorded yet", which is a
     different statement from "no work".
+
+    Reading is bounded to ``MAX_OBSERVATION_FILES`` files. A directory holding
+    more than that is not silently reduced to whatever the cap happened to
+    reach: the whole candidate set is counted, the bounded subset is chosen
+    deterministically, and the shortfall is reported as file-level coverage so
+    no consumer can read a truncated snapshot as the whole local record set.
+    That coverage describes the files, not a record's own source coverage, and
+    it is carried separately from the contract's closed record diagnostics.
     """
 
     path = _observations_path(config)
@@ -1199,23 +1254,45 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
         "records": [],
         "warnings": [],
         "rejected": 0,
+        # File-level coverage of this read. `coverage` is a closed vocabulary
+        # -- complete, partial, unavailable -- and states how much of the
+        # candidate file set the records below were built from; it is not a
+        # record's source coverage and says nothing about work.
+        "coverage": "complete",
+        "truncated": False,
+        "file_cap": MAX_OBSERVATION_FILES,
+        "candidate_files": 0,
+        "read_files": 0,
+        "omitted_files": 0,
+        "selection": OBSERVATION_SELECTION,
         "message": "no local Board observations recorded yet",
+    }
+    unreadable = {
+        "coverage": "unavailable",
+        "candidate_files": None,
+        "read_files": 0,
+        "omitted_files": None,
+        "message": "could not read local Board observations",
+        "available": False,
     }
     if not path.exists():
         return payload
     if not path.is_dir():
-        payload["available"] = False
+        payload.update(unreadable)
         payload["warnings"].append({"file": "", "message": "observation path is not a directory"})
-        payload["message"] = "could not read local Board observations"
         return payload
     try:
-        candidates = sorted(path.glob("*.json"))[:MAX_OBSERVATION_FILES]
+        selected, candidate_count = _select_observation_files(path)
     except OSError:
-        payload["available"] = False
+        payload.update(unreadable)
         payload["warnings"].append({"file": "", "message": "could not list local Board observations"})
-        payload["message"] = "could not read local Board observations"
         return payload
-    for record_file in candidates:
+    payload["candidate_files"] = candidate_count
+    payload["read_files"] = len(selected)
+    payload["omitted_files"] = candidate_count - len(selected)
+    payload["truncated"] = payload["omitted_files"] > 0
+    payload["coverage"] = "partial" if payload["truncated"] else "complete"
+    for record_file in (path / name for name in selected):
         # The contract bounds a record to MAX_BYTES, so at most one byte past
         # that bound is ever read: an oversize file is rejected on the length
         # of what was asked for, without the remainder being loaded or decoded.
@@ -1239,7 +1316,15 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
             # deliberately omits observed values and local paths.
             payload["rejected"] += 1
             payload["warnings"].append({"file": record_file.name, "message": str(exc)})
-    if payload["records"]:
+    if payload["truncated"]:
+        # Said first and unconditionally: whatever the records below turned out
+        # to be, they are not all of them, and that is the fact a reader has to
+        # carry into everything else on the page.
+        payload["message"] = (
+            f"{payload['read_files']} of {payload['candidate_files']} local Board observation "
+            f"files were read (cap {MAX_OBSERVATION_FILES}), so this snapshot is incomplete"
+        )
+    elif payload["records"]:
         payload["message"] = ""
     elif payload["rejected"]:
         payload["message"] = "no local Board observation passed the observation contract"
@@ -1823,6 +1908,44 @@ _BOARD_HTML = """<!doctype html>
         class: unverified ? "warn" : stateClass(status)
       };
     }
+    // How much of the local observation file set this page was built from. The
+    // Board reads a bounded number of files per refresh, so a directory with
+    // more candidates than the cap yields records that are real but partial.
+    // That is a property of the files, not of any record's own source
+    // coverage, and it is the one fact every reading below has to carry: a
+    // truncated snapshot may not be shown as complete coverage, as an idle
+    // session, or as evidence that there is no work.
+    function observationCoverage(data) {
+      const observations = data?.observations || {};
+      const state = text(observations.coverage) || "unknown";
+      const cap = measured(observations.file_cap);
+      const candidates = measured(observations.candidate_files);
+      const read = measured(observations.read_files);
+      const omitted = measured(observations.omitted_files);
+      // Either signal alone is enough to stop claiming completeness; neither is
+      // required to trust the other.
+      const truncated = observations.truncated === true || state === "partial";
+      const counted = candidates !== null && read !== null;
+      return {
+        truncated,
+        state,
+        cap,
+        candidates,
+        read,
+        omitted,
+        // Cap and counts, said in one place so the Health view states the
+        // semantics rather than a bare number.
+        label: counted
+          ? `${read} of ${candidates} observation file${candidates === 1 ? "" : "s"} read${cap === null ? "" : ` (cap ${cap})`}`
+          : `observation file coverage ${state}`,
+        // Only a read that covered every candidate reads as complete; a
+        // coverage this page cannot account for is neutral, not good news.
+        class: truncated ? "warn" : state === "complete" ? "ok" : state === "unavailable" ? "bad" : "muted",
+        note: truncated
+          ? `This snapshot is incomplete: ${omitted === null ? "some" : omitted} observation file${omitted === 1 ? "" : "s"} past the ${cap === null ? "read" : `${cap}-file`} cap ${omitted === 1 ? "was" : "were"} not read, so what is shown is not the whole local record set. Nothing here can be read as complete coverage, as an idle session, or as evidence that there is no work.`
+          : ""
+      };
+    }
     // --- presentation truth helpers (END) ---
     // --- work view model (BEGIN) ---
     // Pure, DOM-free projections of the frozen local observation contract
@@ -2280,7 +2403,11 @@ _BOARD_HTML = """<!doctype html>
         {name: "policy", label: "Human policy", items: policyItems}
       ];
     }
-    function workRow(record, nowMs) {
+    // `coverage` is the file-level reading from observationCoverage: a row is
+    // built from one record, but whether the record set behind it is complete
+    // is a fact about the read, and an idle claim depends on it.
+    function workRow(record, nowMs, coverage) {
+      const truncated = coverage?.truncated === true;
       const kind = text(record?.kind);
       const key = workKey(record);
       const freshness = recordFreshness(record, nowMs);
@@ -2343,30 +2470,42 @@ _BOARD_HTML = """<!doctype html>
         const covered = arrayOf(record?.sources)
           .filter(source => text(source?.freshness) === "fresh" && text(source?.coverage) === "complete")
           .map(source => text(source?.kind));
+        // An idle snapshot is only authoritative about a session when the
+        // whole local record set was read. With files left unread, a record
+        // that says this session had no work cannot be shown as idle: an
+        // unread file may record work in exactly this scope. The record is
+        // still rendered as what it is -- an idle snapshot -- but it claims
+        // neither complete coverage nor an idle session.
         return {
           ...base,
           reference: base.session_label || "this session",
           stage: "",
           stage_label: "no work recorded",
-          states: [{label: "idle with complete coverage", class: "ok", cue: CUES.ok}],
-          headline: "idle with complete coverage",
-          headline_class: "ok",
+          states: truncated
+            ? [{label: "idle in the files read", class: "warn", cue: CUES.warn}]
+            : [{label: "idle with complete coverage", class: "ok", cue: CUES.ok}],
+          headline: truncated ? "idle in the files read" : "idle with complete coverage",
+          headline_class: truncated ? "warn" : "ok",
           pr_number: null,
           head_sha: "",
-          action_label: "nothing to do in this session",
+          action_label: truncated
+            ? "read the unread observation files before treating this session as idle"
+            : "nothing to do in this session",
           actor_label: "no responsible role recorded",
           assignments: [],
           reasons: [],
           groups: [{name: "coverage", label: "Coverage", items: [{
             name: "coverage",
-            label: "observed complete",
+            label: truncated ? "recorded complete, not confirmed" : "observed complete",
             state: covered.length ? covered.join(", ") : NOT_RECORDED,
-            class: covered.length ? "ok" : "muted",
-            cue: cueFor(covered.length ? "ok" : "muted"),
+            class: truncated ? "warn" : covered.length ? "ok" : "muted",
+            cue: cueFor(truncated ? "warn" : covered.length ? "ok" : "muted"),
             source: "session sources",
             head: "",
-            coverage: "complete",
-            note: "This session is idle because the session, work queue and run registry were all observed complete, not because nothing was looked at."
+            coverage: truncated ? "partial" : "complete",
+            note: truncated
+              ? `This record states the session, work queue and run registry were observed complete when it was written, but ${coverage?.omitted === null || coverage?.omitted === undefined ? "some" : coverage.omitted} observation file${coverage?.omitted === 1 ? "" : "s"} went unread this refresh, so this session is not shown as idle.`
+              : "This session is idle because the session, work queue and run registry were all observed complete, not because nothing was looked at."
           }]}],
           measurements: []
         };
@@ -2731,8 +2870,9 @@ _BOARD_HTML = """<!doctype html>
     // reference and the opaque identity, so an unchanged snapshot never
     // reshuffles the list.
     function workRows(data, nowMs) {
+      const coverage = observationCoverage(data);
       return reconciledObservationGroups(data)
-        .map(group => workRow(consolidatedRecord(group), nowMs))
+        .map(group => workRow(consolidatedRecord(group), nowMs, coverage))
         .sort((a, b) =>
           rowUrgency(a) - rowUrgency(b)
           || a.reference.localeCompare(b.reference)
@@ -3188,15 +3328,20 @@ _BOARD_HTML = """<!doctype html>
     function renderWork() {
       const rows = workState.rows;
       const activeKey = resolveSelection(rows, selectedWorkKey);
+      // An incomplete read is stated above the rows, before anything a row
+      // says can be mistaken for the whole picture.
+      const coverageWarning = workState.coverage?.truncated
+        ? `<div class="row warn" role="status"><div class="line"><b>Incomplete snapshot</b>${cuePill(workState.coverage.label, "warn")}</div><div class="muted">${esc(workState.coverage.note)}</div></div>`
+        : "";
       // One refresh has to carry both pieces of ephemeral state at once, so
       // they are composed rather than alternatives. The scroll offset is
       // restored after focus is: focus restoration asks not to scroll, and
       // restoring the offset last means a browser that ignores that request
       // still cannot leave the panel somewhere the operator did not put it.
       withDetailScrollPreserved(() => {
-        withFocusPreserved(() => put("worklist", rows.length
+        withFocusPreserved(() => put("worklist", coverageWarning + (rows.length
           ? `<ul class="workrows" role="list" aria-labelledby="work-heading">${rows.map(row => workRowHtml(row, row.key === activeKey, workState.prs)).join("")}</ul>`
-          : empty(workState.message)));
+          : empty(workState.message))));
         // The offset just captured belongs to whatever was on screen a moment
         // ago; this is the render that decides which identities still exist,
         // so it is also the render that forgets the ones that do not.
@@ -3311,6 +3456,10 @@ _BOARD_HTML = """<!doctype html>
       const nowMs = Date.now();
       const remoteAvailable = data.remote?.available === true;
       const obs = observation(data, nowMs);
+      // Read once and carried into every view: the work list, the Now header,
+      // the chrome and the Health diagnostics all have to agree about whether
+      // this page saw the whole local record set.
+      const observationCover = observationCoverage(data);
       const sources = localSources(data);
       const attention = attentionItems(ownerQueue, prs);
       const ownerItems = attention.filter(item => item.role === "owner");
@@ -3320,6 +3469,9 @@ _BOARD_HTML = """<!doctype html>
         `<div class="metric"><span class="muted">Next action</span><b>${esc(data.next_action || "inspect")}</b></div>`,
         data.next_detail ? `<div class="metric"><span class="muted">Detail</span><b>${esc(data.next_detail)}</b></div>` : "",
         `<div class="metric"><span class="muted">Observation</span><b class="${obs.class}">${esc(obs.label)}</b></div>`,
+        observationCover.truncated
+          ? `<div class="metric"><span class="muted">Observation files</span><b class="warn">${esc(observationCover.label)}</b></div>`
+          : "",
         `<div class="metric"><span class="muted">GitHub</span><b class="${remoteAvailable ? "ok" : "warn"}">${remoteAvailable ? "available" : "unavailable"}</b></div>`,
         `<div class="metric"><span class="muted">Open PRs</span><b class="${remoteAvailable ? "" : "muted"}">${esc(countOf(remoteAvailable, prs.length))}</b></div>`,
         `<div class="metric"><span class="muted">Owner decisions</span><b class="${remoteAvailable ? (ownerItems.length ? "warn" : "ok") : "muted"}">${esc(countOf(remoteAvailable, ownerItems.length))}</b></div>`,
@@ -3335,8 +3487,13 @@ _BOARD_HTML = """<!doctype html>
           ? `<div class="row"><div class="line">Do next: <a href="${esc(href(leadItem.url))}">#${esc(leadItem.pr_number)}</a><b>${esc(leadItem.next_action)}</b>${statePill(leadItem.role, leadItem.role === "owner" ? "warn" : "muted")}${statePill(`gate ${leadItem.gate.state}`, leadItem.gate.class)}</div><div class="muted">${esc(leadItem.title)}</div></div>`
           : `<div class="row"><div class="line">Do next: <b>${esc(data.next_action || "inspect")}</b></div>${data.next_detail ? `<div class="muted">${esc(data.next_detail)}</div>` : ""}</div>`,
         `<div class="row"><div class="line">${pill(`owner decisions ${countOf(remoteAvailable, ownerItems.length)}`)}${pill(`lane work ${countOf(remoteAvailable, laneItems.length)}`)}${pill(`open PRs ${countOf(remoteAvailable, prs.length)}`)}${statePill(obs.label, obs.class)}</div>${obs.detail ? `<div class="muted">${esc(obs.detail)}</div>` : ""}</div>`,
+        // Said in the Now header too, because the "Do next" line above it is
+        // read as the whole of what is waiting.
+        observationCover.truncated
+          ? `<div class="row warn" role="status"><div class="line"><b>Incomplete snapshot</b>${cuePill(observationCover.label, "warn")}</div><div class="muted">${esc(observationCover.note)}</div></div>`
+          : "",
         `<div class="row muted">${esc(sources.message)}</div>`
-      ].join(""));
+      ].filter(Boolean).join(""));
       const reviewerOutcomes = supervisedDecision.reviewer_outcomes || [];
       const supervisedRows = supervised.enabled ? [
         `<div class="row"><div class="line"><b class="${stateClass(supervised.cycle_state)}">${esc(supervised.cycle_state || "unknown")}</b>${pill(supervised.controller_mode || "dry_run")}${supervisedDecision.decision_state ? pill(supervisedDecision.decision_state) : ""}</div><div>next: <b>${esc(supervisedDecision.next_action || "inspect")}</b></div>${supervisedDecision.next_detail ? `<div class="muted">${esc(supervisedDecision.next_detail)}</div>` : ""}</div>`,
@@ -3423,12 +3580,17 @@ _BOARD_HTML = """<!doctype html>
       workState = {
         rows: observationRows,
         prs,
+        coverage: observationCover,
         // empty() escapes what it is given, so these stay plain text here.
         message: observations.available === false
           ? text(observations.message) || "Local Board observations could not be read."
-          : observations.path_exists === true
-            ? text(observations.message) || "No local Board observation passed the observation contract."
-            : "No local Board observation is recorded yet, so no work row is shown. The queues below still summarize the GitHub snapshot."
+          : observationCover.truncated
+            // Never "no work" and never "nothing recorded": files went unread,
+            // so an empty list is a gap in the read, not an empty queue.
+            ? `${text(observations.message) || "This snapshot is incomplete."} ${observationCover.note}`
+            : observations.path_exists === true
+              ? text(observations.message) || "No local Board observation passed the observation contract."
+              : "No local Board observation is recorded yet, so no work row is shown. The queues below still summarize the GitHub snapshot."
       };
       renderWork();
       wire();
@@ -3438,23 +3600,35 @@ _BOARD_HTML = """<!doctype html>
         `<span>Now: <b>${esc(data.next_action || "inspect")}</b></span>`,
         cuePill(obs.label, obs.class),
         `<span class="pill wide">${esc(countOf(remoteAvailable, prs.length))} open PRs</span>`,
-        `<span class="pill wide">${esc(observationRows.length)} observed work item${observationRows.length === 1 ? "" : "s"}</span>`,
+        // The count is of what was read, so it is labelled as such whenever
+        // the read left files behind.
+        `<span class="pill wide">${esc(observationRows.length)} observed work item${observationRows.length === 1 ? "" : "s"}${observationCover.truncated ? " in the files read" : ""}</span>`,
+        observationCover.truncated ? `<span class="pill warn wide"><span class="cue" aria-hidden="true">~</span> incomplete snapshot</span>` : "",
         attentionRows.length ? `<span class="pill warn wide"><span class="cue" aria-hidden="true">~</span> ${esc(attentionRows.length)} awaiting a named role</span>` : ""
       ].filter(Boolean).join(""));
       const participants = participantSummary(observationRows);
       put("participants", participants.length
         ? participants.map(participant => `<div class="row"><div class="line"><b>${esc(participant.provider)}</b>${pill(participant.role)}${cuePill(`worst source ${participant.freshness}`, participant.class)}</div><div class="line">${participant.states.map(state => pill(`${state.label} ${state.count}`)).join("")}</div><div class="muted">${esc(participant.count)} recorded run${participant.count === 1 ? "" : "s"}; run states are what the records state, not a claim that anything is running now.</div></div>`).join("")
-        : empty("No participant run is recorded in any local observation."));
+        : empty(observationCover.truncated
+          ? "No participant run is recorded in the observation files that were read, and this snapshot is incomplete."
+          : "No participant run is recorded in any local observation."));
       const sourceList = sourceRows(data, nowMs);
       put("sources", sourceList.length
         ? sourceList.map(source => `<div class="row"><div class="line"><b>${esc(source.kind)}</b>${cuePill(source.freshness, source.class)}${pill(`coverage ${source.coverage}`)}${source.records > 1 ? pill(`${source.records} records`) : ""}</div><div class="muted">last event ${source.event_at ? localTime(source.event_at) : esc(NOT_RECORDED)}; last observed ${source.observed_at ? localTime(source.observed_at) : esc(NOT_RECORDED)}; heartbeat ${source.heartbeat_at ? localTime(source.heartbeat_at) : esc(NOT_RECORDED)}; checked ${esc(source.checked_text)}</div></div>`).join("")
-        : empty("No observation source is recorded. Connection state below is from the GitHub snapshot only."));
+        : empty(observationCover.truncated
+          ? "No observation source is recorded in the observation files that were read, and this snapshot is incomplete. Connection state below is from the GitHub snapshot only."
+          : "No observation source is recorded. Connection state below is from the GitHub snapshot only."));
       const cache = data.board?.cache || {};
       put("diagnostics", [
         `<div class="row"><div class="line"><b>Board version</b>${pill(`serving ${servingVersion}`)}${pill(`installed ${installedVersion}`)}${version.restart_recommended ? cuePill("restart recommended", "warn") : ""}</div></div>`,
         `<div class="row"><div class="line"><b>Snapshot cache</b>${cuePill(display(cache.state), stateClass(cache.state))}${pill(`generation ${display(cache.generation)}`)}${pill(`age ${ageText(cache.age_seconds)}`)}${cache.refresh_in_progress === true ? pill("refresh in progress") : ""}${measured(cache.retry_in_seconds) === null ? "" : pill(`retry in ${ageText(cache.retry_in_seconds)}`)}</div>${cache.last_error ? `<div class="muted">${esc(cache.last_error)}</div>` : ""}</div>`,
         `<div class="row"><div class="line"><b>GitHub</b>${cuePill(remoteAvailable ? "available" : "unavailable", remoteAvailable ? "ok" : "warn")}</div></div>`,
-        `<div class="row"><div class="line"><b>Observations</b>${pill(`${observationRows.length} recorded`)}${measured(observations.rejected) ? cuePill(`${observations.rejected} rejected by the observation contract`, "warn") : ""}</div>${observations.message ? `<div class="muted">${esc(observations.message)}</div>` : ""}${(observations.warnings || []).length ? `<div class="muted">${esc((observations.warnings || []).slice(0, 3).map(warning => `${warning.file}: ${warning.message}`).join("; "))}</div>` : ""}</div>`,
+        // Cap and counts with their semantics: how many files were candidates,
+        // how many were read, how many the cap left unread, and how the read
+        // set was chosen. Counts only -- no file name and no local path. The
+        // contract's own record diagnostics stay on their own line, because a
+        // rejected record and an unread file are different facts.
+        `<div class="row"><div class="line"><b>Observations</b>${pill(`${observationRows.length} recorded`)}${cuePill(observationCover.label, observationCover.class)}${observationCover.truncated ? cuePill(`${observationCover.omitted === null ? "some" : observationCover.omitted} not read`, "warn") : ""}${measured(observations.rejected) ? cuePill(`${observations.rejected} rejected by the observation contract`, "warn") : ""}</div>${observationCover.truncated ? `<div class="muted">${esc(observationCover.note)} Selection: ${esc(text(observations.selection) || "not recorded")}.</div>` : ""}${observations.message ? `<div class="muted">${esc(observations.message)}</div>` : ""}${(observations.warnings || []).length ? `<div class="muted">${esc((observations.warnings || []).slice(0, 3).map(warning => `${warning.file}: ${warning.message}`).join("; "))}</div>` : ""}</div>`,
         `<div class="row muted">${esc(sources.message)}</div>`
       ].join(""));
       noteChanges(observationRows, nowMs);
