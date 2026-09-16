@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from . import context_graph_connection as graph_connection
 from . import context_review, context_session
 from .claude_audit_pr import _decision_authorities_for_repo
 from .context_contract import ContextError, ContextRequest
@@ -350,6 +351,12 @@ def _builder_recipient(record: Mapping[str, Any]) -> str:
     return recipient
 
 
+def _is_repository_connection(packet_store: ContextStore, name: str) -> bool:
+    """Whether ``name`` is a local repository graph rather than an organization connection."""
+    with packet_store.locked(name) as locked:
+        return graph_connection.is_graph(locked.read())
+
+
 def deliver_session(
     association_store: ContextStore,
     packet_store: ContextStore,
@@ -385,6 +392,15 @@ def deliver_session(
             head, current = _remote_input(
                 record["repo"], record["pr"], token=token, authorities=authorities,
             )
+            if _is_repository_connection(packet_store, record["connection"]):
+                # This checkout's own consuming revision, not just the bound
+                # packet or PR head that ``deliver`` checks below; an
+                # unresolvable revision (e.g. not a Git checkout) fails closed.
+                if consuming_revision(repo_path) != head:
+                    raise ContextError(
+                        "repository context evidence is not bound to this "
+                        "checkout's consuming revision"
+                    )
             text = deliver(
                 packet_store,
                 record["revision"],

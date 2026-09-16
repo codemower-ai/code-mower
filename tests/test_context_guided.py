@@ -9,12 +9,17 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from code_mower import context_audit, context_guided, context_session
+from code_mower import context_audit, context_guided, context_prepare, context_session
+from code_mower import context_graph_connection as graph_connection
+from code_mower import context_graph_lifecycle as lifecycle
 from code_mower.context_contract import ContextError
 from code_mower.context_delivery import deliver, read_binding, save_feedback
 from code_mower.context_review import INPUT_HEADER
 from code_mower.context_store import ContextStore
 import test_context_delivery as fixtures
+import test_context_graph_query as graph_fixtures
+from test_context_connections import MemoryVault
+from test_context_graph_connection import POLICY as GRAPH_POLICY, RECIPIENTS as GRAPH_RECIPIENTS
 
 
 @unittest.skipUnless(os.name == "posix", "private storage needs POSIX")
@@ -155,6 +160,36 @@ class GuidedContextTests(unittest.TestCase):
         self.assertEqual(feedback, "Private finding for the fix round.")
         self.assertEqual(
             context_session.read(self.associations, self.session["id"])["stage"], "reviewed"
+        )
+
+    def test_published_delivery_from_a_non_git_directory_succeeds_for_organization_evidence(self):
+        """Organization evidence never depends on a code revision (issue #982)."""
+        self.attach()
+        saved = context_session.read(self.associations, self.session["id"])
+        with self.patches()[0], self.patches()[1], self.patches()[2]:
+            evidence = context_guided.deliver_session(
+                self.associations, self.fixture.store, saved, repo_path=self.root,
+                backend=self.fixture.backend,
+            )
+        self.assertIn("Private evidence", evidence)
+        self.assertEqual(
+            context_session.read(self.associations, self.session["id"])["context_state"], "ready",
+        )
+
+    def test_published_delivery_still_refuses_a_moved_remote_head(self):
+        """The existing bound-packet/current-PR-head validation is untouched (issue #982)."""
+        self.attach()
+        saved = context_session.read(self.associations, self.session["id"])
+        self.head = "d" * 40
+        with self.patches()[0], self.patches()[1], self.patches()[2]:
+            with self.assertRaises(ContextError):
+                context_guided.deliver_session(
+                    self.associations, self.fixture.store, saved, repo_path=self.root,
+                    backend=self.fixture.backend,
+                )
+        self.assertEqual(
+            context_session.read(self.associations, self.session["id"])["context_state"],
+            "unavailable",
         )
 
     def test_devin_host_builder_and_reviewer_use_the_common_packet(self):
@@ -459,6 +494,156 @@ class GuidedContextTests(unittest.TestCase):
                     self.assertNotIn(private, public)
         self.assertEqual(len(set(delivered)), 1)
         self.assertEqual(self.fixture.backend.searches, 1)
+
+
+@unittest.skipUnless(os.name == "posix", "private storage needs POSIX")
+class GuidedRepositoryDeliveryTests(unittest.TestCase):
+    """Published repository evidence must match the actual consuming checkout (issue #982).
+
+    Unlike ``GuidedContextTests``, the connection here is a real local
+    repository graph over a real throwaway Git checkout, so a mismatch
+    between the checkout doing the work and the bound PR revision is an
+    actual divergence between two resolvable commits, not a mocked value.
+    """
+
+    SESSION_ID = "a" * 32
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.repository = graph_fixtures.make_repository(self.root)
+        self.private = self.root / "private"
+        self.private.mkdir(mode=0o700)
+        self.manifest = lifecycle.build_graph(
+            self.repository, pin=graph_fixtures.PIN,
+            indexer=graph_fixtures.indexer(graph_fixtures.graph_document()), root=self.private,
+        )
+        self.store = ContextStore(self.private, vault=MemoryVault())
+        self.associations = context_session.association_store(self.private)
+        graph_connection.connect(self.store, "local-graph", {
+            "repository_root": str(self.repository),
+            "repositories": ["owner/repo"],
+            "recipients": GRAPH_RECIPIENTS,
+        })
+        selected = context_session.create(
+            self.associations,
+            {
+                "id": self.SESSION_ID, "repo": "owner/repo", "host": "codex",
+                "orchestrator": "codex", "participants": [{"id": "claude"}, {"id": "codex"}],
+            },
+            work_item="WORK-1",
+            policy=GRAPH_POLICY,
+        )
+        report, code = context_prepare.prepare(
+            self.associations, selected, repo_root=self.repository, context_root=self.private,
+            packet_store=self.store, query="parse_config", source="impact", builder="codex",
+        )
+        self.assertEqual((code, report["status"]), (0, "prepared"))
+        self.record = context_session.read(self.associations, self.SESSION_ID)
+        self.head = self.manifest.commit
+        self.comments: list[dict] = []
+
+    def _pull(self, *_args, **_kwargs):
+        return {"head": {"sha": self.head}}
+
+    def _comments(self, *_args, **_kwargs):
+        return list(self.comments)
+
+    def _github(self, _method, _path, **_kwargs):
+        return {}
+
+    def _post(self, _repo, _pr, body, **_kwargs):
+        self.comments.append(
+            {"id": len(self.comments) + 1, "user": {"login": "controller"}, "body": body}
+        )
+        return {"id": len(self.comments)}
+
+    def patches(self):
+        return (
+            mock.patch.object(
+                context_guided, "_github_access", return_value=("token", ("controller",)),
+            ),
+            mock.patch.object(context_guided, "fetch_pull_request", side_effect=self._pull),
+            mock.patch.object(context_guided, "fetch_issue_comments", side_effect=self._comments),
+            mock.patch.object(context_guided, "_gh_request", side_effect=self._github),
+            mock.patch.object(context_guided, "post_pr_comment", side_effect=self._post),
+        )
+
+    def attach(self, pr=1):
+        with (
+            self.patches()[0], self.patches()[1], self.patches()[2],
+            self.patches()[3], self.patches()[4],
+        ):
+            current = context_session.read(self.associations, self.SESSION_ID)
+            return context_guided.attach_session(
+                self.associations, self.store, current, repo_path=self.repository,
+                pr=pr, backend=None,
+            )
+
+    def _advance_the_checkout(self):
+        """Commit new work so the checkout's HEAD moves off the graph's commit."""
+        (self.repository / "example_pkg" / "config.py").write_text("changed\n", encoding="utf-8")
+        graph_fixtures.git(self.repository, "add", ".")
+        graph_fixtures.git(self.repository, "commit", "-q", "-m", "second")
+
+    def test_repository_delivery_matches_the_actual_consuming_checkout(self):
+        report, code = self.attach()
+        self.assertEqual((report["status"], code), ("attached", 0))
+        published = context_session.read(self.associations, self.SESSION_ID)
+        with self.patches()[0], self.patches()[1], self.patches()[2]:
+            evidence = context_guided.deliver_session(
+                self.associations, self.store, published, repo_path=self.repository, backend=None,
+            )
+        self.assertIn("Private evidence", evidence)
+        self.assertIn("example_pkg/config.py#L12", evidence)
+        self.assertEqual(
+            context_session.read(self.associations, self.SESSION_ID)["context_state"], "ready",
+        )
+
+    def test_published_delivery_refuses_when_the_actual_checkout_has_moved(self):
+        self.attach()
+        published = context_session.read(self.associations, self.SESSION_ID)
+        # The remote PR head the stub reports is untouched; only the actual
+        # consuming checkout moves, which is exactly the divergence issue
+        # #982 describes.
+        self._advance_the_checkout()
+        with self.patches()[0], self.patches()[1], self.patches()[2]:
+            with self.assertRaises(ContextError):
+                context_guided.deliver_session(
+                    self.associations, self.store, published,
+                    repo_path=self.repository, backend=None,
+                )
+        after = context_session.read(self.associations, self.SESSION_ID)
+        self.assertEqual(after["context_state"], "unavailable")
+        self.assertEqual(after["stage"], "attached")
+
+    def test_published_repository_delivery_from_a_non_git_directory_fails_closed(self):
+        self.attach()
+        published = context_session.read(self.associations, self.SESSION_ID)
+        outside = self.root / "not-a-checkout"
+        outside.mkdir()
+        with self.patches()[0], self.patches()[1], self.patches()[2]:
+            with self.assertRaises(ContextError):
+                context_guided.deliver_session(
+                    self.associations, self.store, published, repo_path=outside, backend=None,
+                )
+        self.assertEqual(
+            context_session.read(self.associations, self.SESSION_ID)["context_state"],
+            "unavailable",
+        )
+
+    def test_unpublished_repository_delivery_still_binds_the_consuming_checkout(self):
+        evidence = context_guided.deliver_session(
+            self.associations, self.store, self.record, repo_path=self.repository, backend=None,
+        )
+        self.assertIn("Private evidence", evidence)
+        self._advance_the_checkout()
+        moved = context_session.read(self.associations, self.SESSION_ID)
+        with self.assertRaises(ContextError):
+            context_guided.deliver_session(
+                self.associations, self.store, moved, repo_path=self.repository, backend=None,
+            )
 
 
 if __name__ == "__main__":
