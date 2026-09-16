@@ -1216,11 +1216,21 @@ def observations_payload(config: BoardConfig) -> dict[str, Any]:
         payload["message"] = "could not read local Board observations"
         return payload
     for record_file in candidates:
+        # The contract bounds a record to MAX_BYTES, so at most one byte past
+        # that bound is ever read: an oversize file is rejected on the length
+        # of what was asked for, without the remainder being loaded or decoded.
         try:
-            raw = record_file.read_bytes()
+            with record_file.open("rb") as handle:
+                raw = handle.read(board_observation.MAX_BYTES + 1)
         except OSError:
             payload["rejected"] += 1
             payload["warnings"].append({"file": record_file.name, "message": "could not read observation file"})
+            continue
+        if len(raw) > board_observation.MAX_BYTES:
+            # The same closed diagnostic the contract itself raises for an
+            # over-long record; it names no path and repeats no value.
+            payload["rejected"] += 1
+            payload["warnings"].append({"file": record_file.name, "message": "invalid_contract"})
             continue
         try:
             payload["records"].append(board_observation.decode(raw))
@@ -2302,20 +2312,49 @@ _BOARD_HTML = """<!doctype html>
     // Deterministic order: most blocking first, then a stable tiebreak on the
     // opaque identity so an unchanged snapshot never reshuffles the list.
     const ROW_RANK = new Map(STATE_RULES.map(rule => [rule.label, rule.rank]));
+    // How recent one observation of a linked identity is. `created_at` is when
+    // the observation itself was recorded, so it is what orders two
+    // observations of the same work item; the last meaningful update breaks a
+    // tie, and the signature breaks that, so the winner never depends on the
+    // order the directory happened to be listed in.
+    function observationOrder(row) {
+      const created = parseMs(row.record?.created_at);
+      return [created === null ? -Infinity : created, row.update.at === null ? -Infinity : row.update.at];
+    }
+    function isNewerObservation(candidate, existing) {
+      const [candidateCreated, candidateUpdate] = observationOrder(candidate);
+      const [existingCreated, existingUpdate] = observationOrder(existing);
+      if (candidateCreated !== existingCreated) return candidateCreated > existingCreated;
+      if (candidateUpdate !== existingUpdate) return candidateUpdate > existingUpdate;
+      return candidate.signature.localeCompare(existing.signature) > 0;
+    }
     function workRows(data, nowMs) {
       const rows = records(data).map(record => workRow(record, nowMs));
       const merged = [];
-      // Several unlinked observations describe one condition in one scope, so
-      // they render as one row rather than as competing rows.
+      const byKey = new Map();
       for (const row of rows) {
-        const existing = row.kind === "unlinked" ? merged.find(item => item.key === row.key) : undefined;
+        const existing = byKey.get(row.key);
         if (existing === undefined) {
+          byKey.set(row.key, row);
           merged.push(row);
           continue;
         }
-        existing.assignments = [...existing.assignments, ...row.assignments];
-        existing.groups[0].items = [...existing.groups[0].items, ...row.groups[0].items];
-        existing.signature = `${existing.signature}||${row.signature}`;
+        // Several unlinked observations describe one condition in one scope, so
+        // they render as one row rather than as competing rows.
+        if (row.kind === "unlinked") {
+          existing.assignments = [...existing.assignments, ...row.assignments];
+          existing.groups[0].items = [...existing.groups[0].items, ...row.groups[0].items];
+          existing.signature = `${existing.signature}||${row.signature}`;
+          continue;
+        }
+        // A linked identity is one work item however many observations of it
+        // are on disk. An older file and the file that replaced it are not two
+        // items competing for one row id and one detail region: the newest
+        // observation is the one rendered, and the older one is dropped rather
+        // than merged into it.
+        if (!isNewerObservation(row, existing)) continue;
+        merged[merged.indexOf(existing)] = row;
+        byKey.set(row.key, row);
       }
       return merged.sort((a, b) =>
         (ROW_RANK.get(a.headline) ?? 99) - (ROW_RANK.get(b.headline) ?? 99)
@@ -2537,11 +2576,15 @@ _BOARD_HTML = """<!doctype html>
       activeView = id;
       applyView();
     }
-    // Only a URL the payload actually recorded is ever offered. A PR number
-    // observed locally is never turned into a remote address the Board has not
-    // been told about.
+    // Only a URL the payload actually recorded, for a record that names this
+    // Board's own repository, is ever offered. A PR number observed locally is
+    // never turned into a remote address the Board has not been told about,
+    // and an observation directory that holds a record for another repository
+    // never borrows this repository's pull request just because the numbers
+    // happen to match.
     function recordedPrUrl(row, prs) {
       if (row.pr_number === null || row.pr_number === undefined) return "";
+      if (row.repository !== REPO) return "";
       const match = arrayOf(prs).find(pr => pr?.number === row.pr_number);
       const url = match ? text(match.url) : "";
       return href(url) === "#" ? "" : url;
@@ -2550,6 +2593,9 @@ _BOARD_HTML = """<!doctype html>
       const url = recordedPrUrl(row, prs);
       const actions = [];
       if (url) actions.push(`<a href="${esc(href(url))}">Open PR #${esc(row.pr_number)}</a>`);
+      // A foreign record is still shown for what it is; what it does not get
+      // is a link this Board has no record of.
+      else if (row.pr_number !== null && row.pr_number !== undefined && row.repository !== REPO) actions.push(`<span class="muted">PR #${esc(row.pr_number)} in ${esc(row.repository || "an unrecorded repository")}, not this repository; no local link recorded</span>`);
       else if (row.pr_number !== null && row.pr_number !== undefined) actions.push(`<span class="muted">PR #${esc(row.pr_number)}, no local link recorded</span>`);
       actions.push(`<button type="button" class="link" data-view="health">Inspect connection</button>`);
       actions.push(`<button type="button" class="link" data-view="timeline">View recent changes</button>`);

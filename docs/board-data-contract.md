@@ -486,7 +486,14 @@ can stand in for another. The gate publisher is shown beside the
 
 Selection is kept by opaque work identity — session, worktree, and work id —
 not by row position, so a refresh that reorders, adds, or drops rows leaves the
-operator's choice where it was. There is exactly one detail region. It is
+operator's choice where it was. One identity is one row: where the directory
+holds several observations of the same work item, the newest by recorded
+`created_at` is rendered — with the last meaningful update and then the row
+signature as deterministic tiebreaks — so which file the directory listed first
+cannot change what is shown. Change tracking compares the same deduplicated
+set, so there is exactly one row id and one detail region per identity however
+many files describe it. Several `unlinked` observations in one scope still
+consolidate into one row, unchanged. There is exactly one detail region. It is
 rendered inside the selected row, so at phone widths it follows the row it
 belongs to, and at desktop widths CSS places that same region adjacent to the
 list. Rows are buttons carrying `aria-expanded` and `aria-controls`; Up, Down,
@@ -503,7 +510,12 @@ nothing and adds no Timeline entry.
 
 Primary actions stay read-only: open a recorded PR link, inspect a connection
 in Health, and view recent changes. A pull request number observed locally is
-never turned into a remote address the payload has not recorded. There is no
+never turned into a remote address the payload has not recorded, and a link is
+offered only when the record names this Board's own repository. A custom
+observations directory can hold a record another repository produced, where the
+same pull request number means a different pull request; such a record is still
+shown for what it is, named as belonging to that other repository, without a
+link. There is no
 merge, requeue, force-lease, cancel, retry, restart, cloud-schema or
 Slack-specific control, no form, and no non-GET request.
 
@@ -542,7 +554,11 @@ By default the Board reads `*.json` files under
 `.code-mower/board/observations/`. Use `--observations-path PATH` for a custom
 local directory. A missing directory is reported as "nothing recorded yet",
 which is a different statement from "no work". Reading is bounded to 32 files
-per refresh, and the observation contract itself bounds each record.
+per refresh, and the observation contract itself bounds each record to
+`MAX_BYTES`. Each file is read with a single bounded request of at most
+`MAX_BYTES + 1` bytes: a file larger than the cap is rejected on the length of
+what was asked for, with the contract's own `invalid_contract` diagnostic, and
+its remainder is never loaded or decoded.
 
 The block carries:
 

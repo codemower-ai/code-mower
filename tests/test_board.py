@@ -3759,6 +3759,25 @@ def _selected_key(worklist: str) -> str:
     return match.group(1) if match else ""
 
 
+class _RecordingHandle:
+    """A file handle that records the size of every read it is asked for."""
+
+    def __init__(self, handle: object, reads: list[int]) -> None:
+        self._handle = handle
+        self._reads = reads
+
+    def __enter__(self) -> "_RecordingHandle":
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *exc: object) -> object:
+        return self._handle.__exit__(*exc)
+
+    def read(self, size: int = -1) -> bytes:
+        self._reads.append(size)
+        return self._handle.read(size)
+
+
 class BoardObservationReaderTests(TestCase):
     """The Board consumes the frozen observation contract; it never writes one."""
 
@@ -3808,6 +3827,57 @@ class BoardObservationReaderTests(TestCase):
                 board.BoardConfig(repo="owner/repo", observations_path=str(directory))
             )
         self.assertEqual(len(payload["records"]), board.MAX_OBSERVATION_FILES)
+
+    def test_an_oversize_file_is_read_bounded_and_rejected_before_it_is_decoded(self) -> None:
+        cap = board_observation.MAX_BYTES
+        # Warm the contract's own schema read so it cannot be mistaken for one
+        # of the observation reads being measured here.
+        board_observation.schema()
+        reads: list[int] = []
+        decoded: list[int] = []
+        real_open = Path.open
+        real_decode = board_observation.decode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._write(directory, "a-small.json", _observation_fixture("no_work"))
+            # Far past the contract's cap, so there is a real remainder that
+            # must never be pulled into memory.
+            (directory / "b-huge.json").write_bytes(b'{"padding":"' + b"x" * (cap * 4) + b'"}')
+
+            def recording_open(self: Path, *args: object, **kwargs: object) -> object:
+                handle = real_open(self, *args, **kwargs)
+                return _RecordingHandle(handle, reads) if self.parent == directory else handle
+
+            def recording_decode(raw: bytes) -> object:
+                decoded.append(len(raw))
+                return real_decode(raw)
+
+            with patch.object(Path, "open", recording_open), patch.object(
+                board.board_observation, "decode", recording_decode
+            ):
+                payload = board.observations_payload(
+                    board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+                )
+
+        # Every observation file is read with the same bounded request: one
+        # byte past the cap, which is all it takes to know the file is too big.
+        self.assertEqual(reads, [cap + 1, cap + 1])
+        # Only the record inside the cap ever reached the decoder, and it was
+        # never handed more bytes than the contract allows.
+        self.assertEqual(len(decoded), 1)
+        self.assertLessEqual(decoded[0], cap)
+
+        self.assertEqual(len(payload["records"]), 1)
+        self.assertEqual(payload["records"][0]["kind"], "no_work")
+        self.assertEqual(payload["rejected"], 1)
+        self.assertEqual(
+            payload["warnings"], [{"file": "b-huge.json", "message": "invalid_contract"}]
+        )
+        # The diagnostic carries no path and no content from the file.
+        self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertNotIn("x" * 32, json.dumps(payload))
+        self.assertNotIn(str(directory), json.dumps(payload))
 
     def test_observations_are_not_written_into_local_history(self) -> None:
         snapshot = {"schema": "code_mower.laneStatus.v1", "observations": {"records": [1]}}
@@ -4148,6 +4218,104 @@ class BoardWorkFirstViewTests(TestCase):
             sorted(set(re.findall(r'fetch\("([^"]+)"', page))),
             ["/api/events", "/api/status"],
         )
+
+    def test_a_same_numbered_pull_request_in_another_repository_is_never_linked(self) -> None:
+        # A custom observations directory can hold a record another repository
+        # produced. Its PR number is not this repository's PR number, so this
+        # repository's link may not be attached to it.
+        foreign = _observation_fixture("ready")
+        foreign["scope"]["repository"] = "other-org/other-repo"
+        for run in foreign["work"]["runs"]:
+            run["binding"]["repository"] = "other-org/other-repo"
+        # The foreign record is entirely self-consistent: the contract accepts
+        # it, and it names a repository that is not this one.
+        foreign = board_observation.validate(foreign)
+        payload = _observation_payload([foreign])
+        payload["remote"]["pull_requests"] = [
+            {
+                "number": 946,
+                "url": "https://github.example/codemower-ai/code-mower/pull/946",
+                "title": "t",
+                "labels": {},
+                "checks": [],
+            }
+        ]
+        worklist = _render_board_sequence([{"payload": payload}])[0]["worklist"]
+        self.assertNotIn("Open PR #946", worklist)
+        self.assertNotIn("https://github.example/codemower-ai/code-mower/pull/946", worklist)
+        # The foreign record is still shown for exactly what it is.
+        self.assertIn(
+            "PR #946 in other-org/other-repo, not this repository; no local link recorded",
+            worklist,
+        )
+
+        # The identical payload for this repository does get the recorded link,
+        # so the suppression above is the repository check and nothing else.
+        local = copy.deepcopy(payload)
+        local["observations"]["records"] = [_observation_fixture("ready")]
+        self.assertEqual(
+            local["observations"]["records"][0]["scope"]["repository"], "codemower-ai/code-mower"
+        )
+        local_worklist = _render_board_sequence([{"payload": local}])[0]["worklist"]
+        self.assertIn(
+            'href="https://github.example/codemower-ai/code-mower/pull/946">Open PR #946',
+            local_worklist,
+        )
+
+    def test_duplicate_observations_of_one_identity_render_the_newest_once(self) -> None:
+        # Two files in the directory observe the same work item: an older one
+        # and the one that replaced it.
+        older = _observation_fixture("ready")
+        newer = _observation_fixture("merged")
+        for record in (older, newer):
+            record["work"]["id"] = "readywork"
+            record["work"]["runs"][0]["binding"]["work_id"] = "readywork"
+        older["created_at"] = "2026-09-12T20:00:00Z"
+        newer["created_at"] = "2026-09-12T20:00:20Z"
+        # Both remain records the frozen contract accepts.
+        older = board_observation.validate(older)
+        newer = board_observation.validate(newer)
+        scope = older["scope"]
+        identity = f"work:{scope['session_id']}:{scope['worktree_id']}:readywork"
+
+        frames = _render_board_sequence(
+            [
+                {"payload": _observation_payload([older, newer])},
+                # The same two files listed the other way round.
+                {"payload": _observation_payload([newer, older])},
+            ]
+        )
+        worklist = frames[0]["worklist"]
+        # One identity is one row and one detail region, not two competing ones.
+        self.assertEqual(_work_keys(worklist), [identity])
+        self.assertEqual(worklist.count('class="rowbtn" id='), 1)
+        self.assertEqual(worklist.count('id="workdetail"'), 1)
+        # The newest observation is the one rendered.
+        self.assertIn("stage: merged", worklist)
+        self.assertNotIn("stage: ready to merge", worklist)
+        self.assertEqual(_selected_key(worklist), identity)
+
+        # Which file the directory happened to list first cannot change the row.
+        self.assertEqual(frames[1]["worklist"], worklist)
+        # Change tracking reads the same deduplicated set, so reordering the
+        # duplicates is not news.
+        self.assertEqual(frames[1].get("announce", ""), "")
+        self.assertIn("not listed here", frames[1]["changes"])
+
+        # A genuinely newer observation of the same identity is still a change.
+        newest = copy.deepcopy(newer)
+        newest["created_at"] = "2026-09-12T20:00:25Z"
+        newest["work"]["stage"] = "in_review"
+        newest = board_observation.validate(newest)
+        moved = _render_board_sequence(
+            [
+                {"payload": _observation_payload([older, newer])},
+                {"payload": _observation_payload([older, newest])},
+            ]
+        )[1]
+        self.assertEqual(_work_keys(moved["worklist"]), [identity])
+        self.assertIn("stage: in review", moved["worklist"])
+        self.assertIn("issue-946", moved["announce"])
 
     def test_mobile_detail_follows_the_row_and_desktop_places_it_adjacent(self) -> None:
         html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
