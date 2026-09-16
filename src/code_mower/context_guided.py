@@ -229,6 +229,10 @@ def attach_session(
                         head=head,
                         recipient=record["host"] + ":orchestrator",
                         current=current,
+                        # This checkout's actual consuming revision, not the
+                        # remote head alone; a repository connection fails
+                        # closed if the checkout has moved.
+                        consuming_revision=consuming_revision(repo_path),
                         backend=backend,
                     )
                 except ContextError as exc:
@@ -409,6 +413,7 @@ def deliver_session(
                 head=head,
                 recipient=recipient,
                 current=current,
+                consuming_revision=consuming_revision(repo_path),
                 backend=backend,
             ).text
     except ContextError as exc:
@@ -458,6 +463,7 @@ def feedback_session(
             head=head,
             recipient=recipient,
             current=current,
+            consuming_revision=consuming_revision(repo_path),
             backend=backend,
         )
     except ContextError as exc:

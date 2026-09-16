@@ -11,10 +11,16 @@ from types import SimpleNamespace
 from unittest import mock
 
 from code_mower import context_command as command, context_packets, work_orders
+from code_mower import context_graph_connection as graph_connection
+from code_mower import context_graph_lifecycle as lifecycle
 from code_mower.context_contract import ContextError
 from code_mower.context_delivery import read_binding
 from code_mower.context_review import INPUT_HEADER, marker, parse
+from code_mower.context_store import ContextStore
 import test_context_delivery as fixtures
+import test_context_graph_query as graph_fixtures
+from test_context_connections import MemoryVault
+from test_context_graph_connection import POLICY as GRAPH_POLICY, RECIPIENTS as GRAPH_RECIPIENTS
 
 
 @unittest.skipUnless(os.name == 'posix', 'private store requires POSIX')
@@ -163,6 +169,88 @@ class ContextCommandTests(unittest.TestCase):
         code, out, _, credentials = self.invoke(['deliver', '--revision', current['revision'],
             '--connection', 'second', '--recipient', 'codex:builder'])
         self.assertEqual((code, out, credentials), (1, '', 0))
+
+
+@unittest.skipUnless(os.name == 'posix', 'private store requires POSIX')
+class GraphContextCommandTests(unittest.TestCase):
+    """Standalone attached replay must bind repository evidence to the actual
+    consuming checkout named by ``--repo-path``, never to the remote PR head
+    alone (codex:b7f5dbb1412eb89a3797)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        self.repository = graph_fixtures.make_repository(root)
+        private = root / 'private'
+        private.mkdir(mode=0o700)
+        self.manifest = lifecycle.build_graph(
+            self.repository, pin=graph_fixtures.PIN,
+            indexer=graph_fixtures.indexer(graph_fixtures.graph_document()), root=private,
+        )
+        self.store = ContextStore(private, vault=MemoryVault())
+        graph_connection.connect(self.store, 'local-graph', {
+            'repository_root': str(self.repository), 'repositories': ['owner/repo'],
+            'recipients': GRAPH_RECIPIENTS,
+        })
+        self.head = self.manifest.commit
+        self.comments = []
+
+    def invoke(self, args, spec=None, *, actor='controller'):
+        def github(method, path, **kwargs):
+            if path == '/user':
+                return {'login': actor}
+            return {}
+        def publish(repo, pr, body, **kwargs):
+            self.comments.append({'user': {'login': actor}, 'body': body})
+            return {'id': 123}
+        with ExitStack() as stack:
+            stdout = stack.enter_context(redirect_stdout(io.StringIO()))
+            stderr = stack.enter_context(redirect_stderr(io.StringIO()))
+            stack.enter_context(mock.patch.object(command, 'ContextStore', return_value=self.store))
+            stack.enter_context(mock.patch.object(command, '_decision_authorities_for_repo', return_value=('controller',)))
+            stack.enter_context(mock.patch.object(command, '_github', return_value='test-authorization'))
+            stack.enter_context(mock.patch.object(command, '_gh_request', side_effect=github))
+            stack.enter_context(mock.patch.object(command, 'post_pr_comment', side_effect=publish))
+            stack.enter_context(mock.patch.object(command, 'fetch_pull_request', return_value={'head': {'sha': self.head}}))
+            stack.enter_context(mock.patch.object(command, 'fetch_issue_comments', return_value=self.comments))
+            stack.enter_context(mock.patch.object(command.sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(spec).encode()))))
+            code = work_orders.context_main(args)
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def attach(self):
+        packet_spec = {'repository': 'owner/repo', 'work_item': 'WORK-1', 'recipient': 'codex:orchestrator',
+                       'query': 'parse_config', 'source': 'impact', 'policy': GRAPH_POLICY}
+        result = context_packets.fetch(self.store, 'local-graph', packet_spec, revision=self.head)
+        spec = {'repository': 'owner/repo', 'work_item': 'WORK-1', 'pr': 7, 'policy': GRAPH_POLICY,
+                'packet': result['packet_handle']}
+        code, out, err = self.invoke(
+            ['attach', '--connection', 'local-graph', '--host', 'codex', '--request-stdin'], spec)
+        self.assertEqual(code, 0, err)
+        return json.loads(out)['revision']
+
+    def test_replay_succeeds_from_the_actual_consuming_checkout(self):
+        revision = self.attach()
+        code, out, err = self.invoke(['deliver', '--revision', revision, '--recipient', 'codex:builder',
+            '--repo-path', str(self.repository)])
+        self.assertEqual(code, 0, err)
+        self.assertIn('Private evidence', out)
+
+    def test_replay_refuses_a_checkout_that_moved_off_the_attachment_head(self):
+        """Checkout B must not receive evidence bound to checkout A's head."""
+        revision = self.attach()
+        graph_fixtures.git(self.repository, 'commit', '--allow-empty', '-q', '-m', 'checkout moved to B')
+        code, out, err = self.invoke(['deliver', '--revision', revision, '--recipient', 'codex:builder',
+            '--repo-path', str(self.repository)])
+        self.assertEqual((code, out), (1, ''))
+
+    def test_replay_refuses_a_non_git_directory(self):
+        revision = self.attach()
+        outside = self.repository.parent / 'not-a-checkout'
+        outside.mkdir()
+        code, out, err = self.invoke(['deliver', '--revision', revision, '--recipient', 'codex:builder',
+            '--repo-path', str(outside)])
+        self.assertEqual((code, out), (1, ''))
 
 
 class ContextWorkOrderTests(unittest.TestCase):

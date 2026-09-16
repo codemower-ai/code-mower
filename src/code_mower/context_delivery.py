@@ -79,11 +79,11 @@ def read_binding(store, revision):
 def _packet_for_binding(store, binding, recipient, *, backend=None, revision=None):
     if recipient not in SUPPORTED_RECIPIENTS:
         raise ContextError("this participant cannot consume private context in this release")
-    # The consuming revision of a delivery is the head the binding was published
-    # for, which the caller has already confirmed against the trusted current
-    # input. A repository-kind connection re-derives its authorization from that
-    # commit; an organization connection ignores it.
-    revision = revision or binding["metadata"]["head"]
+    # ``revision`` is the caller's actual consuming checkout revision, or an
+    # already-verified immutable review-target head; it is never defaulted to
+    # the head this binding happens to have been published for. A repository
+    # connection re-derives its authorization from exactly that commit and
+    # fails closed when it is missing; an organization connection ignores it.
     packet = load_authorized(store, binding["connection"], binding["handle"], binding["policy"],
         ContextRequest(binding["repository"], binding["work_item"], recipient), backend=backend,
         revision=revision)
@@ -255,7 +255,16 @@ class Delivery:
     binding: dict = field(repr=False)
 
 
-def deliver(store, revision, *, repository, pr, head, recipient, current, backend=None):
+def deliver(store, revision, *, repository, pr, head, recipient, current, consuming_revision=None, backend=None):
+    """Replay one published binding for an approved recipient.
+
+    ``consuming_revision`` is the caller's actual consuming checkout revision,
+    or an already-verified immutable review-target head; ``None`` means the
+    caller cannot name one. It is never defaulted to ``head`` here: a caller
+    that knows only the trusted remote head, not the local checkout doing the
+    work, must say so explicitly rather than let a repository-kind connection
+    be silently authorized against a revision it never held.
+    """
     binding = read_binding(store, revision)
     try:
         current = context_review.validate(dict(current))
@@ -266,7 +275,7 @@ def deliver(store, revision, *, repository, pr, head, recipient, current, backen
         raise ContextError("context input is missing, unpublished, or no longer current")
     if not context_review.review_matches(context_review.marker(current, review=True), current, head=head):
         raise ContextError("context input is unavailable or expired")
-    packet = _packet_for_binding(store, binding, recipient, backend=backend)
+    packet = _packet_for_binding(store, binding, recipient, backend=backend, revision=consuming_revision)
     return Delivery(dict(current), render_evidence(packet, binding["handle"]), binding)
 
 

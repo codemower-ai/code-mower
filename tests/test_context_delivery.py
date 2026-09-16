@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from code_mower import context_graph_connection as graph_connection
+from code_mower import context_graph_lifecycle as lifecycle
 from code_mower.context_connections import connect, disconnect
 from code_mower.context_contract import ContextError, ContextRequest, load_packet
 from code_mower.context_delivery import (SUPPORTED_HOSTS, SUPPORTED_RECIPIENTS, attach, deliver, public_verdict,
@@ -16,6 +18,7 @@ from code_mower.context_store import ContextStore
 from test_context_connections import MemoryVault
 from test_context_packets import RetrievalBackend
 from test_coworker_retrieval import POLICY
+import test_context_graph_query as graph_fixtures
 
 
 @unittest.skipUnless(os.name == 'posix', 'private store requires POSIX')
@@ -113,6 +116,11 @@ class ContextDeliveryTests(unittest.TestCase):
             self.delivery(current)
         self.assertEqual(list(self.store.root.glob('.d-*.json')), [])
 
+    def test_organization_replay_succeeds_without_a_consuming_revision(self):
+        """Organization evidence has no code revision (codex:b7f5dbb1412eb89a3797)."""
+        current = self.attach()
+        self.assertTrue(self.delivery(current, consuming_revision=None).text)
+
     def test_public_verdict_has_only_metadata_and_never_model_authored_findings(self):
         current = self.attach()
         delivery = self.delivery(current)
@@ -162,3 +170,57 @@ class ContextDeliveryTests(unittest.TestCase):
         self.assertIn('Synthetic evidence: parser calls validator.', texts[0])
         self.assertNotIn('/example/repository', texts[0])
         self.assertNotIn('principal', texts[0])
+
+
+@unittest.skipUnless(os.name == 'posix', 'private store requires POSIX')
+class GraphDeliveryBindingTests(unittest.TestCase):
+    """A repository replay must bind to its explicit consuming revision, never the
+    attachment/PR head it happens to have been published for (codex:b7f5dbb1412eb89a3797)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        self.repository = graph_fixtures.make_repository(root)
+        private = root / 'private'
+        private.mkdir(mode=0o700)
+        self.manifest = lifecycle.build_graph(
+            self.repository, pin=graph_fixtures.PIN,
+            indexer=graph_fixtures.indexer(graph_fixtures.graph_document()), root=private,
+        )
+        self.store = ContextStore(private, vault=MemoryVault())
+        self.recipients = [f'{host}:{role}' for host in ('claude', 'codex', 'devin')
+                           for role in ('orchestrator', 'builder', 'reviewer')]
+        graph_connection.connect(self.store, 'local-graph', {
+            'repository_root': str(self.repository), 'repositories': ['owner/repo'],
+            'recipients': self.recipients,
+        })
+        self.head = self.manifest.commit  # checkout A
+        self.other = 'b' * 40  # a different checkout, B
+        self.policy = {'schema': 'code_mower.contextPolicy.v1', 'connection': 'local-graph',
+                       'policy_version': 'v1', 'required': True}
+        spec = {'repository': 'owner/repo', 'work_item': 'WORK-1', 'recipient': 'codex:orchestrator',
+                'query': 'parse_config', 'source': 'impact', 'policy': self.policy}
+        result = fetch(self.store, 'local-graph', spec, revision=self.head)
+        self.current = attach(self.store, 'local-graph', result['packet_handle'], self.policy,
+            ContextRequest('owner/repo', 'WORK-1', 'codex:orchestrator'), pr=42, head=self.head,
+            publish=lambda metadata: None)
+
+    def delivery(self, **kwargs):
+        return deliver(self.store, self.current['revision'], repository='owner/repo', pr=42, head=self.head,
+                       recipient='codex:builder', current=self.current, **kwargs)
+
+    def test_replay_matches_the_actual_consuming_revision(self):
+        self.assertIn('Private evidence', self.delivery(consuming_revision=self.head).text)
+
+    def test_replay_refuses_a_different_consuming_revision(self):
+        """Checkout B must not receive evidence authorized for checkout A."""
+        with self.assertRaises(ContextError):
+            self.delivery(consuming_revision=self.other)
+
+    def test_replay_never_silently_substitutes_the_attachment_head(self):
+        """A caller that cannot name its consuming revision (e.g. non-Git) fails closed."""
+        with self.assertRaises(ContextError):
+            self.delivery()
+        with self.assertRaises(ContextError):
+            self.delivery(consuming_revision=None)

@@ -121,8 +121,13 @@ def main(argv=None):
         if current is None:
             raise ContextError("no trusted current context input is declared")
         head = fetch_pull_request(binding["repository"], binding["pr"], token=token)["head"]["sha"]
+        # The actual consuming checkout, derived from --repo-path, not the
+        # remote PR head: a checkout at a different commit, or a directory
+        # that is not a Git checkout at all, must fail before any evidence or
+        # feedback is produced.
         delivery = deliver(store, args.revision, repository=binding["repository"], pr=binding["pr"], head=head,
-                           recipient=args.recipient, current=current)
+                           recipient=args.recipient, current=current,
+                           consuming_revision=consuming_revision(args.repo_path))
         if args.command == "feedback":
             feedback = delivery.binding["feedback"].get(args.reviewer)
             if feedback is None:

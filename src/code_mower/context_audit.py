@@ -69,8 +69,12 @@ class ReviewContext:
             if not review_matches(marker(current, review=True), current, head=head):
                 return False
             if self.delivery is not None:
+                # The immutable audited target head, not a control checkout's
+                # revision: the checkout running this audit may differ from
+                # the code being reviewed.
                 verified = deliver(self.store, current["revision"], repository=self.repository,
-                    pr=self.pr, head=head, recipient=self.recipient, current=current, backend=self.backend)
+                    pr=self.pr, head=head, recipient=self.recipient, current=current,
+                    consuming_revision=head, backend=self.backend)
                 if verified.text != self.delivery.text:
                     return False
                 save_feedback(self.store, verified, self.recipient.split(":")[0], prose)
@@ -109,8 +113,12 @@ def prepare(*, repository, pr, head, host, authorities, fetch_comments,
             state.ready = review_matches(marker(current, review=True), current, head=head)
             return state
         state.store = store if store is not None else ContextStore(state_dir)
+        # ``head`` is the immutable review-target revision this audit is for,
+        # never derived from ``repo_path`` or ``Path.cwd()``: the audit
+        # control checkout may differ from the selected review target.
         state.delivery = deliver(state.store, current["revision"], repository=repository,
-            pr=pr, head=head, recipient=state.recipient, current=current, backend=backend)
+            pr=pr, head=head, recipient=state.recipient, current=current,
+            consuming_revision=head, backend=backend)
         state.ready = True
     except (ContextError, OSError, ValueError, RuntimeError, TypeError):
         pass
