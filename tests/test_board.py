@@ -7859,6 +7859,445 @@ class BoardIdleFreshnessTests(TestCase):
         self.assertEqual(shipped["action"], "re-observe this session before treating it as idle")
 
 
+
+def _polled(record: dict, seconds: int) -> dict:
+    """The same record, written again by a poll that observed nothing new.
+
+    Only the instants a successful poll advances move: when the record was
+    written, when each source was last checked, when it was last seen, and the
+    heartbeat behind it. Every recorded event time stays exactly where it was,
+    because no event happened -- which is what makes this the refresh that must
+    reach neither the Timeline nor the live region.
+    """
+
+    polled = copy.deepcopy(record)
+    polled["created_at"] = _shift_instants(polled["created_at"], seconds)
+    for source in polled["sources"]:
+        for field in ("checked_at", "observed_at", "heartbeat_at"):
+            source[field] = _shift_instants(source[field], seconds)
+    return board_observation.validate(polled)
+
+
+def _accounted_observations(records: list[dict], **counters: object) -> dict:
+    """The observations block a read emits for these records.
+
+    The defaults describe a read that accounted for every candidate: each one
+    selected, read and accepted. A case states only the counters its own
+    refresh changed, so the only difference between two consecutive payloads is
+    the transition under test.
+    """
+
+    read = len(records)
+    block = {
+        "schema": board.BOARD_OBSERVATIONS_SCHEMA,
+        "record_schema": board_observation.SCHEMA,
+        "available": True,
+        "path": lane_status.LOCAL_PATH_REDACTION,
+        "path_redacted": True,
+        "path_exists": True,
+        "records": records,
+        "warnings": [],
+        "rejected": 0,
+        "coverage": "complete",
+        "coverage_complete": True,
+        "coverage_gaps": [],
+        "truncated": False,
+        "file_cap": board.MAX_OBSERVATION_FILES,
+        "candidate_files": read,
+        "selected_files": read,
+        "read_files": read,
+        "accepted_records": read,
+        "omitted_files": 0,
+        "unreadable_files": 0,
+        "invalid_records": 0,
+        "unaccounted_files": 0,
+        "selection": board.OBSERVATION_SELECTION,
+        "message": "",
+    }
+    block.update(counters)
+    return block
+
+
+# The file-level accounting behind each coverage reading, named once so a
+# transition below reads as the refresh it describes rather than as counters.
+# Every one of them leaves the accepted record itself untouched: what differs
+# is only what the read around it could account for.
+WHOLE_READ: dict = {}
+# A selected candidate that could not be read at all, and one the frozen record
+# contract rejected. Both are files whose contents the page does not know, so
+# both are reported as the same shortfall.
+CANDIDATE_UNREADABLE = dict(
+    coverage="partial",
+    coverage_complete=False,
+    coverage_gaps=["files_unreadable"],
+    candidate_files=2,
+    selected_files=2,
+    read_files=1,
+    unreadable_files=1,
+    unaccounted_files=1,
+)
+CANDIDATE_REJECTED = dict(
+    coverage="partial",
+    coverage_complete=False,
+    coverage_gaps=["records_invalid"],
+    candidate_files=2,
+    selected_files=2,
+    read_files=2,
+    invalid_records=1,
+    unaccounted_files=1,
+)
+# One candidate left past the cap, and then a second one.
+CANDIDATE_OMITTED = dict(
+    coverage="partial",
+    coverage_complete=False,
+    coverage_gaps=["files_omitted"],
+    truncated=True,
+    file_cap=1,
+    candidate_files=2,
+    selected_files=1,
+    read_files=1,
+    omitted_files=1,
+)
+TWO_CANDIDATES_OMITTED = dict(CANDIDATE_OMITTED, candidate_files=3, omitted_files=2)
+# The cap moved and a rejected candidate appeared beside the still-omitted one,
+# so the read got worse in a way the row's chosen reading -- worst evidence
+# first, and a file left unread is the worst -- already states unchanged.
+CANDIDATE_OMITTED_AND_REJECTED = dict(
+    CANDIDATE_OMITTED,
+    coverage_gaps=["files_omitted", "records_invalid"],
+    file_cap=2,
+    candidate_files=3,
+    selected_files=2,
+    read_files=2,
+    invalid_records=1,
+    unaccounted_files=1,
+)
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardEffectiveStateChangeTests(TestCase):
+    """A row changed when what it says changed, not only when its record did.
+
+    Half of what an idle row states is derived rather than recorded: whether
+    this refresh accounted for every candidate observation file, and whether
+    the observation behind it is still current. A refresh can lose a file while
+    the accepted `no_work` record beside it stays byte-identical, and the row
+    then moves from `idle with complete coverage` to `idle in the records read`
+    -- a withdrawn claim about the present, on screen, with a different label,
+    a different cue, a different next action and different coverage evidence.
+
+    Change tracking compared only the recorded half, so exactly that refresh
+    produced no Timeline entry and no announcement: the claim was withdrawn in
+    silence, and an operator reading the Timeline -- or listening to it -- was
+    left with the last thing it said, that the session was idle. These tests
+    hold both halves in one signature, and hold the other half of the bargain
+    too: a poll that only advances timestamps is still not news.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    IDLE_REFERENCE = "Board contract delivery"
+    COMPLETE = "idle with complete coverage"
+    IN_RECORDS = "idle in the records read"
+    IN_FILES = "idle in the files read"
+    PART_COVERED = "last observed idle, coverage incomplete"
+    QUIET = "No meaningful change has been observed since this page loaded."
+
+    # One refresh after another in one page lifetime, and the exact thing the
+    # Timeline and the live region must say about the second one. `None` means
+    # the refresh was not news: nothing is logged and the live region is left
+    # untouched rather than repeated.
+    #
+    # The first element of each pair names the accepted record on that refresh
+    # -- `idle` is the fixture unchanged -- and the second names what the read
+    # around it could account for. Where both refreshes name the same record,
+    # the record is byte-identical and the transition is carried entirely by
+    # the derived half of the row's state: the half that used to be invisible
+    # to change tracking.
+    TRANSITIONS = (
+        (
+            "complete idle -> partial idle: a candidate went unread",
+            ("idle", WHOLE_READ),
+            ("idle", CANDIDATE_UNREADABLE),
+            "moved from idle with complete coverage to idle in the records read",
+        ),
+        (
+            "partial idle -> complete idle: the lost candidate came back",
+            ("idle", CANDIDATE_UNREADABLE),
+            ("idle", WHOLE_READ),
+            "moved from idle in the records read to idle with complete coverage",
+        ),
+        (
+            "accepted no_work -> a candidate the contract rejected beside it",
+            ("idle", WHOLE_READ),
+            ("idle", CANDIDATE_REJECTED),
+            "moved from idle with complete coverage to idle in the records read",
+        ),
+        (
+            "accepted no_work -> a candidate left past the cap beside it",
+            ("idle", WHOLE_READ),
+            ("idle", CANDIDATE_OMITTED),
+            "moved from idle with complete coverage to idle in the files read",
+        ),
+        (
+            "coverage gap vocabulary changes, the reading does not",
+            ("idle", CANDIDATE_UNREADABLE),
+            ("idle", CANDIDATE_REJECTED),
+            None,
+        ),
+        (
+            "routine refresh: every polling instant advances, nothing moves",
+            ("idle", WHOLE_READ),
+            ("polled", WHOLE_READ),
+            None,
+        ),
+        (
+            "partial -> partial that moves the row: unread files to lost records",
+            ("idle", CANDIDATE_OMITTED),
+            ("idle", CANDIDATE_UNREADABLE),
+            "moved from idle in the files read to idle in the records read",
+        ),
+        (
+            "partial -> partial that moves the row: one more file left unread",
+            ("idle", CANDIDATE_OMITTED),
+            ("idle", TWO_CANDIDATES_OMITTED),
+            "changed while staying idle in the files read",
+        ),
+        (
+            "partial -> partial the row already states: a gap under the worst one",
+            ("idle", CANDIDATE_OMITTED),
+            ("idle", CANDIDATE_OMITTED_AND_REJECTED),
+            None,
+        ),
+        (
+            "complete idle -> partial idle: a source covers part of what it covers",
+            ("idle", WHOLE_READ),
+            ("partly_covered", WHOLE_READ),
+            "moved from idle with complete coverage to last observed idle, coverage incomplete",
+        ),
+        (
+            "partial idle -> complete idle: the source covers all of it again",
+            ("partly_covered", WHOLE_READ),
+            ("idle", WHOLE_READ),
+            "moved from last observed idle, coverage incomplete to idle with complete coverage",
+        ),
+    )
+
+    @staticmethod
+    def _record(name: str) -> dict:
+        record = _observation_fixture("no_work")
+        if name == "partly_covered":
+            return _with_extra_source(record, freshness="fresh", coverage="partial")
+        if name == "polled":
+            return _polled(record, 20)
+        return record
+
+    @classmethod
+    def _payload(cls, spec: tuple[str, dict]) -> dict:
+        name, counters = spec
+        return _observation_payload(
+            [], observations=_accounted_observations([cls._record(name)], **counters)
+        )
+
+    def _rows(self, payload: dict) -> list[dict]:
+        return _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => ({key: row.key, headline: row.headline,"
+            "signature: row.signature, recorded: workSignature(row.record),"
+            "action: row.action_label, idle: row.idle || null}))",
+            payload,
+            self.NOW_MS,
+        )
+
+    def test_every_transition_reports_exactly_what_moved(self) -> None:
+        for name, before, after, expected in self.TRANSITIONS:
+            with self.subTest(transition=name):
+                frames = _render_board_sequence(
+                    [{"payload": self._payload(before)}, {"payload": self._payload(after)}]
+                )
+                # The first snapshot of a page is never news: there is nothing
+                # for it to have changed from.
+                # The live region is only ever touched by a meaningful
+                # change, so an untouched one has no text node at all.
+                self.assertEqual(frames[0].get("announce", ""), "")
+                self.assertIn(self.QUIET, frames[0]["changes"])
+
+                if expected is None:
+                    # Not news: the live region is left exactly as it was
+                    # rather than repeated, and the Timeline stays empty.
+                    self.assertEqual(frames[1].get("announce", ""), "")
+                    self.assertIn(self.QUIET, frames[1]["changes"])
+                    self.assertEqual(frames[1]["changes"].count('class="row"'), 0)
+                    continue
+
+                sentence = f"{self.IDLE_REFERENCE} {expected}"
+                self.assertEqual(frames[1]["announce"], f"{sentence}.")
+                self.assertEqual(frames[1]["changes"].count('class="row"'), 1)
+                self.assertIn('<span class="pill">changed</span>', frames[1]["changes"])
+                self.assertIn(sentence, frames[1]["changes"])
+
+    def test_a_coverage_driven_transition_moves_only_the_derived_half(self) -> None:
+        """The finding exactly, at the signature it is decided by.
+
+        Where both refreshes carry the same accepted record, the record is
+        byte-identical and so is the recorded half of the signature. Everything
+        that moved is derived, so a signature built from the record alone
+        cannot see it -- which is why the derived half is part of that same
+        signature rather than one more condition beside it.
+        """
+
+        for name, before, after, expected in self.TRANSITIONS:
+            if before[0] != after[0]:
+                continue
+            with self.subTest(transition=name):
+                first, second = self._payload(before), self._payload(after)
+                self.assertEqual(
+                    first["observations"]["records"], second["observations"]["records"]
+                )
+                one, two = self._rows(first)[0], self._rows(second)[0]
+                # One work identity throughout, so this is a row changing
+                # rather than one row going and another appearing.
+                self.assertEqual(one["key"], two["key"])
+                self.assertEqual(one["recorded"], two["recorded"])
+                self.assertEqual(one["signature"] == two["signature"], expected is None)
+                # And the signature really is the recorded half plus a derived
+                # half, with the idle reading's own identity inside it.
+                for row in (one, two):
+                    recorded, marker, effective = row["signature"].rpartition("|effective:")
+                    self.assertEqual(recorded, row["recorded"])
+                    self.assertEqual(marker, "|effective:")
+                    self.assertIn(row["idle"]["signature"], effective)
+
+    def test_a_withdrawn_claim_keeps_the_row_the_operator_chose(self) -> None:
+        # A second session is recorded as working, so it -- not the idle row --
+        # is what an operator who has chosen nothing is shown, and choosing the
+        # idle row is a real choice with something to survive.
+        idle = _observation_fixture("no_work")
+        work = _in_session(_named_work("alpha"), session=OTHER_SESSION, worktree=OTHER_WORKTREE)
+        whole = _observation_payload([], observations=_accounted_observations([idle, work]))
+        lossy = _observation_payload(
+            [],
+            observations=_accounted_observations(
+                [idle, work],
+                coverage="partial",
+                coverage_complete=False,
+                coverage_gaps=["files_unreadable"],
+                candidate_files=3,
+                selected_files=3,
+                read_files=2,
+                unreadable_files=1,
+                unaccounted_files=1,
+            ),
+        )
+        frames = _render_board_sequence(
+            [
+                {"payload": whole},
+                {"select": _idle_key(), "payload": lossy},
+                {"payload": whole},
+            ]
+        )
+        # The default choice is the work, and the explicit choice of the idle
+        # row survives both the withdrawal and the restoration: the identity a
+        # selection is kept against is the record's session and worktree, and
+        # neither moved.
+        self.assertEqual(_selected_key(frames[0]["worklist"]), _work_key("alpha", OTHER_SESSION, OTHER_WORKTREE))
+        for frame in frames[1:]:
+            self.assertEqual(_selected_key(frame["worklist"]), _idle_key())
+
+        # Exactly one row moved, and it is the idle one. The session that is
+        # working says the same thing throughout and is not announced.
+        withdrawn = f"{self.IDLE_REFERENCE} moved from {self.COMPLETE} to {self.IN_RECORDS}."
+        self.assertEqual(frames[1]["announce"], withdrawn)
+        self.assertEqual(frames[1]["changes"].count('class="row"'), 1)
+        self.assertNotIn("alpha", frames[1]["changes"])
+
+        # Every idle surface moved together: the headline, the next action and
+        # the coverage evidence in the detail panel the operator has open.
+        panel = frames[1]["worklist"]
+        self.assertIn(self.IN_RECORDS, panel)
+        self.assertNotIn(self.COMPLETE, panel)
+        self.assertIn("produced no record this refresh", panel)
+        self.assertNotIn("nothing to do in this session", panel)
+
+        # And the restoration is announced as plainly as the withdrawal was.
+        self.assertEqual(
+            frames[2]["announce"],
+            f"{self.IDLE_REFERENCE} moved from {self.IN_RECORDS} to {self.COMPLETE}.",
+        )
+        self.assertIn(self.COMPLETE, frames[2]["worklist"])
+        self.assertIn("nothing to do in this session", frames[2]["worklist"])
+
+    def test_no_signature_quotes_an_age_that_only_the_clock_advances(self) -> None:
+        # One payload read at four instants inside the current window. The row
+        # states a different age at each of them and the signature states the
+        # same thing at all four, which is what keeps a page polling every few
+        # seconds out of the Timeline and out of the live region.
+        threshold = _eval_board_view("OBSERVATION_STALE_SECONDS")
+        payload = self._payload(("idle", WHOLE_READ))
+        signatures = _eval_board_view(
+            "ARGS[1].map(nowMs => workRows(ARGS[0], nowMs).map(row => row.signature))",
+            payload,
+            [
+                int((FIXTURE_CREATED + timedelta(seconds=age)).timestamp() * 1000)
+                for age in (1, 30, threshold - 1, threshold)
+            ],
+        )
+        self.assertEqual(len({json.dumps(item) for item in signatures}), 1)
+
+        # Crossing the threshold is not the clock advancing, though: the row
+        # stops claiming the present tense, so it is a change and is reported.
+        aged = _eval_board_view(
+            "workRows(ARGS[0], ARGS[1]).map(row => [row.signature, row.headline])",
+            payload,
+            int((FIXTURE_CREATED + timedelta(seconds=threshold + 1)).timestamp() * 1000),
+        )
+        self.assertNotEqual(aged[0][0], signatures[0][0])
+        self.assertEqual(aged[0][1], "last observed idle")
+
+    def test_dropping_the_effective_state_would_leave_the_withdrawal_silent(self) -> None:
+        """Mutation: build the signature from the record alone, as it was.
+
+        The mutant is exactly the Board before this fix, and it produces
+        exactly the silence the assertions above forbid -- so those assertions
+        are load-bearing rather than decorative.
+        """
+
+        pair = [
+            {"payload": self._payload(("idle", WHOLE_READ))},
+            {"payload": self._payload(("idle", CANDIDATE_UNREADABLE))},
+        ]
+        mutated = _eval_board_view(
+            "(() => {"
+            f" const rows = ARGS.map(payload => workRows(payload, {self.NOW_MS})[0]);"
+            " return {signatures: rows.map(row => row.signature),"
+            " headlines: rows.map(row => row.headline)}; })()",
+            pair[0]["payload"],
+            pair[1]["payload"],
+            mutate=("`effective:${effectiveState(freshness, update, idle)}`", '""'),
+        )
+        # The row really does change what it says, and the mutant's signature
+        # really does not notice.
+        self.assertEqual(mutated["headlines"], [self.COMPLETE, self.IN_RECORDS])
+        self.assertEqual(mutated["signatures"][0], mutated["signatures"][1])
+        self.assertEqual(
+            _eval_board_view(
+                "meaningfulChanges("
+                "new Map([['k', {signature: ARGS[0], reference: 'r', headline: ARGS[2]}]]),"
+                "new Map([['k', {signature: ARGS[1], reference: 'r', headline: ARGS[3]}]]))",
+                mutated["signatures"][0],
+                mutated["signatures"][1],
+                mutated["headlines"][0],
+                mutated["headlines"][1],
+            ),
+            [],
+        )
+
+        # The shipped signature, unmutated, reports the very same refresh.
+        frames = _render_board_sequence(pair)
+        self.assertEqual(
+            frames[1]["announce"],
+            f"{self.IDLE_REFERENCE} moved from {self.COMPLETE} to {self.IN_RECORDS}.",
+        )
+
+
 class _FailingReadHandle:
     """A handle that opens cleanly and raises when its contents are read.
 

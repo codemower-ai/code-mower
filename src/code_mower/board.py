@@ -2622,7 +2622,13 @@ _BOARD_HTML = """<!doctype html>
       if (kind === "no_work") return `idle:${text(scope.session_id)}:${text(scope.worktree_id)}`;
       return `unlinked:${text(scope.repository)}`;
     }
-    // Everything that makes one poll meaningfully different from the last.
+    // Everything one record states, as one string. This is the recorded half
+    // of a row's state; `rowSignature` adds the derived half, and only that
+    // sum is what change tracking compares. This half stays a pure function of
+    // the record on purpose, because observation ordering breaks its ties with
+    // it and an ordering that consulted the clock or the file coverage would
+    // not be stable.
+    //
     // `created_at`, every `checked_at`, every `observed_at` and every
     // `heartbeat_at` are excluded on purpose: they advance on every successful
     // poll whether or not anything happened, and including them would make an
@@ -2945,9 +2951,32 @@ _BOARD_HTML = """<!doctype html>
                       coverage_value: "complete",
                       note: `${IDLE_RECORDED}, ${IDLE_WITHHELD}.`
                     };
+      // The semantic identity of this reading, and the whole of what change
+      // tracking needs from it. Everything the classification puts on screen
+      // is in it -- which reading was chosen, how it is labelled and coloured,
+      // the next action it asks for, the coverage verdict, and the note with
+      // the counts and source kinds it quotes back -- so a refresh that
+      // rewrites any of them is a change even when the record behind the row
+      // is byte-identical. The caveat is deliberately outside it: the caveat
+      // carries the record's age, which advances on every poll whether or not
+      // the reading moved.
+      const signature = [
+        reading.key,
+        coverageState,
+        freshnessState,
+        reading.label,
+        reading.class,
+        reading.action,
+        reading.coverage_label,
+        reading.coverage_class,
+        reading.coverage_value,
+        reading.note,
+        covered.join("+")
+      ].join(";");
       return {
         affirmative,
         reason: reading.key,
+        signature,
         freshness_state: freshnessState,
         coverage_state: coverageState,
         label: reading.label,
@@ -2967,6 +2996,37 @@ _BOARD_HTML = """<!doctype html>
           note: `${reading.note}${caveat}`
         }
       };
+    }
+    // The half of a row's state that no record carries: what this page derived
+    // for it from payload-level file coverage and from the clock. A record can
+    // stay byte-identical across a refresh while every one of these moves -- a
+    // refresh that loses a file withdraws an idle claim and rewrites the
+    // headline, the state cue, the next action and the coverage evidence; an
+    // observation that crosses the staleness threshold stops being reported in
+    // the present tense. Each of those rewrites the row on screen, so each has
+    // to be a change.
+    //
+    // Ages are classified, never quoted. "3m" becoming "4m" is the poll
+    // advancing rather than the state moving, and quoting it would make every
+    // poll read as news in the Timeline and in the live region. The rest of
+    // the freshness reading -- which sources are stale, unreachable or partly
+    // covered -- is recorded state `workSignature` already carries, and so is
+    // every instant `lastMeaningfulUpdate` ranks; only which kind of time it
+    // ended up reporting from is derived, and only that is taken here.
+    function effectiveState(freshness, update, idle) {
+      const age = freshness?.age_recorded === true
+        ? (freshness?.current === true ? "current" : "aged")
+        : "unrecorded";
+      return `age:${age};update:${text(update?.basis)};idle:${idle === null ? "" : idle.signature}`;
+    }
+    // One row, one signature, both halves of it: the record it was read off
+    // and the readings this page derived for it. Change detection and the
+    // rendered row descend from the same two objects, so no reading can reach
+    // the operator that change detection has not seen, and an unchanged poll
+    // still produces an unchanged signature because neither half quotes a
+    // polling timestamp.
+    function rowSignature(record, freshness, update, idle) {
+      return [workSignature(record), `effective:${effectiveState(freshness, update, idle)}`].join("|");
     }
     // `coverage` is the file-level reading from observationCoverage: a row is
     // built from one record, but whether the record set behind it is complete
@@ -2991,11 +3051,17 @@ _BOARD_HTML = """<!doctype html>
         state: runState(run) || "not linked to a session",
         freshness: text(runSources[text(run?.source_id)]?.freshness) || "unavailable"
       }));
+      // One classification, decided here and consumed whole: the headline, the
+      // state cues, the next action, the coverage evidence and this row's
+      // signature all read it, so no surface can repeat an idle claim another
+      // surface has already withheld, and change tracking cannot stay silent
+      // about a withdrawal the row renders.
+      const idle = kind === "no_work" ? idlePresentation(record, freshness, coverage) : null;
       const base = {
         key,
         kind,
         participants,
-        signature: workSignature(record),
+        signature: rowSignature(record, freshness, update, idle),
         repository: text(record?.scope?.repository),
         freshness,
         update,
@@ -3031,11 +3097,6 @@ _BOARD_HTML = """<!doctype html>
         };
       }
       if (kind === "no_work") {
-        // One classification, consumed whole: the headline, the state cues,
-        // the next action and the coverage evidence all come from the same
-        // reading, so no surface can repeat an idle claim another surface has
-        // already withheld.
-        const idle = idlePresentation(record, freshness, coverage);
         return {
           ...base,
           reference: base.session_label || "this session",
@@ -3514,7 +3575,10 @@ _BOARD_HTML = """<!doctype html>
     // What changed since the previous snapshot. The first snapshot of a page
     // is not a change, and a snapshot whose every signature matches produces
     // nothing at all -- that is what keeps an unchanged poll out of the
-    // Timeline and out of the announcement region.
+    // Timeline and out of the announcement region. The signature compared here
+    // is `rowSignature`, which is the row's whole state -- what the record
+    // said and what this page derived from the coverage and the clock -- so a
+    // refresh that only withdraws a derived claim is still reported.
     function meaningfulChanges(previous, current) {
       if (previous === null) return [];
       const changes = [];
