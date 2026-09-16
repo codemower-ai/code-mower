@@ -3888,6 +3888,229 @@ def _render_board_focus(
     return json.loads(completed.stdout)
 
 
+# Evaluate one expression against the whole shipped page script, so the id
+# encoding the rows, the detail region and the actions all share can be
+# exercised directly on keys the renderer would have to survive.
+BOARD_PAGE_HARNESS = """
+const NODES = {};
+const document = {getElementById: (id) => (NODES[id] = NODES[id] || {innerHTML: "", textContent: ""})};
+Date.now = () => __NOW_MS__;
+__SCRIPT__
+const ARGS = process.argv.slice(1).map(value => JSON.parse(value));
+console.log(JSON.stringify(__EXPRESSION__));
+"""
+
+
+def _eval_board_page(expression: str, *args: object) -> object:
+    """Evaluate one shipped page expression against JSON arguments."""
+
+    script = (
+        BOARD_PAGE_HARNESS.replace("__NOW_MS__", str(int(OBSERVATION_NOW.timestamp() * 1000)))
+        .replace("__SCRIPT__", _board_script())
+        .replace("__EXPRESSION__", expression)
+    )
+    completed = subprocess.run(
+        [shutil.which("node") or "node", "-e", script, *(json.dumps(arg) for arg in args)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
+# The desktop width at which the work list gains its second column.
+DESKTOP_MEDIA = "@media (min-width: 900px)"
+
+# The rule this page shipped before the detail region was put into normal
+# flow. It is kept here as the regression the layout model has to catch: an
+# out-of-flow detail contributes no height, so a short list leaves it hanging
+# over whatever follows.
+PREVIOUS_DESKTOP_CSS = """
+.workrows { display:grid; gap:8px; }
+.workrow { border:1px solid var(--line); }
+.workdetail { border-top:1px solid var(--line); padding:12px; }
+@media (min-width: 900px) {
+  .worklayout { position:relative; padding-right:372px; min-height:180px; }
+  .workdetail { position:absolute; top:0; right:0; width:356px; max-height:70vh; overflow:auto; }
+}
+"""
+
+
+def _css_rules(css: str) -> list[tuple[str, str, dict[str, str]]]:
+    """Every ``(at-rule, selector, declarations)`` triple a stylesheet declares."""
+
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    rules: list[tuple[str, str, dict[str, str]]] = []
+    stack: list[str] = []
+    prelude = ""
+    index = 0
+    while index < len(css):
+        char = css[index]
+        if char == "{":
+            head, prelude = prelude.strip(), ""
+            if head.startswith("@"):
+                stack.append(" ".join(head.split()))
+                index += 1
+                continue
+            end = css.index("}", index)
+            declarations: dict[str, str] = {}
+            for item in css[index + 1 : end].split(";"):
+                name, separator, value = item.partition(":")
+                if separator:
+                    declarations[name.strip()] = value.strip()
+            for selector in head.split(","):
+                rules.append((" ".join(stack), " ".join(selector.split()), declarations))
+            index = end + 1
+            continue
+        if char == "}":
+            if stack:
+                stack.pop()
+            prelude = ""
+            index += 1
+            continue
+        prelude += char
+        index += 1
+    return rules
+
+
+def _board_css() -> str:
+    """The stylesheet the shipped page serves."""
+
+    html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+    return html[html.index("<style>") + len("<style>") : html.index("</style>")]
+
+
+def _matches(selector: str, node: dict, ancestors: list[dict]) -> bool:
+    """Match the descendant-and-class selectors this stylesheet is written in."""
+
+    compounds = selector.split()
+    subject, rest = compounds[-1], compounds[:-1]
+    if not _matches_compound(subject, node):
+        return False
+    remaining = list(ancestors)
+    for compound in reversed(rest):
+        while remaining and not _matches_compound(compound, remaining[-1]):
+            remaining.pop()
+        if not remaining:
+            return False
+        remaining.pop()
+    return True
+
+
+def _matches_compound(compound: str, node: dict) -> bool:
+    if compound.startswith("#"):
+        return node.get("id") == compound[1:]
+    classes = set(node.get("classes", ()))
+    parts = [part for part in compound.split(".") if part]
+    if not compound.startswith("."):
+        tag, parts = parts[0], parts[1:]
+        if tag != node.get("tag"):
+            return False
+    return all(part in classes for part in parts)
+
+
+def _computed(css: str, node: dict, ancestors: list[dict], *, desktop: bool) -> dict[str, str]:
+    """Cascade the stylesheet onto one node in source order."""
+
+    style: dict[str, str] = {}
+    for at_rule, selector, declarations in _css_rules(css):
+        if at_rule and not (desktop and at_rule == DESKTOP_MEDIA):
+            continue
+        if _matches(selector, node, ancestors):
+            style.update(declarations)
+    return style
+
+
+def _px(value: str, *, viewport: int) -> float:
+    if value.endswith("px"):
+        return float(value[:-2])
+    if value.endswith("vh"):
+        return float(value[:-2]) * viewport / 100
+    return 0.0
+
+
+def _track_count(value: str) -> int:
+    """Count the tracks a ``grid-template-columns`` value declares."""
+
+    tracks, depth, token = 0, 0, ""
+    for char in value:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char.isspace() and depth == 0:
+            tracks += 1 if token else 0
+            token = ""
+            continue
+        token += char
+    return tracks + (1 if token else 0)
+
+
+def _work_list_layout(
+    css: str,
+    *,
+    container_classes: tuple[str, ...] = (),
+    rows: int,
+    selected: int,
+    row_height: float,
+    detail_height: float,
+    viewport: int = 900,
+) -> dict[str, float]:
+    """Model the desktop height the work list reserves and where the detail ends.
+
+    A deliberately small box model: enough to tell an out-of-flow detail, which
+    reserves nothing, from a detail that is a real item of the row's grid and
+    therefore makes the row -- and so the list, and so the section -- at least
+    as tall as itself.
+    """
+
+    container = {"tag": "div", "id": "worklist", "classes": list(container_classes)}
+    list_node = {"tag": "ul", "classes": ["workrows"]}
+    row_nodes = [
+        {"tag": "li", "classes": ["workrow"] + (["selected"] if index == selected else [])}
+        for index in range(rows)
+    ]
+    detail_node = {"tag": "div", "classes": ["workdetail"]}
+    ancestors = [container, list_node, row_nodes[selected]]
+
+    container_style = _computed(css, container, [], desktop=True)
+    list_style = _computed(css, list_node, [container], desktop=True)
+    row_style = _computed(css, row_nodes[selected], [container, list_node], desktop=True)
+    detail_style = _computed(css, detail_node, ancestors, desktop=True)
+
+    height = detail_height
+    if "max-height" in detail_style:
+        height = min(height, _px(detail_style["max-height"], viewport=viewport))
+    gap = _px(list_style.get("gap", "0px"), viewport=viewport)
+
+    out_of_flow = detail_style.get("position") in {"absolute", "fixed"}
+    side_by_side = (
+        row_style.get("display") == "grid"
+        and _track_count(row_style.get("grid-template-columns", "")) > 1
+        and detail_style.get("grid-column") not in {None, "1"}
+    )
+    if out_of_flow:
+        row_heights = [row_height] * rows
+    elif side_by_side:
+        row_heights = [
+            max(row_height, height) if index == selected else row_height for index in range(rows)
+        ]
+    else:  # normal flow, single column: the detail sits under its own row
+        row_heights = [
+            row_height + height if index == selected else row_height for index in range(rows)
+        ]
+
+    reserved = sum(row_heights) + gap * max(rows - 1, 0)
+    reserved = max(reserved, _px(container_style.get("min-height", "0px"), viewport=viewport))
+    if out_of_flow:
+        # Positioned against the list box, so it starts at the list's own top.
+        detail_bottom = _px(detail_style.get("top", "0px"), viewport=viewport) + height
+    else:
+        above = sum(row_heights[:selected]) + gap * selected
+        detail_bottom = above + height
+    return {"reserved": reserved, "detail_bottom": detail_bottom}
+
+
 def _work_keys(worklist: str) -> list[str]:
     return re.findall(r'class="rowbtn" id="[^"]+" data-key="([^"]+)"', worklist)
 
@@ -4818,6 +5041,102 @@ class BoardWorkFirstViewTests(TestCase):
         self.assertNotIn("2 recorded runs", participants)
         self.assertIn("worst source unavailable", participants)
 
+    def test_element_ids_encode_every_work_key_injectively(self) -> None:
+        keys = [
+            # The frozen contract admits all three of these repositories, and
+            # an unlinked row is identified by its repository alone.
+            "unlinked:owner/re.po",
+            "unlinked:owner/re-po",
+            "unlinked:owner/re_po",
+            # Work and idle identities differing only in their punctuation.
+            "work:" + "a" * 32 + ":sha256:" + "b" * 64 + ":work_one",
+            "work:" + "a" * 32 + ":sha256:" + "b" * 64 + ":work-one",
+            "idle:" + "a" * 32 + ":sha256:" + "b" * 64,
+            # Opaque keys past anything the contract admits today: non-ASCII, an
+            # astral character, separators alone, and a long one.
+            "unlinked:ówner/répo",
+            "unlinked:owner/repo\U0001f600",
+            ":::",
+            "unlinked:owner/" + "a.b-c_" * 60,
+        ]
+        rows = _eval_board_page("ARGS[0].map(rowElementId)", keys)
+        # Distinct work is distinct DOM identity: no two keys share a row id.
+        self.assertEqual(len(set(rows)), len(keys))
+        # The rule this replaced did collapse them, which is the defect: it is
+        # not a collision this set merely happens to avoid.
+        self.assertLess(len({re.sub(r"[^A-Za-z0-9_-]", "-", key) for key in keys}), len(keys))
+        for element_id in rows:
+            self.assertRegex(element_id, r"^workrow-[A-Za-z0-9_-]+$")
+        # Every id decodes back to exactly the key it came from, which is what
+        # makes the encoding injective rather than merely unlikely to collide.
+        decoded = _eval_board_page(
+            "ARGS[0].map(key => rowElementId(key).slice('workrow-'.length)"
+            ".replace(/_([0-9a-f]+)_/g, (whole, hex) => String.fromCharCode(parseInt(hex, 16))))",
+            keys,
+        )
+        self.assertEqual(decoded, keys)
+        # The detail region's actions are built from the same encoding, so they
+        # are unique per work item too, and never collide with a row button.
+        actions = _eval_board_page(
+            "ARGS[0].flatMap(key => ARGS[1].map(name => actionElementId(key, name)))",
+            keys,
+            ["openpr", "inspect", "changes"],
+        )
+        self.assertEqual(len(set(actions)), len(keys) * 3)
+        self.assertFalse(set(actions) & set(rows))
+
+    def test_keys_that_differ_only_in_punctuation_keep_separate_rows_and_focus(self) -> None:
+        def unlinked_for(repository: str) -> dict:
+            record = _observation_fixture("unlinked")
+            record["scope"]["repository"] = repository
+            # Still a record the frozen contract accepts.
+            return board_observation.validate(record)
+
+        payload = _observation_payload([unlinked_for("owner/re.po"), unlinked_for("owner/re-po")])
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        keys = _work_keys(worklist)
+        self.assertEqual(sorted(keys), ["unlinked:owner/re-po", "unlinked:owner/re.po"])
+        # Two work items, two row ids. Under the punctuation-to-hyphen rule
+        # both rows claimed one id, so the document carried a duplicate.
+        row_ids = [_row_element_id(worklist, key) for key in keys]
+        self.assertEqual(len(set(row_ids)), 2)
+
+        # The one detail region is labelled by the row that is actually
+        # selected, and the row that is not selected is not expanded.
+        selected_key = _selected_key(worklist)
+        selected_id = _row_element_id(worklist, selected_key)
+        self.assertEqual(worklist.count('id="workdetail"'), 1)
+        self.assertIn(f'id="workdetail" role="region" aria-labelledby="{selected_id}"', worklist)
+        self.assertEqual(worklist.count('aria-expanded="true"'), 1)
+
+        # Selecting its neighbour moves the detail, and the label with it.
+        other_key = next(key for key in keys if key != selected_key)
+        moved = _render_board_focus([{"payload": payload}, {"select": other_key}])[-1]["worklist"]
+        other_id = _row_element_id(moved, other_key)
+        self.assertNotEqual(other_id, selected_id)
+        self.assertEqual(_selected_key(moved), other_key)
+        self.assertEqual(moved.count('id="workdetail"'), 1)
+        self.assertIn(f'id="workdetail" role="region" aria-labelledby="{other_id}"', moved)
+        # The detail's actions belong to the work that is selected, so no
+        # action id is shared between the two rows' detail regions.
+        first_actions = set(re.findall(r'id="(workaction-[^"]+)"', worklist))
+        second_actions = set(re.findall(r'id="(workaction-[^"]+)"', moved))
+        self.assertTrue(first_actions)
+        self.assertFalse(first_actions & second_actions)
+
+        # A refresh under the keyboard restores focus to the same row, not to
+        # the neighbour that used to answer to the same id.
+        restored = _render_board_focus(
+            [
+                {"payload": payload},
+                {"select": other_key},
+                {"focus": other_id},
+                {"payload": payload},
+            ]
+        )[-1]
+        self.assertEqual(restored["active"], other_id)
+        self.assertEqual(_selected_key(restored["worklist"]), other_key)
+
     def test_mobile_detail_follows_the_row_and_desktop_places_it_adjacent(self) -> None:
         html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
         # One detail node, rendered inside the selected row, so single-column
@@ -4835,7 +5154,67 @@ class BoardWorkFirstViewTests(TestCase):
         selected = nodes["worklist"].split('<li class="workrow selected">')[1]
         self.assertLess(selected.index("</button>"), selected.index('id="workdetail"'))
         self.assertIn("@media (min-width: 900px) {", html)
-        self.assertIn(".workdetail { position:absolute;", html)
+        # Desktop moves the detail into a second column of the row's own grid.
+        # It is still one region, still rendered inside the selected row, and
+        # still in normal flow rather than painted over the page.
+        style = _computed(
+            _board_css(),
+            {"tag": "div", "classes": ["workdetail"]},
+            [
+                {"tag": "div", "id": "worklist", "classes": []},
+                {"tag": "ul", "classes": ["workrows"]},
+                {"tag": "li", "classes": ["workrow", "selected"]},
+            ],
+            desktop=True,
+        )
+        self.assertNotIn("position", style)
+        self.assertEqual(style["grid-column"], "2")
+        row = _computed(
+            _board_css(),
+            {"tag": "li", "classes": ["workrow", "selected"]},
+            [{"tag": "div", "id": "worklist", "classes": []}, {"tag": "ul", "classes": ["workrows"]}],
+            desktop=True,
+        )
+        self.assertEqual(row["display"], "grid")
+        self.assertEqual(_track_count(row["grid-template-columns"]), 2)
+
+    def test_desktop_detail_reserves_its_height_so_a_short_list_cannot_overlap(self) -> None:
+        # A detail region far taller than the one or two rows beside it: the
+        # case where an out-of-flow panel used to hang over the Work Now and
+        # Participants sections that follow the list.
+        boxes = {"row_height": 90, "detail_height": 420}
+        for rows, selected in ((1, 0), (2, 0), (2, 1)):
+            with self.subTest(rows=rows, selected=selected):
+                layout = _work_list_layout(
+                    _board_css(), rows=rows, selected=selected, **boxes
+                )
+                # The list reserves real height for the detail, so everything
+                # after it starts below the detail rather than under it.
+                self.assertGreaterEqual(layout["reserved"], layout["detail_bottom"])
+                self.assertGreaterEqual(layout["reserved"], boxes["detail_height"])
+
+        # The same model, given the rule this page shipped before, reports the
+        # overlap it was blocked for: a one-row list reserved its 180px minimum
+        # while the absolutely positioned detail ran on to 420px.
+        previous = _work_list_layout(
+            PREVIOUS_DESKTOP_CSS, container_classes=("worklayout",), rows=1, selected=0, **boxes
+        )
+        self.assertEqual(previous["reserved"], 180)
+        self.assertEqual(previous["detail_bottom"], 420)
+        self.assertGreater(previous["detail_bottom"], previous["reserved"])
+
+    def test_no_rule_takes_dynamic_content_out_of_flow_without_pinning_its_box(self) -> None:
+        # Out-of-flow content contributes no layout height, so anything the
+        # payload can grow must stay in flow. The one exception is the
+        # visually hidden live region, which pins its own box to a clipped
+        # pixel and so can never overlap anything.
+        for at_rule, selector, declarations in _css_rules(_board_css()):
+            if declarations.get("position") not in {"absolute", "fixed"}:
+                continue
+            with self.subTest(rule=f"{at_rule} {selector}".strip()):
+                self.assertEqual(declarations.get("width"), "1px")
+                self.assertEqual(declarations.get("height"), "1px")
+                self.assertEqual(declarations.get("overflow"), "hidden")
 
     def test_participants_report_recorded_phases_without_claiming_liveness(self) -> None:
         nodes = _render_board_sequence(

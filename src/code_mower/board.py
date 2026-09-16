@@ -1453,11 +1453,20 @@ _BOARD_HTML = """<!doctype html>
     .evgroup:first-of-type { border-top:0; }
     .link { font:inherit; color:#145ea8; background:none; border:0; padding:0; cursor:pointer; text-decoration:underline; }
     /* Desktop: the same selected-row detail becomes an adjacent column beside
-       the list instead of moving in the DOM, so selection, focus order and
-       announcements are identical at both widths. */
+       the row it belongs to instead of moving in the DOM, so selection, focus
+       order and announcements are identical at both widths. The row itself is
+       the two-column grid and the detail is one of its items, so the detail
+       stays in normal flow: the row, the list and the section are always at
+       least as tall as the detail, and a list of one or two rows can never let
+       the detail overlap the sections below it. Every row reserves the second
+       column, so the row buttons keep one width whichever row is selected, and
+       the row's frame moves onto the button so an unselected row is not drawn
+       around an empty reserved column. */
     @media (min-width: 900px) {
-      .worklayout { position:relative; padding-right:372px; min-height:180px; }
-      .workdetail { position:absolute; top:0; right:0; width:356px; max-height:70vh; overflow:auto; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+      .workrow { display:grid; grid-template-columns:minmax(0, 1fr) 356px; column-gap:16px; align-items:start; border:0; border-radius:0; background:none; }
+      .rowbtn { grid-column:1; grid-row:1; border:1px solid var(--line); background:var(--panel); }
+      .workrow.selected .rowbtn { border-color:var(--ink); }
+      .workdetail { grid-column:2; grid-row:1; max-height:70vh; overflow:auto; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
     }
   </style>
 </head>
@@ -1481,7 +1490,7 @@ _BOARD_HTML = """<!doctype html>
       <!-- Work first: current work, its evidence, and who is responsible come
            before aggregate productivity and release history, so the first
            viewport answers "what needs doing now", not "what happened". -->
-      <section class="card"><h2 id="work-heading">Work</h2><div class="worklayout" id="worklist"></div></section>
+      <section class="card"><h2 id="work-heading">Work</h2><div id="worklist"></div></section>
       <section class="card"><h2>Work Now</h2><div class="rows" id="worknow"></div></section>
       <section class="card"><h2>Participants</h2><div class="rows" id="participants"></div></section>
       <section class="card"><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
@@ -2685,17 +2694,22 @@ _BOARD_HTML = """<!doctype html>
     let wired = false;
     // A row's element id is derived from its opaque work identity rather than
     // its position, so `aria-labelledby` and restored keyboard focus follow the
-    // work item across a refresh that reorders the list. The work, worktree and
-    // session components the key is built from cannot contain the separator, so
-    // distinct keys cannot collapse onto one id.
-    const keySlug = (key) => text(key).replace(/[^A-Za-z0-9_-]/g, "-");
+    // work item across a refresh that reorders the list. The encoding is
+    // injective for any key whatsoever: a letter, digit or hyphen stands for
+    // itself, and every other code unit -- including the `_` that introduces an
+    // escape, and code units outside ASCII -- becomes `_<hex>_`. A produced id
+    // therefore decodes back to exactly one key, so keys that differ only in
+    // punctuation (`owner/re.po` against `owner/re-po`) can never collapse onto
+    // one id, one `aria-labelledby` target or one focus lookup.
+    const keySlug = (key) => text(key).replace(/[^A-Za-z0-9-]/g, c => `_${c.charCodeAt(0).toString(16)}_`);
     const rowElementId = (key) => `workrow-${keySlug(key)}`;
     // The detail region of the selected row is replaced wholesale on every
     // poll, so its actions need identities of their own for the same reason
-    // the rows do. The action name comes before the work identity and every
-    // name is a single hyphen-free token, so no action id can collide with
-    // another action's id however a work identity happens to be spelled, and
-    // the `workaction-` prefix keeps them clear of the row buttons.
+    // the rows do. The action name comes before the encoded work identity and
+    // every name is a single hyphen-free token, so the first hyphen after the
+    // prefix always ends the name: an action id decodes back to exactly one
+    // (action, key) pair however a work identity happens to be spelled, and the
+    // `workaction-` prefix keeps them clear of the row buttons.
     const actionElementId = (key, name) => `workaction-${name}-${keySlug(key)}`;
     // A background refresh replaces the tab strip and the row list. Without
     // this the focused control is destroyed mid-navigation and focus falls to

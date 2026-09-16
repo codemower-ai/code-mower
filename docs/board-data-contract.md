@@ -514,15 +514,24 @@ participant summary is built from this same deduplicated set, so a run that has
 moved phase is counted once, in the phase the newest observation records, and
 never again in the phase it has left. There is exactly one detail region. It is
 rendered inside the selected row, so at phone widths it follows the row it
-belongs to, and at desktop widths CSS places that same region adjacent to the
-list. Rows are buttons carrying `aria-expanded` and `aria-controls`; Up, Down,
+belongs to, and at desktop widths CSS places that same region in a second
+column of the row's own grid. It stays in normal flow at both widths, so the
+row — and therefore the list and the section — is always at least as tall as
+the detail it is showing, and a list of one or two rows can never leave the
+detail hanging over the sections below it. Rows are buttons carrying
+`aria-expanded` and `aria-controls`; Up, Down,
 Home and End move the selection, tabs wrap with the arrow keys, and every
 interactive control has a visible focus ring.
 
 A poll replaces the tab strip and the row list, so every control that can hold
 the keyboard carries an identity derived from what it acts on rather than from
 where it was rendered: the tabs from the view, the rows from the work identity,
-and the selected row's actions from that identity and the action's own name. A
+and the selected row's actions from that identity and the action's own name.
+The element id is an injective encoding of the opaque identity — a letter,
+digit or hyphen stands for itself and every other code unit becomes `_<hex>_` —
+so identities that differ only in punctuation, such as unlinked work in
+`owner/re.po` and in `owner/re-po`, keep distinct ids, distinct
+`aria-labelledby` targets and distinct focus lookups. A
 refresh therefore returns the keyboard to the same control — restoring without
 scrolling, because a refresh must not move the view. When a control is no
 longer offered, focus moves only to the row that control named as its owner,
