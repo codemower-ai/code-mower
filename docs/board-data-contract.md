@@ -57,8 +57,10 @@ board's `/api/status` response as `observations`. It carries validated
 `code_mower.boardObservation.v1` records read from
 `.code-mower/board/observations/*.json` by default, plus bounded diagnostics for
 records the observation contract rejected and the file-level coverage of that
-bounded read. The Board only consumes that contract; it never produces an
-observation.
+bounded read. A maintained local execution adapter can also supply one immutable
+snapshot to the pure local producer during a refresh. Board validates and
+consumes the returned record in memory through the same frozen contract; it
+never writes an observation.
 
 `code_mower.supervisedPilot.v1` is the local supervised-pilot payload embedded
 as `supervised_pilot` in the board's `/api/status` response when
@@ -674,10 +676,17 @@ Slack-specific control, no form, and no non-GET request.
 
 `code_mower.boardObservations.v1` is the local observation block embedded in the
 board's `/api/status` response as `observations`. It is a **consumer** of the
-frozen `code_mower.boardObservation.v1` contract: the Board reads records,
-decodes each through `board_observation.decode`, and renders what survives. The
-Board never writes an observation, resolves a session, contacts a provider, or
-repairs a record that fails the contract.
+frozen `code_mower.boardObservation.v1` contract: the Board reads file records,
+decodes each through `board_observation.decode`, and renders what survives. A
+maintained execution path may pass one immutable `LocalObservationInput` to
+`status_payload`; Board then calls the pure `observe_local_work` boundary with
+the configured repository and checkout root, validates its returned B0 record
+again, and appends it in memory. The producer reuses the exact read-only current
+session resolver and validates repository, worktree, session, work, run,
+role/provider, PR, and head bindings before correlation. A refusal or exception
+adds no record and cannot abort the rest of the Board refresh. The Board never
+writes an observation, contacts a provider, repairs a record that fails the
+contract, or converts lease ownership alone into liveness.
 
 By default the Board reads `*.json` files under
 `.code-mower/board/observations/`. Use `--observations-path PATH` for a custom
@@ -721,8 +730,12 @@ count.
 
 The block carries:
 
-- `records[]` — validated `code_mower.boardObservation.v1` records, in file-name
-  order.
+- `records[]` — validated `code_mower.boardObservation.v1` records. File-backed
+  records stay in file-name order; the optional in-memory local producer record
+  follows them.
+- `produced_records` — `1` when the typed local hook returned an accepted
+  in-memory record for this refresh, otherwise `0`. This record is not a file
+  and does not change file coverage or any candidate counter.
 - `coverage`, `coverage_complete`, `coverage_gaps[]`, `truncated`, `file_cap`,
   `selection` and the candidate counters below — how much of the candidate file
   set those records were built from. `coverage` is a closed vocabulary:
@@ -748,7 +761,8 @@ The block carries:
   - `read_files` = `accepted_records` + `invalid_records` — a file that was
     read either decoded into a record or was rejected by the frozen record
     contract (including for exceeding `MAX_BYTES`).
-  - `accepted_records` = `len(records)`.
+  - `accepted_records` counts accepted file records only.
+  - `len(records)` = `accepted_records` + `produced_records`.
   - `unaccounted_files` = `unreadable_files` + `invalid_records` — every
     selected candidate the records do not account for.
   - `coverage_complete` is true only when `omitted_files` and

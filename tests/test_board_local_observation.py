@@ -662,7 +662,7 @@ class LocalBoardObservationTests(unittest.TestCase):
             init_repo(root)
 
             def failed(**_kwargs):
-                raise OSError("/Users/private/token/github_pat_secret")
+                raise OSError("/home/private/auth-output")
 
             assert observe_local_work(
                 repository=REPOSITORY,

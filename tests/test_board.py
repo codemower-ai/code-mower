@@ -25,7 +25,14 @@ from unittest import SkipTest, TestCase, skipUnless
 from unittest.mock import patch
 from io import StringIO
 
-from code_mower import board, board_observation, board_store, lane_status, reviewer_spend
+from code_mower import (
+    board,
+    board_local_observation,
+    board_observation,
+    board_store,
+    lane_status,
+    reviewer_spend,
+)
 
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
@@ -4662,6 +4669,92 @@ class BoardObservationReaderTests(TestCase):
         self.assertEqual(payload["records"], [])
         self.assertEqual(payload["message"], "no local Board observations recorded yet")
         self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+
+    def test_typed_local_producer_record_joins_the_existing_record_list_in_memory(self) -> None:
+        snapshot = board_local_observation.LocalObservationInput()
+        produced = _observation_fixture("observed_running")
+        calls: list[dict[str, object]] = []
+
+        def producer(**kwargs: object) -> dict:
+            calls.append(kwargs)
+            return produced
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing = root / "observations"
+            before = sorted(path.relative_to(root) for path in root.rglob("*"))
+            with patch.object(
+                board.board_local_observation,
+                "observe_local_work",
+                side_effect=producer,
+            ):
+                payload = board.observations_payload(
+                    board.BoardConfig(
+                        repo="owner/repo",
+                        repo_path=str(root),
+                        observations_path=str(missing),
+                    ),
+                    local_observation=snapshot,
+                )
+            after = sorted(path.relative_to(root) for path in root.rglob("*"))
+
+        self.assertEqual(
+            calls,
+            [{"repository": "owner/repo", "start": str(root), "snapshot": snapshot}],
+        )
+        self.assertEqual(payload["records"], [produced])
+        self.assertEqual(payload["produced_records"], 1)
+        # In-memory evidence is not a file and cannot change B2's exact file
+        # accounting or create the configured observation directory.
+        self.assertEqual(payload["accepted_records"], 0)
+        self.assertEqual(payload["candidate_files"], 0)
+        self.assertEqual(payload["message"], "")
+        self.assertEqual(before, after)
+
+    def test_local_producer_refusal_or_invalid_output_fails_closed(self) -> None:
+        snapshot = board_local_observation.LocalObservationInput()
+        cases = (
+            ("refused", lambda **_kwargs: None),
+            ("invalid", lambda **_kwargs: {"schema": board_observation.SCHEMA}),
+            ("raised", lambda **_kwargs: (_ for _ in ()).throw(OSError("private path"))),
+        )
+        for name, producer in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                payload = board.observations_payload(
+                    board.BoardConfig(
+                        repo="owner/repo",
+                        observations_path=str(Path(tmp) / "absent"),
+                    ),
+                    local_observation=snapshot,
+                    local_observation_producer=producer,
+                )
+
+            self.assertEqual(payload["records"], [])
+            self.assertEqual(payload["produced_records"], 0)
+            self.assertNotIn("private path", json.dumps(payload))
+
+    def test_status_payload_forwards_the_typed_local_observation_hook(self) -> None:
+        snapshot = board_local_observation.LocalObservationInput()
+        produced = _observation_fixture("provider_reported_progress")
+        calls = 0
+
+        def producer(**_kwargs: object) -> dict:
+            nonlocal calls
+            calls += 1
+            return produced
+
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = board.status_payload(
+                board.BoardConfig(repo="owner/repo", repo_path=tmp),
+                gh_json_runner=_gh_json,
+                command_runner=_command_runner,
+                local_observation=snapshot,
+                local_observation_producer=producer,
+            )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(payload["observations"]["records"], [produced])
+        self.assertEqual(payload["observations"]["produced_records"], 1)
 
     def test_valid_records_are_returned_and_invalid_ones_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
