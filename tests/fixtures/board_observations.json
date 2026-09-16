@@ -15,7 +15,7 @@
           "schema": "code_mower.boardObservation.v1",
           "scope": {
             "repository": "codemower-ai/code-mower",
-            "session_id": "sessionfixture00000000000000000001",
+            "session_id": "a4ce901ecfb743609ed0b6504668aca7",
             "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           },
           "sources": [
@@ -161,7 +161,7 @@
                 "basis": "observed",
                 "binding": {
                   "repository": "codemower-ai/code-mower",
-                  "session_id": "sessionfixture00000000000000000001",
+                  "session_id": "a4ce901ecfb743609ed0b6504668aca7",
                   "work_id": "runningwork",
                   "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 },
@@ -198,7 +198,7 @@
       "error": "identity_mismatch",
       "name": "cross_session_join",
       "set": {
-        "/work/runs/0/binding/session_id": "othersession"
+        "/work/runs/0/binding/session_id": "b4ce901ecfb743609ed0b6504668aca7"
       }
     },
     {
@@ -283,7 +283,7 @@
       "error": "identity_mismatch",
       "name": "unlinked_claims_session",
       "set": {
-        "/scope/session_id": "sessionfixture00000000000000000001"
+        "/scope/session_id": "a4ce901ecfb743609ed0b6504668aca7"
       }
     },
     {
@@ -307,7 +307,7 @@
       "schema": "code_mower.boardObservation.v1",
       "scope": {
         "repository": "codemower-ai/code-mower",
-        "session_id": "sessionfixture00000000000000000001",
+        "session_id": "a4ce901ecfb743609ed0b6504668aca7",
         "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "sources": [
@@ -391,7 +391,7 @@
       "schema": "code_mower.boardObservation.v1",
       "scope": {
         "repository": "codemower-ai/code-mower",
-        "session_id": "sessionfixture00000000000000000001",
+        "session_id": "a4ce901ecfb743609ed0b6504668aca7",
         "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "sources": [
@@ -548,7 +548,7 @@
             "basis": "provider_reported",
             "binding": {
               "repository": "codemower-ai/code-mower",
-              "session_id": "sessionfixture00000000000000000001",
+              "session_id": "a4ce901ecfb743609ed0b6504668aca7",
               "work_id": "completework",
               "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             },
@@ -588,7 +588,7 @@
       "schema": "code_mower.boardObservation.v1",
       "scope": {
         "repository": "codemower-ai/code-mower",
-        "session_id": "sessionfixture00000000000000000001",
+        "session_id": "a4ce901ecfb743609ed0b6504668aca7",
         "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "sources": [
@@ -733,7 +733,7 @@
             "basis": "observed",
             "binding": {
               "repository": "codemower-ai/code-mower",
-              "session_id": "sessionfixture00000000000000000001",
+              "session_id": "a4ce901ecfb743609ed0b6504668aca7",
               "work_id": "runningwork",
               "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             },
@@ -773,7 +773,7 @@
       "schema": "code_mower.boardObservation.v1",
       "scope": {
         "repository": "codemower-ai/code-mower",
-        "session_id": "sessionfixture00000000000000000001",
+        "session_id": "a4ce901ecfb743609ed0b6504668aca7",
         "worktree_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "sources": [

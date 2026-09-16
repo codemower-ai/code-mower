@@ -8,7 +8,7 @@ from pathlib import Path
 
 import unittest
 
-from code_mower import remote_session
+from code_mower import remote_session, session_current
 from code_mower.board_observation import (
     ACTIONS,
     ACTORS,
@@ -218,6 +218,23 @@ class BoardObservationTests(unittest.TestCase):
         primary = contract["$defs"]["primary"]["properties"]
         assert set(primary["actor"]["enum"]) == ACTORS
         assert set(primary["action"]["enum"]) == ACTIONS
+
+    def test_session_identity_matches_current_session_resolver(self) -> None:
+        for session_id in (
+            "a4ce901ecfb743609ed0b6504668aca7",
+            "04ce901ecfb743609ed0b6504668aca7",
+        ):
+            assert session_current._SESSION_ID.fullmatch(session_id)
+            record = copy.deepcopy(named_record("observed_running"))
+            record["scope"]["session_id"] = session_id
+            record["work"]["runs"][0]["binding"]["session_id"] = session_id
+            assert validate(record)["scope"]["session_id"] == session_id
+
+        record = copy.deepcopy(named_record("observed_running"))
+        record["scope"]["session_id"] = "sessionfixture00000000000000000001"
+        record["work"]["runs"][0]["binding"]["session_id"] = record["scope"]["session_id"]
+        with self.assertRaisesRegex(BoardObservationError, "invalid_contract"):
+            validate(record)
 
     def test_fixture_is_metadata_only(self) -> None:
         payload = fixture()
