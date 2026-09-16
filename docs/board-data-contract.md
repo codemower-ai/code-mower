@@ -540,7 +540,39 @@ observation as the last meaningful update, and one entry per run however many
 files observed it, kept as the worst-attested of those observations. The
 participant summary is built from this same deduplicated set, so a run that has
 moved on is counted once, under the lifecycle-aware state the newest
-observation records, and never again under the state it has left. There is exactly one detail region. It is
+observation records, and never again under the state it has left.
+
+Deduplication only ever compares like with like, so it settles which
+observation of one identity is current and says nothing about two identities
+that disagree. A session-level `no_work` snapshot and a work-specific
+observation of the same session and worktree are different identities, so both
+survive it — and left there the Board would state, of one session at once, that
+it was observed complete with nothing to do and that it is running work. A
+single reconciliation step runs immediately after deduplication and before any
+view reads a row, and keeps the newer of the two readings by the same trusted
+recorded order — `created_at`, then the last meaningful update — never by file
+or directory order. An idle snapshot followed by work observations is stale and
+is dropped, and every work item observed after it survives, however many there
+are. Work observations followed by an idle snapshot are the session having
+since gone quiet: the idle snapshot is the truthful current state and those
+work rows are dropped rather than restated as current work, which holds for
+terminal work too — an item observed as merged before its session reported
+itself idle is not current work either. Nothing is invented to stand in for a
+dropped row; what is already recorded is that the row is no longer recorded,
+which change tracking reports in the Timeline on the poll that drops it. Two
+observations recording exactly the same instants are resolved by specificity,
+the work-specific one winning, because claiming "nothing to do in this session"
+over a work item observed at the same instant is the contradiction the step
+exists to remove. Records in different sessions or different worktrees are
+never compared — one session holds several worktrees and one worktree is reused
+by session after session — and a record carrying neither half of a session
+identity, which is every `unlinked` observation, is never correlated with one
+that does and keeps the unlinked consolidation semantics above. The Health view
+still reads every record on disk on purpose: a source behind a superseded
+observation was really contacted, and its connection is inspected there on its
+own terms rather than as a claim about work.
+
+There is exactly one detail region. It is
 rendered inside the selected row, so at phone widths it follows the row it
 belongs to, and at desktop widths CSS places that same region in a second
 column of the row's own grid. It stays in normal flow at both widths, so the

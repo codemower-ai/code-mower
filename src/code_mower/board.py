@@ -2541,10 +2541,12 @@ _BOARD_HTML = """<!doctype html>
       if (candidateUpdate !== existingUpdate) return candidateUpdate > existingUpdate;
       return workSignature(candidate).localeCompare(workSignature(existing)) > 0;
     }
-    // The one deduplicated observation set the work-first views read. The work
-    // list, the participant summary and change tracking all consume this and
-    // nothing else, so none of them can go on counting an observation the
-    // others have already dropped.
+    // Deduplication by identity: one group per work identity, holding the
+    // observations of it that are still worth reading. This compares like with
+    // like only, so it settles which observation of one identity is current and
+    // says nothing about two identities that disagree -- that is what
+    // `reconcileSessionScopes` below decides. Nothing outside
+    // `reconciledObservationGroups` reads this directly.
     //
     // A linked identity is one work item however many observations of it are on
     // disk, so only the newest is retained and the superseded ones are dropped.
@@ -2571,6 +2573,100 @@ _BOARD_HTML = """<!doctype html>
           || text(a?.scope?.repository).localeCompare(text(b?.scope?.repository)));
       }
       return [...groups.values()];
+    }
+    // The session a record belongs to, or nothing at all. The frozen contract
+    // gives a `work` or `no_work` record both halves of a session identity and
+    // gives an `unlinked` record neither, so a record that arrives without both
+    // halves is one this step must leave alone: inferring which session an
+    // identity-less record belonged to would invent exactly the link the
+    // contract declined to record. Those records keep the unlinked
+    // consolidation semantics they already have.
+    function sessionScope(record) {
+      const scope = record?.scope || {};
+      const session = text(scope.session_id);
+      const worktree = text(scope.worktree_id);
+      return session && worktree ? `${session} ${worktree}` : "";
+    }
+    // Which of two observations of one session scope describes it now. The
+    // order is the recorded one -- when the observation was created, then the
+    // last meaningful update it carries -- so it never depends on the order the
+    // directory happened to be listed in or on which file arrived first.
+    //
+    // Two observations that record exactly the same times are resolved by
+    // specificity rather than by a text comparison of their contents. A
+    // work-specific observation names one work item inside the session; a
+    // session-level snapshot only summarizes the session as a whole. Reading
+    // "nothing to do in this session" over a work item observed at the very
+    // same instant is the contradiction this step exists to remove, so on an
+    // exact tie the work-specific observation is the current one.
+    function workSupersedesIdle(work, idle) {
+      const [workCreated, workUpdate] = observationOrder(work);
+      const [idleCreated, idleUpdate] = observationOrder(idle);
+      if (workCreated !== idleCreated) return workCreated > idleCreated;
+      if (workUpdate !== idleUpdate) return workUpdate > idleUpdate;
+      return true;
+    }
+    // Reconcile one session scope against itself, once, before anything reads a
+    // row.
+    //
+    // A session-level `no_work` snapshot and a work-specific observation of the
+    // same session and worktree are different keys -- `idle:session:worktree`
+    // against `work:session:worktree:id` -- so identity deduplication, which
+    // only ever compares like with like, retains both. Left that way the Board
+    // states two incompatible things about one session at once: an idle row
+    // saying the session was observed complete with nothing to do, beside work
+    // rows saying that session is running work right now.
+    //
+    // The two readings are not both current, so the newer one is kept and the
+    // older one is dropped:
+    //
+    //   idle then work  -- the session has since picked work up. The idle
+    //                      snapshot is stale and goes; every work item observed
+    //                      after it stays, however many there are.
+    //   work then idle  -- the session has since gone quiet. The idle snapshot
+    //                      is the truthful current state, and the superseded
+    //                      work rows go rather than being restated as current
+    //                      work. That is deliberate for terminal work too: a
+    //                      merged item observed before the session reported
+    //                      itself idle is not current work either. Nothing is
+    //                      invented to stand in for it -- what the page already
+    //                      records is that the row is no longer recorded, which
+    //                      change tracking reports in the Timeline on the poll
+    //                      that drops it.
+    //
+    // Both directions are decided per work item against the one retained idle
+    // snapshot, so a session that went idle and then picked up new work keeps
+    // only the work observed after the snapshot. Records in different sessions
+    // or different worktrees are never compared, and a record with no session
+    // identity is never correlated with one that has one.
+    //
+    // The Health view still reads every record on disk on purpose: a source
+    // behind a superseded observation was really contacted, and its connection
+    // is inspected there on its own terms rather than as a claim about work.
+    function reconcileSessionScopes(groups) {
+      const idle = new Map();
+      const work = new Map();
+      for (const group of groups) {
+        const scope = sessionScope(group.records[0]);
+        if (!scope) continue;
+        if (group.kind === "no_work") idle.set(scope, group);
+        else if (group.kind === "work") work.set(scope, [...(work.get(scope) || []), group]);
+      }
+      const superseded = new Set();
+      for (const [scope, idleGroup] of idle) {
+        for (const workGroup of work.get(scope) || []) {
+          if (workSupersedesIdle(workGroup.records[0], idleGroup.records[0])) superseded.add(idleGroup);
+          else superseded.add(workGroup);
+        }
+      }
+      return groups.filter(group => !superseded.has(group));
+    }
+    // The one reconciled observation set every work-first view reads. The work
+    // list, the participant summary, change tracking, selection and the
+    // announcement region all descend from this call and from no other, so the
+    // pre-reconciliation set cannot reach any of them.
+    function reconciledObservationGroups(data) {
+      return reconcileSessionScopes(observationGroups(data));
     }
     // One source id names one source, so a source observed in several retained
     // files is one source here too. Its consolidated reading is the
@@ -2635,7 +2731,7 @@ _BOARD_HTML = """<!doctype html>
     // reference and the opaque identity, so an unchanged snapshot never
     // reshuffles the list.
     function workRows(data, nowMs) {
-      return observationGroups(data)
+      return reconciledObservationGroups(data)
         .map(group => workRow(consolidatedRecord(group), nowMs))
         .sort((a, b) =>
           rowUrgency(a) - rowUrgency(b)

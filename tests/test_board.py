@@ -3867,6 +3867,80 @@ def _record_with_run_lifecycle(reference: str, phase: str, state: str | None) ->
     return board_observation.validate(record)
 
 
+# --- Session-scope reconciliation (#948) ------------------------------------
+
+# Two more session identities the frozen contract accepts, so a scope can be
+# moved without inventing a shape a producer could not record.
+FIXTURE_SESSION = "a4ce901ecfb743609ed0b6504668aca7"
+FIXTURE_WORKTREE = f"sha256:{'a' * 64}"
+OTHER_SESSION = "b" * 32
+OTHER_WORKTREE = f"sha256:{'c' * 64}"
+
+_OBSERVATION_INSTANT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def _shift_instants(value: object, seconds: int) -> object:
+    """Move every recorded instant in a decoded record by ``seconds``."""
+
+    if isinstance(value, dict):
+        return {key: _shift_instants(item, seconds) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_shift_instants(item, seconds) for item in value]
+    if isinstance(value, str) and _OBSERVATION_INSTANT.match(value):
+        moved = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC) + timedelta(
+            seconds=seconds
+        )
+        return moved.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return value
+
+
+def _observed_later(record: dict, seconds: int) -> dict:
+    """The same accepted record, recorded ``seconds`` later than it was.
+
+    Every instant moves together, so each ordering rule the frozen contract
+    enforces between them -- a source checked no later than the record, an
+    event no later than the observation that caught it -- still holds. The
+    result is re-validated rather than assumed, so a shifted record is still a
+    record a producer could really emit.
+    """
+
+    return board_observation.validate(_shift_instants(copy.deepcopy(record), seconds))
+
+
+def _in_session(record: dict, *, session: str, worktree: str) -> dict:
+    """The same accepted record, observed in a different session scope."""
+
+    moved = copy.deepcopy(record)
+    moved["scope"]["session_id"] = session
+    moved["scope"]["worktree_id"] = worktree
+    for run in ((moved.get("work") or {}).get("runs") or []):
+        run["binding"]["session_id"] = session
+        run["binding"]["worktree_id"] = worktree
+    return board_observation.validate(moved)
+
+
+def _named_work(work_id: str, *, fixture: str = "observed_running") -> dict:
+    """One accepted work observation carrying the given work identity."""
+
+    record = copy.deepcopy(_observation_fixture(fixture))
+    record["work"]["id"] = work_id
+    record["work"]["reference"] = work_id
+    for index, run in enumerate(record["work"]["runs"]):
+        run["id"] = f"run{index}{work_id}"
+        run["binding"]["work_id"] = work_id
+    return board_observation.validate(record)
+
+
+def _idle_key(session: str = FIXTURE_SESSION, worktree: str = FIXTURE_WORKTREE) -> str:
+    return f"idle:{session}:{worktree}"
+
+
+def _work_key(
+    work_id: str, session: str = FIXTURE_SESSION, worktree: str = FIXTURE_WORKTREE
+) -> str:
+    return f"work:{session}:{worktree}:{work_id}"
+
+
 def _observation_payload(records: list[dict], **overrides: object) -> dict:
     payload: dict[str, object] = {
         "generated_at": "2026-09-12T20:00:00Z",
@@ -4558,7 +4632,16 @@ class BoardWorkFirstViewTests(TestCase):
             _observation_fixture("merged"),
             _observation_fixture("waiting_for_approval"),
             _observation_fixture("failed"),
-            _observation_fixture("no_work"),
+            # The idle row belongs to a different session. A session-level
+            # "nothing to do" snapshot is only ever truthful about a session
+            # that has no work, and reconciliation drops one that sits beside
+            # work in its own scope, so the terminal band is exercised here
+            # with a board a producer could really record.
+            _in_session(
+                _observation_fixture("no_work"),
+                session=OTHER_SESSION,
+                worktree=OTHER_WORKTREE,
+            ),
         ]
         payload = _observation_payload(records)
         worklist = _render_board_sequence([{"payload": payload}])[0]["worklist"]
@@ -4685,7 +4768,17 @@ class BoardWorkFirstViewTests(TestCase):
         ]
 
     def test_row_urgency_is_computed_from_every_recorded_state(self) -> None:
-        records = self._urgency_matrix_records() + [_observation_fixture("no_work")]
+        # The idle row is a different session's: a session-level snapshot is
+        # only truthful about a session with no work of its own, so the one
+        # that exercises the terminal band here is recorded against a session
+        # the work rows do not belong to.
+        records = self._urgency_matrix_records() + [
+            _in_session(
+                _observation_fixture("no_work"),
+                session=OTHER_SESSION,
+                worktree=OTHER_WORKTREE,
+            )
+        ]
         # The same board, read in three different input orders. Nothing about
         # the answer may depend on which order the directory was listed in.
         payloads = [
@@ -4821,7 +4914,14 @@ class BoardWorkFirstViewTests(TestCase):
         # The mutation this test exists to catch: ranking a row by its headline
         # alone, which is what the sort used to do. It is executed here against
         # the shipped model so the difference is demonstrated, not asserted.
-        records = self._urgency_matrix_records() + [_observation_fixture("no_work")]
+        records = self._urgency_matrix_records() + [
+            # A different session's idle snapshot, for the reason given above.
+            _in_session(
+                _observation_fixture("no_work"),
+                session=OTHER_SESSION,
+                worktree=OTHER_WORKTREE,
+            )
+        ]
         payload = _observation_payload(records)
         result = _eval_board_view(
             "(() => {"
@@ -6713,3 +6813,264 @@ class BoardRunLifecycleDisplayTests(TestCase):
         shipped = self._run_displays([record])
         self.assertEqual(shipped["rows"][0]["builder"], [["suspended", "warn", "~"]])
         self.assertEqual(shipped["participants"], [["codex", "builder", [["suspended", 1]]]])
+
+
+# Everything a reconciled reading decides, read off the shipped view model in
+# one call: which rows survive, what each of them says, which row an operator
+# who has made no choice is shown, and what the participant summary counts.
+RECONCILED_EXPRESSION = """(() => {
+  const rows = workRows(ARGS[0], ARGS[1]);
+  return {
+    keys: rows.map(row => row.key),
+    headlines: rows.map(row => row.headline),
+    actions: rows.map(row => row.action_label),
+    selection: resolveSelection(rows, null),
+    participants: participantSummary(rows).map(entry => [entry.provider, entry.role, entry.count])
+  };
+})()"""
+
+
+class BoardSessionScopeReconciliationTests(TestCase):
+    """One session scope never states two incompatible things at once.
+
+    A session-level `no_work` snapshot and a work-specific observation of the
+    same session and worktree are different work identities, so identity
+    deduplication -- which only ever compares like with like -- retains both.
+    Reconciliation is the explicit step that decides which of the two describes
+    the session now, using the recorded observation order rather than the order
+    the directory happened to list the files in.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+
+    def _reconciled(self, records: list[dict], **kwargs: object) -> dict:
+        return _eval_board_view(
+            RECONCILED_EXPRESSION,
+            _observation_payload(records),
+            self.NOW_MS,
+            **kwargs,
+        )
+
+    # Every transition one session scope can record, with the rows that survive
+    # it. Offsets are seconds after the fixture clock, so each case fixes the
+    # recorded order outright; the reversed-order test below proves the result
+    # does not depend on the order the records were handed over in.
+    TRANSITIONS = (
+        (
+            "idle then active: the session picked work up",
+            lambda idle, work: [idle(0), work("alpha", 20)],
+            [_work_key("alpha")],
+        ),
+        (
+            "idle then two distinct work ids: both survive",
+            lambda idle, work: [idle(0), work("alpha", 20), work("beta", 25)],
+            [_work_key("alpha"), _work_key("beta")],
+        ),
+        (
+            "active then idle: the session went quiet",
+            lambda idle, work: [work("alpha", 0), idle(20)],
+            [_idle_key()],
+        ),
+        (
+            "terminal then idle: finished work is not current work either",
+            lambda idle, work: [work("alpha", 0, fixture="merged"), idle(20)],
+            [_idle_key()],
+        ),
+        (
+            "active, idle, then new active: only the newest work survives",
+            lambda idle, work: [work("alpha", 0), idle(20), work("beta", 40)],
+            [_work_key("beta")],
+        ),
+        (
+            "equal timestamps: the work-specific observation is the current one",
+            lambda idle, work: [idle(0), work("alpha", 0)],
+            [_work_key("alpha")],
+        ),
+    )
+
+    def _transition_records(self, build) -> list[dict]:
+        idle = _observation_fixture("no_work")
+
+        def at_idle(offset: int) -> dict:
+            return _observed_later(idle, offset)
+
+        def at_work(work_id: str, offset: int, *, fixture: str = "observed_running") -> dict:
+            return _observed_later(_named_work(work_id, fixture=fixture), offset)
+
+        return build(at_idle, at_work)
+
+    def test_every_session_scope_transition_keeps_one_truthful_reading(self) -> None:
+        for name, build, expected in self.TRANSITIONS:
+            with self.subTest(name):
+                records = self._transition_records(build)
+                self.assertEqual(self._reconciled(records)["keys"], expected)
+
+    def test_reconciliation_never_depends_on_the_order_the_records_arrive_in(self) -> None:
+        # Directory listing order, input order and file order are all the same
+        # accident, and none of them may decide what the Board says.
+        for name, build, expected in self.TRANSITIONS:
+            with self.subTest(name):
+                records = self._transition_records(build)
+                forward = self._reconciled(records)
+                self.assertEqual(forward["keys"], expected)
+                self.assertEqual(self._reconciled(list(reversed(records))), forward)
+
+    def test_equal_timestamps_are_a_real_tie_broken_by_specificity(self) -> None:
+        # The tie is proved rather than assumed: both records are compared on
+        # the trusted order itself, and only then on what the tie-break did.
+        idle = _observation_fixture("no_work")
+        work = _named_work("alpha")
+        orders = _eval_board_view(
+            "[observationOrder(ARGS[0]), observationOrder(ARGS[1])]", idle, work
+        )
+        self.assertEqual(orders[0], orders[1])
+        # A session-level snapshot summarizes the whole session; a work-specific
+        # observation names one item inside it. On an exact tie the specific
+        # reading wins, because "nothing to do" over a work item observed at the
+        # same instant is the contradiction being removed.
+        self.assertEqual(self._reconciled([idle, work])["keys"], [_work_key("alpha")])
+        self.assertEqual(self._reconciled([work, idle])["keys"], [_work_key("alpha")])
+
+    def test_a_different_worktree_in_the_same_session_never_supersedes(self) -> None:
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        elsewhere = _observed_later(
+            _in_session(_named_work("alpha"), session=FIXTURE_SESSION, worktree=OTHER_WORKTREE),
+            20,
+        )
+        # One session can hold several worktrees, and one of them being busy
+        # says nothing about another being idle.
+        expected = sorted([_idle_key(), _work_key("alpha", FIXTURE_SESSION, OTHER_WORKTREE)])
+        self.assertEqual(sorted(self._reconciled([idle, elsewhere])["keys"]), expected)
+        self.assertEqual(sorted(self._reconciled([elsewhere, idle])["keys"]), expected)
+
+    def test_a_different_session_in_the_same_worktree_never_supersedes(self) -> None:
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        other = _observed_later(
+            _in_session(_named_work("alpha"), session=OTHER_SESSION, worktree=FIXTURE_WORKTREE),
+            20,
+        )
+        # One worktree is reused by session after session, so a later session
+        # working in it is not evidence that an earlier one is not idle.
+        expected = sorted([_idle_key(), _work_key("alpha", OTHER_SESSION, FIXTURE_WORKTREE)])
+        self.assertEqual(sorted(self._reconciled([idle, other])["keys"]), expected)
+        self.assertEqual(sorted(self._reconciled([other, idle])["keys"]), expected)
+
+    def test_a_record_without_a_session_identity_is_never_correlated(self) -> None:
+        # The frozen contract gives an unlinked record neither half of a session
+        # identity, so nothing ties it to the session beside it. It keeps the
+        # unlinked consolidation semantics it already had, in both directions.
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        unlinked = _observed_later(_observation_fixture("unlinked"), 20)
+        keys = [_idle_key(), "unlinked:codemower-ai/code-mower"]
+        self.assertEqual(sorted(self._reconciled([idle, unlinked])["keys"]), sorted(keys))
+        older_unlinked = _observed_later(_observation_fixture("unlinked"), -20)
+        self.assertEqual(sorted(self._reconciled([idle, older_unlinked])["keys"]), sorted(keys))
+        work = _observed_later(_named_work("alpha"), 20)
+        self.assertEqual(
+            sorted(self._reconciled([work, unlinked])["keys"]),
+            sorted([_work_key("alpha"), "unlinked:codemower-ai/code-mower"]),
+        )
+
+    def test_a_scope_missing_either_half_of_its_identity_is_not_a_scope(self) -> None:
+        # Half an identity is not an identity: correlating on it would be a
+        # guess about which session a record belonged to. The view model is
+        # asked directly, because the contract does not let a producer record
+        # any of these shapes in the first place.
+        scopes = [
+            {"session_id": FIXTURE_SESSION, "worktree_id": FIXTURE_WORKTREE},
+            {"session_id": FIXTURE_SESSION, "worktree_id": None},
+            {"session_id": None, "worktree_id": FIXTURE_WORKTREE},
+            {"session_id": "", "worktree_id": FIXTURE_WORKTREE},
+            {"session_id": None, "worktree_id": None},
+            {},
+        ]
+        self.assertEqual(
+            _eval_board_view("ARGS[0].map(scope => sessionScope({scope}))", scopes),
+            [f"{FIXTURE_SESSION} {FIXTURE_WORKTREE}", "", "", "", "", ""],
+        )
+
+    def test_the_reconciled_set_is_what_every_work_first_consumer_reads(self) -> None:
+        # One reconciliation, consumed everywhere: the work list, the default
+        # selection and the participant summary all descend from it, so a
+        # superseded observation cannot keep counting a run or keep offering
+        # itself as the row an operator lands on.
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        work = _observed_later(_named_work("alpha"), 20)
+        reconciled = self._reconciled([idle, work])
+        self.assertEqual(reconciled["keys"], [_work_key("alpha")])
+        self.assertEqual(reconciled["selection"], _work_key("alpha"))
+        self.assertEqual(reconciled["participants"], [["codex", "builder", 1]])
+
+        # And in the other direction the idle snapshot is what is left, so the
+        # superseded run is no longer counted as a participant at all.
+        quiet = self._reconciled([_observed_later(_named_work("alpha"), 0), _observed_later(idle, 20)])
+        self.assertEqual(quiet["keys"], [_idle_key()])
+        self.assertEqual(quiet["selection"], _idle_key())
+        self.assertEqual(quiet["participants"], [])
+
+    def test_no_idle_claim_is_rendered_beside_active_work_in_one_scope(self) -> None:
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        work = _observed_later(_named_work("alpha"), 20)
+        nodes = _render_board_sequence([{"payload": _observation_payload([idle, work])}])[0]
+        worklist = nodes["worklist"]
+        self.assertEqual(_work_keys(worklist), [_work_key("alpha")])
+        # The two sentences that would contradict the work beside them.
+        self.assertNotIn("idle with complete coverage", worklist)
+        self.assertNotIn("nothing to do in this session", worklist)
+        self.assertNotIn("This session is idle because", worklist)
+        # The page counts what it renders, everywhere it reports a count.
+        self.assertIn("1 observed work item", nodes["chrome"])
+        self.assertIn("1 recorded run;", nodes["participants"])
+        # The superseded snapshot's sources were still really contacted, so the
+        # Health view still inspects them on their own terms.
+        self.assertIn("<b>session</b>", nodes["sources"])
+
+    def test_change_tracking_reports_the_reconciled_set_and_nothing_else(self) -> None:
+        idle = _observed_later(_observation_fixture("no_work"), 0)
+        work = _observed_later(_named_work("alpha"), 20)
+        frames = _render_board_sequence(
+            [
+                # An idle session, then the same session with work observed
+                # after the snapshot, then the session quiet again.
+                {"payload": _observation_payload([idle])},
+                {"payload": _observation_payload([idle, work])},
+                {"payload": _observation_payload([idle, work, _observed_later(idle, 40)])},
+            ]
+        )
+        # Picking work up is the idle row going and the work row appearing.
+        self.assertIn("alpha appeared as provider run observed", frames[1]["announce"])
+        self.assertIn("is no longer recorded", frames[1]["announce"])
+        self.assertEqual(_work_keys(frames[1]["worklist"]), [_work_key("alpha")])
+        # Going quiet again is the reverse, and the work that is no longer
+        # current is reported as exactly that rather than restated as running.
+        self.assertEqual(_work_keys(frames[2]["worklist"]), [_idle_key()])
+        self.assertIn("alpha is no longer recorded", frames[2]["announce"])
+        self.assertIn("alpha is no longer recorded", frames[2]["changes"])
+        self.assertNotIn("alpha", frames[2]["worklist"])
+
+    def test_without_reconciliation_one_scope_claims_idle_and_active_at_once(self) -> None:
+        # The mutation is exactly the missing step: identity deduplication with
+        # no reconciliation after it, which is what the Board did before.
+        records = [
+            _observed_later(_observation_fixture("no_work"), 0),
+            _observed_later(_named_work("alpha"), 20),
+        ]
+        unreconciled = self._reconciled(
+            records,
+            mutate=(
+                "return reconcileSessionScopes(observationGroups(data));",
+                "return observationGroups(data);",
+            ),
+        )
+        # Both readings survive, and the Board states both at once.
+        self.assertEqual(
+            sorted(unreconciled["keys"]), sorted([_idle_key(), _work_key("alpha")])
+        )
+        self.assertIn("idle with complete coverage", unreconciled["headlines"])
+        self.assertIn("provider run observed", unreconciled["headlines"])
+        self.assertIn("nothing to do in this session", unreconciled["actions"])
+        # And the shipped view model, unmutated, states one of them.
+        shipped = self._reconciled(records)
+        self.assertEqual(shipped["keys"], [_work_key("alpha")])
+        self.assertEqual(shipped["headlines"], ["provider run observed"])
+        self.assertNotIn("nothing to do in this session", shipped["actions"])
