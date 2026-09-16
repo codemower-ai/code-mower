@@ -66,6 +66,7 @@ BOARD_POLL_HARNESS = """
 __CONSTANTS__
 const put = () => {};
 const render = () => {};
+const renderRetained = () => {};
 const renderEvents = () => {};
 const timers = [];
 let clearedCount = 0;
@@ -3702,6 +3703,127 @@ def _render_board_sequence(
     return json.loads(_run_node(script, json.dumps(normalized)))
 
 
+# Drive the shipped polling loop itself, in one page lifetime, against a
+# scripted sequence of `/api/status` and `/api/events` outcomes.
+#
+# `_render_board_sequence` above calls `render()` directly, which is the right
+# harness for what a *payload* renders. This is the harness for what a *failed
+# poll* renders: `load()`, its two independently settled requests, the local
+# transport state it keeps, the rerender of the retained payload it performs,
+# and the one timer it arms are all shipped code here, so nothing about the
+# failure path is restated in the test.
+#
+# The live region records writes rather than its final value. An unchanged poll
+# leaves it alone, and "left alone" and "written with the same sentence again"
+# are different things to a screen reader, so only a recorded write counts as
+# an announcement.
+BOARD_LIFETIME_HARNESS = """
+const NODES = {};
+const announced = [];
+const makeNode = (id) => {
+  const node = {innerHTML: "", _text: ""};
+  Object.defineProperty(node, "textContent", {
+    get: () => node._text,
+    set: (value) => {
+      node._text = value;
+      if (id === "announce") announced.push(value);
+    }
+  });
+  return node;
+};
+const document = {getElementById: (id) => (NODES[id] = NODES[id] || makeNode(id))};
+let CLOCK = __NOW_MS__;
+Date.now = () => CLOCK;
+const timers = [];
+let clearedCount = 0;
+const setTimeout = (fn, ms) => {
+  const timer = {fn, ms};
+  timers.push(timer);
+  return timer;
+};
+const clearTimeout = () => {
+  clearedCount += 1;
+};
+let STEP = null;
+const fetch = async (url) => {
+  const status = url === "/api/status";
+  const outcome = status ? STEP.status : STEP.events;
+  if (outcome === null) throw new Error(status ? STEP.status_error : STEP.events_error);
+  return {json: async () => outcome};
+};
+__SCRIPT__
+(async () => {
+  const frames = [];
+  for (const step of JSON.parse(process.argv[2])) {
+    STEP = step;
+    if (step.now_ms !== null) CLOCK = step.now_ms;
+    if (step.select !== null) selectWork(step.select);
+    const armedBefore = timers.length;
+    const clearedBefore = clearedCount;
+    announced.length = 0;
+    await load();
+    const armed = timers[timers.length - 1];
+    frames.push({
+      nodes: Object.fromEntries(Object.entries(NODES).map(([id, node]) => [id, node.innerHTML || node.textContent])),
+      announced: [...announced],
+      timeline: changeLog.map(entry => entry.sentence),
+      delay: armed === undefined ? null : armed.ms,
+      armed: timers.length - armedBefore,
+      cleared: clearedCount - clearedBefore,
+      timers: timers.length,
+      pending: pollTimer === armed,
+      transport: {...transportState},
+      retained: lastStatusData !== null,
+      selected: selectedWorkKey
+    });
+  }
+  console.log(JSON.stringify(frames));
+})();
+"""
+
+
+def _run_board_lifetime(
+    steps: list[dict[str, object]],
+    *,
+    now: datetime = OBSERVATION_NOW,
+    mutate: tuple[str, str] | None = None,
+) -> list[dict[str, object]]:
+    """Replay a sequence of polls through the shipped ``load()`` loop.
+
+    Each step is one poll. ``status`` and ``events`` carry the payload that
+    request answers with, or ``None`` for a request that fails outright;
+    ``now_ms`` moves the page clock before the poll, so an observation can be
+    aged out between two of them; ``select`` chooses a work row by its opaque
+    identity first, the way an operator would before a refresh lands.
+
+    ``mutate`` replaces one exact fragment of the shipped page before it runs,
+    so a test can execute the code this replaced and prove the assertions it
+    makes would actually catch its return.
+    """
+
+    page = _board_script()
+    if mutate is not None:
+        original, replacement = mutate
+        if page.count(original) != 1:  # pragma: no cover - guards the mutation
+            raise AssertionError(f"board page script no longer contains exactly one {original!r}")
+        page = page.replace(original, replacement)
+    script = BOARD_LIFETIME_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000))).replace(
+        "__SCRIPT__", page
+    )
+    normalized = [
+        {
+            "status": step.get("status"),
+            "events": step.get("events", {"events": []}),
+            "status_error": step.get("status_error", "Failed to fetch"),
+            "events_error": step.get("events_error", "Failed to fetch"),
+            "now_ms": step.get("now_ms"),
+            "select": step.get("select"),
+        }
+        for step in steps
+    ]
+    return json.loads(_run_node(script, json.dumps(normalized)))
+
+
 def _observation_fixture(name: str) -> dict:
     """Build one accepted B0 fixture record, unchanged."""
 
@@ -6849,10 +6971,16 @@ class BoardWorkFirstViewTests(TestCase):
         self.assertNotIn("<form", page)
         self.assertNotIn("POST", page)
         self.assertNotIn("method=", page)
+        # Every request the page makes goes through the one `fetchJson`
+        # helper, so the endpoint literals handed to it are the whole set of
+        # endpoints the page reaches, and the single raw `fetch(` call site
+        # takes only the path it was given.
         self.assertEqual(
-            sorted(set(re.findall(r'fetch\("([^"]+)"', page))),
+            sorted(set(re.findall(r'fetchJson\("([^"]+)"', page))),
             ["/api/events", "/api/status"],
         )
+        self.assertEqual(page.count("fetch("), 1)
+        self.assertIn('fetch(path, {cache:"no-store"})', page)
 
     def test_a_same_numbered_pull_request_in_another_repository_is_never_linked(self) -> None:
         # A custom observations directory can hold a record another repository
@@ -9234,7 +9362,7 @@ class BoardSnapshotAuthorityTests(TestCase):
             self.NOW_MS,
             mutate=(
                 'if (freshness?.snapshot_confirmed === false) {\n'
-                '        return freshness?.snapshot_refreshing === true ? "refreshing" : "unconfirmed";\n'
+                '        return text(freshness?.snapshot_reading) || "unconfirmed";\n'
                 '      }',
                 "",
             ),
@@ -9339,6 +9467,357 @@ class BoardSnapshotAuthorityTests(TestCase):
         self.assertEqual(silent["note"], "")
         self.assertEqual(silent["class"], "muted")
 
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardPollingAuthorityTests(TestCase):
+    """A rendered observation stops speaking for now when polling stops.
+
+    The snapshot cache answers whether the *server* had confirmed what it
+    served. It cannot answer the other half: whether this page has heard from
+    the server since. A page that rendered a fresh, completely covered
+    `no_work` record and then lost `/api/status` held a green `idle with
+    complete coverage` with `nothing to do in this session` beside it for as
+    long as the failures continued -- record freshness, the idle reading and
+    the reconciliation that retires work beside an idle snapshot were all
+    recalculated only by a successful `render()`, so the ten-minute observation
+    threshold never arrived either. A warning written into the summary does not
+    withdraw those claims; only rendering them again does.
+
+    These tests drive the shipped `load()` loop across one page lifetime, so
+    the transport state, the retained rerender and the arming of the next
+    timer are the shipped code rather than a restatement of it. The rule they
+    hold: a status poll that did not complete withdraws every current-state
+    claim on the page and retires nothing, and a poll that completes restores
+    exactly the server's own authority with no client state left behind.
+    """
+
+    NOW_MS = int(OBSERVATION_NOW.timestamp() * 1000)
+    COMPLETE = "idle with complete coverage"
+    UNCONFIRMED = "idle in an unconfirmed snapshot"
+    WORKING = "provider run observed"
+    PRESENT_TENSE = (COMPLETE, "nothing to do in this session")
+    POLL_ACTION = "restore this page's status poll before treating this session as idle"
+    REFRESH_ACTION = "confirm this session with a completed refresh before treating it as idle"
+    # The payload every case starts from: one accepted, completely covered
+    # `no_work` record, 30s old at the test clock, inside a cache the server
+    # confirmed. Every measure the record itself carries says "current", which
+    # is what made the retained claim look sound.
+    FRESH_IDLE = _cache_payload([_observation_fixture("no_work")], CONFIRMED_CACHE)
+    STALE_IDLE = _cache_payload([_observation_fixture("no_work")], STALE_CACHE)
+    AGED_IDLE = _cache_payload([_observation_fixture("no_work")], STALE_CACHE_AGED)
+    FRESH_WORK = _cache_payload([_named_work("alpha")], CONFIRMED_CACHE)
+    # One poll after the last, far enough past the record-level staleness
+    # threshold that the retained observation ages out while the page is not
+    # being answered.
+    LATER_MS = NOW_MS + 11 * 60 * 1000
+
+    # The reference the two record shapes render under, so each case can state
+    # the whole sentence its last poll is allowed to produce.
+    IDLE_REFERENCE = "Board contract delivery"
+    WORK_REFERENCE = "alpha"
+
+    # Every case is one page lifetime: the polls it makes, then the Work
+    # headline the last poll leaves on screen and the one sentence the Timeline
+    # and the live region are allowed to carry for it. `None` means the poll
+    # was not a semantic transition -- nothing is logged and the live region is
+    # left untouched rather than repeated.
+    LIFETIMES = (
+        (
+            "the finding: a fresh, completely covered idle record, then a failed poll",
+            ({"status": FRESH_IDLE}, {"status": None}),
+            UNCONFIRMED,
+            f"{IDLE_REFERENCE} moved from {COMPLETE} to {UNCONFIRMED}",
+        ),
+        (
+            "repeated identical failures say nothing new",
+            ({"status": FRESH_IDLE}, {"status": None}, {"status": None}),
+            UNCONFIRMED,
+            None,
+        ),
+        (
+            "a failure after active work leaves the work row as the last observation",
+            ({"status": FRESH_WORK}, {"status": None}),
+            WORKING,
+            f"{WORK_REFERENCE} changed while staying {WORKING}",
+        ),
+        (
+            "a failure while the server snapshot was already stale: two reasons, one row",
+            ({"status": STALE_IDLE}, {"status": None}),
+            UNCONFIRMED,
+            f"{IDLE_REFERENCE} changed while staying {UNCONFIRMED}",
+        ),
+        (
+            "recovery with a fresh snapshot: the claim returns in full",
+            ({"status": FRESH_IDLE}, {"status": None}, {"status": FRESH_IDLE}),
+            COMPLETE,
+            f"{IDLE_REFERENCE} moved from {UNCONFIRMED} to {COMPLETE}",
+        ),
+        (
+            "recovery with a stale snapshot: the server's own reading, not the client's",
+            ({"status": FRESH_IDLE}, {"status": None}, {"status": STALE_IDLE}),
+            UNCONFIRMED,
+            f"{IDLE_REFERENCE} changed while staying {UNCONFIRMED}",
+        ),
+        (
+            "the freshness threshold elapsing under a failure is not a second transition",
+            ({"status": FRESH_IDLE}, {"status": None}, {"status": None, "now_ms": LATER_MS}),
+            UNCONFIRMED,
+            None,
+        ),
+        (
+            "a different error message under the same reading is not news",
+            (
+                {"status": FRESH_IDLE},
+                {"status": None, "status_error": "Failed to fetch"},
+                {"status": None, "status_error": "NetworkError when attempting to fetch resource"},
+            ),
+            UNCONFIRMED,
+            None,
+        ),
+        (
+            "nor is a cache timestamp that moved under the same reading, after recovery",
+            (
+                {"status": FRESH_IDLE},
+                {"status": None},
+                {"status": STALE_IDLE},
+                {"status": AGED_IDLE},
+            ),
+            UNCONFIRMED,
+            None,
+        ),
+    )
+
+    def test_every_polling_lifetime_states_one_truthful_reading(self) -> None:
+        for name, steps, headline, sentence in self.LIFETIMES:
+            with self.subTest(name):
+                frames = _run_board_lifetime(list(steps))
+                last = frames[-1]
+                # The headline the operator is left looking at.
+                self.assertIn(headline, last["nodes"]["worklist"])
+                # Exactly once per semantic transition, in both places a
+                # transition is reported: nothing is logged and nothing is
+                # spoken when the poll was not news.
+                self.assertEqual(last["announced"], [] if sentence is None else [f"{sentence}."])
+                self.assertEqual(
+                    last["timeline"].count(sentence) if sentence else 0,
+                    0 if sentence is None else 1,
+                )
+                # And one poll timer, however the poll went: armed once,
+                # clearing exactly the one it replaces, and still the pending
+                # one when the poll returns.
+                for index, frame in enumerate(frames):
+                    self.assertEqual(frame["armed"], 1)
+                    self.assertEqual(frame["cleared"], 1 if index else 0)
+                    self.assertEqual(frame["timers"], index + 1)
+                    self.assertTrue(frame["pending"])
+
+    def test_a_failed_poll_withdraws_the_idle_claim_everywhere_it_was_made(self) -> None:
+        """The finding exactly: one record, two transport states."""
+
+        rendered, failed = _run_board_lifetime([{"status": self.FRESH_IDLE}, {"status": None}])
+
+        # Rendered: the claim stands, in full, on every surface that makes it.
+        self.assertIn(self.COMPLETE, rendered["nodes"]["worklist"])
+        self.assertIn("nothing to do in this session", rendered["nodes"]["worklist"])
+        self.assertIn('<b class="ok">live, observed 30s ago</b>', rendered["nodes"]["summary"])
+        self.assertNotIn("Unconfirmed snapshot", rendered["nodes"]["worknow"])
+        self.assertIn("status polls answered", rendered["nodes"]["diagnostics"])
+
+        # Failed: nothing on the page still says this session needs nothing.
+        for surface in ("worklist", "worknow", "summary", "chrome", "diagnostics"):
+            for sentence in self.PRESENT_TENSE:
+                self.assertNotIn(sentence, failed["nodes"][surface])
+        self.assertIn(self.UNCONFIRMED, failed["nodes"]["worklist"])
+        self.assertIn(self.POLL_ACTION.replace("'", "&#39;"), failed["nodes"]["worklist"])
+        self.assertIn("Unconfirmed snapshot", failed["nodes"]["worklist"])
+        # The record's own freshness is recalculated and stops reading current,
+        # which is what a summary warning never did.
+        self.assertIn("last observed 30s ago", failed["nodes"]["worklist"])
+        self.assertNotIn('<span class="pill ok">', failed["nodes"]["worklist"])
+
+        # Summary: the recorded next action is not repeated as a current one.
+        self.assertIn('<b class="warn">reload board</b>', failed["nodes"]["summary"])
+        self.assertIn('<b class="warn">status poll failed</b>', failed["nodes"]["summary"])
+        self.assertIn('<b class="warn">last observed 30s ago</b>', failed["nodes"]["summary"])
+        # Now: the same, beside the banner that says why.
+        self.assertIn("Do next: <b>reload board</b>", failed["nodes"]["worknow"])
+        self.assertIn("Unconfirmed snapshot", failed["nodes"]["worknow"])
+        self.assertIn("nothing here is evidence of work running now", failed["nodes"]["worknow"])
+        # Health: the two halves of the confirmation on their own lines, with
+        # the count and the error text that belong to the client's half.
+        self.assertIn("<b>Board page transport</b>", failed["nodes"]["diagnostics"])
+        self.assertIn("status poll failed", failed["nodes"]["diagnostics"])
+        self.assertIn('<span class="pill">1 failed status poll</span>', failed["nodes"]["diagnostics"])
+        self.assertIn("(Failed to fetch)", failed["nodes"]["diagnostics"])
+        # The snapshot cache row keeps reporting what the server said, and is
+        # coloured by the composed reading the work views are withholding on.
+        self.assertIn('<b>Snapshot cache</b><span class="pill warn">', failed["nodes"]["diagnostics"])
+
+    def test_a_failed_poll_retires_nothing_and_keeps_the_evidence_on_screen(self) -> None:
+        # The session went quiet after working: under a confirmed snapshot the
+        # idle observation is the current reading and the superseded work row
+        # is retired on its authority. A failed poll may not keep exercising
+        # that authority -- it is the same "the session is quiet now" claim the
+        # row above withdrew -- so both readings stay and neither contradicts
+        # the other.
+        records = [_observed_later(_named_work("alpha"), 0), _observed_later(_observation_fixture("no_work"), 20)]
+        payload = _cache_payload(records, CONFIRMED_CACHE)
+        rendered, failed = _run_board_lifetime([{"status": payload}, {"status": None}])
+
+        self.assertEqual(_work_keys(rendered["nodes"]["worklist"]), [_idle_key()])
+        self.assertEqual(
+            sorted(_work_keys(failed["nodes"]["worklist"])),
+            sorted([_idle_key(), _work_key("alpha")]),
+        )
+        # The work row comes back as the last observation it always was, never
+        # restated as work running now.
+        self.assertIn(self.WORKING, failed["nodes"]["worklist"])
+        self.assertIn("last observed", failed["nodes"]["worklist"])
+        # And the historical evidence the payload carried is still rendered:
+        # the sources, the participants and the recorded generation time are
+        # what the page was given, and a failed poll does not delete them.
+        self.assertEqual(failed["nodes"]["sources"], rendered["nodes"]["sources"])
+        self.assertEqual(failed["nodes"]["generated"], rendered["nodes"]["generated"])
+        self.assertNotEqual(failed["nodes"]["sources"].strip(), "")
+
+    def test_a_failed_poll_keeps_the_operators_selection_and_the_events_view(self) -> None:
+        history = {"events": [{"created_at": "2026-09-12T19:59:00Z", "summary": {"next_action": "review"}}]}
+        chosen = _work_key("alpha")
+        frames = _run_board_lifetime(
+            [
+                {"status": _cache_payload([_named_work("alpha"), _named_work("beta")], CONFIRMED_CACHE), "events": history},
+                {"status": None, "events": history, "select": chosen},
+            ]
+        )
+        # The explicit choice survives the failure rerender, in the state the
+        # page keeps it in and in the row it renders as selected.
+        self.assertEqual(frames[1]["selected"], chosen)
+        self.assertIn(f'data-key="{chosen}" aria-expanded="true"', frames[1]["nodes"]["worklist"])
+        # /api/events is a record of what the server logged rather than a claim
+        # about now, so a failed status poll neither suppresses it nor is
+        # suppressed by it.
+        self.assertIn("next: <b>review</b>", frames[1]["nodes"]["history"])
+
+    def test_a_failed_events_poll_withdraws_nothing_a_good_status_poll_confirmed(self) -> None:
+        # Authority is applied only where a failed transport invalidates a
+        # current claim. /api/events feeds a view that never claims to be
+        # current, so its failure must leave the status payload's authority --
+        # and the poll pacing the status cache decided -- exactly alone.
+        frames = _run_board_lifetime(
+            [{"status": self.FRESH_IDLE}, {"status": self.FRESH_IDLE, "events": None}]
+        )
+        self.assertTrue(frames[1]["transport"]["confirmed"])
+        self.assertEqual(frames[1]["transport"]["failures"], 0)
+        self.assertIn(self.COMPLETE, frames[1]["nodes"]["worklist"])
+        self.assertIn("nothing to do in this session", frames[1]["nodes"]["worklist"])
+        self.assertIn("status polls answered", frames[1]["nodes"]["diagnostics"])
+        self.assertEqual(frames[1]["announced"], [])
+        self.assertEqual(frames[1]["delay"], frames[0]["delay"])
+
+    def test_recovery_clears_the_client_state_and_leaves_the_payload_untouched(self) -> None:
+        # Nothing the failure path writes may survive the poll that recovers:
+        # the retained payload is never mutated, so recovery renders exactly
+        # the new server authority and no trace of the local override.
+        fresh, failed, recovered = _run_board_lifetime(
+            [{"status": self.FRESH_IDLE}, {"status": None}, {"status": self.FRESH_IDLE}]
+        )
+        self.assertEqual(recovered["transport"], {"confirmed": True, "failures": 0, "error": ""})
+        # Every surface renders exactly what the first poll rendered. The two
+        # that record history rather than state -- the Timeline and the live
+        # region -- are the only ones that carry the failure forward, which is
+        # what they are for.
+        history = {"changes", "announce"}
+        self.assertEqual(
+            {id: html for id, html in recovered["nodes"].items() if id not in history},
+            {id: html for id, html in fresh["nodes"].items() if id not in history},
+        )
+        self.assertNotIn("status poll failed", recovered["nodes"]["diagnostics"])
+        self.assertNotIn("Failed to fetch", recovered["nodes"]["worklist"])
+
+        # And a recovery onto a snapshot the server itself has not confirmed
+        # reports the server's reason, never the client's.
+        stale = _run_board_lifetime(
+            [{"status": self.FRESH_IDLE}, {"status": None}, {"status": self.STALE_IDLE}]
+        )[-1]
+        self.assertTrue(stale["transport"]["confirmed"])
+        self.assertIn(self.UNCONFIRMED, stale["nodes"]["worklist"])
+        self.assertIn(self.REFRESH_ACTION, stale["nodes"]["worklist"])
+        self.assertNotIn(self.POLL_ACTION.replace("'", "&#39;"), stale["nodes"]["worklist"])
+        self.assertIn("has not completed a status poll", failed["nodes"]["worklist"])
+        self.assertNotIn("has not completed a status poll", stale["nodes"]["worklist"])
+
+    def test_a_page_that_never_loaded_withdraws_nothing_it_never_claimed(self) -> None:
+        # There is no retained payload to rerender and no claim to withdraw,
+        # only the fact that the page has not loaded -- so the summary says
+        # that and every other surface is left holding its own placeholder
+        # rather than being filled with an empty board.
+        first, second, recovered = _run_board_lifetime(
+            [{"status": None}, {"status": None}, {"status": self.FRESH_IDLE}]
+        )
+        for frame in (first, second):
+            self.assertFalse(frame["retained"])
+            self.assertEqual(
+                frame["nodes"]["summary"],
+                '<div class="metric"><span class="muted">Next action</span>'
+                '<b class="warn">reload board</b></div>',
+            )
+            self.assertEqual(frame["nodes"].get("worklist", ""), "")
+            self.assertEqual(frame["announced"], [])
+        # And the first poll that completes renders the whole board, with no
+        # trace of the failures that preceded it.
+        self.assertTrue(recovered["retained"])
+        self.assertIn(self.COMPLETE, recovered["nodes"]["worklist"])
+        self.assertIn("status polls answered", recovered["nodes"]["diagnostics"])
+        # A page that has never rendered a row has nothing to report as
+        # changed, so the first render is not announced as news either.
+        self.assertEqual(recovered["announced"], [])
+
+    def test_the_failure_count_is_bounded_and_never_reaches_a_signature(self) -> None:
+        steps = [{"status": self.FRESH_IDLE}] + [{"status": None}] * 12
+        frames = _run_board_lifetime(steps)
+        self.assertEqual([frame["transport"]["failures"] for frame in frames[1:]], list(range(1, 13)))
+        cap = _eval_board_truth(
+            "transportAuthority({confirmed: false, failures: ARGS[0], error: ARGS[1]})",
+            10_000,
+            "x" * 400,
+        )
+        self.assertEqual(cap["reading"], "unanswered")
+        # Twelve failures, one announcement and one Timeline entry: the count
+        # and the error text are reported and are in no signature.
+        self.assertEqual(sum(len(frame["announced"]) for frame in frames), 1)
+        self.assertEqual(len(frames[-1]["timeline"]), 1)
+        self.assertIn("12 failed status polls", frames[-1]["nodes"]["diagnostics"])
+
+    def test_a_summary_only_catch_handler_leaves_the_claim_asserted(self) -> None:
+        # The code this replaced, executed: the pre-fix handler wrote a warning
+        # into the summary and touched nothing else.
+        summary_only = _run_board_lifetime(
+            [{"status": self.FRESH_IDLE}, {"status": None}],
+            mutate=(
+                "        noteTransportFailure(error);\n        renderRetained();\n",
+                '        put("summary", `<div class="metric"><span class="muted">Next action</span>'
+                '<b class="warn">reload board</b></div>`);\n',
+            ),
+        )[-1]
+        self.assertIn("reload board", summary_only["nodes"]["summary"])
+        # And the Work section went on asserting green idleness beside it.
+        self.assertIn(self.COMPLETE, summary_only["nodes"]["worklist"])
+        self.assertIn("nothing to do in this session", summary_only["nodes"]["worklist"])
+        self.assertEqual(summary_only["announced"], [])
+
+    def test_rerendering_without_the_local_override_leaves_the_claim_asserted(self) -> None:
+        # One level in: rerendering the retained payload is not what withdraws
+        # the claim. Without the transport reading the rerender recomputes the
+        # record's age against the clock and still reports it as current,
+        # because the payload it came from says the server confirmed it.
+        ungated = _run_board_lifetime(
+            [{"status": self.FRESH_IDLE}, {"status": None}],
+            mutate=("      render(lastStatusData, transportState);\n", "      render(lastStatusData);\n"),
+        )[-1]
+        self.assertIn(self.COMPLETE, ungated["nodes"]["worklist"])
+        self.assertIn("nothing to do in this session", ungated["nodes"]["worklist"])
+        self.assertIn('<b class="ok">live, observed 30s ago</b>', ungated["nodes"]["summary"])
+        self.assertEqual(ungated["announced"], [])
 
 
 class _FailingReadHandle:

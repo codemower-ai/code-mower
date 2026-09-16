@@ -2105,6 +2105,11 @@ _BOARD_HTML = """<!doctype html>
     // directly by the tests instead of restated in Python.
     const NOT_RECORDED = "not recorded";
     const GATE_CONTEXT = "code-mower/gate";
+    // The only next action a page whose status poll did not complete may state
+    // as a current one. Every recorded next action in a retained payload is
+    // what was waiting when that payload arrived, so none of them may be
+    // repeated as an instruction for now.
+    const TRANSPORT_NEXT_ACTION = "reload board";
     // A snapshot this much older than now is reported by age alone, whatever
     // the payload calls its source: a wedged refresh must not keep presenting
     // an old observation as the current state of the world.
@@ -2248,76 +2253,157 @@ _BOARD_HTML = """<!doctype html>
         || a.rank - b.rank
         || (a.pr_number ?? 0) - (b.pr_number ?? 0));
     }
-    // Whether the snapshot this page was handed is one the server confirmed as
-    // current. This is the single canonical reading of that fact: every
-    // surface that would otherwise assert something about *now* -- the
-    // observation summary, one record's freshness, an idle claim, the
-    // reconciliation that retires work beside one, and every "nothing is
-    // recorded" message -- consults this and nothing else, so the page cannot
-    // hold two opinions about the currency of one payload.
+    // The client half of the confirmation reading: whether this page's own
+    // last status poll completed. The server's cache state answers whether the
+    // *server* had confirmed the snapshot it served; this answers whether the
+    // *page* has heard from the server since. Both are needed, and neither
+    // substitutes for the other -- a snapshot the server confirmed as fresh is
+    // only fresh as of the poll that delivered it, and a page whose polls have
+    // stopped arriving cannot go on repeating what that poll said in the
+    // present tense.
     //
-    // Only `fresh` is confirmed. The server answers a cold cache with metadata
-    // only and a stale cache with the previous snapshot, so any other reported
-    // state -- including a future one this page does not know -- is unconfirmed
-    // data however recent the timestamps embedded in it look. A record inside
-    // a stale cached snapshot was written when the refresh that produced it
-    // ran, which can be well inside every record-level freshness threshold
-    // while the world has moved on since.
+    // Deliberately bounded and explicit: a classified reading, a count of
+    // consecutive status polls that did not complete, and one error string.
+    // Nothing here is ever written back into the retained payload, so a poll
+    // that completes restores the server's own authority exactly by clearing
+    // this -- there is no client state left behind to survive the recovery.
+    //
+    // "Did not complete" covers every way a status poll can fail to produce a
+    // usable current snapshot -- an unreachable server, a response that is not
+    // JSON, a payload this page cannot render -- because they leave the
+    // operator in the same position: what is on screen is the last snapshot
+    // that arrived, and nothing has confirmed it since.
+    function transportAuthority(transport) {
+      const confirmed = transport?.confirmed !== false;
+      // A failure that recorded no count is still one failure; a count is
+      // never reported against a transport that is confirmed.
+      const failures = confirmed ? 0 : Math.max(measured(transport?.failures) ?? 1, 1);
+      const error = text(transport?.error);
+      return {
+        confirmed,
+        failures,
+        error,
+        reading: confirmed ? "confirmed" : "unanswered",
+        label: confirmed ? "status polls answered" : "status poll failed",
+        class: confirmed ? "ok" : "warn",
+        // The count and the error text are stated here and nowhere in any
+        // signature: "once" and "for the last twenty polls" ask different
+        // things of an operator, but a second identical failure is not news.
+        note: confirmed
+          ? ""
+          : `This Board page's last ${failures} status poll${failures === 1 ? "" : "s"} did not complete${error ? ` (${error})` : ""}, so what is shown is the last snapshot it received and nothing here is evidence of work running now.`
+      };
+    }
+    // Whether the snapshot this page is showing is one that may speak for
+    // *now*. This is the single canonical reading of that fact: every surface
+    // that would otherwise assert something about now -- the observation
+    // summary, one record's freshness, an idle claim, the reconciliation that
+    // retires work beside one, and every "nothing is recorded" message --
+    // consults this and nothing else, so the page cannot hold two opinions
+    // about the currency of one payload.
+    //
+    // It composes two confirmations, and needs both. Server-side, only `fresh`
+    // is confirmed: the server answers a cold cache with metadata only and a
+    // stale cache with the previous snapshot, so any other reported state --
+    // including a future one this page does not know -- is unconfirmed data
+    // however recent the timestamps embedded in it look. A record inside a
+    // stale cached snapshot was written when the refresh that produced it ran,
+    // which can be well inside every record-level freshness threshold while
+    // the world has moved on since. Client-side, a status poll that did not
+    // complete withdraws confirmation from whatever is still on screen, for
+    // the same reason and independently of it: the payload was confirmed when
+    // it arrived, and nothing has confirmed it since.
     //
     // A payload carrying no cache metadata at all states nothing either way,
     // so it is not read as unconfirmed: what qualifies it is the record-level
-    // freshness and the file coverage, which are answered elsewhere.
+    // freshness and the file coverage, which are answered elsewhere. A client
+    // that has not failed a poll states nothing either, so the server's
+    // reading stands alone -- the default for every caller outside the polling
+    // loop, which is every caller that is answering a question about a payload
+    // rather than about this page's connection to the server.
     //
-    // Why the refresh failed, or that one is still running, changes what an
-    // operator should do about it but never whether the snapshot is confirmed,
-    // so both are reported alongside the verdict rather than folded into it.
-    function snapshotAuthority(data) {
+    // Why the refresh failed, that one is still running, and how many polls
+    // have gone unanswered all change what an operator should do about it but
+    // never whether the snapshot is confirmed, so all of them are reported
+    // alongside the verdict rather than folded into it.
+    function snapshotAuthority(data, transport) {
       const cache = data?.board?.cache || {};
       const state = normalized(cache.state);
       const recorded = state !== "";
-      const confirmed = !recorded || state === "fresh";
+      const serverConfirmed = !recorded || state === "fresh";
+      const client = transportAuthority(transport);
+      const confirmed = serverConfirmed && client.confirmed;
       const refreshing = cache.refresh_in_progress === true;
       const error = text(cache.last_error);
       const retry = measured(cache.retry_in_seconds);
       const served = `The Board server is serving a ${state} cached snapshot it has not confirmed`;
+      // What the server said about the snapshot it served, stated whether or
+      // not the client has heard from it since: a page that stopped receiving
+      // polls while the server was already refreshing a stale cache has two
+      // facts to report, not one.
+      const serverNote = serverConfirmed
+        ? ""
+        : refreshing
+          ? `${served} while a background refresh is still running, so nothing here is evidence of work running now.`
+          : error
+            ? `${served} and its last refresh failed (${error})${retry === null ? "" : `, with the next attempt in ${ageText(retry)}`}, so nothing here is evidence of work running now.`
+            : `${served} and no refresh is running, so nothing here is evidence of work running now.`;
       return {
         state,
         recorded,
         confirmed,
+        // The two halves, kept separate so a surface that has something to say
+        // about one of them specifically -- the Health transport row, the
+        // next action a failed poll asks for -- reads it here rather than
+        // re-deriving it from the cache metadata or the client state.
+        server_confirmed: serverConfirmed,
+        transport_confirmed: client.confirmed,
+        transport: client,
+        // The server's half of the note on its own, for the one surface that
+        // reports the two halves on separate lines and would otherwise print
+        // the transport paragraph twice.
+        server_note: serverNote,
         refresh_in_progress: refreshing,
         error,
         // The classified reading, and the whole of what change tracking takes
-        // from this object: the cache age advances on every poll and is never
-        // quoted here, so an unchanged confirmation state is never news.
-        reading: confirmed ? "confirmed" : refreshing ? "refreshing" : "unconfirmed",
-        label: confirmed
-          ? `snapshot ${recorded ? state : "confirmation not recorded"}`
-          : refreshing
-            ? `${state} snapshot, refresh in progress`
-            : `${state} snapshot, unconfirmed`,
+        // from this object: the cache age advances on every poll and the
+        // failure count advances on every failed one, and neither is quoted
+        // here, so an unchanged confirmation state is never news. An
+        // unanswered poll is its own reading rather than a flavour of
+        // `unconfirmed`, because the operator's next move is different -- get
+        // this page talking to the server again, not wait for a refresh.
+        reading: client.confirmed
+          ? (serverConfirmed ? "confirmed" : refreshing ? "refreshing" : "unconfirmed")
+          : "unanswered",
+        label: client.confirmed
+          ? confirmed
+            ? `snapshot ${recorded ? state : "confirmation not recorded"}`
+            : refreshing
+              ? `${state} snapshot, refresh in progress`
+              : `${state} snapshot, unconfirmed`
+          : `${recorded ? state : "last received"} snapshot, status poll failed`,
         class: confirmed ? (recorded ? "ok" : "muted") : "warn",
-        note: confirmed
-          ? ""
-          : refreshing
-            ? `${served} while a background refresh is still running, so nothing here is evidence of work running now.`
-            : error
-              ? `${served} and its last refresh failed (${error})${retry === null ? "" : `, with the next attempt in ${ageText(retry)}`}, so nothing here is evidence of work running now.`
-              : `${served} and no refresh is running, so nothing here is evidence of work running now.`
+        // The client's reading comes first when it has one: it is the fact
+        // that makes everything after it a past observation, including the
+        // server reading it carries along behind it.
+        note: client.confirmed
+          ? serverNote
+          : `${client.note}${serverNote ? ` ${serverNote}` : ""}`
       };
     }
     // Board snapshots can be replayed from local history, served from a cache
     // the server has not confirmed, or carry no observation time at all. Each
     // of those may only report what was last observed; none of them may claim
     // that anything is running right now.
-    function observation(data, nowMs) {
+    function observation(data, nowMs, transport) {
       const current = data?.productivity?.current || {};
       const cache = data?.board?.cache || {};
       const observedAt = text(current.observed_at) || text(data?.generated_at);
       const observedAge = ageSeconds(observedAt, nowMs);
       const cacheAge = measured(cache.age_seconds);
       // The one canonical confirmation reading, not a second opinion on the
-      // cache state.
-      const authority = snapshotAuthority(data);
+      // cache state or on the transport.
+      const authority = snapshotAuthority(data, transport);
       const unconfirmed = !authority.confirmed;
       // Take the older of the two recorded ages so an unconfirmed snapshot can
       // never understate how old what is on screen actually is.
@@ -3056,15 +3142,17 @@ _BOARD_HTML = """<!doctype html>
       if (freshness?.age_recorded !== true) return "unknown";
       return freshness?.current === true ? "current" : "stale";
     }
-    // Whether the snapshot this record arrived in is one the server confirmed,
-    // read off the freshness object that already resolved it so this is a
+    // Whether the snapshot this record arrived in is one that may speak for
+    // now, read off the freshness object that already resolved it so this is a
     // consumer of the canonical answer rather than a second opinion on the
-    // cache metadata. A refresh that is still running and one that is not
-    // coming are different things to ask of an operator, so they are separate
-    // readings rather than one "unconfirmed".
+    // cache metadata or on the transport. A refresh that is still running, one
+    // that is not coming, and a status poll that never arrived are three
+    // different things to ask of an operator, so they stay three readings
+    // rather than one "unconfirmed" -- and they are carried, not re-derived,
+    // so this cannot classify a payload differently from `snapshotAuthority`.
     function idleAuthorityState(freshness) {
       if (freshness?.snapshot_confirmed === false) {
-        return freshness?.snapshot_refreshing === true ? "refreshing" : "unconfirmed";
+        return text(freshness?.snapshot_reading) || "unconfirmed";
       }
       return "confirmed";
     }
@@ -3156,21 +3244,30 @@ _BOARD_HTML = """<!doctype html>
                 }
               : authorityState !== "confirmed"
                 ? {
-                    // A refresh that is still running and one that is not
-                    // coming ask different things of an operator, so they are
-                    // different readings under one label: the row says the
-                    // same honest thing either way, and the next action says
-                    // whether waiting is enough.
+                    // A refresh that is still running, one that is not coming,
+                    // and a status poll that did not arrive ask different
+                    // things of an operator, so they are different readings
+                    // under one label: the row says the same honest thing
+                    // either way, and the next action says whether waiting is
+                    // enough or the connection is what has to be restored.
                     key: authorityState,
                     label: "idle in an unconfirmed snapshot",
                     class: "warn",
                     action: authorityState === "refreshing"
                       ? "wait for the running refresh to confirm this session before treating it as idle"
-                      : "confirm this session with a completed refresh before treating it as idle",
+                      : authorityState === "unanswered"
+                        ? "restore this page's status poll before treating this session as idle"
+                        : "confirm this session with a completed refresh before treating it as idle",
                     coverage_label: "recorded complete, snapshot unconfirmed",
                     coverage_class: "warn",
                     coverage_value: "complete",
-                    note: `${IDLE_RECORDED}, but the Board server has not confirmed the snapshot it was read from, ${IDLE_WITHHELD}.`
+                    // The record is the same record either way; what differs
+                    // is which confirmation is missing, so that is what the
+                    // note states. Neither wording quotes a count or an age,
+                    // so neither makes a repeated failure read as news.
+                    note: authorityState === "unanswered"
+                      ? `${IDLE_RECORDED}, but this page has not completed a status poll since it was received, ${IDLE_WITHHELD}.`
+                      : `${IDLE_RECORDED}, but the Board server has not confirmed the snapshot it was read from, ${IDLE_WITHHELD}.`
                   }
                 : coverageState === "partial"
                   ? {
@@ -3277,12 +3374,14 @@ _BOARD_HTML = """<!doctype html>
         : "unrecorded";
       // Why the row speaks in the past tense is part of what it says: a row
       // held back because its snapshot is unconfirmed renders a different
-      // explanation from one held back by its own age, and a refresh that
-      // confirms the snapshot restores the present tense. Classified, so the
-      // cache age advancing under an unchanged confirmation state is not a
-      // change -- the same rule the age above follows.
+      // explanation from one held back by its own age or by a status poll that
+      // never arrived, and a poll that completes on a confirmed snapshot
+      // restores the present tense. Classified, so the cache age advancing --
+      // or a second identical polling failure, or a different error string
+      // under the same reading -- is not a change, the same rule the age above
+      // follows.
       const snapshot = freshness?.snapshot_confirmed === false
-        ? (freshness?.snapshot_refreshing === true ? "refreshing" : "unconfirmed")
+        ? (text(freshness?.snapshot_reading) || "unconfirmed")
         : "confirmed";
       return `age:${age};snapshot:${snapshot};update:${text(update?.basis)};idle:${idle === null ? "" : idle.signature}`;
     }
@@ -3773,12 +3872,13 @@ _BOARD_HTML = """<!doctype html>
     // Deterministic order: most urgent first, then a stable tiebreak on the
     // reference and the opaque identity, so an unchanged snapshot never
     // reshuffles the list.
-    function workRows(data, nowMs) {
+    function workRows(data, nowMs, transport) {
       const coverage = observationCoverage(data);
       // Derived once for the whole payload and handed to every row and to
       // reconciliation, so one snapshot cannot be confirmed for one row and
-      // unconfirmed for the next.
-      const authority = snapshotAuthority(data);
+      // unconfirmed for the next -- and so the transport reading reaches every
+      // row through the same composition the rest of the page reads.
+      const authority = snapshotAuthority(data, transport);
       return reconciledObservationGroups(data, nowMs, coverage, authority)
         .map(group => workRow(consolidatedRecord(group), nowMs, coverage, authority))
         .sort((a, b) =>
@@ -4337,7 +4437,12 @@ _BOARD_HTML = """<!doctype html>
       document.getElementById("announce").textContent = changeAnnouncement(changes);
     }
     // --- view chrome and work rendering (END) ---
-    function render(data) {
+    // `transport` is this page's own reading of its last status poll, and it
+    // is a parameter rather than a global read so one render is one consistent
+    // answer: the polling loop hands in the state it has just updated, and a
+    // caller that is rendering a payload rather than a connection -- a test, a
+    // future consumer -- omits it and gets the server's authority alone.
+    function render(data, transport) {
       put("lease", renderLease(data.orchestrator_lease));
       document.getElementById("repo").textContent = REPO;
       const version = data.board?.version || {};
@@ -4370,16 +4475,27 @@ _BOARD_HTML = """<!doctype html>
       const productivityQuality = productivity.quality || {};
       const nowMs = Date.now();
       const remoteAvailable = data.remote?.available === true;
-      const obs = observation(data, nowMs);
+      const obs = observation(data, nowMs, transport);
       // Read once and carried into every view: the work list, the Now header,
       // the chrome and the Health diagnostics all have to agree about whether
       // this page saw the whole local record set.
       const observationCover = observationCoverage(data);
       // The same once-and-carried treatment for the other payload-level fact
-      // an absence claim depends on: whether the server confirmed the snapshot
-      // it served. `observation` above and every work row below descend from
-      // this one reading.
-      const snapshot = snapshotAuthority(data);
+      // an absence claim depends on: whether this snapshot may speak for now,
+      // which is the server's confirmation of what it served composed with
+      // this page's confirmation that it has heard from the server since.
+      // `observation` above and every work row below descend from this one
+      // reading.
+      const snapshot = snapshotAuthority(data, transport);
+      // A status poll that did not complete makes every recorded next action a
+      // past one, so the page states the action that is actually current --
+      // get this page talking to the Board server again -- wherever it states
+      // a next action off the payload at all. The Work, Now and Health
+      // surfaces below say why, so this stays the short instruction the
+      // summary line has always carried.
+      const nextAction = snapshot.transport_confirmed === false
+        ? TRANSPORT_NEXT_ACTION
+        : (data.next_action || "inspect");
       // The one place the page composes "and here is why this emptiness is not
       // a finding", so every absence claim on it is qualified the same way and
       // by the same two facts.
@@ -4393,8 +4509,15 @@ _BOARD_HTML = """<!doctype html>
       const laneItems = attention.filter(item => item.role !== "owner");
       const leadItem = attention[0];
       put("summary", [
-        `<div class="metric"><span class="muted">Next action</span><b>${esc(data.next_action || "inspect")}</b></div>`,
+        `<div class="metric"><span class="muted">Next action</span><b${snapshot.transport_confirmed === false ? ` class="warn"` : ""}>${esc(nextAction)}</b></div>`,
         data.next_detail ? `<div class="metric"><span class="muted">Detail</span><b>${esc(data.next_detail)}</b></div>` : "",
+        // Stated as its own metric rather than only inside the observation
+        // label, because the summary is the one surface an operator reads
+        // without opening a view, and a page that has stopped hearing from the
+        // server is the reason everything below it is in the past tense.
+        snapshot.transport_confirmed === false
+          ? `<div class="metric"><span class="muted">Board server</span><b class="warn">${esc(snapshot.transport.label)}</b></div>`
+          : "",
         `<div class="metric"><span class="muted">Observation</span><b class="${obs.class}">${esc(obs.label)}</b></div>`,
         observationCover.incomplete
           ? `<div class="metric"><span class="muted">Observation files</span><b class="warn">${esc(observationCover.label)}</b></div>`
@@ -4412,7 +4535,7 @@ _BOARD_HTML = """<!doctype html>
       put("worknow", [
         leadItem
           ? `<div class="row"><div class="line">Do next: <a href="${esc(href(leadItem.url))}">#${esc(leadItem.pr_number)}</a><b>${esc(leadItem.next_action)}</b>${statePill(leadItem.role, leadItem.role === "owner" ? "warn" : "muted")}${statePill(`gate ${leadItem.gate.state}`, leadItem.gate.class)}</div><div class="muted">${esc(leadItem.title)}</div></div>`
-          : `<div class="row"><div class="line">Do next: <b>${esc(data.next_action || "inspect")}</b></div>${data.next_detail ? `<div class="muted">${esc(data.next_detail)}</div>` : ""}</div>`,
+          : `<div class="row"><div class="line">Do next: <b>${esc(nextAction)}</b></div>${data.next_detail ? `<div class="muted">${esc(data.next_detail)}</div>` : ""}</div>`,
         `<div class="row"><div class="line">${pill(`owner decisions ${countOf(remoteAvailable, ownerItems.length)}`)}${pill(`lane work ${countOf(remoteAvailable, laneItems.length)}`)}${pill(`open PRs ${countOf(remoteAvailable, prs.length)}`)}${statePill(obs.label, obs.class)}</div>${obs.detail ? `<div class="muted">${esc(obs.detail)}</div>` : ""}</div>`,
         // Said in the Now header too, because the "Do next" line above it is
         // read as the whole of what is waiting.
@@ -4509,7 +4632,7 @@ _BOARD_HTML = """<!doctype html>
       // read the records the Board was given; they never produce one, resolve
       // a session, or reach a provider to fill a gap in one.
       const observations = data.observations || {};
-      const observationRows = workRows(data, nowMs);
+      const observationRows = workRows(data, nowMs, transport);
       workState = {
         rows: observationRows,
         prs,
@@ -4537,7 +4660,7 @@ _BOARD_HTML = """<!doctype html>
       applyView();
       const attentionRows = observationRows.filter(row => ["owner", "maintainer", "reviewer", "builder", "orchestrator"].includes(text(row.record?.work?.primary?.actor)));
       put("chrome", [
-        `<span>Now: <b>${esc(data.next_action || "inspect")}</b></span>`,
+        `<span>Now: <b>${esc(nextAction)}</b></span>`,
         cuePill(obs.label, obs.class),
         `<span class="pill wide">${esc(countOf(remoteAvailable, prs.length))} open PRs</span>`,
         // The count is of what was read, so it is labelled as such whenever
@@ -4568,7 +4691,16 @@ _BOARD_HTML = """<!doctype html>
         // -- and `cold`, which no keyword matches -- is never neutral while the
         // work views are withholding their claims because of it. The note says
         // what the state means for everything else on the page.
-        `<div class="row"><div class="line"><b>Snapshot cache</b>${cuePill(display(cache.state), snapshot.class)}${pill(`generation ${display(cache.generation)}`)}${pill(`age ${ageText(cache.age_seconds)}`)}${cache.refresh_in_progress === true ? pill("refresh in progress") : ""}${measured(cache.retry_in_seconds) === null ? "" : pill(`retry in ${ageText(cache.retry_in_seconds)}`)}</div>${snapshot.note ? `<div class="muted">${esc(snapshot.note)}</div>` : ""}${cache.last_error ? `<div class="muted">${esc(cache.last_error)}</div>` : ""}</div>`,
+        `<div class="row"><div class="line"><b>Snapshot cache</b>${cuePill(display(cache.state), snapshot.class)}${pill(`generation ${display(cache.generation)}`)}${pill(`age ${ageText(cache.age_seconds)}`)}${cache.refresh_in_progress === true ? pill("refresh in progress") : ""}${measured(cache.retry_in_seconds) === null ? "" : pill(`retry in ${ageText(cache.retry_in_seconds)}`)}</div>${snapshot.server_note ? `<div class="muted">${esc(snapshot.server_note)}</div>` : ""}${cache.last_error ? `<div class="muted">${esc(cache.last_error)}</div>` : ""}</div>`,
+        // The other half of the same confirmation, on its own line: the row
+        // above is what the server said about the snapshot it served, and this
+        // is whether this page has heard from the server since. Rendered in
+        // both states, because "the polls are arriving" is the fact that makes
+        // everything else on this page readable as current, and an operator
+        // looking for why the Work view went quiet needs to find it stated
+        // rather than inferred from its absence. The failure count and the
+        // error text live here and in no signature.
+        `<div class="row"><div class="line"><b>Board page transport</b>${cuePill(snapshot.transport.label, snapshot.transport.class)}${snapshot.transport.confirmed ? "" : pill(`${snapshot.transport.failures} failed status poll${snapshot.transport.failures === 1 ? "" : "s"}`)}</div>${snapshot.transport.note ? `<div class="muted">${esc(snapshot.transport.note)}</div>` : ""}</div>`,
         `<div class="row"><div class="line"><b>GitHub</b>${cuePill(remoteAvailable ? "available" : "unavailable", remoteAvailable ? "ok" : "warn")}</div></div>`,
         // Cap and counts with their semantics: how many files were candidates,
         // how many were read, how many the cap left unread, and how the read
@@ -4580,6 +4712,30 @@ _BOARD_HTML = """<!doctype html>
       ].join(""));
       noteChanges(observationRows, nowMs);
       renderChanges();
+    }
+    // Rerender everything the last status payload supports, under the current
+    // local transport state.
+    //
+    // The payload itself is not touched: the same records, the same recorded
+    // times, the same evidence and the same selection are rendered again, so
+    // the historical evidence an operator was reading stays on screen and no
+    // work is retired or suppressed by a failure. What a rerender changes is
+    // every claim this page derives about *now* -- record freshness, the idle
+    // reading, the reconciliation that would let an idle snapshot retire work
+    // beside it, the summary, the Now header, the Health rows and the live
+    // region -- because that is the whole set of claims a status poll that did
+    // not complete has stopped confirming. A warning written beside a retained
+    // green "idle with complete coverage" is what this replaces.
+    function renderRetained() {
+      // Nothing has ever rendered, so there is no retained claim to withdraw
+      // and no payload to rerender -- only the fact that the page has not
+      // loaded. Stated in the summary alone, because every other surface is
+      // still showing its own placeholder rather than a claim.
+      if (lastStatusData === null) {
+        put("summary", `<div class="metric"><span class="muted">Next action</span><b class="warn">${esc(TRANSPORT_NEXT_ACTION)}</b></div>`);
+        return;
+      }
+      render(lastStatusData, transportState);
     }
     function renderEvents(history) {
       const events = history.events || [];
@@ -4594,9 +4750,50 @@ _BOARD_HTML = """<!doctype html>
     }
     let pollTimer = null;
     let fastPollAttempts = 0;
+    // What this page can say about its own last status poll, and the only
+    // state the failure path keeps. Deliberately small and explicit: a flag, a
+    // bounded count of consecutive failures, and one truncated error string.
+    // None of it is ever written into the retained payload, so a poll that
+    // completes restores the server's own authority simply by replacing this,
+    // and no client override can survive a recovery.
+    const TRANSPORT_FAILURE_CAP = 99;
+    const TRANSPORT_ERROR_MAX = 160;
+    const confirmedTransport = () => ({confirmed: true, failures: 0, error: ""});
+    // The last status payload that rendered, kept so the failure path can
+    // rerender what is on screen under the withdrawn authority instead of
+    // leaving it as it was. The records in it stay exactly the historical
+    // evidence they always were; what a rerender changes is only what this
+    // page derives about now from them.
+    let lastStatusData = null;
+    let transportState = confirmedTransport();
+    function noteTransportFailure(error) {
+      const message = error && error.message ? String(error.message) : "";
+      transportState = {
+        confirmed: false,
+        // Bounded: a Board left open against a server that never comes back
+        // must not count forever, and past the cap the count has stopped
+        // telling an operator anything it did not already know.
+        failures: Math.min(transportState.failures + 1, TRANSPORT_FAILURE_CAP),
+        error: message.slice(0, TRANSPORT_ERROR_MAX)
+      };
+    }
+    // One request, settled rather than thrown, so the caller decides what each
+    // failure means for the view it feeds and one request's failure can never
+    // cancel the other's success. A response that is not JSON fails the same
+    // way one that never arrived does: neither produces a payload.
+    async function fetchJson(path) {
+      try {
+        const response = await fetch(path, {cache:"no-store"});
+        return {ok: true, data: await response.json()};
+      } catch (error) {
+        return {ok: false, error};
+      }
+    }
     // The only place a timer is ever armed, and it always clears the pending
     // one first, so exactly one load() is scheduled at a time and no fixed
-    // interval can race the self-scheduled poll into stacked timers.
+    // interval can race the self-scheduled poll into stacked timers. Every
+    // path through load() -- rendered, retained, or never loaded at all --
+    // reaches it exactly once, so a failing server cannot stack timers either.
     function scheduleNextLoad(delayMs) {
       if (pollTimer !== null) {
         clearTimeout(pollTimer);
@@ -4618,20 +4815,42 @@ _BOARD_HTML = """<!doctype html>
     }
     async function load() {
       // A failed fetch, a malformed payload, and cache metadata that is absent
-      // or unusable all fall back to the configured interval.
+      // or unusable all fall back to the configured interval. Pacing and
+      // backoff are decided exactly as before: a failure is a normal-interval
+      // tick, and only a response that is no longer awaiting a refresh resets
+      // the fast-poll budget.
       let delayMs = REFRESH_MS;
+      // The two requests are settled independently. Only /api/status carries
+      // the observations whose currency this page asserts, so only its failure
+      // withdraws that authority -- and a failed /api/events, which feeds a
+      // view that never claims to be current, must neither withdraw a claim it
+      // does not touch nor stop a good status payload from rendering.
+      const [status, events] = await Promise.all([
+        fetchJson("/api/status"),
+        fetchJson("/api/events")
+      ]);
       try {
-        const [statusResponse, eventsResponse] = await Promise.all([
-          fetch("/api/status", {cache:"no-store"}),
-          fetch("/api/events", {cache:"no-store"})
-        ]);
-        const statusData = await statusResponse.json();
-        render(statusData);
-        renderEvents(await eventsResponse.json());
-        delayMs = nextDelayMs(statusData.board?.cache);
+        if (!status.ok) throw status.error;
+        // The confirmation is handed to the render that speaks with it, and
+        // only adopted once that render has succeeded: a payload this page
+        // cannot render never becomes the payload it retains, and never clears
+        // a failure count that is still true.
+        const confirmed = confirmedTransport();
+        render(status.data, confirmed);
+        transportState = confirmed;
+        lastStatusData = status.data;
+        delayMs = nextDelayMs(status.data?.board?.cache);
       } catch (error) {
-        put("summary", `<div class="metric"><span class="muted">Next action</span><b class="warn">reload board</b></div>`);
+        // Every way a status poll can fail to leave a usable current snapshot
+        // ends here, and all of them mean one thing for what is on screen: it
+        // is the last snapshot that arrived, and nothing has confirmed it
+        // since. Withdrawing that is a rerender of the retained payload under
+        // the local transport state, not a warning written beside claims that
+        // go on asserting the present tense.
+        noteTransportFailure(error);
+        renderRetained();
       }
+      if (events.ok) renderEvents(events.data);
       scheduleNextLoad(delayMs);
     }
     load();
