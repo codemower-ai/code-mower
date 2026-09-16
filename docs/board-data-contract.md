@@ -484,6 +484,18 @@ each naming the source it came from and how fresh that source is, so no reading
 can stand in for another. The gate publisher is shown beside the
 `code-mower/gate` verdict and is labelled as publisher execution only.
 
+Rows are ordered by urgency, which is a separate question from which recorded
+truth headlines a row. A merged item headlines as merged because that describes
+it best, but it is the least urgent thing on the board, so row order runs
+blocked work first, then work waiting on a named person, then work whose
+evidence cannot be trusted, then work recorded as in flight, and terminal work
+— merged, and an idle session — last by explicit placement. A headline that is
+not ranked sorts after everything ranked and before the terminal band. The
+reference and then the opaque identity break ties, so an unchanged snapshot
+never reshuffles the list. Because the first row is what an operator who has
+chosen nothing is shown, the Board opens on work that still needs someone
+rather than on work that is finished.
+
 Selection is kept by opaque work identity — session, worktree, and work id —
 not by row position, so a refresh that reorders, adds, or drops rows leaves the
 operator's choice where it was. One identity is one row: where the directory
@@ -506,6 +518,18 @@ belongs to, and at desktop widths CSS places that same region adjacent to the
 list. Rows are buttons carrying `aria-expanded` and `aria-controls`; Up, Down,
 Home and End move the selection, tabs wrap with the arrow keys, and every
 interactive control has a visible focus ring.
+
+A poll replaces the tab strip and the row list, so every control that can hold
+the keyboard carries an identity derived from what it acts on rather than from
+where it was rendered: the tabs from the view, the rows from the work identity,
+and the selected row's actions from that identity and the action's own name. A
+refresh therefore returns the keyboard to the same control — restoring without
+scrolling, because a refresh must not move the view. When a control is no
+longer offered, focus moves only to the row that control named as its owner,
+and if that row is gone too the Board leaves focus where the browser put it
+rather than handing the keyboard to an unrelated control. Activating a detail
+action that opens another view moves focus to that view's tab, because the
+control that was activated is inside the panel the switch has just hidden.
 
 Meaningful changes are announced once through a polite live region and listed
 in Timeline. A change is meaningful when a recorded fact differs: stage,

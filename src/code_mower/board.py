@@ -2333,9 +2333,64 @@ _BOARD_HTML = """<!doctype html>
         measurements: []
       };
     }
-    // Deterministic order: most blocking first, then a stable tiebreak on the
-    // opaque identity so an unchanged snapshot never reshuffles the list.
-    const ROW_RANK = new Map(STATE_RULES.map(rule => [rule.label, rule.rank]));
+    // Row order answers a different question from the headline. The headline
+    // precedence in STATE_RULES says which recorded truth describes a work
+    // item best, and "merged" wins that contest outright because a merged item
+    // is not also usefully described as, say, "CI pending". Row order asks who
+    // still has to do something, and by that question a merged item is the
+    // least urgent thing on the board. Reusing headline precedence for the row
+    // list therefore floats finished work to the top and -- because the first
+    // row is what an operator who has made no choice is shown -- opens the
+    // Board on work nobody can act on while blocked work waits below it.
+    //
+    // So urgency is its own explicit ranking. Blocked work comes first, then
+    // work waiting on a named person, then work whose evidence cannot be
+    // trusted, then work that is simply in flight, and terminal work last.
+    const ROW_URGENCY_ORDER = [
+      // Blocked: an operator has to unblock this before anything else moves.
+      "source unavailable",
+      "changes requested",
+      "CI failed",
+      "gate failed",
+      "provider run failed",
+      "provider run cancelled",
+      // Actionable: a named person is the only thing this is waiting on.
+      "waiting for approval",
+      "waiting for an answer",
+      "ready to merge",
+      "ready for human review",
+      "review requested",
+      // Untrustworthy evidence: not known to be moving, not known to be stuck.
+      "stale observation",
+      "stale review",
+      "identity unlinked",
+      "state not recorded",
+      // In flight: recorded as progressing, so nothing is owed right now.
+      "review observed running",
+      "CI pending",
+      "gate pending",
+      "provider reported progress",
+      "provider run observed",
+      "dispatched",
+      "implementation complete",
+      "review passed",
+      "assigned"
+    ];
+    // Terminal work is placed last explicitly rather than by falling off the
+    // end of the ranking, so nothing can be finished and urgent at once.
+    const TERMINAL_ROW_HEADLINES = ["merged", "idle with complete coverage"];
+    const ROW_URGENCY = new Map(ROW_URGENCY_ORDER.map((label, index) => [label, index]));
+    // A headline nobody ranked is neither promoted above recorded work nor
+    // buried under finished work: it sorts after everything named above and
+    // before the terminal band.
+    const UNRANKED_ROW_URGENCY = ROW_URGENCY_ORDER.length;
+    const TERMINAL_ROW_URGENCY = new Map(
+      TERMINAL_ROW_HEADLINES.map((label, index) => [label, UNRANKED_ROW_URGENCY + 1 + index]));
+    function rowUrgency(headline) {
+      const terminal = TERMINAL_ROW_URGENCY.get(headline);
+      if (terminal !== undefined) return terminal;
+      return ROW_URGENCY.get(headline) ?? UNRANKED_ROW_URGENCY;
+    }
     // How recent one observation of a linked identity is. `created_at` is when
     // the observation itself was recorded, so it is what orders two
     // observations of the same work item; the last meaningful update breaks a
@@ -2443,11 +2498,14 @@ _BOARD_HTML = """<!doctype html>
         unlinked: [...unlinked.values()].map(item => item.run).sort(byId)
       };
     }
+    // Deterministic order: most urgent first, then a stable tiebreak on the
+    // reference and the opaque identity, so an unchanged snapshot never
+    // reshuffles the list.
     function workRows(data, nowMs) {
       return observationGroups(data)
         .map(group => workRow(consolidatedRecord(group), nowMs))
         .sort((a, b) =>
-          (ROW_RANK.get(a.headline) ?? 99) - (ROW_RANK.get(b.headline) ?? 99)
+          rowUrgency(a.headline) - rowUrgency(b.headline)
           || a.reference.localeCompare(b.reference)
           || a.key.localeCompare(b.key));
     }
@@ -2630,7 +2688,15 @@ _BOARD_HTML = """<!doctype html>
     // work item across a refresh that reorders the list. The work, worktree and
     // session components the key is built from cannot contain the separator, so
     // distinct keys cannot collapse onto one id.
-    const rowElementId = (key) => `workrow-${text(key).replace(/[^A-Za-z0-9_-]/g, "-")}`;
+    const keySlug = (key) => text(key).replace(/[^A-Za-z0-9_-]/g, "-");
+    const rowElementId = (key) => `workrow-${keySlug(key)}`;
+    // The detail region of the selected row is replaced wholesale on every
+    // poll, so its actions need identities of their own for the same reason
+    // the rows do. The action name comes before the work identity and every
+    // name is a single hyphen-free token, so no action id can collide with
+    // another action's id however a work identity happens to be spelled, and
+    // the `workaction-` prefix keeps them clear of the row buttons.
+    const actionElementId = (key, name) => `workaction-${name}-${keySlug(key)}`;
     // A background refresh replaces the tab strip and the row list. Without
     // this the focused control is destroyed mid-navigation and focus falls to
     // the document body, so the keyboard position is silently lost every poll.
@@ -2639,10 +2705,25 @@ _BOARD_HTML = """<!doctype html>
     function withFocusPreserved(update) {
       const active = document.activeElement;
       const activeId = active && typeof active.id === "string" ? active.id : "";
+      // Read off the element that is about to be destroyed, so the fallback
+      // survives the update that removes it.
+      const fallbackId = active && active.dataset ? text(active.dataset.focusFallback) : "";
       update();
       if (!activeId) return;
       const restored = document.getElementById(activeId);
-      if (restored && typeof restored.focus === "function") restored.focus({preventScroll: true});
+      if (restored && typeof restored.focus === "function") {
+        restored.focus({preventScroll: true});
+        return;
+      }
+      // The control the keyboard was on no longer exists. Focus moves only to
+      // the one element that control named as its owner -- the row it belonged
+      // to -- and never to whatever happens to occupy its former position, so
+      // an action that disappears can never hand the keyboard to an unrelated
+      // control. If the owner is gone too, focus is left where the browser put
+      // it rather than guessed at.
+      if (!fallbackId) return;
+      const owner = document.getElementById(fallbackId);
+      if (owner && typeof owner.focus === "function") owner.focus({preventScroll: true});
     }
     const cuePill = (label, cls) => `<span class="pill ${esc(cls || "muted")}"><span class="cue" aria-hidden="true">${esc(cueFor(cls))}</span> ${esc(label)}</span>`;
     const stateCue = (state) => cuePill(state.label, state.class);
@@ -2679,13 +2760,18 @@ _BOARD_HTML = """<!doctype html>
     function workActionsHtml(row, prs) {
       const url = recordedPrUrl(row, prs);
       const actions = [];
-      if (url) actions.push(`<a href="${esc(href(url))}">Open PR #${esc(row.pr_number)}</a>`);
+      // Every focusable action carries an identity derived from the work it
+      // acts on, and names the row button as where the keyboard should land if
+      // the action itself stops being offered.
+      const owner = rowElementId(row.key);
+      const identity = (name) => `id="${esc(actionElementId(row.key, name))}" data-focus-fallback="${esc(owner)}"`;
+      if (url) actions.push(`<a ${identity("openpr")} href="${esc(href(url))}">Open PR #${esc(row.pr_number)}</a>`);
       // A foreign record is still shown for what it is; what it does not get
       // is a link this Board has no record of.
       else if (row.pr_number !== null && row.pr_number !== undefined && row.repository !== REPO) actions.push(`<span class="muted">PR #${esc(row.pr_number)} in ${esc(row.repository || "an unrecorded repository")}, not this repository; no local link recorded</span>`);
       else if (row.pr_number !== null && row.pr_number !== undefined) actions.push(`<span class="muted">PR #${esc(row.pr_number)}, no local link recorded</span>`);
-      actions.push(`<button type="button" class="link" data-view="health">Inspect connection</button>`);
-      actions.push(`<button type="button" class="link" data-view="timeline">View recent changes</button>`);
+      actions.push(`<button type="button" class="link" ${identity("inspect")} data-view="health">Inspect connection</button>`);
+      actions.push(`<button type="button" class="link" ${identity("changes")} data-view="timeline">View recent changes</button>`);
       return `<div class="line">${actions.join("")}</div>
         <div class="muted">Read-only. This Board never merges, requeues, cancels, retries, restarts or takes a lease.</div>`;
     }
@@ -2764,6 +2850,15 @@ _BOARD_HTML = """<!doctype html>
         const view = event.target.closest("[data-view]");
         if (view) {
           selectView(view.dataset.view);
+          // The control that asked for the view sits in the panel this has
+          // just hidden. Leaving the keyboard on it would park focus inside
+          // hidden content, which browsers resolve by dropping focus to the
+          // document body -- so activating "Inspect connection" from the
+          // keyboard would silently send the operator back to the top of the
+          // page. Focus moves to the tab for the view that was opened, which
+          // is where the operator now is.
+          const tab = document.getElementById(`tab-${view.dataset.view}`);
+          if (tab && typeof tab.focus === "function") tab.focus();
           return;
         }
         const button = event.target.closest(".rowbtn");

@@ -3750,8 +3750,151 @@ def _observation_payload(records: list[dict], **overrides: object) -> dict:
     return payload
 
 
+# A DOM shim in which focus is a real question. Elements exist because the
+# markup that was rendered declared an id; replacing a container's innerHTML
+# destroys everything that was inside it, so a focused control that the refresh
+# does not render again is genuinely gone and focus falls to the body exactly
+# as a browser would drop it. Only the ids the shipped page ships in its static
+# shell exist up front, so a lookup for a control that a render removed returns
+# nothing rather than conjuring a phantom element to focus.
+BOARD_FOCUS_HARNESS = """
+class FakeElement {
+  constructor(doc, id, attrs, parent) {
+    this.doc = doc;
+    this.id = id;
+    this.attrs = attrs || {};
+    this.parent = parent || null;
+    this.dataset = {};
+    this.classList = (this.attrs["class"] || "").split(/\\s+/).filter(Boolean);
+    for (const [name, value] of Object.entries(this.attrs)) {
+      if (!name.startsWith("data-")) continue;
+      this.dataset[name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = value;
+    }
+    this.hidden = false;
+    this.textContent = "";
+    this._html = "";
+  }
+  get innerHTML() { return this._html; }
+  set innerHTML(value) {
+    this.doc.replaceChildren(this, value);
+    this._html = value;
+  }
+  focus() { this.doc.activeElement = this; }
+  matches(selector) {
+    if (selector.startsWith(".")) return this.classList.includes(selector.slice(1));
+    const attribute = /^\\[([A-Za-z-]+)(?:=([^\\]]*))?\\]$/.exec(selector);
+    if (!attribute) return false;
+    const value = this.attrs[attribute[1]];
+    if (value === undefined) return false;
+    return attribute[2] === undefined || value === attribute[2];
+  }
+  closest(selector) {
+    for (let node = this; node; node = node.parent) if (node.matches(selector)) return node;
+    return null;
+  }
+  querySelectorAll(selector) {
+    return [...(this.doc.owned.get(this.id) || new Map()).values()]
+      .filter(node => node.matches(selector));
+  }
+}
+const document = {
+  activeElement: null,
+  body: null,
+  roots: new Map(),
+  owned: new Map(),
+  index: new Map(),
+  getElementById(id) {
+    if (this.index.has(id)) return this.index.get(id);
+    return this.roots.get(id) || null;
+  },
+  replaceChildren(root, html) {
+    for (const [id, node] of this.owned.get(root.id) || new Map()) {
+      if (this.index.get(id) === node) this.index.delete(id);
+      if (this.activeElement === node) this.activeElement = this.body;
+    }
+    const created = new Map();
+    for (const tag of html.match(/<[a-zA-Z][^>]*>/g) || []) {
+      const attrs = {};
+      for (const [, name, value] of tag.matchAll(/([A-Za-z-]+)="([^"]*)"/g)) attrs[name] = value;
+      if (attrs.id === undefined) continue;
+      const node = new FakeElement(this, attrs.id, attrs, root);
+      created.set(attrs.id, node);
+      this.index.set(attrs.id, node);
+    }
+    this.owned.set(root.id, created);
+  }
+};
+document.body = new FakeElement(document, "", {});
+document.activeElement = document.body;
+for (const id of __SHELL_IDS__) document.roots.set(id, new FakeElement(document, id, {}));
+Date.now = () => __NOW_MS__;
+__SCRIPT__
+const element = (id) => {
+  const node = document.getElementById(id);
+  if (!node) throw new Error("no element: " + id);
+  return node;
+};
+const frames = [];
+for (const step of JSON.parse(process.argv[1])) {
+  if (step.focus) element(step.focus).focus();
+  if (step.click) element(step.on || "worklist").onclick({target: element(step.click)});
+  if (step.key) {
+    element(step.on || "worklist").onkeydown({
+      key: step.key,
+      target: element(step.from),
+      preventDefault: () => {},
+    });
+  }
+  if (step.select) selectWork(step.select);
+  if (step.payload) render(step.payload);
+  frames.push({
+    active: document.activeElement === document.body ? "" : document.activeElement.id,
+    worklist: document.getElementById("worklist").innerHTML,
+    tabs: document.getElementById("tabs").innerHTML,
+    hidden: Object.fromEntries(["now", "timeline", "releases", "health"]
+      .map(view => [view, element("panel-" + view).hidden])),
+  });
+}
+console.log(JSON.stringify(frames));
+"""
+
+
+def _board_shell_ids() -> list[str]:
+    """Every id the shipped page's static markup declares, script excluded."""
+
+    html = board.render_board_html(board.BoardConfig(repo="codemower-ai/code-mower"))
+    shell = html[: html.index("  <script>\n")]
+    return sorted(set(re.findall(r'id="([^"]+)"', shell)))
+
+
+def _render_board_focus(
+    steps: list[dict[str, object]],
+    *,
+    now: datetime = OBSERVATION_NOW,
+) -> list[dict[str, str]]:
+    """Drive focus, selection and refresh through the shipped page in one lifetime."""
+
+    script = (
+        BOARD_FOCUS_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000)))
+        .replace("__SHELL_IDS__", json.dumps(_board_shell_ids()))
+        .replace("__SCRIPT__", _board_script())
+    )
+    completed = subprocess.run(
+        [shutil.which("node") or "node", "-e", script, json.dumps(steps)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
 def _work_keys(worklist: str) -> list[str]:
     return re.findall(r'class="rowbtn" id="[^"]+" data-key="([^"]+)"', worklist)
+
+
+def _row_element_id(worklist: str, key: str) -> str:
+    match = re.search(rf'class="rowbtn" id="([^"]+)" data-key="{re.escape(key)}"', worklist)
+    return match.group(1) if match else ""
 
 
 def _selected_key(worklist: str) -> str:
@@ -3930,6 +4073,267 @@ class BoardWorkFirstViewTests(TestCase):
             "]"
         )
         self.assertEqual(moves, [0, 3, 0, 3, -1, 2, 0, 0, 2, -1, -1])
+
+    def test_row_order_is_urgency_and_never_headline_precedence(self) -> None:
+        # Headline precedence is untouched: "merged" is still the truth that
+        # describes a merged item best, and it still wins that contest outright.
+        rules = _eval_board_view("STATE_RULES.map(rule => [rule.label, rule.rank])")
+        self.assertEqual(rules[0], ["merged", 0])
+
+        # Row order is a separate, explicit ranking. Every headline the views
+        # can produce is ranked in it -- the recorded states, plus the two the
+        # idle and unlinked rows synthesise -- so no headline orders by accident.
+        ranked = _eval_board_view("[...ROW_URGENCY_ORDER, ...TERMINAL_ROW_HEADLINES]")
+        for label in [rule[0] for rule in rules] + [
+            "state not recorded",
+            "idle with complete coverage",
+        ]:
+            self.assertIn(label, ranked)
+        self.assertEqual(len(ranked), len(set(ranked)))
+
+        # Terminal placement is explicit, not a consequence of falling off the
+        # end: every named non-terminal headline ranks below an unranked one,
+        # which ranks below every terminal headline, and no two share a rank.
+        ranks = _eval_board_view(
+            "[...ROW_URGENCY_ORDER, 'a headline nobody ranked', ...TERMINAL_ROW_HEADLINES]"
+            ".map(rowUrgency)"
+        )
+        self.assertEqual(ranks, sorted(ranks))
+        self.assertEqual(len(set(ranks)), len(ranks))
+        # And the two rankings genuinely disagree about merged work.
+        self.assertGreater(
+            _eval_board_view("rowUrgency('merged')"),
+            _eval_board_view("rowUrgency('CI pending')"),
+        )
+
+    def test_finished_work_never_outranks_actionable_or_blocked_work(self) -> None:
+        records = [
+            _observation_fixture("merged"),
+            _observation_fixture("waiting_for_approval"),
+            _observation_fixture("failed"),
+            _observation_fixture("no_work"),
+        ]
+        payload = _observation_payload(records)
+        worklist = _render_board_sequence([{"payload": payload}])[0]["worklist"]
+        headlines = re.findall(
+            r'aria-hidden="true">[^<]*</span> ([^<]+)</span><span class="pill">stage', worklist
+        )
+        # Blocked work first, then work waiting on a person, and the two
+        # terminal rows last in their declared order.
+        self.assertEqual(
+            headlines,
+            [
+                "provider run failed",
+                "waiting for approval",
+                "merged",
+                "idle with complete coverage",
+            ],
+        )
+
+        keys = _work_keys(worklist)
+        # An operator who has chosen nothing is shown blocked work, never the
+        # merged item that used to win on headline precedence.
+        self.assertEqual(_selected_key(worklist), keys[0])
+        self.assertTrue(keys[0].endswith("failedwork"))
+
+        # The order is a property of what the rows record, not of the order the
+        # observation directory happened to list them in.
+        reversed_payload = _observation_payload(list(reversed(records)))
+        self.assertEqual(
+            _render_board_sequence([{"payload": reversed_payload}])[0]["worklist"], worklist
+        )
+
+        # With only merged work on the board, the merged row is still selected:
+        # terminal placement orders rows, it never hides them.
+        merged_only = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("merged")])}]
+        )[0]["worklist"]
+        self.assertTrue(_selected_key(merged_only).endswith("mergedwork"))
+
+        # Two rows that share a headline still order deterministically on the
+        # reference and then the opaque identity.
+        first = _observation_fixture("waiting_for_approval")
+        second = copy.deepcopy(first)
+        second["work"]["id"] = "approvaltwo"
+        second["work"]["reference"] = "issue-947"
+        for run in second["work"]["runs"]:
+            run["binding"]["work_id"] = "approvaltwo"
+        second = board_observation.validate(second)
+        tied = _render_board_sequence([{"payload": _observation_payload([second, first])}])[0]
+        self.assertEqual(
+            re.findall(r'<span class="ref">([^<]+)</span>', tied["worklist"]),
+            ["issue-946", "issue-947"],
+        )
+
+    def test_detail_actions_keep_keyboard_focus_across_a_refresh(self) -> None:
+        payload = _observation_payload([_observation_fixture("ready")])
+        payload["remote"]["pull_requests"] = [
+            {
+                "number": 946,
+                "url": "https://github.example/codemower-ai/code-mower/pull/946",
+                "title": "t",
+                "labels": {},
+                "checks": [],
+            }
+        ]
+        opened = _render_board_focus([{"payload": payload}])[0]
+        worklist = opened["worklist"]
+        key = _work_keys(worklist)[0]
+        row_id = _row_element_id(worklist, key)
+        actions = re.findall(r'id="(workaction-[^"]+)"', worklist)
+        # Every focusable action in the detail region carries an identity, and
+        # no identity is shared with another action or with the row button.
+        self.assertEqual(len(actions), 3)
+        self.assertEqual(sorted(name.split("-")[1] for name in actions), ["changes", "inspect", "openpr"])
+        self.assertEqual(len(set(actions + [row_id])), 4)
+        self.assertNotIn(row_id, actions)
+
+        # Focus each action in turn, then let an unchanged poll replace the row
+        # list under it. Focus must come back to the same action, not to the
+        # document body.
+        steps: list[dict[str, object]] = [{"payload": payload}]
+        for action in actions + [row_id, "tab-now"]:
+            steps.append({"focus": action})
+            steps.append({"payload": payload})
+        frames = _render_board_focus(steps)
+        restored = [frames[index]["active"] for index in range(2, len(frames), 2)]
+        self.assertEqual(restored, actions + [row_id, "tab-now"])
+        self.assertNotIn("", restored)
+
+        # A poll that changes the row still keeps the keyboard on the action,
+        # because the action's identity is the work's, not the render's.
+        moved = copy.deepcopy(payload)
+        moved["observations"]["records"][0]["work"]["stage"] = "in_review"
+        after_change = _render_board_focus(
+            [{"payload": payload}, {"focus": actions[0]}, {"payload": moved}]
+        )
+        self.assertIn("stage: in review", after_change[-1]["worklist"])
+        self.assertEqual(after_change[-1]["active"], actions[0])
+
+    def test_a_detail_action_that_disappears_never_hands_focus_to_another_control(self) -> None:
+        payload = _observation_payload([_observation_fixture("ready")])
+        payload["remote"]["pull_requests"] = [
+            {
+                "number": 946,
+                "url": "https://github.example/codemower-ai/code-mower/pull/946",
+                "title": "t",
+                "labels": {},
+                "checks": [],
+            }
+        ]
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        row_id = _row_element_id(worklist, _work_keys(worklist)[0])
+        open_pr = next(name for name in re.findall(r'id="(workaction-[^"]+)"', worklist) if "openpr" in name)
+
+        # The recorded PR link stops being recorded, so the action it backed is
+        # no longer offered. Focus lands on the row that action belonged to --
+        # the one control it named -- and never on whichever action now happens
+        # to sit in its place.
+        without_link = copy.deepcopy(payload)
+        without_link["remote"]["pull_requests"] = []
+        gone = _render_board_focus(
+            [{"payload": payload}, {"focus": open_pr}, {"payload": without_link}]
+        )[-1]
+        self.assertNotIn(open_pr, gone["worklist"])
+        self.assertEqual(gone["active"], row_id)
+
+        # The whole work item disappears and a different one takes the first
+        # row. Nothing is focused at all: the Board does not move the keyboard
+        # onto an unrelated work item's controls.
+        replaced = _observation_payload([_observation_fixture("observed_running")])
+        dropped = _render_board_focus(
+            [{"payload": payload}, {"focus": open_pr}, {"payload": replaced}]
+        )[-1]
+        self.assertIn("runningwork", dropped["worklist"])
+        self.assertNotIn(row_id, dropped["worklist"])
+        self.assertEqual(dropped["active"], "")
+
+        # Same when nothing at all is left to render.
+        emptied = _render_board_focus(
+            [{"payload": payload}, {"focus": open_pr}, {"payload": _observation_payload([])}]
+        )[-1]
+        self.assertEqual(emptied["active"], "")
+
+    def test_opening_a_view_from_a_detail_action_moves_focus_out_of_the_hidden_panel(self) -> None:
+        payload = _observation_payload([_observation_fixture("ready")])
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        actions = {
+            name.split("-")[1]: name for name in re.findall(r'id="(workaction-[^"]+)"', worklist)
+        }
+        # Both view-switching actions live in the Now panel, which the switch
+        # itself hides. Focus must end on the tab for the view that was opened
+        # rather than inside hidden content or back at the document body.
+        for name, view in (("inspect", "health"), ("changes", "timeline")):
+            frame = _render_board_focus(
+                [{"payload": payload}, {"focus": actions[name]}, {"click": actions[name]}]
+            )[-1]
+            self.assertTrue(frame["hidden"]["now"])
+            self.assertFalse(frame["hidden"][view])
+            self.assertEqual(frame["active"], f"tab-{view}")
+            self.assertIn(f'id="tab-{view}" data-view="{view}" aria-selected="true"', frame["tabs"])
+
+        # Choosing a row is not a view switch, so it leaves the view alone and
+        # the keyboard on the row.
+        row_id = _row_element_id(worklist, _work_keys(worklist)[0])
+        chosen = _render_board_focus(
+            [{"payload": payload}, {"focus": row_id}, {"click": row_id}]
+        )[-1]
+        self.assertFalse(chosen["hidden"]["now"])
+        self.assertEqual(chosen["active"], row_id)
+
+    def test_keyboard_navigation_moves_selection_and_focus_through_rows_and_tabs(self) -> None:
+        payload = _observation_payload(
+            [_observation_fixture("failed"), _observation_fixture("merged")]
+        )
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        keys = _work_keys(worklist)
+        rows = [_row_element_id(worklist, key) for key in keys]
+        self.assertEqual(len(rows), 2)
+
+        def press(key: str, start: str, **extra: object) -> dict[str, str]:
+            steps: list[dict[str, object]] = [
+                {"payload": payload},
+                {"focus": start},
+                {"key": key, "from": start, **extra},
+            ]
+            return _render_board_focus(steps)[-1]
+
+        # Down selects and focuses the next row; Up comes back; End and Home
+        # jump to the ends; Down on the last row clamps rather than wrapping.
+        moved = press("ArrowDown", rows[0])
+        self.assertEqual(moved["active"], rows[1])
+        self.assertEqual(_selected_key(moved["worklist"]), keys[1])
+        self.assertEqual(press("ArrowUp", rows[1])["active"], rows[0])
+        self.assertEqual(press("End", rows[0])["active"], rows[1])
+        self.assertEqual(press("Home", rows[1])["active"], rows[0])
+        clamped = press("ArrowDown", rows[1])
+        self.assertEqual(clamped["active"], rows[1])
+        self.assertEqual(_selected_key(clamped["worklist"]), keys[1])
+
+        # A key the row list does not handle leaves selection and focus alone.
+        ignored = press("ArrowLeft", rows[0])
+        self.assertEqual(ignored["active"], rows[0])
+        self.assertEqual(_selected_key(ignored["worklist"]), keys[0])
+
+        # Arrow keys pressed on a detail action are not row movement: the
+        # action keeps the keyboard and the selection does not move.
+        action = next(
+            name for name in re.findall(r'id="(workaction-[^"]+)"', worklist) if "inspect" in name
+        )
+        on_action = press("ArrowDown", action)
+        self.assertEqual(on_action["active"], action)
+        self.assertEqual(_selected_key(on_action["worklist"]), keys[0])
+
+        # Tabs wrap, and the roving tabindex follows the focused tab.
+        forward = press("ArrowRight", "tab-now", on="tabs")
+        self.assertEqual(forward["active"], "tab-timeline")
+        self.assertFalse(forward["hidden"]["timeline"])
+        self.assertTrue(forward["hidden"]["now"])
+        self.assertIn('id="tab-timeline" data-view="timeline" aria-selected="true"', forward["tabs"])
+        self.assertEqual(forward["tabs"].count('tabindex="0"'), 1)
+        wrapped = press("ArrowLeft", "tab-now", on="tabs")
+        self.assertEqual(wrapped["active"], "tab-health")
+        self.assertFalse(wrapped["hidden"]["health"])
 
     def test_work_row_carries_reference_stage_assignment_update_action_and_role(self) -> None:
         nodes = _render_board_sequence(
