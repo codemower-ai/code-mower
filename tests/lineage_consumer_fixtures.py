@@ -19,7 +19,8 @@ AUTHORS = ('lineage-publisher[bot]',)
 ROWS = {
     'A': ('test_lineage_consumer_admission.py::AdmissionConsumers::test_actual_wrappers_share_conflict_empty_takeover_and_stale_decisions',
           'test_lineage_consumer_admission.py::AdmissionConsumers::test_wrapper_cumulative_history_budget_and_strict_announced_markers',
-          'test_devin_review.py::LineageReviewLifecycleTests'),
+          'test_devin_review.py::LineageReviewLifecycleTests',
+          'test_devin_cli_audit_pr.py::TestPublicLineageRefusals'),
     'B': ('test_lineage_consumer_labels.py::LabelConsumers::test_check_run_fallback_and_all_normal_saas_sinks_keep_admission',
           'test_lineage_consumer_labels.py::RawFetchLabelConsumers::test_real_fetcher_rejects_bad_history_before_every_label_route'),
     'C': ('test_lineage_consumer_labels.py::LabelConsumers::test_greptile_both_structural_requeues_resolve_empty_history',
