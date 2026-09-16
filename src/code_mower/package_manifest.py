@@ -51,8 +51,18 @@ PACKAGE_FILES = (
         "core",
     ),
     (
+        "src/code_mower/context_graph_query.py",
+        "src/code_mower/context_graph_query.py",
+        "core",
+    ),
+    (
         "src/code_mower/context_graph_command.py",
         "src/code_mower/context_graph_command.py",
+        "core",
+    ),
+    (
+        "src/code_mower/context_graph_connection.py",
+        "src/code_mower/context_graph_connection.py",
         "core",
     ),
     ("src/code_mower/productivity_report.py", "src/code_mower/productivity_report.py", "core"),
@@ -598,6 +608,7 @@ PACKAGE_FILES = (
     ("docs/slack-contract.md", "docs/slack-contract.md", "doc"),
     ("docs/graphify-evaluation.md", "docs/graphify-evaluation.md", "doc"),
     ("docs/context-graph-lifecycle.md", "docs/context-graph-lifecycle.md", "doc"),
+    ("docs/context-graph-queries.md", "docs/context-graph-queries.md", "doc"),
     ("docs/context-connections.md", "docs/context-connections.md", "doc"),
     ("docs/context-setup.md", "docs/context-setup.md", "doc"),
     ("docs/v130-release-notes.md", "docs/v130-release-notes.md", "doc"),

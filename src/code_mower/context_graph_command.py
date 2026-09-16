@@ -16,14 +16,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
+from . import context_graph_connection as connection
 from . import context_graph_lifecycle as lifecycle
+from . import context_graph_query as query
 from .context_contract import ContextError
-from .context_store import strict_json
+from .context_store import ContextStore, strict_json
 
 MAX_PIN_BYTES = 8192
+
+#: The authorization envelope and policy a packet binds to. Read from a file
+#: the operator names, never discovered: this command mints evidence for named
+#: recipients, and which recipients those are is an authorization decision that
+#: belongs to the connection, not to a query.
+MAX_AUTHORIZATION_BYTES = 65_536
 
 
 def _load_pin(path: Path | None) -> lifecycle.GraphifyPin | None:
@@ -48,6 +57,63 @@ def _require_pin(path: Path | None) -> lifecycle.GraphifyPin:
     return pin
 
 
+def _load_authorization(path: Path) -> dict:
+    """The connection envelope and policy one packet will bind to.
+
+    Bounded at the stream for the same reason the pin is: a bound checked on
+    bytes already in memory is not a bound on what the file can cost to read.
+    """
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_AUTHORIZATION_BYTES + 1)
+    except OSError:
+        raise ContextError("context authorization file is unreadable") from None
+    if len(raw) > MAX_AUTHORIZATION_BYTES:
+        raise ContextError("context authorization file exceeds its bound")
+    payload = strict_json(raw)
+    if not isinstance(payload, dict) or set(payload) != {"connection", "policy", "repository", "work_item"}:
+        raise ContextError("context authorization must carry a connection, policy, repository and work item")
+    return payload
+
+
+def _write_packet(destination: Path, packet: dict) -> None:
+    """Write one packet where only this operator can read it.
+
+    ``0o600`` at creation rather than after: the delivery path refuses a packet
+    whose mode ever allowed anyone else, and a chmod after the fact is a window
+    in which it did.
+
+    A destination that already exists is *replaced*, never reopened. The
+    creation mode an open passes is only honoured for a file the open creates,
+    so writing into an existing world-readable path would put the evidence
+    behind whatever permissions that path already carried -- which the delivery
+    contract then refuses, after the bytes are already readable. The packet is
+    therefore written to a freshly created private sibling and renamed over the
+    destination, which is also atomic: a reader never sees a half-written
+    packet, and a failed write leaves the previous file untouched.
+    """
+    body = json.dumps(packet, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    # ``O_EXCL`` so the mode below is the mode of a file this process created.
+    # The name is unique per process rather than random: this directory is the
+    # operator's own, and a leftover from a crashed run must not be adopted.
+    staging = destination.with_name(f".{destination.name}.{os.getpid()}.partial")
+    descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staging, destination)
+    except BaseException:
+        # The evidence never survives a failed write under a name anyone asked
+        # for, and never under the staging name either.
+        try:
+            os.unlink(staging)
+        except OSError:
+            pass
+        raise
+
+
 def _emit(payload: dict, *, as_json: bool, text: str) -> None:
     if as_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -66,12 +132,20 @@ def main(argv=None) -> int:
     status = sub.add_parser("status", help="Report whether the published generation may be used")
     remove = sub.add_parser("remove", help="Delete this checkout's private local graph state")
     doctor = sub.add_parser("doctor", help="Check the local graph posture without building anything")
+    ask = sub.add_parser("query", help="Answer one bounded question and emit a revision-bound packet")
+    # The guided route. ``query`` is the standalone verb an operator drives by
+    # hand; these three register the same graph as an ordinary context
+    # connection, so ``session context prepare``/``deliver`` can reach it
+    # through the shared packet store without a Coworker account or SDK.
+    join = sub.add_parser("connect", help="Register this checkout's graph as a local context connection")
+    leave = sub.add_parser("disconnect", help="Disable the connection and drop the packets it authorized")
+    linked = sub.add_parser("connection-status", help="Report the connection and the graph behind it")
 
-    for command in (build, refresh, status, remove, doctor):
+    for command in (build, refresh, status, remove, doctor, ask, join, leave, linked):
         command.add_argument("--repo-path", type=Path, default=Path.cwd(), help="Checkout to bind")
         command.add_argument("--state-dir", type=Path, help="Private state root; defaults to the context store")
         command.add_argument("--json", action="store_true", help="Emit a machine-readable summary")
-    for command in (build, refresh, status, doctor):
+    for command in (build, refresh, status, doctor, ask):
         command.add_argument("--revision", default="HEAD", help="Revision to bind, for example a commit or tag")
     for command in (build, refresh, doctor):
         command.add_argument("--pin-file", type=Path, help="JSON file naming one exact provider release")
@@ -82,6 +156,22 @@ def main(argv=None) -> int:
     status.add_argument("--allow-partial", action="store_true",
                         help="Treat a provider-declared partial build as usable")
     remove.add_argument("--show-local-paths", action="store_true", help="Include the private state path in output")
+    ask.add_argument("--question", required=True, choices=query.QUESTIONS, help="Which bounded question to ask")
+    ask.add_argument("--target", required=True, help="Symbol name, or a repository-relative path")
+    ask.add_argument("--authorization", type=Path, required=True,
+                     help="JSON file with the connection envelope, policy, repository and work item")
+    ask.add_argument("--packet-out", type=Path,
+                     help="Write the private packet to this file, created 0600")
+    ask.add_argument("--depth", type=int, help="Traversal depth; defaults to the question's own ceiling")
+    ask.add_argument("--node-budget", type=int, default=query.DEFAULT_NODE_BUDGET,
+                     help="Most relationships one answer may carry before it reports truncation")
+    linked.add_argument("--revision", default="HEAD", help="Revision the connection must currently bind")
+    for command in (join, leave, linked):
+        command.add_argument("--connection", required=True, help="Context connection name to register or inspect")
+    join.add_argument("--repository", required=True, action="append", metavar="OWNER/NAME",
+                      help="Approved context repository; repeat for more than one")
+    join.add_argument("--recipient", required=True, action="append", metavar="HOST:ROLE",
+                      help="Approved recipient, for example claude:builder; repeat for more than one")
 
     args = parser.parse_args(argv)
     try:
@@ -137,6 +227,50 @@ def main(argv=None) -> int:
             # A non-current graph is a normal, reportable condition, not a
             # command failure; exit 1 so a script can branch on usability.
             return 0 if report.usable else 1
+        if args.command == "query":
+            authorization = _load_authorization(args.authorization)
+            outcome = query.graph_context(
+                args.repo_path,
+                question=args.question,
+                target=args.target,
+                envelope=authorization["connection"],
+                policy=authorization["policy"],
+                context_repository=authorization["repository"],
+                work_item=authorization["work_item"],
+                root=args.state_dir,
+                revision=args.revision,
+                depth=args.depth,
+                node_budget=args.node_budget,
+            )
+            if outcome.packet is not None and args.packet_out is not None:
+                _write_packet(args.packet_out, outcome.packet)
+            # Metadata only, here as everywhere in this command: the summary
+            # carries counts, states and the binding, and the evidence itself
+            # goes to the private file the operator named or nowhere at all.
+            lines = [f"Local graph query: {outcome.status}"]
+            lines.extend(f"  {key}: {value}" for key, value in sorted(outcome.summary.items())
+                         if key not in ("schema", "status"))
+            _emit(outcome.summary, as_json=args.json, text="\n".join(lines) + "\n")
+            return outcome.exit_code
+        if args.command in ("connect", "disconnect", "connection-status"):
+            store = ContextStore(args.state_dir)
+            if args.command == "connect":
+                summary = connection.connect(store, args.connection, {
+                    "repository_root": str(Path(args.repo_path).resolve()),
+                    "repositories": list(args.repository),
+                    "recipients": list(args.recipient),
+                })
+            elif args.command == "disconnect":
+                summary = connection.disconnect(store, args.connection)
+            else:
+                summary = connection.status(
+                    store, args.connection, root=args.state_dir, revision=args.revision,
+                )
+            lines = [f"Local graph connection: {summary['status']}"]
+            lines.extend(f"  {key}: {value}" for key, value in sorted(summary.items())
+                         if key not in ("schema", "status"))
+            _emit(summary, as_json=args.json, text="\n".join(lines) + "\n")
+            return 0 if summary.get("authorization", "available") == "available" else 1
         if args.command == "remove":
             state = lifecycle.GraphStateRoot(args.repo_path, root=args.state_dir)
             path = str(state.path) if args.show_local_paths else None

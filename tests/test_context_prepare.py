@@ -5,15 +5,17 @@ from __future__ import annotations
 import io
 import json
 import os
+import secrets
 import tempfile
 import unittest
+import uuid
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from code_mower import context_prepare, context_session, session
+from code_mower import context_delivery, context_guided, context_prepare, context_session, session
 from code_mower.context_connections import connect
-from code_mower.context_contract import ContextError, ContextRetrievalError
+from code_mower.context_contract import ContextError, ContextRequest, ContextRetrievalError
 from code_mower.context_store import ContextStore
 from test_context_connections import MemoryVault
 from test_context_packets import RetrievalBackend
@@ -148,6 +150,90 @@ class ContextPrepareTests(unittest.TestCase):
                 self.assertEqual(saved["attachment_state"], attachment)
                 self.backend.revoked = False
         self.assertEqual(prepared["packet"], saved["packet"])
+
+    def test_prepare_preserves_a_genuine_unpublished_reservation_and_refuses_refresh(self):
+        """A real ``reserving`` intent -- exactly the durable, unpublished
+        state a crash inside ``reserve_attachment`` itself would leave
+        behind, strictly before any GitHub write -- must guard prepare
+        exactly like ``pending``/``uncertain``: the earliest check, before
+        checkout revision, query fingerprint, work-order, packet store, or
+        provider access. Neither ordinary prepare nor a changed-query
+        ``--refresh`` may inspect or abandon the saved binding; only
+        attach's own cleanup primitive may resolve it, and only then does
+        prepare work again (codex:1a4bc7b34687da726908)."""
+        record = self.create_record()
+        _report, code = self.prepare(record)
+        self.assertEqual(code, 0)
+        prepared = context_session.read(self.associations, record["session_id"])
+
+        revision = uuid.uuid4().hex
+        head = secrets.token_hex(20)
+        reserving = context_session.update(
+            self.associations,
+            prepared["session_id"],
+            expected_generation=prepared["generation"],
+            changes={
+                "pr": 42, "head": head, "revision": revision,
+                "attachment_state": "reserving",
+            },
+        )
+        # This organization connection's evidence versions independently of
+        # any Git checkout, so the reservation names no consuming revision --
+        # the same "no Git checkout revision" call attach would have made.
+        context_delivery.reserve_attachment(
+            self.packet_store,
+            reserving["connection"],
+            reserving["packet"],
+            reserving["policy"],
+            ContextRequest(reserving["repo"], reserving["work_item"], reserving["host"] + ":orchestrator"),
+            pr=42,
+            head=head,
+            revision=revision,
+            consuming_revision=None,
+            backend=self.backend,
+        )
+        binding = context_delivery.read_binding(self.packet_store, revision)
+        self.assertFalse(binding["published"])
+        self.assertEqual(reserving["attachment_state"], "reserving")
+        self.assertIsNotNone(reserving["revision"])
+
+        def snapshot():
+            return {
+                path: path.read_bytes()
+                for path in sorted(self.private.rglob("*"))
+                if path.is_file()
+            }
+
+        before = snapshot()
+        self.backend.revoked = True
+
+        report, code = self.prepare(reserving)
+        self.assertEqual(
+            (code, report["status"], report["stage"], report["dependent_work"]),
+            (0, "attachment_in_progress", "attachment_pending", "paused"),
+        )
+        self.assertEqual(self.backend.searches, 1)
+        self.assertEqual(snapshot(), before)
+
+        with self.assertRaisesRegex(ContextError, "reconcile the saved attachment"):
+            self.prepare(reserving, refresh=True, query="a materially different bounded query")
+        self.assertEqual(self.backend.searches, 1)
+        self.assertEqual(snapshot(), before)
+
+        self.backend.revoked = False
+        saved = context_session.read(self.associations, record["session_id"])
+        self.assertEqual(saved, reserving)
+        self.assertEqual(prepared["packet"], saved["packet"])
+
+        context_guided._abandon_and_clear(self.associations, self.packet_store, saved)
+        cleared = context_session.read(self.associations, record["session_id"])
+        self.assertEqual(cleared["attachment_state"], "none")
+        with self.assertRaises(ContextError):
+            context_delivery.read_binding(self.packet_store, revision)
+
+        resumed, code = self.prepare(cleared)
+        self.assertEqual((code, resumed["status"], resumed["reused"]), (0, "prepared", True))
+        self.assertEqual(self.backend.searches, 1)
 
     def test_failed_or_interrupted_search_requires_explicit_refresh(self):
         record = self.create_record()

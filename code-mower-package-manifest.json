@@ -109,6 +109,11 @@
     },
     {
       "kind": "doc",
+      "source": "docs/context-graph-queries.md",
+      "target": "docs/context-graph-queries.md"
+    },
+    {
+      "kind": "doc",
       "source": "docs/context-packet-schema.md",
       "target": "docs/context-packet-schema.md"
     },
@@ -729,8 +734,18 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/context_graph_connection.py",
+      "target": "src/code_mower/context_graph_connection.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/context_graph_lifecycle.py",
       "target": "src/code_mower/context_graph_lifecycle.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/context_graph_query.py",
+      "target": "src/code_mower/context_graph_query.py"
     },
     {
       "kind": "core",

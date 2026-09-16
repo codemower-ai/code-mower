@@ -44,9 +44,10 @@ provenance at all. If Code Mower does not bind the revision, nothing does.
    repository it was never authorized to read. Committed private state is
    skipped for a third reason, at any depth and case-folded: the roots are
    `context_graph`'s excluded roots themselves — `.git`, `.graph`, `.graphify`,
-   `.code-mower` — bound rather than copied, so the set that refuses a citation
-   into private state is the same set that keeps those bytes away from the
-   indexer. A tracked `.graphify/` or `.graph/` is somebody's old index, and
+   `graphify-out`, `.code-mower` — bound rather than copied, so the set that
+   refuses a citation into private state is the same set that keeps those bytes
+   away from the indexer. A tracked `.graphify/`, `.graph/` or `graphify-out/`
+   is somebody's old index, and
    materializing it would let the provider resume from a cache built over
    content this build never saw, and let the adapter collect tracked repository
    bytes as if the provider had just produced them. A tracked `.code-mower/`
@@ -180,6 +181,69 @@ being read out of a file makes a path no narrower than guessing it would — and
 an environment that records no base that still exists is refused with an
 instruction rather than built against whatever runtime is lying around.
 
+A prefix is still not the whole runtime on a host whose interpreter came from a
+package manager. CPython's `_ssl` extension lives inside the interpreter's
+prefix and is *linked against* an OpenSSL that does not — under Homebrew,
+`/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib` and the `libcrypto` beside it —
+and Graphify imports `ssl` during start-up even for a code-only extraction. With
+only the prefixes exposed those libraries are simply absent, so the provider
+aborted inside the loader before it scanned anything. That is a missing runtime
+dependency; it is not an argument for giving the child a network or a wider
+filesystem, and neither was granted.
+
+So the dependency is **derived, never named**. Every Mach-O image inside the
+exposure is read for the libraries its own load commands ask `dyld` to find,
+each one not already covered is resolved and added, and newly added libraries
+are read in turn, so `libssl` needing `libcrypto` is reached without either
+being written down. What is added is the **library file**, never the directory
+holding it: exposing `/opt/homebrew/opt/openssl@3/lib` exposes a package
+manager's prefix, and its `etc` and `var` with it. `@rpath`, `@loader_path` and
+`@executable_path` names are resolved by `dyld` against the image itself and are
+not paths this adds. Every derived path goes through the same broad-exposure
+refusals as any other exposure — the filesystem root, the operator's home, the
+checkout, an ancestor of either — and is additionally refused unless it is a
+regular file within a size bound whose ancestry only this account or root may
+write, because a library the provider maps executable inside the boundary is
+code. It must also **say it is a shared library in its own header**: the name
+came out of a load command in somebody else's image, and ownership and size say
+who wrote a file and how big it is, not what it is — so without reading the
+container, a provider that writes its own linker input picks which of the
+operator's files this boundary exposes, and each one passes every check an
+operator-owned file passes. The candidate is read as a Mach-O and its
+`filetype` must be `MH_DYLIB` or the `MH_DYLIB_STUB` a stripped SDK ships in its
+place. Not an executable, an object file or an `MH_BUNDLE`, which is reached
+through `dlopen` rather than through the loader these commands drive. A
+universal archive is held to that on **every** slice — the child is the
+provider's interpreter, whose architecture is not necessarily this one, so the
+slice loaded inside the boundary is not the slice a single check would pick —
+and a file that is not a readable Mach-O at all is refused as such.
+
+A magic and a `filetype` field are not that reading. Those four bytes and that
+one integer are the cheapest thing in the file to reproduce over arbitrary
+operator-owned bytes, so the **structure behind them** is what is checked. The
+universal header is decoded in the byte order its own magic declares —
+`FAT_MAGIC` big-endian, `FAT_CIGAM` little — because reading the swapped
+spelling as big-endian turns a count of two into 33 million and every slice
+offset into a number with no relation to the file. The architecture table is
+bounded and must fit in the file; each slice must begin after the table
+describing it, end within the file, and not overlap another slice, because
+overlapping slices make "which image is this" ambiguous. Within each admitted
+slice the thin header must be complete and its declared load-command region
+must fit inside **that slice** rather than merely inside the file, so one slice
+cannot reach into the next one's bytes to satisfy its header. The commands then
+have to walk: each `cmdsize` at least a command header, a multiple of the
+image's pointer width, and within the region — and the chain must consume the
+region exactly, since `sizeofcmds` is the size of *all* the commands and a
+chain that stops short leaves unexamined bytes where only commands belong. A
+64-bit universal header (`FAT_MAGIC_64`) has wider records and is refused as
+unrecognized rather than guessed at. Anything malformed is refused whole rather
+than read as far as it parses. A
+referenced path that this host does not have installed is skipped: if it
+turns out to have been required, the loader fails the build naming the library
+it could not find. The derivation reads Mach-O images, so **Linux is unchanged**
+— an ELF runtime's libraries are already under the `/lib` and `/usr/lib`
+directories the read-only runtime names.
+
 The prefix a particular build ends up with is probed before that build runs,
 not just the host's mechanism at startup: the readable set of a real build is
 the provider's install rather than the interpreter paths the host probe uses,
@@ -294,6 +358,7 @@ Every published generation carries, in `manifest.json`:
 | `graph_digest`, `graph_bytes` | Detects a truncated or tampered artifact on every read. |
 | `completeness` | `complete` or `partial`, from the provider's own admission. |
 | `indexed_files` | What the provider claims it processed, bounded by the census. |
+| `unsupported_inputs` | How many inputs the provider classified as code and then deterministically could not extract — no wired extractor, or an extractor that declined by design. Read bytes, no contribution. Kept separate from `skipped_paths`, which counts what this build declined to materialize at all; the two answer different questions and their sum answers neither. Optional on read so a generation published before the field existed still loads as `0`; always written. |
 
 `shareable_summary()` is the metadata-only view: revisions, digests, counts and
 states. It carries no indexed content, no provider output, and no local path.
@@ -301,12 +366,25 @@ states. It carries no indexed content, no provider output, and no local path.
 ## How the provider is actually invoked
 
 `subprocess_indexer()` builds the argv for the interface the adopt decision
-evaluated, not a conventional-looking one: `extract` plus the pinned options,
-run with its working directory set to the materialized copy. The evaluated
-release takes no `--source`/`--output` pair — `extract` reads the directory it
-is run in and writes its state beside those sources, which the clean-room run in
+evaluated, not a conventional-looking one: `extract`, the scan target, then the
+pinned options, run with its working directory set to the materialized copy. The
+evaluated release takes no `--source`/`--output` pair — `extract` writes its
+state beside the sources it was pointed at, which the clean-room run in
 [the evaluation](graphify-evaluation.md) recorded as
 `extract --code-only --no-cluster --max-workers 4`.
+
+**The scan target is required, and it is positional.** This module used to pass
+the options alone, on the reading that a subcommand which writes beside its
+sources must also discover them from the working directory. The pinned CLI does
+not: it takes the target as the first positional after the subcommand, decides
+it has one only when that argument does not begin with `-`, and exits 1 with
+`must specify a path to scan or a --postgres DSN` when it does not. Every real
+build therefore failed before extraction, and failed as the adapter's generic
+non-zero refusal rather than as anything naming the omission. The target passed
+is `.`: the child's working directory is already the materialized copy, so the
+relative spelling names exactly that tree and names nothing about where it sits
+on this host. It goes **between** the subcommand and the options, because the
+CLI reads `sys.argv[2]` and nothing later.
 
 **`--code-only` and `--no-cluster` are always passed, whatever the pin says.**
 They are conditions of the adopt decision, not preferences: a pin that named no
@@ -319,8 +397,12 @@ valued form such as `--code-only=false` — is refused rather than quietly
 overridden by argument order.
 
 So the adapter collects an artifact afterwards rather than naming one up front.
-The state directory the provider wrote (`.graphify` or `.graph`, both already on
-the excluded-roots list) is packed into a single reproducible archive: names
+The output root the provider wrote — exactly `graphify-out`, the literal default
+of the pin's own `GRAPHIFY_OUT`, resolved beneath the materialized copy and
+never from a caller path or that environment override, and required to be a real
+non-symlinked directory holding `graph.json` as a regular file, with a second
+provider root beside it refused rather than guessed between — is packed into a
+single reproducible archive: names
 sorted, timestamps and ownership fixed, modes normalized, symlinks dropped. Two
 builds of one commit have to produce identical bytes, because the manifest binds
 a digest of them. That state lands inside the throwaway materialized copy, never
@@ -340,26 +422,102 @@ build from this module there is none; the refusal is the second check, because
 everything after the run treats whatever is in that directory as output this
 run produced.
 
-**Completeness is read from the provider's report, never from its exit status,
-and only an affirmative claim counts.** `complete` requires a report shaped the
-way the adapter understands one: a claim that the run finished (`complete`,
-`completed`, `finished`, or a recognized `status`), a count of what was
-indexed, and no counter admitting requeued, pending, or failed work. Everything
-else is `partial` — a report that denies completion, one in an unrecognized
-schema, an empty object, an unreadable one, one larger than a manifest, and no
-report at all. Absent evidence is not evidence of a complete build, and
-`partial` is the state `graph_status` refuses by default, so the failure is one
-an operator can see and act on. This is the direct consequence of the requeue
-defect the evaluation recorded — a repeat that exits zero in 1.63 seconds
-having requeued 54 entries has not built a complete graph.
+**Completeness is coverage, read from the provider's own manifest and never
+from its exit status.** The pinned `save_manifest` writes a flat map of
+repository-relative POSIX path to `{mtime, seen, ast_hash, semantic_hash}`. It
+carries no completion flag and no indexed count, so there is no affirmative
+claim to accept: the question is whether every input this pin would dispatch
+came back with a hash proving the provider read its bytes.
 
-The report is provider output of unknown size, so it is read to one byte past
+The denominator is the immutable materialized census narrowed to the pin's own
+`detect.CODE_EXTENSIONS`. Inputs outside that set are deterministically not code
+to this pin and are skipped rather than counted missing — holding a correct run
+to every tracked Markdown file would make it permanently `partial`.
+
+A file counts as processed only when its row carries a well-formed 32-character
+`ast_hash` **and that hash is the digest of the bytes this build actually handed
+the provider**. The pin's `_md5_file` streams a file and returns the MD5 hex
+digest of its contents, so the adapter takes the same digest of every eligible
+input from the materialized copy *before* the launch — the only moment that tree
+is still exactly what the provider was given — and compares. A well-formed
+digest on its own only says a hash-shaped string is present; the comparison is
+what says it is a hash of this input, and without it a manifest carried over
+from another tree, another revision, or a resumed cache would read as proof of
+work on bytes the provider never saw.
+
+The denominator is the census classified the way the pinned
+`detect.classify_file` classifies it, **in its order** — not by extension
+membership. A package manifest is routed by filename first (`apm.yml`,
+`apm.yaml`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `pom.xml`), an
+extensionless file by its shebang second, and only then is the extension table
+reached. Suffix membership alone misses both: `.yml`, `.toml`, `.mod` and
+`.xml` are not code extensions, so a `pyproject.toml` the provider failed on
+could drop out of the coverage question entirely while an unrelated `.py` file
+let the run claim it was complete.
+
+Everything else is `partial`: a row the manifest never wrote, a blank or
+malformed hash, a hash that disagrees with those bytes, an input the copy could
+not be re-read for, a record this adapter cannot classify, an input it cannot
+classify against the provider's own dispatch, an unreadable or oversized
+manifest, no manifest at all, and a build with no census.
+
+### What a stamped row is evidence of
+
+From the pin's own post-extraction writer rule. After a run the CLI clears
+(`clear_ast`) exactly the rows in `_failed_sources`, and stamps every other
+dispatched input. A result is a failed source when it carries an `error`, or
+when its extractor produced zero nodes. It is **not** when `_get_extractor`
+returned `None` — the file short-circuits to an empty result with neither
+marker — and **not** when the extractor declined by design, as the JSON
+extractor does for data JSON and for a non-object root.
+
+So a stamped, matching row proves the provider read those exact bytes and did
+not fail on them. It does not prove nodes. The deterministically unsupported
+dispatch is therefore counted and reported on its own line
+(`unsupported_inputs`) rather than folded into `indexed_files`, and zero nodes
+for a stamped file is a complete *read* of that file and nothing more.
+
+### Where the boundary runs
+
+`classify_file` is the eligibility oracle. What it deterministically calls
+not-code — every suffix outside its registry included — is not in the code
+denominator, does not make a run partial, and is not counted anywhere; there is
+no all-non-code skipped tally. `unsupported_inputs` counts the inputs it *does*
+call code that then reach a dispatch with no extractor: the static table
+difference, a code shebang with no dispatch entry, and a `.m` whose bytes carry
+no Objective-C directive. That last one is decided from the bytes, not a table
+— `.m` is Objective-C or MATLAB/Octave, the suffix map routes it to the
+Objective-C extractor, and the pin returns no extractor for a `.m` without an
+Objective-C directive rather than force-parsing MATLAB into garbage. The row is
+stamped regardless, so counting it as an indexed file would report work that
+did not happen.
+
+Everything else stays partial: an eligible code input that failed, one whose
+postcondition is unknown, one whose row disagrees with the bytes it was given,
+one this build could not classify against the pin's own dispatch, and a
+zero-node result that cannot be told apart from a failure.
+
+Blank rows are the cases the pin's rule makes blank: an extractor error or an
+anomalous zero-node extract. They stay `partial` here. The evaluation's
+clean-room repeat that exited zero in 1.63 seconds requeued 54 entries; the
+retained evidence for that run carries *stamped* rows, so requeueing there is
+not observable as a blank row, and nothing in this module claims it is. That
+requeue behaviour remains an observed limitation of the provider's incremental
+gate rather than a shape this adapter reports on.
+
+Nothing upgrades a run. The exit status, a non-empty graph, and the raw
+extraction's `extracted_sources` all describe what was *dispatched*, failures
+included. An unstamped file is `partial` however large the graph is. `partial`
+is the state `graph_status` refuses by default, so the failure is one an
+operator can see and act on.
+
+The manifest is provider output of unknown size, so it is read to one byte past
 the manifest bound and refused if it is longer, rather than loaded whole and
 measured afterwards. A bound checked on bytes already in memory bounds nothing.
 
 The provider's own stdout and stderr are the other unbounded output, and they
 are discarded at the kernel: `stdin`, `stdout` and `stderr` are all
-`DEVNULL`. Nothing reads them — completeness comes from the report, not from
+`DEVNULL`. Nothing reads them — completeness comes from the manifest, not from
 what the run printed — so buffering them would only accumulate whatever a
 talkative indexer chose to log, for up to the timeout, under neither the
 tracked-content budget nor the artifact one. Inheriting them is not the

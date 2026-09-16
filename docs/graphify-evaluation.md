@@ -174,8 +174,15 @@ lifecycle in
 outside every checkout, a manifest that binds full commit and tree with build
 time, opt-in acquisition with no default dependency, and a `partial`
 completeness state that refuses to read a fast incremental repeat as a complete
-graph. Conditions 4 and 6 belong to the retrieval adapter, which does not exist
-yet.
+graph.
+
+Conditions 4 and 6 are implemented by the query and packet adapter in
+[Local repository graph: bounded queries and context packets](context-graph-queries.md)
+(issue #914): symbol-first, relationship-filtered traversals with explicit
+depth and node budgets, truncation reported as `truncated` plus a
+`provider_has_more` omission rather than hidden, and a packet whose citations
+are validated against the bound commit's tracked tree before any of it reaches
+a recipient.
 
 ## Boundary
 

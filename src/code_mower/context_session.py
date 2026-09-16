@@ -19,7 +19,14 @@ from .participants import PARTICIPANTS, participant_id
 ASSOCIATION_SCHEMA = "code_mower.contextSession.v1"
 STATUS_SCHEMA = "code_mower.contextSessionStatus.v1"
 STAGES = frozenset(("selected", "preparing", "prepared", "attached", "reviewed"))
-ATTACHMENT_STATES = frozenset(("none", "pending", "published", "uncertain"))
+ATTACHMENT_STATES = frozenset(
+    ("none", "reserving", "pending", "published", "uncertain")
+)
+#: ``reserving`` is the durable, pre-publication marker a freshly minted
+#: attachment identity holds before ``reserve_attachment`` is even called.
+#: It proves no GitHub write has begun, so it is always safe to abandon;
+#: only a successful transition to ``pending`` (still before any GitHub
+#: write) records that the reservation itself durably exists.
 CONTEXT_STATES = frozenset(
     ("unchecked", "ready", "expired", "authorization_failed", "unavailable")
 )
@@ -232,7 +239,7 @@ def validate(value: Mapping[str, Any]) -> dict[str, Any]:
     attachment_fields = (pr, head, revision)
     if attachment == "none" and any(item is not None for item in attachment_fields):
         raise ContextError("private session context revision has no attachment")
-    if attachment in {"pending", "uncertain"} and (
+    if attachment in {"reserving", "pending", "uncertain"} and (
         value["stage"] != "prepared" or any(item is None for item in attachment_fields)
     ):
         raise ContextError("private session context attachment intent is incomplete")
@@ -434,6 +441,18 @@ def status(record: Mapping[str, Any] | None, *, lease_live: bool) -> dict[str, A
             "schema": STATUS_SCHEMA, "selected": True, "configured": False,
             "stage": "not_configured", "dependent_work": "usable", "owner_action": False,
             "next_action": "Continue the ordinary workflow or configure an optional context connection.",
+        }
+    if record["attachment_state"] == "reserving":
+        # A ``reserving`` intent has never reached a GitHub write, so attach
+        # can always safely reconcile it without reauthorization; that takes
+        # precedence over any ``context_state`` failure recorded against a
+        # prior generation of this same record, unlike ``pending``/
+        # ``uncertain`` below, whose failures may still need owner action.
+        return {
+            "schema": STATUS_SCHEMA, "selected": True, "configured": True,
+            "stage": "attachment_pending", "dependent_work": "paused",
+            "owner_action": False,
+            "next_action": "Rerun attach to reconcile or finish the saved publication intent.",
         }
     if record["context_state"] in {"expired", "authorization_failed", "unavailable"}:
         expired = record["context_state"] == "expired"

@@ -14,7 +14,7 @@ from . import context_review
 from .claude_audit_pr import _decision_authorities_for_repo
 from .context_contract import ContextError, ContextRequest, _object, normalize_policy
 from .context_delivery import SUPPORTED_HOSTS, SUPPORTED_RECIPIENTS, attach, deliver, read_binding, render_evidence
-from .context_packets import load_authorized
+from .context_packets import consuming_revision, load_authorized
 from .context_store import ContextStore, strict_json
 from .provider_runners import fetch_issue_comments, fetch_pull_request, post_pr_comment
 from .provider_runners.github_auth import resolve_github_token_from_env_or_gh
@@ -63,7 +63,8 @@ def main(argv=None):
             if args.recipient not in SUPPORTED_RECIPIENTS or args.recipient.endswith(":reviewer"):
                 raise ContextError("independent reviewers consume an attached review revision")
             packet = load_authorized(store, args.connection, args.packet, spec["policy"],
-                ContextRequest(spec["repository"], spec["work_item"], args.recipient))
+                ContextRequest(spec["repository"], spec["work_item"], args.recipient,
+                               consuming_revision(args.repo_path)))
             print(render_evidence(packet, args.packet), end="")
             return 0
         if args.command in ('deliver', 'feedback') and (args.connection or args.request_stdin):
@@ -107,9 +108,14 @@ def main(argv=None):
                 # The current trusted gate independently rejects policy downgrade.
                 publish(metadata)
             else:
+                # The actual consuming checkout, derived from --repo-path, not
+                # the remote PR head: a checkout at a different commit, or a
+                # directory that is not a Git checkout at all, must fail
+                # before any evidence is reserved or published.
                 metadata = attach(store, args.connection, spec["packet"], spec["policy"],
                     ContextRequest(spec["repository"], spec["work_item"], args.host + ":orchestrator"),
-                    pr=spec["pr"], head=head, publish=publish)
+                    pr=spec["pr"], head=head, publish=publish,
+                    consuming_revision=consuming_revision(args.repo_path))
             print(json.dumps({"status": "attached", **metadata}, sort_keys=True))
             return 0
         if not args.revision or args.packet:
@@ -120,8 +126,13 @@ def main(argv=None):
         if current is None:
             raise ContextError("no trusted current context input is declared")
         head = fetch_pull_request(binding["repository"], binding["pr"], token=token)["head"]["sha"]
+        # The actual consuming checkout, derived from --repo-path, not the
+        # remote PR head: a checkout at a different commit, or a directory
+        # that is not a Git checkout at all, must fail before any evidence or
+        # feedback is produced.
         delivery = deliver(store, args.revision, repository=binding["repository"], pr=binding["pr"], head=head,
-                           recipient=args.recipient, current=current)
+                           recipient=args.recipient, current=current,
+                           consuming_revision=consuming_revision(args.repo_path))
         if args.command == "feedback":
             feedback = delivery.binding["feedback"].get(args.reviewer)
             if feedback is None:

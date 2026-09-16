@@ -7,15 +7,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from code_mower import context_graph_connection as graph_connection
+from code_mower import context_graph_lifecycle as lifecycle
 from code_mower.context_connections import connect, disconnect
 from code_mower.context_contract import ContextError, ContextRequest, load_packet
-from code_mower.context_delivery import (SUPPORTED_HOSTS, SUPPORTED_RECIPIENTS, attach, deliver, public_verdict,
-                                         read_binding, render_evidence, save_feedback)
-from code_mower.context_packets import fetch
+from code_mower.context_delivery import (SUPPORTED_HOSTS, SUPPORTED_RECIPIENTS, abandon_attachment, attach,
+                                         deliver, public_verdict, read_binding, render_evidence,
+                                         retire_attachment, save_feedback)
+from code_mower.context_packets import _index, fetch
 from code_mower.context_store import ContextStore
 from test_context_connections import MemoryVault
 from test_context_packets import RetrievalBackend
 from test_coworker_retrieval import POLICY
+import test_context_graph_query as graph_fixtures
 
 
 @unittest.skipUnless(os.name == 'posix', 'private store requires POSIX')
@@ -113,6 +117,11 @@ class ContextDeliveryTests(unittest.TestCase):
             self.delivery(current)
         self.assertEqual(list(self.store.root.glob('.d-*.json')), [])
 
+    def test_organization_replay_succeeds_without_a_consuming_revision(self):
+        """Organization evidence has no code revision (codex:b7f5dbb1412eb89a3797)."""
+        current = self.attach()
+        self.assertTrue(self.delivery(current, consuming_revision=None).text)
+
     def test_public_verdict_has_only_metadata_and_never_model_authored_findings(self):
         current = self.attach()
         delivery = self.delivery(current)
@@ -162,3 +171,177 @@ class ContextDeliveryTests(unittest.TestCase):
         self.assertIn('Synthetic evidence: parser calls validator.', texts[0])
         self.assertNotIn('/example/repository', texts[0])
         self.assertNotIn('principal', texts[0])
+
+    def test_retirement_completes_after_an_interrupted_index_write(self):
+        """Delivery removal writes the index without the revision before
+        deleting the artifact; a crash between those writes must resolve on
+        retry rather than report an inconsistent index (codex:1a4bc7b34687da726908)."""
+        current = self.attach()
+        revision = current['revision']
+        handle = self.result['packet_handle']
+        with self.store.locked('example') as locked:
+            index_file, index = _index(locked)
+            entry = next(item for item in index['entries'] if item['handle'] == handle)
+            entry['deliveries'].remove(revision)
+            index_file.write(index)
+        # The artifact is still present; only the index write completed.
+        retire_attachment(self.store, 'example', handle, revision)
+        with self.assertRaises(ContextError):
+            read_binding(self.store, revision)
+        # Retrying the exact same removal is idempotent.
+        retire_attachment(self.store, 'example', handle, revision)
+
+    def test_abandon_still_refuses_a_published_binding(self):
+        current = self.attach()
+        with self.assertRaises(ContextError):
+            abandon_attachment(self.store, 'example', self.result['packet_handle'], current['revision'])
+        self.assertTrue(read_binding(self.store, current['revision'])['published'])
+
+    def test_removal_refuses_a_binding_whose_identity_does_not_match(self):
+        """The targeted binding is identity checked; a mismatched handle or
+        revision inside the stored binding must still fail closed even
+        though the artifact exists (codex:1a4bc7b34687da726908)."""
+        current = self.attach()
+        revision = current['revision']
+        handle = self.result['packet_handle']
+        with self.store.locked('example') as locked:
+            artifact = locked.artifact('d-' + revision)
+            corrupted = {**artifact.read(), 'handle': 'f' * 32}
+            artifact.write(corrupted)
+        with self.assertRaises(ContextError):
+            retire_attachment(self.store, 'example', handle, revision)
+        with self.assertRaises(ContextError):
+            abandon_attachment(self.store, 'example', handle, revision)
+
+    def test_removal_refuses_when_the_index_entry_is_missing(self):
+        """A missing index entry is not the same state an interrupted
+        cleanup leaves -- that only ever drops the revision from an
+        existing entry's deliveries -- so it still fails closed rather than
+        completing as if it were (codex:1a4bc7b34687da726908)."""
+        current = self.attach()
+        revision = current['revision']
+        handle = self.result['packet_handle']
+        with self.store.locked('example') as locked:
+            index_file, index = _index(locked)
+            index['entries'] = [item for item in index['entries'] if item['handle'] != handle]
+            index_file.write(index)
+        with self.assertRaises(ContextError):
+            retire_attachment(self.store, 'example', handle, revision)
+
+
+@unittest.skipUnless(os.name == 'posix', 'private store requires POSIX')
+class GraphDeliveryBindingTests(unittest.TestCase):
+    """A repository replay must bind to its explicit consuming revision, never the
+    attachment/PR head it happens to have been published for (codex:b7f5dbb1412eb89a3797)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        self.repository = graph_fixtures.make_repository(root)
+        private = root / 'private'
+        private.mkdir(mode=0o700)
+        self.manifest = lifecycle.build_graph(
+            self.repository, pin=graph_fixtures.PIN,
+            indexer=graph_fixtures.indexer(graph_fixtures.graph_document()), root=private,
+        )
+        self.store = ContextStore(private, vault=MemoryVault())
+        self.recipients = [f'{host}:{role}' for host in ('claude', 'codex', 'devin')
+                           for role in ('orchestrator', 'builder', 'reviewer')]
+        graph_connection.connect(self.store, 'local-graph', {
+            'repository_root': str(self.repository), 'repositories': ['owner/repo'],
+            'recipients': self.recipients,
+        })
+        self.head = self.manifest.commit  # checkout A
+        self.other = 'b' * 40  # a different checkout, B
+        self.policy = {'schema': 'code_mower.contextPolicy.v1', 'connection': 'local-graph',
+                       'policy_version': 'v1', 'required': True}
+        spec = {'repository': 'owner/repo', 'work_item': 'WORK-1', 'recipient': 'codex:orchestrator',
+                'query': 'parse_config', 'source': 'impact', 'policy': self.policy}
+        result = fetch(self.store, 'local-graph', spec, revision=self.head)
+        self.current = attach(self.store, 'local-graph', result['packet_handle'], self.policy,
+            ContextRequest('owner/repo', 'WORK-1', 'codex:orchestrator'), pr=42, head=self.head,
+            publish=lambda metadata: None, consuming_revision=self.head)
+
+    def delivery(self, **kwargs):
+        return deliver(self.store, self.current['revision'], repository='owner/repo', pr=42, head=self.head,
+                       recipient='codex:builder', current=self.current, **kwargs)
+
+    def test_replay_matches_the_actual_consuming_revision(self):
+        self.assertIn('Private evidence', self.delivery(consuming_revision=self.head).text)
+
+    def test_replay_refuses_a_different_consuming_revision(self):
+        """Checkout B must not receive evidence authorized for checkout A."""
+        with self.assertRaises(ContextError):
+            self.delivery(consuming_revision=self.other)
+
+    def test_replay_never_silently_substitutes_the_attachment_head(self):
+        """A caller that cannot name its consuming revision (e.g. non-Git) fails closed."""
+        with self.assertRaises(ContextError):
+            self.delivery()
+        with self.assertRaises(ContextError):
+            self.delivery(consuming_revision=None)
+
+
+@unittest.skipUnless(os.name == 'posix', 'private store requires POSIX')
+class GraphAttachmentBindingTests(unittest.TestCase):
+    """A fresh attachment must bind repository evidence to the actual consuming
+    checkout, never merely to the PR head a caller happens to report
+    (codex:65a17212478a56416b1c)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        self.repository = graph_fixtures.make_repository(root)
+        private = root / 'private'
+        private.mkdir(mode=0o700)
+        self.manifest = lifecycle.build_graph(
+            self.repository, pin=graph_fixtures.PIN,
+            indexer=graph_fixtures.indexer(graph_fixtures.graph_document()), root=private,
+        )
+        self.store = ContextStore(private, vault=MemoryVault())
+        self.recipients = [f'{host}:{role}' for host in ('claude', 'codex', 'devin')
+                           for role in ('orchestrator', 'builder', 'reviewer')]
+        graph_connection.connect(self.store, 'local-graph', {
+            'repository_root': str(self.repository), 'repositories': ['owner/repo'],
+            'recipients': self.recipients,
+        })
+        self.head = self.manifest.commit  # checkout A
+        self.other = 'b' * 40  # a different checkout, B
+        self.policy = {'schema': 'code_mower.contextPolicy.v1', 'connection': 'local-graph',
+                       'policy_version': 'v1', 'required': True}
+        spec = {'repository': 'owner/repo', 'work_item': 'WORK-1', 'recipient': 'codex:orchestrator',
+                'query': 'parse_config', 'source': 'impact', 'policy': self.policy}
+        self.handle = fetch(self.store, 'local-graph', spec, revision=self.head)['packet_handle']
+        self.published = []
+
+    def attach(self, *, head, **kwargs):
+        return attach(self.store, 'local-graph', self.handle, self.policy,
+            ContextRequest('owner/repo', 'WORK-1', 'codex:orchestrator'), pr=42, head=head,
+            publish=self.published.append, **kwargs)
+
+    def test_attachment_succeeds_when_packet_pr_and_consumer_all_match(self):
+        current = self.attach(head=self.head, consuming_revision=self.head)
+        self.assertEqual(current['head'], self.head)
+        self.assertEqual(len(self.published), 1)
+
+    def test_attachment_refuses_a_consumer_the_checkout_is_not_actually_on(self):
+        """Checkout B must not enable a binding authorized for checkout A."""
+        with self.assertRaises(ContextError):
+            self.attach(head=self.head, consuming_revision=self.other)
+        self.assertEqual(self.published, [])
+
+    def test_attachment_refuses_a_pull_request_head_that_differs_from_the_packet_even_when_the_consumer_matches(self):
+        """Packet A versus PR B is refused even though the consumer is A."""
+        with self.assertRaises(ContextError):
+            self.attach(head=self.other, consuming_revision=self.head)
+        self.assertEqual(self.published, [])
+
+    def test_attachment_never_silently_substitutes_the_pr_head_for_an_unknown_consumer(self):
+        """A caller that cannot name its consuming revision (e.g. non-Git) fails closed."""
+        with self.assertRaises(ContextError):
+            self.attach(head=self.head)
+        with self.assertRaises(ContextError):
+            self.attach(head=self.head, consuming_revision=None)
+        self.assertEqual(self.published, [])

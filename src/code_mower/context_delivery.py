@@ -6,6 +6,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 
+from . import context_graph_connection as graph_connection
 from . import context_review
 from .context_connections import _state
 from .context_contract import ContextError, ContextRequest, ValidatedPacket, _identifier, _object, _text, normalize_policy
@@ -75,11 +76,17 @@ def read_binding(store, revision):
         return _binding(lookup.artifact("d-" + revision).read())
 
 
-def _packet_for_binding(store, binding, recipient, *, backend=None):
+def _packet_for_binding(store, binding, recipient, *, backend=None, revision=None):
     if recipient not in SUPPORTED_RECIPIENTS:
         raise ContextError("this participant cannot consume private context in this release")
+    # ``revision`` is the caller's actual consuming checkout revision, or an
+    # already-verified immutable review-target head; it is never defaulted to
+    # the head this binding happens to have been published for. A repository
+    # connection re-derives its authorization from exactly that commit and
+    # fails closed when it is missing; an organization connection ignores it.
     packet = load_authorized(store, binding["connection"], binding["handle"], binding["policy"],
-        ContextRequest(binding["repository"], binding["work_item"], recipient), backend=backend)
+        ContextRequest(binding["repository"], binding["work_item"], recipient), backend=backend,
+        revision=revision)
     if packet.sha256 != binding["packet_sha256"]:
         raise ContextError("context evidence changed; attach the new input and review again")
     return packet
@@ -95,6 +102,7 @@ def reserve_attachment(
     pr,
     head,
     revision=None,
+    consuming_revision=None,
     backend=None,
 ):
     """Reserve one unpublished binding before any remote publication.
@@ -102,11 +110,28 @@ def reserve_attachment(
     A caller-supplied revision lets a guided session persist its intent before
     touching GitHub and resume that exact intent after a crash. Repeating the
     same reservation is idempotent; a conflicting reuse fails closed.
+
+    ``revision`` here is that attachment handle, not a Git revision. ``head``
+    is attachment metadata: the PR head the caller read from the trusted
+    remote. ``consuming_revision`` is the caller's actual consuming checkout
+    revision, or ``None`` when the caller cannot name one; it is never
+    defaulted to ``head``, because a caller that knows only the trusted
+    remote head, not the local checkout doing the work, must say so
+    explicitly rather than let a repository-kind connection be silently
+    authorized against a revision it never held. Repository-kind evidence is
+    authorized against that consuming revision and separately checked against
+    ``head``, so a packet prepared while the checkout sat at commit A cannot
+    be attached to a PR whose head is commit B, and a checkout that has
+    itself moved to commit B cannot attach evidence for commit A.
     """
     if request.recipient not in SUPPORTED_RECIPIENTS or not request.recipient.endswith(":orchestrator"):
         raise ContextError("an approved orchestrator must attach context")
     policy = normalize_policy(policy)
-    packet = load_authorized(store, name, handle, policy, request, backend=backend)
+    packet = load_authorized(
+        store, name, handle, policy,
+        ContextRequest(request.repository, request.work_item, request.recipient, consuming_revision),
+        backend=backend, revision=consuming_revision,
+    )
     payload = packet.private_payload()
     revision = revision or uuid.uuid4().hex
     _handle(revision)
@@ -114,8 +139,26 @@ def reserve_attachment(
         "state": "available", "expires_at": payload["binding"]["expires_at"]})
     render_evidence(packet, handle)
     with store.locked(name) as locked:
-        state = _state(locked.read(), name)
-        if state["state"] != "verified" or state["generation"] != payload["binding"]["generation"]:
+        saved = locked.read()
+        if graph_connection.is_graph(saved):
+            state = graph_connection.saved_state(saved, name)
+            # The local graph's "authorization changed" is a rebuild: the
+            # published generation is what a packet binds, so a graph rebuilt
+            # between preparation and attachment fails the same check a revoked
+            # organization authorization does. ``consuming_revision`` cannot be
+            # ``None`` here: a graph connection already refused the load above
+            # when it was missing.
+            generation = graph_connection.current_generation(state, root=store.root, revision=consuming_revision)
+            # Stated here as well as enforced on the load, because this is the
+            # line an attachment is read off: repository evidence describes one
+            # commit's code, and the commit this PR is at is the only one it may
+            # be attached to.
+            if payload["source_revision"] != head:
+                raise ContextError("context evidence is not bound to the current pull request head")
+        else:
+            state = _state(saved, name)
+            generation = state["generation"]
+        if state["state"] != "verified" or generation != payload["binding"]["generation"]:
             raise ContextError("context authorization changed before attachment")
         index_file, index = _index(locked)
         entry = next((item for item in index["entries"] if item["handle"] == handle), None)
@@ -162,6 +205,16 @@ def mark_published(store, name, revision):
 
 
 def _remove_attachment(store, name, handle, revision, *, published):
+    """Remove one identity-checked binding, idempotent for its own interrupted cleanup.
+
+    The index is written without ``revision`` before the artifact is deleted,
+    so a crash between those two writes leaves an artifact whose index entry
+    already omits it. Retrying with the exact same ``handle``/``revision``
+    recognizes that state -- the artifact's own binding still names them --
+    and finishes deleting the artifact rather than reporting an inconsistent
+    index. A missing or mismatched identity, or a missing index entry, is
+    never treated as that same interrupted cleanup and still fails closed.
+    """
     _handle(handle)
     _handle(revision)
     with store.locked(name) as locked:
@@ -175,12 +228,16 @@ def _remove_attachment(store, name, handle, revision, *, published):
                 index_file.write(index)
             return
         binding = _binding(saved)
+        if binding["handle"] != handle or binding["revision"] != revision:
+            raise ContextError("context attachment index is inconsistent")
         if binding["published"] and not published:
             raise ContextError("published context attachment cannot be abandoned")
-        if entry is None or revision not in entry.setdefault("deliveries", []):
+        if entry is None:
             raise ContextError("context attachment index is inconsistent")
-        entry["deliveries"].remove(revision)
-        index_file.write(index)
+        deliveries = entry.setdefault("deliveries", [])
+        if revision in deliveries:
+            deliveries.remove(revision)
+            index_file.write(index)
         artifact.delete()
 
 
@@ -194,14 +251,17 @@ def retire_attachment(store, name, handle, revision):
     _remove_attachment(store, name, handle, revision, published=True)
 
 
-def attach(store, name, handle, policy, request: ContextRequest, *, pr, head, publish, backend=None):
+def attach(store, name, handle, policy, request: ContextRequest, *, pr, head, publish,
+          consuming_revision=None, backend=None):
     """Publish a new input revision before any participant can use that binding.
 
     ``publish`` is a trusted runtime callback for the selected repository/PR,
     never provider code. A failed publication leaves the local binding unusable.
+    ``consuming_revision`` is forwarded to ``reserve_attachment`` unchanged.
     """
     metadata = reserve_attachment(
-        store, name, handle, policy, request, pr=pr, head=head, backend=backend,
+        store, name, handle, policy, request, pr=pr, head=head,
+        consuming_revision=consuming_revision, backend=backend,
     )
     revision = metadata["revision"]
     try:
@@ -222,7 +282,16 @@ class Delivery:
     binding: dict = field(repr=False)
 
 
-def deliver(store, revision, *, repository, pr, head, recipient, current, backend=None):
+def deliver(store, revision, *, repository, pr, head, recipient, current, consuming_revision=None, backend=None):
+    """Replay one published binding for an approved recipient.
+
+    ``consuming_revision`` is the caller's actual consuming checkout revision,
+    or an already-verified immutable review-target head; ``None`` means the
+    caller cannot name one. It is never defaulted to ``head`` here: a caller
+    that knows only the trusted remote head, not the local checkout doing the
+    work, must say so explicitly rather than let a repository-kind connection
+    be silently authorized against a revision it never held.
+    """
     binding = read_binding(store, revision)
     try:
         current = context_review.validate(dict(current))
@@ -233,7 +302,7 @@ def deliver(store, revision, *, repository, pr, head, recipient, current, backen
         raise ContextError("context input is missing, unpublished, or no longer current")
     if not context_review.review_matches(context_review.marker(current, review=True), current, head=head):
         raise ContextError("context input is unavailable or expired")
-    packet = _packet_for_binding(store, binding, recipient, backend=backend)
+    packet = _packet_for_binding(store, binding, recipient, backend=backend, revision=consuming_revision)
     return Delivery(dict(current), render_evidence(packet, binding["handle"]), binding)
 
 
