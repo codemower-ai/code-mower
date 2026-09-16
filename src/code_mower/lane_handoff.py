@@ -206,3 +206,72 @@ def reserve_launch(handoff: Handoff, root: Path, *, head: Callable = observe_hea
         record["launch_reserved"] = True
         locked.write(record)
         return True
+
+
+def observe_lineage_source(source, handoff):
+    """Read independent source exit evidence, without cancellation or discovery."""
+    from .builder_lineage import Target
+    from .builder_lineage_producer import ProducerRefusal
+    from .lane_delivery import _lineage_checkout
+    repo, number = handoff.target_pr.split("#")
+    target = Target(repo, int(number), handoff.target_branch, handoff.expected_head)
+    if source.get("transport") == "local_process":
+        if set(source) != {"transport", "state_dir", "writer"}:
+            raise ProducerRefusal("Exact source writer binding required.")
+        writer = LocalWriter(Path(source["state_dir"]), source["writer"])
+        with writer.store.locked(writer.key) as locked:
+            record = locked.read()
+        if (not isinstance(record, dict) or record.get("schema") != "code_mower.localWriter.v1"
+                or record.get("repo", "").lower() != target.repo
+                or record.get("lane") != handoff.source_lane
+                or record.get("finished") is not True or record.get("quiescent") is not True
+                or any(type(record.get(k)) is not int or record[k] <= 0 for k in ("pid", "pgid"))):
+            raise ProducerRefusal("Source supervisor has not proved named writer exit.")
+        _lineage_checkout(record["checkout"], target)
+    elif source.get("transport") == "remote_session":
+        from .remote_session import _key
+        if (set(source) != {"transport", "state_dir", "provider", "session"}
+                or source["provider"] not in {"fake", handoff.source_lane}):
+            raise ProducerRefusal("Exact remote writer binding required.")
+        engine = remote_engine(source)
+        with engine.store.locked(_key(source["session"])) as locked:
+            record = locked.read()
+            engine._writer_binding(record, target.repo)
+            if (record.get("writer_retired") is not True
+                    or any(op["state"] == "pending" for op in record["operations"].values())
+                    or engine._writer_observation(record) != "terminated"):
+                raise ProducerRefusal("Remote source exit is unverified.")
+    else:
+        raise ProducerRefusal("Unsupported source writer transport.")
+    return "terminated"
+
+
+def lineage_handoff(handoff, root, round_observer, after, *, source_branch_prefixes,
+                    sequence=1, source_ownership=None):
+    """Convert accepted #962 launch binding plus independently observed exits."""
+    from .builder_lineage import Episode
+    from .builder_lineage_producer import ProducerRefusal, _delivery
+    from .lane_delivery import LineageRound, validate_handoff
+    if not isinstance(round_observer, LineageRound):
+        raise ProducerRefusal("A supervised destination round is required.")
+    observed = round_observer.observed(after)
+    validated = validate_handoff(**handoff.as_dict(), running_lane=observed.transport.lane,
+        repo=after.repo, observed_head=observed.before.head_sha,
+        source_branch_prefixes=source_branch_prefixes, source_ownership=source_ownership)
+    if (validated != handoff or handoff.target_pr.lower() != f"{after.repo}#{after.pr_number}"
+            or handoff.target_branch != after.branch):
+        raise ProducerRefusal("Exact accepted handoff target differs.")
+    identity = key([handoff.target_pr.lower(), handoff.expected_head])
+    with ContextStore(root).locked(identity) as locked:
+        record = locked.read()
+    if (not isinstance(record, dict) or record.get("accepted") is not True
+            or record.get("launch_reserved") is not True or record.get("handoff") != handoff.as_dict()
+            or record.get("fingerprint") != key([handoff.as_dict(), record.get("source")])
+            or record.get("writer_state") != "terminated"):
+        raise ProducerRefusal("Verified accepted terminated-source launch binding required.")
+    state = observe_lineage_source(record["source"], handoff)
+    return _delivery(Episode(sequence=sequence, repo=after.repo, pr_number=after.pr_number,
+        branch=after.branch, source_lane=handoff.source_lane,
+        destination_lane=handoff.destination_lane, expected_head=handoff.expected_head,
+        resulting_head=after.head_sha, writer_state=state), observed.writer,
+        observed.round_id, observed.transport)

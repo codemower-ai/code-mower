@@ -121,7 +121,7 @@ def _gh_json(args: list[str]) -> object:
                 "title": "Adopt board",
                 "url": "https://github.com/owner/repo/pull/7",
                 "headRefName": "codex/board",
-                "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                "headRefOid": "abcdef01abcdef01abcdef01abcdef01abcdef01",
                 "author": {"login": "codex-bot"},
                 "isDraft": False,
                 "mergeStateStatus": "CLEAN",
@@ -145,6 +145,8 @@ def _gh_json(args: list[str]) -> object:
                 "url": "https://github.com/owner/repo/actions/runs/77",
             },
         ]
+    if args[0] == "api" and "/comments?" in args[1]:
+        return []
     raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
 

@@ -1448,22 +1448,74 @@ class RunnerScriptContractTests(unittest.TestCase):
                 self.assertIn("closes a different issue, is not delivered", text)
 
     def test_runner_scripts_resolve_lane_delivery_explicitly(self) -> None:
-        # Ambient PATH resolution is the whole problem: a consumer repo can
-        # have an older installed code-mower, and a source checkout must run
-        # the tree it ships in. The order is pin, then source checkout, then an
-        # installed CLI that actually implements the command.
-        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
-            with self.subTest(path=path.name):
-                text = path.read_text(encoding="utf-8")
-                pin = text.index('${CODE_MOWER_LANE_DELIVERY_CMD:-}')
-                source = text.index('${repo_root}/src/code_mower/lane_delivery.py')
-                installed = text.index("code-mower lane-delivery --help")
-                self.assertLess(pin, source)
-                self.assertLess(source, installed)
-                # An installed CLI that predates the command disables the
-                # contract for that run instead of failing every unit.
-                self.assertIn("installed-cli-too-old", text)
-                self.assertIn("lane-delivery contract inactive", text)
+        from code_mower import config, init
+        with tempfile.TemporaryDirectory() as tmp:
+            generated = Path(tmp)/"generated"
+            cfg = config.load_config(ROOT/"src/code_mower/templates/code-mower.example.yml")
+            init.apply_init_plan(init.render_init_plan(cfg, package_mode=True, repo_root=ROOT, builders=init._parse_builder_lanes("codex,claude")),
+                                 generated, source_root=ROOT)
+            for path in (RUNNER_TEMPLATE, PACKAGED_RUNNER_TEMPLATE, REPO_RUNNER,
+                         generated/"tools/lanes/run_mac_lane.sh"):
+                with self.subTest(path=str(path)):
+                    text = path.read_text(encoding="utf-8")
+                    pin = text.index('${CODE_MOWER_LANE_DELIVERY_CMD:-}')
+                    installed = text.index("code-mower lane-delivery --help")
+                    capability = text.index('"${lane_delivery[@]}" lineage-capabilities')
+                    first_handoff = text.index('if [ -n "$HANDOFF_SOURCE_LANE" ]')
+                    self.assertLess(pin, installed)
+                    self.assertLess(installed, capability)
+                    self.assertLess(capability, first_handoff)
+                    self.assertIn('lane_delivery=( "${CODE_MOWER_LANE_DELIVERY_CMD}" )', text)
+                    self.assertIn("unsupported installed lineage capability", text)
+                    self.assertNotIn('${repo_root}/src/code_mower/lane_delivery.py', text)
+                    self.assertNotIn("lane-delivery contract inactive", text)
+                    self.assertIn('python3.14 python3.13 python3.12 python3', text)
+
+    def test_maintained_and_generated_capability_boundary_precedes_all_effects(self) -> None:
+        import shlex
+        import sys
+        from code_mower import config, init
+        from lineage_consumer_fixtures import fixture_shell_env
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            generated = root/"generated"
+            cfg = config.load_config(ROOT/"src/code_mower/templates/code-mower.example.yml")
+            init.apply_init_plan(init.render_init_plan(cfg, package_mode=True, repo_root=ROOT, builders=init._parse_builder_lanes("codex,claude")),
+                                 generated, source_root=ROOT)
+            bin_dir = root/"candidate bin"
+            bin_dir.mkdir()
+            effects = root/"effects"
+            for command in ("gh", "codex", "claude"):
+                executable = bin_dir/command
+                executable.write_text('#!/bin/sh\nprintf effect >> '+shlex.quote(str(effects))+'\nexit 81\n')
+                executable.chmod(0o755)
+            for mode in ("pin", "installed"):
+                for capable in (True, False):
+                    executable = bin_dir/("lane-delivery" if mode == "pin" else "code-mower")
+                    module = "code_mower.lane_delivery" if mode == "pin" else "code_mower.cli"
+                    command = shlex.quote(sys.executable)+' -m '+module+' "$@"'
+                    executable.write_text('#!/bin/sh\n'+('exec '+command if capable else
+                        'case " $* " in *" --help "*) exit 0 ;; *) exit 2 ;; esac')+'\n')
+                    executable.chmod(0o755)
+                    env = os.environ | fixture_shell_env(root) | {
+                        'HOME': str(root), 'LANE_PYTHON': sys.executable,
+                        'PYTHONPATH': str(ROOT/'src'), 'PATH': str(bin_dir)+os.pathsep+os.environ['PATH']}
+                    env.pop('CODE_MOWER_LANE_DELIVERY_CMD', None)
+                    if mode == "pin":
+                        env['CODE_MOWER_LANE_DELIVERY_CMD'] = str(executable)
+                    for runner in (REPO_RUNNER, generated/'tools/lanes/run_mac_lane.sh'):
+                        with self.subTest(mode=mode, capable=capable, runner=str(runner)):
+                            result = subprocess.run(['bash', str(runner), '--lane', 'codex',
+                                '--repo', 'invalid', '--max-minutes', '1'], env=env,
+                                text=True, capture_output=True, check=False)
+                            self.assertEqual(result.returncode, 2, result.stderr)
+                            self.assertFalse(effects.exists())
+                            if capable:
+                                self.assertIn('--repo must be OWNER/REPO', result.stderr)
+                                self.assertNotIn('unsupported installed lineage capability', result.stderr)
+                            else:
+                                self.assertIn('unsupported installed lineage capability', result.stderr)
+                                self.assertNotIn('--repo must be OWNER/REPO', result.stderr)
 
     def test_runner_scripts_treat_the_pin_as_one_executable(self) -> None:
         # The pin is an executable path or name, like every other command
@@ -2209,6 +2261,7 @@ class BoundedOutcomeBrokerTests(unittest.TestCase):
         comment: str = COMMENT_URL,
         edit: str = "ok",
     ) -> tuple[dict[str, str], list[str]]:
+        from lineage_consumer_fixtures import fixture_shell_env
         harness = BROKER_HARNESS.replace("__BLOCK__", _broker_block(path))
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "broker.sh"
@@ -2217,6 +2270,7 @@ class BoundedOutcomeBrokerTests(unittest.TestCase):
                 ["bash", str(script)],
                 env={
                     **os.environ,
+                    **fixture_shell_env(Path(tmp)),
                     "SCRATCH": tmp,
                     "DECLARED_OUTCOME": outcome,
                     "COMMENT_RESULT": comment,
@@ -2313,3 +2367,19 @@ class BoundedOutcomeBrokerTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class ExplicitLineageSnapshotTests(unittest.TestCase):
+    def test_exact_producer_snapshot_preserves_branch_case_and_legacy_defaults(self):
+        raw = {"kind": "pr", "number": "42", "pr_number": "42", "head_sha": "a" * 40,
+               "pr_state": "OPEN", "labels": [], "author": "source-bot",
+               "snapshot_complete": True, "branch": "codex/Topic"}
+        snapshot = lane_delivery.lineage_target_state("Owner/Repo", raw)
+        self.assertEqual(snapshot.target.branch, "codex/Topic")
+        self.assertEqual(snapshot.target.repo, "owner/repo")
+        legacy = lane_delivery.TargetState.from_mapping(raw)
+        self.assertNotIn("branch", legacy.as_dict())
+        for change in ({"branch": None}, {"branch": " codex/Topic"}, {"labels": None},
+                       {"snapshot_complete": False}, {"head_sha": "bad"}, {"pr_number": True}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                lane_delivery.lineage_target_state("owner/repo", raw | change)

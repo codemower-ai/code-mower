@@ -4,6 +4,11 @@
       "reason": "daemon defaults and scheduling policy remain repo-local",
       "source": "tools/local_llm_audit_bridge.py",
       "target": "src/code_mower/local_llm_audit_bridge.py"
+    },
+    {
+      "reason": "core",
+      "source": "src/code_mower/provider_runners/lineage.py",
+      "target": "src/code_mower/provider_runners/lineage.py"
     }
   ],
   "files_written": [
@@ -376,6 +381,16 @@
       "kind": "core",
       "source": "src/code_mower/builder_experiment.py",
       "target": "src/code_mower/builder_experiment.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/builder_lineage.py",
+      "target": "src/code_mower/builder_lineage.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/builder_lineage_producer.py",
+      "target": "src/code_mower/builder_lineage_producer.py"
     },
     {
       "kind": "core",
@@ -1388,6 +1403,11 @@
       "target": "src/code_mower/provider_runners/github_pr.py"
     },
     {
+      "kind": "core",
+      "source": "src/code_mower/provider_runners/lineage.py",
+      "target": "src/code_mower/provider_runners/lineage.py"
+    },
+    {
       "kind": "reviewer",
       "source": "src/code_mower/provider_runners/pr_worktree.py",
       "target": "src/code_mower/provider_runners/pr_worktree.py"
@@ -1628,6 +1648,11 @@
       "target": "src/code_mower/templates/lanes/generic.md"
     },
     {
+      "kind": "template",
+      "source": "src/code_mower/templates/lanes/lineage-producer.sh",
+      "target": "src/code_mower/templates/lanes/lineage-producer.sh"
+    },
+    {
       "kind": "lane-template",
       "source": "generated",
       "target": "src/code_mower/templates/lanes/run_mac_lane.sh"
@@ -1696,6 +1721,11 @@
       "kind": "workflow",
       "source": "generated",
       "target": "src/code_mower/templates/workflows/audit-label-cleanup.yml.j2"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/templates/workflows/builder-lineage-producer.yml.j2",
+      "target": "src/code_mower/templates/workflows/builder-lineage-producer.yml.j2"
     },
     {
       "kind": "workflow",
@@ -1873,6 +1903,11 @@
       "target": "templates/lanes/generic.md"
     },
     {
+      "kind": "template",
+      "source": "templates/lanes/lineage-producer.sh",
+      "target": "templates/lanes/lineage-producer.sh"
+    },
+    {
       "kind": "lane-template",
       "source": "generated",
       "target": "templates/lanes/run_mac_lane.sh"
@@ -2003,6 +2038,11 @@
       "target": "templates/workflows/blind-review-artifacts-dry-run.yml.j2"
     },
     {
+      "kind": "template",
+      "source": "templates/workflows/builder-lineage-producer.yml.j2",
+      "target": "templates/workflows/builder-lineage-producer.yml.j2"
+    },
+    {
       "kind": "workflow",
       "source": "generated",
       "target": "templates/workflows/builder-provenance.yml.j2"
@@ -2071,6 +2111,11 @@
       "kind": "workflow",
       "source": "generated",
       "target": "templates/workflows/trailer-comment-labeler.yml.j2"
+    },
+    {
+      "kind": "core",
+      "source": "tools/builder_lineage.py",
+      "target": "tools/builder_lineage.py"
     }
   ],
   "mode": "materialize",

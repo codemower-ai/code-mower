@@ -232,7 +232,15 @@ def status_payload(
     jira_reader: controller.tracker_queue.JiraQueueReader | None = None,
     tracker_links: Mapping[tuple[str, str, str], int] | None = None,
 ) -> dict[str, Any]:
+    policy = None
+    try:
+        candidate = code_mower_config.load_config(Path(config.repo_path) / "code-mower.yml")
+        if not code_mower_config.validate_config(candidate):
+            policy = candidate
+    except (OSError, ValueError):
+        pass
     payload = lane_status.collect_status(
+        lineage_config=policy,
         repo=config.repo,
         gh_json_runner=gh_json_runner,
         command_runner=command_runner,
@@ -765,6 +773,14 @@ def _supervised_decision_payload(decision: Mapping[str, Any]) -> dict[str, Any]:
         "would_mutate": _safe_bool(decision.get("would_mutate")),
         "reviewer_outcomes": _safe_reviewer_outcomes(decision.get("reviewer_outcomes")),
     }
+    lineage = decision.get("lineage")
+    if isinstance(lineage, Mapping):
+        payload["lineage"] = {
+            "status": _safe_text(lineage.get("status"), limit=20),
+            "reason": _safe_text(lineage.get("reason"), limit=80),
+            "current_writer": _safe_text(lineage.get("current_writer"), limit=40) if lineage.get("status") == "ready" else None,
+            "contributors": [_safe_text(item, limit=40) for item in (lineage.get("contributors") or [])[:32]],
+        }
     if pr_number := _int(decision.get("pr_number")):
         payload["pr_number"] = pr_number
     if issue_number := _int(decision.get("issue_number")):

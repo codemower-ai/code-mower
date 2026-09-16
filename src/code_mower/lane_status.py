@@ -273,7 +273,7 @@ def _summarize_pr(
     merge_state = _text(pr.get("mergeStateStatus")) or "UNKNOWN"
     updated_at = _text(pr.get("updatedAt"))
     is_draft = bool(pr.get("isDraft"))
-    number = int(pr.get("number") or 0)
+    number = pr.get("number") if type(pr.get("number")) is int and pr["number"] > 0 else 0
     head_sha = _text(pr.get("headRefOid"))
     next_action = _next_action(labels, checks, merge_state, is_draft)
     stale = _stale(updated_at, now, stale_minutes, labels, checks)
@@ -337,6 +337,7 @@ def _remote(
     pr_limit: int,
     workflow_limit: int,
     stale_minutes: int,
+    lineage_config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
     try:
@@ -353,6 +354,48 @@ def _remote(
         for pr in raw_prs
         if isinstance(pr, Mapping)
     ]
+
+    from .audit_labeler_lib import lineage_identity, lineage_decision, lineage_history, lineage_projection, lineage_authorities
+    from .builder_lineage import Target, ContractError, admit
+    from . import config as policy_config
+    budget = 64  # Global history requests, including terminal probes; every listed PR stays visible.
+    for pr, raw_pr in zip(prs, (item for item in raw_prs if isinstance(item, Mapping)), strict=True):
+        try:
+            if lineage_config is None or (lineage_config and policy_config.validate_config(lineage_config)):
+                raise ContractError("Trusted validated status policy required")
+            identity = lineage_identity(lineage_config)
+            authority = lineage_authorities(lineage_config)
+            target = Target(repo, raw_pr.get("number"), raw_pr.get("headRefName"), raw_pr.get("headRefOid"))
+            raw_labels = raw_pr.get("labels")
+            raw_author = raw_pr.get("author")
+            if (not isinstance(raw_labels, list)
+                    or any(not isinstance(item, Mapping) or not isinstance(item.get("name"), str) for item in raw_labels)
+                    or not isinstance(raw_author, Mapping) or not isinstance(raw_author.get("login"), str)):
+                raise ContractError("Exact readable labels and author required")
+            def page(number, size, target=target):
+                nonlocal budget
+                if budget <= 0:
+                    raise ContractError("Global lineage retrieval budget exhausted")
+                budget -= 1
+                return gh_json_runner(["api", f"repos/{target.repo}/issues/{target.pr_number}/comments?per_page={size}&page={number}"])
+            history = lineage_history(page)
+            _, decision = lineage_decision(target, identity, authority, history,
+                author=raw_author["login"], labels=[item["name"] for item in raw_labels])
+            pr["lineage"] = lineage_projection(decision)
+            pr["lineage"]["repo"] = target.repo
+            pr["lineage"]["pr_number"] = target.pr_number
+            pr["lineage"]["branch"] = target.branch
+            lanes = lineage_config.get("lanes", {})
+            pr["lineage"]["admitted_reviewers"] = sorted({
+                str(lane.get("author_lane") or lane.get("trailer_lane") or lane.get("provider") or key)
+                for key, lane in lanes.items() if isinstance(lane, Mapping)
+                and admit(decision, str(lane.get("author_lane") or lane.get("trailer_lane") or lane.get("provider") or key))})
+        except (ValueError, KeyError, TypeError, RuntimeError):
+            pr["lineage"] = {"status": "unknown", "reason": "lineage_unreadable",
+                             "current_writer": None, "contributors": [], "admitted_reviewers": []}
+        if pr["lineage"]["status"] != "ready":
+            pr["next_action"] = "owner action required"
+            pr["next_detail"] = "lineage " + pr["lineage"]["status"] + ": " + pr["lineage"]["reason"]
 
     try:
         raw_runs = gh_json_runner([
@@ -612,6 +655,7 @@ def _global_next(report: Mapping[str, Any]) -> tuple[str, str]:
             else "remote unavailable; fix GitHub access"
         ), ""
     for action in (
+        "owner action required",
         "fix BLOCKED audit",
         "fix failing check",
         "rebase/behind",
@@ -640,6 +684,7 @@ def collect_status(
     stale_minutes: int = 30,
     show_local_paths: bool = False,
     tracker_config: Mapping[str, Any] | None = None,
+    lineage_config: Mapping[str, Any] | None = None,
     jira_reader: tracker_queue.JiraQueueReader | None = None,
     tracker_links: Mapping[tuple[str, str, str], int] | None = None,
     checkout: str | Path | None = None,
@@ -649,7 +694,7 @@ def collect_status(
         "schema": LANE_STATUS_SCHEMA,
         "repo": repo,
         "generated_at": observed_at.isoformat().replace("+00:00", "Z"),
-        "remote": _remote(repo, gh_json_runner, observed_at, pr_limit, workflow_limit, stale_minutes),
+        "remote": _remote(repo, gh_json_runner, observed_at, pr_limit, workflow_limit, stale_minutes, lineage_config),
         "local_boards": collect_local_boards(command_runner),
         "local_processes": collect_lane_processes(command_runner),
         "orchestrator_lease": session_lease.observe_lease(start=checkout, now=observed_at, repo=repo),

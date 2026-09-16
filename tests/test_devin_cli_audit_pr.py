@@ -39,6 +39,9 @@ class _DevinCliAuditTestCase(unittest.TestCase):
         self._run_git(["commit", "-m", "pr"])
         self.head_sha = self._run_git_text(["rev-parse", "HEAD"])
 
+        self.history = mock.patch("code_mower.provider_runners.github_pr.fetch_issue_comments", return_value=[])
+        self.history.start()
+        self.addCleanup(self.history.stop)
         self.command = self.tmp / "fake-devin"
 
     def tearDown(self) -> None:
@@ -73,10 +76,14 @@ class _DevinCliAuditTestCase(unittest.TestCase):
 
     def _pr_meta(self, *, author: str = "someone", moved: bool = False) -> dict:
         return {
+            "number": 1,
+            "labels": [],
+            "base": {"repo": {"full_name": "owner/repo"}},
             "title": "Test PR",
             "body": "Test body",
             "user": {"login": author},
             "head": {
+                "ref": "human/fix",
                 "sha": "different" if moved else self.head_sha,
                 "repo": {"full_name": "owner/repo"},
             },
@@ -973,6 +980,284 @@ class TestDisposableHeadCheckout(_DevinCliAuditTestCase):
         )
         self.assertEqual(self._run_git_text(["status", "--porcelain"]), "")
         self.assertEqual(self._run_git_text(["rev-parse", "HEAD"]), self.head_sha)
+
+
+class TestPublicLineageRefusals(_DevinCliAuditTestCase):
+    """Public diagnostics use real Git policy and complete shared admission."""
+
+    def setUp(self):
+        super().setUp()
+        self.history.stop()
+        self._install_policy()
+
+    def _install_policy(self, prefixes=None, *, invalid=False):
+        from lineage_consumer_fixtures import policy, policy_text
+        self._run_git(['checkout', 'main'])
+        cfg = policy(prefixes)
+        if invalid:
+            cfg['merge_authority_excludes_author'] = 'not-a-boolean'
+        (self.repo/'code-mower.yml').write_text(policy_text(cfg))
+        self._run_git(['add', 'code-mower.yml'])
+        self._run_git(['commit', '--allow-empty', '-m', 'Immutable trusted policy'])
+        self.base_sha = self._run_git_text(['rev-parse', 'HEAD'])
+        self._run_git(['checkout', '--detach'])
+        (self.repo/'file.py').write_text('changed tree\n')
+        self._run_git(['add', 'file.py'])
+        self._run_git(['commit', '--allow-empty', '-m', 'Exact review head'])
+        self.head_sha = self._run_git_text(['rev-parse', 'HEAD'])
+
+    def _snapshot(self, *, builder='codex', author='human'):
+        from lineage_consumer_fixtures import complete_pr
+        return complete_pr(number=1, branch='codex/topic', head=self.head_sha,
+            author=author, labels=[f'builder:{builder}']) | {
+                'base': {'sha': self.base_sha, 'repo': {'full_name': 'owner/repo'}},
+                'head': {'sha': self.head_sha, 'ref': 'codex/topic',
+                         'repo': {'full_name': 'owner/repo'}}}
+
+    def _prior_devin(self, *, include_devin=True):
+        from dataclasses import replace
+        from code_mower.builder_lineage import Chain, Episode, Target, render
+        from lineage_consumer_fixtures import AUTHORS
+        episodes = [Episode(sequence=1, repo='owner/repo', pr_number=1, branch='codex/topic',
+            source_lane='codex', destination_lane='devin', expected_head=self.base_sha,
+            resulting_head='c'*40, writer_state='terminated', kind='handoff'),
+            Episode(sequence=2, repo='owner/repo', pr_number=1, branch='codex/topic',
+            source_lane='devin', destination_lane='claude', expected_head='c'*40,
+            resulting_head=self.head_sha, writer_state='terminated', kind='handoff')]
+        if not include_devin:
+            episodes = [replace(episodes[0], destination_lane='claude', resulting_head=self.head_sha)]
+        return [{'user': {'login': AUTHORS[0]}, 'body': render(Chain.from_arrivals(
+            Target('owner/repo', 1, 'codex/topic', self.head_sha), episodes))}]
+
+    @contextlib.contextmanager
+    def _boundary(self, initial, history, *, current=None, on_history=None):
+        from copy import deepcopy
+        from code_mower.provider_runners import github_pr
+        calls, posts, pr_reads = [], [], []
+        def request(method, path, **kwargs):
+            calls.append((method, path))
+            if method == 'GET' and path == '/repos/owner/repo/pulls/1':
+                pr_reads.append(path)
+                return deepcopy(initial if len(pr_reads) == 1 or current is None else current)
+            if method == 'GET' and '/issues/1/comments?' in path:
+                if on_history:
+                    on_history()
+                if isinstance(history, Exception):
+                    raise history
+                return deepcopy(history)
+            if method == 'POST' and path == '/repos/owner/repo/issues/1/comments':
+                self.assertEqual(len(pr_reads), 2, 'Fresh target must precede the diagnostic effect')
+                posts.append(kwargs['body']['body'])
+                return {'id': 123, 'html_url': 'https://github.com/owner/repo/pull/1#issuecomment-123'}
+            self.fail(f'Unexpected effect or read: {method} {path}')
+        with tempfile.TemporaryDirectory(dir=self.tmp) as artifacts, \
+                mock.patch.dict(os.environ, {'CODE_MOWER_VERDICT_ARTIFACT_DIR': artifacts,
+                    'GITHUB_TOKEN': 'fixture-token', 'GITHUB_RUN_ID': '',
+                    'DEVIN_CLI_BOT_AUTHORS': '', 'CODE_MOWER_DECISION_AUTHORITIES': '',
+                    'CODE_MOWER_DECISION_AUTHORITIES_OVERRIDE': ''}), \
+                mock.patch.object(github_pr, '_gh_request', side_effect=request), \
+                mock.patch.object(devin_cli_audit, '_run_devin_cli', return_value=(
+                    json.dumps({'verdict': 'pass', 'summary': 'No actionable defects found.', 'findings': []}), 0, 0.125)) as provider:
+            yield provider, posts, calls, Path(artifacts)
+
+    def _cli(self, *, dry_run=False):
+        argv = ['--repo', 'owner/repo', '--pr', '1', '--repo-paths', f'owner/repo:{self.repo}',
+            '--base-ref', 'main', '--command', str(self.command)]
+        return devin_cli_audit.main(argv + (['--dry-run'] if dry_run else []))
+
+    def _assert_unknown(self, posts, artifacts, *, legacy=False):
+        files = list(artifacts.rglob('*.json'))
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(len(files), 1)
+        payload = json.loads(files[0].read_text())
+        self.assertEqual(payload['repo'], 'owner/repo')
+        self.assertEqual(payload['pr_number'], 1)
+        self.assertEqual(payload['head_sha_start'], self.head_sha)
+        self.assertEqual(payload['head_sha_end'], self.head_sha)
+        self.assertEqual(payload['verdict'], 'unknown')
+        self.assertEqual(payload['duration_seconds'], 0.0)
+        self.assertEqual(payload['trailer'], devin_cli_audit.NEEDS_TRAILER)
+        self.assertEqual(payload['comment_body'], posts[0])
+        self.assertIn(f'Head SHA: `{self.head_sha}`', posts[0])
+        self.assertIn('informational', posts[0])
+        if not legacy:
+            self.assertIn('Review not performed', posts[0])
+            self.assertIn('Owner action:', posts[0])
+        self.assertLess(len(posts[0]), 1000)
+        for prohibited in (' — PASS', ' — BLOCKED', 'devin-cli-audit-done',
+                'devin-cli-audit-blocked', 'verified_lineage', 'current_writer',
+                'raw-secret', 'fixture-token', str(self.tmp)):
+            self.assertNotIn(prohibited, json.dumps(payload))
+
+    def test_public_and_cli_bound_unknown_for_contributor_conflict_and_raw_history(self):
+        from lineage_consumer_fixtures import AUTHORS
+        raw = [{'user': {'login': AUTHORS[0]}, 'body': '<!-- CODE_MOWER_BUILDER_LINEAGE: raw-secret -->'}]
+        cases = [('contributor', self._snapshot(builder='claude'), self._prior_devin()),
+            ('conflict', self._snapshot(builder='claude'), []),
+            ('marker', self._snapshot(), raw), ('null', self._snapshot(), None),
+            ('object', self._snapshot(), {}), ('mixed', self._snapshot(), [None]),
+            ('unreadable', self._snapshot(), RuntimeError('raw-secret fixture-token')),
+            ('network', self._snapshot(), OSError('raw-secret transport')),
+            ('cap', self._snapshot(), [{}]*100)]
+        for name, pr, history in cases:
+            for cli in (False, True):
+                with self.subTest(case=name, cli=cli), self._boundary(pr, history) as (provider, posts, calls, artifacts):
+                    if cli:
+                        self.assertEqual(self._cli(), 2)
+                    else:
+                        result = devin_cli_audit.audit_pr(self._config())
+                        self.assertEqual(result.verdict, 'UNKNOWN')
+                        self.assertEqual(result.head_sha_start, self.head_sha)
+                        self.assertEqual(result.verdict_artifact_path, next(artifacts.rglob('*.json')))
+                    provider.assert_not_called()
+                    self._assert_unknown(posts, artifacts)
+                    reads = [path for method, path in calls if method == 'GET' and '/comments?' in path]
+                    self.assertEqual(len(reads), 9 if name == 'cap' else 1)
+
+    def test_public_dry_run_unknown_has_no_effect_and_cli_still_exits_two(self):
+        pr = self._snapshot(builder='claude')
+        with self._boundary(pr, []) as (provider, posts, _, artifacts), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(self._cli(dry_run=True), 2)
+            provider.assert_not_called()
+            self.assertEqual(posts, [])
+            self.assertEqual(list(artifacts.rglob('*.json')), [])
+            self.assertIn(self.head_sha, output.getvalue())
+            self.assertIn('Review not performed', output.getvalue())
+            self.assertIn(devin_cli_audit.NEEDS_TRAILER, output.getvalue())
+        from code_mower.provider_runners.verdict_artifacts import load_audit_verdict_artifact
+        from code_mower.provider_runners.comments import bind_actions_run_comment_id
+        with self._boundary(pr, []) as (provider, posts, _, artifacts):
+            result = devin_cli_audit.audit_pr(self._config(actions_run_id='999'))
+            provider.assert_not_called()
+            payload = load_audit_verdict_artifact(result.verdict_artifact_path)
+            self.assertEqual(payload['verdict'], 'unknown')
+            self.assertEqual(payload['trailer'], devin_cli_audit.NEEDS_TRAILER)
+            self.assertEqual(payload['head_sha_start'], self.head_sha)
+            self.assertEqual(payload['head_sha_end'], self.head_sha)
+            self.assertEqual(payload['comment_body'], bind_actions_run_comment_id(posts[0], 123))
+            self.assertIn('Review not performed', payload['comment_body'])
+            self.assertEqual(result.comment_body, payload['comment_body'])
+
+    def test_private_admission_remains_an_exception_without_diagnostic_effects(self):
+        for pr, history in ((self._snapshot(builder='claude'), self._prior_devin()),
+                            (self._snapshot(builder='claude'), []), (self._snapshot(), None)):
+            with self.subTest(history=history), self._boundary(pr, history) as (provider, posts, _, artifacts):
+                with self.assertRaises(devin_cli_audit.ContractError):
+                    devin_cli_audit._do_audit_pr(self._config())
+                provider.assert_not_called()
+                self.assertEqual(posts, [])
+                self.assertEqual(list(artifacts.rglob('*.json')), [])
+
+    def test_trusted_takeover_without_devin_contribution_is_eligible(self):
+        for cli in (False, True):
+            with self.subTest(cli=cli), self._boundary(self._snapshot(builder='claude'),
+                    self._prior_devin(include_devin=False)) as (provider, posts, _, artifacts):
+                if cli:
+                    self.assertEqual(self._cli(), 0)
+                else:
+                    self.assertEqual(devin_cli_audit.audit_pr(self._config()).verdict, 'PASS')
+                self.assertEqual(provider.call_count, 1)
+                self.assertEqual(len(posts), 1)
+                self.assertIn(devin_cli_audit.PASS_TRAILER, posts[0])
+                self.assertEqual(json.loads(next(artifacts.rglob('*.json')).read_text())['verdict'], 'pass')
+
+    def test_trusted_ordinary_no_contract_and_legacy_author_exclusion(self):
+        for no_contract in (False, True):
+            if no_contract:
+                self._install_policy({})
+            for cli in (False, True):
+                with self.subTest(no_contract=no_contract, cli=cli), self._boundary(
+                        self._snapshot(builder='claude' if no_contract else 'codex'), []) as (provider, posts, _, artifacts):
+                    if cli:
+                        self.assertEqual(self._cli(), 0)
+                    else:
+                        self.assertEqual(devin_cli_audit.audit_pr(self._config()).verdict, 'PASS')
+                    self.assertEqual(provider.call_count, 1)
+                    self.assertEqual(len(posts), 1)
+                    self.assertIn(devin_cli_audit.PASS_TRAILER, posts[0])
+                    self.assertEqual(json.loads(next(artifacts.rglob('*.json')).read_text())['head_sha_start'], self.head_sha)
+        with self._boundary(self._snapshot(author='devin-cli-audit-bot'), []) as (provider, posts, calls, artifacts):
+            self.assertEqual(self._cli(), 2)
+            provider.assert_not_called()
+            self._assert_unknown(posts, artifacts, legacy=True)
+            self.assertFalse(any('/comments?' in path for _, path in calls))
+
+    def test_target_and_base_drift_or_missing_target_keep_a_hard_refusal(self):
+        from copy import deepcopy
+        initial = self._snapshot(builder='claude')
+        for drift in ('head', 'branch', 'base', 'repo', 'number', 'missing-branch', 'missing-head', 'missing-base', 'head-repo'):
+            current = deepcopy(initial)
+            if drift == 'head':
+                current['head']['sha'] = 'd'*40
+            elif drift == 'branch':
+                current['head']['ref'] = 'codex/other'
+            elif drift == 'base':
+                current['base']['sha'] = 'e'*40
+            elif drift == 'repo':
+                current['base']['repo']['full_name'] = 'other/repo'
+            elif drift == 'number':
+                current['number'] = 2
+            elif drift == 'missing-branch':
+                del current['head']['ref']
+            elif drift == 'missing-head':
+                del current['head']['sha']
+            elif drift == 'missing-base':
+                del current['base']['sha']
+            else:
+                current['head']['repo']['full_name'] = 'other/repo'
+            # A different, valid branch observed consistently is not drift.
+            # Initial checkout mismatch retains the existing workspace handler.
+            for bad_initial in ((False,) if drift in ('head', 'branch') else (False, True)):
+                for cli in (False, True):
+                    with self.subTest(drift=drift, initial=bad_initial, cli=cli), self._boundary(
+                            current if bad_initial else initial, [], current=current) as (provider, posts, _, artifacts), \
+                            contextlib.redirect_stderr(io.StringIO()):
+                        if cli:
+                            self.assertEqual(self._cli(), 1)
+                        else:
+                            with self.assertRaises((ValueError, devin_cli_audit.ProviderWorkspaceError)):
+                                devin_cli_audit.audit_pr(self._config())
+                        provider.assert_not_called()
+                        self.assertEqual(posts, [])
+                        self.assertEqual(list(artifacts.rglob('*.json')), [])
+
+    def test_invalid_policy_and_unrelated_value_error_do_not_become_unknown(self):
+        self._install_policy(invalid=True)
+        with self._boundary(self._snapshot(builder='claude'), []) as (provider, posts, calls, artifacts):
+            with self.assertRaises(devin_cli_audit.ContractError):
+                devin_cli_audit.audit_pr(self._config())
+            provider.assert_not_called()
+            self.assertEqual(posts, [])
+            self.assertEqual(list(artifacts.rglob('*.json')), [])
+            self.assertFalse(any('/comments?' in path for _, path in calls))
+        self._install_policy()
+        with self._boundary(self._snapshot(), ValueError('programmer/configuration failure')) as (provider, posts, _, artifacts):
+            with self.assertRaisesRegex(ValueError, 'programmer/configuration failure'):
+                devin_cli_audit.audit_pr(self._config())
+            provider.assert_not_called()
+            self.assertEqual(posts, [])
+            self.assertEqual(list(artifacts.rglob('*.json')), [])
+
+    def test_refusal_keeps_selected_base_when_its_tracking_ref_moves(self):
+        original_base = self.base_sha
+        def move_ref():
+            self._run_git(['update-ref', 'refs/heads/main', self.head_sha])
+        with self._boundary(self._snapshot(builder='claude'), [], on_history=move_ref) as (provider, posts, _, artifacts):
+            self.assertEqual(devin_cli_audit.audit_pr(self._config()).verdict, 'UNKNOWN')
+            provider.assert_not_called()
+            self._assert_unknown(posts, artifacts)
+            self.assertEqual(self._run_git_text(['rev-parse', 'main']), self.head_sha)
+            self.assertNotEqual(original_base, self.head_sha)
+
+    def test_local_checkout_drift_refuses_before_diagnostic_effects(self):
+        def move_head():
+            self._run_git(['checkout', '--detach', self.base_sha])
+        with self._boundary(self._snapshot(builder='claude'), [], on_history=move_head) as (provider, posts, _, artifacts):
+            with self.assertRaises(devin_cli_audit.ContractError):
+                devin_cli_audit.audit_pr(self._config())
+            provider.assert_not_called()
+            self.assertEqual(posts, [])
+            self.assertEqual(list(artifacts.rglob('*.json')), [])
 
 
 if __name__ == "__main__":

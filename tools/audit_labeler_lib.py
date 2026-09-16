@@ -21,17 +21,138 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Pattern, Sequence
 from urllib.parse import quote
 import re
+from itertools import chain as chain_arrivals
 
 if __package__:
     try:
         from . import decisions as code_mower_decisions
         from . import context_review as code_mower_context_review
+        from . import builder_lineage as lineage_core
     except ImportError:  # pragma: no cover - copied tools fallback
         import decisions as code_mower_decisions  # type: ignore
         import context_review as code_mower_context_review  # type: ignore
+        import builder_lineage as lineage_core  # type: ignore
 else:  # pragma: no cover - direct helper execution
     import decisions as code_mower_decisions  # type: ignore
     import context_review as code_mower_context_review  # type: ignore
+    import builder_lineage as lineage_core  # type: ignore
+
+
+def lineage_identity(config):
+    raw = config.get("builder_identity", {})
+    if not isinstance(raw, dict):
+        raise lineage_core.ContractError("Malformed builder identity configuration")
+    if set(raw) - {"labels", "authors", "branch_prefixes", "trailers", "fix_round_mentions"}:
+        raise lineage_core.ContractError("Unknown builder identity fields")
+    aliases = {"grok-bot": "cursor", "claude_audit": "claude", "devin_cli": "devin"}
+    value = {"enabled": config.get("merge_authority_excludes_author", True)}
+    for section in ("labels", "authors", "branch_prefixes"):
+        mapping = raw.get(section, {})
+        if not isinstance(mapping, dict):
+            raise lineage_core.ContractError("Malformed identity mapping")
+        value[section] = {key: aliases.get(lane, lane) for key, lane in mapping.items()}
+    value["require_verified_lineage"] = bool(value["branch_prefixes"])
+    return lineage_core.Identity(value)
+
+
+def lineage_authorities(config, *, extra=()):
+    """Validate raw authority declarations before existing explicit selectors."""
+    owner, decisions = config.get('owner_surface', {}), config.get('decisions', {})
+    if not isinstance(owner, Mapping) or not isinstance(decisions, Mapping):
+        raise lineage_core.ContractError('Malformed authority configuration')
+    if 'owner_login' in owner and not isinstance(owner['owner_login'], str):
+        raise lineage_core.ContractError('Malformed owner authority')
+    selected = decisions.get('authorities', ())
+    if isinstance(selected, str):
+        selected = [item.strip() for item in selected.split(',') if item.strip()]
+    lineage_core.Authorities(selected)
+    lineage_core.Authorities(extra)
+    return lineage_core.Authorities((*code_mower_decisions.decision_authorities_from_config(config), *extra))
+
+
+def lineage_decision(target, identity, authorities, history, *, author, labels, private=()):
+    """One complete target-bound consumer decision, including empty histories.
+
+    The caller selects public-only evidence explicitly by leaving private empty;
+    selected private-store read failures must propagate before entering here.
+    """
+    if not isinstance(target, lineage_core.Target):
+        raise lineage_core.ContractError("Exact lineage target required")
+    if not isinstance(identity, lineage_core.Identity):
+        raise lineage_core.ContractError("Validated identity policy required")
+    if not isinstance(authorities, lineage_core.Authorities):
+        raise lineage_core.ContractError("Explicit lineage authorities required")
+    if not isinstance(history, lineage_core.History):
+        raise lineage_core.ContractError("Readable complete history required")
+    bound = lineage_core.Chain.from_arrivals(target, chain_arrivals(
+        lineage_core.parse_markers(history, authorities), private))
+    return bound, lineage_core.resolve(bound, identity, author, labels)
+
+
+def lineage_admission(decision, reviewer):
+    if not lineage_core.admit(decision, reviewer):
+        raise lineage_core.ContractError("Lineage admission refused: " + decision.reason)
+    return decision
+
+
+def lineage_snapshot(repo, number, payload):
+    """Validate fetched REST metadata without converting missing fields to defaults."""
+    if not isinstance(payload, Mapping) or payload.get("number") != number:
+        raise lineage_core.ContractError("Exact fetched PR metadata required")
+    try:
+        target = lineage_core.Target(payload["base"]["repo"]["full_name"], number,
+                                     payload["head"]["ref"], payload["head"]["sha"])
+        if target.repo != repo.lower() or not isinstance(payload["labels"], list):
+            raise ValueError
+        labels = tuple(item["name"] for item in payload["labels"])
+        author = payload["user"]["login"]
+    except (KeyError, TypeError, ValueError):
+        raise lineage_core.ContractError("Exact fetched PR target, author and labels required") from None
+    return target, author, labels
+
+
+def lineage_history(fetch_page, *, page_size=100, max_pages=8):
+    """Validate each raw page before flattening, including the terminal probe."""
+    if type(max_pages) is not int or not 1 <= max_pages <= 8:
+        raise lineage_core.ContractError("Invalid lineage history page budget")
+    if type(page_size) is not int or not 1 <= page_size <= 100:
+        raise lineage_core.ContractError("Invalid lineage history page size")
+    pages = []
+    for page in range(1, max_pages + 2):
+        raw = fetch_page(page, page_size)
+        lineage_core.History(raw)
+        if len(raw) > page_size or (page > max_pages and raw):
+            raise lineage_core.ContractError("Complete lineage history exceeds page budget")
+        if page <= max_pages:
+            pages.append(raw)
+        if len(raw) < page_size:
+            return lineage_core.History.from_pages(pages)
+    raise lineage_core.ContractError("Incomplete lineage history")
+
+
+def lineage_projection(decision):
+    """Bounded public status only; unresolved ownership is never advertised."""
+    if not isinstance(decision, lineage_core.Lineage) or decision.target is None:
+        raise lineage_core.ContractError("Target-bound lineage decision required")
+    return dict(status=decision.status, reason=decision.reason,
+                contributors=list(decision.contributors),
+                current_writer=decision.current_writer if decision.status == "ready" else None,
+                head_sha=decision.target.head_sha, owner_action=decision.owner_action)
+
+
+def lineage_from_environment(repo, number, payload, history, *, reviewer, accounts=()):
+    """Trusted workflow projection, emitted from accepted policy by init/the gate.
+
+    Only declared typed Identity fields are supported. Legacy trailers and prose
+    confer no lineage authority; old layouts refuse until regenerated.
+    """
+    identity = lineage_core.Identity.from_text(os.environ[AUTHOR_EXCLUSION_ENV])
+    identity = identity.with_reviewer_floor(reviewer, accounts)
+    authorities = lineage_core.Authorities(code_mower_decisions.decision_authorities_from_env())
+    target, author, labels = lineage_snapshot(repo, number, payload)
+    _, decision = lineage_decision(target, identity, authorities, history,
+                                  author=author, labels=labels)
+    return decision
 
 MIN_ABBREVIATED_SHA_LENGTH = 7
 AUTHOR_EXCLUSION_ENV = "CODE_MOWER_AUTHOR_EXCLUSION_JSON"
@@ -250,7 +371,7 @@ def author_exclusion_reason(
 
 
 def load_json(path: Path) -> Dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return lineage_core._json(path.read_text(encoding="utf-8"))
 
 
 def extract_reviewed_sha(body: str) -> Optional[str]:
@@ -303,7 +424,7 @@ def github_request(
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             response_body = response.read().decode("utf-8")
-            return json.loads(response_body) if response_body else None
+            return lineage_core._json(response_body)
     except urllib.error.HTTPError as exc:
         if allow_missing and exc.code == 404:
             return None
@@ -929,26 +1050,14 @@ def fetch_issue_comments(
     tokens: Sequence[GitHubToken],
     page_cap: int,
 ) -> list[dict[str, Any]]:
-    comments: list[dict[str, Any]] = []
-    page = 1
-    while page <= page_cap:
-        chunk = github_request_with_fallback(
-            "GET",
-            f"/repos/{repo}/issues/{issue_number}/comments?per_page=100&page={page}",
-            tokens=tokens,
-        ) or []
-        if not isinstance(chunk, list):
-            raise RuntimeError("GitHub API issue comments returned a non-list response")
-        if not chunk:
-            return comments
-        comments.extend(comment for comment in chunk if isinstance(comment, dict))
-        if len(chunk) < 100:
-            return comments
-        page += 1
-    raise IssueCommentPaginationLimitExceeded(
-        f"hit pagination cap of {page_cap} pages ({page_cap * 100} comments) "
-        f"for {repo}#{issue_number}; refusing to classify stale labels on partial data"
-    )
+    pages = []
+    def fetch(page, size):
+        raw = github_request_with_fallback("GET",
+            f"/repos/{repo}/issues/{issue_number}/comments?per_page={size}&page={page}", tokens=tokens)
+        pages.append(raw)
+        return raw
+    lineage_history(fetch, max_pages=min(page_cap, 8))
+    return [comment for page in pages for comment in page]
 
 
 def apply_label_decision(

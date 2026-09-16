@@ -183,6 +183,12 @@ STARTER_DATA_FILES = (
 
 PRODUCT_SUPPORT_FILES = (
     (
+        "tools/builder_lineage.py",
+        "builder_lineage.py",
+        "product-support-helper",
+        "0644",
+    ),
+    (
         "tools/code_mower",
         "templates/product-support/code_mower",
         "product-support-wrapper",
@@ -1325,14 +1331,8 @@ def _author_exclusion_payload(
     config: Mapping[str, Any],
     selected_lanes: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
-    raw_identity = config.get("builder_identity")
-    identity = raw_identity if isinstance(raw_identity, Mapping) else {}
-    payload = {
-        "enabled": bool(config.get("merge_authority_excludes_author", True)),
-        "labels": _identity_section(identity, "labels", canonicalize_lanes=True),
-        "authors": _identity_section(identity, "authors", canonicalize_lanes=True),
-        "trailers": _identity_section(identity, "trailers", canonicalize_lanes=True),
-    }
+    from .audit_labeler_lib import lineage_identity
+    payload = lineage_identity(config).to_mapping()
     for label, lane in tuple(payload["labels"].items()):
         if label in BUILDER_LEGACY_BUILDER_LABELS.get(lane, ()):
             payload["labels"].setdefault(f"builder:{lane}", lane)
@@ -2700,6 +2700,15 @@ def render_init_plan(
         ):
             adoption_config_entry["config_data"] = config
         generated_files.append(adoption_config_entry)
+
+    for target, source in (
+        (".github/workflows/builder-lineage-producer.yml", "workflows/builder-lineage-producer.yml.j2"),
+        ("tools/lanes/lineage-producer.sh", "lanes/lineage-producer.sh"),
+    ):
+        if target not in generated_paths:
+            generated_paths.add(target)
+            generated_files.append({"path": target, "source": "lineage-producer",
+                "copy_from": "templates/" + source, "package_copy_from": "templates/" + source})
 
     for lane_id, lane in selected_lanes.items():
         lane_labels = _labels_for(lane)
