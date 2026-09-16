@@ -256,6 +256,47 @@ class GuidedGraphSessionTests(unittest.TestCase):
         with self.assertRaises(ContextError):
             self.load(handle, "claude:builder")
 
+    def _reconnect(self, **overrides) -> dict:
+        spec = {
+            "repository_root": str(self.repository),
+            "repositories": ["owner/repo"],
+            "recipients": RECIPIENTS,
+        }
+        spec.update(overrides)
+        return connection.connect(self.store, "local-graph", spec)
+
+    def test_reconnect_completes_pending_packet_cleanup_that_disconnect_could_not(self) -> None:
+        """A cleanup failure on disconnect must not let reconnect skip it.
+
+        Reproduces codex:57555c67a42d8aeba514: previously ``connect`` wrote
+        ``verified`` state straight back once a disconnected connection was
+        found, regardless of whether the packets it once authorized were ever
+        actually purged. With the same graph and approved scope, that let a
+        surviving packet and its delivery/attachment binding become authorized
+        again.
+        """
+        handle = self.fetch()["packet_handle"]
+        binding = self._attach(handle, self.manifest.commit, consuming_revision=self.manifest.commit)
+        with patch("code_mower.context_packets.purge_connection", side_effect=RuntimeError("boom")):
+            summary = connection.disconnect(self.store, "local-graph")
+            self.assertEqual((summary["status"], summary["packet_cleanup"]), ("disconnected", "needs_attention"))
+            with self.assertRaises(ContextError):
+                self._reconnect()
+        # Cleanup is still pending: the connection stays disconnected, and
+        # neither the surviving packet nor its attachment binding is usable.
+        with self.store.locked("local-graph") as locked:
+            self.assertEqual(connection.saved_state(locked.read(), "local-graph")["state"], "disconnected")
+        with self.assertRaises(ContextError):
+            self.load(handle, "claude:builder")
+        with self.assertRaises(ContextError):
+            context_delivery.read_binding(self.store, binding["revision"])
+        # Cleanup now succeeds: reconnect completes it and only then verifies.
+        self.assertEqual(self._reconnect()["status"], "verified")
+        with self.assertRaises(ContextError):
+            self.load(handle, "claude:builder")
+        with self.assertRaises(ContextError):
+            context_delivery.read_binding(self.store, binding["revision"])
+
     def test_connection_status_reports_the_graph_without_minting_evidence(self) -> None:
         report = connection.status(self.store, "local-graph", root=self.private)
         self.assertEqual(report["provider"], connection.PROVIDER)

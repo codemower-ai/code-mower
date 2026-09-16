@@ -117,6 +117,17 @@ def connect(store: ContextStore, name: str, spec: Any) -> dict[str, Any]:
             raise ContextError("this connection name already names a different context provider")
         if old is not None and saved_state(old, name)["state"] != "disconnected":
             raise ContextError("connection already exists; disconnect before changing its checkout or scope")
+        if old is not None:
+            # A reconnect retries packet cleanup under this same lock before
+            # authorizing anything again, even when the disconnect that
+            # preceded it already reported the cleanup complete: a packet or
+            # delivery binding that survived that attempt must not become
+            # authorized again just because the graph and scope are unchanged.
+            try:
+                from .context_packets import purge_connection
+                purge_connection(locked)
+            except Exception as exc:
+                raise ContextError("pending packet cleanup failed; reconnect refused") from exc
         state = {"schema": GRAPH_SCHEMA, "connection": name, "provider": PROVIDER,
                  "kind": CONNECTION_KIND, "state": "verified", "repository_root": str(root),
                  "repositories": spec["repositories"], "recipients": spec["recipients"]}
