@@ -106,6 +106,13 @@ disk untouched, so recovery there is to load it again rather than to restore it;
 either way the payload's `rollback` field says whether the previous service came
 back.
 
+Rolling back a *first* install means leaving nothing behind, and that is decided
+on the same terms as `remove`: the load state is read before anything is
+deleted, and a job launchd still holds -- or one it will not confirm absent --
+keeps its definition rather than being deleted out of the inventory. A bootstrap
+that times out after launchd has already registered the job is exactly that
+case; the rollback reports failure and leaves the service manageable.
+
 An *unreadable* existing definition -- a malformed plist, or one that cannot be
 opened -- refuses on the same terms. It is the one case where nothing can be
 compared, which makes it the last case that should be read as consent: taking it

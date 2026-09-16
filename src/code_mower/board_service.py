@@ -998,7 +998,12 @@ def process_cwd(pid: int, command_runner: lane_status.CommandRunner) -> str:
 def probe_identity(host: str, port: int, *, timeout: float = 0.75) -> dict[str, Any]:
     """Ask a listener who it is. Loopback only; no secrets, no paths."""
 
-    url = f"http://{host}:{int(port)}/api/identity"
+    # An IPv6 literal has to be bracketed or the colons in the address run into
+    # the port and the URL names a different thing entirely. `board._server_url`
+    # already does this; a healthy `--host ::1` service would otherwise fail
+    # every identity probe and time the health window out.
+    display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    url = f"http://{display_host}:{int(port)}/api/identity"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - loopback only
             raw = response.read().decode("utf-8") or "{}"
@@ -1773,18 +1778,35 @@ def _rollback(provider: Any, spec: ServiceSpec, previous_text: str) -> dict[str,
         # again at the next login. Either one means the rollback did not happen,
         # and the caller must say `rollback_failed` rather than `apply_failed`.
         unloaded, unload_detail = provider.bootout(spec.label)
-        deleted = provider.delete_definition(spec.label)
+        # The load state decides whether the definition may go, so it is read
+        # before anything is deleted. A job launchd still holds -- or one it
+        # will not confirm absent -- keeps its definition, because the
+        # definition is the only handle `board service status`, `remove` and
+        # the `board stop` keepalive guard have on it: deleting it strands a
+        # running, self-restarting service outside the inventory entirely.
+        # This is the rule `remove_service` already follows.
         still_loaded, _pid = _job_load_state(provider, spec.label)
-        present = bool(getattr(provider, "definition_exists", lambda _label: not deleted)(spec.label))
-        if still_loaded or present:
-            reasons = []
-            if still_loaded:
-                reasons.append(unload_detail or "launchd still holds the job")
-            if present:
-                reasons.append("its definition is still installed and would start it again at the next login")
+        if still_loaded:
             return {
                 "ok": False,
-                "detail": "could not remove the definition that failed to apply: " + "; ".join(reasons),
+                "detail": (
+                    "could not remove the definition that failed to apply: "
+                    + (unload_detail or "launchd still holds the job")
+                    + "; its definition was kept so the still-loaded job stays discoverable by "
+                    "board service status, remove and the board stop keepalive guard"
+                ),
+                "restored": False,
+                "deleted": False,
+            }
+        deleted = provider.delete_definition(spec.label)
+        present = bool(getattr(provider, "definition_exists", lambda _label: not deleted)(spec.label))
+        if present:
+            return {
+                "ok": False,
+                "detail": (
+                    "could not remove the definition that failed to apply: its definition is still "
+                    "installed and would start it again at the next login"
+                ),
                 "restored": False,
                 "deleted": False,
             }

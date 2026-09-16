@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
-from unittest import TestCase
+from unittest import TestCase, mock
 
 from code_mower import board, board_service, lane_status
 
@@ -1035,6 +1035,77 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertEqual(payload["status"], "rollback_failed")
         self.assertIn("rollback also failed", payload["message"])
         self.assertFalse(payload["rollback"]["restored"])
+
+    def test_a_rollback_that_cannot_unload_the_job_keeps_its_definition(self) -> None:
+        # launchd registered the job and then bootstrap gave up waiting for it,
+        # so the apply failed with a job still supervised -- and the rollback's
+        # bootout failed too. The definition is the only handle `board service
+        # status`, `remove` and the `board stop` keepalive guard have on that
+        # job, because all three discover services by scanning definitions.
+        # Deleting it would strand a running, self-restarting Board outside the
+        # inventory entirely, so it is kept until the job is confirmed gone.
+        class StrandsTheJob(board_service.LaunchdProvider):
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                super().bootstrap(label)
+                return False, "timed out waiting for the job to answer"
+
+            def bootout(self, label: str) -> tuple[bool, str]:
+                return False, "Bootout failed: 125: Unknown error"
+
+        payload = board_service.install_service(
+            self.spec(),
+            provider=StrandsTheJob(
+                command_runner=self.host.run, root=self.root, uid=self.host.uid, platform="darwin"
+            ),
+            command_runner=self.host.run,
+            identity_probe=self.host.identity_probe,
+            settle_seconds=0.0,
+            refresh_seconds=0.1,
+            timeout_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+
+        self.assertEqual(payload["status"], "rollback_failed")
+        self.assertFalse(payload["rollback"]["ok"])
+        self.assertFalse(payload["rollback"]["deleted"])
+        self.assertIn("still-loaded job stays discoverable", payload["rollback"]["detail"])
+        self.assertIn("ai.codemower.board.5332", self.host.loaded)
+        self.assertTrue((self.root / "ai.codemower.board.5332.plist").exists())
+        # The point of keeping it: the stranded job is still manageable.
+        self.assertEqual(
+            [item.label for item in self.host.provider().list_services()],
+            ["ai.codemower.board.5332"],
+        )
+        self.assertIn("Rollback: failed", board_service.render_operation_text(payload))
+
+    def test_an_identity_probe_brackets_an_ipv6_address(self) -> None:
+        # `http://::1:5332/api/identity` names something other than the service
+        # on `::1`: the colons of the address run into the port. Board binds
+        # IPv6 and `build_spec` accepts `--host ::1`, so an unbracketed probe
+        # would fail against a perfectly healthy service and exhaust the whole
+        # health window before install or restart reported failure.
+        seen: list[str] = []
+
+        class Answer:
+            def __enter__(self) -> "Answer":
+                return self
+
+            def __exit__(self, *_exc: object) -> bool:
+                return False
+
+            def read(self) -> bytes:
+                return b'{"repo": "codemower-ai/code-mower"}'
+
+        def urlopen(url: str, timeout: float = 0.0) -> Answer:
+            seen.append(url)
+            return Answer()
+
+        with mock.patch.object(board_service.urllib.request, "urlopen", urlopen):
+            ipv6 = board_service.probe_identity("::1", 5332)
+            board_service.probe_identity("127.0.0.1", 5332)
+
+        self.assertEqual(seen, ["http://[::1]:5332/api/identity", "http://127.0.0.1:5332/api/identity"])
+        self.assertEqual(ipv6["repo"], "codemower-ai/code-mower")
 
     def test_an_unreadable_definition_is_not_permission_to_take_over(self) -> None:
         self.install(self.spec())
