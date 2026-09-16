@@ -986,6 +986,24 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertEqual(ownership["state"], "foreign")
         self.assertEqual(ownership["pid"], foreign_pid)
 
+    def test_an_unreadable_definition_still_owns_the_port_it_is_serving(self) -> None:
+        # Ownership is the supervised pid, and a definition that cannot be
+        # parsed is still a job launchd supervises under our label. Reading the
+        # runtime state only for parseable definitions would make our own
+        # running Board look like somebody else's supervised process.
+        spec = self.spec()
+        self.install(spec)
+        (self.root / "ai.codemower.board.5332.plist").write_text("this is not a plist", encoding="utf-8")
+
+        service = self.host.provider().read_service(spec.label)
+        ownership = board_service.port_ownership(
+            5332, provider=self.host.provider(), label=spec.label, command_runner=self.host.run
+        )
+
+        self.assertFalse(service.readable)
+        self.assertTrue(service.loaded)
+        self.assertEqual(ownership["state"], "managed_self")
+
     def test_removal_that_cannot_unload_the_job_keeps_the_definition(self) -> None:
         # Deleting the definition of a job launchd still holds would strand a
         # running, self-restarting service: discovery scans definition files, so

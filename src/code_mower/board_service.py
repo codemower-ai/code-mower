@@ -441,6 +441,28 @@ def _service_from_definition(path: Path, data: Mapping[str, Any], text: str) -> 
     )
 
 
+def _unreadable_service(label: str, path: Path, *, digest: str, message: str) -> ManagedService:
+    """A definition that is installed but cannot be understood.
+
+    The label, and therefore the port, still come from the filename; nothing
+    else about the definition can be trusted.
+    """
+
+    return ManagedService(
+        label=label,
+        definition_path=path,
+        arguments=(),
+        repo="",
+        repo_path="",
+        host=DEFAULT_HOST,
+        port=port_from_label(label),
+        keepalive=False,
+        digest=digest,
+        readable=False,
+        message=message,
+    )
+
+
 def parse_launchctl_arguments(stdout: str) -> tuple[str, ...] | None:
     """The `arguments = { ... }` block of a `launchctl print` dump.
 
@@ -507,58 +529,55 @@ class LaunchdProvider:
 
     # -- reads --------------------------------------------------------------
     def read_service(self, label: str) -> ManagedService | None:
+        """The installed definition, always carrying the job's runtime state.
+
+        Runtime state comes from the label, which is the filename, so it is just
+        as knowable for a definition that cannot be parsed as for one that can.
+        A service whose plist was corrupted is still a service launchd is
+        supervising under our label, and anything deciding who owns its port has
+        to see that.
+        """
+
         path = self.definition_path(label)
+
+        def with_runtime(service: ManagedService) -> ManagedService:
+            loaded, pid = self.runtime(label)
+            return dataclasses.replace(service, loaded=loaded, pid=pid)
+
         try:
             text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return None
         except OSError as exc:
-            return ManagedService(
-                label=label,
-                definition_path=path,
-                arguments=(),
-                repo="",
-                repo_path="",
-                host=DEFAULT_HOST,
-                port=port_from_label(label),
-                keepalive=False,
-                digest="",
-                readable=False,
-                message=f"service definition could not be read ({exc.__class__.__name__})",
+            return with_runtime(
+                _unreadable_service(
+                    label,
+                    path,
+                    digest="",
+                    message=f"service definition could not be read ({exc.__class__.__name__})",
+                )
             )
         try:
             data = plistlib.loads(text.encode("utf-8"))
         except Exception:  # noqa: BLE001 - any malformed plist is the same fact
-            return ManagedService(
-                label=label,
-                definition_path=path,
-                arguments=(),
-                repo="",
-                repo_path="",
-                host=DEFAULT_HOST,
-                port=port_from_label(label),
-                keepalive=False,
-                digest=definition_digest(text),
-                readable=False,
-                message="service definition is not a readable plist",
+            return with_runtime(
+                _unreadable_service(
+                    label,
+                    path,
+                    digest=definition_digest(text),
+                    message="service definition is not a readable plist",
+                )
             )
         if not isinstance(data, Mapping):
-            return ManagedService(
-                label=label,
-                definition_path=path,
-                arguments=(),
-                repo="",
-                repo_path="",
-                host=DEFAULT_HOST,
-                port=port_from_label(label),
-                keepalive=False,
-                digest=definition_digest(text),
-                readable=False,
-                message="service definition is not a plist dictionary",
+            return with_runtime(
+                _unreadable_service(
+                    label,
+                    path,
+                    digest=definition_digest(text),
+                    message="service definition is not a plist dictionary",
+                )
             )
-        service = _service_from_definition(path, data, text)
-        loaded, pid = self.runtime(label)
-        return dataclasses.replace(service, loaded=loaded, pid=pid)
+        return with_runtime(_service_from_definition(path, data, text))
 
     def list_services(self) -> list[ManagedService]:
         try:
@@ -882,15 +901,15 @@ def _is_python_interpreter(value: str) -> bool:
 
 
 def normalize_live_arguments(live: Sequence[str], expected: Sequence[str]) -> tuple[str, ...]:
-    """Restate an observed command line in the installed definition's terms.
+    """Restate a reported argument list in the installed definition's terms.
 
     A pip installation puts a console script at `.../bin/code-mower`, and that
     single path is what the definition names. The script carries a `#!`, so the
-    process launchd actually forks is the interpreter with the script as its
-    first argument, and `ps` reports `/.../python3 /.../bin/code-mower board
-    serve ...`. Both spellings describe the same process, so an exact
-    comparison against the definition would fail every healthy console-script
-    service.
+    process that is actually forked is the interpreter with the script as its
+    first argument, and a provider reporting the exec'd form says
+    `/.../python3 /.../bin/code-mower board serve ...`. Both spellings describe
+    the same process, so an exact comparison against the definition would fail
+    every healthy console-script service.
 
     The interpreter/script prefix is folded back to the script only when the
     observed list is exactly one argument longer, its first argument is a
@@ -988,6 +1007,12 @@ def validate_binding(
         # From launchd, not from `ps`: the argument boundaries have to survive a
         # checkout or executable path containing a space, and a space-joined
         # `ps -o command=` line cannot be split back into the original argv.
+        # This is the argv of the job launchd is supervising as `pid`, which is
+        # what catches a service that came back on an argument list the
+        # definition no longer carries. That the pid is this service's process
+        # is proved separately: `service.loaded` takes the pid from launchd,
+        # `process.supervisor` and `process.repo_path` read that same pid, and
+        # `binding.port` requires it to be the process holding the port.
         reported = provider.job_arguments(spec.label) if hasattr(provider, "job_arguments") else None
         live_arguments = tuple(reported or ())
         compared_arguments = normalize_live_arguments(live_arguments, wanted_arguments)
