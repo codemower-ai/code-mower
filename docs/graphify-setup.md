@@ -42,7 +42,8 @@ Download only the wheel, then verify before installing:
 ```bash
 set -euo pipefail
 python3.12 -m venv "$GRAPHIFY_ENV"
-"$GRAPHIFY_ENV/bin/python" -m pip --isolated download --no-cache-dir \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null "$GRAPHIFY_ENV/bin/python" -m pip --isolated download --no-cache-dir \
   --index-url https://pypi.org/simple/ --only-binary=:all: --no-deps \
   --dest "$GRAPHIFY_WHEELS" graphifyy==0.9.58
 "$GRAPHIFY_ENV/bin/python" - "$GRAPHIFY_WHEELS" <<'PY'
@@ -54,7 +55,8 @@ expected = 'e239803288e91c723d6e30540860bd6d5a1dc3f0914b9fc1104b0233e98aaeb8'
 if hashlib.sha256(wheel.read_bytes()).hexdigest() != expected:
     raise SystemExit('Graphify wheel digest mismatch; stop before installation')
 PY
-"$GRAPHIFY_ENV/bin/python" -m pip --isolated install --no-cache-dir \
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null "$GRAPHIFY_ENV/bin/python" -m pip --isolated install --no-cache-dir \
   --index-url https://pypi.org/simple/ \
   "$GRAPHIFY_WHEELS"/graphifyy-0.9.58-*.whl
 ```
@@ -62,6 +64,10 @@ PY
 This installs the verified local wheel in the separate environment, with
 dependency downloads restricted to canonical PyPI. Keep this environment,
 the downloaded wheel, graph state and all provider output outside Git repositories.
+Both pip commands clear ambient index and link variables and disable all pip
+configuration files with `PIP_CONFIG_FILE=/dev/null`. `--isolated` alone still
+permits global/site configuration and a file selected by `PIP_CONFIG_FILE`;
+those sources must not add an alternate index or local dependency source.
 
 ## Separate contained offline build
 

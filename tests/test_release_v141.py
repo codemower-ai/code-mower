@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,61 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class GraphifyGuidanceTests(unittest.TestCase):
+    def test_documented_acquisition_neutralizes_ambient_pip_sources(self):
+        doc = (ROOT / "docs/graphify-setup.md").read_text()
+        blocks = re.findall(r"```bash\n(.*?)```", doc, re.S)
+        acquisition = next(block for block in blocks if '-m venv' in block)
+        commands = [
+            line for line in acquisition.replace("\\\n", "").splitlines()
+            if " -m pip " in line
+        ]
+        self.assertEqual(len(commands), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            environment = root / "operator owned" / "venv"
+            wheels = root / "operator owned" / "wheels"
+            (environment / "bin").mkdir(parents=True)
+            wheels.mkdir()
+            wheel = wheels / "graphifyy-0.9.58-py3-none-any.whl"
+            wheel.touch()
+            # Record only the pip command boundary: never invoke pip or Graphify.
+            recorder = root / "record.py"
+            recorder.write_text(
+                "import json, os, sys\n"
+                "print(json.dumps({'args': sys.argv[1:], 'env': "
+                "{k: v for k, v in os.environ.items() if k.startswith('PIP_')}}))\n"
+            )
+            interpreter = environment / "bin" / "python"
+            interpreter.write_text(
+                f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -I '
+                f'{shlex.quote(str(recorder))} "$@"\n'
+            )
+            interpreter.chmod(0o755)
+            ambient = {
+                "PATH": os.defpath,
+                "GRAPHIFY_ENV": str(environment),
+                "GRAPHIFY_WHEELS": str(wheels),
+                "PIP_INDEX_URL": "https://ambient.invalid/simple/",
+                "PIP_EXTRA_INDEX_URL": "https://extra.invalid/simple/",
+                "PIP_FIND_LINKS": str(root / "ambient wheels"),
+                "PIP_NO_INDEX": "1",
+                "PIP_CONFIG_FILE": str(root / "ambient-pip.conf"),
+            }
+            expected = (
+                ["download", "--no-cache-dir", "--index-url", "https://pypi.org/simple/",
+                 "--only-binary=:all:", "--no-deps", "--dest", str(wheels), "graphifyy==0.9.58"],
+                ["install", "--no-cache-dir", "--index-url", "https://pypi.org/simple/", str(wheel)],
+            )
+            for command, arguments in zip(commands, expected, strict=True):
+                with self.subTest(operation=arguments[0]):
+                    result = subprocess.run(
+                        ["bash", "-c", command], cwd=root, env=ambient,
+                        capture_output=True, text=True, check=True,
+                    )
+                    recorded = json.loads(result.stdout)
+                    self.assertEqual(recorded["env"], {"PIP_CONFIG_FILE": os.devnull})
+                    self.assertEqual(recorded["args"], ["-m", "pip", "--isolated", *arguments])
+
     def test_documented_provider_paths_stay_outside_selected_checkout(self):
         doc = (ROOT / "docs/graphify-setup.md").read_text()
         blocks = re.findall(r"```bash\n(.*?)```", doc, re.S)
