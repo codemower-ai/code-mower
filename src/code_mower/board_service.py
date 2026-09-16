@@ -94,6 +94,7 @@ ORIGIN_SLUG_RE = re.compile(
 _LABEL_PORT_RE = re.compile(rf"^{re.escape(SERVICE_LABEL_PREFIX)}\.(\d+)$")
 _LAUNCHCTL_PID_RE = re.compile(r"^\s*pid\s*=\s*(\d+)", re.MULTILINE)
 _LAUNCHCTL_STATE_RE = re.compile(r"^\s*state\s*=\s*(\S+)", re.MULTILINE)
+_PYTHON_EXECUTABLE_RE = re.compile(r"^python(?:\d+(?:\.\d+)?)?$")
 
 # The binding checks that make up the serving gate. Named here so a runbook can
 # assert the gate still covers everything it claims to cover.
@@ -353,6 +354,38 @@ def render_definition(spec: ServiceSpec) -> str:
     return plistlib.dumps(launchd_definition(spec), sort_keys=True).decode("utf-8")
 
 
+def log_directories(spec: ServiceSpec) -> tuple[Path, ...]:
+    """The parent directories launchd must be able to open the log files in."""
+
+    parents = []
+    for path in (spec.log_path, spec.error_log_path):
+        parent = path.parent
+        if not str(path) or str(parent) in {"", "."}:
+            continue
+        if parent not in parents:
+            parents.append(parent)
+    return tuple(parents)
+
+
+def ensure_log_directories(spec: ServiceSpec) -> str:
+    """Create the log parents, returning "" on success or a reason on failure.
+
+    The definition directs both output streams into `.code-mower/board/logs`,
+    which does not exist in a fresh checkout. launchd will not start a job whose
+    `StandardOutPath` cannot be opened, so the directories are created *before*
+    the job is loaded -- and, on an apply that replaces a running service,
+    before the running one is booted out, so a filesystem failure is reported
+    without having disrupted a Board that was working.
+    """
+
+    for parent in log_directories(spec):
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return f"could not create the service log directory ({exc.__class__.__name__})"
+    return ""
+
+
 def binding_from_arguments(arguments: Sequence[str]) -> dict[str, Any]:
     """Recover the Board binding a command line encodes.
 
@@ -549,14 +582,22 @@ class LaunchdProvider:
         return path
 
     def delete_definition(self, label: str) -> bool:
+        """Whether the definition is gone afterwards, not whether we unlinked it."""
+
         path = self.definition_path(label)
         try:
             path.unlink()
         except FileNotFoundError:
-            return False
+            return True
         except OSError:
             return False
         return True
+
+    def definition_exists(self, label: str) -> bool:
+        try:
+            return self.definition_path(label).exists()
+        except OSError:
+            return True
 
     def bootstrap(self, label: str) -> tuple[bool, str]:
         completed = self._run(["launchctl", "bootstrap", self.domain, str(self.definition_path(label))])
@@ -609,6 +650,9 @@ class UnsupportedProvider:
 
     def read_service(self, label: str) -> ManagedService | None:
         return None
+
+    def definition_exists(self, label: str) -> bool:
+        return False
 
     def list_services(self) -> list[ManagedService]:
         return []
@@ -704,11 +748,18 @@ def probe_identity(host: str, port: int, *, timeout: float = 0.75) -> dict[str, 
 
 
 def port_listeners(port: int, command_runner: lane_status.CommandRunner) -> list[dict[str, Any]]:
-    """Every local Board-shaped or unknown listener holding a port."""
+    """Every local process holding a port, Board-shaped or not.
 
-    local = lane_status.collect_local_boards(command_runner)
+    Deliberately unfiltered. "Is this port free" and "was this port released"
+    are questions about the port, not about Code Mower: a Node server on 5332,
+    or an unrelated Python process on a nondefault port, holds the port just as
+    firmly as a Board does. Asking the Board-shaped inventory would call those
+    ports free and let an apply mutate local state into a conflict, or report a
+    port released while another process still owns it.
+    """
+
     listeners = []
-    for item in local.get("boards") or []:
+    for item in lane_status.local_listeners(command_runner):
         if isinstance(item, Mapping) and int(item.get("port") or -1) == int(port):
             listeners.append(dict(item))
     return listeners
@@ -759,6 +810,43 @@ def port_ownership(
 
 def _check(check_id: str, status: str, message: str, **extra: Any) -> dict[str, Any]:
     return {"id": check_id, "status": status, "message": message, **extra}
+
+
+def _is_python_interpreter(value: str) -> bool:
+    name = os.path.basename(str(value or "")).lower()
+    return bool(_PYTHON_EXECUTABLE_RE.match(name))
+
+
+def normalize_live_arguments(live: Sequence[str], expected: Sequence[str]) -> tuple[str, ...]:
+    """Restate an observed command line in the installed definition's terms.
+
+    A pip installation puts a console script at `.../bin/code-mower`, and that
+    single path is what the definition names. The script carries a `#!`, so the
+    process launchd actually forks is the interpreter with the script as its
+    first argument, and `ps` reports `/.../python3 /.../bin/code-mower board
+    serve ...`. Both spellings describe the same process, so an exact
+    comparison against the definition would fail every healthy console-script
+    service.
+
+    The interpreter/script prefix is folded back to the script only when the
+    observed list is exactly one argument longer, its first argument is a
+    Python interpreter, and the script it runs is the very executable the
+    definition names. Anything else is returned untouched and still has to
+    match the definition exactly -- this narrows a false failure, it does not
+    widen what counts as the same process.
+    """
+
+    observed = tuple(str(item) for item in live)
+    wanted = tuple(str(item) for item in expected)
+    if not observed or not wanted:
+        return observed
+    if len(observed) != len(wanted) + 1:
+        return observed
+    if not _is_python_interpreter(observed[0]) or _is_python_interpreter(wanted[0]):
+        return observed
+    if not _same_path(observed[1], wanted[0]):
+        return observed
+    return (wanted[0], *observed[2:])
 
 
 def validate_binding(
@@ -838,7 +926,8 @@ def validate_binding(
             live_arguments = tuple(shlex.split(live_command))
         except ValueError:
             live_arguments = ()
-        arguments_match = live_arguments == wanted_arguments
+        compared_arguments = normalize_live_arguments(live_arguments, wanted_arguments)
+        arguments_match = compared_arguments == wanted_arguments
         checks.append(
             _check(
                 "process.arguments",
@@ -846,8 +935,11 @@ def validate_binding(
                 "running process argument list matches the definition exactly"
                 if arguments_match
                 else "running process was started with different arguments than the definition",
+                # The observed list, not the normalized one: a reviewer reading a
+                # failure needs what `ps` actually said.
                 arguments=redact_arguments(live_arguments, show_local_paths=show_local_paths),
                 arguments_redacted=not show_local_paths,
+                interpreter_prefix_normalized=compared_arguments != live_arguments,
             )
         )
         cwd = process_cwd(pid, command_runner)
@@ -1118,6 +1210,34 @@ def _origin_guard(
     return None
 
 
+def _unreadable_refusal(
+    spec: ServiceSpec,
+    expected: str,
+    existing: ManagedService,
+    *,
+    show_local_paths: bool,
+) -> dict[str, Any]:
+    """Refuse an installed definition we cannot read, unless takeover is asked for.
+
+    A malformed or unreadable plist is the one case where nothing can be
+    compared, which makes it the last case that should be treated as consent.
+    Falling through would boot the job out and overwrite the file with no
+    recoverable backup -- the definition's contents could not be read, so a
+    rollback could not restore them. `--replace` is the same explicit takeover
+    that stale arguments require.
+    """
+
+    return _operation_payload(
+        "stale_arguments",
+        f"a definition is installed for this port but cannot be read ({existing.message or 'unreadable'}); "
+        "rerun with --replace to overwrite it, which discards its current contents",
+        spec,
+        expected,
+        show_local_paths=show_local_paths,
+        installed_readable=False,
+    )
+
+
 def install_service(
     spec: ServiceSpec,
     *,
@@ -1142,6 +1262,8 @@ def install_service(
     rendered = render_definition(spec)
     expected = definition_digest(rendered)
     existing = provider.read_service(spec.label)
+    if existing is not None and not existing.readable and not replace:
+        return _unreadable_refusal(spec, expected, existing, show_local_paths=show_local_paths)
     if existing is not None and existing.readable and existing.digest == expected and not replace:
         health = delayed_health(
             spec,
@@ -1253,6 +1375,15 @@ def _apply(
 ) -> dict[str, Any]:
     """Replace a managed binding atomically, or restore what was there before."""
 
+    # Before anything is booted out: launchd cannot start a job whose log files
+    # it cannot open, and a filesystem failure must not be discovered after the
+    # previously working service has already been stopped.
+    log_failure = ensure_log_directories(spec)
+    if log_failure:
+        return _operation_payload(
+            "apply_failed", log_failure, spec, expected, show_local_paths=show_local_paths
+        )
+
     previous_text = ""
     if previous is not None and previous.readable:
         try:
@@ -1264,12 +1395,21 @@ def _apply(
     try:
         provider.write_definition(spec.label, rendered)
     except OSError as exc:
+        detail = f"could not write the service definition ({exc.__class__.__name__})"
+        if previous is None:
+            return _operation_payload(
+                "apply_failed", detail, spec, expected, show_local_paths=show_local_paths
+            )
+        # The previous service was already booted out, so failing here without
+        # reloading it would leave a Board that was working stopped.
+        restore = _restore_unwritten(provider, spec)
         return _operation_payload(
-            "apply_failed",
-            f"could not write the service definition ({exc.__class__.__name__})",
+            "apply_failed" if restore["ok"] else "rollback_failed",
+            detail if restore["ok"] else f"{detail}; rollback also failed: {restore['detail']}",
             spec,
             expected,
             show_local_paths=show_local_paths,
+            rollback=restore,
         )
     ok, detail = provider.bootstrap(spec.label)
     if not ok:
@@ -1307,6 +1447,21 @@ def _apply(
         delayed=health,
         show_local_paths=show_local_paths,
     )
+
+
+def _restore_unwritten(provider: Any, spec: ServiceSpec) -> dict[str, Any]:
+    """Reload the previous service after its replacement failed to be written.
+
+    Distinct from `_rollback`, and deliberately so. `write_definition` swaps
+    atomically, so a failed write leaves the previous definition on disk exactly
+    as it was: there is nothing to rewrite, and nothing to delete -- deleting
+    it, which is what `_rollback` correctly does for a definition we *did*
+    write, would destroy the very thing being recovered. All that is owed here
+    is loading the untouched definition again, and saying whether that worked.
+    """
+
+    ok, detail = provider.bootstrap(spec.label)
+    return {"ok": ok, "detail": detail or "reloaded the previous definition", "restored": ok}
 
 
 def _rollback(provider: Any, spec: ServiceSpec, previous_text: str) -> dict[str, Any]:
@@ -1368,6 +1523,8 @@ def restart_service(
             sleeper=sleeper,
             clock=clock,
         )
+    if not existing.readable and not replace:
+        return _unreadable_refusal(spec, expected, existing, show_local_paths=show_local_paths)
     if existing.readable and existing.digest != expected and not replace:
         return _operation_payload(
             "stale_arguments",
@@ -1378,7 +1535,19 @@ def restart_service(
             installed_repo=existing.repo,
         )
     if existing.readable and existing.digest == expected:
-        ok, detail = provider.kickstart(spec.label)
+        log_failure = ensure_log_directories(spec)
+        if log_failure:
+            return _operation_payload("apply_failed", log_failure, spec, expected, show_local_paths=show_local_paths)
+        # `kickstart` restarts a job launchd already holds; it cannot load one
+        # that is not registered. A valid definition whose job was booted out --
+        # after a logout, or a manual `launchctl bootout` -- is recovered by
+        # bootstrapping it, which is what the runbook's restart has to do.
+        if existing.loaded:
+            ok, detail = provider.kickstart(spec.label)
+            restarted_message = "restarted the managed Board service in place and validated its binding"
+        else:
+            ok, detail = provider.bootstrap(spec.label)
+            restarted_message = "loaded the installed definition, which was not running, and validated its binding"
         if not ok:
             return _operation_payload("apply_failed", detail, spec, expected, show_local_paths=show_local_paths)
         health = delayed_health(
@@ -1395,7 +1564,7 @@ def restart_service(
         )
         status = "restarted" if health["state"] == "pass" else "delayed_health_failed"
         message = (
-            "restarted the managed Board service in place and validated its binding"
+            restarted_message
             if health["state"] == "pass"
             else "the service restarted but its binding did not validate within the delayed health window"
         )
@@ -1479,6 +1648,10 @@ def remove_service(
     service = resolved["service"]
     ok, detail = provider.bootout(service.label)
     deleted = provider.delete_definition(service.label)
+    # The authority is the filesystem, not the return value: a definition still
+    # in LaunchAgents starts the service again at the next login, so removal has
+    # not happened however cleanly the unload went.
+    definition_present = bool(getattr(provider, "definition_exists", lambda _label: not deleted)(service.label))
     if settle_seconds:
         sleeper(max(0.0, float(settle_seconds)))
     remaining = port_listeners(service.port, command_runner) if service.port else []
@@ -1487,11 +1660,20 @@ def remove_service(
         "label": service.label,
         "repo": service.repo,
         "port": service.port,
-        "definition_deleted": deleted,
+        "definition_deleted": deleted and not definition_present,
+        "definition_present": definition_present,
     }
     if not ok:
         payload["status"] = "remove_incomplete"
         payload["message"] = detail or "the service could not be unloaded"
+        return payload
+    if definition_present:
+        payload["status"] = "remove_incomplete"
+        payload["message"] = (
+            "the service was unloaded but its definition could not be deleted, so it would "
+            "start again at the next login; remove the definition by hand before treating "
+            "this port as free"
+        )
         return payload
     if remaining:
         payload["status"] = "remove_incomplete"

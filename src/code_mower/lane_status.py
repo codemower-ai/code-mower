@@ -517,6 +517,18 @@ def _listener_inventory(command_runner: CommandRunner) -> list[dict[str, Any]]:
     return _ss_listeners(text) if text else []
 
 
+def local_listeners(command_runner: CommandRunner = _run_command) -> list[dict[str, Any]]:
+    """Every local TCP listener, unfiltered.
+
+    `collect_local_boards` narrows this to Board-shaped listeners, which is the
+    right inventory for "which Boards are running here" and the wrong one for
+    "is this port free": a Node server on 5332 is not a Board, but it does hold
+    the port, and an apply that treats the port as free would fight it.
+    """
+
+    return _listener_inventory(command_runner)
+
+
 def _process_cwd(pid: int, command_runner: CommandRunner) -> str:
     for line in _stdout(command_runner, ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"]).splitlines():
         if line.startswith("n"):

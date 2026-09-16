@@ -59,7 +59,7 @@ None of these change any local state:
 
 | Status | Cause |
 | --- | --- |
-| `stale_arguments` | a different definition is installed for this port; rerun with `--replace` |
+| `stale_arguments` | a different definition is installed for this port, or one that cannot be read; rerun with `--replace` |
 | `ownership_mismatch` | another managed label owns the port, or `--repo-path` was not proven to be a checkout of `--repo` |
 | `external_supervisor` | the port is held by a process a different supervisor owns |
 | `port_conflict` | the port is held by an unrelated local process |
@@ -70,7 +70,45 @@ None of these change any local state:
 `--replace` is the only way to take over an existing definition for a port, and
 the replacement is atomic: the definition file is swapped with `os.replace`, and
 a failed bootstrap restores exactly the previous definition or reports
-`rollback_failed`.
+`rollback_failed`. A write that fails outright leaves the previous definition on
+disk untouched, so recovery there is to load it again rather than to restore it;
+either way the payload's `rollback` field says whether the previous service came
+back.
+
+An *unreadable* existing definition -- a malformed plist, or one that cannot be
+opened -- refuses on the same terms. It is the one case where nothing can be
+compared, which makes it the last case that should be read as consent: taking it
+over overwrites contents that could not be read and therefore could not be
+rolled back, so it needs the same explicit `--replace`.
+
+Port occupancy is decided from the *unfiltered* local listener inventory, not
+from the Board-shaped one. A Node server on 5332, or an ordinary Python process
+on a nondefault port, is not a Board but holds the port exactly as firmly; a
+narrower inventory would call the port free and let an apply mutate local state
+straight into a conflict.
+
+### Logs
+
+The definition sends both output streams to `<repo>/.code-mower/board/logs`.
+launchd will not start a job whose `StandardOutPath` cannot be opened, so an
+apply creates both parents first -- and creates them *before* booting out the
+service it is replacing, so a filesystem failure is reported as `apply_failed`
+without having stopped a Board that was working.
+
+### Restart and the load state
+
+`restart` on an unchanged definition restarts the job in place with `launchctl
+kickstart -k`. If the definition is valid but its job is *not* loaded -- after a
+logout, or a manual `launchctl bootout` -- there is no job to kickstart, so the
+existing definition is bootstrapped instead. Either way the delayed-health gate
+has to pass before the restart is called a restart.
+
+### Removal
+
+`remove` reports `removed` only when the definition is actually gone from
+`LaunchAgents` and the port was released. A definition that could not be deleted
+would start the service again at the next login, so that reports
+`remove_incomplete` with `definition_present: true` rather than success.
 
 ### Proving the checkout
 

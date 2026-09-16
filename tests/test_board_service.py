@@ -148,6 +148,14 @@ class FakeHost:
             return _completed("")
         return _completed("", returncode=1)
 
+    def _process_name(self, pid: int) -> str:
+        command = str((self.processes.get(pid) or {}).get("command") or "")
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            argv = []
+        return Path(argv[0]).name if argv else "unknown"
+
     def _ps(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         pid = int(argv[argv.index("-p") + 1])
         process = self.processes.get(pid)
@@ -165,7 +173,12 @@ class FakeHost:
                 return _completed("", returncode=1)
             lines = []
             for port, pid in sorted(self.listeners.items()):
-                lines.extend([f"p{pid}", "ccode-mower", f"n127.0.0.1:{port}"])
+                # The real `lsof` names the executable that holds the port, which
+                # is how a listener gets classified. Reporting every listener as
+                # `code-mower` would make a Node server on 5332 look Board-shaped
+                # and hide exactly the misclassification this inventory must not
+                # make.
+                lines.extend([f"p{pid}", f"c{self._process_name(pid)}", f"n127.0.0.1:{port}"])
             return _completed("\n".join(lines) + "\n")
         if "-d" in argv:
             pid = int(argv[argv.index("-p") + 1])
@@ -665,6 +678,232 @@ class BoardServiceLifecycleTest(ServiceHarness):
 
         self.assertEqual(payload["status"], "remove_incomplete")
         self.assertIn("still held", payload["message"])
+
+    def test_install_creates_the_log_directories_launchd_must_open(self) -> None:
+        # A fresh checkout has no `.code-mower/board/logs`. launchd will not
+        # start a job whose StandardOutPath cannot be opened, so the apply has
+        # to create both parents itself.
+        logs = self.checkout / ".code-mower" / "board" / "logs"
+        self.assertFalse(logs.exists())
+
+        payload = self.install(self.spec())
+
+        self.assertEqual(payload["status"], "installed")
+        self.assertTrue(logs.is_dir())
+        data = plistlib.loads((self.root / "ai.codemower.board.5332.plist").read_bytes())
+        self.assertTrue(Path(data["StandardOutPath"]).parent.is_dir())
+        self.assertTrue(Path(data["StandardErrorPath"]).parent.is_dir())
+
+    def test_an_unusable_log_directory_is_reported_before_the_running_board_is_stopped(self) -> None:
+        self.install(self.spec())
+        serving_pid = self.host.loaded["ai.codemower.board.5332"]
+        blocked = self.tmp / "blocked"
+        blocked.mkdir()
+        # A regular file where the log directory's parent has to go.
+        (blocked / ".code-mower").write_text("not a directory", encoding="utf-8")
+        self.host.origins[str(blocked)] = "git@github.com:codemower-ai/code-mower.git"
+
+        payload = self.restart(self.spec(repo_path=blocked), replace=True)
+
+        self.assertEqual(payload["status"], "apply_failed")
+        self.assertIn("log directory", payload["message"])
+        # The Board that was serving is still the Board that is serving.
+        self.assertEqual(self.host.loaded["ai.codemower.board.5332"], serving_pid)
+        self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
+
+    def test_a_console_script_reported_with_its_interpreter_is_still_healthy(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        pid = self.host.loaded["ai.codemower.board.5332"]
+        definition_argv = shlex.split(str(self.host.processes[pid]["command"]))
+        # What `ps` reports for a `#!`-headed console script: the interpreter,
+        # then the script, then the script's own arguments.
+        self.host.processes[pid]["command"] = shlex.join(["/usr/local/bin/python3.12", *definition_argv])
+
+        binding = board_service.validate_binding(
+            spec,
+            provider=self.host.provider(),
+            command_runner=self.host.run,
+            identity_probe=self.host.identity_probe,
+        )
+
+        self.assertEqual(binding["failing_checks"], [])
+        check = next(item for item in binding["checks"] if item["id"] == "process.arguments")
+        self.assertTrue(check["interpreter_prefix_normalized"])
+
+    def test_an_interpreter_running_another_script_still_fails_the_gate(self) -> None:
+        # Folding away the interpreter prefix narrows a false failure; it must
+        # not turn a genuinely different program into a match.
+        spec = self.spec()
+        self.install(spec)
+        pid = self.host.loaded["ai.codemower.board.5332"]
+        definition_argv = shlex.split(str(self.host.processes[pid]["command"]))
+        self.host.processes[pid]["command"] = shlex.join(
+            ["/usr/local/bin/python3.12", "/usr/local/bin/some-other-tool", *definition_argv[1:]]
+        )
+
+        binding = board_service.validate_binding(
+            spec,
+            provider=self.host.provider(),
+            command_runner=self.host.run,
+            identity_probe=self.host.identity_probe,
+        )
+
+        self.assertIn("process.arguments", binding["failing_checks"])
+
+    def test_a_listener_that_is_not_a_board_still_stops_the_apply(self) -> None:
+        # A Node server is not a Board, but it holds 5332 just as firmly. The
+        # Board-shaped inventory would call this port free.
+        self.host.add_foreign_listener(5332, command="/usr/local/bin/node /srv/dashboard/server.js", ppid=4242)
+
+        payload = self.install(self.spec())
+
+        self.assertEqual(payload["status"], "port_conflict")
+        self.assertEqual(list(self.root.glob("*.plist")), [])
+        self.assertEqual(self.host.loaded, {})
+
+    def test_a_listener_on_a_nondefault_port_still_stops_the_apply(self) -> None:
+        self.host.add_foreign_listener(5999, command="/usr/bin/python3 -m http.server 5999", ppid=4242)
+
+        payload = self.install(self.spec(port=5999))
+
+        self.assertEqual(payload["status"], "port_conflict")
+        self.assertEqual(list(self.root.glob("*.plist")), [])
+
+    def test_a_failed_replacement_write_reloads_the_service_it_stopped(self) -> None:
+        self.install(self.spec())
+        before = (self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8")
+        drifted = self.spec(repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332)
+
+        payload = self._restart_with(self._refusing_writes(), drifted, replace=True)
+
+        self.assertEqual(payload["status"], "apply_failed")
+        self.assertTrue(payload["rollback"]["ok"])
+        self.assertTrue(payload["rollback"]["restored"])
+        # The atomic swap never happened, so the definition is untouched -- and
+        # the Board it describes is serving again rather than left stopped.
+        self.assertEqual((self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8"), before)
+        self.assertIn("ai.codemower.board.5332", self.host.loaded)
+        self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
+
+    def test_a_failed_write_that_cannot_be_reloaded_says_so(self) -> None:
+        self.install(self.spec())
+        self.host.bootstrap_failures.add("ai.codemower.board.5332")
+        drifted = self.spec(repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332)
+
+        payload = self._restart_with(self._refusing_writes(), drifted, replace=True)
+
+        self.assertEqual(payload["status"], "rollback_failed")
+        self.assertIn("rollback also failed", payload["message"])
+        self.assertFalse(payload["rollback"]["restored"])
+
+    def test_an_unreadable_definition_is_not_permission_to_take_over(self) -> None:
+        self.install(self.spec())
+        path = self.root / "ai.codemower.board.5332.plist"
+        path.write_text("this is not a plist", encoding="utf-8")
+
+        refused_restart = self.restart(self.spec())
+        refused_install = self.install(self.spec())
+
+        self.assertEqual(refused_restart["status"], "stale_arguments")
+        self.assertFalse(refused_restart["installed_readable"])
+        self.assertEqual(refused_install["status"], "stale_arguments")
+        # Nothing overwritten -- the contents could not be read, so a rollback
+        # could not have restored them -- and nothing unloaded.
+        self.assertEqual(path.read_text(encoding="utf-8"), "this is not a plist")
+        self.assertIn("ai.codemower.board.5332", self.host.loaded)
+
+    def test_an_explicit_replace_takes_over_an_unreadable_definition(self) -> None:
+        self.install(self.spec())
+        (self.root / "ai.codemower.board.5332.plist").write_text("this is not a plist", encoding="utf-8")
+
+        payload = self.restart(self.spec(), replace=True)
+
+        self.assertEqual(payload["status"], "restarted")
+        service = self.host.provider().read_service("ai.codemower.board.5332")
+        self.assertTrue(service.readable)
+        self.assertEqual(service.digest, payload["digest"])
+
+    def test_restart_loads_a_valid_definition_whose_job_was_unloaded(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        # A logout, or a manual `launchctl bootout`: the job is gone, but the
+        # definition it was applied from is still exactly right. `kickstart`
+        # cannot load an unregistered job, so restart has to bootstrap it.
+        self.host.provider().bootout(spec.label)
+        self.assertEqual(self.host.loaded, {})
+
+        payload = self.restart(spec)
+
+        self.assertEqual(payload["status"], "restarted")
+        self.assertEqual(payload["delayed_health"]["state"], "pass")
+        self.assertIn("ai.codemower.board.5332", self.host.loaded)
+        self.assertIn(
+            ["launchctl", "bootstrap", "gui/501", str(self.root / "ai.codemower.board.5332.plist")],
+            self.host.calls,
+        )
+
+    def test_removal_that_cannot_delete_the_definition_is_not_reported_as_removed(self) -> None:
+        self.install(self.spec())
+
+        class KeepsDefinition(board_service.LaunchdProvider):
+            def delete_definition(self, label: str) -> bool:
+                return False
+
+        payload = board_service.remove_service(
+            provider=KeepsDefinition(
+                command_runner=self.host.run, root=self.root, uid=self.host.uid, platform="darwin"
+            ),
+            port=5332,
+            command_runner=self.host.run,
+            settle_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+
+        self.assertEqual(payload["status"], "remove_incomplete")
+        self.assertTrue(payload["definition_present"])
+        self.assertFalse(payload["definition_deleted"])
+        self.assertIn("next login", payload["message"])
+        self.assertTrue((self.root / "ai.codemower.board.5332.plist").exists())
+
+    def test_remove_reports_a_port_reclaimed_by_a_process_that_is_not_a_board(self) -> None:
+        self.install(self.spec())
+
+        def sticky_sleeper(_seconds: float) -> None:
+            self.host.add_foreign_listener(5332, command="/usr/local/bin/node /srv/dashboard/server.js", ppid=4242)
+
+        payload = board_service.remove_service(
+            provider=self.host.provider(),
+            port=5332,
+            command_runner=self.host.run,
+            settle_seconds=1.0,
+            sleeper=sticky_sleeper,
+        )
+
+        self.assertEqual(payload["status"], "remove_incomplete")
+        self.assertIn("still held", payload["message"])
+
+    def _refusing_writes(self) -> board_service.LaunchdProvider:
+        class RefusingWrites(board_service.LaunchdProvider):
+            def write_definition(self, label: str, text: str) -> Path:
+                raise PermissionError("read-only file system")
+
+        return RefusingWrites(
+            command_runner=self.host.run, root=self.root, uid=self.host.uid, platform="darwin"
+        )
+
+    def _restart_with(self, provider: object, spec: board_service.ServiceSpec, **kwargs: object) -> dict:
+        return board_service.restart_service(
+            spec,
+            provider=provider,
+            command_runner=self.host.run,
+            identity_probe=self.host.identity_probe,
+            settle_seconds=0.0,
+            refresh_seconds=0.1,
+            timeout_seconds=0.0,
+            sleeper=self.sleeper,
+            **kwargs,
+        )
 
     def test_an_ambiguous_repository_selection_resolves_nothing(self) -> None:
         self.install(self.spec(repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5342))
