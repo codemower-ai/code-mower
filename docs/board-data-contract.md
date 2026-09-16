@@ -52,6 +52,13 @@ board's `/api/status` response. It summarizes PRs that need operator attention.
 the board's `/api/status` response. It reads opt-in metadata files from
 `.code-mower/board/agents/*.json` by default.
 
+`code_mower.boardObservations.v1` is the local observation block embedded in the
+board's `/api/status` response as `observations`. It carries validated
+`code_mower.boardObservation.v1` records read from
+`.code-mower/board/observations/*.json` by default, plus bounded diagnostics for
+records the observation contract rejected. The Board only consumes that
+contract; it never produces an observation.
+
 `code_mower.supervisedPilot.v1` is the local supervised-pilot payload embedded
 as `supervised_pilot` in the board's `/api/status` response when
 `code-mower.yml` is present. It is derived from the same controller policy
@@ -75,7 +82,8 @@ and local diagnostics:
   When `restart_recommended` is true, stop and restart
   `code-mower board serve --repo OWNER/REPO` so the browser uses the newly
   installed package. The response also embeds `productivity` as
-  `code_mower.boardProductivity.v1`. The GitHub/local snapshot behind this
+  `code_mower.boardProductivity.v1` and `observations` as
+  `code_mower.boardObservations.v1`. The GitHub/local snapshot behind this
   response is served from a thread-safe stale-while-refresh cache bounded by
   `board.refresh_seconds`: a cold request returns a metadata-only
   warming payload immediately and starts one background refresh, a
@@ -442,6 +450,116 @@ add no fields to any schema; they only bound what the page is allowed to assert.
   adapter cards, orchestrator lease, reviewer verdict history, reviewer spend
   rows) are absent, GitHub information stays useful and the page names the
   local data that is unavailable instead of rendering it as zero.
+
+## Board Views
+
+The browser view is organized as four tabs over one payload. Nothing below
+changes the payload; the views only bound what the page asserts and where it
+says it.
+
+Persistent chrome — repository, serving and installed version, snapshot time,
+the one next action, and observation freshness — stays on screen in every view
+and at every width. The tabs are a real `tablist` of `tab` buttons controlling
+real `tabpanel` regions; the unselected panels carry `hidden`, so they leave the
+accessibility tree instead of being painted away.
+
+- **Now** — the work rows, the selected work item's evidence, the participant
+  summary, and the existing owner queue, lane work, supervised pilot and open
+  PR sections.
+- **Timeline** — meaningful recent changes, local Board history, the reviewer
+  verdict timeline, and recent Code Mower workflow runs.
+- **Releases** — release campaigns, productivity, and spend. Completed campaign
+  history lives here rather than in front of current work.
+- **Health** — observation sources and their freshness, Board version and
+  restart state, snapshot cache state, GitHub availability, gate alerts, the
+  orchestrator lease, agent cards, and local Board and lane processes.
+
+### Work rows and selected-work detail
+
+Each work row shows the safe `reference` the observation records, the stage,
+the assignments recorded for it, the last meaningful update, the recorded next
+action, and the responsible role. Selecting a row exposes the six independent
+evidence readings — builder runs, review, CI, gate, merge, and human policy —
+each naming the source it came from and how fresh that source is, so no reading
+can stand in for another. The gate publisher is shown beside the
+`code-mower/gate` verdict and is labelled as publisher execution only.
+
+Selection is kept by opaque work identity — session, worktree, and work id —
+not by row position, so a refresh that reorders, adds, or drops rows leaves the
+operator's choice where it was. There is exactly one detail region. It is
+rendered inside the selected row, so at phone widths it follows the row it
+belongs to, and at desktop widths CSS places that same region adjacent to the
+list. Rows are buttons carrying `aria-expanded` and `aria-controls`; Up, Down,
+Home and End move the selection, tabs wrap with the arrow keys, and every
+interactive control has a visible focus ring.
+
+Meaningful changes are announced once through a polite live region and listed
+in Timeline. A change is meaningful when a recorded fact differs: stage,
+reasons, route, pull request identity, evidence state, measurements, run phase
+or basis, or a source's freshness, coverage or event time. `created_at`,
+`checked_at`, `observed_at` and `heartbeat_at` are excluded because they advance
+on every successful poll, so a poll that repeats the same observation announces
+nothing and adds no Timeline entry.
+
+Primary actions stay read-only: open a recorded PR link, inspect a connection
+in Health, and view recent changes. A pull request number observed locally is
+never turned into a remote address the payload has not recorded. There is no
+merge, requeue, force-lease, cancel, retry, restart, cloud-schema or
+Slack-specific control, no form, and no non-GET request.
+
+### Observation presentation rules
+
+- **Liveness is read, never inferred.** A run is only described in the phase its
+  own record states, alongside the freshness of the source behind it. A record
+  whose sources are not all `fresh`, or that is more than ten minutes old, is
+  reported as a last observation and may not claim anything is running now.
+- **Unavailable is not zero, and idle is not unknown.** A `no_work` observation
+  is shown as idle *with complete coverage* and names the source kinds that were
+  observed fresh and complete. An `unlinked` observation claims no stage and no
+  route, because the contract records none for it.
+- **No invented totals.** An unavailable measurement renders `not recorded`. A
+  partial measurement renders the value with the evidence it was counted from
+  (`120.0s from 2 of 5 recorded`). Nothing is extrapolated to a whole, and no
+  ratio is turned into a percentage or an ETA.
+- **Unknown is neutral.** Evidence states are a closed vocabulary and each one
+  is classified explicitly; `unknown`, `not_started`, `absent`, `unverifiable`,
+  `none` and `unassigned` are neutral, and anything unrecognised is neutral too.
+  Colour always accompanies a text label and a text cue.
+- **An empty directory is not an empty queue.** With no observation recorded,
+  the work list says so rather than reporting no work, and the GitHub-derived
+  queues below it still render.
+
+## Board Observations
+
+`code_mower.boardObservations.v1` is the local observation block embedded in the
+board's `/api/status` response as `observations`. It is a **consumer** of the
+frozen `code_mower.boardObservation.v1` contract: the Board reads records,
+decodes each through `board_observation.decode`, and renders what survives. The
+Board never writes an observation, resolves a session, contacts a provider, or
+repairs a record that fails the contract.
+
+By default the Board reads `*.json` files under
+`.code-mower/board/observations/`. Use `--observations-path PATH` for a custom
+local directory. A missing directory is reported as "nothing recorded yet",
+which is a different statement from "no work". Reading is bounded to 32 files
+per refresh, and the observation contract itself bounds each record.
+
+The block carries:
+
+- `records[]` — validated `code_mower.boardObservation.v1` records, in file-name
+  order.
+- `rejected` and `warnings[]` — the count of records that failed, with the
+  contract's own fixed diagnostic (`invalid_contract`, `invalid_route`,
+  `identity_mismatch`, and so on). Those diagnostics deliberately omit observed
+  values and local paths.
+- `path`, redacted as `[local path hidden]`, `path_exists`, `available`, and a
+  safe `message`.
+
+Observations are not copied into the local Board event store: `code-mower board
+record` and `--record-events` persist the snapshot without the `observations`
+block, so local history keeps the shape it already had. The cloud board-snapshot
+export is an allowlist of summarized fields and is unchanged by this block; no
+observation field is uploaded.
 
 ## Agent Adapters
 

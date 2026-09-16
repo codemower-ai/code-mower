@@ -28,6 +28,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from . import __version__ as CODE_MOWER_VERSION
+from . import board_observation
 from . import board_store
 from . import config as code_mower_config
 from . import controller
@@ -47,8 +48,13 @@ BOARD_IDENTITY_SCHEMA = "code_mower.boardIdentity.v1"
 BOARD_INVENTORY_SCHEMA = "code_mower.boardInventory.v1"
 BOARD_STOP_SCHEMA = "code_mower.boardStop.v1"
 BOARD_RELEASE_CAMPAIGNS_SCHEMA = "code_mower.boardReleaseCampaigns.v1"
+BOARD_OBSERVATIONS_SCHEMA = "code_mower.boardObservations.v1"
 DEFAULT_AGENT_ADAPTERS_RELATIVE_PATH = Path(".code-mower") / "board" / "agents"
+DEFAULT_OBSERVATIONS_RELATIVE_PATH = Path(".code-mower") / "board" / "observations"
 DEFAULT_CAMPAIGNS_RELATIVE_PATH = Path(".code-mower") / "campaigns"
+# Bounded so a directory left full of records cannot turn one page load into an
+# unbounded read. The contract itself bounds each record to MAX_BYTES.
+MAX_OBSERVATION_FILES = 32
 SECRET_VALUE_RE = re.compile(
     r"(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})"
 )
@@ -69,6 +75,7 @@ class BoardConfig:
     store_path: str | None = None
     spend_path: str | None = None
     agent_adapters_path: str | None = None
+    observations_path: str | None = None
     campaigns_path: str | None = None
     event_limit: int = 20
     record_events: bool = False
@@ -95,6 +102,12 @@ def _agent_adapters_path(config: BoardConfig) -> Path:
     return Path(config.repo_path) / DEFAULT_AGENT_ADAPTERS_RELATIVE_PATH
 
 
+def _observations_path(config: BoardConfig) -> Path:
+    if config.observations_path:
+        return Path(config.observations_path)
+    return Path(config.repo_path) / DEFAULT_OBSERVATIONS_RELATIVE_PATH
+
+
 def _campaigns_path(config: BoardConfig) -> Path:
     if config.campaigns_path:
         return Path(config.campaigns_path)
@@ -113,6 +126,7 @@ def resolved_metadata_paths(config: BoardConfig) -> dict[str, str]:
         "store_path": str(_store_path(config)),
         "spend_path": str(_spend_path(config)),
         "agent_adapters_path": str(_agent_adapters_path(config)),
+        "observations_path": str(_observations_path(config)),
         "campaigns_path": str(_campaigns_path(config)),
     }
 
@@ -262,6 +276,7 @@ def status_payload(
     }
     payload["orchestrator_lease"] = session_lease.observe_lease(start=config.repo_path)
     payload["agent_adapters"] = agent_adapters_payload(config)
+    payload["observations"] = observations_payload(config)
     payload["release_campaigns"] = release_campaigns_payload(config)
     payload["owner_queue"] = owner_queue_payload(payload)
     payload["supervised_pilot"] = supervised_pilot_payload(
@@ -302,6 +317,10 @@ def _recordable_payload(payload: dict[str, Any]) -> dict[str, Any]:
     snapshot = dict(payload)
     snapshot.pop("productivity", None)
     snapshot.pop("orchestrator_lease", None)
+    # Observations are a live read model carrying local session and worktree
+    # identity. The Board renders them; it does not copy them into persisted
+    # local history, so replayed history keeps the shape it already had.
+    snapshot.pop("observations", None)
     return snapshot
 
 
@@ -1157,6 +1176,66 @@ def prune_stale_agent_adapters(
     return result
 
 
+def observations_payload(config: BoardConfig) -> dict[str, Any]:
+    """Read locally recorded Board observations without producing any.
+
+    This is a consumer of the frozen ``code_mower.boardObservation.v1``
+    contract: every record is decoded by :mod:`board_observation` and a record
+    that fails that contract is dropped with its own bounded diagnostic instead
+    of being repaired, widened, or rendered. The Board never writes these
+    files, never resolves a session, and never contacts a provider to fill one
+    in; an empty directory is reported as "nothing recorded yet", which is a
+    different statement from "no work".
+    """
+
+    path = _observations_path(config)
+    payload: dict[str, Any] = {
+        "schema": BOARD_OBSERVATIONS_SCHEMA,
+        "record_schema": board_observation.SCHEMA,
+        "available": True,
+        "path": lane_status.LOCAL_PATH_REDACTION,
+        "path_redacted": True,
+        "path_exists": path.exists(),
+        "records": [],
+        "warnings": [],
+        "rejected": 0,
+        "message": "no local Board observations recorded yet",
+    }
+    if not path.exists():
+        return payload
+    if not path.is_dir():
+        payload["available"] = False
+        payload["warnings"].append({"file": "", "message": "observation path is not a directory"})
+        payload["message"] = "could not read local Board observations"
+        return payload
+    try:
+        candidates = sorted(path.glob("*.json"))[:MAX_OBSERVATION_FILES]
+    except OSError:
+        payload["available"] = False
+        payload["warnings"].append({"file": "", "message": "could not list local Board observations"})
+        payload["message"] = "could not read local Board observations"
+        return payload
+    for record_file in candidates:
+        try:
+            raw = record_file.read_bytes()
+        except OSError:
+            payload["rejected"] += 1
+            payload["warnings"].append({"file": record_file.name, "message": "could not read observation file"})
+            continue
+        try:
+            payload["records"].append(board_observation.decode(raw))
+        except board_observation.BoardObservationError as exc:
+            # The contract's diagnostics are a fixed closed vocabulary that
+            # deliberately omits observed values and local paths.
+            payload["rejected"] += 1
+            payload["warnings"].append({"file": record_file.name, "message": str(exc)})
+    if payload["records"]:
+        payload["message"] = ""
+    elif payload["rejected"]:
+        payload["message"] = "no local Board observation passed the observation contract"
+    return payload
+
+
 def release_campaigns_payload(
     config: BoardConfig,
     *,
@@ -1297,35 +1376,79 @@ def timelines_payload(
     }
 
 
-def render_board_html(config: BoardConfig) -> str:
-    repo_json = json.dumps(config.repo).replace("</", "<\\/")
-    refresh_json = json.dumps(config.refresh_seconds * 1000)
-    return f"""<!doctype html>
+# The whole Board page as one template. It is plain text rather than an
+# f-string so the shipped CSS and JavaScript read exactly as the browser
+# receives them, with no doubled braces between the source and the page the
+# tests execute. Only the two placeholders below are substituted.
+_BOARD_HTML = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Code Mower Board</title>
   <style>
-    :root {{ color-scheme: light; --bg:#f7f8f5; --ink:#1d2520; --muted:#66736b; --line:#d8ded7; --ok:#137a42; --warn:#9a5b00; --bad:#aa2e25; --panel:#ffffff; }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-    header {{ display:flex; align-items:flex-end; justify-content:space-between; gap:24px; padding:24px 32px 18px; border-bottom:1px solid var(--line); background:var(--panel); }}
-    h1 {{ margin:0; font-size:24px; font-weight:720; letter-spacing:0; }}
-    h2 {{ margin:0 0 10px; font-size:15px; letter-spacing:0; }}
-    main {{ max-width:1180px; margin:0 auto; padding:24px 20px 40px; display:grid; gap:18px; }}
-    .summary {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:10px; }}
-    .metric, section {{ background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }}
-    .metric b {{ display:block; font-size:20px; margin-top:4px; }}
-    .muted {{ color:var(--muted); }}
-    .rows {{ display:grid; gap:10px; }}
-    .row {{ border-top:1px solid var(--line); padding-top:10px; }}
-    .row:first-child {{ border-top:0; padding-top:0; }}
-    .line {{ display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; }}
-    .pill {{ border:1px solid var(--line); border-radius:999px; padding:2px 8px; color:var(--muted); white-space:nowrap; }}
-    .ok {{ color:var(--ok); }} .warn {{ color:var(--warn); }} .bad {{ color:var(--bad); }}
-    code {{ background:#eef2ec; border-radius:4px; padding:1px 4px; }}
-    a {{ color:#145ea8; text-decoration:none; }} a:hover {{ text-decoration:underline; }}
+    :root { color-scheme: light; --bg:#f7f8f5; --ink:#1d2520; --muted:#66736b; --line:#d8ded7; --ok:#137a42; --warn:#9a5b00; --bad:#aa2e25; --panel:#ffffff; --focus:#145ea8; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    /* One visible focus ring for every interactive control, including the
+       work rows and the view tabs, so keyboard position is never invisible. */
+    :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+    header { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; padding:14px 20px 10px; border-bottom:1px solid var(--line); background:var(--panel); }
+    h1 { margin:0; font-size:19px; font-weight:720; letter-spacing:0; }
+    h2 { margin:0 0 10px; font-size:15px; letter-spacing:0; }
+    h3 { margin:0 0 6px; font-size:14px; }
+    h4 { margin:12px 0 4px; font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); }
+    main { max-width:1180px; margin:0 auto; padding:14px 16px 40px; display:grid; gap:14px; }
+    .chrome { position:sticky; top:0; z-index:2; background:var(--panel); border-bottom:1px solid var(--line); padding:8px 20px; display:grid; gap:8px; }
+    /* Counts that the summary strip immediately below already carries. At
+       phone widths the persistent chrome keeps only the next action, how
+       current the snapshot is, and the view tabs, so it stays compact enough
+       to remain pinned without eating the viewport. */
+    @media (max-width: 699px) { .wide { display:none; } }
+    .summary { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; }
+    .metric, section.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; }
+    .metric { padding:8px 10px; }
+    .metric b { display:block; font-size:17px; margin-top:2px; }
+    .muted { color:var(--muted); }
+    .rows { display:grid; gap:10px; }
+    .row { border-top:1px solid var(--line); padding-top:10px; }
+    .row:first-child { border-top:0; padding-top:0; }
+    .line { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; }
+    .pill { border:1px solid var(--line); border-radius:999px; padding:2px 8px; color:var(--muted); white-space:nowrap; }
+    .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+    .cue { font-weight:700; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    code { background:#eef2ec; border-radius:4px; padding:1px 4px; }
+    a { color:#145ea8; text-decoration:none; } a:hover { text-decoration:underline; }
+    /* Views. Tabs are real buttons in a real tablist; panels are real
+       tabpanels toggled with the hidden property, so an unselected view is
+       removed from the accessibility tree rather than merely painted away. */
+    .tabs { display:flex; flex-wrap:wrap; gap:6px; }
+    .tab { font:inherit; border:1px solid var(--line); background:var(--bg); color:var(--muted); border-radius:999px; padding:6px 14px; cursor:pointer; }
+    .tab[aria-selected="true"] { background:var(--panel); color:var(--ink); border-color:var(--ink); font-weight:650; }
+    [hidden] { display:none !important; }
+    /* An announcement region that carries text for assistive technology
+       without occupying layout. */
+    .sr { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
+    /* Work rows. Mobile first: the detail panel is a child of the selected
+       row, so it always follows the row it belongs to in source order and in
+       a single-column layout. */
+    .workrows { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+    .workrow { border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+    .workrow.selected { border-color:var(--ink); }
+    .rowbtn { display:block; width:100%; text-align:left; font:inherit; color:inherit; background:none; border:0; border-radius:8px; padding:10px 12px; cursor:pointer; }
+    .rowbtn .line { margin-bottom:4px; }
+    .rowbtn .ref { font-weight:650; }
+    .workdetail { border-top:1px solid var(--line); padding:12px; display:grid; gap:6px; }
+    .evgroup { border-top:1px solid var(--line); padding-top:6px; }
+    .evgroup:first-of-type { border-top:0; }
+    .link { font:inherit; color:#145ea8; background:none; border:0; padding:0; cursor:pointer; text-decoration:underline; }
+    /* Desktop: the same selected-row detail becomes an adjacent column beside
+       the list instead of moving in the DOM, so selection, focus order and
+       announcements are identical at both widths. */
+    @media (min-width: 900px) {
+      .worklayout { position:relative; padding-right:372px; min-height:180px; }
+      .workdetail { position:absolute; top:0; right:0; width:356px; max-height:70vh; overflow:auto; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+    }
   </style>
 </head>
 <body>
@@ -1333,30 +1456,52 @@ def render_board_html(config: BoardConfig) -> str:
     <div><h1>Code Mower Board</h1><div class="muted" id="repo"></div><div class="muted" id="version"></div></div>
     <div class="muted" id="generated">Loading...</div>
   </header>
+  <!-- Persistent compact chrome: the one next step, how current this snapshot
+       is, and the view tabs stay on screen in every view and at every width. -->
+  <div class="chrome">
+    <div class="line" id="chrome"></div>
+    <nav id="tabs" class="tabs" role="tablist" aria-label="Board views"></nav>
+  </div>
+  <!-- Meaningful changes are announced here. An unchanged poll writes nothing
+       at all, so a screen reader is not told the same state every refresh. -->
+  <div class="sr" id="announce" role="status" aria-live="polite" aria-atomic="true"></div>
   <main>
-    <div class="summary" id="summary"></div>
-    <!-- Current work first: the short summary and the two actionable queues
-         come before aggregate productivity and release history so the first
-         desktop viewport answers "what needs doing now", not "what happened". -->
-    <section><h2>Work Now</h2><div class="rows" id="worknow"></div></section>
-    <section><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
-    <section><h2>Lane Work</h2><div class="rows" id="lanework"></div></section>
-    <section><h2>Supervised Pilot</h2><div class="rows" id="supervised"></div></section>
-    <section><h2>Open PRs</h2><div class="rows" id="prs"></div></section>
-    <section><h2>Gate Alerts</h2><div class="rows" id="alerts"></div></section>
-    <section><h2>Agent Cards</h2><div class="rows" id="agents"></div></section>
-    <section><h2>Local Orchestrator Lease</h2><div class="rows" id="lease"></div></section>
-    <section><h2>Release Campaigns</h2><div class="rows" id="campaigns"></div></section>
-    <section><h2>Productivity</h2><div class="rows" id="productivity"></div></section>
-    <section><h2>Recent Code Mower Workflows</h2><div class="rows" id="runs"></div></section>
-    <section><h2>Recent Local History</h2><div class="rows" id="history"></div></section>
-    <section><h2>Reviewer Verdict Timeline</h2><div class="rows" id="verdicts"></div></section>
-    <section><h2>Spend And Latency</h2><div class="rows" id="spend"></div></section>
-    <section><h2>Local Activity</h2><div class="rows" id="local"></div></section>
+    <section class="view" id="panel-now" role="tabpanel" aria-labelledby="tab-now" tabindex="0">
+      <div class="summary" id="summary"></div>
+      <!-- Work first: current work, its evidence, and who is responsible come
+           before aggregate productivity and release history, so the first
+           viewport answers "what needs doing now", not "what happened". -->
+      <section class="card"><h2 id="work-heading">Work</h2><div class="worklayout" id="worklist"></div></section>
+      <section class="card"><h2>Work Now</h2><div class="rows" id="worknow"></div></section>
+      <section class="card"><h2>Participants</h2><div class="rows" id="participants"></div></section>
+      <section class="card"><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
+      <section class="card"><h2>Lane Work</h2><div class="rows" id="lanework"></div></section>
+      <section class="card"><h2>Supervised Pilot</h2><div class="rows" id="supervised"></div></section>
+      <section class="card"><h2>Open PRs</h2><div class="rows" id="prs"></div></section>
+    </section>
+    <section class="view" id="panel-timeline" role="tabpanel" aria-labelledby="tab-timeline" tabindex="0" hidden>
+      <section class="card"><h2>Recent Changes</h2><div class="rows" id="changes"></div></section>
+      <section class="card"><h2>Recent Local History</h2><div class="rows" id="history"></div></section>
+      <section class="card"><h2>Reviewer Verdict Timeline</h2><div class="rows" id="verdicts"></div></section>
+      <section class="card"><h2>Recent Code Mower Workflows</h2><div class="rows" id="runs"></div></section>
+    </section>
+    <section class="view" id="panel-releases" role="tabpanel" aria-labelledby="tab-releases" tabindex="0" hidden>
+      <section class="card"><h2>Release Campaigns</h2><div class="rows" id="campaigns"></div></section>
+      <section class="card"><h2>Productivity</h2><div class="rows" id="productivity"></div></section>
+      <section class="card"><h2>Spend And Latency</h2><div class="rows" id="spend"></div></section>
+    </section>
+    <section class="view" id="panel-health" role="tabpanel" aria-labelledby="tab-health" tabindex="0" hidden>
+      <section class="card"><h2>Connections And Sources</h2><div class="rows" id="sources"></div></section>
+      <section class="card"><h2>Board Process And Version</h2><div class="rows" id="diagnostics"></div></section>
+      <section class="card"><h2>Gate Alerts</h2><div class="rows" id="alerts"></div></section>
+      <section class="card"><h2>Local Orchestrator Lease</h2><div class="rows" id="lease"></div></section>
+      <section class="card"><h2>Agent Cards</h2><div class="rows" id="agents"></div></section>
+      <section class="card"><h2>Local Activity</h2><div class="rows" id="local"></div></section>
+    </section>
   </main>
   <script>
-    const REPO = {repo_json};
-    const REFRESH_MS = {refresh_json};
+    const REPO = __REPO_JSON__;
+    const REFRESH_MS = __REFRESH_MS_JSON__;
     const FAST_POLL_MS = 750;
     const FAST_POLL_MAX_ATTEMPTS = 20;
     // Floor for a TTL-derived delay: a snapshot that is fresh by a hair must
@@ -1379,19 +1524,19 @@ def render_board_html(config: BoardConfig) -> str:
     // pick up the next one a full interval later -- an update every ~two
     // intervals. A fresh response therefore schedules itself near its own
     // remaining TTL. null means "no usable metadata": use the normal interval.
-    const freshDelayMs = (cache) => {{
+    const freshDelayMs = (cache) => {
       if (cache?.state !== "fresh") return null;
       const ttl = finiteNumber(cache?.ttl_seconds);
       const age = finiteNumber(cache?.age_seconds);
       if (ttl === null || age === null || ttl <= 0 || age < 0) return null;
       return Math.min(Math.max((ttl - age) * 1000, MIN_POLL_MS), REFRESH_MS);
-    }};
+    };
     const text = (value) => String(value ?? "");
-    const esc = (value) => text(value).replace(/[&<>"']/g, c => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[c]));
+    const esc = (value) => text(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}[c]));
     const put = (id, html) => document.getElementById(id).innerHTML = html;
-    const pill = (value) => `<span class="pill">${{esc(value)}}</span>`;
-    const statePill = (value, cls) => `<span class="pill ${{esc(cls || "muted")}}">${{esc(value)}}</span>`;
-    const empty = (message) => `<div class="muted">${{esc(message)}}</div>`;
+    const pill = (value) => `<span class="pill">${esc(value)}</span>`;
+    const statePill = (value, cls) => `<span class="pill ${esc(cls || "muted")}">${esc(value)}</span>`;
+    const empty = (message) => `<div class="muted">${esc(message)}</div>`;
     const href = (value) => /^https?:\\/\\//i.test(text(value)) ? text(value) : "#";
     // --- presentation truth helpers (BEGIN) ---
     // Pure, DOM-free projections of the existing /api/status payload. They add
@@ -1409,41 +1554,41 @@ def render_board_html(config: BoardConfig) -> str:
     // Number.isFinite(Number(v)) test silently reports "no data" as zero.
     const measured = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
     const display = (value) => (value === null || value === undefined || value === "" ? NOT_RECORDED : String(value));
-    const seconds = (value) => {{
+    const seconds = (value) => {
       const number = measured(value);
-      return number === null ? NOT_RECORDED : `${{number.toFixed(1)}}s`;
-    }};
-    const money = (value) => {{
+      return number === null ? NOT_RECORDED : `${number.toFixed(1)}s`;
+    };
+    const money = (value) => {
       const number = measured(value);
-      return number === null ? NOT_RECORDED : `$${{number.toFixed(3)}}`;
-    }};
+      return number === null ? NOT_RECORDED : `$${number.toFixed(3)}`;
+    };
     const countOf = (available, value) => (available ? String(value) : NOT_RECORDED);
     // An absent, unknown or unavailable state is neutral, never green and
     // never "pass". Only a state the payload actually reports as good earns
     // the ok colour.
     const UNKNOWN_STATE_RE = /^(unknown|unavailable|absent|none|not recorded|no data|off|n\\/a)$/i;
-    const stateClass = (value) => {{
+    const stateClass = (value) => {
       const state = text(value).trim();
       if (state === "" || UNKNOWN_STATE_RE.test(state)) return "muted";
       if (/fail|error|blocked|expired|overdue/i.test(state)) return "bad";
       if (/warn|pending|waiting|queued|progress|stale|unverified|last reported/i.test(state)) return "warn";
       return "ok";
-    }};
-    const parseMs = (value) => {{
+    };
+    const parseMs = (value) => {
       const parsed = Date.parse(text(value));
       return Number.isFinite(parsed) ? parsed : null;
-    }};
-    const ageText = (secs) => {{
+    };
+    const ageText = (secs) => {
       const number = measured(secs);
       if (number === null) return NOT_RECORDED;
-      if (number >= 3600) return `${{(number / 3600).toFixed(1)}}h`;
-      if (number >= 60) return `${{(number / 60).toFixed(0)}}m`;
-      return `${{Math.max(number, 0).toFixed(0)}}s`;
-    }};
-    const ageSeconds = (value, nowMs) => {{
+      if (number >= 3600) return `${(number / 3600).toFixed(1)}h`;
+      if (number >= 60) return `${(number / 60).toFixed(0)}m`;
+      return `${Math.max(number, 0).toFixed(0)}s`;
+    };
+    const ageSeconds = (value, nowMs) => {
       const at = parseMs(value);
       return at === null ? null : Math.max((nowMs - at) / 1000, 0);
-    }};
+    };
     // The `code-mower/gate` commit status is the verdict. The only thing that
     // publishes it is the canonical gate workflow and its publishing job, so
     // the publisher is an allowlist of those two names rather than anything
@@ -1454,53 +1599,53 @@ def render_board_html(config: BoardConfig) -> str:
     const normalized = (value) => text(value).trim().toLowerCase().replace(/\\s+/g, " ");
     const isGateContext = (name) => normalized(name) === GATE_CONTEXT;
     const isGatePublisher = (name) => GATE_PUBLISHER_NAMES.includes(normalized(name));
-    function gateVerdict(pr) {{
+    function gateVerdict(pr) {
       const list = Array.isArray(pr?.checks) ? pr.checks : [];
       const verdict = list.find(check => isGateContext(check?.name));
-      if (!verdict) return {{state: NOT_RECORDED, recorded: false, class: "muted"}};
+      if (!verdict) return {state: NOT_RECORDED, recorded: false, class: "muted"};
       const state = text(verdict.state).trim() || "unknown";
-      return {{state, recorded: true, class: stateClass(state)}};
-    }}
+      return {state, recorded: true, class: stateClass(state)};
+    }
     // Reasons the Board can raise for one work item, and the role that clears
     // each one. Rebase, CI repair, audit fixes and re-review are routine lane
     // work owned by the builder or the orchestrator. Owner attention is
     // reserved for reasons carrying explicit permission, budget, policy,
     // product-decision or owner-request evidence in the payload's own labels.
-    const ATTENTION_REASONS = {{
-      "needs-owner": {{rank: 0, role: "owner"}},
-      "blocked-audit": {{rank: 1, role: "builder"}},
-      "failing-check": {{rank: 2, role: "builder"}},
-      "rebase-needed": {{rank: 3, role: "builder"}},
-      "stale-gate": {{rank: 4, role: "orchestrator"}},
-      "draft": {{rank: 5, role: "builder"}}
-    }};
-    const UNKNOWN_REASON = {{rank: 8, role: "orchestrator"}};
+    const ATTENTION_REASONS = {
+      "needs-owner": {rank: 0, role: "owner"},
+      "blocked-audit": {rank: 1, role: "builder"},
+      "failing-check": {rank: 2, role: "builder"},
+      "rebase-needed": {rank: 3, role: "builder"},
+      "stale-gate": {rank: 4, role: "orchestrator"},
+      "draft": {rank: 5, role: "builder"}
+    };
+    const UNKNOWN_REASON = {rank: 8, role: "orchestrator"};
     const OWNER_EVIDENCE_RE = /^(needs-owner|owner-request|owner-decision|owner-approval|needs-permission|permission-required|needs-budget|budget-approval|needs-policy|policy-decision|needs-product-decision|product-decision)$/i;
-    function ownerEvidence(...sources) {{
+    function ownerEvidence(...sources) {
       const names = [];
-      for (const source of sources) {{
-        const values = Array.isArray(source) ? source : Object.values(source || {{}}).flat();
-        for (const value of values) {{
+      for (const source of sources) {
+        const values = Array.isArray(source) ? source : Object.values(source || {}).flat();
+        for (const value of values) {
           const name = text(value).trim();
           if (OWNER_EVIDENCE_RE.test(name) && !names.includes(name)) names.push(name);
-        }}
-      }}
+        }
+      }
       return names;
-    }}
+    }
     // One PR is one work item. The owner queue payload emits a separate entry
     // per reason, so several reasons for the same PR are grouped here instead
     // of rendering as unrelated rows and inflating the owner count.
-    function attentionItems(entries, prs) {{
+    function attentionItems(entries, prs) {
       const byNumber = new Map();
       for (const pr of Array.isArray(prs) ? prs : []) byNumber.set(pr?.number, pr);
       const items = new Map();
-      for (const entry of Array.isArray(entries) ? entries : []) {{
+      for (const entry of Array.isArray(entries) ? entries : []) {
         const number = entry?.pr_number;
         const reason = ATTENTION_REASONS[entry?.kind] || UNKNOWN_REASON;
         let item = items.get(number);
-        if (!item) {{
-          const pr = byNumber.get(number) || {{}};
-          item = {{
+        if (!item) {
+          const pr = byNumber.get(number) || {};
+          item = {
             pr_number: number,
             title: entry?.title || pr.title || "",
             url: entry?.url || pr.url || "",
@@ -1513,22 +1658,22 @@ def render_board_html(config: BoardConfig) -> str:
             reasons: [],
             next_action: "",
             rank: UNKNOWN_REASON.rank + 1
-          }};
+          };
           items.set(number, item);
-        }}
+        }
         const kind = text(entry?.kind).trim() || "attention";
-        if (!item.reasons.some(existing => existing.kind === kind)) {{
-          item.reasons.push({{kind, role: reason.role, next_action: text(entry?.next_action)}});
-        }}
-        for (const name of ownerEvidence(entry?.labels)) {{
+        if (!item.reasons.some(existing => existing.kind === kind)) {
+          item.reasons.push({kind, role: reason.role, next_action: text(entry?.next_action)});
+        }
+        for (const name of ownerEvidence(entry?.labels)) {
           if (!item.evidence.includes(name)) item.evidence.push(name);
-        }}
-        if (reason.rank < item.rank) {{
+        }
+        if (reason.rank < item.rank) {
           item.rank = reason.rank;
           item.next_action = text(entry?.next_action);
-        }}
-      }}
-      return [...items.values()].map(item => {{
+        }
+      }
+      return [...items.values()].map(item => {
         // A reason only a builder or the orchestrator can clear never promotes
         // to owner attention, and a reason that claims owner attention without
         // explicit evidence falls back to orchestrator triage.
@@ -1538,18 +1683,18 @@ def render_board_html(config: BoardConfig) -> str:
           : item.reasons.every(reason => reason.role === "orchestrator") || claimsOwner
             ? "orchestrator"
             : "builder";
-        return {{...item, role, next_action: item.next_action || item.reasons[0]?.next_action || "inspect"}};
-      }}).sort((a, b) => (a.role === b.role ? 0 : a.role === "owner" ? -1 : b.role === "owner" ? 1 : 0)
+        return {...item, role, next_action: item.next_action || item.reasons[0]?.next_action || "inspect"};
+      }).sort((a, b) => (a.role === b.role ? 0 : a.role === "owner" ? -1 : b.role === "owner" ? 1 : 0)
         || a.rank - b.rank
         || (a.pr_number ?? 0) - (b.pr_number ?? 0));
-    }}
+    }
     // Board snapshots can be replayed from local history, served from a cache
     // the server has not confirmed, or carry no observation time at all. Each
     // of those may only report what was last observed; none of them may claim
     // that anything is running right now.
-    function observation(data, nowMs) {{
-      const current = data?.productivity?.current || {{}};
-      const cache = data?.board?.cache || {{}};
+    function observation(data, nowMs) {
+      const current = data?.productivity?.current || {};
+      const cache = data?.board?.cache || {};
       const observedAt = text(current.observed_at) || text(data?.generated_at);
       const observedAge = ageSeconds(observedAt, nowMs);
       const cacheAge = measured(cache.age_seconds);
@@ -1572,7 +1717,7 @@ def render_board_html(config: BoardConfig) -> str:
       const remoteAvailable = data?.remote?.available === true;
       const aged = age !== null && age > STALE_OBSERVATION_SECONDS;
       const stale = historical || aged || unconfirmed || unknownAge || !remoteAvailable;
-      return {{
+      return {
         age_text: ageText(age),
         historical,
         aged,
@@ -1580,24 +1725,24 @@ def render_board_html(config: BoardConfig) -> str:
         live: !stale,
         label: unknownAge
           ? "observation time not recorded"
-          : stale ? `last observed ${{ageText(age)}} ago` : `live, observed ${{ageText(age)}} ago`,
+          : stale ? `last observed ${ageText(age)} ago` : `live, observed ${ageText(age)} ago`,
         class: unknownAge ? "muted" : stale ? "warn" : "ok",
         detail: historical
           ? "Replayed from the last recorded local Board snapshot; nothing here is evidence of work running now."
           : unconfirmed
-            ? `The Board server is serving a ${{cacheState}} cached snapshot it has not confirmed; nothing here is evidence of work running now.`
+            ? `The Board server is serving a ${cacheState} cached snapshot it has not confirmed; nothing here is evidence of work running now.`
             : unknownAge
               ? "No observation time is recorded, so this snapshot cannot be shown as current."
               : remoteAvailable
                 ? ""
                 : "GitHub is unavailable, so remote counts below are last observed rather than current."
-      }};
-    }}
+      };
+    }
     // Which local-only inputs the snapshot actually carries. Fresh GitHub data
     // stays useful when they are missing, but the page has to say so rather
     // than render their absence as a zero.
-    function localSources(data) {{
-      const adapters = data?.agent_adapters || {{}};
+    function localSources(data) {
+      const adapters = data?.agent_adapters || {};
       // No adapter directory at all is "never measured", which is a different
       // statement from an empty directory reporting zero live agents.
       const adaptersAvailable = adapters.available !== false && adapters.path_exists === true;
@@ -1606,14 +1751,14 @@ def render_board_html(config: BoardConfig) -> str:
       if (text(data?.orchestrator_lease?.state) !== "active") missing.push("orchestrator lease");
       if (!(data?.timelines?.verdicts?.entries || []).length) missing.push("reviewer verdict history");
       if (!(data?.timelines?.spend?.groups || []).length) missing.push("reviewer spend rows");
-      return {{
+      return {
         adapters_available: adaptersAvailable,
         missing,
         message: missing.length
-          ? `Local session data unavailable: ${{missing.join(", ")}}. GitHub data above is unaffected.`
+          ? `Local session data unavailable: ${missing.join(", ")}. GitHub data above is unaffected.`
           : "Local session data available."
-      }};
-    }}
+      };
+    }
     const CLAIMS_RUNNING_RE = /^(running|dispatched|in_progress)$/i;
     // The provider states in which a card is still waiting for a response.
     // Of release_campaigns' five valid provider states, `complete` and
@@ -1625,7 +1770,7 @@ def render_board_html(config: BoardConfig) -> str:
     // The one wall-clock signal it carries is a provider response deadline:
     // once that has passed -- or was never recorded -- nothing in the payload
     // shows the provider still working.
-    function cardLiveness(card, nowMs) {{
+    function cardLiveness(card, nowMs) {
       const state = text(card?.state).trim() || "unknown";
       const deadline = parseMs(card?.response_deadline_at);
       const awaiting = AWAITING_CARD_STATE_RE.test(state);
@@ -1636,98 +1781,921 @@ def render_board_html(config: BoardConfig) -> str:
       // failed `blocked` from red to yellow.
       const overdue = awaiting && deadline !== null && deadline < nowMs;
       const suppressed = CLAIMS_RUNNING_RE.test(state) && (overdue || deadline === null);
-      return {{
-        label: suppressed ? `last reported ${{state}}` : state,
+      return {
+        label: suppressed ? `last reported ${state}` : state,
         awaiting,
         overdue,
         deadline_recorded: deadline !== null,
         overdue_for: overdue ? ageText((nowMs - deadline) / 1000) : "",
         class: suppressed || overdue ? "warn" : stateClass(state)
-      }};
-    }}
-    function campaignLiveness(campaign, nowMs) {{
+      };
+    }
+    function campaignLiveness(campaign, nowMs) {
       const status = text(campaign?.status).trim() || "unknown";
       const cards = (Array.isArray(campaign?.cards) ? campaign.cards : []).map(card => cardLiveness(card, nowMs));
       // Only a card actually awaiting a response can evidence a live campaign:
       // an unexpired deadline retained by a finished card proves nothing.
       const unverified = CLAIMS_RUNNING_RE.test(status)
         && !cards.some(card => card.awaiting && card.deadline_recorded && !card.overdue);
-      return {{
+      return {
         cards,
         unverified,
-        label: unverified ? `last reported ${{status}}` : status,
+        label: unverified ? `last reported ${status}` : status,
         class: unverified ? "warn" : stateClass(status)
-      }};
-    }}
+      };
+    }
     // --- presentation truth helpers (END) ---
-    const localTime = (value) => {{
+    // --- work view model (BEGIN) ---
+    // Pure, DOM-free projections of the frozen local observation contract
+    // `code_mower.boardObservation.v1`. They read what a record states and add
+    // nothing to it: no percentage, no ETA, no inferred liveness, no derived
+    // remote identity, and no route for a record that carries none.
+    const STAGE_LABELS = {
+      unknown: "not recorded",
+      queued: "queued",
+      building: "building",
+      in_review: "in review",
+      changes_requested: "changes requested",
+      ready_for_human_review: "ready for human review",
+      ready_to_merge: "ready to merge",
+      merged: "merged"
+    };
+    const ACTION_LABELS = {
+      none: "no next action recorded",
+      respond_to_approval: "respond to approval",
+      answer_question: "answer the question",
+      restore_source: "restore the source",
+      connect_session: "connect the session",
+      refresh_evidence: "refresh evidence",
+      inspect_failure: "inspect the failure",
+      inspect_provider: "inspect the provider",
+      inspect_cancellation: "inspect the cancellation",
+      address_findings: "address review findings",
+      update_branch: "update the branch",
+      fix_checks: "fix failing checks",
+      resolve_gate: "resolve the gate",
+      request_review: "request review",
+      review_current_head: "review the current head",
+      finish_review: "finish the review",
+      wait_for_checks: "wait for checks",
+      wait_for_gate: "wait for the gate",
+      review_change: "review the change",
+      merge: "merge"
+    };
+    const ACTOR_LABELS = {
+      none: "no responsible role recorded",
+      owner: "owner",
+      orchestrator: "orchestrator",
+      builder: "builder",
+      reviewer: "reviewer",
+      automation: "automation",
+      maintainer: "maintainer"
+    };
+    const PHASE_LABELS = {
+      assigned: "assigned",
+      dispatched: "dispatched",
+      observed_running: "observed running",
+      provider_progress: "provider reported progress",
+      waiting_for_user: "waiting for an answer",
+      waiting_for_approval: "waiting for approval",
+      implementation_complete: "implementation complete",
+      failed: "failed",
+      cancelled: "cancelled"
+    };
+    const PHASE_CLASSES = {
+      assigned: "muted",
+      dispatched: "warn",
+      observed_running: "warn",
+      provider_progress: "warn",
+      waiting_for_user: "warn",
+      waiting_for_approval: "warn",
+      implementation_complete: "ok",
+      failed: "bad",
+      cancelled: "warn"
+    };
+    const BASIS_LABELS = {
+      configured: "from configuration",
+      requested: "from a request",
+      observed: "observed directly",
+      provider_reported: "reported by the provider"
+    };
+    // Colour is never the only carrier: every state renders a text label and
+    // one of these text cues, so an unknown state stays visibly neutral.
+    const CUES = {ok: "+", warn: "~", bad: "!", muted: "?"};
+    const cueFor = (cls) => CUES[cls] || CUES.muted;
+    const lookup = (table, value, fallback) => {
+      const key = text(value);
+      return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : fallback;
+    };
+    // An observation older than this is reported by age alone, whatever its
+    // sources claim: a producer that stopped writing must not keep a screen
+    // asserting the state of the world.
+    const OBSERVATION_STALE_SECONDS = 600;
+    const FRESHNESS_RANK = {fresh: 0, stale: 1, unavailable: 2};
+    const FRESHNESS_CLASSES = {fresh: "ok", stale: "warn", unavailable: "bad"};
+    const arrayOf = (value) => (Array.isArray(value) ? value : []);
+    const records = (data) => arrayOf(data?.observations?.records);
+    const sourceIndex = (record) => {
+      const index = {};
+      for (const source of arrayOf(record?.sources)) index[text(source?.id)] = source;
+      return index;
+    };
+    const newestMs = (values) => {
+      let best = null;
+      for (const value of values) {
+        const at = parseMs(value);
+        if (at !== null && (best === null || at > best)) best = at;
+      }
+      return best;
+    };
+    // `checked_at` advances on every poll whether or not anything happened, so
+    // it can never be the last meaningful update. Only a recorded event time
+    // can be -- and, when a record carries none, the time something was last
+    // observed, reported as such.
+    function lastMeaningfulUpdate(record) {
+      const sources = arrayOf(record?.sources);
+      const runs = arrayOf(record?.work?.runs);
+      const event = newestMs([...sources.map(item => item?.event_at), ...runs.map(item => item?.event_at)]);
+      if (event !== null) return {at: event, basis: "event"};
+      const observed = newestMs([
+        ...sources.map(item => item?.observed_at),
+        ...runs.map(item => item?.observed_at),
+        ...arrayOf(record?.unlinked).map(item => item?.observed_at)
+      ]);
+      return observed === null ? {at: null, basis: "none"} : {at: observed, basis: "observation"};
+    }
+    function updateText(update, nowMs) {
+      if (update.at === null) return NOT_RECORDED;
+      const age = ageText(Math.max((nowMs - update.at) / 1000, 0));
+      return update.basis === "event" ? `${age} ago` : `observed ${age} ago`;
+    }
+    function worstFreshness(sources) {
+      if (!sources.length) return "unavailable";
+      let worst = "fresh";
+      for (const source of sources) {
+        const value = text(source?.freshness);
+        if ((FRESHNESS_RANK[value] ?? 3) > (FRESHNESS_RANK[worst] ?? 3)) worst = value;
+      }
+      return worst;
+    }
+    // How current one record is. A record is only allowed to read as current
+    // when every source behind it is fresh and the record itself is recent;
+    // anything else is reported as the last observation it is.
+    function recordFreshness(record, nowMs) {
+      const sources = arrayOf(record?.sources);
+      const createdAt = parseMs(record?.created_at);
+      const ageSeconds = createdAt === null ? null : Math.max((nowMs - createdAt) / 1000, 0);
+      const worst = worstFreshness(sources);
+      const aged = ageSeconds === null || ageSeconds > OBSERVATION_STALE_SECONDS;
+      const current = worst === "fresh" && !aged;
+      const unavailable = sources.filter(item => text(item?.freshness) === "unavailable").map(item => text(item?.kind));
+      const stale = sources.filter(item => text(item?.freshness) === "stale").map(item => text(item?.kind));
+      const partial = sources.filter(item => text(item?.coverage) === "partial").map(item => text(item?.kind));
+      const notes = [];
+      if (unavailable.length) notes.push(`Source unavailable: ${unavailable.join(", ")}. The last recorded observation is shown and is not evidence of work running now.`);
+      if (stale.length) notes.push(`Source stale: ${stale.join(", ")}. What follows is what was last observed there.`);
+      if (partial.length) notes.push(`Partial coverage: ${partial.join(", ")} reported part of what it covers, so counts below are what was observed, not a total.`);
+      if (ageSeconds === null) notes.push("No observation time is recorded, so this record cannot be shown as current.");
+      else if (aged) notes.push(`This observation is ${ageText(ageSeconds)} old, so it is shown as last observed rather than current.`);
+      return {
+        state: worst,
+        current,
+        age_text: ageSeconds === null ? NOT_RECORDED : ageText(ageSeconds),
+        label: ageSeconds === null
+          ? "observation time not recorded"
+          : current ? `observed ${ageText(ageSeconds)} ago` : `last observed ${ageText(ageSeconds)} ago`,
+        class: ageSeconds === null ? "muted" : current ? "ok" : unavailable.length ? "bad" : "warn",
+        unavailable_sources: unavailable,
+        stale_sources: stale,
+        partial_sources: partial,
+        detail: notes.join(" ")
+      };
+    }
+    // Every distinct truth the contract can record about one work item gets its
+    // own label, so review requested, review observed running, stale review,
+    // changes requested, implementation complete, ready for human review,
+    // ready to merge and merged can never collapse into one another. The
+    // lowest-ranked match is the row headline; the rest stay as state cues.
+    const STATE_RULES = [
+      {rank: 0, label: "merged", cls: "ok", when: (w) => w.stage === "merged" || w.merge === "merged"},
+      {rank: 1, label: "ready to merge", cls: "ok", when: (w) => w.stage === "ready_to_merge" || w.reasons.includes("ready_to_merge")},
+      {rank: 2, label: "changes requested", cls: "bad", when: (w) => w.stage === "changes_requested" || w.reasons.includes("changes_requested") || w.review === "blocked"},
+      {rank: 3, label: "CI failed", cls: "bad", when: (w) => w.ci === "failed" || w.reasons.includes("ci_failed")},
+      {rank: 4, label: "gate failed", cls: "bad", when: (w) => w.gate === "failed" || w.reasons.includes("gate_failed")},
+      {rank: 5, label: "provider run failed", cls: "bad", when: (w) => w.phases.includes("failed") || w.reasons.includes("provider_failed")},
+      {rank: 6, label: "provider run cancelled", cls: "warn", when: (w) => w.phases.includes("cancelled") || w.reasons.includes("cancelled")},
+      {rank: 7, label: "source unavailable", cls: "bad", when: (w) => w.reasons.includes("source_unavailable")},
+      {rank: 8, label: "waiting for approval", cls: "warn", when: (w) => w.reasons.includes("approval_required") || w.phases.includes("waiting_for_approval")},
+      {rank: 9, label: "waiting for an answer", cls: "warn", when: (w) => w.reasons.includes("user_input_required") || w.phases.includes("waiting_for_user")},
+      {rank: 10, label: "stale observation", cls: "warn", when: (w) => w.reasons.includes("stale_observation")},
+      {rank: 11, label: "stale review", cls: "warn", when: (w) => w.review === "stale" || w.reasons.includes("review_stale")},
+      {rank: 12, label: "ready for human review", cls: "warn", when: (w) => w.stage === "ready_for_human_review" || w.reasons.includes("human_review_required")},
+      {rank: 13, label: "review observed running", cls: "warn", when: (w) => w.review === "running" || w.reasons.includes("review_in_progress")},
+      {rank: 14, label: "implementation complete", cls: "ok", when: (w) => w.phases.includes("implementation_complete")},
+      // A requested review that already has a verdict is no longer waiting on
+      // one, so the request stops being reported as an outstanding state.
+      {rank: 15, label: "review requested", cls: "warn", when: (w) => (w.request === "requested" || w.reasons.includes("review_requested")) && !["pass", "blocked", "stale", "running"].includes(w.review)},
+      {rank: 16, label: "CI pending", cls: "warn", when: (w) => w.ci === "pending" || w.reasons.includes("ci_pending")},
+      {rank: 17, label: "gate pending", cls: "warn", when: (w) => w.gate === "pending" || w.reasons.includes("gate_pending")},
+      {rank: 18, label: "review passed", cls: "ok", when: (w) => w.review === "pass"},
+      {rank: 19, label: "provider reported progress", cls: "warn", when: (w) => w.phases.includes("provider_progress")},
+      {rank: 20, label: "provider run observed", cls: "warn", when: (w) => w.phases.includes("observed_running")},
+      {rank: 21, label: "dispatched", cls: "warn", when: (w) => w.phases.includes("dispatched")},
+      {rank: 22, label: "assigned", cls: "muted", when: (w) => w.phases.includes("assigned") || w.assignment === "assigned"},
+      {rank: 23, label: "identity unlinked", cls: "warn", when: (w) => w.reasons.includes("identity_unlinked")}
+    ];
+    function workStates(work) {
+      const evidence = work?.evidence || {};
+      const facts = {
+        stage: text(work?.stage),
+        reasons: arrayOf(work?.reasons).map(text),
+        phases: arrayOf(work?.runs).map(run => text(run?.phase)),
+        review: text(evidence.review?.state),
+        request: text(evidence.review_request?.state),
+        ci: text(evidence.ci?.state),
+        gate: text(evidence.gate?.state),
+        merge: text(evidence.merge?.state),
+        assignment: text(evidence.assignment?.state)
+      };
+      const states = STATE_RULES.filter(rule => rule.when(facts)).map(rule => ({label: rule.label, class: rule.cls, cue: cueFor(rule.cls)}));
+      return states.length ? states : [{label: "state not recorded", class: "muted", cue: CUES.muted}];
+    }
+    // The opaque identity a selection is kept against. It is built only from
+    // identity the contract already fixes -- session, worktree and work id --
+    // so it survives a refresh that reorders, adds or drops rows.
+    function workKey(record) {
+      const scope = record?.scope || {};
+      const kind = text(record?.kind);
+      if (kind === "work") return `work:${text(scope.session_id)}:${text(scope.worktree_id)}:${text(record?.work?.id)}`;
+      if (kind === "no_work") return `idle:${text(scope.session_id)}:${text(scope.worktree_id)}`;
+      return `unlinked:${text(scope.repository)}`;
+    }
+    // Everything that makes one poll meaningfully different from the last.
+    // `created_at`, every `checked_at`, every `observed_at` and every
+    // `heartbeat_at` are excluded on purpose: they advance on every successful
+    // poll whether or not anything happened, and including them would make an
+    // unchanged snapshot look like news in the Timeline and to a screen reader.
+    function workSignature(record) {
+      const parts = [text(record?.kind), text(record?.display?.authorized), text(record?.display?.session_label)];
+      const work = record?.work;
+      if (work) {
+        parts.push(
+          text(work.stage),
+          arrayOf(work.reasons).map(text).join("+"),
+          text(work.primary?.actor),
+          text(work.primary?.action),
+          text(work.pull_request?.number),
+          text(work.pull_request?.head_sha)
+        );
+        const evidence = work.evidence || {};
+        for (const name of Object.keys(evidence).sort()) {
+          const item = evidence[name] || {};
+          parts.push(`${name}=${text(item.state)}:${text(item.source_id)}:${text(item.head_sha)}:${text(item.coverage)}`);
+        }
+        const measurements = work.measurements || {};
+        for (const name of Object.keys(measurements).sort()) {
+          const item = measurements[name] || {};
+          parts.push(`${name}=${text(item.value)}:${text(item.coverage)}:${text(item.observed)}:${text(item.total)}`);
+        }
+        for (const run of arrayOf(work.runs).slice().sort((a, b) => text(a?.id).localeCompare(text(b?.id)))) {
+          parts.push(`run:${text(run?.id)}=${text(run?.provider)}:${text(run?.role)}:${text(run?.phase)}:${text(run?.basis)}:${text(run?.reported_stage)}:${text(run?.event_at)}:${text(run?.lifecycle?.state)}:${text(run?.lifecycle?.reason)}`);
+        }
+      }
+      for (const run of arrayOf(record?.unlinked).slice().sort((a, b) => text(a?.id).localeCompare(text(b?.id)))) {
+        parts.push(`unlinked:${text(run?.id)}=${text(run?.provider)}:${text(run?.role)}`);
+      }
+      for (const source of arrayOf(record?.sources).slice().sort((a, b) => text(a?.id).localeCompare(text(b?.id)))) {
+        parts.push(`source:${text(source?.id)}=${text(source?.kind)}:${text(source?.freshness)}:${text(source?.coverage)}:${text(source?.event_at)}`);
+      }
+      return parts.join("|");
+    }
+    function measurementText(measurement, unit) {
+      const coverage = text(measurement?.coverage);
+      if (coverage === "unavailable") return NOT_RECORDED;
+      const value = measured(measurement?.value);
+      if (value === null) return NOT_RECORDED;
+      const shown = unit === "usd" ? money(value) : unit === "seconds" ? seconds(value) : String(value);
+      const observed = measured(measurement?.observed);
+      const total = measured(measurement?.total);
+      // Partial coverage is reported as the counted evidence it is. Nothing is
+      // extrapolated to a whole and no ratio is turned into a percentage.
+      return coverage === "partial" && observed !== null && total !== null
+        ? `${shown} from ${observed} of ${total} recorded`
+        : shown;
+    }
+    function sourceNote(source) {
+      if (!source) return "source not recorded";
+      const freshness = text(source.freshness) || "unknown";
+      const coverage = text(source.coverage) || "unknown";
+      return `${text(source.kind) || "source"}, ${freshness}, ${coverage} coverage`;
+    }
+    // The contract's evidence states are a closed vocabulary, so each one is
+    // classified explicitly. Anything unrecognised -- and every not-started,
+    // absent or unverifiable reading -- stays neutral rather than defaulting
+    // into a colour that would read as a pass.
+    const EVIDENCE_STATE_CLASSES = {
+      unknown: "muted",
+      none: "muted",
+      not_started: "muted",
+      unverifiable: "muted",
+      absent: "muted",
+      unassigned: "muted",
+      not_requested: "muted",
+      draft: "muted",
+      open: "muted",
+      held: "ok",
+      assigned: "ok",
+      pass: "ok",
+      ready: "ok",
+      merged: "ok",
+      requested: "warn",
+      running: "warn",
+      pending: "warn",
+      stale: "warn",
+      expired: "bad",
+      blocked: "bad",
+      failed: "bad",
+      closed_unmerged: "bad"
+    };
+    function evidenceItem(name, label, item, source, options) {
+      const state = text(item?.state) || "unknown";
+      const settings = options || {};
+      const cls = settings.class || lookup(EVIDENCE_STATE_CLASSES, state, "muted");
+      return {
+        name,
+        label,
+        state: state.replace(/_/g, " "),
+        class: cls,
+        cue: cueFor(cls),
+        source: sourceNote(source),
+        head: text(item?.head_sha) ? text(item.head_sha).slice(0, 7) : "",
+        coverage: text(item?.coverage),
+        note: settings.note || ""
+      };
+    }
+    // Six independent readings of the same work item. Each one names the
+    // source it came from, so a green publisher run, an assignment record and
+    // a merge state can never stand in for one another.
+    function evidenceGroups(record) {
+      const work = record?.work || {};
+      const evidence = work.evidence || {};
+      const sources = sourceIndex(record);
+      const runs = arrayOf(work.runs);
+      const reasons = arrayOf(work.reasons).map(text);
+      const builder = runs.length
+        ? runs.map(run => ({
+            name: "run",
+            label: `${text(run?.provider) || "provider"} ${text(run?.role) || "role"}`,
+            state: lookup(PHASE_LABELS, run?.phase, text(run?.phase) || "unknown"),
+            class: lookup(PHASE_CLASSES, run?.phase, "muted"),
+            cue: cueFor(lookup(PHASE_CLASSES, run?.phase, "muted")),
+            source: sourceNote(sources[text(run?.source_id)]),
+            head: "",
+            coverage: "",
+            note: `${lookup(BASIS_LABELS, run?.basis, text(run?.basis))}${text(run?.reported_stage) ? `; provider reported stage ${text(run.reported_stage)}` : ""}${run?.heartbeat_at ? "; heartbeat recorded" : "; no heartbeat recorded"}`
+          }))
+        : [{name: "run", label: "provider run", state: NOT_RECORDED, class: "muted", cue: CUES.muted, source: "no run recorded", head: "", coverage: "", note: "No provider run is recorded for this work item."}];
+      const policyItems = [
+        evidenceItem("lease", "orchestrator lease", evidence.lease, sources[text(evidence.lease?.source_id)]),
+        evidenceItem("assignment", "assignment", evidence.assignment, sources[text(evidence.assignment?.source_id)], {note: "An assignment is a record of intent, not of execution."})
+      ];
+      for (const reason of ["approval_required", "user_input_required", "human_review_required"]) {
+        if (reasons.includes(reason)) {
+          policyItems.push({
+            name: reason,
+            label: "human policy",
+            state: reason.replace(/_/g, " "),
+            class: "warn",
+            cue: CUES.warn,
+            source: "recorded reason",
+            head: "",
+            coverage: "",
+            note: "A person has to act before this can move."
+          });
+        }
+      }
+      return [
+        {name: "builder", label: "Builder", items: builder},
+        {name: "review", label: "Review", items: [
+          evidenceItem("review_request", "review requested", evidence.review_request, sources[text(evidence.review_request?.source_id)]),
+          evidenceItem("review", "review verdict", evidence.review, sources[text(evidence.review?.source_id)])
+        ]},
+        {name: "ci", label: "CI", items: [
+          evidenceItem("ci", "checks", evidence.ci, sources[text(evidence.ci?.source_id)])
+        ]},
+        {name: "gate", label: "Gate", items: [
+          evidenceItem("gate", "code-mower/gate verdict", evidence.gate, sources[text(evidence.gate?.source_id)]),
+          evidenceItem("gate_publisher", "gate publisher run", evidence.gate_publisher, sources[text(evidence.gate_publisher?.source_id)], {note: "Publisher execution only; it is not the gate verdict."})
+        ]},
+        {name: "merge", label: "Merge", items: [
+          evidenceItem("merge", "merge state", evidence.merge, sources[text(evidence.merge?.source_id)])
+        ]},
+        {name: "policy", label: "Human policy", items: policyItems}
+      ];
+    }
+    function workRow(record, nowMs) {
+      const kind = text(record?.kind);
+      const key = workKey(record);
+      const freshness = recordFreshness(record, nowMs);
+      const update = lastMeaningfulUpdate(record);
+      const base = {
+        key,
+        kind,
+        signature: workSignature(record),
+        repository: text(record?.scope?.repository),
+        freshness,
+        update,
+        update_text: updateText(update, nowMs),
+        session_label: record?.display?.authorized === true ? text(record?.display?.session_label) : "",
+        record
+      };
+      if (kind === "work") {
+        const work = record.work || {};
+        const states = workStates(work);
+        return {
+          ...base,
+          reference: text(work.reference) || "work",
+          stage: text(work.stage),
+          stage_label: lookup(STAGE_LABELS, work.stage, "not recorded"),
+          states,
+          headline: states[0].label,
+          headline_class: states[0].class,
+          pr_number: work.pull_request?.number ?? null,
+          head_sha: text(work.pull_request?.head_sha),
+          action_label: lookup(ACTION_LABELS, work.primary?.action, "no next action recorded"),
+          actor_label: lookup(ACTOR_LABELS, work.primary?.actor, "no responsible role recorded"),
+          assignments: arrayOf(work.runs).map(run => `${text(run?.provider)} ${text(run?.role)} ${lookup(PHASE_LABELS, run?.phase, text(run?.phase))}`),
+          reasons: arrayOf(work.reasons).map(text),
+          groups: evidenceGroups(record),
+          measurements: [
+            {label: "elapsed", value: measurementText(work.measurements?.elapsed_seconds, "seconds")},
+            {label: "cost", value: measurementText(work.measurements?.cost_usd, "usd")},
+            {label: "quality", value: measurementText(work.measurements?.quality_score, "count")},
+            {label: "productivity", value: measurementText(work.measurements?.productivity_count, "count")},
+            {label: "provenance", value: measurementText(work.measurements?.provenance_count, "count")}
+          ]
+        };
+      }
+      if (kind === "no_work") {
+        const covered = arrayOf(record?.sources)
+          .filter(source => text(source?.freshness) === "fresh" && text(source?.coverage) === "complete")
+          .map(source => text(source?.kind));
+        return {
+          ...base,
+          reference: base.session_label || "this session",
+          stage: "",
+          stage_label: "no work recorded",
+          states: [{label: "idle with complete coverage", class: "ok", cue: CUES.ok}],
+          headline: "idle with complete coverage",
+          headline_class: "ok",
+          pr_number: null,
+          head_sha: "",
+          action_label: "nothing to do in this session",
+          actor_label: "no responsible role recorded",
+          assignments: [],
+          reasons: [],
+          groups: [{name: "coverage", label: "Coverage", items: [{
+            name: "coverage",
+            label: "observed complete",
+            state: covered.length ? covered.join(", ") : NOT_RECORDED,
+            class: covered.length ? "ok" : "muted",
+            cue: cueFor(covered.length ? "ok" : "muted"),
+            source: "session sources",
+            head: "",
+            coverage: "complete",
+            note: "This session is idle because the session, work queue and run registry were all observed complete, not because nothing was looked at."
+          }]}],
+          measurements: []
+        };
+      }
+      const runs = arrayOf(record?.unlinked);
+      return {
+        ...base,
+        reference: "unlinked local runs",
+        stage: "",
+        stage_label: "not linked to a session",
+        states: [{label: "identity unlinked", class: "warn", cue: CUES.warn}],
+        headline: "identity unlinked",
+        headline_class: "warn",
+        pr_number: null,
+        head_sha: "",
+        // The contract records no route for an unlinked observation, so none
+        // is derived for it here.
+        action_label: "no next action recorded",
+        actor_label: "no responsible role recorded",
+        assignments: runs.map(run => `${text(run?.provider)} ${text(run?.role)}`),
+        reasons: [],
+        groups: [{name: "unlinked", label: "Unlinked runs", items: runs.map(run => ({
+          name: "unlinked",
+          label: `${text(run?.provider) || "provider"} ${text(run?.role) || "role"}`,
+          state: "observed, not linked to a session",
+          class: "warn",
+          cue: CUES.warn,
+          source: sourceNote(sourceIndex(record)[text(run?.source_id)]),
+          head: "",
+          coverage: "",
+          note: "Nothing binds this run to Code Mower work, so no stage is claimed for it."
+        }))}],
+        measurements: []
+      };
+    }
+    // Deterministic order: most blocking first, then a stable tiebreak on the
+    // opaque identity so an unchanged snapshot never reshuffles the list.
+    const ROW_RANK = new Map(STATE_RULES.map(rule => [rule.label, rule.rank]));
+    function workRows(data, nowMs) {
+      const rows = records(data).map(record => workRow(record, nowMs));
+      const merged = [];
+      // Several unlinked observations describe one condition in one scope, so
+      // they render as one row rather than as competing rows.
+      for (const row of rows) {
+        const existing = row.kind === "unlinked" ? merged.find(item => item.key === row.key) : undefined;
+        if (existing === undefined) {
+          merged.push(row);
+          continue;
+        }
+        existing.assignments = [...existing.assignments, ...row.assignments];
+        existing.groups[0].items = [...existing.groups[0].items, ...row.groups[0].items];
+        existing.signature = `${existing.signature}||${row.signature}`;
+      }
+      return merged.sort((a, b) =>
+        (ROW_RANK.get(a.headline) ?? 99) - (ROW_RANK.get(b.headline) ?? 99)
+        || a.reference.localeCompare(b.reference)
+        || a.key.localeCompare(b.key));
+    }
+    // Who is recorded as taking part, and in what phase. Nothing is inferred:
+    // a participant is only ever reported in the phases its own runs record,
+    // alongside how fresh the source behind them is.
+    function participantSummary(data) {
+      const summary = new Map();
+      for (const record of records(data)) {
+        const sources = sourceIndex(record);
+        const runs = [...arrayOf(record?.work?.runs), ...arrayOf(record?.unlinked)];
+        for (const run of runs) {
+          const provider = text(run?.provider) || "unknown";
+          const role = text(run?.role) || "unknown";
+          const key = `${provider}/${role}`;
+          const entry = summary.get(key) || {provider, role, count: 0, freshness: "fresh", phases: new Map()};
+          const phase = text(run?.phase) || "not linked to a session";
+          entry.phases.set(phase, (entry.phases.get(phase) || 0) + 1);
+          entry.count += 1;
+          const freshness = text(sources[text(run?.source_id)]?.freshness) || "unavailable";
+          if ((FRESHNESS_RANK[freshness] ?? 3) > (FRESHNESS_RANK[entry.freshness] ?? 3)) entry.freshness = freshness;
+          summary.set(key, entry);
+        }
+      }
+      return [...summary.values()]
+        .map(entry => ({
+          provider: entry.provider,
+          role: entry.role,
+          count: entry.count,
+          freshness: entry.freshness,
+          class: FRESHNESS_CLASSES[entry.freshness] || "muted",
+          phases: [...entry.phases.entries()]
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([phase, count]) => ({phase, count, label: lookup(PHASE_LABELS, phase, phase)}))
+        }))
+        .sort((a, b) => a.provider.localeCompare(b.provider) || a.role.localeCompare(b.role));
+    }
+    // Every source behind every record, so a connection can be inspected on
+    // its own terms in the Health view. Several records routinely observe the
+    // same source, so identical readings collapse into one connection with the
+    // number of records behind it: repeating one lease five times would read
+    // as five connections rather than as one.
+    function sourceRows(data, nowMs) {
+      const grouped = new Map();
+      for (const record of records(data)) {
+        for (const source of arrayOf(record?.sources)) {
+          const freshness = text(source?.freshness) || "unknown";
+          const checked = parseMs(source?.checked_at);
+          const row = {
+            id: text(source?.id),
+            kind: text(source?.kind) || "source",
+            freshness,
+            class: FRESHNESS_CLASSES[freshness] || "muted",
+            cue: cueFor(FRESHNESS_CLASSES[freshness] || "muted"),
+            coverage: text(source?.coverage) || "unknown",
+            event_at: text(source?.event_at),
+            observed_at: text(source?.observed_at),
+            heartbeat_at: text(source?.heartbeat_at),
+            checked_text: checked === null ? NOT_RECORDED : `${ageText(Math.max((nowMs - checked) / 1000, 0))} ago`,
+            records: 1
+          };
+          const key = [row.id, row.kind, row.freshness, row.coverage, row.event_at, row.observed_at, row.heartbeat_at, row.checked_text].join("|");
+          const existing = grouped.get(key);
+          if (existing === undefined) grouped.set(key, row);
+          else existing.records += 1;
+        }
+      }
+      return [...grouped.values()].sort((a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id));
+    }
+    // What changed since the previous snapshot. The first snapshot of a page
+    // is not a change, and a snapshot whose every signature matches produces
+    // nothing at all -- that is what keeps an unchanged poll out of the
+    // Timeline and out of the announcement region.
+    function meaningfulChanges(previous, current) {
+      if (previous === null) return [];
+      const changes = [];
+      for (const [key, row] of current) {
+        const before = previous.get(key);
+        if (before === undefined) changes.push({key, reference: row.reference, headline: row.headline, kind: "appeared"});
+        else if (before.signature !== row.signature) changes.push({key, reference: row.reference, headline: row.headline, kind: "changed", from: before.headline});
+      }
+      for (const [key, before] of previous) {
+        if (!current.has(key)) changes.push({key, reference: before.reference, headline: before.headline, kind: "gone"});
+      }
+      return changes.sort((a, b) => a.reference.localeCompare(b.reference) || a.key.localeCompare(b.key));
+    }
+    function changeSentence(change) {
+      if (change.kind === "appeared") return `${change.reference} appeared as ${change.headline}`;
+      if (change.kind === "gone") return `${change.reference} is no longer recorded`;
+      return change.from && change.from !== change.headline
+        ? `${change.reference} moved from ${change.from} to ${change.headline}`
+        : `${change.reference} changed while staying ${change.headline}`;
+    }
+    // A bounded sentence, so one refresh that touches many items does not read
+    // an unbounded list out loud.
+    function changeAnnouncement(changes) {
+      if (!changes.length) return "";
+      const shown = changes.slice(0, 3).map(changeSentence);
+      const remaining = changes.length - shown.length;
+      return `${shown.join("; ")}${remaining > 0 ? `; and ${remaining} more work item${remaining === 1 ? "" : "s"} changed` : ""}.`;
+    }
+    // Keyboard movement, kept pure so the rules are testable without a browser.
+    // Tabs wrap, as the tabs pattern expects; the vertical row list clamps at
+    // its ends so Down on the last row does not jump back to the top.
+    function nextTabIndex(key, index, count) {
+      if (count < 1) return -1;
+      if (key === "ArrowRight" || key === "ArrowDown") return (index + 1) % count;
+      if (key === "ArrowLeft" || key === "ArrowUp") return (index - 1 + count) % count;
+      if (key === "Home") return 0;
+      if (key === "End") return count - 1;
+      return -1;
+    }
+    function nextRowIndex(key, index, count) {
+      if (count < 1) return -1;
+      if (key === "ArrowDown") return Math.min(index + 1, count - 1);
+      if (key === "ArrowUp") return Math.max(index - 1, 0);
+      if (key === "Home") return 0;
+      if (key === "End") return count - 1;
+      return -1;
+    }
+    // A selection is kept by opaque work identity, never by position. An
+    // explicit choice survives a refresh that reorders the list, and is only
+    // replaced on screen -- not forgotten -- while the work it names is absent.
+    function resolveSelection(rows, chosenKey) {
+      if (chosenKey !== null && rows.some(row => row.key === chosenKey)) return chosenKey;
+      return rows.length ? rows[0].key : null;
+    }
+    // --- work view model (END) ---
+    const localTime = (value) => {
       const raw = text(value);
       if (!raw) return "";
       const date = new Date(raw);
       if (Number.isNaN(date.getTime())) return esc(raw);
-      const local = new Intl.DateTimeFormat(undefined, {{year:"numeric", month:"short", day:"numeric", hour:"numeric", minute:"2-digit", second:"2-digit", timeZoneName:"short"}}).format(date);
-      return `<time datetime="${{esc(raw)}}" title="UTC ${{esc(raw)}}">${{esc(local)}}</time>`;
-    }};
-    function labels(groups) {{
-      return Object.values(groups || {{}}).flat().map(pill).join(" ") || '<span class="muted">none</span>';
-    }}
-    function checks(list) {{
+      const local = new Intl.DateTimeFormat(undefined, {year:"numeric", month:"short", day:"numeric", hour:"numeric", minute:"2-digit", second:"2-digit", timeZoneName:"short"}).format(date);
+      return `<time datetime="${esc(raw)}" title="UTC ${esc(raw)}">${esc(local)}</time>`;
+    };
+    function labels(groups) {
+      return Object.values(groups || {}).flat().map(pill).join(" ") || '<span class="muted">none</span>';
+    }
+    function checks(list) {
       // The canonical publishing job is marked so a green publisher run is
       // never read as a green verdict. Other checks, including unrelated ones
       // whose name happens to contain "gate", render normally.
-      return (list || []).map(c => {{
+      return (list || []).map(c => {
         const publisher = isGatePublisher(c.name);
         const suffix = publisher ? ' <span class="muted">(publisher job, not the verdict)</span>' : "";
-        return `<span class="${{stateClass(c.state)}}">${{esc(c.name)}}=${{esc(display(c.state))}}</span>${{suffix}}`;
-      }}).join(", ") || '<span class="muted">none</span>';
-    }}
-    function attentionRow(item) {{
-      const reasons = item.reasons.map(reason => pill(`${{reason.kind}} -> ${{reason.role}}`)).join(" ");
-      const evidence = item.evidence.length ? `<div class="muted">owner evidence: ${{esc(item.evidence.join(", "))}}</div>` : "";
+        return `<span class="${stateClass(c.state)}">${esc(c.name)}=${esc(display(c.state))}</span>${suffix}`;
+      }).join(", ") || '<span class="muted">none</span>';
+    }
+    function attentionRow(item) {
+      const reasons = item.reasons.map(reason => pill(`${reason.kind} -> ${reason.role}`)).join(" ");
+      const evidence = item.evidence.length ? `<div class="muted">owner evidence: ${esc(item.evidence.join(", "))}</div>` : "";
       return `<div class="row">
-        <div class="line"><a href="${{esc(href(item.url))}}">#${{esc(item.pr_number)}} ${{esc(item.title)}}</a>${{statePill(item.role, item.role === "owner" ? "warn" : "muted")}}${{statePill(`gate ${{item.gate.state}}`, item.gate.class)}}${{item.head_sha_prefix ? pill(item.head_sha_prefix) : ""}}</div>
-        <div>next: <b>${{esc(item.next_action)}}</b></div>
-        <div class="line">reasons (${{item.reasons.length}}): ${{reasons}}</div>
-        ${{evidence}}
-        <div class="muted">${{esc(item.branch)}} by ${{esc(item.author)}}${{item.updated_at ? ` updated ${{localTime(item.updated_at)}}` : ""}}</div>
+        <div class="line"><a href="${esc(href(item.url))}">#${esc(item.pr_number)} ${esc(item.title)}</a>${statePill(item.role, item.role === "owner" ? "warn" : "muted")}${statePill(`gate ${item.gate.state}`, item.gate.class)}${item.head_sha_prefix ? pill(item.head_sha_prefix) : ""}</div>
+        <div>next: <b>${esc(item.next_action)}</b></div>
+        <div class="line">reasons (${item.reasons.length}): ${reasons}</div>
+        ${evidence}
+        <div class="muted">${esc(item.branch)} by ${esc(item.author)}${item.updated_at ? ` updated ${localTime(item.updated_at)}` : ""}</div>
       </div>`;
-    }}
-    function renderLease(lease) {{
-      const messages = {{absent: "No orchestrator lease in this working copy.", expired: "Lease expired.", malformed: "Local lease is malformed.", unavailable: "Local lease is unavailable."}};
+    }
+    function renderLease(lease) {
+      const messages = {absent: "No orchestrator lease in this working copy.", expired: "Lease expired.", malformed: "Local lease is malformed.", unavailable: "Local lease is unavailable."};
       const state = lease?.state || "unavailable";
-      return `<div class="row"><div class="line">${{pill(state)}}<b>Provider: ${{esc(lease?.provider || "none")}}</b></div><div>Expires: ${{lease?.expires_at ? localTime(lease.expires_at) : "n/a"}}</div><div class="muted">${{esc(messages[state] || "Local orchestration lease is active.")}}</div></div>`;
-    }}
-    function render(data) {{
+      return `<div class="row"><div class="line">${pill(state)}<b>Provider: ${esc(lease?.provider || "none")}</b></div><div>Expires: ${lease?.expires_at ? localTime(lease.expires_at) : "n/a"}</div><div class="muted">${esc(messages[state] || "Local orchestration lease is active.")}</div></div>`;
+    }
+    // --- view chrome and work rendering (BEGIN) ---
+    const VIEWS = [
+      {id: "now", label: "Now", panel: "panel-now"},
+      {id: "timeline", label: "Timeline", panel: "panel-timeline"},
+      {id: "releases", label: "Releases", panel: "panel-releases"},
+      {id: "health", label: "Health", panel: "panel-health"}
+    ];
+    let activeView = "now";
+    // The operator's explicit choice, kept as the opaque work identity rather
+    // than a row position and never cleared by a refresh.
+    let selectedWorkKey = null;
+    let workState = {rows: [], prs: [], message: ""};
+    let previousSignatures = null;
+    let changeLog = [];
+    let wired = false;
+    // A row's element id is derived from its opaque work identity rather than
+    // its position, so `aria-labelledby` and restored keyboard focus follow the
+    // work item across a refresh that reorders the list. The work, worktree and
+    // session components the key is built from cannot contain the separator, so
+    // distinct keys cannot collapse onto one id.
+    const rowElementId = (key) => `workrow-${text(key).replace(/[^A-Za-z0-9_-]/g, "-")}`;
+    // A background refresh replaces the tab strip and the row list. Without
+    // this the focused control is destroyed mid-navigation and focus falls to
+    // the document body, so the keyboard position is silently lost every poll.
+    // Restoring never scrolls: an explicit key press moves the view, a refresh
+    // must not.
+    function withFocusPreserved(update) {
+      const active = document.activeElement;
+      const activeId = active && typeof active.id === "string" ? active.id : "";
+      update();
+      if (!activeId) return;
+      const restored = document.getElementById(activeId);
+      if (restored && typeof restored.focus === "function") restored.focus({preventScroll: true});
+    }
+    const cuePill = (label, cls) => `<span class="pill ${esc(cls || "muted")}"><span class="cue" aria-hidden="true">${esc(cueFor(cls))}</span> ${esc(label)}</span>`;
+    const stateCue = (state) => cuePill(state.label, state.class);
+    function tabsHtml() {
+      return VIEWS.map(view => {
+        const selected = view.id === activeView;
+        return `<button type="button" role="tab" class="tab" id="tab-${esc(view.id)}" data-view="${esc(view.id)}" aria-selected="${selected}" aria-controls="${esc(view.panel)}" tabindex="${selected ? "0" : "-1"}">${esc(view.label)}</button>`;
+      }).join("");
+    }
+    function applyView() {
+      withFocusPreserved(() => put("tabs", tabsHtml()));
+      for (const view of VIEWS) {
+        document.getElementById(view.panel).hidden = view.id !== activeView;
+      }
+    }
+    function selectView(id) {
+      if (!VIEWS.some(view => view.id === id)) return;
+      activeView = id;
+      applyView();
+    }
+    // Only a URL the payload actually recorded is ever offered. A PR number
+    // observed locally is never turned into a remote address the Board has not
+    // been told about.
+    function recordedPrUrl(row, prs) {
+      if (row.pr_number === null || row.pr_number === undefined) return "";
+      const match = arrayOf(prs).find(pr => pr?.number === row.pr_number);
+      const url = match ? text(match.url) : "";
+      return href(url) === "#" ? "" : url;
+    }
+    function workActionsHtml(row, prs) {
+      const url = recordedPrUrl(row, prs);
+      const actions = [];
+      if (url) actions.push(`<a href="${esc(href(url))}">Open PR #${esc(row.pr_number)}</a>`);
+      else if (row.pr_number !== null && row.pr_number !== undefined) actions.push(`<span class="muted">PR #${esc(row.pr_number)}, no local link recorded</span>`);
+      actions.push(`<button type="button" class="link" data-view="health">Inspect connection</button>`);
+      actions.push(`<button type="button" class="link" data-view="timeline">View recent changes</button>`);
+      return `<div class="line">${actions.join("")}</div>
+        <div class="muted">Read-only. This Board never merges, requeues, cancels, retries, restarts or takes a lease.</div>`;
+    }
+    function evidenceGroupHtml(group) {
+      const items = group.items.map(item => `<div class="line"><span>${esc(item.label)}</span>${cuePill(item.state, item.class)}${item.head ? `<span class="pill">head ${esc(item.head)}</span>` : ""}${item.coverage ? `<span class="pill">coverage ${esc(item.coverage)}</span>` : ""}</div><div class="muted">${esc(item.source)}${item.note ? ` -- ${esc(item.note)}` : ""}</div>`).join("");
+      return `<div class="evgroup"><h4>${esc(group.label)}</h4>${items}</div>`;
+    }
+    function workDetailHtml(row, labelId, prs) {
+      const measurements = row.measurements.length
+        ? `<h4>Measurements</h4><div class="line">${row.measurements.map(item => `<span class="pill">${esc(item.label)} ${esc(item.value)}</span>`).join("")}</div>`
+        : "";
+      const reasons = row.reasons.length
+        ? `<div class="line">${row.reasons.map(reason => pill(reason.replace(/_/g, " "))).join("")}</div>`
+        : "";
+      return `<div class="workdetail" id="workdetail" role="region" aria-labelledby="${esc(labelId)}">
+        <h3>${esc(row.reference)}</h3>
+        <div class="line">${row.states.map(stateCue).join("")}</div>
+        <div>next: <b>${esc(row.action_label)}</b> <span class="muted">responsible: ${esc(row.actor_label)}</span></div>
+        <div class="muted">stage: ${esc(row.stage_label)}; last meaningful update ${esc(row.update_text)}${row.head_sha ? `; head ${esc(row.head_sha.slice(0, 7))}` : ""}</div>
+        ${row.freshness.detail ? `<div class="muted">${esc(row.freshness.detail)}</div>` : ""}
+        ${reasons}
+        <h4>Independent evidence</h4>
+        ${row.groups.map(evidenceGroupHtml).join("")}
+        ${measurements}
+        <h4>Actions</h4>
+        ${workActionsHtml(row, prs)}
+      </div>`;
+    }
+    function workRowHtml(row, selected, prs) {
+      const id = rowElementId(row.key);
+      const assignments = row.assignments.length ? `assignments: ${row.assignments.join("; ")}` : "assignments: not recorded";
+      return `<li class="workrow${selected ? " selected" : ""}">
+        <button type="button" class="rowbtn" id="${id}" data-key="${esc(row.key)}" aria-expanded="${selected}" aria-controls="workdetail">
+          <span class="line"><span class="ref">${esc(row.reference)}</span>${stateCue(row.states[0])}<span class="pill">stage: ${esc(row.stage_label)}</span>${cuePill(row.freshness.label, row.freshness.class)}</span>
+          <span class="line"><span>next: <b>${esc(row.action_label)}</b></span><span class="muted">responsible: ${esc(row.actor_label)}</span><span class="muted">last update: ${esc(row.update_text)}</span></span>
+          <span class="line muted">${esc(assignments)}</span>
+        </button>
+        ${selected ? workDetailHtml(row, id, prs) : ""}
+      </li>`;
+    }
+    function renderWork() {
+      const rows = workState.rows;
+      const activeKey = resolveSelection(rows, selectedWorkKey);
+      withFocusPreserved(() => put("worklist", rows.length
+        ? `<ul class="workrows" role="list" aria-labelledby="work-heading">${rows.map(row => workRowHtml(row, row.key === activeKey, workState.prs)).join("")}</ul>`
+        : empty(workState.message)));
+    }
+    function selectWork(key) {
+      if (!key) return;
+      selectedWorkKey = key;
+      renderWork();
+    }
+    // Handlers are attached once to the two containers that survive every
+    // re-render, so replacing their contents can never leave a row or a tab
+    // unresponsive, and nothing outside an interaction touches the document.
+    function wire() {
+      if (wired) return;
+      wired = true;
+      const tabs = document.getElementById("tabs");
+      tabs.onclick = (event) => {
+        const button = event.target.closest("[data-view]");
+        if (button) selectView(button.dataset.view);
+      };
+      tabs.onkeydown = (event) => {
+        const buttons = [...tabs.querySelectorAll("[role=tab]")];
+        const current = buttons.indexOf(event.target.closest("[role=tab]"));
+        const next = nextTabIndex(event.key, current < 0 ? 0 : current, buttons.length);
+        if (next < 0) return;
+        event.preventDefault();
+        selectView(buttons[next].dataset.view);
+        const moved = document.getElementById(`tab-${activeView}`);
+        if (moved) moved.focus();
+      };
+      const list = document.getElementById("worklist");
+      list.onclick = (event) => {
+        const view = event.target.closest("[data-view]");
+        if (view) {
+          selectView(view.dataset.view);
+          return;
+        }
+        const button = event.target.closest(".rowbtn");
+        if (button) selectWork(button.dataset.key);
+      };
+      list.onkeydown = (event) => {
+        const buttons = [...list.querySelectorAll(".rowbtn")];
+        const current = buttons.indexOf(event.target.closest(".rowbtn"));
+        if (current < 0) return;
+        const next = nextRowIndex(event.key, current, buttons.length);
+        if (next < 0) return;
+        event.preventDefault();
+        selectWork(buttons[next].dataset.key);
+        const moved = list.querySelectorAll(".rowbtn")[next];
+        if (moved) moved.focus();
+      };
+    }
+    function renderChanges() {
+      put("changes", changeLog.length
+        ? changeLog.map(entry => `<div class="row"><div class="line"><b>${localTime(entry.at)}</b>${pill(entry.kind)}</div><div>${esc(entry.sentence)}</div></div>`).join("")
+        : empty("No meaningful change has been observed since this page loaded. Polls that repeat the same observation are not listed here."));
+    }
+    // Announce only what actually changed. An unchanged poll writes nothing at
+    // all, so the live region stays silent instead of repeating itself.
+    function noteChanges(rows, nowMs) {
+      const current = new Map(rows.map(row => [row.key, row]));
+      const changes = meaningfulChanges(previousSignatures, current);
+      previousSignatures = new Map(rows.map(row => [row.key, {signature: row.signature, reference: row.reference, headline: row.headline}]));
+      if (!changes.length) return;
+      const at = new Date(nowMs).toISOString();
+      changeLog = [...changes.map(change => ({at, kind: change.kind, sentence: changeSentence(change)})), ...changeLog].slice(0, 20);
+      document.getElementById("announce").textContent = changeAnnouncement(changes);
+    }
+    // --- view chrome and work rendering (END) ---
+    function render(data) {
       put("lease", renderLease(data.orchestrator_lease));
       document.getElementById("repo").textContent = REPO;
-      const version = data.board?.version || {{}};
+      const version = data.board?.version || {};
       const servingVersion = version.serving_version || "unknown";
       const installedVersion = version.installed_version || servingVersion;
       document.getElementById("version").textContent = version.restart_recommended
-        ? `serving ${{servingVersion}}; installed ${{installedVersion}} available after restart`
-        : `serving ${{servingVersion}}`;
-      document.getElementById("generated").innerHTML = data.generated_at ? `Generated ${{localTime(data.generated_at)}}` : "Loading...";
+        ? `serving ${servingVersion}; installed ${installedVersion} available after restart`
+        : `serving ${servingVersion}`;
+      document.getElementById("generated").innerHTML = data.generated_at ? `Generated ${localTime(data.generated_at)}` : "Loading...";
       const prs = data.remote?.pull_requests || [];
       const runs = data.remote?.workflow_runs || [];
       const alerts = data.remote?.gate_health?.alerts || [];
       const ownerQueue = data.owner_queue?.entries || [];
       const agentCards = data.agent_adapters?.agents || [];
-      const supervised = data.supervised_pilot || {{}};
-      const supervisedDecision = supervised.decision || {{}};
-      const supervisedQueue = supervised.queue || {{}};
-      const supervisedMetrics = supervisedQueue.metrics || {{}};
+      const supervised = data.supervised_pilot || {};
+      const supervisedDecision = supervised.decision || {};
+      const supervisedQueue = supervised.queue || {};
+      const supervisedMetrics = supervisedQueue.metrics || {};
       const supervisedPRs = supervised.active_prs || [];
       const supervisedIssues = supervised.active_issues || [];
-      const timelines = data.timelines || {{}};
+      const timelines = data.timelines || {};
       const verdicts = timelines.verdicts?.entries || [];
-      const spend = timelines.spend || {{}};
+      const spend = timelines.spend || {};
       const spendGroups = spend.groups || [];
-      const productivity = data.productivity || {{}};
-      const productivityMetrics = productivity.metrics || {{}};
-      const productivityCurrent = productivity.current || {{}};
-      const productivityWindow = productivity.window?.local_history || {{}};
-      const productivitySpend = productivity.spend || {{}};
-      const productivityQuality = productivity.quality || {{}};
+      const productivity = data.productivity || {};
+      const productivityMetrics = productivity.metrics || {};
+      const productivityCurrent = productivity.current || {};
+      const productivityWindow = productivity.window?.local_history || {};
+      const productivitySpend = productivity.spend || {};
+      const productivityQuality = productivity.quality || {};
       const nowMs = Date.now();
       const remoteAvailable = data.remote?.available === true;
       const obs = observation(data, nowMs);
@@ -1737,48 +2705,48 @@ def render_board_html(config: BoardConfig) -> str:
       const laneItems = attention.filter(item => item.role !== "owner");
       const leadItem = attention[0];
       put("summary", [
-        `<div class="metric"><span class="muted">Next action</span><b>${{esc(data.next_action || "inspect")}}</b></div>`,
-        data.next_detail ? `<div class="metric"><span class="muted">Detail</span><b>${{esc(data.next_detail)}}</b></div>` : "",
-        `<div class="metric"><span class="muted">Observation</span><b class="${{obs.class}}">${{esc(obs.label)}}</b></div>`,
-        `<div class="metric"><span class="muted">GitHub</span><b class="${{remoteAvailable ? "ok" : "warn"}}">${{remoteAvailable ? "available" : "unavailable"}}</b></div>`,
-        `<div class="metric"><span class="muted">Open PRs</span><b class="${{remoteAvailable ? "" : "muted"}}">${{esc(countOf(remoteAvailable, prs.length))}}</b></div>`,
-        `<div class="metric"><span class="muted">Owner decisions</span><b class="${{remoteAvailable ? (ownerItems.length ? "warn" : "ok") : "muted"}}">${{esc(countOf(remoteAvailable, ownerItems.length))}}</b></div>`,
-        `<div class="metric"><span class="muted">Lane work</span><b class="${{remoteAvailable ? (laneItems.length ? "warn" : "ok") : "muted"}}">${{esc(countOf(remoteAvailable, laneItems.length))}}</b></div>`,
-        `<div class="metric"><span class="muted">Gate alerts</span><b class="${{remoteAvailable ? (alerts.length ? "warn" : "ok") : "muted"}}">${{esc(countOf(remoteAvailable, alerts.length))}}</b></div>`,
-        `<div class="metric"><span class="muted">Pilot</span><b class="${{stateClass(supervised.cycle_state)}}">${{esc(display(supervised.cycle_state))}}</b></div>`,
-        `<div class="metric"><span class="muted">Productivity</span><b class="${{stateClass(productivity.status)}}">${{esc(display(productivity.status))}}</b></div>`,
-        `<div class="metric"><span class="muted">Agent cards</span><b class="${{sources.adapters_available ? "" : "muted"}}">${{esc(countOf(sources.adapters_available, agentCards.length))}}</b></div>`,
-        `<div class="metric"><span class="muted">Campaigns</span><b class="muted">${{(data.release_campaigns?.campaigns || []).length}}</b></div>`
+        `<div class="metric"><span class="muted">Next action</span><b>${esc(data.next_action || "inspect")}</b></div>`,
+        data.next_detail ? `<div class="metric"><span class="muted">Detail</span><b>${esc(data.next_detail)}</b></div>` : "",
+        `<div class="metric"><span class="muted">Observation</span><b class="${obs.class}">${esc(obs.label)}</b></div>`,
+        `<div class="metric"><span class="muted">GitHub</span><b class="${remoteAvailable ? "ok" : "warn"}">${remoteAvailable ? "available" : "unavailable"}</b></div>`,
+        `<div class="metric"><span class="muted">Open PRs</span><b class="${remoteAvailable ? "" : "muted"}">${esc(countOf(remoteAvailable, prs.length))}</b></div>`,
+        `<div class="metric"><span class="muted">Owner decisions</span><b class="${remoteAvailable ? (ownerItems.length ? "warn" : "ok") : "muted"}">${esc(countOf(remoteAvailable, ownerItems.length))}</b></div>`,
+        `<div class="metric"><span class="muted">Lane work</span><b class="${remoteAvailable ? (laneItems.length ? "warn" : "ok") : "muted"}">${esc(countOf(remoteAvailable, laneItems.length))}</b></div>`,
+        `<div class="metric"><span class="muted">Gate alerts</span><b class="${remoteAvailable ? (alerts.length ? "warn" : "ok") : "muted"}">${esc(countOf(remoteAvailable, alerts.length))}</b></div>`,
+        `<div class="metric"><span class="muted">Pilot</span><b class="${stateClass(supervised.cycle_state)}">${esc(display(supervised.cycle_state))}</b></div>`,
+        `<div class="metric"><span class="muted">Productivity</span><b class="${stateClass(productivity.status)}">${esc(display(productivity.status))}</b></div>`,
+        `<div class="metric"><span class="muted">Agent cards</span><b class="${sources.adapters_available ? "" : "muted"}">${esc(countOf(sources.adapters_available, agentCards.length))}</b></div>`,
+        `<div class="metric"><span class="muted">Campaigns</span><b class="muted">${(data.release_campaigns?.campaigns || []).length}</b></div>`
       ].join(""));
       put("worknow", [
         leadItem
-          ? `<div class="row"><div class="line">Do next: <a href="${{esc(href(leadItem.url))}}">#${{esc(leadItem.pr_number)}}</a><b>${{esc(leadItem.next_action)}}</b>${{statePill(leadItem.role, leadItem.role === "owner" ? "warn" : "muted")}}${{statePill(`gate ${{leadItem.gate.state}}`, leadItem.gate.class)}}</div><div class="muted">${{esc(leadItem.title)}}</div></div>`
-          : `<div class="row"><div class="line">Do next: <b>${{esc(data.next_action || "inspect")}}</b></div>${{data.next_detail ? `<div class="muted">${{esc(data.next_detail)}}</div>` : ""}}</div>`,
-        `<div class="row"><div class="line">${{pill(`owner decisions ${{countOf(remoteAvailable, ownerItems.length)}}`)}}${{pill(`lane work ${{countOf(remoteAvailable, laneItems.length)}}`)}}${{pill(`open PRs ${{countOf(remoteAvailable, prs.length)}}`)}}${{statePill(obs.label, obs.class)}}</div>${{obs.detail ? `<div class="muted">${{esc(obs.detail)}}</div>` : ""}}</div>`,
-        `<div class="row muted">${{esc(sources.message)}}</div>`
+          ? `<div class="row"><div class="line">Do next: <a href="${esc(href(leadItem.url))}">#${esc(leadItem.pr_number)}</a><b>${esc(leadItem.next_action)}</b>${statePill(leadItem.role, leadItem.role === "owner" ? "warn" : "muted")}${statePill(`gate ${leadItem.gate.state}`, leadItem.gate.class)}</div><div class="muted">${esc(leadItem.title)}</div></div>`
+          : `<div class="row"><div class="line">Do next: <b>${esc(data.next_action || "inspect")}</b></div>${data.next_detail ? `<div class="muted">${esc(data.next_detail)}</div>` : ""}</div>`,
+        `<div class="row"><div class="line">${pill(`owner decisions ${countOf(remoteAvailable, ownerItems.length)}`)}${pill(`lane work ${countOf(remoteAvailable, laneItems.length)}`)}${pill(`open PRs ${countOf(remoteAvailable, prs.length)}`)}${statePill(obs.label, obs.class)}</div>${obs.detail ? `<div class="muted">${esc(obs.detail)}</div>` : ""}</div>`,
+        `<div class="row muted">${esc(sources.message)}</div>`
       ].join(""));
       const reviewerOutcomes = supervisedDecision.reviewer_outcomes || [];
       const supervisedRows = supervised.enabled ? [
-        `<div class="row"><div class="line"><b class="${{stateClass(supervised.cycle_state)}}">${{esc(supervised.cycle_state || "unknown")}}</b>${{pill(supervised.controller_mode || "dry_run")}}${{supervisedDecision.decision_state ? pill(supervisedDecision.decision_state) : ""}}</div><div>next: <b>${{esc(supervisedDecision.next_action || "inspect")}}</b></div>${{supervisedDecision.next_detail ? `<div class="muted">${{esc(supervisedDecision.next_detail)}}</div>` : ""}}</div>`,
-        `<div class="row"><div class="line">${{pill(`open PRs ${{display(supervisedMetrics.open_pr_count ?? supervisedPRs.length)}}`)}}${{pill(`ready issues ${{display(supervisedMetrics.ready_issue_count ?? supervisedIssues.length)}}`)}}${{pill(`active lanes ${{display(supervisedMetrics.active_lane_count)}}`)}}${{pill(`stale ${{display(supervisedMetrics.stale_evidence_count)}}`)}}</div></div>`,
-        supervisedDecision.pr_number ? `<div class="row"><div class="line"><a href="${{esc(href(supervisedDecision.pr_url))}}">Selected PR #${{esc(supervisedDecision.pr_number)}}</a>${{supervisedDecision.lane_id ? pill(supervisedDecision.lane_id) : ""}}${{supervisedDecision.gate_status ? pill(`gate ${{supervisedDecision.gate_status}}`) : ""}}${{supervisedDecision.author_lane_excluded ? pill("author excluded") : ""}}</div><div class="muted">${{esc(supervisedDecision.branch || "")}}${{supervisedDecision.head_sha_prefix ? ` @ ${{esc(supervisedDecision.head_sha_prefix)}}` : ""}}</div></div>` : "",
-        supervisedDecision.issue_number ? `<div class="row"><div class="line"><a href="${{esc(href(supervisedDecision.issue_url))}}">Selected issue #${{esc(supervisedDecision.issue_number)}}</a>${{supervisedDecision.lane_id ? pill(supervisedDecision.lane_id) : ""}}</div></div>` : "",
-        reviewerOutcomes.length ? `<div class="row"><b>Reviewer Evidence</b><div class="muted">${{reviewerOutcomes.map(outcome => `${{esc(outcome.lane_id || outcome.config_lane_id)}}=${{esc(outcome.verdict)}}`).join(", ")}}</div></div>` : "",
-        supervisedIssues.length ? `<div class="row"><b>Ready Issues</b><div class="muted">${{supervisedIssues.slice(0, 5).map(issue => `${{esc(issue.work_item?.identity?.issue_key || `#${{issue.number}}`)}} ${{esc(issue.builder_lane || "")}}`).join(", ")}}</div></div>` : "",
-        supervisedPRs.length ? `<div class="row"><b>Active PRs</b><div class="muted">${{supervisedPRs.slice(0, 5).map(pr => `#${{esc(pr.number)}} ${{esc(pr.merge_state || "")}}${{pr.stale ? " stale" : ""}}${{pr.is_draft ? " draft" : ""}}`).join(", ")}}</div></div>` : ""
+        `<div class="row"><div class="line"><b class="${stateClass(supervised.cycle_state)}">${esc(supervised.cycle_state || "unknown")}</b>${pill(supervised.controller_mode || "dry_run")}${supervisedDecision.decision_state ? pill(supervisedDecision.decision_state) : ""}</div><div>next: <b>${esc(supervisedDecision.next_action || "inspect")}</b></div>${supervisedDecision.next_detail ? `<div class="muted">${esc(supervisedDecision.next_detail)}</div>` : ""}</div>`,
+        `<div class="row"><div class="line">${pill(`open PRs ${display(supervisedMetrics.open_pr_count ?? supervisedPRs.length)}`)}${pill(`ready issues ${display(supervisedMetrics.ready_issue_count ?? supervisedIssues.length)}`)}${pill(`active lanes ${display(supervisedMetrics.active_lane_count)}`)}${pill(`stale ${display(supervisedMetrics.stale_evidence_count)}`)}</div></div>`,
+        supervisedDecision.pr_number ? `<div class="row"><div class="line"><a href="${esc(href(supervisedDecision.pr_url))}">Selected PR #${esc(supervisedDecision.pr_number)}</a>${supervisedDecision.lane_id ? pill(supervisedDecision.lane_id) : ""}${supervisedDecision.gate_status ? pill(`gate ${supervisedDecision.gate_status}`) : ""}${supervisedDecision.author_lane_excluded ? pill("author excluded") : ""}</div><div class="muted">${esc(supervisedDecision.branch || "")}${supervisedDecision.head_sha_prefix ? ` @ ${esc(supervisedDecision.head_sha_prefix)}` : ""}</div></div>` : "",
+        supervisedDecision.issue_number ? `<div class="row"><div class="line"><a href="${esc(href(supervisedDecision.issue_url))}">Selected issue #${esc(supervisedDecision.issue_number)}</a>${supervisedDecision.lane_id ? pill(supervisedDecision.lane_id) : ""}</div></div>` : "",
+        reviewerOutcomes.length ? `<div class="row"><b>Reviewer Evidence</b><div class="muted">${reviewerOutcomes.map(outcome => `${esc(outcome.lane_id || outcome.config_lane_id)}=${esc(outcome.verdict)}`).join(", ")}</div></div>` : "",
+        supervisedIssues.length ? `<div class="row"><b>Ready Issues</b><div class="muted">${supervisedIssues.slice(0, 5).map(issue => `${esc(issue.work_item?.identity?.issue_key || `#${issue.number}`)} ${esc(issue.builder_lane || "")}`).join(", ")}</div></div>` : "",
+        supervisedPRs.length ? `<div class="row"><b>Active PRs</b><div class="muted">${supervisedPRs.slice(0, 5).map(pr => `#${esc(pr.number)} ${esc(pr.merge_state || "")}${pr.stale ? " stale" : ""}${pr.is_draft ? " draft" : ""}`).join(", ")}</div></div>` : ""
       ].filter(Boolean).join("") : empty(supervised.message || "Supervised pilot state unavailable.");
-      const trackerRows = data.tracker ? `<div class="row"><b>Tracker: ${{esc(data.tracker.source_kind)}}</b> ${{pill(data.tracker.freshness)}}<div>${{esc((data.tracker.errors || []).join(", "))}}</div></div>` + (data.tracker.items || []).map(row => `<div class="row"><a href="${{esc(href(row.work_item.url))}}">${{esc(row.work_item.identity.issue_key || row.work_item.identity.issue_id)}}</a> ${{pill(row.work_item.lifecycle_category)}} ${{pill(row.freshness)}} ${{pill(row.lane_id || "unassigned")}}<div>PR ${{esc(row.linked_pr_number || "-")}} gate=${{esc(row.gate_status)}} (${{esc(row.pr_freshness)}})</div><div>next: ${{esc(row.next_action)}}</div></div>`).join("") : "";
+      const trackerRows = data.tracker ? `<div class="row"><b>Tracker: ${esc(data.tracker.source_kind)}</b> ${pill(data.tracker.freshness)}<div>${esc((data.tracker.errors || []).join(", "))}</div></div>` + (data.tracker.items || []).map(row => `<div class="row"><a href="${esc(href(row.work_item.url))}">${esc(row.work_item.identity.issue_key || row.work_item.identity.issue_id)}</a> ${pill(row.work_item.lifecycle_category)} ${pill(row.freshness)} ${pill(row.lane_id || "unassigned")}<div>PR ${esc(row.linked_pr_number || "-")} gate=${esc(row.gate_status)} (${esc(row.pr_freshness)})</div><div>next: ${esc(row.next_action)}</div></div>`).join("") : "";
       put("supervised", trackerRows + supervisedRows || empty(supervised.message || "No supervised pilot activity."));
       const productivityRows = [
-        `<div class="row"><div>next: <b>${{esc(productivity.next_action || "inspect")}}</b></div></div>`,
+        `<div class="row"><div>next: <b>${esc(productivity.next_action || "inspect")}</b></div></div>`,
         // Aggregates are only as current as the snapshot they were computed
         // from, so the observation comes before the numbers rather than after.
-        `<div class="row"><div class="line">${{pill(`source ${{display(productivityCurrent.source)}}`)}}${{statePill(obs.label, obs.class)}}${{obs.historical ? statePill("historical snapshot", "warn") : ""}}</div><div class="muted">observed ${{esc(display(productivityCurrent.observed_at))}}${{obs.historical ? "; these aggregates replay the last recorded snapshot and are not evidence of work running now" : ""}}</div></div>`,
-        `<div class="row"><b>Current</b><div class="line">${{pill(`open PRs ${{display(productivityCurrent.open_pr_count)}}`)}}${{pill(`active lanes ${{display(productivityCurrent.active_lane_count)}}`)}}${{pill(`blocked ${{display(productivityCurrent.blocked_pr_count)}}`)}}${{pill(`owner actions ${{display(productivityCurrent.owner_action_count)}}`)}}</div></div>`,
-        `<div class="row"><b>Throughput</b><div class="line">${{pill(`merged ${{display(productivityMetrics.merged_pr_count)}}`)}}${{pill(`cycle ${{seconds(productivityMetrics.cycle_time_seconds)}}`)}}${{pill(`active ${{seconds(productivityMetrics.active_time_seconds)}}`)}}${{pill(`wait ${{seconds(productivityMetrics.wait_time_seconds)}}`)}}</div><div class="muted">local window ${{display(productivityWindow.start)}} to ${{display(productivityWindow.end)}} (${{seconds(productivityWindow.duration_seconds)}})</div></div>`,
-        `<div class="row"><b>Quality</b><div class="line">${{pill(`reviews ${{display(productivityMetrics.reviewer_run_count)}}`)}}${{pill(`PASS ${{display(productivityQuality.audit_pass_count)}}`)}}${{pill(`BLOCKED ${{display(productivityQuality.audit_blocked_count)}}`)}}${{pill(`catches ${{display(productivityQuality.reviewer_catch_count)}}`)}}${{pill(`fix rounds ${{display(productivityQuality.fix_round_count)}}`)}}</div></div>`,
-        `<div class="row"><b>Cost And Latency</b><div class="line">${{pill(`${{seconds(productivitySpend.wall_seconds)}} reviewer wall`)}}${{pill(`${{display(productivitySpend.total_tokens)}} tokens`)}}${{pill(money(productivitySpend.cost_usd))}}</div></div>`,
-        (productivity.warnings || []).length ? `<div class="row muted">${{esc((productivity.warnings || []).slice(0, 3).join("; "))}}</div>` : ""
+        `<div class="row"><div class="line">${pill(`source ${display(productivityCurrent.source)}`)}${statePill(obs.label, obs.class)}${obs.historical ? statePill("historical snapshot", "warn") : ""}</div><div class="muted">observed ${esc(display(productivityCurrent.observed_at))}${obs.historical ? "; these aggregates replay the last recorded snapshot and are not evidence of work running now" : ""}</div></div>`,
+        `<div class="row"><b>Current</b><div class="line">${pill(`open PRs ${display(productivityCurrent.open_pr_count)}`)}${pill(`active lanes ${display(productivityCurrent.active_lane_count)}`)}${pill(`blocked ${display(productivityCurrent.blocked_pr_count)}`)}${pill(`owner actions ${display(productivityCurrent.owner_action_count)}`)}</div></div>`,
+        `<div class="row"><b>Throughput</b><div class="line">${pill(`merged ${display(productivityMetrics.merged_pr_count)}`)}${pill(`cycle ${seconds(productivityMetrics.cycle_time_seconds)}`)}${pill(`active ${seconds(productivityMetrics.active_time_seconds)}`)}${pill(`wait ${seconds(productivityMetrics.wait_time_seconds)}`)}</div><div class="muted">local window ${display(productivityWindow.start)} to ${display(productivityWindow.end)} (${seconds(productivityWindow.duration_seconds)})</div></div>`,
+        `<div class="row"><b>Quality</b><div class="line">${pill(`reviews ${display(productivityMetrics.reviewer_run_count)}`)}${pill(`PASS ${display(productivityQuality.audit_pass_count)}`)}${pill(`BLOCKED ${display(productivityQuality.audit_blocked_count)}`)}${pill(`catches ${display(productivityQuality.reviewer_catch_count)}`)}${pill(`fix rounds ${display(productivityQuality.fix_round_count)}`)}</div></div>`,
+        `<div class="row"><b>Cost And Latency</b><div class="line">${pill(`${seconds(productivitySpend.wall_seconds)} reviewer wall`)}${pill(`${display(productivitySpend.total_tokens)} tokens`)}${pill(money(productivitySpend.cost_usd))}</div></div>`,
+        (productivity.warnings || []).length ? `<div class="row muted">${esc((productivity.warnings || []).slice(0, 3).join("; "))}</div>` : ""
       ].filter(Boolean).join("");
       put("productivity", productivityRows || empty("No local productivity signals yet."));
       put("owner", ownerItems.length
@@ -1789,33 +2757,33 @@ def render_board_html(config: BoardConfig) -> str:
       put("lanework", laneItems.length
         ? laneItems.map(attentionRow).join("")
         : empty(remoteAvailable ? "No builder or orchestrator work items." : "GitHub unavailable; lane work not recorded."));
-      put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${{esc(agent.provider)}}</b>${{pill(agent.role)}}${{pill(agent.status)}}${{agent.stale ? pill("stale") : ""}}${{agent.lane ? pill(agent.lane) : ""}}${{agent.pr_number ? pill(`#${{agent.pr_number}}`) : ""}}</div><div>${{esc(agent.title || agent.next_action || "local agent")}}</div><div class="muted">${{esc(agent.branch || agent.repo || "")}}${{agent.pid ? ` pid=${{esc(agent.pid)}}` : ""}}${{agent.cwd ? ` cwd=${{esc(agent.cwd)}}` : ""}}${{agent.updated_at ? ` updated ${{localTime(agent.updated_at)}}` : ""}}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
-      const campaignsData = data.release_campaigns || {{}};
+      put("agents", agentCards.length ? agentCards.map(agent => `<div class="row"><div class="line"><b>${esc(agent.provider)}</b>${pill(agent.role)}${pill(agent.status)}${agent.stale ? pill("stale") : ""}${agent.lane ? pill(agent.lane) : ""}${agent.pr_number ? pill(`#${agent.pr_number}`) : ""}</div><div>${esc(agent.title || agent.next_action || "local agent")}</div><div class="muted">${esc(agent.branch || agent.repo || "")}${agent.pid ? ` pid=${esc(agent.pid)}` : ""}${agent.cwd ? ` cwd=${esc(agent.cwd)}` : ""}${agent.updated_at ? ` updated ${localTime(agent.updated_at)}` : ""}</div></div>`).join("") : empty(data.agent_adapters?.message || "No local agent adapter cards."));
+      const campaignsData = data.release_campaigns || {};
       const campaigns = campaignsData.campaigns || [];
-      const campaignRows = campaigns.flatMap(c => {{
+      const campaignRows = campaigns.flatMap(c => {
         const live = campaignLiveness(c, nowMs);
-        const header = `<div class="row"><div class="line"><b>Release ${{esc(c.release_tag)}}</b>${{statePill(live.label, live.class)}}${{c.dry_run ? pill("dry-run") : pill("applied")}}${{pill(c.qualification_context)}}<span>recorded work ${{seconds(c.elapsed_seconds)}}</span></div><div>next: <b>${{esc(c.next_action)}}</b></div>${{live.unverified ? `<div class="muted">No unexpired provider response deadline is recorded, so this campaign is shown as last reported rather than currently running.</div>` : ""}}</div>`;
-        const cardRows = (c.cards || []).map((card, index) => {{
+        const header = `<div class="row"><div class="line"><b>Release ${esc(c.release_tag)}</b>${statePill(live.label, live.class)}${c.dry_run ? pill("dry-run") : pill("applied")}${pill(c.qualification_context)}<span>recorded work ${seconds(c.elapsed_seconds)}</span></div><div>next: <b>${esc(c.next_action)}</b></div>${live.unverified ? `<div class="muted">No unexpired provider response deadline is recorded, so this campaign is shown as last reported rather than currently running.</div>` : ""}</div>`;
+        const cardRows = (c.cards || []).map((card, index) => {
           const cardLive = live.cards[index] || cardLiveness(card, nowMs);
-          return `<div class="row" style="margin-left:16px"><div class="line"><b>${{esc(card.provider)}}</b>${{pill(card.posture || "required")}}<span class="${{cardLive.class}}">${{esc(cardLive.label)}}</span>${{pill(card.environment)}}${{card.transport_verified === false ? pill("transport unverified") : ""}}${{cardLive.overdue ? statePill(`deadline passed ${{cardLive.overdue_for}} ago`, "warn") : ""}}<span>recorded work ${{seconds(card.elapsed_seconds)}}</span></div><div>next: <b>${{esc(card.next_action)}}</b></div>${{card.next_detail ? `<div class="muted">${{esc(card.next_detail)}}</div>` : ""}}<div class="muted">${{card.response_deadline_at ? `response deadline ${{localTime(card.response_deadline_at)}}` : `response deadline ${{esc(NOT_RECORDED)}}`}}</div></div>`;
-        }});
+          return `<div class="row" style="margin-left:16px"><div class="line"><b>${esc(card.provider)}</b>${pill(card.posture || "required")}<span class="${cardLive.class}">${esc(cardLive.label)}</span>${pill(card.environment)}${card.transport_verified === false ? pill("transport unverified") : ""}${cardLive.overdue ? statePill(`deadline passed ${cardLive.overdue_for} ago`, "warn") : ""}<span>recorded work ${seconds(card.elapsed_seconds)}</span></div><div>next: <b>${esc(card.next_action)}</b></div>${card.next_detail ? `<div class="muted">${esc(card.next_detail)}</div>` : ""}<div class="muted">${card.response_deadline_at ? `response deadline ${localTime(card.response_deadline_at)}` : `response deadline ${esc(NOT_RECORDED)}`}</div></div>`;
+        });
         return [header, ...cardRows];
-      }}).join("");
+      }).join("");
       put("campaigns", campaignRows || empty(campaignsData.message || "No release campaigns."));
       put("prs", prs.length ? prs.map(pr => `<div class="row">
-        <div class="line"><a href="${{esc(href(pr.url))}}">#${{esc(pr.number)}} ${{esc(pr.title)}}</a>${{pill(pr.merge_state)}}${{pr.is_draft ? pill("draft") : ""}}${{pr.stale ? pill("stale") : ""}}</div>
-        <div class="muted">${{esc(pr.branch)}} by ${{esc(pr.author)}}${{pr.updated_at ? ` updated ${{localTime(pr.updated_at)}}` : ""}}</div>
-        <div>labels: ${{labels(pr.labels)}}</div>
-        <div>checks: ${{checks(pr.checks)}}</div>
-        <div>next: <b>${{esc(pr.next_action)}}</b></div>
-        ${{pr.next_detail ? `<div class="muted">${{esc(pr.next_detail)}}</div>` : ""}}
+        <div class="line"><a href="${esc(href(pr.url))}">#${esc(pr.number)} ${esc(pr.title)}</a>${pill(pr.merge_state)}${pr.is_draft ? pill("draft") : ""}${pr.stale ? pill("stale") : ""}</div>
+        <div class="muted">${esc(pr.branch)} by ${esc(pr.author)}${pr.updated_at ? ` updated ${localTime(pr.updated_at)}` : ""}</div>
+        <div>labels: ${labels(pr.labels)}</div>
+        <div>checks: ${checks(pr.checks)}</div>
+        <div>next: <b>${esc(pr.next_action)}</b></div>
+        ${pr.next_detail ? `<div class="muted">${esc(pr.next_detail)}</div>` : ""}
       </div>`).join("") : empty("No open pull requests."));
       put("alerts", !remoteAvailable
         ? empty("GitHub unavailable; gate alerts not recorded.")
         : alerts.length
-          ? alerts.map(a => `<div class="row"><b class="warn">${{esc(a.kind)}}</b> ${{esc(a.message)}}</div>`).join("")
+          ? alerts.map(a => `<div class="row"><b class="warn">${esc(a.kind)}</b> ${esc(a.message)}</div>`).join("")
           : empty("No gate alerts."));
-      put("runs", runs.length ? runs.slice(0, 8).map(run => {{
+      put("runs", runs.length ? runs.slice(0, 8).map(run => {
         // A run of the workflow that publishes `code-mower/gate` succeeds when
         // the publisher job finished, whatever verdict it published. Say so
         // here so a green row is never read as a green gate.
@@ -1823,43 +2791,87 @@ def render_board_html(config: BoardConfig) -> str:
         // subject, and a PR that merely mentions the gate is not a publisher.
         const publisher = isGatePublisher(run.workflow);
         const state = run.conclusion || run.status;
-        return `<div class="row"><div class="line"><a href="${{esc(href(run.url))}}">${{esc(run.workflow || "workflow")}}</a>${{statePill(display(state), stateClass(state))}}${{publisher ? pill("gate publisher") : ""}}</div>${{publisher ? `<div class="muted">Publisher execution only; the ${{esc(GATE_CONTEXT)}} verdict is the commit status listed under each PR.</div>` : ""}}<div class="muted">${{esc(run.branch)}}${{run.updated_at ? ` updated ${{localTime(run.updated_at)}}` : ""}}</div></div>`;
-      }}).join("") : empty("No recent Code Mower workflow runs."));
-      put("verdicts", verdicts.length ? verdicts.map(v => `<div class="row"><div class="line"><a href="${{esc(href(v.url))}}">#${{esc(v.pr_number)}} ${{esc(v.lane)}}</a>${{pill(v.verdict)}}${{pill(v.head_sha_prefix)}}</div><div class="muted">${{localTime(v.created_at)}}</div></div>`).join("") : empty(timelines.verdicts?.message || "No local reviewer verdict history yet."));
+        return `<div class="row"><div class="line"><a href="${esc(href(run.url))}">${esc(run.workflow || "workflow")}</a>${statePill(display(state), stateClass(state))}${publisher ? pill("gate publisher") : ""}</div>${publisher ? `<div class="muted">Publisher execution only; the ${esc(GATE_CONTEXT)} verdict is the commit status listed under each PR.</div>` : ""}<div class="muted">${esc(run.branch)}${run.updated_at ? ` updated ${localTime(run.updated_at)}` : ""}</div></div>`;
+      }).join("") : empty("No recent Code Mower workflow runs."));
+      put("verdicts", verdicts.length ? verdicts.map(v => `<div class="row"><div class="line"><a href="${esc(href(v.url))}">#${esc(v.pr_number)} ${esc(v.lane)}</a>${pill(v.verdict)}${pill(v.head_sha_prefix)}</div><div class="muted">${localTime(v.created_at)}</div></div>`).join("") : empty(timelines.verdicts?.message || "No local reviewer verdict history yet."));
       const spendRows = [
-        ...spendGroups.map(g => `<div class="row"><div class="line"><b>${{esc(g.lane)}}</b>${{pill(display(g.verdict))}}${{pill(`${{display(g.runs)}} runs`)}}</div><div class="muted">${{seconds(g.wall_seconds_total)}} total / ${{seconds(g.wall_seconds_avg)}} avg / ${{money(g.cost_usd_total)}} / ${{esc(display(g.total_tokens))}} tokens</div></div>`),
-        spend.skipped_rows ? `<div class="row muted">Skipped ${{esc(spend.skipped_rows)}} malformed spend row(s).</div>` : "",
-        spend.filtered_rows ? `<div class="row muted">Filtered ${{esc(spend.filtered_rows)}} spend row(s) from other repos.</div>` : ""
+        ...spendGroups.map(g => `<div class="row"><div class="line"><b>${esc(g.lane)}</b>${pill(display(g.verdict))}${pill(`${display(g.runs)} runs`)}</div><div class="muted">${seconds(g.wall_seconds_total)} total / ${seconds(g.wall_seconds_avg)} avg / ${money(g.cost_usd_total)} / ${esc(display(g.total_tokens))} tokens</div></div>`),
+        spend.skipped_rows ? `<div class="row muted">Skipped ${esc(spend.skipped_rows)} malformed spend row(s).</div>` : "",
+        spend.filtered_rows ? `<div class="row muted">Filtered ${esc(spend.filtered_rows)} spend row(s) from other repos.</div>` : ""
       ].filter(Boolean);
       put("spend", spendRows.length ? spendRows.join("") : empty(spend.message || "No reviewer spend rows for this repo yet."));
       const boards = data.local_boards?.boards || [];
       const procs = data.local_processes?.processes || [];
-      put("local", [...boards.map(b => `<div class="row">board localhost:${{esc(b.port)}} pid=${{esc(b.pid)}} cwd=<code>${{esc(b.cwd || "")}}</code></div>`), ...procs.slice(0, 8).map(p => `<div class="row">${{esc(p.provider)}} pid=${{esc(p.pid)}} cwd=<code>${{esc(p.cwd || "")}}</code></div>`)].join("") || empty("No local boards or lane processes visible."));
-    }}
-    function renderEvents(history) {{
+      put("local", [...boards.map(b => `<div class="row">board localhost:${esc(b.port)} pid=${esc(b.pid)} cwd=<code>${esc(b.cwd || "")}</code></div>`), ...procs.slice(0, 8).map(p => `<div class="row">${esc(p.provider)} pid=${esc(p.pid)} cwd=<code>${esc(p.cwd || "")}</code></div>`)].join("") || empty("No local boards or lane processes visible."));
+      // Work first, from the frozen local observation contract. These views
+      // read the records the Board was given; they never produce one, resolve
+      // a session, or reach a provider to fill a gap in one.
+      const observations = data.observations || {};
+      const observationRows = workRows(data, nowMs);
+      workState = {
+        rows: observationRows,
+        prs,
+        // empty() escapes what it is given, so these stay plain text here.
+        message: observations.available === false
+          ? text(observations.message) || "Local Board observations could not be read."
+          : observations.path_exists === true
+            ? text(observations.message) || "No local Board observation passed the observation contract."
+            : "No local Board observation is recorded yet, so no work row is shown. The queues below still summarize the GitHub snapshot."
+      };
+      renderWork();
+      wire();
+      applyView();
+      const attentionRows = observationRows.filter(row => ["owner", "maintainer", "reviewer", "builder", "orchestrator"].includes(text(row.record?.work?.primary?.actor)));
+      put("chrome", [
+        `<span>Now: <b>${esc(data.next_action || "inspect")}</b></span>`,
+        cuePill(obs.label, obs.class),
+        `<span class="pill wide">${esc(countOf(remoteAvailable, prs.length))} open PRs</span>`,
+        `<span class="pill wide">${esc(observationRows.length)} observed work item${observationRows.length === 1 ? "" : "s"}</span>`,
+        attentionRows.length ? `<span class="pill warn wide"><span class="cue" aria-hidden="true">~</span> ${esc(attentionRows.length)} awaiting a named role</span>` : ""
+      ].filter(Boolean).join(""));
+      const participants = participantSummary(data);
+      put("participants", participants.length
+        ? participants.map(participant => `<div class="row"><div class="line"><b>${esc(participant.provider)}</b>${pill(participant.role)}${cuePill(`worst source ${participant.freshness}`, participant.class)}</div><div class="line">${participant.phases.map(phase => pill(`${phase.label} ${phase.count}`)).join("")}</div><div class="muted">${esc(participant.count)} recorded run${participant.count === 1 ? "" : "s"}; phases are what the records state, not a claim that anything is running now.</div></div>`).join("")
+        : empty("No participant run is recorded in any local observation."));
+      const sourceList = sourceRows(data, nowMs);
+      put("sources", sourceList.length
+        ? sourceList.map(source => `<div class="row"><div class="line"><b>${esc(source.kind)}</b>${cuePill(source.freshness, source.class)}${pill(`coverage ${source.coverage}`)}${source.records > 1 ? pill(`${source.records} records`) : ""}</div><div class="muted">last event ${source.event_at ? localTime(source.event_at) : esc(NOT_RECORDED)}; last observed ${source.observed_at ? localTime(source.observed_at) : esc(NOT_RECORDED)}; heartbeat ${source.heartbeat_at ? localTime(source.heartbeat_at) : esc(NOT_RECORDED)}; checked ${esc(source.checked_text)}</div></div>`).join("")
+        : empty("No observation source is recorded. Connection state below is from the GitHub snapshot only."));
+      const cache = data.board?.cache || {};
+      put("diagnostics", [
+        `<div class="row"><div class="line"><b>Board version</b>${pill(`serving ${servingVersion}`)}${pill(`installed ${installedVersion}`)}${version.restart_recommended ? cuePill("restart recommended", "warn") : ""}</div></div>`,
+        `<div class="row"><div class="line"><b>Snapshot cache</b>${cuePill(display(cache.state), stateClass(cache.state))}${pill(`generation ${display(cache.generation)}`)}${pill(`age ${ageText(cache.age_seconds)}`)}${cache.refresh_in_progress === true ? pill("refresh in progress") : ""}${measured(cache.retry_in_seconds) === null ? "" : pill(`retry in ${ageText(cache.retry_in_seconds)}`)}</div>${cache.last_error ? `<div class="muted">${esc(cache.last_error)}</div>` : ""}</div>`,
+        `<div class="row"><div class="line"><b>GitHub</b>${cuePill(remoteAvailable ? "available" : "unavailable", remoteAvailable ? "ok" : "warn")}</div></div>`,
+        `<div class="row"><div class="line"><b>Observations</b>${pill(`${observationRows.length} recorded`)}${measured(observations.rejected) ? cuePill(`${observations.rejected} rejected by the observation contract`, "warn") : ""}</div>${observations.message ? `<div class="muted">${esc(observations.message)}</div>` : ""}${(observations.warnings || []).length ? `<div class="muted">${esc((observations.warnings || []).slice(0, 3).map(warning => `${warning.file}: ${warning.message}`).join("; "))}</div>` : ""}</div>`,
+        `<div class="row muted">${esc(sources.message)}</div>`
+      ].join(""));
+      noteChanges(observationRows, nowMs);
+      renderChanges();
+    }
+    function renderEvents(history) {
       const events = history.events || [];
-      put("history", events.length ? events.slice().reverse().map(event => {{
-        const s = event.summary || {{}};
+      put("history", events.length ? events.slice().reverse().map(event => {
+        const s = event.summary || {};
         const remote = s.remote_available ? "remote available" : "remote unavailable";
         const locals = measured(s.local_boards) === null && measured(s.local_processes) === null
           ? NOT_RECORDED
           : String((measured(s.local_boards) ?? 0) + (measured(s.local_processes) ?? 0));
-        return `<div class="row"><div class="line"><b>${{localTime(event.created_at)}}</b>${{pill(remote)}}</div><div>next: <b>${{esc(s.next_action || "inspect")}}</b></div><div class="muted">PRs ${{esc(display(s.open_prs))}} / alerts ${{esc(display(s.gate_alerts))}} / local ${{esc(locals)}}</div></div>`;
-      }}).join("") : empty(history.message || "No local board events recorded yet."));
-    }}
+        return `<div class="row"><div class="line"><b>${localTime(event.created_at)}</b>${pill(remote)}</div><div>next: <b>${esc(s.next_action || "inspect")}</b></div><div class="muted">PRs ${esc(display(s.open_prs))} / alerts ${esc(display(s.gate_alerts))} / local ${esc(locals)}</div></div>`;
+      }).join("") : empty(history.message || "No local board events recorded yet."));
+    }
     let pollTimer = null;
     let fastPollAttempts = 0;
     // The only place a timer is ever armed, and it always clears the pending
     // one first, so exactly one load() is scheduled at a time and no fixed
     // interval can race the self-scheduled poll into stacked timers.
-    function scheduleNextLoad(delayMs) {{
-      if (pollTimer !== null) {{
+    function scheduleNextLoad(delayMs) {
+      if (pollTimer !== null) {
         clearTimeout(pollTimer);
-      }}
+      }
       pollTimer = setTimeout(load, delayMs);
-    }}
-    function nextDelayMs(cache) {{
-      if (awaitingRefresh(cache)) {{
+    }
+    function nextDelayMs(cache) {
+      if (awaitingRefresh(cache)) {
         // Only a response that is no longer awaiting a refresh resets the
         // budget. An exhausted counter must stay exhausted while the same
         // refresh is still pending, otherwise every normal-interval poll would
@@ -1867,33 +2879,43 @@ def render_board_html(config: BoardConfig) -> str:
         if (fastPollAttempts >= FAST_POLL_MAX_ATTEMPTS) return REFRESH_MS;
         fastPollAttempts += 1;
         return FAST_POLL_MS;
-      }}
+      }
       fastPollAttempts = 0;
       return freshDelayMs(cache) ?? REFRESH_MS;
-    }}
-    async function load() {{
+    }
+    async function load() {
       // A failed fetch, a malformed payload, and cache metadata that is absent
       // or unusable all fall back to the configured interval.
       let delayMs = REFRESH_MS;
-      try {{
+      try {
         const [statusResponse, eventsResponse] = await Promise.all([
-          fetch("/api/status", {{cache:"no-store"}}),
-          fetch("/api/events", {{cache:"no-store"}})
+          fetch("/api/status", {cache:"no-store"}),
+          fetch("/api/events", {cache:"no-store"})
         ]);
         const statusData = await statusResponse.json();
         render(statusData);
         renderEvents(await eventsResponse.json());
         delayMs = nextDelayMs(statusData.board?.cache);
-      }} catch (error) {{
+      } catch (error) {
         put("summary", `<div class="metric"><span class="muted">Next action</span><b class="warn">reload board</b></div>`);
-      }}
+      }
       scheduleNextLoad(delayMs);
-    }}
+    }
     load();
   </script>
 </body>
 </html>
 """
+
+
+def render_board_html(config: BoardConfig) -> str:
+    repo_json = json.dumps(config.repo).replace("</", "<\\/")
+    refresh_json = json.dumps(config.refresh_seconds * 1000)
+    # Refresh first: the repo slug is substituted afterwards so a slug that
+    # happens to contain a placeholder name cannot be expanded again.
+    return _BOARD_HTML.replace("__REFRESH_MS_JSON__", refresh_json).replace(
+        "__REPO_JSON__", repo_json
+    )
 
 
 def _probe_board_status(board: Mapping[str, Any], *, timeout: float = 0.75) -> dict[str, Any]:
@@ -2721,6 +3743,10 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--store-path", help="custom local Board event store path")
     serve_parser.add_argument("--spend-path", help="custom reviewer spend ledger path")
     serve_parser.add_argument("--agent-adapters-path", help="custom local agent card directory")
+    serve_parser.add_argument(
+        "--observations-path",
+        help="custom local Board observation directory (read-only)",
+    )
     serve_parser.add_argument("--event-limit", type=int, default=20, help="local history events to show")
     serve_parser.add_argument("--record-events", action="store_true", help="append local history while the Board is open")
     serve_parser.add_argument("--record-interval-seconds", type=int, default=60, help="minimum seconds between records")
@@ -2800,6 +3826,7 @@ def main(argv: list[str] | None = None) -> int:
                 store_path=args.store_path,
                 spend_path=args.spend_path,
                 agent_adapters_path=args.agent_adapters_path,
+                observations_path=args.observations_path,
                 event_limit=args.event_limit,
                 record_events=args.record_events,
                 record_interval_seconds=args.record_interval_seconds,

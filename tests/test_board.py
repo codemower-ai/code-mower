@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
+import copy
 import http.client
 import json
 import math
@@ -19,7 +20,7 @@ from unittest import TestCase, skipUnless
 from unittest.mock import patch
 from io import StringIO
 
-from code_mower import board, board_store, lane_status, reviewer_spend
+from code_mower import board, board_observation, board_store, lane_status, reviewer_spend
 
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
@@ -3592,3 +3593,624 @@ class StatusCacheTests(TestCase):
             server.shutdown()
             server.server_close()
             server_thread.join(timeout=5)
+
+
+# --- Work-first Board views (#948) -----------------------------------------
+
+WORK_MODEL_END = "// --- work view model (END) ---"
+
+# The fixture clock plus 30s, so every fixture record is recent enough to be
+# reported as current unless the record itself says otherwise.
+OBSERVATION_NOW = datetime(2026, 9, 12, 20, 0, 30, tzinfo=UTC)
+
+OBSERVATION_FIXTURES = Path(__file__).parent / "fixtures" / "board_observations.json"
+
+# Render one payload after another through the shipped renderer in a single
+# page lifetime, so selection, announcements and the change timeline are
+# exercised the way a refresh actually exercises them. A step may select a work
+# row by its opaque key before rendering the next payload.
+BOARD_SEQUENCE_HARNESS = """
+const NODES = {};
+const document = {getElementById: (id) => (NODES[id] = NODES[id] || {innerHTML: "", textContent: ""})};
+Date.now = () => __NOW_MS__;
+__SCRIPT__
+const frames = [];
+for (const step of JSON.parse(process.argv[1])) {
+  if (step.select !== null) selectWork(step.select);
+  if (step.payload !== null) render(step.payload);
+  frames.push(Object.fromEntries(Object.entries(NODES).map(([id, node]) => [id, node.innerHTML || node.textContent])));
+}
+console.log(JSON.stringify(frames));
+"""
+
+
+def _board_script() -> str:
+    """The shipped page script, minus its own ``load()`` bootstrap."""
+
+    html = board.render_board_html(board.BoardConfig(repo="codemower-ai/code-mower"))
+    body = html[html.index("  <script>\n") + len("  <script>\n") : html.index("\n  </script>")]
+    trimmed = body.rsplit("    load();", 1)
+    if len(trimmed) != 2:  # pragma: no cover - guards the extraction
+        raise AssertionError("board HTML no longer bootstraps with load()")
+    return "".join(trimmed)
+
+
+def _board_view_model() -> str:
+    """Lift the shipped, DOM-free view-model transforms out of the page.
+
+    The work view model is layered on the B1 truth helpers, so the extraction
+    runs from the first helper through the end of the view-model block. As with
+    the B1 helpers, the tests execute the JavaScript the browser gets.
+    """
+
+    html = board.render_board_html(board.BoardConfig(repo="codemower-ai/code-mower"))
+    start = html.find("    const text =")
+    end = html.find(WORK_MODEL_END)
+    if start < 0 or end < start:  # pragma: no cover - guards the extraction
+        raise AssertionError("board HTML no longer exposes the work view model")
+    return html[start : end + len(WORK_MODEL_END)]
+
+
+def _eval_board_view(expression: str, *args: object) -> object:
+    """Evaluate one shipped view-model expression against JSON arguments."""
+
+    script = (
+        _board_view_model()
+        + "\nconst ARGS = process.argv.slice(1).map(value => JSON.parse(value));\n"
+        + f"console.log(JSON.stringify({expression}));\n"
+    )
+    completed = subprocess.run(
+        [shutil.which("node") or "node", "-e", script, *(json.dumps(arg) for arg in args)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def _render_board_sequence(
+    steps: list[dict[str, object]],
+    *,
+    now: datetime = OBSERVATION_NOW,
+) -> list[dict[str, str]]:
+    """Render a sequence of payloads in one page lifetime."""
+
+    script = BOARD_SEQUENCE_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000))).replace(
+        "__SCRIPT__", _board_script()
+    )
+    normalized = [{"select": step.get("select"), "payload": step.get("payload")} for step in steps]
+    completed = subprocess.run(
+        [shutil.which("node") or "node", "-e", script, json.dumps(normalized)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def _observation_fixture(name: str) -> dict:
+    """Build one accepted B0 fixture record, unchanged."""
+
+    fixture = json.loads(OBSERVATION_FIXTURES.read_text(encoding="utf-8"))
+    case = next(item for item in fixture["valid"] if item["name"] == name)
+    record = copy.deepcopy(fixture["templates"][case["template"]])
+    for pointer, value in case["set"].items():
+        if pointer == "":
+            record = copy.deepcopy(value)
+            continue
+        parts = [part.replace("~1", "/").replace("~0", "~") for part in pointer.split("/")[1:]]
+        target: object = record
+        for part in parts[:-1]:
+            target = target[int(part)] if isinstance(target, list) else target[part]
+        if isinstance(target, list):
+            target[int(parts[-1])] = copy.deepcopy(value)
+        else:
+            target[parts[-1]] = copy.deepcopy(value)
+    # Every fixture the views are tested against is a record the frozen
+    # contract accepts, so no view is ever proved against a shape a producer
+    # could not emit.
+    return board_observation.validate(record)
+
+
+def _observation_payload(records: list[dict], **overrides: object) -> dict:
+    payload: dict[str, object] = {
+        "generated_at": "2026-09-12T20:00:00Z",
+        "next_action": "inspect",
+        "board": {
+            "cache": {
+                "state": "fresh",
+                "ttl_seconds": 15,
+                "age_seconds": 1,
+                "generation": 2,
+                "refresh_in_progress": False,
+                "retry_in_seconds": None,
+            },
+            "version": {
+                "serving_version": "1.4.1",
+                "installed_version": "1.4.1",
+                "restart_recommended": False,
+            },
+        },
+        "remote": {
+            "available": True,
+            "pull_requests": [],
+            "workflow_runs": [],
+            "gate_health": {"alerts": []},
+        },
+        "observations": {
+            "available": True,
+            "path_exists": True,
+            "records": records,
+            "warnings": [],
+            "rejected": 0,
+            "message": "",
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _work_keys(worklist: str) -> list[str]:
+    return re.findall(r'class="rowbtn" id="[^"]+" data-key="([^"]+)"', worklist)
+
+
+def _selected_key(worklist: str) -> str:
+    match = re.search(r'data-key="([^"]+)" aria-expanded="true"', worklist)
+    return match.group(1) if match else ""
+
+
+class BoardObservationReaderTests(TestCase):
+    """The Board consumes the frozen observation contract; it never writes one."""
+
+    def _write(self, directory: Path, name: str, record: object) -> None:
+        (directory / name).write_text(json.dumps(record), encoding="utf-8")
+
+    def test_missing_directory_is_nothing_recorded_not_no_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(Path(tmp) / "absent"))
+            )
+        self.assertTrue(payload["available"])
+        self.assertFalse(payload["path_exists"])
+        self.assertEqual(payload["records"], [])
+        self.assertEqual(payload["message"], "no local Board observations recorded yet")
+        self.assertEqual(payload["path"], lane_status.LOCAL_PATH_REDACTION)
+
+    def test_valid_records_are_returned_and_invalid_ones_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._write(directory, "a-work.json", _observation_fixture("observed_running"))
+            self._write(directory, "b-idle.json", _observation_fixture("no_work"))
+            # A record that fails the contract is dropped, not repaired.
+            broken = _observation_fixture("observed_running")
+            broken["work"]["reasons"] = ["review_requested", "approval_required"]
+            self._write(directory, "c-broken.json", broken)
+            (directory / "d-garbage.json").write_text("{not json", encoding="utf-8")
+            payload = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            )
+
+        self.assertEqual(len(payload["records"]), 2)
+        self.assertEqual([record["kind"] for record in payload["records"]], ["work", "no_work"])
+        self.assertEqual(payload["rejected"], 2)
+        messages = {warning["message"] for warning in payload["warnings"]}
+        # Contract diagnostics are a fixed vocabulary with no values or paths.
+        self.assertTrue(messages <= {"invalid_route", "invalid_contract"})
+        self.assertEqual(payload["record_schema"], board_observation.SCHEMA)
+
+    def test_reading_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            record = _observation_fixture("no_work")
+            for index in range(board.MAX_OBSERVATION_FILES + 5):
+                self._write(directory, f"obs-{index:03d}.json", record)
+            payload = board.observations_payload(
+                board.BoardConfig(repo="owner/repo", observations_path=str(directory))
+            )
+        self.assertEqual(len(payload["records"]), board.MAX_OBSERVATION_FILES)
+
+    def test_observations_are_not_written_into_local_history(self) -> None:
+        snapshot = {"schema": "code_mower.laneStatus.v1", "observations": {"records": [1]}}
+        self.assertNotIn("observations", board._recordable_payload(snapshot))
+        self.assertIn("observations", snapshot)
+
+    def test_resolved_metadata_paths_bind_the_observation_directory(self) -> None:
+        paths = board.resolved_metadata_paths(board.BoardConfig(repo="owner/repo", repo_path="/repo"))
+        self.assertTrue(paths["observations_path"].endswith("/.code-mower/board/observations"))
+
+
+@skipUnless(shutil.which("node"), "node is required to execute the shipped board renderer")
+class BoardWorkFirstViewTests(TestCase):
+    """The Now, Timeline, Releases and Health views over B0 fixtures."""
+
+    def test_views_are_semantic_tabs_with_visible_focus_and_expanded_state(self) -> None:
+        html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+        for view in ("now", "timeline", "releases", "health"):
+            self.assertIn(f'id="panel-{view}" role="tabpanel" aria-labelledby="tab-{view}"', html)
+        self.assertIn('role="tablist"', html)
+        self.assertIn(":focus-visible { outline:", html)
+
+        nodes = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("observed_running")])}]
+        )[0]
+        tabs = nodes["tabs"]
+        self.assertEqual(tabs.count('role="tab"'), 4)
+        self.assertEqual(tabs.count('aria-selected="true"'), 1)
+        self.assertIn('id="tab-now" data-view="now" aria-selected="true"', tabs)
+        # Roving tabindex: exactly one tab is in the tab order.
+        self.assertEqual(tabs.count('tabindex="0"'), 1)
+        self.assertEqual(tabs.count('tabindex="-1"'), 3)
+        # One row is expanded and it is the one carrying the detail region.
+        self.assertEqual(nodes["worklist"].count('aria-expanded="true"'), 1)
+        self.assertIn('aria-controls="workdetail"', nodes["worklist"])
+        # The detail region is labelled by the row it belongs to, and the row's
+        # element id is derived from its opaque identity rather than its index.
+        row_id = re.search(r'class="rowbtn" id="([^"]+)"', nodes["worklist"]).group(1)
+        self.assertIn(f'id="workdetail" role="region" aria-labelledby="{row_id}"', nodes["worklist"])
+        self.assertIn("runningwork", row_id)
+
+    def test_keyboard_movement_rules_wrap_for_tabs_and_clamp_for_rows(self) -> None:
+        moves = _eval_board_view(
+            "["
+            "nextTabIndex('ArrowRight', 3, 4), nextTabIndex('ArrowLeft', 0, 4),"
+            "nextTabIndex('Home', 2, 4), nextTabIndex('End', 0, 4), nextTabIndex('a', 0, 4),"
+            "nextRowIndex('ArrowDown', 2, 3), nextRowIndex('ArrowUp', 0, 3),"
+            "nextRowIndex('Home', 2, 3), nextRowIndex('End', 0, 3), nextRowIndex('ArrowLeft', 0, 3),"
+            "nextRowIndex('ArrowDown', 0, 0)"
+            "]"
+        )
+        self.assertEqual(moves, [0, 3, 0, 3, -1, 2, 0, 0, 2, -1, -1])
+
+    def test_work_row_carries_reference_stage_assignment_update_action_and_role(self) -> None:
+        nodes = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("observed_running")])}]
+        )[0]
+        row = nodes["worklist"]
+        self.assertIn('<span class="ref">issue-946</span>', row)
+        self.assertIn("stage: building", row)
+        self.assertIn("assignments: codex builder observed running", row)
+        self.assertIn("last update: 50s ago", row)
+        self.assertIn("responsible: no responsible role recorded", row)
+        self.assertIn("next: <b>no next action recorded</b>", row)
+
+        reviewed = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("reviewed")])}]
+        )[0]["worklist"]
+        self.assertIn("next: <b>review the change</b>", reviewed)
+        self.assertIn("responsible: owner", reviewed)
+
+    def test_lifecycle_states_remain_distinct(self) -> None:
+        expected = {
+            "review_requested": ("implementation_complete", "review requested"),
+            "review_running": ("observed_running", "provider run observed"),
+            "stale_review": ("stale", "stale observation"),
+            "changes_requested": ("cancelled", "provider run cancelled"),
+            "implementation_complete": ("implementation_complete", "implementation complete"),
+            "human_review": ("reviewed", "ready for human review"),
+            "ready": ("ready", "ready to merge"),
+            "merged": ("merged", "merged"),
+        }
+        headlines = {}
+        for label, (fixture_name, _state) in expected.items():
+            states = _eval_board_view("workStates(ARGS[0].work)", _observation_fixture(fixture_name))
+            headlines[label] = [state["label"] for state in states]
+
+        self.assertEqual(headlines["ready"][0], "ready to merge")
+        self.assertEqual(headlines["merged"][0], "merged")
+        self.assertEqual(headlines["human_review"][0], "ready for human review")
+        self.assertEqual(headlines["implementation_complete"][0], "implementation complete")
+        self.assertIn("review requested", headlines["implementation_complete"])
+        self.assertEqual(headlines["stale_review"][0], "stale observation")
+        self.assertEqual(headlines["review_running"][0], "provider run observed")
+
+        # The eight named lifecycle states never share a label.
+        distinct = [
+            "review requested",
+            "review observed running",
+            "stale review",
+            "changes requested",
+            "implementation complete",
+            "ready for human review",
+            "ready to merge",
+            "merged",
+        ]
+        self.assertEqual(len(set(distinct)), len(distinct))
+        rules = _eval_board_view("STATE_RULES.map(rule => rule.label)")
+        for label in distinct:
+            self.assertIn(label, rules)
+        self.assertEqual(len(rules), len(set(rules)))
+
+    def test_gate_publisher_never_stands_in_for_the_gate_verdict(self) -> None:
+        nodes = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("publisher_pass_gate_pending")])}]
+        )[0]
+        detail = nodes["worklist"]
+        self.assertIn("code-mower/gate verdict", detail)
+        self.assertIn("gate publisher run", detail)
+        self.assertIn("Publisher execution only; it is not the gate verdict.", detail)
+        self.assertIn("gate pending", detail)
+
+    def test_selected_row_exposes_independent_evidence(self) -> None:
+        nodes = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("ready")])}]
+        )[0]
+        detail = nodes["worklist"]
+        for group in ("Builder", "Review", "CI", "Gate", "Merge", "Human policy"):
+            self.assertIn(f"<h4>{group}</h4>", detail)
+        self.assertIn("orchestrator lease", detail)
+        self.assertIn("An assignment is a record of intent, not of execution.", detail)
+        self.assertIn("github, fresh, complete coverage", detail)
+        self.assertIn("remote_session, fresh, complete coverage", detail)
+
+    def test_selection_is_kept_by_opaque_work_identity_across_refresh(self) -> None:
+        first = _observation_fixture("observed_running")
+        second = _observation_fixture("ready")
+        payload = _observation_payload([first, second])
+        keys = _work_keys(_render_board_sequence([{"payload": payload}])[0]["worklist"])
+        self.assertEqual(len(keys), 2)
+        running_key = next(key for key in keys if key.endswith("runningwork"))
+
+        # Select the row that is not the default, then refresh twice: once with
+        # the same payload and once with the rows in the opposite order.
+        reordered = _observation_payload([second, first])
+        frames = _render_board_sequence(
+            [
+                {"payload": payload},
+                {"select": running_key, "payload": payload},
+                {"payload": reordered},
+            ]
+        )
+        self.assertNotEqual(_selected_key(frames[0]["worklist"]), running_key)
+        self.assertEqual(_selected_key(frames[1]["worklist"]), running_key)
+        self.assertEqual(_selected_key(frames[2]["worklist"]), running_key)
+
+        # The identity is built only from session, worktree and work id.
+        key = _eval_board_view("workKey(ARGS[0])", first)
+        self.assertTrue(key.startswith("work:"))
+        self.assertIn(first["work"]["id"], key)
+        moved = copy.deepcopy(first)
+        moved["created_at"] = "2026-09-12T20:00:01Z"
+        self.assertEqual(_eval_board_view("workKey(ARGS[0])", moved), key)
+
+    def test_unchanged_polls_announce_nothing_and_stay_out_of_the_timeline(self) -> None:
+        record = _observation_fixture("observed_running")
+        payload = _observation_payload([record])
+        # A poll that only advances observation and heartbeat times is an
+        # unchanged snapshot, not news.
+        polled = copy.deepcopy(payload)
+        for source in polled["observations"]["records"][0]["sources"]:
+            source["checked_at"] = "2026-09-12T20:00:20Z"
+        changed = copy.deepcopy(payload)
+        changed["observations"]["records"][0]["work"]["stage"] = "in_review"
+
+        frames = _render_board_sequence(
+            [
+                {"payload": payload},
+                {"payload": polled},
+                {"payload": changed},
+                {"payload": changed},
+            ]
+        )
+        # The live region is only ever touched by a meaningful change, so the
+        # first render and the unchanged poll after it leave it untouched.
+        self.assertEqual(frames[0].get("announce", ""), "")
+        self.assertEqual(frames[1].get("announce", ""), "")
+        self.assertIn("not listed here", frames[1]["changes"])
+        self.assertIn("issue-946", frames[2]["announce"])
+        # A recorded change that does not move the headline is still reported
+        # as a change rather than as a new state.
+        self.assertIn("changed while staying provider run observed", frames[2]["announce"])
+        self.assertEqual(
+            _eval_board_view(
+                "changeSentence({kind: 'changed', reference: 'issue-946',"
+                " headline: 'ready to merge', from: 'in review'})"
+            ),
+            "issue-946 moved from in review to ready to merge",
+        )
+        self.assertEqual(frames[2]["changes"].count('class="row"'), 1)
+        # The fourth poll repeats the third, so nothing new is announced or logged.
+        self.assertEqual(frames[3]["announce"], frames[2]["announce"])
+        self.assertEqual(frames[3]["changes"].count('class="row"'), 1)
+
+    def test_signature_ignores_poll_timestamps_and_tracks_recorded_change(self) -> None:
+        record = _observation_fixture("observed_running")
+        polled = copy.deepcopy(record)
+        for source in polled["sources"]:
+            source["checked_at"] = "2026-09-12T20:00:20Z"
+            source["observed_at"] = "2026-09-12T20:00:10Z"
+            if source["heartbeat_at"] is not None:
+                source["heartbeat_at"] = "2026-09-12T20:00:10Z"
+        polled["created_at"] = "2026-09-12T20:00:20Z"
+        self.assertEqual(
+            _eval_board_view("workSignature(ARGS[0])", record),
+            _eval_board_view("workSignature(ARGS[0])", polled),
+        )
+        moved = copy.deepcopy(record)
+        moved["work"]["runs"][0]["phase"] = "implementation_complete"
+        moved["work"]["runs"][0]["basis"] = "provider_reported"
+        moved["work"]["runs"][0]["lifecycle"]["state"] = "complete"
+        self.assertNotEqual(
+            _eval_board_view("workSignature(ARGS[0])", record),
+            _eval_board_view("workSignature(ARGS[0])", moved),
+        )
+
+    def test_fixture_scenarios_produce_honest_summaries(self) -> None:
+        # No session: an unlinked observation claims no stage and no route.
+        unlinked = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("unlinked")])}]
+        )[0]["worklist"]
+        self.assertIn("identity unlinked", unlinked)
+        self.assertIn("stage: not linked to a session", unlinked)
+        self.assertIn("next: <b>no next action recorded</b>", unlinked)
+        self.assertIn("Nothing binds this run to Code Mower work", unlinked)
+
+        # Idle with complete coverage is idle because it was looked at.
+        idle = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("no_work")])}]
+        )[0]["worklist"]
+        self.assertIn("idle with complete coverage", idle)
+        self.assertIn("session, work_queue, run_registry", idle)
+        self.assertNotIn("no work found", idle)
+
+        # An unavailable source preserves the last observation without a live claim.
+        unavailable = _render_board_sequence(
+            [
+                {
+                    "payload": _observation_payload(
+                        [_observation_fixture("source_unavailable_preserves_last_observation")]
+                    )
+                }
+            ]
+        )[0]["worklist"]
+        self.assertIn("source unavailable", unavailable)
+        self.assertIn("last observed", unavailable)
+        self.assertIn("is not evidence of work running now", unavailable)
+
+        # A stale source is reported as stale, with its partial coverage named.
+        stale = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("stale")])}]
+        )[0]["worklist"]
+        self.assertIn("stale observation", stale)
+        self.assertIn("Source stale: remote_session", stale)
+        self.assertIn("Partial coverage: remote_session", stale)
+        self.assertNotIn("live, observed", stale)
+
+    def test_partial_coverage_reports_counts_and_never_a_percentage_or_eta(self) -> None:
+        record = _observation_fixture("observed_running")
+        record["work"]["measurements"]["elapsed_seconds"] = {
+            "value": 120.0,
+            "coverage": "partial",
+            "observed": 2,
+            "total": 5,
+        }
+        record = board_observation.validate(record)
+        nodes = _render_board_sequence([{"payload": _observation_payload([record])}])[0]
+        self.assertIn("elapsed 120.0s from 2 of 5 recorded", nodes["worklist"])
+        self.assertIn("cost not recorded", nodes["worklist"])
+
+        # Nothing the operator is shown states a share, a percentage, or a
+        # projection of work that has not been observed.
+        rendered = "\n".join(nodes.values())
+        self.assertNotIn("%", rendered)
+        for invented in ("percent", "estimat", "remaining", "projected", "eta "):
+            self.assertNotIn(invented, rendered.lower())
+        # A partial measurement is reported as counted evidence, never scaled.
+        self.assertEqual(
+            _eval_board_view(
+                "measurementText({value: 2, coverage: 'partial', observed: 2, total: 5}, 'count')"
+            ),
+            "2 from 2 of 5 recorded",
+        )
+
+    def test_unknown_states_stay_neutral_and_colour_always_carries_text(self) -> None:
+        classes = _eval_board_view(
+            "['unknown', 'not_started', 'absent', 'unverifiable', 'none', 'unassigned']"
+            ".map(state => EVIDENCE_STATE_CLASSES[state])"
+        )
+        self.assertEqual(set(classes), {"muted"})
+        nodes = _render_board_sequence(
+            [{"payload": _observation_payload([_observation_fixture("observed_running")])}]
+        )[0]
+        detail = nodes["worklist"]
+        # Every coloured pill carries a text cue and a text label beside it.
+        for coloured in re.findall(r'<span class="pill (ok|warn|bad)">(.*?)</span>\s*</span>', detail):
+            self.assertIn('class="cue"', coloured[1] + "</span>")
+        self.assertEqual(detail.count('<span class="pill ok">'), detail.count('<span class="pill ok"><span class="cue"'))
+        self.assertEqual(detail.count('<span class="pill bad">'), detail.count('<span class="pill bad"><span class="cue"'))
+
+    def test_actions_are_read_only_and_never_invent_a_remote_link(self) -> None:
+        record = _observation_fixture("ready")
+        # No open PR is recorded locally, so no PR link may be offered.
+        without_link = _render_board_sequence([{"payload": _observation_payload([record])}])[0]
+        self.assertIn("PR #946, no local link recorded", without_link["worklist"])
+        self.assertNotIn("https://github.com/codemower-ai/code-mower/pull/946", without_link["worklist"])
+
+        payload = _observation_payload([record])
+        payload["remote"]["pull_requests"] = [
+            {
+                "number": 946,
+                "url": "https://github.example/owner/repo/pull/946",
+                "title": "t",
+                "labels": {},
+                "checks": [],
+            }
+        ]
+        with_link = _render_board_sequence([{"payload": payload}])[0]["worklist"]
+        self.assertIn('href="https://github.example/owner/repo/pull/946">Open PR #946', with_link)
+        self.assertIn("This Board never merges, requeues, cancels, retries", with_link)
+        # The page has no form, no non-GET request, and reaches only the two
+        # read-only local endpoints.
+        page = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+        self.assertNotIn("<form", page)
+        self.assertNotIn("POST", page)
+        self.assertNotIn("method=", page)
+        self.assertEqual(
+            sorted(set(re.findall(r'fetch\("([^"]+)"', page))),
+            ["/api/events", "/api/status"],
+        )
+
+    def test_mobile_detail_follows_the_row_and_desktop_places_it_adjacent(self) -> None:
+        html = board.render_board_html(board.BoardConfig(repo="owner/repo"))
+        # One detail node, rendered inside the selected row, so single-column
+        # source order already puts it under the row it belongs to.
+        nodes = _render_board_sequence(
+            [
+                {
+                    "payload": _observation_payload(
+                        [_observation_fixture("observed_running"), _observation_fixture("ready")]
+                    )
+                }
+            ]
+        )[0]
+        self.assertEqual(nodes["worklist"].count('id="workdetail"'), 1)
+        selected = nodes["worklist"].split('<li class="workrow selected">')[1]
+        self.assertLess(selected.index("</button>"), selected.index('id="workdetail"'))
+        self.assertIn("@media (min-width: 900px) {", html)
+        self.assertIn(".workdetail { position:absolute;", html)
+
+    def test_participants_report_recorded_phases_without_claiming_liveness(self) -> None:
+        nodes = _render_board_sequence(
+            [
+                {
+                    "payload": _observation_payload(
+                        [_observation_fixture("observed_running"), _observation_fixture("unlinked")]
+                    )
+                }
+            ]
+        )[0]
+        participants = nodes["participants"]
+        self.assertIn("<b>codex</b>", participants)
+        self.assertIn("observed running 1", participants)
+        self.assertIn("<b>claude</b>", participants)
+        self.assertIn("not linked to a session 1", participants)
+        self.assertIn("not a claim that anything is running now", participants)
+
+    def test_health_view_reports_connections_version_and_process_state(self) -> None:
+        payload = _observation_payload(
+            [_observation_fixture("stale"), _observation_fixture("observed_running")]
+        )
+        payload["board"]["version"]["installed_version"] = "1.5.0"
+        payload["board"]["version"]["restart_recommended"] = True
+        payload["board"]["cache"]["state"] = "stale"
+        payload["local_boards"] = {"boards": [{"port": 5332, "pid": 42, "cwd": ""}]}
+        nodes = _render_board_sequence([{"payload": payload}])[0]
+        self.assertIn("restart recommended", nodes["diagnostics"])
+        self.assertIn("installed 1.5.0", nodes["diagnostics"])
+        self.assertIn("Snapshot cache", nodes["diagnostics"])
+        self.assertIn("2 recorded", nodes["diagnostics"])
+        self.assertIn("<b>remote_session</b>", nodes["sources"])
+        self.assertIn("coverage partial", nodes["sources"])
+        self.assertIn("board localhost:5332", nodes["local"])
+
+    def test_empty_observation_directory_is_reported_as_nothing_recorded(self) -> None:
+        payload = _observation_payload([])
+        payload["observations"]["path_exists"] = False
+        nodes = _render_board_sequence([{"payload": payload}])[0]
+        self.assertIn("No local Board observation is recorded yet", nodes["worklist"])
+        self.assertNotIn("idle", nodes["worklist"])
+        rejected = _observation_payload([])
+        rejected["observations"]["rejected"] = 1
+        rejected["observations"]["message"] = "no local Board observation passed the observation contract"
+        rejected_nodes = _render_board_sequence([{"payload": rejected}])[0]
+        self.assertIn("passed the observation contract", rejected_nodes["worklist"])
+        self.assertIn("1 rejected by the observation contract", rejected_nodes["diagnostics"])
