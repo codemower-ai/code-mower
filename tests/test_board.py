@@ -3934,8 +3934,12 @@ class FakeElement {
     // restored offset is only ever in range because the page put it in range.
     this.scrollTop = 0;
   }
-  get scrollHeight() { return (this.doc.metrics[this.id] || {}).scrollHeight || 0; }
-  get clientHeight() { return (this.doc.metrics[this.id] || {}).clientHeight || 0; }
+  // Content inside a hidden panel has no box at all, so every layout metric
+  // reads zero however tall the evidence is. That is the browser behaviour the
+  // page has to tell apart from a genuine reading position of zero, so the
+  // shim reproduces it rather than letting a test opt into it.
+  get scrollHeight() { return this.doc.laidOut(this) ? (this.doc.metrics[this.id] || {}).scrollHeight || 0 : 0; }
+  get clientHeight() { return this.doc.laidOut(this) ? (this.doc.metrics[this.id] || {}).clientHeight || 0 : 0; }
   get innerHTML() { return this._html; }
   set innerHTML(value) {
     this.doc.replaceChildren(this, value);
@@ -3969,9 +3973,20 @@ const document = {
   roots: new Map(),
   owned: new Map(),
   index: new Map(),
+  // Which view panel each static container belongs to, read off the shipped
+  // markup rather than assumed here.
+  panelOf: __PANEL_OF__,
   getElementById(id) {
     if (this.index.has(id)) return this.index.get(id);
     return this.roots.get(id) || null;
+  },
+  laidOut(node) {
+    for (let current = node; current; current = current.parent) {
+      if (current.hidden === true) return false;
+      const panel = this.panelOf[current.id];
+      if (panel && (this.roots.get(panel) || {}).hidden === true) return false;
+    }
+    return true;
   },
   replaceChildren(root, html) {
     for (const [id, node] of this.owned.get(root.id) || new Map()) {
@@ -4013,12 +4028,24 @@ for (const step of JSON.parse(process.argv[1])) {
     });
   }
   if (step.select) selectWork(step.select);
-  if (step.scroll) element(step.scroll.id || "workdetail").scrollTop = step.scroll.top;
+  if (step.scroll) {
+    // A browser moves the element and then tells the page it moved. Both
+    // halves are modelled: a page that only ever reads the offset out of the
+    // element when it is about to be replaced has nothing to read once the
+    // panel is hidden.
+    const scrolled = element(step.scroll.id || "workdetail");
+    scrolled.scrollTop = step.scroll.top;
+    if (typeof scrolled.onscroll === "function") scrolled.onscroll();
+  }
   if (step.payload) render(step.payload);
   const detail = document.getElementById("workdetail");
   frames.push({
     active: document.activeElement === document.body ? "" : document.activeElement.id,
     detail: detail === null ? null : {key: detail.attrs["data-key"] || "", top: detail.scrollTop},
+    // What the page remembers outside the DOM, so a test can see that a
+    // hidden poll left it alone and that an identity the Board stopped
+    // showing was dropped rather than kept for ever.
+    remembered: Object.fromEntries(detailOffsets),
     worklist: document.getElementById("worklist").innerHTML,
     tabs: document.getElementById("tabs").innerHTML,
     hidden: Object.fromEntries(["now", "timeline", "releases", "health"]
@@ -4037,6 +4064,21 @@ def _board_shell_ids() -> list[str]:
     return sorted(set(re.findall(r'id="([^"]+)"', shell)))
 
 
+def _board_panel_of() -> dict[str, str]:
+    """Which view panel each static container in the shipped shell sits inside."""
+
+    html = board.render_board_html(board.BoardConfig(repo="codemower-ai/code-mower"))
+    shell = html[: html.index("  <script>\n")]
+    panels: dict[str, str] = {}
+    sections = list(re.finditer(r'<section class="view" id="(panel-[a-z]+)"', shell))
+    for index, section in enumerate(sections):
+        end = sections[index + 1].start() if index + 1 < len(sections) else len(shell)
+        for found in re.findall(r'id="([^"]+)"', shell[section.start() : end]):
+            if found != section.group(1):
+                panels[found] = section.group(1)
+    return panels
+
+
 def _render_board_focus(
     steps: list[dict[str, object]],
     *,
@@ -4047,6 +4089,7 @@ def _render_board_focus(
     script = (
         BOARD_FOCUS_HARNESS.replace("__NOW_MS__", str(int(now.timestamp() * 1000)))
         .replace("__SHELL_IDS__", json.dumps(_board_shell_ids()))
+        .replace("__PANEL_OF__", json.dumps(_board_panel_of()))
         .replace("__SCRIPT__", _board_script())
     )
     completed = subprocess.run(
@@ -5230,10 +5273,22 @@ class BoardWorkFirstViewTests(TestCase):
         # detail is a different identity, so it inherits nothing.
         moved = _render_board_focus([*opened, {"select": other}])
         self.assertEqual(moved[-1]["detail"], {"key": other, "top": 0})
-        # And coming back does not resurrect the old position either: the
-        # offset belongs to the panel that was on screen, not to a history.
-        returned = _render_board_focus([*opened, {"select": other}, {"select": key}])
-        self.assertEqual(returned[-1]["detail"], {"key": key, "top": 0})
+        # Coming back returns to where this identity was being read. The
+        # offsets are kept per identity, so the two never mix: the second work
+        # item's own position is its own, and it is the one restored when it
+        # is the one on screen.
+        returned = _render_board_focus(
+            [
+                *opened,
+                {"select": other},
+                {"scroll": {"top": 90}},
+                {"select": key},
+                {"select": other},
+            ]
+        )
+        self.assertEqual(returned[-3]["detail"], {"key": other, "top": 90})
+        self.assertEqual(returned[-2]["detail"], {"key": key, "top": 240})
+        self.assertEqual(returned[-1]["detail"], {"key": other, "top": 90})
 
         # A refresh that drops the selected record entirely selects another
         # row, which also starts at the top.
@@ -5247,6 +5302,254 @@ class BoardWorkFirstViewTests(TestCase):
         emptied = _render_board_focus([*opened, {"payload": _observation_payload([])}])
         self.assertIsNone(emptied[-1]["detail"])
         self.assertIn("No local Board observation", emptied[-1]["worklist"])
+
+    # Reading evidence, then going to look at something else, is the ordinary
+    # thing to do with a tabbed page. While another view is open the Now panel
+    # is hidden: its content has no box, so every layout metric reads zero.
+    # These are the cases where a position read off -- or clamped against -- a
+    # hidden panel silently becomes a return to the top.
+    def _reading(self, key: str) -> list[dict[str, object]]:
+        """An operator part way down one work item's evidence, on Now."""
+
+        return [
+            {"select": key, "metrics": self.DETAIL_METRICS},
+            {"scroll": {"top": 240}},
+        ]
+
+    def test_a_poll_that_lands_while_now_is_hidden_keeps_the_reading_position(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        frames = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"click": "tab-timeline", "on": "tabs"},
+                {"payload": payload},
+                {"click": "tab-now", "on": "tabs"},
+            ]
+        )
+        # Now really is hidden while the poll lands, and the replacement the
+        # poll rendered into the hidden panel starts at the top with no
+        # measurable height at all -- there is nothing there to read.
+        self.assertTrue(frames[-2]["hidden"]["now"])
+        self.assertFalse(frames[-1]["hidden"]["now"])
+        self.assertEqual(frames[-2]["detail"], {"key": key, "top": 0})
+        # What the operator was reading was never in that element: it is kept
+        # against the identity, outside everything the poll replaced.
+        self.assertEqual(frames[-2]["remembered"], {key: 240})
+        # Returning to Now is the first moment the panel can be measured
+        # again, and it is where the reading position comes back.
+        self.assertEqual(frames[-1]["detail"], {"key": key, "top": 240})
+
+        # The keyboard takes the same route through the tab strip, and the two
+        # pieces of state compose: the keyboard is left on the tab the
+        # operator moved to, and the evidence is where they left it.
+        keyboard = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"focus": "tab-now"},
+                {"key": "ArrowRight", "on": "tabs", "from": "tab-now"},
+                {"payload": refreshed},
+                {"key": "ArrowLeft", "on": "tabs", "from": "tab-timeline"},
+            ]
+        )
+        self.assertEqual(keyboard[-3]["active"], "tab-timeline")
+        self.assertTrue(keyboard[-2]["hidden"]["now"])
+        self.assertEqual(keyboard[-1]["active"], "tab-now")
+        self.assertEqual(keyboard[-1]["detail"], {"key": key, "top": 240})
+
+    def test_many_hidden_polls_and_changed_evidence_lose_nothing(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        away = [
+            {"payload": payload},
+            *self._reading(key),
+            {"click": "tab-health", "on": "tabs"},
+        ]
+        # Eight polls land while the operator is on another view, two of them
+        # changing the evidence of the very work item being read. Each one
+        # replaces the hidden detail region; none of them may touch what is
+        # remembered for it.
+        polls: list[dict[str, object]] = []
+        for index in range(8):
+            polls.append({"payload": refreshed if index % 4 == 3 else payload})
+        frames = _render_board_focus([*away, *polls, {"click": "tab-now", "on": "tabs"}])
+        for frame in frames[len(away) : -1]:
+            self.assertTrue(frame["hidden"]["now"])
+            self.assertEqual(frame["remembered"], {key: 240})
+        self.assertEqual(frames[-1]["detail"], {"key": key, "top": 240})
+        self.assertIn("CI pending", frames[-1]["worklist"])
+
+        # Switching view twice over, with polls on both sides, is the same
+        # story: the position belongs to the identity, not to a visit.
+        returning = _render_board_focus(
+            [
+                *away,
+                {"payload": refreshed},
+                {"click": "tab-now", "on": "tabs"},
+                {"payload": payload},
+                {"click": "tab-releases", "on": "tabs"},
+                {"payload": refreshed},
+                {"click": "tab-now", "on": "tabs"},
+            ]
+        )
+        self.assertEqual(returning[-1]["detail"], {"key": key, "top": 240})
+
+    def test_a_hidden_panel_is_never_read_as_a_reading_position_of_zero(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        # Hidden content has no box: the shim reports what a browser reports,
+        # so a page that reads the offset out of the element, or clamps
+        # against its travel, sees zero and throws the reading away.
+        hidden = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"click": "tab-timeline", "on": "tabs"},
+                {"payload": refreshed},
+            ]
+        )[-1]
+        self.assertEqual(hidden["detail"], {"key": key, "top": 0})
+        self.assertEqual(hidden["remembered"], {key: 240})
+
+        # Zero metrics declared outright -- a panel the browser has not laid
+        # out yet -- are read the same way: not a position, so nothing is
+        # captured from it and nothing is clamped against it.
+        unlaid = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"metrics": {"workdetail": {"scrollHeight": 0, "clientHeight": 0}}},
+                {"payload": refreshed},
+                {"metrics": self.DETAIL_METRICS},
+                {"payload": refreshed},
+            ]
+        )
+        self.assertEqual(unlaid[-2]["remembered"], {key: 240})
+        self.assertEqual(unlaid[-1]["detail"], {"key": key, "top": 240})
+
+        # All of which rests on one property of the shipped stylesheet: a
+        # hidden view is taken out of layout rather than merely made
+        # invisible, so its content genuinely has no box to measure. The rule
+        # is read here rather than assumed, because a stylesheet that hid a
+        # panel some other way would leave these metrics reporting a box for
+        # evidence nobody can see.
+        hiding = [
+            declarations
+            for at_rule, selector, declarations in _css_rules(_board_css())
+            if selector == "[hidden]" and not at_rule
+        ]
+        self.assertEqual([entry.get("display") for entry in hiding], ["none !important"])
+
+    def test_returning_to_now_clamps_against_what_is_there_on_return(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        away = [
+            {"payload": payload},
+            {"select": key, "metrics": self.DETAIL_METRICS},
+            {"scroll": {"top": 560}},
+            {"click": "tab-timeline", "on": "tabs"},
+            {"payload": refreshed},
+        ]
+        # Evidence that shrank while the operator was away can only scroll
+        # 100px, and the clamp happens on return -- the one moment the panel
+        # can be measured -- rather than against the zeros it reported while
+        # hidden. What is remembered is then what is on screen.
+        shrunk = _render_board_focus(
+            [
+                *away,
+                {"metrics": {"workdetail": {"scrollHeight": 400, "clientHeight": 300}}},
+                {"click": "tab-now", "on": "tabs"},
+            ]
+        )
+        self.assertEqual(shrunk[-1]["detail"], {"key": key, "top": 100})
+        self.assertEqual(shrunk[-1]["remembered"], {key: 100})
+
+        # Evidence that grew keeps the place that was being read: there is
+        # more below it, not less.
+        grown = _render_board_focus(
+            [
+                *away,
+                {"metrics": {"workdetail": {"scrollHeight": 1500, "clientHeight": 300}}},
+                {"click": "tab-now", "on": "tabs"},
+            ]
+        )
+        self.assertEqual(grown[-1]["detail"], {"key": key, "top": 560})
+
+        # And growth while Now is open keeps it too, poll after poll.
+        visible = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"metrics": {"workdetail": {"scrollHeight": 1500, "clientHeight": 300}}},
+                {"payload": refreshed},
+                {"payload": payload},
+            ]
+        )
+        self.assertEqual(visible[-1]["detail"], {"key": key, "top": 240})
+
+    def test_remembered_reading_positions_are_dropped_with_the_work_they_belong_to(self) -> None:
+        payload, refreshed, key = self._scroll_case()
+        worklist = _render_board_focus([{"payload": payload}])[0]["worklist"]
+        other = next(item for item in _work_keys(worklist) if item != key)
+        without = _observation_payload([_record_with_reasons("observed_running", "beta", [])])
+
+        # A work item the Board stops showing has no evidence to come back to,
+        # so what was remembered for it goes with it -- while the offset of
+        # the item still on screen is left exactly where it was.
+        frames = _render_board_focus(
+            [
+                {"payload": payload},
+                *self._reading(key),
+                {"select": other},
+                {"scroll": {"top": 90}},
+                {"payload": without},
+                {"payload": payload},
+                {"select": key},
+            ]
+        )
+        self.assertEqual(frames[-3]["remembered"], {other: 90})
+        # The identity is rendered again later, but it comes back as new work
+        # rather than resuming a position from before it disappeared.
+        self.assertEqual(frames[-1]["detail"], {"key": key, "top": 0})
+
+        # Polls alone never accumulate anything: an unchanged poll remembers
+        # what the operator did, and nothing else.
+        repeated = _render_board_focus(
+            [{"payload": payload}, *self._reading(key), *([{"payload": payload}] * 6)]
+        )
+        self.assertEqual(repeated[-1]["remembered"], {key: 240})
+
+    def test_the_remembered_reading_positions_are_bounded(self) -> None:
+        # The page is left open for days. Even a stream of identities that
+        # were never on screen together cannot grow the map without limit:
+        # it is bounded, and the least recently touched entry is the one that
+        # goes. The bound is read off the page rather than assumed here.
+        limit = _eval_board_page("DETAIL_OFFSET_LIMIT")
+        self.assertIsInstance(limit, int)
+        self.assertGreater(limit, 1)
+        measured = _eval_board_page(
+            "(() => {"
+            "  for (let index = 0; index < ARGS[0]; index += 1) rememberDetailOffset('k' + index, index);"
+            "  const keys = [...detailOffsets.keys()];"
+            "  rememberDetailOffset(keys[0], 7);"
+            "  rememberDetailOffset('fresh', 9);"
+            "  return {"
+            "    size: detailOffsets.size,"
+            "    first: keys[0],"
+            "    kept: detailOffsets.get(keys[0]),"
+            "    oldest: [...detailOffsets.keys()][0],"
+            "    newest: detailOffsets.get('fresh'),"
+            "    dropped: detailOffsets.has('k0')"
+            "  };"
+            "})()",
+            2000,
+        )
+        self.assertEqual(measured["size"], limit)
+        # Every identity beyond the bound displaced an older one, touching an
+        # entry keeps it, and the entry evicted for the newest arrival is the
+        # one that had gone longest without being touched.
+        self.assertEqual(measured["kept"], 7)
+        self.assertNotEqual(measured["oldest"], measured["first"])
+        self.assertEqual(measured["newest"], 9)
+        self.assertFalse(measured["dropped"])
 
     def test_keyboard_focus_and_the_reading_position_survive_one_refresh_together(self) -> None:
         payload, refreshed, key = self._scroll_case()
@@ -5299,10 +5602,12 @@ class BoardWorkFirstViewTests(TestCase):
     #   keyboard focus        read off the element about to be destroyed and
     #                         restored by id, with the row named as the
     #                         fallback when the control is not offered again;
-    #   detail scroll offset  read off the detail region about to be destroyed
-    #                         and restored against the identity it was
-    #                         rendered for, clamped to what the replacement
-    #                         can actually scroll.
+    #   detail scroll offset  kept outside the subtree too, in `detailOffsets`,
+    #                         against the same opaque identity; captured when
+    #                         the operator scrolls and before the panel is
+    #                         replaced or hidden, and restored -- clamped to
+    #                         what is there to scroll -- only while that
+    #                         identity's detail is visible and measurable.
 
     def test_every_ephemeral_state_the_work_list_replaces_is_accounted_for(self) -> None:
         payload, refreshed, key = self._scroll_case()

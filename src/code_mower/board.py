@@ -2873,28 +2873,126 @@ _BOARD_HTML = """<!doctype html>
     //
     // The offset is kept against the same opaque work identity the selection
     // is kept against, never against a row position, so it is restored only
-    // while the operator is still reading the same work item. A different
-    // identity starts at the top of its own evidence rather than inheriting
-    // someone else's position, and a selection that stops being rendered has
-    // nothing to restore onto.
+    // onto the evidence it was taken from. A different identity starts at the
+    // top of its own evidence rather than inheriting someone else's position,
+    // each identity keeps its own place while the Board goes on showing it,
+    // and a work item the Board stops showing takes its position with it.
+    //
+    // It cannot be kept on the detail region itself, nor read off it at an
+    // arbitrary moment. Every poll replaces that element, and while another
+    // view is open the Now panel is hidden -- a hidden element reports a zero
+    // height and a zero scroll position, which is not a reading position of
+    // zero but no reading at all. Reading one off a hidden panel overwrote the
+    // operator's place with zero, and clamping against a hidden panel's zero
+    // travel discarded it; either way, returning to Now started at the top.
+    // The offsets therefore live here, outside anything a render replaces,
+    // and are touched only while the panel is on screen and measurable.
+    const detailOffsets = new Map();
+    // A Board left open for days must not accumulate one entry per work item
+    // it has ever rendered. Identities the payload stops carrying are dropped
+    // by the render that stops showing them, and the map is bounded besides --
+    // least recently touched first -- so even a long stream of unfamiliar
+    // identities cannot grow it without limit.
+    const DETAIL_OFFSET_LIMIT = 64;
     const detailKey = (detail) => (detail && detail.dataset ? text(detail.dataset.key) : "");
-    function detailScrollState() {
+    // The detail region only tells the truth about its position while it is
+    // rendered and laid out. A hidden view is hidden with `display:none`, so
+    // everything in it is out of layout and reports a zero-sized box and a
+    // zero offset; so does a panel the browser has not laid out yet. Neither
+    // is a reading position of zero, so both are reported as "not measurable"
+    // and every caller leaves what is remembered alone rather than reading a
+    // zero out of the element or clamping one against it.
+    function measurableDetail() {
       const detail = document.getElementById("workdetail");
-      if (!detail) return null;
+      if (!detail || !detailKey(detail)) return null;
+      const visible = Number(detail.clientHeight);
+      const content = Number(detail.scrollHeight);
+      if (!Number.isFinite(visible) || !Number.isFinite(content)) return null;
+      if (visible <= 0 || content <= 0) return null;
+      return detail;
+    }
+    function rememberDetailOffset(key, top) {
+      if (!key) return;
+      // Re-inserting moves the entry to the end, so map order is least
+      // recently touched first and the bound evicts the stalest reading.
+      detailOffsets.delete(key);
+      detailOffsets.set(key, top);
+      while (detailOffsets.size > DETAIL_OFFSET_LIMIT) {
+        detailOffsets.delete(detailOffsets.keys().next().value);
+      }
+    }
+    // The detail region the page has actually put a position onto. A
+    // replacement that was rendered while Now was hidden is not it: it sits at
+    // the top because nothing could measure it, and that top is no more a
+    // reading position than the zeros it reports. Reading one off it would
+    // overwrite the operator's real place the moment the panel became
+    // measurable again, so only this element is ever read from.
+    let syncedDetail = null;
+    // The operator moving the panel is always believed: whatever else the page
+    // thinks, a scroll the operator performed is their reading position, and
+    // the element it happened on is by definition in sync with what is
+    // remembered for it.
+    function noteDetailScrolled() {
+      const detail = measurableDetail();
+      if (detail === null) return;
       const top = Number(detail.scrollTop);
-      return {key: detailKey(detail), top: Number.isFinite(top) && top > 0 ? top : 0};
+      syncedDetail = detail;
+      rememberDetailOffset(detailKey(detail), Number.isFinite(top) && top > 0 ? top : 0);
+    }
+    // Called before a render replaces the panel and before Now is hidden, so
+    // that a position the operator reached is recorded while it can still be
+    // read. Both are no-ops unless the panel is measurable and is the one the
+    // page synchronised, so neither a hidden poll nor a panel that was never
+    // restored onto can overwrite a real reading position with zero.
+    function captureDetailOffset() {
+      const detail = measurableDetail();
+      if (detail === null || detail !== syncedDetail) return;
+      const top = Number(detail.scrollTop);
+      rememberDetailOffset(detailKey(detail), Number.isFinite(top) && top > 0 ? top : 0);
+    }
+    // Restoring is clamped to what the panel can actually scroll, so evidence
+    // that shrank lands at the end of what is now there instead of at an
+    // offset that no longer exists, while evidence that grew keeps the place
+    // the operator was reading. The clamped value is written back, so what is
+    // remembered is always what is on screen. Only a measurable panel is ever
+    // restored or clamped: a hidden one keeps its cached offset untouched
+    // until the view it belongs to is open again.
+    function restoreDetailOffset() {
+      const detail = measurableDetail();
+      if (detail === null) return;
+      // Measurable, so from here on this element and the remembered offset
+      // agree -- either because one was restored onto it, or because there is
+      // nothing remembered for this identity and the top is where it belongs.
+      syncedDetail = detail;
+      const key = detailKey(detail);
+      if (!detailOffsets.has(key)) return;
+      const overflow = Number(detail.scrollHeight) - Number(detail.clientHeight);
+      const top = Math.min(detailOffsets.get(key), Number.isFinite(overflow) && overflow > 0 ? overflow : 0);
+      detail.scrollTop = top;
+      rememberDetailOffset(key, top);
+    }
+    // An identity the Board no longer shows has no reading position to come
+    // back to, so the render that drops it drops what was remembered for it.
+    function forgetUnrenderedDetailOffsets(rows) {
+      const shown = new Set(arrayOf(rows).map(row => text(row?.key)));
+      for (const key of [...detailOffsets.keys()]) {
+        if (!shown.has(key)) detailOffsets.delete(key);
+      }
     }
     function withDetailScrollPreserved(update) {
-      const before = detailScrollState();
+      captureDetailOffset();
       update();
-      if (before === null || !before.top) return;
       const detail = document.getElementById("workdetail");
-      if (detail === null || detailKey(detail) !== before.key) return;
-      // Restoring is clamped to what the replacement can actually scroll, so a
-      // refresh that shortens the evidence lands at the end of what is now
-      // there instead of at an offset that no longer exists.
-      const overflow = Number(detail.scrollHeight) - Number(detail.clientHeight);
-      detail.scrollTop = Math.min(before.top, Number.isFinite(overflow) && overflow > 0 ? overflow : 0);
+      // The replacement is a new element and carries none of the old one's
+      // handlers, so the scroll listener is attached again here -- this is the
+      // only place a detail region is ever created. Capturing on scroll is
+      // what makes a poll that lands while Now is hidden survivable: the
+      // position was already recorded while the panel was still on screen.
+      if (detail) detail.onscroll = noteDetailScrolled;
+      // Nothing is rendered to read: the page holds no reference to the
+      // element that was replaced.
+      else syncedDetail = null;
+      restoreDetailOffset();
     }
     const cuePill = (label, cls) => `<span class="pill ${esc(cls || "muted")}"><span class="cue" aria-hidden="true">${esc(cueFor(cls))}</span> ${esc(label)}</span>`;
     const stateCue = (state) => cuePill(state.label, state.class);
@@ -2909,9 +3007,17 @@ _BOARD_HTML = """<!doctype html>
       for (const view of VIEWS) {
         document.getElementById(view.panel).hidden = view.id !== activeView;
       }
+      // Every path that opens a view ends here, so this is the one moment at
+      // which a panel that was hidden becomes measurable again. Polls that
+      // landed while Now was hidden left the cached offset alone; this is
+      // where the operator's place in the evidence comes back.
+      restoreDetailOffset();
     }
     function selectView(id) {
       if (!VIEWS.some(view => view.id === id)) return;
+      // Read the reading position while Now is still on screen: once the panel
+      // is hidden there is nothing left to read it off.
+      captureDetailOffset();
       activeView = id;
       applyView();
     }
@@ -2991,9 +3097,15 @@ _BOARD_HTML = """<!doctype html>
       // restored after focus is: focus restoration asks not to scroll, and
       // restoring the offset last means a browser that ignores that request
       // still cannot leave the panel somewhere the operator did not put it.
-      withDetailScrollPreserved(() => withFocusPreserved(() => put("worklist", rows.length
-        ? `<ul class="workrows" role="list" aria-labelledby="work-heading">${rows.map(row => workRowHtml(row, row.key === activeKey, workState.prs)).join("")}</ul>`
-        : empty(workState.message))));
+      withDetailScrollPreserved(() => {
+        withFocusPreserved(() => put("worklist", rows.length
+          ? `<ul class="workrows" role="list" aria-labelledby="work-heading">${rows.map(row => workRowHtml(row, row.key === activeKey, workState.prs)).join("")}</ul>`
+          : empty(workState.message)));
+        // The offset just captured belongs to whatever was on screen a moment
+        // ago; this is the render that decides which identities still exist,
+        // so it is also the render that forgets the ones that do not.
+        forgetUnrenderedDetailOffsets(rows);
+      });
     }
     function selectWork(key) {
       if (!key) return;
