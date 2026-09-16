@@ -1361,10 +1361,10 @@ exit 1
                 self.assertNotIn("Replace placeholders", template)
                 self.assertNotIn("Install this generated template", template)
                 if filename == "builder-provenance.yml.j2":
-                    self.assertIn(
-                        f"CODE_MOWER_PACKAGE_SPEC: {next_steps.current_alpha_package_spec()}",
-                        template,
-                    )
+                    self.assertIn('"status": "skipped"', template)
+                    self.assertIn("builder-lineage-producer.yml.j2", template)
+                    self.assertNotIn("builder auto-record", template)
+                    self.assertNotIn("pip install", template)
 
     def test_generated_workflows_use_checkout_v7_pin(self) -> None:
         workflow_paths = [
@@ -7627,7 +7627,7 @@ def main():
             problems(
                 version="code-mower 1.4.1",
                 distribution_version="1.4.1",
-                requested_version="1.4.1",
+                requested_version="1.4.0",
             )
         )
         self.assertTrue(problems(version="code-mower", distribution_version="1.4.1"))
@@ -7641,7 +7641,7 @@ def main():
 
         # pip installs normalized metadata, so an equivalent requested spelling
         # of the same release is the requested candidate.
-        for requested in ("1.4.1", "v1.4.1", "1.4.1.0", "1.4", " 1.4.1 "):
+        for requested in ("1.4.1", "v1.4.1", "1.4.1.0", "1.4.1.0.0", " 1.4.1 "):
             with self.subTest(requested=requested):
                 self.assertEqual(
                     problems(
@@ -7652,7 +7652,7 @@ def main():
                     [],
                 )
 
-        for requested in ("1.4.1", "1.4.1rc1", "1.4.1.post1", "2!1.4.1", "1.4.1+local", "not-a-version"):
+        for requested in ("1.4", "1.4.0", "1.4.2", "1.4.1rc1", "1.4.1.post1", "2!1.4.1", "1.4.1+local", "not-a-version"):
             with self.subTest(requested=requested):
                 self.assertEqual(
                     problems(

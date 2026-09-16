@@ -4,19 +4,59 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest import mock
 
+import yaml
+
 from code_mower import cli, init, package, release_readiness
 from code_mower.config import load_config
+from code_mower.context_graph_lifecycle import _refuse_broad_exposure
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class GraphifyGuidanceTests(unittest.TestCase):
+    def test_documented_provider_paths_stay_outside_selected_checkout(self):
+        doc = (ROOT / "docs/graphify-setup.md").read_text()
+        blocks = re.findall(r"```bash\n(.*?)```", doc, re.S)
+        paths = next(block for block in blocks if 'GRAPHIFY_ROOT=' in block)
+        acquisition = next(block for block in blocks if '-m venv' in block)
+        build = next(block for block in blocks if 'context-graph build' in block)
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = Path(tmp) / "checkout"
+            repository.mkdir()
+            provider_root = Path(tmp) / "operator owned" / "graphify-0.9.58"
+            script = paths.replace('/absolute/operator-owned/graphify-0.9.58', str(provider_root))
+            script += '\nprintf "%s\\n" "$GRAPHIFY_ROOT" "$GRAPHIFY_ENV" "$GRAPHIFY_WHEELS" "$GRAPHIFY_INDEXER"\n'
+            result = subprocess.run(
+                ["bash", "-c", script], cwd=repository,
+                capture_output=True, text=True, check=True,
+            )
+            root, environment, wheels, indexer = map(Path, result.stdout.splitlines())
+            self.assertEqual(root, provider_root)
+            self.assertEqual(environment, root / "venv")
+            self.assertEqual(wheels, root / "wheels")
+            self.assertEqual(indexer, environment / "bin" / "graphify")
+            for path in (root, environment, wheels, indexer):
+                self.assertTrue(path.is_absolute())
+                _refuse_broad_exposure(path, repository=repository)
+            self.assertEqual(list(repository.iterdir()), [])
+        self.assertIn('python3.12 -m venv "$GRAPHIFY_ENV"', acquisition)
+        self.assertIn('--dest "$GRAPHIFY_WHEELS"', acquisition)
+        self.assertIn('"$GRAPHIFY_ENV/bin/python" - "$GRAPHIFY_WHEELS"', acquisition)
+        self.assertIn('wheel, = Path(sys.argv[1]).glob', acquisition)
+        self.assertLess(acquisition.index('digest mismatch'), acquisition.index('pip --isolated install'))
+        self.assertNotIn('context-graph', acquisition)
+        self.assertNotIn('-m pip', build)
+        self.assertIn('--indexer "$GRAPHIFY_INDEXER"', build)
+        self.assertIn('--pin-file "$GRAPHIFY_ROOT/pin.json"', build)
+        self.assertIn('--revision "$GRAPHIFY_REVISION"', build)
+
     def test_opt_in_changes_only_guidance(self):
         config = load_config(package.packaged_starter_config_path())
         baseline = init.render_init_plan(config).data
@@ -51,6 +91,36 @@ class GraphifyGuidanceTests(unittest.TestCase):
             self.assertIn(f'test "$(git rev-list -n 1 {tag})" = "$RELEASE_SHA"', assertions)
             self.assertIn(f'test -s "$RELEASE_CHECKOUT/docs/{tag.replace(".", "")}-release-notes.md"', assertions)
             self.assertNotIn("v1.4.0", "\n".join(assertions))
+
+
+class LegacyProvenanceGuidanceTests(unittest.TestCase):
+    def test_pr_workflow_emits_only_skipped_guidance_without_trusted_inputs(self):
+        template = (ROOT / "templates/workflows/builder-provenance.yml.j2").read_text()
+        workflow = yaml.safe_load(template)
+        self.assertEqual(workflow[True], {"pull_request": {
+            "types": ["opened", "edited", "synchronize", "reopened", "ready_for_review"],
+        }})
+        steps = workflow["jobs"]["lineage-guidance"]["steps"]
+        self.assertEqual(len(steps), 2)
+        record, upload = steps
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # No package install, PR payload, credential or lineage environment.
+            result = subprocess.run(
+                ["bash", "-c", record["run"]], cwd=root, env={"PATH": os.defpath},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            artifact = root / upload["with"]["path"]
+            payload = json.loads(artifact.read_text())
+            self.assertEqual(payload["mode"], "builder-provenance-guidance")
+            self.assertEqual(payload["status"], "skipped")
+            self.assertIn("builder-lineage-producer.yml.j2", payload["next_step"])
+            self.assertEqual([p for p in root.rglob('*') if p.is_file()], [artifact])
+            self.assertNotIn("event_type", payload)
+        self.assertEqual(upload["with"]["name"], "code-mower-builder-provenance-skipped")
+        self.assertIs(upload["with"]["include-hidden-files"], True)
+        self.assertEqual(upload["with"]["if-no-files-found"], "error")
 
 
 class InstalledPromptPackTests(unittest.TestCase):

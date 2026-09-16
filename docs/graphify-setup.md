@@ -24,27 +24,58 @@ See the [evaluation and thresholds](graphify-evaluation.md). `graphify.net` is
 not an interchangeable service. Never install an unpinned newer provider as
 part of a Code Mower upgrade.
 
-Acquisition requires an explicit operator decision and network access. Download
-only the wheel into a new directory, then verify before installing:
+Acquisition requires an explicit operator decision and network access. Choose a
+fresh, absolute, operator-owned location **outside the target checkout and all
+other Git repositories**. Replace the example below with that location; a
+Git-ignored directory inside the checkout is still refused by containment.
+Keep these absolute paths in the same shell for acquisition and the later build:
 
 ```bash
-python3.12 -m venv .graphify-env
-.graphify-env/bin/python -m pip --isolated download --no-cache-dir \
+GRAPHIFY_ROOT="/absolute/operator-owned/graphify-0.9.58"
+GRAPHIFY_ENV="$GRAPHIFY_ROOT/venv"
+GRAPHIFY_WHEELS="$GRAPHIFY_ROOT/wheels"
+GRAPHIFY_INDEXER="$GRAPHIFY_ENV/bin/graphify"
+```
+
+Download only the wheel, then verify before installing:
+
+```bash
+set -euo pipefail
+python3.12 -m venv "$GRAPHIFY_ENV"
+"$GRAPHIFY_ENV/bin/python" -m pip --isolated download --no-cache-dir \
   --index-url https://pypi.org/simple/ --only-binary=:all: --no-deps \
-  --dest .graphify-wheels graphifyy==0.9.58
-.graphify-env/bin/python - <<'PY'
+  --dest "$GRAPHIFY_WHEELS" graphifyy==0.9.58
+"$GRAPHIFY_ENV/bin/python" - "$GRAPHIFY_WHEELS" <<'PY'
 from pathlib import Path
 import hashlib
-wheel, = Path('.graphify-wheels').glob('graphifyy-0.9.58-*.whl')
+import sys
+wheel, = Path(sys.argv[1]).glob('graphifyy-0.9.58-*.whl')
 expected = 'e239803288e91c723d6e30540860bd6d5a1dc3f0914b9fc1104b0233e98aaeb8'
 if hashlib.sha256(wheel.read_bytes()).hexdigest() != expected:
     raise SystemExit('Graphify wheel digest mismatch; stop before installation')
 PY
+"$GRAPHIFY_ENV/bin/python" -m pip --isolated install --no-cache-dir \
+  --index-url https://pypi.org/simple/ \
+  "$GRAPHIFY_WHEELS"/graphifyy-0.9.58-*.whl
 ```
 
-After that check, install that exact local wheel in the separate environment
-with dependency downloads restricted to canonical PyPI. Keep this environment,
-the downloaded wheel, graph state and all provider output out of tracked source.
+This installs the verified local wheel in the separate environment, with
+dependency downloads restricted to canonical PyPI. Keep this environment,
+the downloaded wheel, graph state and all provider output outside Git repositories.
+
+## Separate contained offline build
+
+Save the [accepted pin JSON](context-graph-lifecycle.md#commands) as
+`$GRAPHIFY_ROOT/pin.json`. From the selected repository, in the same shell, bind
+the immutable tracked commit and carry the absolute indexer path into the build:
+
+```bash
+set -euo pipefail
+GRAPHIFY_REVISION="$(git rev-parse HEAD)"
+code-mower context-graph build --pin-file "$GRAPHIFY_ROOT/pin.json" \
+  --indexer "$GRAPHIFY_INDEXER" --revision "$GRAPHIFY_REVISION"
+```
+
 Do not run `graphify` against the working checkout: explicit builds go through
 Code Mower's [contained lifecycle](context-graph-lifecycle.md), using the exact
 wheel pin and immutable tracked commit. Code-only/no-cluster extraction is the
