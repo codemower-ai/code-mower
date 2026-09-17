@@ -1765,10 +1765,16 @@ class CreationOrigin:
     The issue number never reaches published metadata. It names the unit of work
     whose single created pull request may be attributed, so two rounds launched
     against different issues can never share one supervised creation record.
+
+    ``pull_frontier`` is the highest pull request number observed in the
+    repository before the writer was launched. Together with the targeted issue
+    it fixes the number below which no pull request can have been created by
+    this round, so a pre-existing pull request can never be claimed as created.
     """
     repo: str
     issue_number: int
     base_sha: str
+    pull_frontier: int
 
     def __post_init__(self) -> None:
         from .builder_lineage_producer import ProducerRefusal
@@ -1781,8 +1787,27 @@ class CreationOrigin:
             raise ProducerRefusal("Exact OWNER/REPO creation origin required.")
         if type(self.issue_number) is not int or self.issue_number <= 0:
             raise ProducerRefusal("Exact positive issue number required.")
+        if type(self.pull_frontier) is not int or self.pull_frontier < 0:
+            raise ProducerRefusal("Observed pre-launch pull request frontier required.")
         if not re.fullmatch(r"[0-9a-f]{40}", self.base_sha):
             raise ProducerRefusal("Immutable 40-hex starting base required.")
+
+    @property
+    def creation_floor(self) -> int:
+        """The exclusive lower bound on a pull request number this round created.
+
+        Both inputs are observed before launch: the targeted issue already held
+        its number, and every pull request that existed held one at or below the
+        frontier. GitHub's monotone per-repository numbering therefore places
+        anything created during the round strictly above both.
+        """
+        return max(self.pull_frontier, self.issue_number)
+
+    @classmethod
+    def for_launch(cls, io, repo, issue_number, base_sha):
+        """Bind a round to the frontier read before its writer is launched."""
+        validated = cls(repo, issue_number, base_sha, 0)
+        return cls(validated.repo, issue_number, base_sha, io.pull_frontier(validated.repo))
 
 
 def _creation_repository(checkout):
@@ -1835,6 +1860,13 @@ def discover_created_pull(io, origin, branch, head_sha):
     Ambiguity fails closed in both directions: no pull request for the observed
     branch, or more than one ever opened from it, leaves this round unable to
     name what it created.
+
+    A branch that already had a pull request before launch is not this round's
+    creation either, even when its head descends from the launch base: a writer
+    that checked out someone else's work would otherwise mint a creation episode
+    naming only this lane and drop every earlier contributor from the chain. The
+    pre-launch frontier in ``origin`` is what makes that case decidable, so a
+    pull request numbered at or below it is refused rather than attributed.
     """
     from .builder_lineage import Target
     from .builder_lineage_producer import ProducerRefusal
@@ -1851,6 +1883,8 @@ def discover_created_pull(io, origin, branch, head_sha):
                      entry["head"].get("ref"), entry["head"].get("sha"))
     if (created.repo, created.branch, created.head_sha) != (origin.repo, branch, head_sha):
         raise ProducerRefusal("Created pull request differs from the observed branch head.")
+    if created.pr_number <= origin.creation_floor:
+        raise ProducerRefusal("Pull request existed before the supervised creation round.")
     return created
 
 
@@ -1883,7 +1917,8 @@ class LineageCreationRound:
     def _binding(self):
         return dict(round_id=self.round_id, writer=self.writer,
                     origin=dict(repo=self.origin.repo, issue_number=self.origin.issue_number,
-                                base_sha=self.origin.base_sha),
+                                base_sha=self.origin.base_sha,
+                                pull_frontier=self.origin.pull_frontier),
                     transport=self.transport.__dict__)
 
     def stop_requested(self):
@@ -1919,6 +1954,10 @@ def lineage_creation(round_observer, created, base_sha):
     observed = round_observer.observed()
     if (created.repo, base_sha) != (observed.origin.repo, observed.origin.base_sha):
         raise ProducerRefusal("Created pull request is outside the supervised creation origin.")
+    # Discovery already refuses a pre-existing pull request; minting refuses it
+    # again, so no caller can hand this contract a pull request it did not create.
+    if created.pr_number <= observed.origin.creation_floor:
+        raise ProducerRefusal("Pull request existed before the supervised creation round.")
     return _delivery(Episode(sequence=1, repo=created.repo, pr_number=created.pr_number,
         branch=created.branch, source_lane=observed.transport.lane,
         destination_lane=observed.transport.lane, expected_head=base_sha,
@@ -1945,13 +1984,15 @@ def _start_creation_round(args, *, io=None, runtime_observation=None):
     if args.lineage_before or args.lineage_handoff:
         raise LaneDeliveryError("Creation lineage has no pre-existing pull request target")
     config, identity, authorities = trusted_policy(args.cwd, args.lineage_base)
-    origin = CreationOrigin(args.writer_repo, args.lineage_issue, args.lineage_base)
     transport = Transport(args.writer_lane, "devin_cli" if args.writer_lane == "devin" else args.writer_lane,
                           args.writer_lane + "_cli", "local_cli")
     prefixes = [prefix for prefix, lane in identity.branch_prefixes if lane == transport.lane]
     if not prefixes:
         raise LaneDeliveryError("Creation requires a configured branch prefix for this lane")
     io = io if io is not None else GitHub()
+    # Read before registration, so the frontier this round is bound to is always
+    # older than anything the supervised writer can open.
+    origin = CreationOrigin.for_launch(io, args.writer_repo, args.lineage_issue, args.lineage_base)
     if runtime_observation is None:
         def runtime_observation():
             lane_runtime.prepare(args.cwd, sys.executable)

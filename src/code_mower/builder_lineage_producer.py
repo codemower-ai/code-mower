@@ -358,6 +358,22 @@ class GitHub:
             raise ProducerRefusal("Complete readable created pull request list required.")
         return raw
 
+    def pull_frontier(self, repo):
+        """The highest pull request number this repository had at the time of the read.
+
+        GitHub allocates issue and pull request numbers from one monotone
+        per-repository sequence, so a pull request opened after this read is
+        numbered strictly above every pull request that already existed. Read
+        before a creation round launches, this is the independent evidence that
+        separates a pull request the round created from one it merely found.
+        """
+        raw = self._json(f"repos/{repo}/pulls?state=all&sort=created&direction=desc&per_page=100")
+        if not isinstance(raw, list) or any(not isinstance(item, dict)
+                                            or type(item.get("number")) is not int for item in raw):
+            raise ProducerRefusal("Readable pull request frontier required.")
+        # The newest page already contains the maximum; older pages cannot exceed it.
+        return max((item["number"] for item in raw), default=0)
+
     def post(self, target, body):
         self._json(f"repos/{target.repo}/issues/{target.pr_number}/comments",
                    "--method", "POST", "-f", "body=" + body)

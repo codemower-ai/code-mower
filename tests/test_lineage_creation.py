@@ -20,7 +20,11 @@ from code_mower.builder_lineage_producer import ProducerRefusal, ProducerStore, 
 from lineage_producer_fixtures import MemoryStore, episode as handoff_episode, sha, target as pr_target
 
 REPO = "owner/repo"
-PR = 77
+ISSUE = 1020
+# The frontier is the highest pull request number that existed before launch, so
+# the created pull request is the first number the repository allocated after it.
+FRONTIER = 1020
+PR = 1021
 BRANCH = "claude/1020-creation"
 BASE = sha(9)
 CREATED = sha(10)
@@ -50,7 +54,8 @@ def creation_episode(**changes):
 
 
 def origin(**changes):
-    return lane_delivery.CreationOrigin(**(dict(repo=REPO, issue_number=1020, base_sha=BASE) | changes))
+    return lane_delivery.CreationOrigin(**(dict(repo=REPO, issue_number=ISSUE, base_sha=BASE,
+                                                pull_frontier=FRONTIER) | changes))
 
 
 def pull_payload(**changes):
@@ -138,13 +143,19 @@ class CreationContractTests(unittest.TestCase):
 class FakeGitHub:
     """Finite in-memory GitHub transport; every producer validation stays real."""
 
-    def __init__(self, *, pulls=None, target=None, labels=("builder:claude",), author="owner-login"):
+    def __init__(self, *, pulls=None, target=None, labels=("builder:claude",), author="owner-login",
+                 frontier=FRONTIER):
         self.target = target if target is not None else created_target()
         self.pulls = [pull_payload()] if pulls is None else pulls
         self.current_labels = tuple(labels)
         self.author = author
+        self.frontier = frontier
         self.public = []
         self.effects = []
+
+    def pull_frontier(self, repo):
+        self.effects.append(("frontier", repo))
+        return self.frontier
 
     def pulls_for_branch(self, repo, branch):
         self.effects.append(("pulls", repo, branch))
@@ -276,6 +287,45 @@ class CreationDeliveryTests(unittest.TestCase):
                 with self.assertRaises(ContractError):
                     lane_delivery.discover_created_pull(io, origin(), BRANCH, head)
 
+    def test_a_pull_request_that_existed_before_launch_is_never_a_creation(self):
+        """A writer may check out an existing PR branch that descends from the base.
+
+        Branch, head and ancestry all look exactly like a creation in that case,
+        so only the pre-launch frontier separates the two. Attributing it would
+        publish a chain naming this lane alone and silently drop every earlier
+        contributor from later reviewer-exclusion checks.
+        """
+        for reason, binding, number in (
+                ("opened before this round", origin(), FRONTIER),
+                ("opened before the targeted issue", origin(pull_frontier=3), ISSUE - 1),
+                ("frontier moved past the round", origin(pull_frontier=PR), PR),
+        ):
+            with self.subTest(reason=reason):
+                io = FakeGitHub(pulls=[pull_payload(number=number)])
+                with self.assertRaises(ProducerRefusal):
+                    lane_delivery.discover_created_pull(io, binding, BRANCH, CREATED)
+        # An empty repository frontier still floors the round at the issue number.
+        self.assertEqual(origin(pull_frontier=0).creation_floor, ISSUE)
+        self.assertEqual(origin().creation_floor, FRONTIER)
+        io = FakeGitHub()
+        self.assertEqual(lane_delivery.discover_created_pull(io, origin(), BRANCH, CREATED),
+                         created_target())
+
+    def test_minting_refuses_a_pre_existing_pull_request_handed_in_directly(self):
+        observer = self.round_fixture(round_id="creation-round-pre-existing")
+        with self.assertRaises(ProducerRefusal):
+            lane_delivery.lineage_creation(observer, created_target(pr_number=FRONTIER), BASE)
+        self.assertEqual(lane_delivery.lineage_creation(observer, created_target(), BASE)
+                         .episode.pr_number, PR)
+
+    def test_for_launch_binds_the_frontier_observed_before_registration(self):
+        io = FakeGitHub(frontier=1000)
+        bound = lane_delivery.CreationOrigin.for_launch(io, "Owner/Repo", ISSUE, BASE)
+        self.assertEqual((bound.repo, bound.pull_frontier), (REPO, 1000))
+        self.assertEqual(io.effects, [("frontier", REPO)])
+        with self.assertRaises(ProducerRefusal):
+            lane_delivery.CreationOrigin.for_launch(io, "owner", ISSUE, BASE)
+
     def test_observed_branch_requires_descent_from_the_immutable_base(self):
         import subprocess
         outputs = {("branch", "--show-current"): BRANCH, ("rev-parse", "HEAD"): CREATED}
@@ -304,7 +354,9 @@ class CreationDeliveryTests(unittest.TestCase):
     def test_creation_origin_refuses_incomplete_issue_bindings(self):
         for changes in (dict(repo="owner"), dict(repo=42), dict(issue_number=0),
                         dict(issue_number=True), dict(issue_number="1020"),
-                        dict(base_sha="deadbeef"), dict(base_sha=None)):
+                        dict(base_sha="deadbeef"), dict(base_sha=None),
+                        dict(pull_frontier=-1), dict(pull_frontier="1020"),
+                        dict(pull_frontier=None), dict(pull_frontier=True)):
             with self.subTest(changes=changes):
                 with self.assertRaises(ProducerRefusal):
                     origin(**changes)
@@ -377,6 +429,10 @@ class CreationLauncherTests(unittest.TestCase):
         io = FakeGitHub()
         observer, finish = lane_delivery._start_creation_round(
             self.args(), io=io, runtime_observation=lambda: "ready")
+        # The frontier is observed before the round is registered, never after
+        # the writer has had a chance to open anything.
+        self.assertEqual(io.effects[0], ("frontier", REPO))
+        self.assertEqual(observer.origin.pull_frontier, FRONTIER)
         observer.started(31, 31)
         observer.finish(quiescent=True)
         finish(self.result())
@@ -410,6 +466,19 @@ class CreationLauncherTests(unittest.TestCase):
             with self.assertRaises(lane_delivery.LaneDeliveryError):
                 finish(self.result())
         self.assertNotIn("post", io.effects)
+
+    def test_launcher_refuses_a_pull_request_that_existed_before_launch(self):
+        """End to end: an existing PR on the checked-out branch is not a creation."""
+        io = FakeGitHub(pulls=[pull_payload(number=FRONTIER)],
+                        target=created_target(pr_number=FRONTIER))
+        observer, finish = lane_delivery._start_creation_round(
+            self.args(), io=io, runtime_observation=lambda: "ready")
+        observer.started(34, 34)
+        observer.finish(quiescent=True)
+        with self.assertRaises(ProducerRefusal):
+            finish(self.result())
+        self.assertNotIn("post", io.effects)
+        self.attribution.assert_not_called()
 
     def test_launcher_refuses_incomplete_or_contradictory_selections(self):
         for reason, changes in (
