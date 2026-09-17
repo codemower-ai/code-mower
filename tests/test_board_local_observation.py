@@ -15,6 +15,7 @@ from code_mower import builder_lineage, cli, session_current
 from code_mower.board_local_observation import (
     LocalEvidenceObservation,
     LocalObservationInput,
+    LocalPolicyObservation,
     LocalProcessObservation,
     LocalRunObservation,
     LocalWorkObservation,
@@ -347,6 +348,15 @@ class LocalBoardObservationTests(unittest.TestCase):
                 current_session_resolver=active_resolver,
             )
 
+            assert record["work"]["stage"] != "ready_to_merge"
+            # Missing policy is not evidence that no human requirement applies.
+            from dataclasses import replace
+            record = observe_local_work(
+                repository=REPOSITORY, start=root,
+                snapshot=LocalObservationInput(work=replace(
+                    work, policy=LocalPolicyObservation(exact, NOW),
+                )), now=NOW, current_session_resolver=active_resolver,
+            )
             assert record["work"]["stage"] == "ready_to_merge"
             assert record["work"]["reasons"] == ["ready_to_merge"]
             for kind in ("review", "ci", "gate"):

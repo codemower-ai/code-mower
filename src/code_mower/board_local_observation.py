@@ -627,7 +627,8 @@ def _no_work(
 
 
 def _derive_state(
-    runs: Sequence[dict[str, Any]], evidence: Mapping[str, Mapping[str, Any]], reasons: set[str]
+    runs: Sequence[dict[str, Any]], evidence: Mapping[str, Mapping[str, Any]], reasons: set[str],
+    *, policy_current: bool,
 ) -> str:
     # A review/merge fact does not erase an independently observed provider wait
     # or failure (a completed implementation can still have an active writer).
@@ -669,6 +670,7 @@ def _derive_state(
         and evidence["ci"]["coverage"] == "full"
         and evidence["gate"]["state"] == "pass"
         and evidence["merge"]["state"] == "ready"
+        and policy_current
         and not reasons
         and not phases & (_LIVE_PHASES | {"assigned", "dispatched"})
     ):
@@ -727,6 +729,7 @@ def _produce_work(
     reasons: set[str] = set()
     if not _fresh(work.observed_at, now, stale_after_seconds):
         reasons.add("stale_observation")
+    policy_current = False
     if work.policy is not None:
         policy = work.policy
         if not isinstance(policy, LocalPolicyObservation):
@@ -749,6 +752,7 @@ def _produce_work(
         elif not fresh:
             reasons.add("stale_observation")
         else:
+            policy_current = True
             reasons.update(policy.reasons)
 
     rendered_runs: list[dict[str, Any]] = []
@@ -924,7 +928,7 @@ def _produce_work(
                 else None,
             }
 
-    stage = _derive_state(rendered_runs, evidence, reasons)
+    stage = _derive_state(rendered_runs, evidence, reasons, policy_current=policy_current)
     if work.binding.pr_number is not None and evidence["review_request"]["state"] == "requested":
         if evidence["review"]["state"] in {"unknown", "not_started"}:
             reasons.add("review_requested")

@@ -2106,11 +2106,11 @@ _BOARD_HTML = """<!doctype html>
   <div class="sr" id="announce" role="status" aria-live="polite" aria-atomic="true"></div>
   <main>
     <section class="view" id="panel-now" role="tabpanel" aria-labelledby="tab-now" tabindex="0">
-      <div class="summary" id="summary"></div>
       <!-- Work first: current work, its evidence, and who is responsible come
            before aggregate productivity and release history, so the first
            viewport answers "what needs doing now", not "what happened". -->
       <section class="card"><h2 id="work-heading">Work</h2><div id="worklist"></div></section>
+      <div class="summary" id="summary"></div>
       <section class="card"><h2>Work Now</h2><div class="rows" id="worknow"></div></section>
       <section class="card"><h2>Participants</h2><div class="rows" id="participants"></div></section>
       <section class="card"><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
@@ -3122,8 +3122,11 @@ _BOARD_HTML = """<!doctype html>
         evidenceItem("assignment", "assignment", evidence.assignment, sources[text(evidence.assignment?.source_id)], {note: "An assignment is a record of intent, not of execution."})
       ];
       if (!["approval_required", "user_input_required", "human_review_required"].some(reason => reasons.includes(reason))) {
-        policyItems.push(evidenceItem("human_policy", "human policy", null, null,
-          {note: "No human requirement is recorded; a passing audit does not establish policy approval."}));
+        const policy = sources.policyobs;
+        const observed = text(policy?.freshness) === "fresh" && text(policy?.coverage) === "complete";
+        policyItems.push(evidenceItem("human_policy", "human policy",
+          observed ? {state: "no recorded requirement"} : null, policy,
+          {note: "A passing audit does not establish policy approval. Only an explicit current policy observation can establish that no human requirement was recorded."}));
       }
       for (const reason of ["approval_required", "user_input_required", "human_review_required"]) {
         if (reasons.includes(reason)) {
@@ -3483,7 +3486,7 @@ _BOARD_HTML = """<!doctype html>
     // whether the snapshot carrying it was confirmed are facts about the
     // payload, and an idle claim depends on both.
     function workRoute(work, freshness) {
-      // Recorded blocking routes always win. With no route, offer a read-only
+      // Recorded blocking routes always win. With no route, offer an observed
       // follow-up from the observed phase; never invent a policy requirement.
       if (text(work.primary?.action) && work.primary.action !== "none") return {
         action: lookup(ACTION_LABELS, work.primary.action, "no next action recorded"),

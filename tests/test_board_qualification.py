@@ -89,13 +89,15 @@ class BoardQualificationTests(unittest.TestCase):
                     self.assertEqual(record["work"]["evidence"][kind]["head_sha"], item.binding.head_sha)
 
     def test_passes_require_full_ci_and_independent_human_policy(self):
-        item = replace(self.work, runs=(complete(self.work),), evidence=tuple(
+        item = replace(self.work, runs=(complete(self.work),),
+                       policy=LocalPolicyObservation(self.work.binding, NOW), evidence=tuple(
             evidence(self.work, kind, state) for kind, state in (
                 ("review", "pass"), ("ci", "pass"), ("gate", "pass"), ("merge", "ready"))))
         result = project(self.root, LocalObservationInput(work=item))["work"]
         self.assertEqual(result["stage"], "ready_to_merge")
         self.assertNotIn("human_review_required", result["reasons"])
         for changed in (
+            replace(item, policy=None),
             replace(item, evidence=tuple(replace(e, coverage="sampled") if e.kind == "ci" else e
                                          for e in item.evidence)),
             replace(item, policy=LocalPolicyObservation(item.binding, NOW, ("human_review_required",))),
