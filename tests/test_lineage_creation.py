@@ -305,6 +305,63 @@ class CreationDeliveryTests(unittest.TestCase):
                     lane_delivery.lineage_creation(observer, other, BASE)
         self.assertEqual(lane_delivery.lineage_creation(observer, created, BASE).episode.pr_number, PR)
 
+    def test_a_round_that_created_nothing_on_purpose_has_nothing_to_attribute(self):
+        """A bounded declaration plus an intact reservation is a no-creation round.
+
+        The provider may answer an issue with "no code change is needed" or
+        "this needs the owner" instead of a pull request. Nothing was created
+        then, so there is nothing to discover and nothing to publish — and the
+        runner brokers that declaration only from a provider that exited zero,
+        so refusing would spend the unit's one explanation on a lineage error.
+
+        Both halves are required. The declaration alone is the provider's own
+        claim, so the repository has to agree the branch this round reserved is
+        still exactly as unused as it was before launch; and the reservation
+        alone cannot tell a pull request that was never opened from one a failed
+        read cannot see, so an absent declaration still refuses.
+        """
+        checkout = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, checkout, ignore_errors=True)
+        declaration = checkout / lane_delivery.LANE_OUTCOME_FILE
+        declaration.parent.mkdir(parents=True)
+
+        def declined(written, io=None):
+            declaration.unlink(missing_ok=True)
+            if written is not None:
+                declaration.write_text(written, encoding="utf-8")
+            return lane_delivery.declined_creation(
+                io if io is not None else FakeGitHub(pulls=[], refs={}), checkout, origin())
+
+        for reason, written in (
+                ("no declaration at all", None),
+                ("an unreadable declaration", "{"),
+                ("a declaration that is not an object", '"no_change"'),
+                ("no outcome at all", '{"summary": "nothing to change"}'),
+                ("an outcome this contract never accepts", '{"outcome": "delivered"}'),
+                ("a delivery reported as a declaration", '{"outcome": "pr_opened"}')):
+            with self.subTest(reason=reason):
+                self.assertFalse(declined(written))
+        for reason, written in (
+                ("no change", '{"outcome": "no_change", "summary": "nothing to change"}'),
+                ("owner action", '{"outcome": "owner_action", "summary": "needs a credential"}'),
+                # The summary is the runner's to validate: it posts the comment
+                # and applies the label, and voids a declaration without one.
+                # Re-deciding that here could only disagree with it.
+                ("an outcome whose summary the runner will void", '{"outcome": "no_change"}')):
+            with self.subTest(reason=reason):
+                self.assertTrue(declined(written))
+        # Whatever it declared, a round that pushed the reserved branch or
+        # opened a pull request from it created something, and goes back through
+        # discovery and publication unchanged.
+        bounded = '{"outcome": "no_change", "summary": "nothing to change"}'
+        for reason, io in (
+                ("a pull request on the reserved branch", FakeGitHub(refs={})),
+                ("a closed pull request on it", FakeGitHub(pulls=[pull_payload(state="closed")], refs={})),
+                ("the reserved branch pushed", FakeGitHub(pulls=[], refs={BRANCH: CREATED}))):
+            with self.subTest(reason=reason):
+                self.assertFalse(declined(bounded, io))
+        self.assertTrue(declined(bounded, FakeGitHub(pulls=[], refs={"claude/other": CREATED})))
+
     def test_minting_refuses_a_pull_request_this_round_never_discovered(self):
         observer = self.round_fixture(round_id="creation-round-unbound")
         with self.assertRaises(ProducerRefusal):
@@ -734,6 +791,62 @@ class CreationLauncherTests(unittest.TestCase):
                 finish(self.result())
         self.assertNotIn("post", io.effects)
         self.attribution.assert_not_called()
+
+    def test_launcher_keeps_a_bounded_no_creation_outcome_deliverable(self):
+        """A clean exit that created nothing must stay a clean exit.
+
+        The runner brokers a bounded declaration only from a provider that
+        exited zero and was not killed, and applies ``needs-owner`` on the same
+        evidence. Raising here because no pull request exists would take that
+        exit code with it, and the unit would be reported as undelivered rather
+        than carrying the explanation the provider actually wrote.
+        """
+        checkout = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, checkout, ignore_errors=True)
+        declaration = checkout / lane_delivery.LANE_OUTCOME_FILE
+        declaration.parent.mkdir(parents=True)
+        declaration.write_text('{"outcome": "owner_action", "summary": "needs a credential"}',
+                               encoding="utf-8")
+        io = self.unused()
+        observer, finish = lane_delivery._start_creation_round(
+            self.args(cwd=checkout), io=io, runtime_observation=lambda: "ready")
+        observer.started(36, 36)
+        observer.finish(quiescent=True)
+        # Nothing was created, so the reservation this round took before launch
+        # still holds, and the repository is what confirms it.
+        self.assertIsNone(finish(self.result()))
+        self.assertEqual(io.effects[-2:], [("pulls", REPO, BRANCH), ("ref", REPO, BRANCH)])
+        self.assertNotIn("post", io.effects)
+        self.attribution.assert_not_called()
+        self.assertIsNone(MemoryStore.records[
+            (observer.control.store.root, observer.control.key)].get("lineage_created"))
+
+    def test_launcher_still_attributes_a_creation_that_declared_otherwise(self):
+        """A declaration cannot excuse a round out of attributing what it created.
+
+        The declaration is only ever believed while the repository agrees the
+        reserved branch is untouched. A writer that pushed it and opened a pull
+        request delivered, whatever it wrote about itself, and the creation is
+        published exactly as it is without one.
+        """
+        checkout = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, checkout, ignore_errors=True)
+        declaration = checkout / lane_delivery.LANE_OUTCOME_FILE
+        declaration.parent.mkdir(parents=True)
+        declaration.write_text('{"outcome": "no_change", "summary": "nothing to change"}',
+                               encoding="utf-8")
+        io = self.unused()
+        observer, finish = lane_delivery._start_creation_round(
+            self.args(cwd=checkout), io=io, runtime_observation=lambda: "ready")
+        observer.started(37, 37)
+        observer.finish(quiescent=True)
+        io.writer_created()
+        finish(self.result())
+        self.assertIn("post", io.effects)
+        self.assertEqual(MemoryStore.records[(observer.control.store.root, observer.control.key)]
+                         ["lineage_created"],
+                         dict(repo=REPO, pr_number=PR, branch=BRANCH, head_sha=CREATED))
+        self.assertEqual(self.attribution.call_args.args[0].chain.episodes[0].kind, "creation")
 
     def test_launcher_refuses_incomplete_or_contradictory_selections(self):
         for reason, changes in (

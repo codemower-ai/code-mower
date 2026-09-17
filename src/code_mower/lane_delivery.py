@@ -82,6 +82,13 @@ DELIVERING_TRANSITIONS = frozenset(
 #: Bounded outcomes a unit may declare when it produced no new PR/head state.
 DECLARED_OUTCOMES = frozenset({"", TRANSITION_NO_CHANGE, TRANSITION_OWNER_ACTION})
 
+#: Where a provider writes that bounded declaration, relative to its checkout.
+#: The runner owns the declaration end to end -- it validates the summary,
+#: posts the comment and applies the owner label -- so this path exists here
+#: only so a supervised creation round can tell "created nothing on purpose"
+#: from "created nothing and failed". ``tests`` pin it against every runner copy.
+LANE_OUTCOME_FILE = Path(".code-mower/lane-outcome.json")
+
 OWNER_ACTION_LABEL = "needs-owner"
 
 #: Supervisor exit codes. 124 matches coreutils `timeout` so existing runner
@@ -2140,6 +2147,55 @@ def lineage_creation(round_observer, created, base_sha):
         observed.writer, observed.round_id, observed.transport)
 
 
+def declined_creation(io, checkout, origin):
+    """Whether a cleanly stopped round provably created nothing to attribute.
+
+    An issue-targeted round may legitimately end with no pull request at all:
+    the provider decides the right answer is that no code change is needed, or
+    that the unit needs the owner, writes the bounded declaration the runner
+    brokers, and stops. Discovery has nothing to find then, and refusing would
+    take the launcher's exit code down with it — the runner brokers a
+    declaration only from a provider that exited zero, so a refusal here would
+    spend the unit's one explanation, and an ``owner_action`` label, on a
+    supervisor error about missing lineage. This is the creation-side
+    counterpart of returning early when an existing pull request did not move.
+
+    Both halves are required, and each guards the other's failure mode.
+
+    The declaration alone is the provider's claim about itself, so the
+    repository has to agree: the branch reserved before launch must still have
+    no ref and no pull request, which is exactly the evidence
+    :func:`reserve_creation_branch` took before the writer existed. A round that
+    pushed that branch or opened a pull request created something, whatever it
+    declared, and goes back through discovery and publication unchanged.
+
+    The reservation alone is not enough either. A created pull request that a
+    failed or eventually-consistent read cannot see looks identical to one that
+    was never opened, and skipping on that reading would silently drop
+    attribution for real work. A provider that created a pull request does not
+    also declare that it created nothing, so the declaration is what separates
+    the two, and its absence still refuses exactly as before.
+
+    Only the declaration's enum is read. Whether it is brokered at all is the
+    runner's decision — it owns the comment and the label, and voids a
+    declaration whose summary is missing, blank, multi-line or over-long — and
+    re-deciding that here could only disagree with it.
+    """
+    from .builder_lineage_producer import ProducerRefusal
+    try:
+        declared = json.loads((Path(checkout) / LANE_OUTCOME_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(declared, dict) or declared.get("outcome") not in (
+            TRANSITION_NO_CHANGE, TRANSITION_OWNER_ACTION):
+        return False
+    try:
+        reserve_creation_branch(io, origin.repo, origin.branch)
+    except ProducerRefusal:
+        return False
+    return True
+
+
 def _start_creation_round(args, *, io=None, runtime_observation=None):
     """One launcher lifetime owns an issue-targeted round and its created PR.
 
@@ -2191,6 +2247,11 @@ def _start_creation_round(args, *, io=None, runtime_observation=None):
         observer.observed()
         if result.reason != "completed" or result.exit_code != 0:
             raise LaneDeliveryError("No completed supervised delivery")
+        # A round that provably created nothing has nothing to attribute, and
+        # publishing is not what it owes the unit: the runner's own snapshots
+        # and the bounded declaration decide it from here.
+        if declined_creation(io, observer.checkout, origin):
+            return
         branch, head_sha = observed_creation_branch(observer.checkout, origin)
         if not any(branch.lower().startswith(prefix) for prefix in prefixes):
             raise LaneDeliveryError("Created branch is outside this lane's configured prefixes")
