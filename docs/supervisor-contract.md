@@ -290,7 +290,9 @@ It stores only private bindings/input digests and closed outcomes, never input
 prose. Concurrent duplicates serialize on that reservation. A completed duplicate
 returns its saved outcome after fresh authorization; it does not poll or resend.
 This is a **receipt**, not current completion evidence; use `result` to collect
-current exact-head completion. Input changes under the same key are conflicts.
+current exact-head completion. A renewed live claim can retrieve the same saved
+receipt, which may carry the earlier claim expiry; use the renewed claim for
+further work. All other input changes under the same key are conflicts.
 Crashes before/after a send, timeouts, ambiguous delivery and failed outcome
 writes leave `mutation_uncertain` / `owner_action`. New keys, renewal, handoff,
 status and cancellation cannot blindly replay a pending mutation. There is no

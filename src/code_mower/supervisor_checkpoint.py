@@ -141,6 +141,14 @@ def _input(task, request):
     return value
 
 
+def _input_fingerprint(value):
+    private = asdict(value)
+    # A live renewal changes only expiry, not this claim's identity or authority.
+    # Validate the current claim on every call, but retain the same saved receipt.
+    del private["request"]["claim"]["expires_at"]
+    return digest(private)
+
+
 def operate(supervisor, action, claim, *, request_key):
     from .supervisor import _status, failure
 
@@ -153,11 +161,11 @@ def operate(supervisor, action, claim, *, request_key):
             record = locked.read()
             task = supervisor._check(record, claim, action, request_key=request_key)
             value = _input(task, request)
-            fingerprint = digest(asdict(value))
+            fingerprint = _input_fingerprint(value)
 
             def guard():
                 fresh = supervisor._check(record, claim, action, request_key=request_key)
-                if digest(asdict(_input(fresh, request))) != fingerprint:
+                if _input_fingerprint(_input(fresh, request)) != fingerprint:
                     raise SupervisorError("request_conflict")
                 if supervisor.builder.binding(fresh) != record["builder_binding"]:
                     raise SupervisorError("binding_mismatch")

@@ -107,6 +107,20 @@ class CheckpointTests(V2Case):
         done = self.supervisor.operate("result", claim)
         self.assertEqual(done["status"]["state"], "complete", done)
         self.assertFalse(done["status"]["merge_authority"])
+        budget = self.agent.calls[-1][0]["checkpoint_budget"]
+        self.assertEqual(budget, dict(round=1, remaining=dict(
+            clarification_answers=2, fix_requests=0, review_requests=0)))
+
+    def test_cancel_uses_exact_round_review_key_before_and_after_fix(self):
+        claim = self.started()
+        self.checkpoint(claim, "fix", "fix_1")
+        self.send(claim, "fix", "fix_1")
+        self.github.pr = replace(self.github.pr, head_sha="b" * 40)
+        self.complete(round=1, head_sha="b" * 40)
+        self.supervisor.operate("result", claim)
+        result = self.supervisor.operate("cancel", claim)
+        self.assertEqual(result["status"]["state"], "cancelled", result)
+        self.assertEqual(self.reviews.cancellations[-1], self.reviews.requests[-1])
 
     def test_waiting_for_approval_never_accepts_clarification(self):
         claim = self.started()
@@ -315,6 +329,20 @@ class CompatibilityTests(V2Case):
 
 
 class FenceTests(V2Case):
+    def test_renewed_live_claim_can_retrieve_same_saved_answer(self):
+        claim = self.started()
+        value = self.checkpoint(claim)
+        first = self.send(claim)
+        self.now += 60
+        renewed = self.supervisor.operate("renew", claim)["claim"]
+        self.assertGreater(renewed["expires_at"], claim["expires_at"])
+        self.queue.task = replace(self.queue.task, checkpoint_input=replace(value,
+            request=value.request | {"claim": renewed}))
+        with mock.patch.object(self.provider, "message", wraps=self.provider.message) as message:
+            self.assertEqual(self.send(renewed), first)
+            self.assertEqual(self.send(claim)["status"]["reason"], "binding_mismatch")
+            self.assertEqual(message.call_count, 0)
+
     def test_authorization_latency_cannot_outlive_claim_or_generation(self):
         claim = self.started()
         self.checkpoint(claim)

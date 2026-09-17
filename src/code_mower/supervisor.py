@@ -334,6 +334,11 @@ class Supervisor:
                        scope_digest=record["scope_digest"], phase=phase,
                        status=record["status"], target=record["target"], limits=limits,
                        plan=record["plan"])
+        if _version(record) == "v2":
+            request["checkpoint_budget"] = dict(round=record["round"], remaining={
+                name: limits[name] - record[name]
+                for name in ("clarification_answers", "fix_requests", "review_requests")
+            })
         try:
             decision = validate("decision", self.runtime.decide(task, request, timeout=limits["runtime_seconds"]))
         except Exception:
@@ -365,6 +370,10 @@ class Supervisor:
         if status["state"] == "complete":
             status.update(state="reviewing", next_action="result")
         return self._result(record | dict(status=status, target=None))
+
+    @staticmethod
+    def _review_key(record, claim):
+        return claim["token"] + ("-" + str(record["round"]) if _version(record) == "v2" else "")
 
     def admit(self, admission: dict) -> dict:
         version = _version(admission) if isinstance(admission, dict) else "v1"
@@ -518,7 +527,8 @@ class Supervisor:
                         self._check(record, claim, action)
                     if record["review_target"] is not None:
                         target = builder_lineage.Target.from_mapping(record["review_target"])
-                        writer = self.reviews.cancel(task, target, record["plan"]["reviewer"], key=claim["token"])
+                        writer = self.reviews.cancel(task, target, record["plan"]["reviewer"],
+                                                     key=self._review_key(record, claim))
                         if writer not in {"running", "suspended", "terminated", "unknown"}:
                             raise SupervisorError("invalid_contract")
                         record["status"]["review_writer"] = writer
@@ -599,7 +609,7 @@ class Supervisor:
                 record["review_requests"] += 1
             record.update(pending="review", review_target=record["target"])
             locked.write(record)
-            self.reviews.request(task, target, reviewer, key=claim["token"] + ("-" + str(record["round"]) if _version(record) == "v2" else ""))
+            self.reviews.request(task, target, reviewer, key=self._review_key(record, claim))
             self._check(record, claim, "result")
             record["pending"] = None
             status.update(state="reviewing", review="pending", review_writer="unknown", reason="none", next_action="result")
