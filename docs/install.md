@@ -1,8 +1,10 @@
 # Install And Bootstrap
 
-The v1.4.2 source candidate is not yet published or qualified. Pinned index
-commands below apply after publication; candidate checks use the verified
-artifact. Track acceptance in [#952](https://github.com/codemower-ai/code-mower/issues/952).
+v1.4.2 is published. The pinned index commands below install the current
+release; verify the exact command path and version after installing. Release
+evidence is on the
+[v1.4.2 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.4.2)
+and in the [v1.4.2 qualification record](v142-qualification.md).
 
 Code Mower requires Python 3.12 or newer. Use one install path per machine or
 agent, then verify the installed command before touching a repository.
@@ -21,6 +23,27 @@ add `--apply` to write reviewable setup files. See
 | Hosted agent, CI box, or minimal Linux VM | `uv tool install` | The machine already uses uv, lacks pipx, or should avoid changing shell startup files. |
 | Code Mower contributor checkout | editable venv | You are changing Code Mower itself and need tests against this checkout. |
 
+pipx and uv are the recommended paths because each keeps Code Mower and its
+dependencies in their own isolated environment, separate from system Python and
+from any other tool. Install the installer itself from its official
+documentation rather than from a copied shell snippet:
+
+- pipx: <https://pipx.pypa.io/stable/installation/>
+- uv: <https://docs.astral.sh/uv/getting-started/installation/>
+
+Code Mower does not publish, and you should not use, a
+`curl ... | sh` bootstrap for either installer.
+
+Confirm the installer is on `PATH` before installing Code Mower with it:
+
+```bash
+command -v pipx
+command -v uv
+```
+
+An empty result means that installer is not installed or not on `PATH` for this
+shell; fix that first rather than falling back to an ambient `pip install`.
+
 ## Cold Install Vs Upgrade
 
 A cold install means this machine does not already have the `code-mower`
@@ -31,6 +54,12 @@ package, then verify both the command path and version:
 command -v code-mower
 code-mower --version
 ```
+
+`command -v code-mower` must print the path belonging to the installer you
+chose, and `code-mower --version` must print `code-mower 1.4.2`. A version that
+does not match, or a path from a different installer, means an older command is
+still winning on `PATH`; resolve that before running anything against a
+repository.
 
 An upgrade means `code-mower` already exists. Before changing it, record the
 current command path and version, then choose whether this machine should keep
@@ -205,7 +234,8 @@ uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mowe
 code-mower --version
 ```
 
-Before PyPI has the candidate, rehearse the local wheel from a source checkout:
+To rehearse an unpublished build -- a release candidate, or a local source
+change -- install the local wheel from a source checkout instead of the index:
 
 ```bash
 scripts/dev-python -m build
@@ -347,3 +377,44 @@ wrappers or unattended dispatch.
 Then follow [Try Code Mower In 10 Minutes](try-in-10-minutes.md) for the first
 audited PR or [Build Loop In 30 Minutes](build-loop-in-30-minutes.md) after the
 reviewer gate is working.
+
+## What The Install Does And Does Not Change
+
+Five boundaries survive install, upgrade, and reinstall. Adoption feedback keeps
+returning to them, so they are stated here rather than only in the reference:
+
+- **`init --easy` previews and changes nothing.** `--apply` writes a reviewable
+  generated tree under `.code-mower.generated/`; it does not copy files into
+  your repository, start a provider, enable auto-merge, or upload anything. In a
+  checkout with no `code-mower.yml`, init falls back to the packaged starter
+  configuration and says so (`Config source: packaged starter ...`), rather than
+  failing.
+- **A session lease is local, explicit, and releasable.** An eligible
+  `code-mower session start` takes a mutating single-orchestrator lease with a
+  12-hour default. `code-mower session show --current` and `code-mower session
+  lease show` are read-only. A later process renews or releases the same lease
+  by passing the session ID: `code-mower session lease renew --session-id
+  SESSION_ID`, then `code-mower session lease release --session-id SESSION_ID`
+  after its writers stop. Use `--dry-run` for a preview or `--no-lease` for a
+  saved read-only brief.
+- **Headless authorization has real limits.** Codex's isolated campaign home is
+  keyring-only. On a Linux host with no desktop session, doctor reports that as
+  a fact and does not recommend a keyring login there; it offers the supported
+  routes instead -- dispatch from a host with a desktop-session keyring, run
+  `doctor --hosted-builders` or `--orchestrator-only`, or set
+  `CODE_MOWER_CAMPAIGN_AUTH_PROBE=0` to leave the lane capability-only. Isolated
+  non-keyring Codex campaign authentication is tracked separately in
+  [#983](https://github.com/codemower-ai/code-mower/issues/983).
+- **The Board is loopback-only and does not upload.** `code-mower board serve
+  --repo OWNER/REPO` binds a loopback host, redacts local paths by default, and
+  prints a URL that is local to that machine unless you build your own tunnel.
+  `code-mower board stop --repo OWNER/REPO` resolves exactly one known binding:
+  an ambiguous, duplicate, or contradicting repository/port/PID selection stops
+  nothing, and a port that a keepalive-managed service would immediately reclaim
+  is refused rather than reported as stopped. For a Board that outlives the
+  shell, see [Board Service Lifecycle](board-service-lifecycle.md); macOS is the
+  supported platform and every other platform refuses.
+- **Unselected integrations stay quiet.** Ordinary no-campaign adoption asks for
+  no campaign-auth owner action. Optional surfaces -- Coworker, Jira Cloud,
+  Graphify, cloud sharing -- are opt-in and add nothing to a default
+  Claude + Codex install until you select them.

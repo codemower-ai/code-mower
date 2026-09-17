@@ -199,7 +199,7 @@ they are not live provider authorization evidence. The [v1.3 qualification score
 live delivery evidence from frozen reference assessment. Public artifacts contain no
 private account identities, source text, source IDs, or credentials.
 
-## Later Graphify candidate
+## Local repository provider (Graphify)
 
 Use a discriminated connection kind: remote organization or local repository.
 The shared evidence contract preserves extracted/inferred/unknown confidence,
@@ -217,13 +217,16 @@ claims still resolve. Scope is a gate rather than a score: one out-of-scope
 citation rejects the packet. Stale or unknown revision binding fails that
 quality gate even when every citation resolves.
 
-The [Graphify candidate](https://github.com/codemower-ai/code-mower/issues/876)
-is **adopted as an optional, bounded local provider** behind this contract; see
-the [evaluation record](graphify-evaluation.md) for the decision, the pinned
-package record, and the conditions an implementing change must meet. Nothing is
-installed or required yet. Synthetic graph fixtures prove only the extension
-point; they do not establish Graphify compatibility or make it a v1.4.0
-dependency.
+Graphify was **adopted as an optional, bounded local provider** behind this
+contract under
+[#876](https://github.com/codemower-ai/code-mower/issues/876), and it shipped in
+`v1.4.1`. It remains optional: separately installed into an operator-owned
+environment, explicitly activated, and outside the base dependency set. Nothing
+is installed or required by a default Claude + Codex install. See
+[Optional Graphify Setup](graphify-setup.md) for the current path and the
+[evaluation record](graphify-evaluation.md) for the dated decision and pinned
+package record. Synthetic graph fixtures in the suite prove only the extension
+point; they are not provider compatibility evidence.
 
 The lifecycle around such a provider — exact pin, immutable tracked-file
 materialization, scrubbed environment, an OS sandbox that denies the provider

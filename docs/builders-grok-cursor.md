@@ -67,9 +67,10 @@ no builder sidecar. Use the separately staged
 and its required `target_json`, `policy_json`, `authority_json`, and
 `transport_json` inputs for reviewed integration by a trusted caller. That
 producer owns the explicit-input contract; do not derive these inputs from PR
-metadata or execute PR code/configuration to obtain them. The 1.4.2 source
-candidate remains unqualified and unpublished; activation against the released
-package remains gated by #952.
+metadata or execute PR code/configuration to obtain them. These producer assets
+ship in the published 1.4.2 package but are not materialized by normal init;
+activating them against a repository is still an explicit, separately reviewed
+integration by a trusted caller.
 
 Treat each PR branch as single-writer. The owning `builder:<lane>` identity is
 the only lane that should push commits to that branch; other builders and audit

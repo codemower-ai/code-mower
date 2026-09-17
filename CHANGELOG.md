@@ -5,7 +5,25 @@ project used alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop were hardening; v1.0 and
 later entries are regular releases.
 
-## 1.4.2 — source candidate (publication pending)
+## Unreleased
+
+Accepted on `main` and not in any published package. The published `v1.4.2`
+package on the package index contains the originally shipped optional Graphify
+integration; the entries below are intended for the next appropriate release.
+The lineage-contract and Coworker-citation entries that were previously listed
+here shipped in the published `v1.4.1` artifact and are recorded under that
+release below.
+
+### Fixed
+
+- Graphify inventories larger than 256 KiB now use a separate bounded 16 MiB
+  provider-manifest reader without relaxing file coverage or hash checks.
+  Oversized provider manifests explicitly refuse publication. The accepted
+  provider's `doc_ref` nodes are recognized as non-code exclusions, and related
+  test queries recognize JavaScript/TypeScript `.test`/`.spec` and `__tests__`
+  conventions and import relationships without claiming execution coverage.
+
+## 1.4.2 — published
 
 - `code-mower board service` manages a persistent local Board: render a
   reviewable definition, install, inspect, restart, and remove it. macOS uses
@@ -25,19 +43,22 @@ later entries are regular releases.
 - Board's work-first Now/Timeline/Releases/Health views, provider-neutral
   remote lifecycle observations, exact local work observations, and the
   qualified independent head-bound evidence and session-visibility
-  composition are accepted on `main` (#999, #1000, #1001, #1002, #1003 / #951).
-  This source PR adds no new cloud event fields; Slack-specific and hosted
-  cloud mappings remain #921.
+  composition ship in this release (PRs #999, #1000, #1001, #1002, #1003,
+  covering issue #951's merged local-evidence code). No new cloud event field
+  was added; Slack-specific and hosted cloud mappings remain #921.
 - Version, changelog, release notes, current docs, and package/release
   qualification contracts updated for v1.4.2, distinguishing local Board
   visibility from future Slack/cloud mappings.
-  See [candidate notes](docs/v142-release-notes.md) and the
+  See [release notes](docs/v142-release-notes.md) and the
   [evidence matrix](docs/v142-qualification.md) for inclusion and limitations.
-  Publication, installed-package acceptance, restart verification against the
-  two observed local Board services (port 5332, `codemower-ai/code-mower`,
+- Published from release commit `55339bf1acf76d33be5937e80bdaad772e0b2bf5`
+  under the annotated `v1.4.2` tag. Production PyPI publication, canonical
+  cold install, the 1.4.1-to-1.4.2 upgrade, and restart verification against
+  both observed local Board services (port 5332, `codemower-ai/code-mower`,
   plus one additional private-repository port, each restarted by its
-  classified managed-or-transient posture), and the #951 bounded hosted
-  Devin canary remain pending #952.
+  classified managed-or-transient posture) passed and closed #952. The #951
+  bounded hosted Devin canary is a separate open boundary and is not claimed
+  by this release.
 
 ## 1.4.1 — published
 
@@ -50,40 +71,22 @@ later entries are regular releases.
   See [release notes](docs/v141-release-notes.md) for inclusion and limitations.
   Publication, installed-package acceptance and the release-specific
   scorecard, campaign, Board and cloud evidence completed the #915 closeout.
-
-## Unreleased
-
-### Added
-
-- Staged trusted lineage producer primitives for supervised takeover and same-writer
-  delivery persistence, authenticated semantic publication, explicit builder-label
-  reconciliation, and transport-preserving attribution. Independent workflow and
-  runner assets are available for explicit materialization; normal init and
-  automatic adoption remain unchanged until #992.
-
-- A pure typed builder-lineage contract with immutable exact targets, validated
-  contribution chains, explicit comment history and authority accounts, and
-  contributor-aware reviewer admission. Includes a standalone init support
-  module; live consumers will adopt the contract in a later stage.
-
-### Fixed
-
-- Graphify inventories larger than 256 KiB now use a separate bounded 16 MiB
-  provider-manifest reader without relaxing file coverage or hash checks.
-  Oversized provider manifests explicitly refuse publication. The accepted
-  provider's `doc_ref` nodes are recognized as non-code exclusions, and related
-  test queries recognize JavaScript/TypeScript `.test`/`.spec` and `__tests__`
-  conventions and import relationships without claiming execution coverage.
-- Coworker fast-search responses with `source_id`, missing titles, or `Text`
-  records now retain cited evidence with explicit uncertainty. Records without
-  provenance are never given invented citations. Response-format failures,
-  including nested SDK task-group errors, no longer masquerade as access
-  failures; fetch and guided prepare return closed, redacted failure reasons
-  and preserve the explicit-refresh requirement.
-- Coworker's `no_data` response now yields explicitly incomplete empty evidence
-  instead of a format or access failure.
-- Local packet/storage failures and text budgets too small to retain evidence
-  have separate redacted diagnostics instead of blaming provider access.
+- Shipped the typed builder-lineage contract -- immutable exact targets,
+  validated contribution chains, explicit comment history and authority
+  accounts, and contributor-aware reviewer admission -- together with the
+  trusted lineage producer primitives for supervised takeover, same-writer
+  delivery persistence, authenticated semantic publication, explicit
+  builder-label reconciliation, and transport-preserving attribution. The
+  independent workflow and runner assets stay opt-in materialization; normal
+  init and automatic adoption are unchanged.
+- Fixed Coworker fast-search responses carrying `source_id`, missing titles, or
+  `Text` records so they retain cited evidence with explicit uncertainty.
+  Records without provenance are never given invented citations, and
+  response-format failures -- including nested SDK task-group errors -- no
+  longer masquerade as access failures. A `no_data` response yields explicitly
+  incomplete empty evidence, and local packet/storage failures and
+  too-small text budgets report separate redacted diagnostics instead of
+  blaming provider access.
 
 ## v1.4.0
 

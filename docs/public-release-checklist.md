@@ -1,8 +1,10 @@
 # Code Mower Public Release Checklist
 
-The v1.4.2 source candidate is not yet published or qualified. Pinned index
-commands below apply after publication; candidate checks use the verified
-artifact. Track acceptance in [#952](https://github.com/codemower-ai/code-mower/issues/952).
+v1.4.2 is published. The pinned index commands below install the current
+release; verify the exact command path and version after installing. Release
+evidence is on the
+[v1.4.2 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.4.2)
+and in the [v1.4.2 qualification record](v142-qualification.md).
 
 Use this checklist for public OSS readiness and 1.x hardening. The standalone
 `code-mower` repository is public; the remaining work is to make the first
@@ -16,12 +18,12 @@ not know the original reference repos.
 - The package has public releases and reports its version with
   `code-mower --version`.
 - The current published package-index release entrypoint is
-  `code-mower==1.4.1` (GitHub tag `v1.4.1`), with
+  `code-mower==1.4.2` (GitHub tag `v1.4.2`), with
   `code-mower doctor --adoption --repo OWNER/REPO` as the human-facing
   first-run setup diagnostic and `code-mower lanes status --repo OWNER/REPO`
-  as the operator snapshot. The target package-index entrypoint after
-  v1.4.2's acceptance is `code-mower==1.4.2` (GitHub tag `v1.4.2`), tracked
-  by [#952](https://github.com/codemower-ai/code-mower/issues/952);
+  as the operator snapshot. v1.4.2 superseded `code-mower==1.4.1` (GitHub tag
+  `v1.4.1`) when release
+  [#952](https://github.com/codemower-ai/code-mower/issues/952) closed;
   `doctor --preflight` and `doctor --v05` remain compatibility presets for
   scripts.
 - The current supervised-pilot release includes Python 3.12+ install hardening,
@@ -33,7 +35,12 @@ not know the original reference repos.
   multi-instance handling, setup drift reporting, explicit package-index
   rehearsal opt-ins, the public Board demo rehearsal, local release
   qualification, resumable provider campaigns, Board campaign visibility, and
-  opt-in metadata-only `adoption_run` cloud reporting.
+  opt-in metadata-only `adoption_run` cloud reporting. v1.4.2 adds the
+  work-first Board views, provider-neutral remote lifecycle observations, exact
+  local work observations, repository-aware `board stop --repo`, and the
+  macOS-only persistent Board service (`code-mower board service`); v1.4.1's
+  optional local Graphify repository-graph provider remains available and
+  outside the base dependency set.
 - The README now shows a shortened `doctor --adoption --repo OWNER/REPO`
   example so fresh users can see the payoff before installing.
 - The first-run transcript, architecture overview, cloud data contract, and

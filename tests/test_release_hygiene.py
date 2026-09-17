@@ -10877,9 +10877,9 @@ def main():
 
         self.assertIn("include CODE_OF_CONDUCT.md", manifest)
         self.assertIn("include SUPPORT.md", manifest)
-        self.assertIn("[Support](SUPPORT.md)", readme)
-        self.assertIn("[Security Policy](SECURITY.md)", readme)
-        self.assertIn("[Code of Conduct](CODE_OF_CONDUCT.md)", readme)
+        self.assertIn("[Support](https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md)", readme)
+        self.assertIn("[Security Policy](https://github.com/codemower-ai/code-mower/blob/main/SECURITY.md)", readme)
+        self.assertIn("[Code of Conduct](https://github.com/codemower-ai/code-mower/blob/main/CODE_OF_CONDUCT.md)", readme)
         for text in (support, conduct):
             lowered = text.lower()
             self.assertIn("private source", lowered)
@@ -10902,6 +10902,140 @@ def main():
         )
         self.assertEqual(check_ids["public-docs-linked-from-readme"]["status"], "fail")
         self.assertEqual(check_ids["public-support-redaction-guidance"]["status"], "fail")
+
+    def test_public_doc_link_resolves_the_destination_to_the_actual_document(
+        self,
+    ) -> None:
+        accepted = {
+            "relative": "SUPPORT.md",
+            "relative_dot_slash": "./SUPPORT.md",
+            "relative_traversal_that_lands_on_the_file": "docs/../SUPPORT.md",
+            "relative_trailing_slash": "SUPPORT.md/",
+            "relative_fragment": "SUPPORT.md#getting-help",
+            "relative_query": "SUPPORT.md?plain=1",
+            "absolute_blob": (
+                "https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md"
+            ),
+            "absolute_blob_on_a_tag": (
+                "https://github.com/codemower-ai/code-mower/blob/v1.4.2/SUPPORT.md"
+            ),
+            "absolute_raw": (
+                "https://github.com/codemower-ai/code-mower/raw/main/SUPPORT.md"
+            ),
+            "absolute_query": (
+                "https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md?plain=1"
+            ),
+            "absolute_fragment": (
+                "https://github.com/codemower-ai/code-mower/blob/main/"
+                "SUPPORT.md#getting-help"
+            ),
+        }
+        for label, destination in accepted.items():
+            with self.subTest(accepted=label):
+                self.assertTrue(
+                    release_readiness._links_to_repository_doc(
+                        f"See [Support]({destination}) for help.\n",
+                        "Support",
+                        "SUPPORT.md",
+                    )
+                )
+
+        rejected = {
+            # A nested path is a different document, and nothing in this
+            # repository puts SUPPORT.md under docs/.
+            "nested_relative_path_that_does_not_exist": "docs/SUPPORT.md",
+            "nested_absolute_path_that_does_not_exist": (
+                "https://github.com/codemower-ai/code-mower/blob/main/docs/SUPPORT.md"
+            ),
+            # An unrelated URL that merely ends in the required filename.
+            "unrelated_host": "https://example.com/SUPPORT.md",
+            "unrelated_host_nested": "https://example.com/code-mower/SUPPORT.md",
+            "another_github_owner": (
+                "https://github.com/someone-else/code-mower/blob/main/SUPPORT.md"
+            ),
+            "another_github_repository": (
+                "https://github.com/codemower-ai/other-repo/blob/main/SUPPORT.md"
+            ),
+            "scheme_relative": "//github.com/codemower-ai/code-mower/blob/main/SUPPORT.md",
+            # GitHub does not resolve a site-root path against the repository.
+            "site_root": "/SUPPORT.md",
+            # Names that merely end in the required one.
+            "sibling_suffix": "OTHER_SUPPORT.md",
+            "nested_sibling_suffix": "docs/OTHER_SUPPORT.md",
+            "deeply_nested_sibling_suffix": "nested/docs/OTHER_SUPPORT.md",
+            "sibling_suffix_fragment": "OTHER_SUPPORT.md#getting-help",
+            "sibling_suffix_query": "OTHER_SUPPORT.md?plain=1",
+            # Escapes the repository root README.md sits at.
+            "parent_traversal": "../SUPPORT.md",
+        }
+        for label, destination in rejected.items():
+            with self.subTest(rejected=label):
+                self.assertFalse(
+                    release_readiness._links_to_repository_doc(
+                        f"See [Support]({destination}) for help.\n",
+                        "Support",
+                        "SUPPORT.md",
+                    )
+                )
+
+    def test_public_docs_link_check_rejects_lookalike_destinations(self) -> None:
+        readmes = {
+            "lookalike": "\n".join(
+                [
+                    "[Support](docs/OTHER_SUPPORT.md)",
+                    "[Security Policy](SECURITY.md)",
+                    "[Code of Conduct](CODE_OF_CONDUCT.md)",
+                ]
+            ),
+            "nested_path_that_does_not_exist": "\n".join(
+                [
+                    "[Support](docs/SUPPORT.md)",
+                    "[Security Policy](SECURITY.md)",
+                    "[Code of Conduct](CODE_OF_CONDUCT.md)",
+                ]
+            ),
+            "foreign_url": "\n".join(
+                [
+                    "[Support](https://example.com/SUPPORT.md)",
+                    "[Security Policy](SECURITY.md)",
+                    "[Code of Conduct](CODE_OF_CONDUCT.md)",
+                ]
+            ),
+            "exact": "\n".join(
+                [
+                    "[Support](SUPPORT.md)",
+                    "[Security Policy](SECURITY.md)",
+                    "[Code of Conduct](CODE_OF_CONDUCT.md)",
+                ]
+            ),
+            "absolute": "\n".join(
+                [
+                    "[Support](https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md)",
+                    "[Security Policy](https://github.com/codemower-ai/code-mower/blob/main/SECURITY.md)",
+                    "[Code of Conduct](https://github.com/codemower-ai/code-mower/blob/main/CODE_OF_CONDUCT.md)",
+                ]
+            ),
+        }
+        expected = {
+            "lookalike": "fail",
+            "nested_path_that_does_not_exist": "fail",
+            "foreign_url": "fail",
+            "exact": "pass",
+            "absolute": "pass",
+        }
+
+        for label, readme in readmes.items():
+            with self.subTest(readme=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                (repo / "README.md").write_text(readme + "\n", encoding="utf-8")
+
+                payload = release_readiness.render_release_readiness(repo)
+
+                check_ids = {check["id"]: check for check in payload["checks"]}
+                self.assertEqual(
+                    check_ids["public-docs-linked-from-readme"]["status"],
+                    expected[label],
+                )
 
     def test_public_redaction_guidance_requires_support_and_conduct(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -10997,7 +11131,10 @@ def main():
         )
 
     def test_public_announcement_docs_use_current_release_helpers(self) -> None:
-        baseline_sentence = "The current source candidate is `v1.4.2`, with target install spec `code-mower==1.4.2`."
+        # v1.4.2 is published, so the shared published-baseline helper is the
+        # sentence these pages carry. Deriving it here keeps the docs and the
+        # helper from drifting apart at the next release.
+        baseline_sentence = code_mower_versioning.public_baseline_sentence(__version__)
         package_spec = code_mower_versioning.public_package_spec(__version__)
         announcement_url = code_mower_versioning.tagged_doc_url(__version__)
 
@@ -11049,14 +11186,14 @@ def main():
             encoding="utf-8"
         )
         self.assertIn("Documentation on `main` follows the source on `main`", readme)
-        self.assertIn("included in the `code-mower==1.4.2` source candidate", sessions)
+        self.assertIn("included in the published `code-mower==1.4.2` release", sessions)
         self.assertIn("# Code Mower v1.4.2 Release Notes", release_notes)
         self.assertIn("The privacy boundary is unchanged.", release_notes)
         release_history = (ROOT / "docs" / "release-history.md").read_text(
             encoding="utf-8"
         )
         self.assertIn(
-            "[Release History And Archived Plans](docs/release-history.md)",
+            "[Release History And Archived Plans](https://github.com/codemower-ai/code-mower/blob/main/docs/release-history.md)",
             readme,
         )
         self.assertLess(
@@ -11072,11 +11209,11 @@ def main():
             release_history.index("[v1.2.0 release notes](v12-release-notes.md)"),
         )
         self.assertLess(
-            release_history.index("[v1.4.2 source candidate notes](v142-release-notes.md)"),
-            release_history.index("[v1.4.1 source candidate notes](v141-release-notes.md)"),
+            release_history.index("[v1.4.2 release notes](v142-release-notes.md)"),
+            release_history.index("[v1.4.1 release notes](v141-release-notes.md)"),
         )
         self.assertLess(
-            release_history.index("[v1.4.1 source candidate notes](v141-release-notes.md)"),
+            release_history.index("[v1.4.1 release notes](v141-release-notes.md)"),
             release_history.index("[v1.3.1 release notes](v131-release-notes.md)"),
         )
 
@@ -11099,17 +11236,12 @@ def main():
             encoding="utf-8",
         )
 
-        current_status = "The current source candidate is `v1.4.2`, with target install spec `code-mower==1.4.2`."
+        current_status = code_mower_versioning.public_baseline_sentence(__version__)
         for text in (readme, current_state, rollout):
             self.assertIn(current_status, " ".join(text.split()))
         self.assertIn(
             "The current published package-index release entrypoint is\n"
-            "  `code-mower==1.4.1` (GitHub tag `v1.4.1`)",
-            public_release,
-        )
-        self.assertIn(
-            "The target package-index entrypoint after\n"
-            "  v1.4.2's acceptance is `code-mower==1.4.2` (GitHub tag `v1.4.2`)",
+            "  `code-mower==1.4.2` (GitHub tag `v1.4.2`)",
             public_release,
         )
         self.assertIn("The current supervised-pilot release includes", public_release)
@@ -11119,7 +11251,7 @@ def main():
         )
 
         self.assertIn(
-            "The target public-release baseline is `v1.4.2`",
+            "The public-release baseline is the published `v1.4.2`",
             oss_checklist,
         )
         self.assertIn(
@@ -11258,7 +11390,7 @@ def main():
             "It does not prove that a reviewer should gate merges.",
             normalized_readme,
         )
-        self.assertIn("[lane promotion policy](docs/lane-promotion-policy.md)", readme)
+        self.assertIn("[lane promotion policy](https://github.com/codemower-ai/code-mower/blob/main/docs/lane-promotion-policy.md)", readme)
         self.assertIn("## Start Here", readme)
         self.assertIn("supervised-pilot, bring-your-own-agent-loop software", normalized_readme)
         self.assertIn("not a drop-in unattended merge gate", normalized_readme)
@@ -11266,7 +11398,7 @@ def main():
         self.assertIn("Claude Code, Codex, Cursor-style", readme)
         self.assertIn("supervised issue-to-merge loop end to end", normalized_readme)
         self.assertIn(
-            "[Release History And Archived Plans](docs/release-history.md)",
+            "[Release History And Archived Plans](https://github.com/codemower-ai/code-mower/blob/main/docs/release-history.md)",
             readme,
         )
 
@@ -11301,8 +11433,8 @@ def main():
             encoding="utf-8",
         )
 
-        self.assertIn("[Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)", readme)
-        self.assertIn("[Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)", readme)
+        self.assertIn("[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/try-in-10-minutes.md)", readme)
+        self.assertIn("[Build Loop In 30 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/build-loop-in-30-minutes.md)", readme)
         self.assertEqual(len(re.findall(r"^## 8\.", try_in_10, re.MULTILINE)), 1)
         self.assertTrue(try_in_10.rstrip().endswith("](build-loop-in-30-minutes.md)."))
         self.assertIn("[Quickstart](quickstart.md)", try_in_10)
@@ -11390,7 +11522,7 @@ def main():
         readme_flat = " ".join(readme.split())
         quickstart_flat = " ".join(quickstart.split())
 
-        self.assertIn("[Board Data Contract](docs/board-data-contract.md)", readme)
+        self.assertIn("[Board Data Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/board-data-contract.md)", readme)
         self.assertIn("code-mower board record --repo OWNER/REPO", readme)
         self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", readme)
         self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", launch_surface)
@@ -11639,9 +11771,9 @@ def main():
             encoding="utf-8",
         )
 
-        self.assertIn("[Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)", readme)
+        self.assertIn("[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/try-in-10-minutes.md)", readme)
         self.assertIn(
-            "[Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)",
+            "[Build Loop In 30 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/build-loop-in-30-minutes.md)",
             readme,
         )
         self.assertIn("code-mower builder-experiment run", builder_experiments)

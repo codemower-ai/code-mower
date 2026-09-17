@@ -1,8 +1,19 @@
 # Code Mower v1.4.1 Release Notes
 
-Status: source candidate prepared for #915. This document is not a publication,
-installed-package qualification, comparative scorecard or freshness claim.
-v1.4.0 tags, assets, release notes and its historical runbook remain immutable.
+> **v1.4.1 is a completed release.** This page is preserved as the
+> source-candidate note it was when it was written for release #915, which has
+> since closed. The prepublication procedure and boundaries below are kept
+> verbatim as the historical record; they are not current instructions. For the
+> current release see the [v1.4.2 release notes](v142-release-notes.md) and the
+> [v1.4.2 qualification record](v142-qualification.md), and for what v1.4.1
+> actually proved see the
+> [v1.4.1 qualification record](v141-qualification.md) and the
+> [v1.4.1 GitHub release](https://github.com/codemower-ai/code-mower/releases/tag/v1.4.1).
+
+Status as written: source candidate prepared for #915. At that time this
+document was not a publication, installed-package qualification, comparative
+scorecard or freshness claim. v1.4.0 tags, assets, release notes and its
+historical runbook remain immutable.
 
 ## Optional local Graphify context
 

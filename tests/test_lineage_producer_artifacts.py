@@ -90,7 +90,11 @@ class ArtifactTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.tmp.cleanup)
-        cls.root = Path(cls.tmp.name)
+        # Canonicalize once. The subprocess provenance assertions below compare a
+        # resolved module path against this root, and macOS hands out temporary
+        # directories under the /var -> /private/var symlink, so an unresolved
+        # root would fail those assertions for the wrong reason.
+        cls.root = Path(cls.tmp.name).resolve()
         cls.wheels = cls.root / "wheels"
         cls.installed = cls.root / "installed"
         supplied_wheel = os.environ.get("CODE_MOWER_QUALIFICATION_WHEEL")
@@ -117,7 +121,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, {str(cls.installed)!r})
 import code_mower.builder_lineage_producer as producer
-assert Path(producer.__file__).resolve().is_relative_to(Path({str(cls.installed)!r}))
+assert Path(producer.__file__).resolve().is_relative_to(Path({str(cls.installed)!r}).resolve())
 assert {str(ROOT / 'src')!r} not in sys.path
 class Clock(datetime.datetime):
     @classmethod
@@ -182,7 +186,7 @@ from pathlib import Path
 sys.meta_path = [f for f in sys.meta_path if '__editable__' not in str(f)]
 sys.path.insert(0, sys.argv[1])
 from code_mower import init
-assert Path(init.__file__).resolve().is_relative_to(Path(sys.argv[1]))
+assert Path(init.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve())
 source = Path(sys.argv[1]) / 'code_mower/templates' / sys.argv[2]
 print(init._render_workflow_template(source.read_text(), {}), end='')
 """
@@ -335,7 +339,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, {str(legacy)!r})
 import code_mower
-assert Path(code_mower.__file__).resolve().is_relative_to(Path({str(legacy)!r}))
+assert Path(code_mower.__file__).resolve().is_relative_to(Path({str(legacy)!r}).resolve())
 assert {str(ROOT/'src')!r} not in sys.path
 exec(compile(sys.stdin.read(), '<emitted-installed-artifact>', 'exec'))
 '''
@@ -380,7 +384,7 @@ sys.meta_path = [finder for finder in sys.meta_path if '__editable__' not in str
 sys.path.insert(0, {str(self.installed)!r})
 sys.path.insert(1, {str(ROOT/'tests')!r})
 import code_mower.lane_delivery as delivery
-assert Path(delivery.__file__).resolve().is_relative_to(Path({str(self.installed)!r}))
+assert Path(delivery.__file__).resolve().is_relative_to(Path({str(self.installed)!r}).resolve())
 from test_lineage_consumer_activation import ProducerActivation
 suite = unittest.TestSuite(ProducerActivation(name) for name in (
  'test_actual_entrypoint_takeover_continuation_then_third_writer',

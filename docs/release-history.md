@@ -11,8 +11,10 @@ guidance; use [Install And Bootstrap](install.md) instead.
 
 ## Current Release Line
 
-- [v1.4.2 source candidate notes](v142-release-notes.md) (publication/qualification pending #952)
-- [v1.4.1 source candidate notes](v141-release-notes.md) (published)
+- [v1.4.2 release notes](v142-release-notes.md) (published; current baseline)
+- [v1.4.2 qualification record](v142-qualification.md)
+- [v1.4.1 release notes](v141-release-notes.md) (published)
+- [v1.4.1 qualification record](v141-qualification.md)
 - [v1.4.0 release notes](v140-release-notes.md)
 - [v1.3.1 release notes](v131-release-notes.md)
 - [v1.3.1 guided context qualification](v131-guided-context-qualification.md)

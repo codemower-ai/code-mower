@@ -518,6 +518,8 @@ refuses publication with an explicit provider-manifest diagnostic. It is never
 loaded whole and measured afterwards. Existing coverage/hash checks and the
 total artifact budget still apply; a larger readable inventory does not excuse
 missing or mismatched rows. A bound checked on bytes already in memory bounds nothing.
+The separate provider-manifest budget arrived after `v1.4.2` was published; the
+published package applies the single compact bound to both.
 
 The provider's own stdout and stderr are the other unbounded output, and they
 are discarded at the kernel: `stdin`, `stdout` and `stderr` are all

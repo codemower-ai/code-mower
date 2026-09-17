@@ -9,8 +9,9 @@ CODE_MOWER_PYTHON="$(command -v python3.12)"
 pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.2
 ```
 
-The v1.4.2 source candidate is not yet published or qualified. All mutating
-steps below require the supervisor and the recorded owner release decision.
+v1.4.2 is published; the steps below are the executed record of that release
+and the shape the next release follows. All mutating steps require the
+supervisor and the recorded owner release decision.
 
 <a id="v140-post-merge-release-runbook"></a>
 
