@@ -306,6 +306,15 @@ use the runner's private `.source.json` artifact: its fields are
 all control artifacts private; public handoff evidence contains lane, PR, and
 head metadata only. No new hosted session is created by a handoff.
 
+The stable writer identity and the supervised round ID in those artifacts come
+from one canonical derivation, `code-mower lane-delivery writer-id --lane <lane>
+--repo <owner/repo>`. A repository name may legally contain `.`, which the
+supervised-round identifier alphabet does not accept, so a slug that the
+alphabet or the 100-character cap cannot carry is encoded as
+`<lane>--<readable>-<digest of the exact lane and slug>`. An ordinary slug keeps
+the `<lane>-<owner>__<name>` identity it already has, so existing private writer
+state stays addressable.
+
 Code Mower asks the existing local supervisor to stop its own process group, or
 cancels the bound remote session through the existing idempotent lifecycle. It
 then independently verifies raw writer exit or suspension. A logical completed

@@ -57,7 +57,8 @@ def require_capabilities():
         from .. import lane_delivery, lane_handoff, builder_runs
         for module, names in ((core, ('Target', 'History', 'Chain', 'resolve', 'admit')),
             (producer, ('Observation', 'observe', 'publish', 'ProducerStore', 'Transport', 'staged_record')),
-            (lane_delivery, ('LineageRound', 'lineage_continuation', 'lineage_target_state')),
+            (lane_delivery, ('LineageRound', 'lineage_continuation', 'lineage_target_state',
+                             'lineage_writer_id')),
             (lane_handoff, ('lineage_handoff',)), (builder_runs, ('record_lineage_builder',))):
             if any(not callable(getattr(module, name, None)) for name in names):
                 raise ImportError

@@ -36,6 +36,18 @@ release below.
 
 ### Fixed
 
+- The local lane runner can drive a repository whose name contains `.`. The
+  stable lineage writer identity and the supervised round ID used to be the
+  pasted `<lane>-<owner>__<name>` slug, which the supervised-round identifier
+  alphabet (`[A-Za-z0-9_-]{1,100}`) rejects, so an otherwise eligible dotted or
+  very long slug was refused before the provider ever launched. Both identities
+  now come from one canonical derivation, exposed as `code-mower lane-delivery
+  writer-id`, which preserves the existing identifier for ordinary slugs and
+  otherwise encodes the slug with a digest of the exact lane and repository, so
+  two repositories can never share one writer identity. Round validation is
+  unchanged, and an installed CLI without the derivation is refused by the
+  runner's existing capability gate rather than at launch.
+
 - Graphify inventories larger than 256 KiB now use a separate bounded 16 MiB
   provider-manifest reader without relaxing file coverage or hash checks.
   Oversized provider manifests explicitly refuse publication. The accepted

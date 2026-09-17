@@ -1178,7 +1178,21 @@ before_state="${log%.log}.before.json"
 after_state="${log%.log}.after.json"
 status_file="${log%.log}.status.json"
 writer_state_dir="$("$LANE_PYTHON" -c 'from pathlib import Path; print((Path.home() / ".local/share/code-mower/local-writers").resolve())')"
-writer_alias="${LANE}-${repo_key}-${stamp}-$$"
+# LineageRound accepts only [A-Za-z0-9_-]{1,100} for the stable writer identity
+# and for the supervised round ID, while a repository name may legally contain
+# ".". Both identities come from the one canonical derivation the installed
+# lane-delivery owns, because a second derivation here could disagree with the
+# supervisor about who the writer is.
+writer_identity="$("${lane_delivery[@]}" writer-id --lane "$LANE" --repo "$REPO" --run "${stamp}-$$")" || {
+  echo "${LANE}: refusing to run; no canonical lineage writer identity for ${REPO}" >&2
+  exit 2
+}
+writer_alias="$(printf '%s\n' "$writer_identity" | jq -r '.round_id // empty')"
+lineage_writer="$(printf '%s\n' "$writer_identity" | jq -r '.writer // empty')"
+[ -n "$writer_alias" ] && [ -n "$lineage_writer" ] || {
+  echo "${LANE}: refusing to run; the canonical lineage writer identity for ${REPO} is unusable" >&2
+  exit 2
+}
 writer_source="${log%.log}.source.json"
 ( umask 077; jq -n --arg writer "$writer_alias" --arg state_dir "$writer_state_dir" \
   '{transport:"local_process",writer:$writer,state_dir:$state_dir}' > "$writer_source" )
@@ -1224,7 +1238,7 @@ run_provider() {
     if [ "$kind" = "pr" ] && [ "$mode" != "audit" ]; then
       lineage_store="${HOME}/.local/share/code-mower/lineage/${repo_key}/${num}"
       supervise_args+=(--lineage-before "$before_state" --lineage-base "$lineage_base"
-        --lineage-writer "${LANE}-${repo_key}" --lineage-output "${log%.log}.lineage.json")
+        --lineage-writer "$lineage_writer" --lineage-output "${log%.log}.lineage.json")
       if [ -d "$lineage_store" ] || [ -n "$handoff_file" ]; then
         supervise_args+=(--lineage-store "$lineage_store")
         [ -d "$lineage_store" ] || supervise_args+=(--lineage-create)
