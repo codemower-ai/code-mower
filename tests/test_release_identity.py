@@ -137,6 +137,7 @@ class ReleaseIdentityTests(unittest.TestCase):
             ("pyproject.toml", 'project = "invalid"'),
             ("src/code_mower/__init__.py", '__version__ = "1.5.1"'),
             ("src/code_mower/__init__.py", '__version__ = "1.5.0"\n__version__ = "1.5.1"'),
+            ("src/code_mower/__init__.py", '__version__ = "1.5.0"\n__version__ = compute_version()'),
             ("src/code_mower/__init__.py", '__version__ = compute_version()'),
         ):
             with self.subTest(path=path, text=text):

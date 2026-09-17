@@ -90,11 +90,10 @@ def check_release_identity(repo_path: Path, tag: str) -> list[str]:
     try:
         tree = ast.parse(read("src/code_mower/__init__.py"))
         versions = [
-            node.value.value
+            node.value.value if isinstance(node.value, ast.Constant) else None
             for node in tree.body
             if isinstance(node, ast.Assign)
             and any(isinstance(t, ast.Name) and t.id == "__version__" for t in node.targets)
-            and isinstance(node.value, ast.Constant)
         ]
     except SyntaxError:
         versions = []
