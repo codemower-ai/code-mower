@@ -279,8 +279,23 @@ class ChangelogAndRunbookInclusionTests(unittest.TestCase):
         unreleased = changelog.partition("## Unreleased")[2].partition("\n## 1.4.2")[0]
         self.assertNotIn("code-mower board service` manages", unreleased)
         self.assertNotIn("board stop --repo OWNER/REPO", unreleased)
-        # PR #1007 is open, not merged; it is neither released nor on main.
-        self.assertNotIn("#1007", changelog)
+
+    def test_unreleased_carries_the_merged_graphify_compatibility_work(self):
+        """PR #1007 merged to main after v1.4.2 was published.
+
+        Its entry belongs under Unreleased -- on main, in no published package
+        -- and must not be folded into the immutable 1.4.2 section.
+        """
+        changelog = _read("CHANGELOG.md")
+        unreleased = changelog.partition("## Unreleased")[2].partition("\n## 1.4.2")[0]
+        v142_section = changelog.partition("## 1.4.2")[2].partition("\n## 1.4.1")[0]
+        collapsed = " ".join(unreleased.split())
+        self.assertIn("16 MiB", collapsed)
+        self.assertIn("provider-manifest reader", collapsed)
+        self.assertIn("doc_ref", collapsed)
+        self.assertIn("__tests__", collapsed)
+        self.assertNotIn("16 MiB", " ".join(v142_section.split()))
+        self.assertNotIn("doc_ref", v142_section)
 
     def test_changelog_v141_section_is_marked_published_not_pending(self):
         changelog = _read("CHANGELOG.md")
@@ -499,6 +514,56 @@ class BoardAndGraphifyDiscoverabilityTests(unittest.TestCase):
         self.assertIn("graphify-setup.md", evaluation)
         # The recorded benchmark evidence is preserved, not rewritten.
         self.assertIn("Clean-room experiment", evaluation)
+
+    def test_graphify_docs_separate_the_published_package_from_current_main(self):
+        """v1.4.2 ships the original integration; #1007's fixes are only on main."""
+        setup = " ".join(_read("docs/graphify-setup.md").split())
+        self.assertIn("Published `v1.4.2` versus current `main`", setup)
+        self.assertIn("/pull/1007", setup)
+        # The boundary is stated in both directions.
+        self.assertIn("merged to `main`", setup)
+        self.assertIn("none of it is in the published `v1.4.2` package", setup)
+        # An upgrade alone does not repair a generation built earlier.
+        self.assertIn("does not repair a generation you already built", setup)
+        self.assertIn("context-graph refresh", setup)
+
+        roadmap = " ".join(_read("docs/current-state-and-roadmap.md").split())
+        self.assertIn("/pull/1007", roadmap)
+        self.assertIn("the published `v1.4.2` package does not contain them", roadmap)
+
+    def test_no_current_doc_calls_1007_open_or_unmerged(self):
+        """#1007 merged at b863e638. Nothing current may still call it open."""
+        stale = (
+            "separate open pull request",
+            "it is not merged",
+            "is not merged and not released",
+            "#1007 is open",
+            "#1007 remains open",
+            "#1007 stays open",
+            "pending #1007",
+        )
+        for relative in CURRENT_FACING_DOCS + (
+            "docs/graphify-evaluation.md",
+            "docs/context-graph-lifecycle.md",
+            "docs/context-graph-queries.md",
+        ):
+            collapsed = " ".join(_read(relative).split()).lower()
+            for phrase in stale:
+                with self.subTest(doc=relative, phrase=phrase):
+                    self.assertNotIn(phrase, collapsed)
+
+    def test_graphify_provider_pin_is_unchanged_by_the_compatibility_work(self):
+        """#1007 is a Code Mower fix, not a provider upgrade."""
+        setup = " ".join(_read("docs/graphify-setup.md").split())
+        self.assertIn("graphifyy", setup)
+        self.assertIn("0.9.58", setup)
+        self.assertIn(
+            "e239803288e91c723d6e30540860bd6d5a1dc3f0914b9fc1104b0233e98aaeb8", setup
+        )
+        self.assertIn("not a Graphify upgrade", setup)
+        for other in ("0.9.59", "0.9.60", "0.10.", "1.0.0"):
+            with self.subTest(version=other):
+                self.assertNotIn(f"graphifyy=={other}", setup)
 
     def test_board_demo_does_not_claim_serve_opens_a_browser(self):
         demo = " ".join(_read("examples/board-demo/README.md").split())

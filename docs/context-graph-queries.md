@@ -201,6 +201,11 @@ although its validator omits that type. These are accepted as declared non-code
 exclusions, like document nodes. They and their incident edges do not become
 code query results or source citations; unknown node types remain invalid.
 
+The test-path conventions and the `doc_ref` acceptance described in this section
+arrived after `v1.4.2` was published and are on `main` for the next appropriate
+release. In the published package a `doc_ref` node is an unknown type and the
+JavaScript/TypeScript conventions are not recognized.
+
 Each traversal is symbol-first: a target resolves to the symbols carrying that
 name, and only a target that names no symbol at all is read as a path. Each is
 breadth-first over adjacency sorted by the full relationship identity described

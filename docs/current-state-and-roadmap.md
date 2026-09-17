@@ -224,10 +224,22 @@ Release #915 shipped that accepted source and stabilization baseline as
 `v1.4.1`, completing the release-specific comparative scorecard, campaign,
 Board, and fresh aggregate evidence as part of that closeout.
 
-Graphify remains available in `v1.4.2`, unchanged. Installation stays opt-in and
-outside the base dependency set, no command requires an index to exist, and Code
-Mower owns refresh policy rather than parsing human-oriented MCP prose. See
+The published `v1.4.2` package carries that originally shipped integration
+unchanged. Installation stays opt-in and outside the base dependency set, no
+command requires an index to exist, and Code Mower owns refresh policy rather
+than parsing human-oriented MCP prose. See
 [Optional Graphify Setup](graphify-setup.md) for the current ramp-up flow.
+
+Real-pilot compatibility fixes have since merged to `main` in
+[PR #1007](https://github.com/codemower-ai/code-mower/pull/1007): a bounded
+provider-manifest reader separate from the compact generation-manifest bound,
+explicit refusal of an oversized provider manifest, `doc_ref` nodes as declared
+non-code exclusions, and JavaScript/TypeScript test-convention and `imports`
+recognition in `related_tests`. They are on `main` and intended for the next
+appropriate release; the published `v1.4.2` package does not contain them. The
+accepted `0.9.58` provider pin is unchanged, and a generation built before that
+future release must be rebuilt explicitly -- upgrading Code Mower does not
+repair one, because a published generation is never rewritten in place.
 
 ### 3. Board Clarity And Session Visibility -- shipped in `v1.4.2` ([#945](https://github.com/codemower-ai/code-mower/issues/945) / release [#952](https://github.com/codemower-ai/code-mower/issues/952))
 
@@ -302,7 +314,9 @@ setup, or documentation work.
 Elapsed time, implementation difficulty, or an open draft PR never changes this
 release order. Merged fixes count as on main until a later published package is
 verified to contain them; #935/#973 and the phase-3 Board PRs are now verified
-in the published `v1.4.2` artifact.
+in the published `v1.4.2` artifact, while the merged Graphify compatibility
+fixes in [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007) are on
+main awaiting the next appropriate release.
 
 Each child issue should produce one reviewable PR with one branch writer,
 independent current-head review, the normal gate, and package-level validation.

@@ -218,7 +218,33 @@ provider environment from
 [Separate acquisition environment](#separate-acquisition-environment) is yours
 to keep or delete separately; Code Mower never touches it.
 
-A separate open pull request,
-[#1007](https://github.com/codemower-ai/code-mower/pull/1007), is working on
-further Graphify real-pilot compatibility. It is not merged and not released;
-nothing on this page depends on it.
+## Published `v1.4.2` versus current `main`
+
+The published `v1.4.2` package on the package index contains the optional
+Graphify integration exactly as it originally shipped. Everything above
+describes that package.
+
+[PR #1007](https://github.com/codemower-ai/code-mower/pull/1007) has since
+merged to `main` with further real-pilot compatibility fixes: a bounded 16 MiB
+provider-manifest reader separate from the 256 KiB bound on Code Mower's own
+generation manifest, explicit refusal of an oversized provider manifest,
+`doc_ref` nodes accepted as declared non-code exclusions, and `related_tests`
+recognition of JavaScript/TypeScript `.test`/`.spec` and `__tests__`
+conventions together with `imports` relationships. The language-extras and
+runtime-ownership paragraphs under
+[Separate acquisition environment](#separate-acquisition-environment) arrived
+with the same change. All of it is on `main` and intended for the next
+appropriate release; none of it is in the published `v1.4.2` package.
+
+The accepted provider pin is unchanged. This is a Code Mower compatibility fix,
+not a Graphify upgrade: `graphifyy` `0.9.58` and the recorded wheel digest above
+stay exactly as they are.
+
+Because a published generation is never rewritten in place, installing that
+later release does not repair a generation you already built. A generation built
+before it can be partial -- a frontend inventory whose oversized provider
+manifest was refused, or inputs left unprocessed by a missing language parser.
+After upgrading, rebuild it explicitly with `code-mower context-graph refresh`
+(step 6), which publishes a new generation at the same revision, then confirm
+`code-mower context-graph status --json` reports it usable rather than
+`partial`.

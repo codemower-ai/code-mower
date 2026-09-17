@@ -13,7 +13,9 @@ forward to [epic #902](https://github.com/codemower-ai/code-mower/issues/902).
 > published `v1.4.2` release. For what exists today, read
 > [Optional Graphify Setup](graphify-setup.md),
 > [the revision-bound lifecycle](context-graph-lifecycle.md), and
-> [bounded queries and context packets](context-graph-queries.md). The
+> [bounded queries and context packets](context-graph-queries.md). For the
+> real-pilot compatibility fixes that merged to `main` after the release, read
+> [published `v1.4.2` versus current `main`](graphify-setup.md#published-v142-versus-current-main). The
 > benchmark evidence and thresholds below are preserved as recorded and are not
 > rewritten.
 

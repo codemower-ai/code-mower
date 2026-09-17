@@ -298,6 +298,14 @@ for what a build is allowed to see and where its state lives, and
 [Bounded Queries And Context Packets](https://github.com/codemower-ai/code-mower/blob/main/docs/context-graph-queries.md) for the
 four questions and the packet contract.
 
+The published v1.4.2 package contains that originally shipped integration.
+Further real-pilot compatibility fixes -- a bounded provider-manifest reader,
+`doc_ref` exclusions, and JavaScript/TypeScript test-convention recognition --
+merged to `main` after the release and are intended for the next appropriate
+release. The accepted `0.9.58` provider pin is unchanged, and a generation built
+before that release has to be rebuilt explicitly; upgrading does not repair one.
+See [Optional Graphify Setup](https://github.com/codemower-ai/code-mower/blob/main/docs/graphify-setup.md#published-v142-versus-current-main).
+
 ## Documentation
 
 ### Install And First Use
