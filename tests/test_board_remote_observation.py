@@ -134,6 +134,31 @@ class BoardRemoteTests(unittest.TestCase):
                 record = render(self.root, snapshot)
                 self.assertEqual(record["work"]["evidence"]["review"]["state"], state)
 
+    def test_verified_review_does_not_erase_provider_wait(self):
+        current = LocalEvidenceObservation("merge", "open", self.work.binding, NOW)
+        review = RemoteEvidence(0, LocalEvidenceObservation(
+            "review", "pass", self.work.binding, NOW, source_kind="review",
+        ))
+        remote = observation("waiting_for_approval", reason="approval_required")
+        snapshot = remote_work_input(self.work, round_number=0, current_pr=current,
+                                     runs=(RemoteRun(self.work.binding, 0, remote),),
+                                     evidence=(review,), now=NOW)
+        record = render(self.root, snapshot)
+        self.assertEqual(record["work"]["evidence"]["review"]["state"], "pass")
+        self.assertIn("approval_required", record["work"]["reasons"])
+        self.assertEqual(record["work"]["primary"]["action"], "respond_to_approval")
+
+    def test_unknown_source_does_not_become_idle_or_invent_a_date(self):
+        remote = replace(observation(), lifecycle=None, observed_at=None, available=False)
+        snapshot = remote_work_input(self.work, round_number=0,
+                                     runs=(RemoteRun(self.work.binding, 0, remote),), now=NOW)
+        record = render(self.root, snapshot)
+        self.assertEqual(record["kind"], "work")
+        source = next(s for s in record["sources"] if s["kind"] == "remote_session")
+        self.assertIsNone(source["observed_at"])
+        self.assertEqual(source["freshness"], "unavailable")
+        self.assertEqual(record["work"]["runs"][0]["phase"], "assigned")
+
     def test_round_changes_run_identity_and_refuses_mismatched_binding(self):
         runs = []
         for round_number in (0, 1):
@@ -355,6 +380,16 @@ class HostedBoardTests(WorkOrderCase):
         record = render(self.checkout, hosted_work_input(old, observed, expected_round=0, evidence=(review,), now=NOW))
         self.assertEqual(record["work"]["pull_request"]["head_sha"], OTHER)
         self.assertEqual(record["work"]["evidence"]["review"]["state"], "stale")
+
+    def test_accepted_implementation_does_not_imply_provider_writer_has_stopped(self):
+        self.provider.set_state(self.binding(), "running", result=self.claim())
+        self.run_order("collect")
+        observed = self.service.observe(self.order, now=NOW)
+        self.assertTrue(observed.implementation_verified)
+        record = render(self.checkout, hosted_work_input(work(self.checkout), observed, expected_round=0, now=NOW))
+        self.assertEqual([run["phase"] for run in record["work"]["runs"]],
+                         ["observed_running", "implementation_complete"])
+        self.assertEqual(record["work"]["evidence"]["review"]["state"], "unknown")
 
     def test_github_failure_withholds_cached_current_head_review_and_merge(self):
         old = work(self.checkout)

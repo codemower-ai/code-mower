@@ -602,6 +602,20 @@ def _no_work(
 def _derive_state(
     runs: Sequence[dict[str, Any]], evidence: Mapping[str, Mapping[str, Any]], reasons: set[str]
 ) -> str:
+    # A review/merge fact does not erase an independently observed provider wait
+    # or failure (a completed implementation can still have an active writer).
+    phases = {run["phase"] for run in runs}
+    if any(run["phase"] == "failed" and (run.get("lifecycle") or {}).get("state") != "suspended"
+           for run in runs):
+        reasons.add("provider_failed")
+    if any((run.get("lifecycle") or {}).get("state") == "suspended" for run in runs):
+        reasons.add("provider_suspended")
+    if phases & {"cancelled"}:
+        reasons.add("cancelled")
+    if phases & {"waiting_for_user"}:
+        reasons.add("user_input_required")
+    if phases & {"waiting_for_approval"}:
+        reasons.add("approval_required")
     if evidence["merge"]["state"] == "merged":
         return "merged"
     if evidence["review"]["state"] == "blocked":
@@ -631,18 +645,6 @@ def _derive_state(
     if evidence["review"]["state"] == "pass":
         reasons.add("human_review_required")
         return "ready_for_human_review"
-    phases = {run["phase"] for run in runs}
-    if any(run["phase"] == "failed" and (run.get("lifecycle") or {}).get("state") != "suspended"
-           for run in runs):
-        reasons.add("provider_failed")
-    if any((run.get("lifecycle") or {}).get("state") == "suspended" for run in runs):
-        reasons.add("provider_suspended")
-    if phases & {"cancelled"}:
-        reasons.add("cancelled")
-    if phases & {"waiting_for_user"}:
-        reasons.add("user_input_required")
-    if phases & {"waiting_for_approval"}:
-        reasons.add("approval_required")
     if phases & {"observed_running", "provider_progress", "waiting_for_user", "waiting_for_approval"}:
         return "building"
     if phases & {"assigned", "dispatched"}:

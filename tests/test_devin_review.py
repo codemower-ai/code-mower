@@ -109,6 +109,33 @@ def hosted(tmp_path, review, current, output):
 
 
 class DevinReviewTests(unittest.TestCase):
+    def test_board_observe_is_metadata_only_and_rechecks_current_head(self):
+        with TemporaryDirectory() as directory:
+            review = make_review()
+            current = [review]
+            remote, state, calls = hosted(Path(directory).resolve(), review, lambda: current[0], CONTROLS[0][2])
+            remote.dispatch("approved", apply=True)
+            calls.clear()
+            with patch.object(remote.remote, "run", side_effect=AssertionError("mutation")), \
+                 patch.object(remote.remote, "private_result", side_effect=AssertionError("result")):
+                observed = remote.observe()
+            self.assertTrue(observed.available)
+            self.assertEqual(observed.lifecycle["state"], "running")
+            self.assertEqual(calls, [("GET", None)])
+            self.assertNotIn("summary", repr(observed))
+            current[0] = replace(review, head="c" * 40)
+            with self.assertRaisesRegex(RemoteError, "review_binding_mismatch"):
+                remote.observe(previous=observed)
+            current[0] = review
+            original = remote.remote.observe
+            def race(*args, **kwargs):
+                result = original(*args, **kwargs)
+                current[0] = replace(review, head="c" * 40)
+                return result
+            with patch.object(remote.remote, "observe", side_effect=race):
+                with self.assertRaisesRegex(RemoteError, "review_binding_mismatch"):
+                    remote.observe()
+
     def test_calibration_transport_parity(self):
         for name, expected, output in CONTROLS:
             with self.subTest(name=name, expected=expected, output=output):

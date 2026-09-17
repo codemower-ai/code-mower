@@ -164,8 +164,19 @@ def hosted_work_input(
         binding, observation.session.checked_at, source_kind="github",
         source_available=observation.github_available,
     )
-    return remote_work_input(
+    snapshot = remote_work_input(
         work, round_number=expected_round,
         runs=(RemoteRun(binding, expected_round, observation.session),), current_pr=current_pr,
         evidence=evidence, controller=controller, now=now,
     )
+    if observation.implementation_verified and observation.github_available:
+        # This is a separate implementation observation, not a claim that the
+        # remote writer stopped. A resumable provider can still be running.
+        implementation = LocalRunObservation(
+            _opaque(f"{binding}\0{expected_round}\0{observation.generation}", "implementation"),
+            binding, observation.session.provider, "builder", "implementation_complete", "observed",
+            observation.session.checked_at, source_kind="github",
+            checked_at=observation.session.checked_at,
+        )
+        snapshot = replace(snapshot, work=replace(snapshot.work, runs=(*snapshot.work.runs, implementation)))
+    return snapshot
