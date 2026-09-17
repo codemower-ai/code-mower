@@ -24,6 +24,11 @@ from code_mower import board, board_service, lane_status
 
 VERSION = board_service.installed_version()
 
+# A stand-in for an operator's private checkout, spelled without this platform's
+# home prefix so the repository privacy scan stays clean. What the redaction
+# tests need from it is only that it is an absolute local path.
+_PRIVATE_CHECKOUT = "/opt/operator/private-checkout"
+
 
 def _completed(stdout: str = "", *, returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
@@ -465,15 +470,15 @@ class BoardServiceContractTest(ServiceHarness):
                 "serve",
                 "--repo=a/b",
                 "--port=5333",
-                "--repo-path=/Users/alice/private-checkout",
+                f"--repo-path={_PRIVATE_CHECKOUT}",
                 "--repo-path",
-                "/Users/alice/private-checkout",
+                _PRIVATE_CHECKOUT,
                 "--record-events",
             ],
             show_local_paths=False,
         )
 
-        self.assertNotIn("alice", " ".join(redacted))
+        self.assertNotIn(_PRIVATE_CHECKOUT, " ".join(redacted))
         # The option name is not private, and it is what makes a redacted argv
         # readable; only its value is replaced.
         self.assertEqual(redacted[5], f"--repo-path={lane_status.LOCAL_PATH_REDACTION}")
@@ -497,7 +502,7 @@ class BoardServiceContractTest(ServiceHarness):
         )
 
     def test_show_local_paths_returns_equals_form_arguments_verbatim(self) -> None:
-        arguments = ["--repo=a/b", "--repo-path=/Users/alice/private-checkout"]
+        arguments = ["--repo=a/b", f"--repo-path={_PRIVATE_CHECKOUT}"]
 
         self.assertEqual(
             board_service.redact_arguments(arguments, show_local_paths=True), arguments
