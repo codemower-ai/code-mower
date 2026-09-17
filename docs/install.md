@@ -333,10 +333,29 @@ reviewer-gate path:
 
 ```bash
 code-mower init --easy
+code-mower doctor --adoption --repo OWNER/REPO --concise
 code-mower doctor --adoption --repo OWNER/REPO --json
 code-mower lanes status --repo OWNER/REPO
 code-mower board serve --repo OWNER/REPO
 ```
+
+Read `--concise` first: every check still runs, and the posture-scoped summary
+leads with active failures and owner actions and counts the remaining warnings
+by group. Keep `--json` for the complete machine-readable evidence, and use
+`--advanced` when you want the full text list of every check. The concise view
+is a reading order, not a smaller check set.
+
+A Board that was just started can still be binding its port when a doctor
+snapshot runs. `code-mower doctor` now re-observes Board visibility for a short
+bounded grace in that case only, so the snapshot agrees with `code-mower board
+list`. A Board that is visible is reported immediately, so a stopped,
+wrong-repository, stale-version, or unhealthy Board is never hidden by the wait,
+and a host with no `lsof`/`ss` still reports the missing listener inventory
+without retrying. Set `CODE_MOWER_BOARD_STARTUP_GRACE_SECONDS=0` to turn the
+wait off; any other value is a budget in seconds, capped at 10, and a value that
+is not a finite non-negative number falls back to the short default rather than
+lengthening the wait. The JSON report records the timing it actually used under
+`startup_grace`.
 
 For an existing repository with older Code Mower generated files, inspect drift
 before copying a newly generated tree into the repo:
@@ -346,9 +365,30 @@ code-mower migration setup-drift --repo-path . --json
 code-mower migration setup-drift --repo-path .
 ```
 
-The drift report is read-only. It compares the current generated setup output
-against tracked Code Mower files and classifies paths as `same`, `differs`,
-`new`, `repo-only`, or `missing-from-output`. The text report also names the
+The drift report is read-only. It compares two named operands:
+
+- source: the generated setup from the installed Code Mower package, for the
+  config and profile the report names;
+- target: the tracked repository files in the checkout you point `--repo-path`
+  at.
+
+Every classification is defined in terms of those two operands, and the report
+prints the definitions with the counts:
+
+| Classification | Meaning | Side |
+| --- | --- | --- |
+| `same` | present on both sides with identical bytes | both |
+| `differs` | present on both sides with different bytes | both |
+| `new` | present in the generated setup only | source only |
+| `repo-only` | tracked in the repository only | target only |
+| `missing-from-output` | named by the setup plan but not readable from the installed package | source unreadable |
+
+The comparison is presence and bytes only. A `differs` entry does not say which
+side is newer: check the installed package version and the repository history
+before deciding which one to keep. The JSON report carries the same metadata
+under `comparison`, and each file entry carries its `side`.
+
+The text report also names the
 configuration source (`Config source: packaged starter ...` or
 `Config source: explicit repository config ...`), using the same terms as
 `code-mower init`. Use it before an upgrade PR so
