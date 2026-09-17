@@ -1,0 +1,551 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "code_mower.supervisor.v1",
+  "title": "Private qualified supervisor boundary; only status may enter telemetry",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/admission"
+    },
+    {
+      "$ref": "#/$defs/claim"
+    },
+    {
+      "$ref": "#/$defs/result"
+    },
+    {
+      "$ref": "#/$defs/request"
+    }
+  ],
+  "$defs": {
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant",
+        "repository",
+        "work",
+        "run",
+        "operation"
+      ],
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "work": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "run": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "operation": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "builder_acu",
+        "runtime_calls",
+        "runtime_seconds",
+        "review_requests"
+      ],
+      "properties": {
+        "builder_acu": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "runtime_calls": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 32
+        },
+        "runtime_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        },
+        "review_requests": {
+          "const": 1
+        }
+      }
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "binding",
+        "grant",
+        "runner",
+        "expires_at",
+        "limits"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.supervisor.v1"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "grant": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "runner": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "limits": {
+          "$ref": "#/$defs/limits"
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "binding",
+        "grant",
+        "runner",
+        "session",
+        "generation",
+        "token",
+        "scope_digest",
+        "expires_at"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.supervisor_claim.v1"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "grant": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "runner": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "session": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "generation": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "token": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "scope_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "maxLength": 64
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "binding",
+        "generation",
+        "scope_digest",
+        "decision",
+        "builder_acu",
+        "reviewer"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.supervisor_decision.v1"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "generation": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "maxLength": 64
+        },
+        "scope_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "maxLength": 64
+        },
+        "decision": {
+          "enum": [
+            "accept",
+            "dispatch",
+            "wait",
+            "review",
+            "complete",
+            "owner_action",
+            "reject"
+          ]
+        },
+        "builder_acu": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "reviewer": {
+          "enum": [
+            "codex",
+            "claude"
+          ]
+        }
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "state",
+        "reason",
+        "next_action",
+        "implementation",
+        "writer",
+        "review",
+        "gate",
+        "merge",
+        "lifecycle",
+        "tracker_write",
+        "merge_authority",
+        "review_writer"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.supervisor_status.v1"
+        },
+        "state": {
+          "enum": [
+            "waiting",
+            "claimed",
+            "running",
+            "reviewing",
+            "complete",
+            "cancelled",
+            "uncertain",
+            "rejected"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "none",
+            "supervisor_unavailable",
+            "supervisor_unqualified",
+            "not_registered",
+            "binding_mismatch",
+            "claim_conflict",
+            "claim_expired",
+            "claim_revoked",
+            "supervisor_restarted",
+            "lease_unavailable",
+            "handoff_uncertain",
+            "recovery_required",
+            "budget_exhausted",
+            "builder_unavailable",
+            "result_not_ready",
+            "writer_active",
+            "review_unavailable",
+            "review_failed",
+            "gate_pending",
+            "head_changed",
+            "cancel_pending",
+            "cancel_uncertain",
+            "policy_denied",
+            "invalid_contract"
+          ]
+        },
+        "next_action": {
+          "enum": [
+            "none",
+            "configure_supervisor",
+            "status",
+            "result",
+            "owner_action",
+            "new_authorization"
+          ]
+        },
+        "implementation": {
+          "enum": [
+            "pending",
+            "verified"
+          ]
+        },
+        "writer": {
+          "enum": [
+            "not_started",
+            "unknown",
+            "running",
+            "suspended",
+            "terminated"
+          ]
+        },
+        "review": {
+          "enum": [
+            "not_requested",
+            "pending",
+            "passed",
+            "failed",
+            "unavailable",
+            "cancelled"
+          ]
+        },
+        "gate": {
+          "enum": [
+            "unknown",
+            "pending",
+            "passed",
+            "failed"
+          ]
+        },
+        "merge": {
+          "enum": [
+            "unknown",
+            "open",
+            "merged",
+            "closed"
+          ]
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/lifecycle"
+        },
+        "tracker_write": {
+          "const": false
+        },
+        "merge_authority": {
+          "const": false
+        },
+        "review_writer": {
+          "enum": [
+            "not_started",
+            "running",
+            "suspended",
+            "terminated",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "state",
+        "reason",
+        "next_action",
+        "counts"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.remote_session.v1"
+        },
+        "state": {
+          "enum": [
+            "archived",
+            "complete",
+            "failed",
+            "pending",
+            "running",
+            "suspended",
+            "terminated",
+            "uncertain",
+            "waiting_for_approval",
+            "waiting_for_user"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "approval_required",
+            "inspect_provider_then_acknowledge",
+            "none",
+            "provider_unavailable",
+            "reconcile_dispatch",
+            "result_not_ready",
+            "result_unavailable",
+            "session_failed",
+            "session_suspended",
+            "user_input_required"
+          ]
+        },
+        "next_action": {
+          "enum": [
+            "acknowledge_delivered",
+            "inspect_provider",
+            "none",
+            "status"
+          ]
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dispatch",
+            "message",
+            "cancel",
+            "collect"
+          ],
+          "properties": {
+            "dispatch": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "message": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "cancel": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "collect": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            }
+          }
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo",
+        "pr_number",
+        "branch",
+        "head_sha"
+      ],
+      "properties": {
+        "repo": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*$",
+          "maxLength": 256
+        },
+        "pr_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "head_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "maxLength": 40
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "claim",
+        "status",
+        "target"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.supervisor_result.v1"
+        },
+        "claim": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/claim"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/target"
+            }
+          ]
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "action",
+        "claim"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.supervisor_request.v1"
+        },
+        "action": {
+          "enum": [
+            "handoff",
+            "status",
+            "result",
+            "cancel",
+            "renew"
+          ]
+        },
+        "claim": {
+          "$ref": "#/$defs/claim"
+        }
+      }
+    }
+  }
+}
