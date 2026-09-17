@@ -1546,8 +1546,14 @@ class RunnerScriptContractTests(unittest.TestCase):
             spaced = Path(tmp) / "Code Mower bin"
             spaced.mkdir()
             wrapper = spaced / "lane-delivery"
+            # The capability gate probes `writer-id` before it looks at --repo,
+            # so a pinned command has to answer it with accepted identities.
             wrapper.write_text(
-                "#!/usr/bin/env bash\nexit 0\n",
+                "#!/usr/bin/env bash\n"
+                'if [ "${1:-}" = "writer-id" ]; then\n'
+                "  printf '%s\\n' "
+                '\'{"writer":"claude-owner__repo","round_id":"claude-owner__repo-probe"}\'\n'
+                "fi\nexit 0\n",
                 encoding="utf-8",
             )
             wrapper.chmod(0o755)
