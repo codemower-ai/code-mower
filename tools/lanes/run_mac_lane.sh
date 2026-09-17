@@ -1574,6 +1574,38 @@ case "$supervision_reason" in
   timeout|output_overflow|interrupted) supervisor_ended=1 ;;
 esac
 
+# A supervised creation round publishes its chain inside the supervisor, before
+# this runner reads anything back, and leaves its private record filed under the
+# issue it was launched for. The delivered pull request's number is the only
+# place a later fix round -- or a rerun of this same issue -- looks for that
+# record, so the relocation happens here, on the number the supervisor itself
+# discovered and published.
+#
+# It deliberately does not wait for delivery classification. That step is
+# independently fallible: an incomplete after-snapshot alone ends the run at the
+# undelivered path, which returns before any post-delivery attribution block.
+# The chain would stay published on the created head with no record to extend,
+# and every later round would answer `lineage_head_pending` from there on.
+#
+# A destination that already exists belongs to some other round and is left
+# untouched: a stranded record costs a chain restart, overwriting one would cost
+# another pull request its history.
+creation_published=""
+if [ -n "$creation_branch" ] && [ -s "${log%.log}.lineage.json" ]; then
+  creation_published=1
+  creation_delivered_pr="$(jq -r --arg repo "$REPO" '
+    if ((.dimensions.pr_repo // "") | ascii_downcase) == ($repo | ascii_downcase)
+    then (.dimensions.pr_number // "") else "" end' \
+    "${log%.log}.lineage.json" 2>/dev/null || printf '')"
+  creation_delivered_store="${HOME}/.local/share/code-mower/lineage/${repo_key}/${creation_delivered_pr}"
+  if ! printf '%s' "$creation_delivered_pr" | grep -Eq '^[1-9][0-9]*$'; then
+    echo "${LANE}: published creation round named no pull request in ${REPO}; its private lineage record stays under issue #${num}" >&2
+  elif [ -d "$creation_store" ] && { [ -e "$creation_delivered_store" ] \
+    || ! mv "$creation_store" "$creation_delivered_store"; }; then
+    echo "${LANE}: created pull request #${creation_delivered_pr} keeps its private lineage record under issue #${num}" >&2
+  fi
+fi
+
 # Read the target again before the runner writes anything to it. This snapshot
 # is the provider's own work and nothing else, which is the one question that
 # has to be answered before the bounded outcome is brokered: a provider that
@@ -1804,22 +1836,15 @@ fi
 
 # A newly opened PR has no pre-launch PR target. Attribute only after the
 # validated delivery, with fresh exact metadata and immutable policy/history.
-if [ "$mode" != "audit" ] && [ "$kind" = "issue" ] && [ "$observed_transition" = "pr_opened" ]; then
+#
+# A supervised creation round that published is skipped: it already minted exact
+# attribution for the one pull request it is bound to, and relocated its private
+# record onto that number above, so the weaker post-hoc record would only
+# restate it. A creation round that published nothing still takes this path.
+if [ "$mode" != "audit" ] && [ "$kind" = "issue" ] && [ "$observed_transition" = "pr_opened" ] \
+  && [ -z "$creation_published" ]; then
   delivered_pr="$(jq -r '.pr_number // empty' "$after_state")"
-  if [ -n "$creation_branch" ] && [ -s "${log%.log}.lineage.json" ]; then
-    # The supervised creation round already published exact attribution for the
-    # one pull request it is bound to, so the weaker post-hoc record would only
-    # restate it. Move the private record onto the delivered number instead, so
-    # the next fix round continues this chain rather than starting a new one. A
-    # destination that already exists belongs to some other round and is left
-    # untouched: a stranded record costs a chain restart, overwriting one would
-    # cost another pull request its history.
-    delivered_store="${HOME}/.local/share/code-mower/lineage/${repo_key}/${delivered_pr}"
-    if [ -d "$creation_store" ] && printf '%s' "$delivered_pr" | grep -Eq '^[1-9][0-9]*$' \
-      && [ ! -e "$delivered_store" ] && ! mv "$creation_store" "$delivered_store"; then
-      echo "${LANE}: created pull request #${delivered_pr} keeps its private lineage record under issue #${num}" >&2
-    fi
-  elif ! "${lane_delivery[@]}" lineage-record --repo "$REPO" --pr "$delivered_pr" \
+  if ! "${lane_delivery[@]}" lineage-record --repo "$REPO" --pr "$delivered_pr" \
       --base "$lineage_base" --lane "$LANE" --output "${log%.log}.builder.json"; then
     echo "${LANE}: builder provenance record skipped; trusted lineage attribution refused" >&2
   fi
