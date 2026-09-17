@@ -239,6 +239,11 @@
     },
     {
       "kind": "doc",
+      "source": "docs/supervisor-contract.md",
+      "target": "docs/supervisor-contract.md"
+    },
+    {
+      "kind": "doc",
       "source": "docs/troubleshooting.md",
       "target": "docs/troubleshooting.md"
     },
@@ -1591,6 +1596,31 @@
       "kind": "core",
       "source": "src/code_mower/slack_ingress.py",
       "target": "src/code_mower/slack_ingress.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/supervisor.py",
+      "target": "src/code_mower/supervisor.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/supervisor_codex.py",
+      "target": "src/code_mower/supervisor_codex.py"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/supervisor_contract.fixtures.json",
+      "target": "src/code_mower/supervisor_contract.fixtures.json"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/supervisor_contract.py",
+      "target": "src/code_mower/supervisor_contract.py"
+    },
+    {
+      "kind": "schema",
+      "source": "src/code_mower/supervisor_contract.schema.json",
+      "target": "src/code_mower/supervisor_contract.schema.json"
     },
     {
       "kind": "config",
