@@ -147,13 +147,21 @@ class ServiceRequestError(ValueError):
     """Raised for a request that can never be valid, such as a bad repo slug."""
 
 
-def installed_version() -> str:
-    """The installed distribution version, falling back to the imported one."""
+def installed_distribution_version() -> str | None:
+    """The installed distribution version, or `None` in a source checkout.
+
+    The Board answers the same question with `board.board_version_payload()`,
+    which reports an empty `installed_version` when there is no distribution
+    metadata. Keeping the "no distribution" case distinguishable here -- rather
+    than folding it into the imported version -- is what lets the serving gate
+    hold both sides to the same contract instead of comparing a fallback
+    against an empty string forever.
+    """
 
     try:
         return metadata.version("code-mower")
     except metadata.PackageNotFoundError:
-        return CODE_MOWER_VERSION
+        return None
 
 
 def default_service_root() -> Path:
@@ -1436,30 +1444,53 @@ def validate_binding(
             repo=spec.repo,
         )
     )
-    expected_installed = installed_version()
+    # Two supported launch modes, one contract. An installed distribution names
+    # its version on both sides and they must be equal. A source checkout has no
+    # distribution metadata on either side, so the Board reports an empty
+    # installed version and the honest expectation is that it stays empty --
+    # demanding the imported version there would fail a healthy service forever.
+    expected_installed = installed_distribution_version()
     reported_installed = _text(version.get("installed_version"))
-    installed_ok = bool(reported_installed) and reported_installed == expected_installed
+    if expected_installed is None:
+        installed_ok = reported_installed == ""
+        installed_message = (
+            "neither side has distribution metadata, as expected for a source checkout"
+            if installed_ok
+            else "the served Board reports an installed distribution this checkout does not have"
+        )
+    else:
+        installed_ok = reported_installed == expected_installed
+        installed_message = (
+            "the served installed version matches this installation"
+            if installed_ok
+            else "the served installed version does not match this installation"
+        )
     checks.append(
         _check(
             "binding.installed_version",
             "pass" if installed_ok else "fail",
-            "the served installed version matches this installation"
-            if installed_ok
-            else "the served installed version does not match this installation",
+            installed_message,
             installed_version=reported_installed,
-            expected_installed_version=expected_installed,
+            expected_installed_version=expected_installed or "",
+            source_checkout=expected_installed is None,
         )
     )
+    # The serving version is the code the process is actually running, and both
+    # modes populate it. Comparing it against this Code Mower -- rather than
+    # against whatever the Board reports as installed -- is the one comparison
+    # that means the same thing in both modes, and `restart_recommended` still
+    # carries the Board's own verdict that it is running behind its install.
     reported_serving = _text(version.get("serving_version"))
-    serving_ok = bool(reported_serving) and reported_serving == reported_installed and not version.get("restart_recommended")
+    serving_ok = reported_serving == CODE_MOWER_VERSION and not version.get("restart_recommended")
     checks.append(
         _check(
             "binding.serving_version",
             "pass" if serving_ok else "fail",
-            "the serving version matches the installed version"
+            "the serving version matches this Code Mower"
             if serving_ok
-            else "the serving version is stale against the installed version",
+            else "the serving version is stale against this Code Mower",
             serving_version=reported_serving,
+            expected_serving_version=CODE_MOWER_VERSION,
         )
     )
     return _binding_payload(spec, checks, service, show_local_paths=show_local_paths, expected_digest=expected)

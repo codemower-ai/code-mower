@@ -16,18 +16,44 @@ import shlex
 import subprocess
 import tempfile
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
+from importlib import metadata
 from pathlib import Path
 from unittest import TestCase, mock
 
 from code_mower import board, board_service, lane_status
 
 
-VERSION = board_service.installed_version()
+# A Board answers about its versions through `board.board_version_payload()`, so
+# the fake host answers with exactly that payload rather than a hand-written one
+# that always populates `installed_version`. A source checkout reports an empty
+# installed version there, and the serving gate has to accept the real shape.
+CODE_MOWER_VERSION = board.CODE_MOWER_VERSION
 
 # A stand-in for an operator's private checkout, spelled without this platform's
 # home prefix so the repository privacy scan stays clean. What the redaction
 # tests need from it is only that it is an absolute local path.
 _PRIVATE_CHECKOUT = "/opt/operator/private-checkout"
+
+
+def _without_distribution_metadata() -> AbstractContextManager[object]:
+    """Run as a source checkout: no `code-mower` distribution is installed.
+
+    Both sides read the same `importlib.metadata`, so one patch puts the Board
+    payload and the serving gate in the same mode -- which is the point of the
+    contract being tested.
+    """
+
+    def _missing(name: str) -> str:
+        raise metadata.PackageNotFoundError(name)
+
+    return mock.patch.object(metadata, "version", _missing)
+
+
+def _with_distribution_metadata(version: str) -> AbstractContextManager[object]:
+    """Run as an installed distribution reporting `version`."""
+
+    return mock.patch.object(metadata, "version", lambda name: version)
 
 
 def _completed(stdout: str = "", *, returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess[str]:
@@ -121,13 +147,7 @@ class FakeHost:
         self.identities[port] = {
             "schema": "code_mower.boardIdentity.v1",
             "repo": binding["repo"],
-            "board": {
-                "version": {
-                    "serving_version": VERSION,
-                    "installed_version": VERSION,
-                    "restart_recommended": False,
-                }
-            },
+            "board": {"version": board.board_version_payload()},
         }
         self.loaded[label] = pid
 
@@ -174,13 +194,7 @@ class FakeHost:
             self.identities[port] = {
                 "schema": "code_mower.boardIdentity.v1",
                 "repo": binding["repo"],
-                "board": {
-                    "version": {
-                        "serving_version": VERSION,
-                        "installed_version": VERSION,
-                        "restart_recommended": False,
-                    }
-                },
+                "board": {"version": board.board_version_payload()},
             }
         return pid
 
@@ -1169,11 +1183,7 @@ class BoardServiceLifecycleTest(ServiceHarness):
         spec = self.spec()
         self.install(spec)
         self.host.identities[5332]["board"] = {
-            "version": {
-                "serving_version": "0.0.1",
-                "installed_version": VERSION,
-                "restart_recommended": True,
-            }
+            "version": board.board_version_payload() | {"serving_version": "0.0.1", "restart_recommended": True}
         }
 
         binding = board_service.validate_binding(
@@ -1184,6 +1194,84 @@ class BoardServiceLifecycleTest(ServiceHarness):
         )
 
         self.assertIn("binding.serving_version", binding["failing_checks"])
+
+    def test_a_source_checkout_board_passes_the_version_checks(self) -> None:
+        # The supported module entry point runs from a checkout with no
+        # distribution metadata. `board_version_payload()` reports an empty
+        # installed version there, and the gate has to accept its own side
+        # having none either rather than demanding the imported version.
+        with _without_distribution_metadata():
+            spec = self.spec()
+            payload = self.install(spec)
+            binding = board_service.validate_binding(
+                spec,
+                provider=self.host.provider(),
+                command_runner=self.host.run,
+                identity_probe=self.host.identity_probe,
+            )
+
+        self.assertEqual(payload["status"], "installed")
+        self.assertEqual(binding["failing_checks"], [])
+        installed_check = next(item for item in binding["checks"] if item["id"] == "binding.installed_version")
+        self.assertTrue(installed_check["source_checkout"])
+        self.assertEqual(installed_check["installed_version"], "")
+        serving_check = next(item for item in binding["checks"] if item["id"] == "binding.serving_version")
+        self.assertEqual(serving_check["serving_version"], CODE_MOWER_VERSION)
+
+    def test_an_installed_distribution_board_passes_the_version_checks(self) -> None:
+        with _with_distribution_metadata(CODE_MOWER_VERSION):
+            spec = self.spec()
+            payload = self.install(spec)
+            binding = board_service.validate_binding(
+                spec,
+                provider=self.host.provider(),
+                command_runner=self.host.run,
+                identity_probe=self.host.identity_probe,
+            )
+
+        self.assertEqual(payload["status"], "installed")
+        self.assertEqual(binding["failing_checks"], [])
+        installed_check = next(item for item in binding["checks"] if item["id"] == "binding.installed_version")
+        self.assertFalse(installed_check["source_checkout"])
+        self.assertEqual(installed_check["installed_version"], CODE_MOWER_VERSION)
+
+    def test_an_installed_distribution_that_disagrees_fails_the_gate(self) -> None:
+        # Exact comparison is still what installed-package mode owes: a Board
+        # serving some other installation of Code Mower is not this binding.
+        with _with_distribution_metadata(CODE_MOWER_VERSION):
+            spec = self.spec()
+            self.install(spec)
+            self.host.identities[5332]["board"] = {
+                "version": board.board_version_payload() | {"installed_version": "0.0.1", "restart_recommended": True}
+            }
+            binding = board_service.validate_binding(
+                spec,
+                provider=self.host.provider(),
+                command_runner=self.host.run,
+                identity_probe=self.host.identity_probe,
+            )
+
+        self.assertIn("binding.installed_version", binding["failing_checks"])
+        self.assertIn("binding.serving_version", binding["failing_checks"])
+
+    def test_a_source_checkout_refuses_a_board_that_claims_an_installation(self) -> None:
+        # Accepting an empty installed version is the source-checkout contract,
+        # not a blanket pass: a Board that names a distribution this checkout
+        # does not have is serving other code.
+        with _without_distribution_metadata():
+            spec = self.spec()
+            self.install(spec)
+            self.host.identities[5332]["board"] = {
+                "version": board.board_version_payload() | {"installed_version": "9.9.9"}
+            }
+            binding = board_service.validate_binding(
+                spec,
+                provider=self.host.provider(),
+                command_runner=self.host.run,
+                identity_probe=self.host.identity_probe,
+            )
+
+        self.assertIn("binding.installed_version", binding["failing_checks"])
 
     def test_another_supervisor_on_the_port_stops_the_apply(self) -> None:
         self.host.add_foreign_listener(5332, command="/usr/local/bin/code-mower board serve --repo other/other", ppid=1)

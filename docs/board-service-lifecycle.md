@@ -41,8 +41,15 @@ must pass before an operation reports success:
 | `process.supervisor` | the process is supervised, so it survives the invoking shell |
 | `binding.port` | the service process, and nothing else, holds the port -- every listener on it is that process, the same bar an apply enforces |
 | `binding.repo` | the port serves the expected repository slug |
-| `binding.installed_version` | the served installed version matches this installation |
-| `binding.serving_version` | the serving version is not stale against the installed one |
+| `binding.installed_version` | the served installed version matches this installation, or -- from a source checkout, where neither side has distribution metadata -- that the Board reports none either |
+| `binding.serving_version` | the running code is this Code Mower, and the Board does not recommend a restart |
+
+Both launch modes are supported and held to one contract. An installed
+distribution names its version on both sides, and they must be equal. A source
+checkout started through the module entry point has no distribution metadata, so
+`board_version_payload()` reports an empty `installed_version`; the gate expects
+exactly that, and still requires the serving version to equal the Code Mower this
+command is running from.
 
 ## Delayed health
 
