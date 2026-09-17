@@ -915,21 +915,37 @@ if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
   fi
   # Creation lineage attests the pull request this run opens, so it applies to
   # exactly the bootstrap case: nothing closes the issue yet, the policy branch
-  # exists nowhere on the remote, and the name is inside this lane's own
-  # prefixes. Every other issue run is a continuation of a pull request or a
-  # branch that already exists; the reservation in the creation contract refuses
-  # those anyway, and refusing them here as well would take away the no-PR
-  # bootstrap this runner has always performed. The one branch reserved for the
-  # round is the branch the guard already pins and the prompt already names, so
-  # the writer is never free to choose a different one.
+  # exists nowhere on the remote, and the target repository's own trusted policy
+  # admits a reservation of that name. Every other issue run is a continuation
+  # of a pull request or a branch that already exists; the reservation in the
+  # creation contract refuses those anyway, and refusing them here as well would
+  # take away the no-PR bootstrap this runner has always performed. The one
+  # branch reserved for the round is the branch the guard already pins and the
+  # prompt already names, so the writer is never free to choose a different one.
+  #
+  # Eligibility is asked of the supervisor that will enforce it, against the
+  # immutable base this checkout sits on. This runner's own prefixes cannot
+  # answer it: they are generated, and supply `<lane>/` for every locally
+  # executed lane whether or not `builder_identity.branch_prefixes` declares it,
+  # while a creation round admits only a declared one. Gating on the generated
+  # set selected rounds the supervisor then refused before launching anything,
+  # which took the bootstrap away from issue runs that had always worked. Any
+  # answer other than an accepted reservation -- including an installed CLI that
+  # does not know this subcommand -- keeps that bootstrap instead.
   if [ "$issue_pr_status" = "none" ] && [ "$policy_branch_expected_head" = "absent" ]; then
-    if printf '%s\n' "$lane_branch_prefixes_json" \
-      | jq -e --arg branch "$resolved_branch" \
-          'any(.[]; . as $prefix | ($branch | ascii_downcase | startswith($prefix)))' >/dev/null; then
+    creation_refusal=""
+    if ! creation_refusal="$("${lane_delivery[@]}" creation-eligible --cwd "$work" \
+        --lineage-base "$lineage_base" --writer-lane "$LANE" \
+        --lineage-branch "$resolved_branch" 2>&1 >/dev/null)"; then
+      creation_refusal="$(printf '%s' "${creation_refusal:-creation eligibility could not be established}" | tr '\n' ' ')"
+    else
+      creation_refusal=""
+    fi
+    if [ -z "$creation_refusal" ]; then
       creation_branch="$resolved_branch"
       creation_store="${HOME}/.local/share/code-mower/lineage/${repo_key}/issue-${num}"
     else
-      echo "${LANE}: policy branch ${resolved_branch} is outside this lane's prefixes (${lane_branch_prefixes_display}); issue #${num} runs without creation lineage"
+      echo "${LANE}: ${REPO} admits no creation reservation for ${resolved_branch} at ${lineage_base} (${creation_refusal}); issue #${num} runs without creation lineage"
     fi
   elif [ "$issue_pr_status" = "lane" ]; then
     # Rerunning the issue a creation round already delivered is a continuation

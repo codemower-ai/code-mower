@@ -1318,6 +1318,13 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--lane", required=True, choices=("codex", "claude", "devin"))
     record.add_argument("--output", required=True, type=Path)
     subparsers.add_parser("lineage-capabilities", help="Refuse unsupported installed lineage APIs")
+    eligible = subparsers.add_parser(
+        "creation-eligible",
+        help="Answer whether the trusted immutable-base policy admits a creation reservation")
+    eligible.add_argument("--cwd", required=True, type=Path)
+    eligible.add_argument("--lineage-base", required=True)
+    eligible.add_argument("--writer-lane", required=True)
+    eligible.add_argument("--lineage-branch", required=True)
     args = parser.parse_args(argv)
     if args.command == "handoff" and not args.source_branch_prefixes and args.lineage_store is None:
         parser.error("handoff requires --source-branch-prefix unless exact source ownership is selected with --lineage-store")
@@ -1331,6 +1338,8 @@ def main(argv: list[str] | None = None) -> int:
             from .provider_runners.lineage import require_capabilities
             require_capabilities()
             return 0
+        if args.command == "creation-eligible":
+            return _creation_eligible_main(args)
         if args.command == "classify":
             return _classify_main(args)
         if args.command == "transition":
@@ -2232,6 +2241,41 @@ def declined_creation(io, checkout, origin):
     return True
 
 
+def creation_prefix_refusal(identity, lane, branch):
+    """Why the trusted policy admits no creation round for ``branch``, or None.
+
+    A creation round may reserve only a prefix the target repository's own
+    immutable-base ``builder_identity.branch_prefixes`` actually declares. The
+    Mac runner's embedded prefixes are not that policy: they are generated, and
+    supply ``<lane>/`` for every locally executed lane whether or not the
+    repository declares it. Both the launcher and the ``creation-eligible``
+    probe the runner gates on answer from here, so the check a run passes is
+    the check its round is later held to.
+    """
+    prefixes = [prefix for prefix, prefix_lane in identity.branch_prefixes if prefix_lane == lane]
+    if not prefixes:
+        return "Creation requires a configured branch prefix for this lane"
+    if not any(branch.lower().startswith(prefix) for prefix in prefixes):
+        return "Reserved creation branch is outside this lane's configured prefixes"
+    return None
+
+
+def _creation_eligible_main(args):
+    """Answer, without effect, whether a creation round could reserve a branch.
+
+    The runner asks before it commits an issue run to creation supervision, so
+    a repository whose trusted policy declares no prefix for this lane keeps the
+    no-PR bootstrap instead of being refused at launch.
+    """
+    from .provider_runners.lineage import require_capabilities, trusted_policy
+    require_capabilities()
+    _, identity, _ = trusted_policy(args.cwd, args.lineage_base)
+    refusal = creation_prefix_refusal(identity, args.writer_lane, args.lineage_branch)
+    if refusal:
+        raise LaneDeliveryError(refusal)
+    return 0
+
+
 def _start_creation_round(args, *, io=None, runtime_observation=None):
     """One launcher lifetime owns an issue-targeted round and its created PR.
 
@@ -2265,10 +2309,9 @@ def _start_creation_round(args, *, io=None, runtime_observation=None):
     transport = Transport(args.writer_lane, "devin_cli" if args.writer_lane == "devin" else args.writer_lane,
                           args.writer_lane + "_cli", "local_cli")
     prefixes = [prefix for prefix, lane in identity.branch_prefixes if lane == transport.lane]
-    if not prefixes:
-        raise LaneDeliveryError("Creation requires a configured branch prefix for this lane")
-    if not any(args.lineage_branch.lower().startswith(prefix) for prefix in prefixes):
-        raise LaneDeliveryError("Reserved creation branch is outside this lane's configured prefixes")
+    refusal = creation_prefix_refusal(identity, transport.lane, args.lineage_branch)
+    if refusal:
+        raise LaneDeliveryError(refusal)
     io = io if io is not None else GitHub()
     # Read before registration, so the frontier this round is bound to is always
     # older than anything the supervised writer can open, and the branch it may

@@ -333,10 +333,22 @@ resolved and reserved before launch as `--lineage-branch`, the immutable
 `--lineage-base` the checkout sits on, the canonical `--lineage-writer`, and a
 private store and output. This applies to exactly the bootstrap case — the
 repository configures `delivery_policy.branch_template`, no pull request closes
-the issue yet, the resolved branch exists nowhere on the remote, and its name is
-inside that lane's own configured prefixes. Every other issue run continues a
-pull request or a branch that already exists and keeps the long-standing no-PR
-bootstrap, with post-hoc attribution as before. The reserved branch is the same
+the issue yet, the resolved branch exists nowhere on the remote, and the target
+repository's own policy admits a reservation of that name. Every other issue run
+continues a pull request or a branch that already exists and keeps the
+long-standing no-PR bootstrap, with post-hoc attribution as before.
+
+That last condition is asked of the supervisor, with `creation-eligible`, about
+the checkout at the immutable base the round would be bound to. The runner's
+embedded branch prefixes cannot answer it: they are generated, and supply
+`<lane>/` for every locally executed lane whether or not the repository declares
+it, while a creation round admits only a prefix
+`builder_identity.branch_prefixes` actually declares at that base. Any answer
+other than an admitted reservation — a lane the policy declares no prefix for, a
+branch outside the declared ones, an unreadable policy, or an installed CLI that
+does not know the subcommand — keeps the ordinary bootstrap instead of refusing
+the run. The probe reads only that configuration and writes nothing, so it has
+no effect of its own. The reserved branch is the same
 one name the pre-push guard authorizes and the prompt tells the writer to push,
 so the writer never chooses it. Once a created pull request is observed, its
 private record moves from `lineage/<owner>__<name>/issue-<n>` onto the delivered

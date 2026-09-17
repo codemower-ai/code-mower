@@ -316,6 +316,9 @@ class GeneratedRunnerTests(unittest.TestCase):
                         gh_call_log: Path | None = None,
                         base_sha: str | None = None,
                         supervise_log: Path | None = None,
+                        trusted_creation_prefixes: tuple[str, ...] = ("codex/",),
+                        eligibility_log: Path | None = None,
+                        unknown_eligibility_subcommand: bool = False,
                         lineage_store_pr: int | None = None,
                         discovered_creation_pr: int | None = None,
                         publication_completes: bool = True,
@@ -482,9 +485,47 @@ printf 'fake codex completed\\n'
                 # and the pull request the supervisor discovered is named in the
                 # output written before publication starts. The attribution
                 # output only follows when publication ran to completion.
+                #
+                # ``trusted_creation_prefixes`` is what the target repository's
+                # immutable-base policy declares for this lane, which is the only
+                # thing `creation-eligible` answers from. It is deliberately not
+                # the runner's own generated prefix set: an empty tuple is the
+                # shipped-example case where `builder_identity.branch_prefixes`
+                # names other lanes only, and the runner must still reach the
+                # ordinary bootstrap there. The refusal text mirrors the real
+                # subcommand's, which `tests/test_lineage_creation.py` pins.
                 recorder.write_text(
                     """#!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "creation-eligible" ]; then
+  eligibility_log=__ELIGIBILITY_LOG__
+  [ -z "$eligibility_log" ] || printf '%s\\n' "$@" > "$eligibility_log"
+  if [ -n "__UNKNOWN_ELIGIBILITY__" ]; then
+    printf "lane-delivery: error: argument command: invalid choice: 'creation-eligible'\\n" >&2
+    exit 2
+  fi
+  eligible_branch=""
+  eligible_skip=""
+  for arg in "$@"; do
+    if [ -n "$eligible_skip" ]; then
+      case "$eligible_skip" in --lineage-branch) eligible_branch="$arg" ;; esac
+      eligible_skip=""
+      continue
+    fi
+    case "$arg" in --cwd|--lineage-base|--writer-lane|--lineage-branch) eligible_skip="$arg" ;; esac
+  done
+  eligible_prefixes=__TRUSTED_CREATION_PREFIXES__
+  if [ "$(printf '%s\\n' "$eligible_prefixes" | jq -r 'length')" = "0" ]; then
+    printf 'lane-delivery: %s\\n' "Creation requires a configured branch prefix for this lane" >&2
+    exit 2
+  fi
+  if ! printf '%s\\n' "$eligible_prefixes" | jq -e --arg branch "$eligible_branch" \
+      'any(.[]; . as $p | ($branch | ascii_downcase | startswith($p)))' >/dev/null; then
+    printf 'lane-delivery: %s\\n' "Reserved creation branch is outside this lane's configured prefixes" >&2
+    exit 2
+  fi
+  exit 0
+fi
 if [ "${1:-}" = "supervise" ]; then
   printf '%s\\n' "$@" > __SUPERVISE_LOG__
   filtered=()
@@ -536,6 +577,11 @@ if [ "${1:-}" = "supervise" ]; then
 fi
 exec __REAL_LANE_DELIVERY__ "$@"
 """.replace("__SUPERVISE_LOG__", shlex.quote(str(supervise_log)))
+   .replace("__TRUSTED_CREATION_PREFIXES__",
+            shlex.quote(json.dumps(list(trusted_creation_prefixes))))
+   .replace("__ELIGIBILITY_LOG__",
+            shlex.quote("" if eligibility_log is None else str(eligibility_log)))
+   .replace("__UNKNOWN_ELIGIBILITY__", "1" if unknown_eligibility_subcommand else "")
    .replace("__DISCOVERED_CREATION_PR__",
             "" if discovered_creation_pr is None else str(discovered_creation_pr))
    .replace("__PUBLICATION_COMPLETES__", "1" if publication_completes else "")
@@ -676,7 +722,69 @@ exec __REAL_LANE_DELIVERY__ "$@"
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("supervise", argv)
         self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
-        self.assertIn("is outside this lane's prefixes", completed.stdout)
+        self.assertIn("runs without creation lineage", completed.stdout)
+        self.assertIn("outside this lane's configured prefixes", completed.stdout)
+
+    def test_a_lane_the_trusted_policy_declares_no_prefix_for_keeps_the_bootstrap(self) -> None:
+        # The shipped example declares branch_prefixes for other lanes only,
+        # while this runner is generated with `codex/` for every local lane. The
+        # branch is therefore inside the runner's own prefixes and outside the
+        # policy's, which is precisely the split that used to select a creation
+        # round the supervisor then refused before launching the provider. The
+        # run must reach the long-standing no-PR bootstrap instead.
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, argv, prompt, guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE,
+            trusted_creation_prefixes=())
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        # The provider still ran, and it still ran under the supervisor: only
+        # the lineage selection is withheld.
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+        self.assertIn("Creation requires a configured branch prefix for this lane",
+                      completed.stdout)
+        self.assertIn("runs without creation lineage", completed.stdout)
+        # Write authority and the branch the writer is told to push are the
+        # resolved policy branch either way; only the attestation is dropped.
+        self.assertIn("push exactly the branch " + self.CREATED_BRANCH, prompt)
+        self.assertEqual(guard["allowed_branch"], self.CREATED_BRANCH)
+
+    def test_an_installed_cli_without_the_eligibility_probe_keeps_the_bootstrap(self) -> None:
+        # `creation-eligible` is newer than the released CLI the runner may be
+        # sitting on, and argparse answers an unknown subcommand with exit 2.
+        # That is an unavailable answer, not an admitted reservation, so the
+        # issue run degrades to the bootstrap rather than being refused.
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, argv, _prompt, _guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE,
+            unknown_eligibility_subcommand=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+        self.assertIn("runs without creation lineage", completed.stdout)
+
+    def test_the_runner_asks_eligibility_of_the_checkout_and_its_immutable_base(self) -> None:
+        # The question has to be about the target repository at the revision the
+        # round would be bound to; asking about anything else is what let the
+        # two checks disagree in the first place.
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        base = "d" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            probe_log = Path(tmp) / "eligibility-argv"
+            completed, _prompt, _guard = self._run_codex_lane(
+                json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE, base_sha=base,
+                supervise_log=Path(tmp) / "supervise-argv", eligibility_log=probe_log)
+            probe = probe_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(probe[0], "creation-eligible")
+        self.assertEqual(self._flag(probe, "--lineage-base"), base)
+        self.assertEqual(self._flag(probe, "--writer-lane"), "codex")
+        self.assertEqual(self._flag(probe, "--lineage-branch"), self.CREATED_BRANCH)
+        self.assertTrue((self._flag(probe, "--cwd") or "").endswith("/codex/owner__repo"),
+                        self._flag(probe, "--cwd"))
 
     def test_an_existing_lane_owned_policy_branch_starts_no_creation_round(self) -> None:
         # Continuing work that already has a branch is not a creation, and the
@@ -843,6 +951,19 @@ exec __REAL_LANE_DELIVERY__ "$@"
                     text.index('mv "$creation_store" "$creation_delivered_store"'),
                     text.index('[ -s "${log%.log}.lineage.json" ]'),
                     "publication success may not gate filing the record")
+                # Whether a round may be started at all is the supervisor's own
+                # answer about the target repository at the immutable base, in
+                # every copy: a copy still gating on its generated prefixes would
+                # select rounds the supervisor refuses before launching anything.
+                self.assertIn('creation-eligible --cwd "$work"', text)
+                self.assertIn('--lineage-base "$lineage_base" --writer-lane "$LANE"', text)
+                self.assertIn('--lineage-branch "$resolved_branch"', text)
+                self.assertNotIn('"$lane_branch_prefixes_json"', text.split(
+                    "# Creation lineage attests")[1].split("elif [ \"$issue_pr_status\" = \"lane\" ]")[0])
+                self.assertLess(
+                    text.index("creation-eligible --cwd"),
+                    text.index('creation_branch="$resolved_branch"'),
+                    "the reservation may only be taken after the policy admits it")
 
     def test_runner_refuses_an_existing_policy_branch_it_does_not_own(self) -> None:
         # fix/12-nv-accessible-label is the one name the policy allows for

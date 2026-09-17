@@ -8,6 +8,7 @@ while nothing else held it. The accepted #963 handoff/continuation contracts are
 asserted unchanged, including the rendered public marker bytes.
 """
 import argparse
+import io as io_module
 import json
 from pathlib import Path
 import shutil
@@ -924,6 +925,92 @@ class CreationLauncherTests(unittest.TestCase):
                     lane_delivery._start_lineage_round(
                         self.args(**(dict(lineage_branch=None, lineage_created=None) | changes)),
                         io=self.unused(), runtime_observation=lambda: "ready")
+
+
+class CreationEligibilityTests(unittest.TestCase):
+    """`creation-eligible`: the launcher's own prefix admission, asked in advance.
+
+    The Mac runner has to decide whether to commit an issue run to creation
+    supervision before it launches anything, and it cannot answer from its own
+    embedded prefixes: those are generated and supply ``<lane>/`` for every
+    locally executed lane, while a round admits only what the target
+    repository's immutable-base ``builder_identity.branch_prefixes`` declares.
+    A runner gating on the generated set selected rounds this launcher then
+    refused, which took away the no-PR bootstrap those issue runs had. These
+    rows pin that the advance answer is the same answer, reason for reason.
+    """
+
+    # The shipped example configuration: prefixes are declared for the lanes it
+    # names, and the locally executed lanes are simply absent from them.
+    OTHER_LANES = Identity.from_mapping({
+        "enabled": True, "authors": {}, "labels": {"builder:claude": "claude"},
+        "branch_prefixes": {"cursor/": "cursor", "devin/": "devin"},
+        "require_verified_lineage": True,
+    })
+
+    def eligible(self, identity, lane, branch):
+        """The probe's exit status and what it said, with nothing else stubbed."""
+        with patch("code_mower.provider_runners.lineage.require_capabilities"), \
+                patch("code_mower.provider_runners.lineage.trusted_policy",
+                      return_value=({}, identity, AUTHORITY)) as policy, \
+                patch("sys.stderr", new_callable=io_module.StringIO) as err:
+            rc = lane_delivery.main(["creation-eligible", "--cwd", "/creation-checkout",
+                                     "--lineage-base", BASE, "--writer-lane", lane,
+                                     "--lineage-branch", branch])
+        # The question is always about the target checkout at the immutable base
+        # the round would be bound to, never about the host this runs on.
+        self.assertEqual(policy.call_args.args, (Path("/creation-checkout"), BASE))
+        return rc, err.getvalue()
+
+    def test_a_declared_prefix_admits_the_reservation_with_no_other_effect(self):
+        rc, said = self.eligible(POLICY, "claude", BRANCH)
+        self.assertEqual((rc, said), (0, ""))
+        # Lane by lane, against the same policy: each lane's own prefix only.
+        self.assertEqual(self.eligible(POLICY, "codex", CODEX_BRANCH)[0], 0)
+        self.assertNotEqual(self.eligible(POLICY, "codex", BRANCH)[0], 0)
+
+    def test_the_probe_and_the_launcher_refuse_for_the_same_stated_reason(self):
+        for reason, identity, branch in (
+                ("no prefix declared for this lane", self.OTHER_LANES, BRANCH),
+                ("branch outside the declared prefixes", POLICY, "fix/1020-creation"),
+        ):
+            with self.subTest(reason=reason):
+                rc, said = self.eligible(identity, "claude", branch)
+                self.assertEqual(rc, 2)
+                refusal = lane_delivery.creation_prefix_refusal(identity, "claude", branch)
+                self.assertIn(refusal, said)
+                # And the launcher, given exactly what the probe was asked
+                # about, refuses with that same message before reading the
+                # repository or registering a round.
+                with patch("code_mower.provider_runners.lineage.require_capabilities"), \
+                        patch("code_mower.provider_runners.lineage.trusted_policy",
+                              return_value=({}, identity, AUTHORITY)):
+                    launcher = FakeGitHub(pulls=[], refs={})
+                    with self.assertRaises(lane_delivery.LaneDeliveryError) as raised:
+                        lane_delivery._start_creation_round(
+                            argparse.Namespace(
+                                cwd=Path("/creation-checkout"), writer="creation-round-1",
+                                writer_state_dir=Path("/rounds"), writer_repo=REPO,
+                                writer_lane="claude", lineage_writer="claude--writer",
+                                lineage_issue=ISSUE, lineage_base=BASE, lineage_before=None,
+                                lineage_handoff=None, lineage_branch=branch,
+                                lineage_store=Path("/producer-state"),
+                                lineage_output=Path("/out/event.json"),
+                                lineage_created=Path("/out/created.json")),
+                            io=launcher, runtime_observation=lambda: "ready")
+                self.assertEqual(str(raised.exception), refusal)
+                self.assertEqual(launcher.effects, [])
+
+    def test_an_unreadable_trusted_policy_is_not_an_admitted_reservation(self):
+        # Creation lineage being unavailable must read as a refusal the runner
+        # can degrade on, never as an accepted reservation it then commits to.
+        with patch("code_mower.provider_runners.lineage.require_capabilities"), \
+                patch("code_mower.provider_runners.lineage.trusted_policy",
+                      side_effect=ContractError("Trusted immutable-base policy unavailable")), \
+                patch("sys.stderr", new_callable=io_module.StringIO):
+            self.assertEqual(lane_delivery.main(
+                ["creation-eligible", "--cwd", "/creation-checkout", "--lineage-base", BASE,
+                 "--writer-lane", "claude", "--lineage-branch", BRANCH]), 2)
 
 
 class CreationFrontierTransportTests(unittest.TestCase):
