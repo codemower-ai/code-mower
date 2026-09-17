@@ -4598,6 +4598,8 @@ _BOARD_HTML = """<!doctype html>
       // `observation` above and every work row below descend from this one
       // reading.
       const snapshot = snapshotAuthority(data, transport);
+      const observationRows = workRows(data, nowMs, transport);
+      const currentWork = observationRows.find(row => row.kind === "work" && row.stage !== "merged");
       // A status poll that did not complete makes every recorded next action a
       // past one, so the page states the action that is actually current --
       // get this page talking to the Board server again -- wherever it states
@@ -4606,7 +4608,7 @@ _BOARD_HTML = """<!doctype html>
       // summary line has always carried.
       const nextAction = snapshot.transport_confirmed === false
         ? TRANSPORT_NEXT_ACTION
-        : (data.next_action || "inspect");
+        : (currentWork?.action_label || data.next_action || "inspect");
       // The one place the page composes "and here is why this emptiness is not
       // a finding", so every absence claim on it is qualified the same way and
       // by the same two facts.
@@ -4743,7 +4745,6 @@ _BOARD_HTML = """<!doctype html>
       // read the records the Board was given; they never produce one, resolve
       // a session, or reach a provider to fill a gap in one.
       const observations = data.observations || {};
-      const observationRows = workRows(data, nowMs, transport);
       workState = {
         rows: observationRows,
         prs,
@@ -4772,6 +4773,7 @@ _BOARD_HTML = """<!doctype html>
       const attentionRows = observationRows.filter(row => ["owner", "maintainer", "reviewer", "builder", "orchestrator"].includes(text(row.record?.work?.primary?.actor)));
       put("chrome", [
         `<span>Now: <b>${esc(nextAction)}</b></span>`,
+        currentWork && snapshot.transport_confirmed !== false ? `<span>responsible: ${esc(currentWork.actor_label)}</span>` : "",
         cuePill(obs.label, obs.class),
         `<span class="pill wide">${esc(countOf(remoteAvailable, prs.length))} open PRs</span>`,
         // The count is of what was read, so it is labelled as such whenever

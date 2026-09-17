@@ -10,6 +10,7 @@ import argparse
 import io
 import json
 import re
+import subprocess
 import sys
 import time
 import unittest
@@ -32,6 +33,11 @@ def main() -> int:
     args = parser.parse_args()
     if not re.fullmatch(r"[a-f0-9]{40}", args.head_sha):
         parser.error("head must be a full commit SHA")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                          text=True, capture_output=True, check=True).stdout.strip()
+    dirty = subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], cwd=ROOT, check=False)
+    if head != args.head_sha or dirty.returncode != 0:
+        parser.error("qualification requires a clean checkout of the requested exact head")
     results = []
     for name in SUITES:
         started = time.monotonic()

@@ -211,6 +211,9 @@ class BoardQualificationTests(unittest.TestCase):
         for label in ("gate publisher run", "code-mower/gate verdict", "review verdict",
                       "Sampled checks only", "merge state", "human policy"):
             self.assertIn(label, frame["worklist"])
+        fresh_frame = frames[list(cases).index("fresh_without_pr")]
+        self.assertIn("observe implementation progress", fresh_frame["chrome"])
+        self.assertIn("responsible: orchestrator", fresh_frame["chrome"])
         grouped = cases["behind_and_review"]
         rows = _eval_board_view("workRows(ARGS[0], ARGS[1])", payload([grouped, copy.deepcopy(grouped)]),
                                 int(NOW.timestamp() * 1000))
