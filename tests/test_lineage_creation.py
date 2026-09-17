@@ -8,6 +8,8 @@ unchanged, including the rendered public marker bytes.
 """
 import argparse
 from pathlib import Path
+import shutil
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -29,6 +31,9 @@ BRANCH = "claude/1020-creation"
 BASE = sha(9)
 CREATED = sha(10)
 AUTHORITY = Authorities(["lineage-publisher[bot]"])
+# The real checkout observation, captured before any test patches it away, so one
+# row can still exercise it against a genuine directory.
+REAL_CHECKOUT = lane_delivery._lineage_checkout
 CLAUDE = Transport("claude", "claude", "claude_cli", "local_cli")
 CODEX = Transport("codex", "codex", "codex_cli", "local_cli")
 # The shared human owner login is deliberately unmapped: an issue-targeted run
@@ -190,13 +195,16 @@ class CreationDeliveryTests(unittest.TestCase):
         patch("code_mower.lane_handoff.ContextStore", MemoryStore).start()
         patch("code_mower.lane_delivery._creation_checkout",
               side_effect=lambda checkout, binding: Path(checkout)).start()
+        patch("code_mower.lane_delivery._lineage_checkout",
+              side_effect=lambda checkout, target: None).start()
         self.store = ProducerStore(Path("/producer-state"))
 
     def round_fixture(self, *, transport=CLAUDE, round_id="creation-round-1", binding=None,
-                      quiescent=True, started=True, finished=True):
+                      quiescent=True, started=True, finished=True,
+                      checkout=Path("/creation-checkout")):
         observer = lane_delivery.LineageCreationRound(
             Path("/rounds"), round_id, "claude--writer", binding or origin(), transport,
-            Path("/creation-checkout"), config={}, runtime_observation=lambda: "ready")
+            checkout, config={}, runtime_observation=lambda: "ready")
         if started:
             observer.started(21, 21)
         if finished:
@@ -213,7 +221,7 @@ class CreationDeliveryTests(unittest.TestCase):
     def test_stopped_round_records_and_publishes_the_creation_episode(self):
         observer = self.round_fixture()
         io = FakeGitHub()
-        created = lane_delivery.discover_created_pull(io, origin(), BRANCH, CREATED)
+        created = observer.bind_created(lane_delivery.discover_created_pull(io, origin(), BRANCH, CREATED))
         self.assertEqual(created, created_target())
         delivery = lane_delivery.lineage_creation(observer, created, BASE)
         self.assertEqual(delivery.episode.kind, "creation")
@@ -233,20 +241,75 @@ class CreationDeliveryTests(unittest.TestCase):
         self.assertEqual(io.current_labels, ("builder:claude",))
 
     def test_replay_of_one_round_is_idempotent_but_a_conflicting_replay_refuses(self):
+        from code_mower.builder_lineage_producer import _delivery
         observer = self.round_fixture()
-        created = lane_delivery.discover_created_pull(FakeGitHub(), origin(), BRANCH, CREATED)
+        created = observer.bind_created(
+            lane_delivery.discover_created_pull(FakeGitHub(), origin(), BRANCH, CREATED))
         delivery = lane_delivery.lineage_creation(observer, created, BASE)
         self.assertTrue(self.record(delivery))
         writes = len(MemoryStore.effects)
         self.assertFalse(self.record(delivery, create=False))
         self.assertEqual(writes, len(MemoryStore.effects))
-        moved = lane_delivery.lineage_creation(observer, created_target(head_sha=sha(12)), BASE)
+        # The round itself can no longer mint a second, different receipt, so the
+        # store's own refusal is asserted against a hand-built conflicting one.
+        moved = _delivery(creation_episode(resulting_head=sha(12)), delivery.writer,
+                          delivery.round_id, CLAUDE)
         with self.assertRaises(ProducerRefusal):
             self.record(moved, created_target(head_sha=sha(12)), create=False)
 
+    def test_one_finished_round_attributes_exactly_one_created_pull_request(self):
+        """A finished observer is not a licence to mint receipts for other work.
+
+        Registration binds an issue and a base, never a pull request, so only
+        the persisted discovery separates this round's creation from any other
+        pull request numbered above the pre-launch frontier. Without that bind,
+        one stopped writer could name unrelated work as its own single-lane
+        creation, and the store would accept both because its replay checks are
+        scoped per target.
+        """
+        observer = self.round_fixture(round_id="creation-round-single")
+        created = observer.bind_created(created_target())
+        self.assertEqual(observer.bind_created(created_target()), created)
+        for reason, other in (("another pull request", created_target(pr_number=PR + 1)),
+                              ("a moved head", created_target(head_sha=sha(12))),
+                              ("another branch", created_target(branch="claude/other"))):
+            with self.subTest(reason=reason):
+                with self.assertRaises(ProducerRefusal):
+                    observer.bind_created(other)
+                with self.assertRaises(ProducerRefusal):
+                    lane_delivery.lineage_creation(observer, other, BASE)
+        self.assertEqual(lane_delivery.lineage_creation(observer, created, BASE).episode.pr_number, PR)
+
+    def test_minting_refuses_a_pull_request_this_round_never_discovered(self):
+        observer = self.round_fixture(round_id="creation-round-unbound")
+        with self.assertRaises(ProducerRefusal):
+            lane_delivery.lineage_creation(observer, created_target(), BASE)
+
+    def test_minting_requires_the_checkout_to_still_sit_on_the_created_head(self):
+        """The created head must be the one the writer left, as a delivery's is."""
+        checkout = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, checkout, ignore_errors=True)
+        (checkout / ".git").mkdir()
+        left = {("rev-parse", "HEAD"): CREATED, ("branch", "--show-current"): BRANCH}
+        observer = self.round_fixture(round_id="creation-round-checkout", checkout=checkout)
+        with patch("code_mower.lane_delivery._lineage_checkout", REAL_CHECKOUT), \
+                patch("code_mower.lane_delivery.subprocess.check_output",
+                      side_effect=lambda argv, **kwargs: left[tuple(argv[3:])] + "\n"):
+            created = observer.bind_created(created_target())
+            self.assertEqual(lane_delivery.lineage_creation(observer, created, BASE)
+                             .episode.resulting_head, CREATED)
+            for reason, key, value in (("head moved", ("rev-parse", "HEAD"), sha(12)),
+                                       ("branch changed", ("branch", "--show-current"), "claude/other")):
+                with self.subTest(reason=reason):
+                    restored, left[key] = left[key], value
+                    with self.assertRaises(ProducerRefusal):
+                        lane_delivery.lineage_creation(observer, created, BASE)
+                    left[key] = restored
+
     def test_creation_cannot_start_a_chain_without_the_explicit_create_selection(self):
         observer = self.round_fixture()
-        created = lane_delivery.discover_created_pull(FakeGitHub(), origin(), BRANCH, CREATED)
+        created = observer.bind_created(
+            lane_delivery.discover_created_pull(FakeGitHub(), origin(), BRANCH, CREATED))
         delivery = lane_delivery.lineage_creation(observer, created, BASE)
         writes = len(MemoryStore.effects)
         with self.assertRaises(ProducerRefusal):
@@ -261,10 +324,13 @@ class CreationDeliveryTests(unittest.TestCase):
                 observer = self.round_fixture(round_id="creation-round-" + reason.replace(" ", "-"),
                                               **changes)
                 with self.assertRaises(ProducerRefusal):
+                    observer.bind_created(created_target())
+                with self.assertRaises(ProducerRefusal):
                     lane_delivery.lineage_creation(observer, created_target(), BASE)
 
     def test_creation_outside_the_supervised_origin_refuses(self):
         observer = self.round_fixture()
+        observer.bind_created(created_target())
         for reason, args in (
                 ("other repository", (created_target(repo="owner/other"), BASE)),
                 ("other base", (created_target(), sha(3))),
@@ -313,8 +379,11 @@ class CreationDeliveryTests(unittest.TestCase):
 
     def test_minting_refuses_a_pre_existing_pull_request_handed_in_directly(self):
         observer = self.round_fixture(round_id="creation-round-pre-existing")
-        with self.assertRaises(ProducerRefusal):
-            lane_delivery.lineage_creation(observer, created_target(pr_number=FRONTIER), BASE)
+        for handed_in in (lambda t: observer.bind_created(t),
+                          lambda t: lane_delivery.lineage_creation(observer, t, BASE)):
+            with self.assertRaises(ProducerRefusal):
+                handed_in(created_target(pr_number=FRONTIER))
+        observer.bind_created(created_target())
         self.assertEqual(lane_delivery.lineage_creation(observer, created_target(), BASE)
                          .episode.pr_number, PR)
 
@@ -374,7 +443,8 @@ class CreationDeliveryTests(unittest.TestCase):
         observer = self.round_fixture(transport=CODEX, round_id="codex-round")
         io = FakeGitHub(pulls=[pull_payload(head={"ref": "codex/1020-creation", "sha": CREATED})],
                         target=created_target(branch="codex/1020-creation"), labels=("builder:codex",))
-        created = lane_delivery.discover_created_pull(io, origin(), "codex/1020-creation", CREATED)
+        created = observer.bind_created(
+            lane_delivery.discover_created_pull(io, origin(), "codex/1020-creation", CREATED))
         delivery = lane_delivery.lineage_creation(observer, created, BASE)
         self.assertEqual(delivery.episode.destination_lane, "codex")
         self.assertTrue(self.record(delivery, created, labels=["builder:codex"]))
@@ -407,6 +477,8 @@ class CreationLauncherTests(unittest.TestCase):
         patch("code_mower.lane_handoff.ContextStore", MemoryStore).start()
         patch("code_mower.lane_delivery._creation_checkout",
               side_effect=lambda checkout, binding: Path(checkout)).start()
+        patch("code_mower.lane_delivery._lineage_checkout",
+              side_effect=lambda checkout, target: None).start()
         patch("code_mower.provider_runners.lineage.require_capabilities").start()
         patch("code_mower.provider_runners.lineage.trusted_policy",
               return_value=({}, POLICY, AUTHORITY)).start()
@@ -437,6 +509,11 @@ class CreationLauncherTests(unittest.TestCase):
         observer.finish(quiescent=True)
         finish(self.result())
         self.assertIn("post", io.effects)
+        # The discovered pull request is bound into the stopped writer's own
+        # record before anything is minted, so the receipt names only it.
+        written = MemoryStore.records[(observer.control.store.root, observer.control.key)]
+        self.assertEqual(written["lineage_created"],
+                         dict(repo=REPO, pr_number=PR, branch=BRANCH, head_sha=CREATED))
         observation = self.attribution.call_args.args[0]
         self.assertEqual(observation.decision.current_writer, "claude")
         self.assertEqual(observation.chain.episodes[0].kind, "creation")

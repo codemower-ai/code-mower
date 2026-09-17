@@ -1930,7 +1930,51 @@ class LineageCreationRound:
     def finish(self, *, quiescent):
         self.control.finish(quiescent=quiescent)
 
-    def observed(self):
+    def _created(self, created):
+        """The exact discovered creation this round may be bound to, if any."""
+        from .builder_lineage import Target
+        from .builder_lineage_producer import ProducerRefusal
+        if not isinstance(created, Target) or created.repo != self.origin.repo:
+            raise ProducerRefusal("Created pull request is outside the supervised creation origin.")
+        if created.pr_number <= self.origin.creation_floor:
+            raise ProducerRefusal("Pull request existed before the supervised creation round.")
+        return dict(repo=created.repo, pr_number=created.pr_number,
+                    branch=created.branch, head_sha=created.head_sha)
+
+    def bind_created(self, created):
+        """Persist the one independently discovered pull request this round created.
+
+        Registration binds the round to an issue and a base; neither names a
+        pull request, because none exists yet. Discovery is what finds it, so
+        the discovered target is written back into the stopped writer's own
+        record before any receipt can be minted. One finished round therefore
+        attributes exactly one creation: an identical replay is accepted
+        unchanged, and a second, different pull request is refused instead of
+        acquiring the same verified single-lane attribution.
+        """
+        from .builder_lineage_producer import ProducerRefusal
+        bound = self._created(created)
+        self.observed()
+        with self.control.store.locked(self.control.key) as locked:
+            record = locked.read()
+            existing = record.get("lineage_created")
+            if existing is None:
+                record["lineage_created"] = bound
+                locked.write(record)
+            elif existing != bound:
+                raise ProducerRefusal("This supervised round already created a different pull request.")
+        self.observed(created)
+        return created
+
+    def observed(self, created=None):
+        """The stopped writer's own evidence, optionally for one bound creation.
+
+        Called with ``created``, the round additionally requires the persisted
+        binding to name that exact pull request and the writer's checkout to
+        still sit on that exact branch head, the way ``LineageRound.observed``
+        requires of a delivery. A head that is absent from the checkout, or a
+        target this round never discovered, has no supervised creation evidence.
+        """
         from .builder_lineage_producer import ProducerRefusal
         with self.control.store.locked(self.control.key) as locked:
             record = locked.read()
@@ -1942,22 +1986,29 @@ class LineageCreationRound:
                 or record.get("finished") is not True or record.get("quiescent") is not True
                 or any(type(record.get(k)) is not int or record[k] <= 0 for k in ("pid", "pgid"))):
             raise ProducerRefusal("Independent stopped/reaped named writer evidence required.")
+        if created is not None:
+            if record.get("lineage_created") != self._created(created):
+                raise ProducerRefusal("Creation differs from the pull request this round discovered.")
+            _lineage_checkout(record["checkout"], created)
         return self
 
 
 def lineage_creation(round_observer, created, base_sha):
-    """One stopped issue-targeted round that opened exactly this pull request."""
+    """One stopped issue-targeted round that opened exactly this pull request.
+
+    The round must already be bound to ``created`` by
+    :meth:`LineageCreationRound.bind_created`, which is what makes the target a
+    discovered observation rather than a caller's claim. Repository, immutable
+    base and the pre-launch frontier are then all re-checked here, so no caller
+    can hand this contract a pull request the round did not create.
+    """
     from .builder_lineage import Episode
     from .builder_lineage_producer import ProducerRefusal, _delivery
     if not isinstance(round_observer, LineageCreationRound):
         raise ProducerRefusal("A supervised creation round observer is required.")
-    observed = round_observer.observed()
+    observed = round_observer.observed(created)
     if (created.repo, base_sha) != (observed.origin.repo, observed.origin.base_sha):
         raise ProducerRefusal("Created pull request is outside the supervised creation origin.")
-    # Discovery already refuses a pre-existing pull request; minting refuses it
-    # again, so no caller can hand this contract a pull request it did not create.
-    if created.pr_number <= observed.origin.creation_floor:
-        raise ProducerRefusal("Pull request existed before the supervised creation round.")
     return _delivery(Episode(sequence=1, repo=created.repo, pr_number=created.pr_number,
         branch=created.branch, source_lane=observed.transport.lane,
         destination_lane=observed.transport.lane, expected_head=base_sha,
@@ -2009,7 +2060,9 @@ def _start_creation_round(args, *, io=None, runtime_observation=None):
         branch, head_sha = observed_creation_branch(observer.checkout, origin)
         if not any(branch.lower().startswith(prefix) for prefix in prefixes):
             raise LaneDeliveryError("Created branch is outside this lane's configured prefixes")
-        created = discover_created_pull(io, origin, branch, head_sha)
+        # Bind the discovered pull request into the stopped writer's own record
+        # before anything is minted, so this round can attribute only this one.
+        created = observer.bind_created(discover_created_pull(io, origin, branch, head_sha))
         snapshot = exact_snapshot(io, created)
         delivery = lineage_creation(observer, created, origin.base_sha)
         store.record(delivery, created, identity, authorities, io.history(created),
