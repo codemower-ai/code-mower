@@ -49,6 +49,7 @@ from code_mower.doctor_checks.campaign_auth import (
     AUTH_ERROR_UNSUPPORTED_MODE,
     AUTH_STATE_UNSUPPORTED_MODE,
     CAMPAIGN_AUTH_CHECK_NAME,
+    CAMPAIGN_AUTH_HOME_PREPARED_KEY,
     CAMPAIGN_AUTH_MODE_ENV_KEY,
     resolve_campaign_auth_source,
 )
@@ -418,6 +419,76 @@ class DoctorParityTests(unittest.TestCase):
         self.assertIn("docs/release-qualification.md", check.remediation)
         self.assertNotIn("codex", _readiness(checks).detail.get("ready_providers", []))
 
+    def test_missing_file_mode_credential_still_prepares_the_selected_home(self) -> None:
+        """The documented login runs against the configuration doctor writes.
+
+        An operator migrating an existing keyring-configured home to file mode
+        runs doctor before logging in. If doctor returned the missing-source
+        warning without preparing that home, the home would still name the
+        keyring store, and the login the remediation asks for would try to
+        store the new credential in a keyring this headless host does not have.
+        """
+
+        def refuse(*args, **kwargs):  # pragma: no cover - must never be reached
+            raise AssertionError("no probe may run without a credential source")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "codex-home"
+            # The home as a previous keyring-mode run left it.
+            prepare_codex_campaign_home(home, auth_mode=CODEX_AUTH_MODE_KEYRING)
+            config_path = home / "config.toml"
+            self.assertIn(
+                'cli_auth_credentials_store = "keyring"',
+                config_path.read_text(encoding="utf-8"),
+            )
+
+            checks = _run_checks(refuse, mode=CODEX_AUTH_MODE_FILE, codex_home=home)
+
+            config = config_path.read_text(encoding="utf-8")
+            self.assertIn('cli_auth_credentials_store = "file"', config)
+            self.assertNotIn("keyring", config)
+            # Preparing the home is not authenticating it: no credential is
+            # created, so the source stays missing and the owner still owes a
+            # login.
+            self.assertFalse((home / CODEX_CAMPAIGN_AUTH_FILENAME).exists())
+            self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
+            # The restricted boundary is written, not relaxed.
+            self.assertIn('default_permissions = "campaign"', config)
+            self.assertIn('":root" = "deny"', config)
+
+        check = _auth_check(checks)
+        self.assertEqual(check.status, STATUS_WARN)
+        self.assertEqual(check.detail.get("error"), AUTH_ERROR_SOURCE_MISSING)
+        self.assertTrue(check.detail.get(CAMPAIGN_AUTH_HOME_PREPARED_KEY))
+        self.assertTrue(check.detail.get("owner_action"))
+        self.assertNotIn("codex", _readiness(checks).detail.get("ready_providers", []))
+        self.assertNotIn(str(home), json.dumps(check.as_dict()))
+
+    def test_unpreparable_home_says_so_instead_of_promising_the_login(self) -> None:
+        """A home doctor could not configure must not be reported as ready to log in."""
+
+        def refuse(*args, **kwargs):  # pragma: no cover - must never be reached
+            raise AssertionError("no probe may run without a credential source")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "codex-home"
+            with mock.patch(
+                "code_mower.campaign_adapters.prepare_codex_campaign_home",
+                side_effect=OSError("read-only file system"),
+            ):
+                checks = _run_checks(refuse, mode=CODEX_AUTH_MODE_FILE, codex_home=home)
+        check = _auth_check(checks)
+        self.assertEqual(check.status, STATUS_WARN)
+        self.assertEqual(check.detail.get("error"), AUTH_ERROR_SOURCE_MISSING)
+        self.assertFalse(check.detail.get(CAMPAIGN_AUTH_HOME_PREPARED_KEY))
+        self.assertTrue(check.detail.get("owner_action"))
+        self.assertIn("could not be prepared", check.remediation)
+        # The filesystem error text is never echoed back into doctor output.
+        rendered = json.dumps(check.as_dict())
+        self.assertNotIn("read-only file system", rendered)
+        self.assertNotIn(str(home), rendered)
+
     def test_unusable_file_mode_credential_is_an_owner_action(self) -> None:
         def refuse(*args, **kwargs):  # pragma: no cover - must never be reached
             raise AssertionError("no probe may run for an unusable source")
@@ -429,6 +500,11 @@ class DoctorParityTests(unittest.TestCase):
         check = _auth_check(checks)
         self.assertEqual(check.status, STATUS_WARN)
         self.assertEqual(check.detail.get("error"), AUTH_ERROR_SOURCE_UNUSABLE)
+        # Preparation refuses a home whose credential is not a private regular
+        # file, in file mode exactly as in keyring mode, so the refusal is
+        # reported rather than worked around.
+        self.assertFalse(check.detail.get(CAMPAIGN_AUTH_HOME_PREPARED_KEY))
+        self.assertIn("Remove it", check.remediation)
         self.assertNotIn(str(home), json.dumps(check.as_dict()))
 
     def test_authenticated_file_mode_home_passes_on_a_headless_host(self) -> None:

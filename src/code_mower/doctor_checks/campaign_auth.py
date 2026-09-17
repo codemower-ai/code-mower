@@ -253,6 +253,11 @@ AUTH_ERROR_SOURCE_UNUSABLE = "campaign_auth_source_unusable"
 #: unsupported mode must never earn.
 AUTH_STATE_UNSUPPORTED_MODE = "unsupported_mode"
 
+#: Detail key reporting whether the isolated home now carries the selected
+#: mode's restricted configuration. A bounded boolean: never a path, a
+#: permission bit, or a filesystem error message.
+CAMPAIGN_AUTH_HOME_PREPARED_KEY = "campaign_auth_home_prepared"
+
 #: Bounded source words mirrored from :mod:`code_mower.campaign_adapters`.
 CAMPAIGN_AUTH_SOURCE_PRESENT = "present"
 CAMPAIGN_AUTH_SOURCE_MISSING = "missing"
@@ -483,6 +488,34 @@ def campaign_auth_probe_env(
         return {}, AUTH_ERROR_PROBE_UNAVAILABLE
 
 
+def campaign_auth_prepare_home(provider: str, auth_mode: str) -> bool:
+    """Prepare one lane's isolated home for the selected mode, without probing.
+
+    Doctor is the documented step that writes the isolated home's restricted
+    configuration, and the operator then runs the provider's own login against
+    that configuration. The configuration names the credential store, so it has
+    to be written for the selected mode even when no credential exists yet: a
+    home carried over from keyring mode would otherwise still tell the login to
+    store the new credential in a keyring the targeted headless host does not
+    have. Preparation creates no credential and runs no probe, so a home with
+    no login stays exactly as unauthenticated as it was.
+
+    Returns whether the home now carries the selected mode's configuration. A
+    refused home -- the non-regular or symlinked credential file keyring and
+    file mode both reject -- reports ``False`` rather than raising, because the
+    caller is already reporting that refusal as the owner's action.
+    """
+    from code_mower.campaign_adapters import prepare_codex_campaign_home
+
+    if provider != "codex" or not auth_mode:
+        return False
+    try:
+        prepare_codex_campaign_home(auth_mode=auth_mode)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def campaign_auth_location_label(lane: Any) -> str:
     """Return the bounded location phrase used after ``canonical`` in messages."""
     provider_config = getattr(lane, "provider_config", None)
@@ -652,24 +685,49 @@ def _missing_source_check(
     timeout_seconds: int,
     location_label: str,
     source: CampaignAuthSource,
+    home_prepared: bool,
 ) -> DoctorCheck:
     """Report a selected credential source that is absent or not usable."""
     unusable = source.state == CAMPAIGN_AUTH_SOURCE_UNUSABLE
     auth_phrase = _campaign_auth_location_phrase(lane, canonical)
-    remediation = (
-        (
+    if unusable:
+        remediation = (
             f"The {auth_phrase} holds a {source.mode}-mode credential that is "
             "not a private regular file. Remove it and authenticate that home "
             "again using the login steps in docs/release-qualification.md "
             "(Provider Adapter Setup)."
         )
-        if unusable
-        else (
+    elif home_prepared:
+        # The home now carries the selected mode's configuration, so the
+        # documented login stores the credential in the selected source.
+        remediation = (
             f"Authenticate the {auth_phrase} once for {source.mode} mode using "
             "the login steps in docs/release-qualification.md (Provider Adapter "
             "Setup), then re-run `code-mower doctor --adoption --campaign`."
         )
+    else:
+        # Without that configuration the login would fall back to whatever
+        # store the home already named, so say so before sending the operator
+        # to a login step that would silently target the wrong source.
+        remediation = (
+            f"The {auth_phrase} could not be prepared for {source.mode} mode, "
+            "so its restricted configuration does not select that credential "
+            "source yet. Make sure the campaign home location is writable by "
+            "this user, re-run `code-mower doctor --adoption --campaign`, then "
+            "authenticate that home using the login steps in "
+            "docs/release-qualification.md (Provider Adapter Setup)."
+        )
+    detail = _owner_action_detail(
+        canonical=canonical,
+        lane=lane,
+        state=AUTH_STATE_UNAUTHENTICATED,
+        enabled=enabled,
+        timeout_seconds=timeout_seconds,
+        error=(AUTH_ERROR_SOURCE_UNUSABLE if unusable else AUTH_ERROR_SOURCE_MISSING),
+        source=source,
     )
+    # A bounded fact about the isolated home, never a path or a permission bit.
+    detail[CAMPAIGN_AUTH_HOME_PREPARED_KEY] = home_prepared
     return DoctorCheck(
         name=CAMPAIGN_AUTH_CHECK_NAME,
         status=STATUS_WARN,
@@ -678,17 +736,7 @@ def _missing_source_check(
             f"{canonical} {location_label} {source.mode}-mode credential source "
             f"is {'not usable' if unusable else 'missing'}"
         ),
-        detail=_owner_action_detail(
-            canonical=canonical,
-            lane=lane,
-            state=AUTH_STATE_UNAUTHENTICATED,
-            enabled=enabled,
-            timeout_seconds=timeout_seconds,
-            error=(
-                AUTH_ERROR_SOURCE_UNUSABLE if unusable else AUTH_ERROR_SOURCE_MISSING
-            ),
-            source=source,
-        ),
+        detail=detail,
         remediation=remediation,
     )
 
@@ -887,6 +935,15 @@ def check_campaign_auth_readiness(
         # The selected file-mode source is absent or is not a private regular
         # file. The probe would only rediscover that, so report the bounded
         # source state and the login the operator still owes instead.
+        #
+        # The home is still prepared for the selected mode first. Doctor is the
+        # documented step that writes that restricted configuration, and the
+        # operator's next step is a provider login against it: returning here
+        # without preparing would leave a home migrated from keyring mode still
+        # naming the keyring store, so the login the remediation asks for would
+        # try to store the new credential in a keyring this headless host does
+        # not have. Preparing creates no credential and starts no probe.
+        home_prepared = campaign_auth_prepare_home(provider, source.mode)
         return _missing_source_check(
             lane=lane,
             canonical=canonical,
@@ -894,6 +951,7 @@ def check_campaign_auth_readiness(
             timeout_seconds=timeout_seconds,
             location_label=location_label,
             source=source,
+            home_prepared=home_prepared,
         )
 
     keyring_unavailable = source.keyring_required and headless_linux_host(current_env)
@@ -1017,6 +1075,7 @@ __all__ = (
     "AUTH_STATE_UNKNOWN",
     "AUTH_STATE_UNSUPPORTED_MODE",
     "CAMPAIGN_AUTH_CHECK_NAME",
+    "CAMPAIGN_AUTH_HOME_PREPARED_KEY",
     "CAMPAIGN_AUTH_KEYRING_REQUIRED_KEY",
     "CAMPAIGN_AUTH_MODE_ENV_KEY",
     "CAMPAIGN_AUTH_SOURCE_EXTERNAL",
@@ -1045,6 +1104,7 @@ __all__ = (
     "campaign_auth_logged_out_exit_codes",
     "campaign_auth_logged_out_markers",
     "campaign_auth_mode_env_name",
+    "campaign_auth_prepare_home",
     "campaign_auth_probe_args",
     "campaign_auth_probe_env",
     "campaign_auth_probe_requested",
