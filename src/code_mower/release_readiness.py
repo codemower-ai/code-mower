@@ -111,13 +111,21 @@ def _links_to_repository_doc(markdown: str, label: str, relative_path: str) -> b
     destination resolves against the package index rather than the repository,
     so repository links there are absolute GitHub URLs. Both spellings satisfy
     this check; only the label and the file it lands on are required.
+
+    The destination has to land on ``relative_path`` at a path-segment
+    boundary, so a neighbouring file whose name merely ends in the required
+    one -- ``docs/OTHER_SUPPORT.md`` for ``SUPPORT.md`` -- does not count. A
+    query string or fragment decorates the destination without changing which
+    file it resolves to, so both are dropped before the comparison.
     """
 
     pattern = re.compile(
         r"\[" + re.escape(label) + r"\]\(\s*<?([^)\s>]+)>?[^)]*\)"
     )
+    nested_suffix = "/" + relative_path
     for destination in pattern.findall(markdown):
-        if destination.partition("#")[0].rstrip("/").endswith(relative_path):
+        path = destination.partition("#")[0].partition("?")[0].rstrip("/")
+        if path == relative_path or path.endswith(nested_suffix):
             return True
     return False
 

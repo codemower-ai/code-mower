@@ -10903,6 +10903,83 @@ def main():
         self.assertEqual(check_ids["public-docs-linked-from-readme"]["status"], "fail")
         self.assertEqual(check_ids["public-support-redaction-guidance"]["status"], "fail")
 
+    def test_public_doc_link_requires_a_path_segment_boundary(self) -> None:
+        accepted = (
+            "SUPPORT.md",
+            "./SUPPORT.md",
+            "/SUPPORT.md",
+            "SUPPORT.md#getting-help",
+            "https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md",
+            "https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md?plain=1",
+            "https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md#getting-help",
+        )
+        for destination in accepted:
+            with self.subTest(destination=destination):
+                self.assertTrue(
+                    release_readiness._links_to_repository_doc(
+                        f"See [Support]({destination}) for help.\n",
+                        "Support",
+                        "SUPPORT.md",
+                    )
+                )
+
+        rejected = (
+            "OTHER_SUPPORT.md",
+            "docs/OTHER_SUPPORT.md",
+            "nested/docs/OTHER_SUPPORT.md",
+            "https://github.com/codemower-ai/code-mower/blob/main/docs/OTHER_SUPPORT.md",
+            "OTHER_SUPPORT.md#getting-help",
+            "OTHER_SUPPORT.md?plain=1",
+        )
+        for destination in rejected:
+            with self.subTest(destination=destination):
+                self.assertFalse(
+                    release_readiness._links_to_repository_doc(
+                        f"See [Support]({destination}) for help.\n",
+                        "Support",
+                        "SUPPORT.md",
+                    )
+                )
+
+    def test_public_docs_link_check_rejects_lookalike_destinations(self) -> None:
+        readmes = {
+            "lookalike": "\n".join(
+                [
+                    "[Support](docs/OTHER_SUPPORT.md)",
+                    "[Security Policy](SECURITY.md)",
+                    "[Code of Conduct](CODE_OF_CONDUCT.md)",
+                ]
+            ),
+            "exact": "\n".join(
+                [
+                    "[Support](SUPPORT.md)",
+                    "[Security Policy](SECURITY.md)",
+                    "[Code of Conduct](CODE_OF_CONDUCT.md)",
+                ]
+            ),
+            "absolute": "\n".join(
+                [
+                    "[Support](https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md)",
+                    "[Security Policy](https://github.com/codemower-ai/code-mower/blob/main/SECURITY.md)",
+                    "[Code of Conduct](https://github.com/codemower-ai/code-mower/blob/main/CODE_OF_CONDUCT.md)",
+                ]
+            ),
+        }
+        expected = {"lookalike": "fail", "exact": "pass", "absolute": "pass"}
+
+        for label, readme in readmes.items():
+            with self.subTest(readme=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                (repo / "README.md").write_text(readme + "\n", encoding="utf-8")
+
+                payload = release_readiness.render_release_readiness(repo)
+
+                check_ids = {check["id"]: check for check in payload["checks"]}
+                self.assertEqual(
+                    check_ids["public-docs-linked-from-readme"]["status"],
+                    expected[label],
+                )
+
     def test_public_redaction_guidance_requires_support_and_conduct(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
