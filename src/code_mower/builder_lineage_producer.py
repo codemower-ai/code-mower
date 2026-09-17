@@ -366,12 +366,20 @@ class GitHub:
         numbered strictly above every pull request that already existed. Read
         before a creation round launches, this is the independent evidence that
         separates a pull request the round created from one it merely found.
+
+        Exactly one pull request is requested. The response is ordered
+        newest-created-first and creation order is that same monotone sequence,
+        so the first entry already carries the maximum and no later entry could
+        exceed it. Asking for a full page instead would decide every creation
+        round on response size: ``_json`` passes the whole payload through
+        ``decode_transport``, which refuses beyond a fixed byte budget, and a
+        hundred complete pull request objects exceed that budget in any
+        long-lived repository -- refusing the round before the writer starts.
         """
-        raw = self._json(f"repos/{repo}/pulls?state=all&sort=created&direction=desc&per_page=100")
-        if not isinstance(raw, list) or any(not isinstance(item, dict)
-                                            or type(item.get("number")) is not int for item in raw):
+        raw = self._json(f"repos/{repo}/pulls?state=all&sort=created&direction=desc&per_page=1")
+        if not isinstance(raw, list) or len(raw) > 1 or any(
+                not isinstance(item, dict) or type(item.get("number")) is not int for item in raw):
             raise ProducerRefusal("Readable pull request frontier required.")
-        # The newest page already contains the maximum; older pages cannot exceed it.
         return max((item["number"] for item in raw), default=0)
 
     def branch_ref(self, repo, branch):

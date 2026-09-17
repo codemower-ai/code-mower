@@ -8,6 +8,7 @@ while nothing else held it. The accepted #963 handoff/continuation contracts are
 asserted unchanged, including the rendered public marker bytes.
 """
 import argparse
+import json
 from pathlib import Path
 import shutil
 import tempfile
@@ -19,7 +20,11 @@ from code_mower.builder_lineage import (
     Authorities, Chain, ContractError, Episode, History, Identity, Target, admit,
     parse_markers, render, resolve,
 )
-from code_mower.builder_lineage_producer import ProducerRefusal, ProducerStore, Snapshot, Transport
+from code_mower.builder_lineage_producer import (
+    GitHub, ProducerRefusal, ProducerStore, Snapshot, Transport, decode_transport,
+)
+from code_mower.context_contract import ContextError
+from code_mower.context_store import MAX_STATE_BYTES
 from lineage_producer_fixtures import MemoryStore, episode as handoff_episode, sha, target as pr_target
 
 REPO = "owner/repo"
@@ -860,6 +865,61 @@ class CreationLauncherTests(unittest.TestCase):
                 with self.assertRaises(lane_delivery.LaneDeliveryError):
                     lane_delivery._start_creation_round(self.args(**changes), io=self.unused(),
                                                         runtime_observation=lambda: "ready")
+
+
+class CreationFrontierTransportTests(unittest.TestCase):
+    """The real pre-launch frontier read, against realistic pull request payloads.
+
+    Every creation round begins with this request, so its cost is the cost of
+    launching at all: the transport decodes the whole response under a fixed
+    byte budget, and a repository large enough to fill a page of complete pull
+    request objects would otherwise refuse every round before the writer starts.
+    """
+
+    def fake_gh(self, sizes):
+        """A ``gh api`` stand-in returning ``per_page`` complete pull requests."""
+        def run(argv, **kwargs):
+            endpoint = argv[2]
+            requested = int(endpoint.split("per_page=")[1].split("&")[0])
+            sizes.append((endpoint, requested))
+            # Numbered newest-created-first, exactly as the sorted endpoint reports.
+            payload = [dict(pull_payload(number=PR - offset),
+                            body="x" * 4096, title="t" * 256, labels=[])
+                       for offset in range(requested)]
+            return argparse.Namespace(stdout=json.dumps(payload))
+        return run
+
+    def test_the_frontier_read_stays_inside_the_transport_byte_budget(self):
+        sizes = []
+        with patch("code_mower.builder_lineage_producer.subprocess.run", self.fake_gh(sizes)):
+            self.assertEqual(GitHub().pull_frontier(REPO), PR)
+        (endpoint, requested), = sizes
+        self.assertEqual(requested, 1, f"frontier read must request one pull request: {endpoint}")
+        # The same payload at a full page is what the decoder refuses, so the
+        # bound above is load-bearing rather than merely tidier.
+        oversized = json.dumps([dict(pull_payload(number=PR - offset), body="x" * 4096,
+                                     title="t" * 256, labels=[]) for offset in range(100)])
+        self.assertGreater(len(oversized.encode("utf-8")), MAX_STATE_BYTES)
+        with self.assertRaises(ContextError):
+            decode_transport(oversized)
+
+    def test_the_frontier_refuses_an_unreadable_or_overlong_response(self):
+        for reason, payload in (
+                ("not a list", json.dumps(pull_payload())),
+                ("unnumbered entry", json.dumps([{"state": "open"}])),
+                ("non-integer number", json.dumps([{"number": "1021"}])),
+                ("more than the one requested", json.dumps([{"number": PR}, {"number": PR - 1}])),
+        ):
+            with self.subTest(reason=reason):
+                with patch("code_mower.builder_lineage_producer.subprocess.run",
+                           lambda *a, **k: argparse.Namespace(stdout=payload)):
+                    with self.assertRaises(ProducerRefusal):
+                        GitHub().pull_frontier(REPO)
+
+    def test_a_repository_with_no_pull_requests_has_a_zero_frontier(self):
+        with patch("code_mower.builder_lineage_producer.subprocess.run",
+                   lambda *a, **k: argparse.Namespace(stdout="[]")):
+            self.assertEqual(GitHub().pull_frontier(REPO), 0)
 
 
 if __name__ == "__main__":
