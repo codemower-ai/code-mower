@@ -35,6 +35,10 @@ CODE_MOWER_VERSION = board.CODE_MOWER_VERSION
 # tests need from it is only that it is an absolute local path.
 _PRIVATE_CHECKOUT = "/opt/operator/private-checkout"
 
+# The same, with a space in a directory name: the spelling whose end a
+# path-shaped run cannot find on its own.
+_SPACED_CHECKOUT = "/opt/Private Projects"
+
 
 def _without_distribution_metadata() -> AbstractContextManager[object]:
     """Run as a source checkout: no `code-mower` distribution is installed.
@@ -570,6 +574,84 @@ class BoardServiceContractTest(ServiceHarness):
             board_service.redact_diagnostic(diagnostic, show_local_paths=True), diagnostic
         )
 
+    def test_a_known_path_containing_spaces_is_replaced_whole(self) -> None:
+        # The operation knows the exact definition it wrote, so a path with
+        # spaces in it has a known end and the reason survives beside it.
+        definition = f"{_SPACED_CHECKOUT}/Library/LaunchAgents/ai.codemower.board.5332.plist"
+
+        redacted = board_service.redact_diagnostic(
+            f"launchctl bootstrap failed: {definition}: Operation not permitted",
+            show_local_paths=False,
+            known_paths=[definition],
+        )
+
+        self.assertEqual(
+            redacted,
+            f"launchctl bootstrap failed: {lane_status.LOCAL_PATH_REDACTION}: Operation not permitted",
+        )
+
+    def test_an_unknown_path_containing_spaces_leaves_no_suffix_behind(self) -> None:
+        # A path-shaped run ends at whitespace, so `/opt/Private Projects/x`
+        # matches only its first word. Whether what follows continues the path
+        # or resumes the message cannot be told from the text, so the rest of
+        # the line is withheld rather than published as a suffix.
+        redacted = board_service.redact_diagnostic(
+            f"launchctl bootstrap failed: {_SPACED_CHECKOUT}/customer-secret/agent.plist",
+            show_local_paths=False,
+        )
+
+        self.assertNotIn("Projects", redacted)
+        self.assertNotIn("customer-secret", redacted)
+        self.assertNotIn("agent.plist", redacted)
+        self.assertEqual(
+            redacted, f"launchctl bootstrap failed: {lane_status.LOCAL_PATH_REDACTION}"
+        )
+
+    def test_an_unknown_home_relative_path_with_spaces_is_withheld_too(self) -> None:
+        redacted = board_service.redact_diagnostic(
+            "launchctl bootout failed: ~/My Boards/customer-secret/agent.plist: No such file",
+            show_local_paths=False,
+        )
+
+        self.assertNotIn("Boards", redacted)
+        self.assertNotIn("customer-secret", redacted)
+        self.assertIn("launchctl bootout failed", redacted)
+        self.assertIn(lane_status.LOCAL_PATH_REDACTION, redacted)
+
+    def test_a_quoted_spaced_path_does_not_survive_its_closing_quote(self) -> None:
+        redacted = board_service.redact_diagnostic(
+            f"could not load '{_SPACED_CHECKOUT}/agent.plist': permission denied",
+            show_local_paths=False,
+        )
+
+        self.assertNotIn("Projects", redacted)
+        self.assertNotIn("agent.plist", redacted)
+
+    def test_a_path_free_diagnostic_keeps_every_word(self) -> None:
+        # Withholding is for text whose path boundary is unknown, not for a
+        # diagnostic that names no path at all.
+        text = "Bootstrap failed: 5: Input/output error"
+
+        self.assertEqual(board_service.redact_diagnostic(text, show_local_paths=False), text)
+
+    def test_a_terminated_path_keeps_the_words_after_it(self) -> None:
+        # `/path/to/a.plist:` cannot continue past the colon, so the message
+        # after it is published rather than withheld.
+        redacted = board_service.redact_diagnostic(
+            f"launchctl bootstrap failed: {_PRIVATE_CHECKOUT}/agent.plist: Input/output error",
+            show_local_paths=False,
+        )
+
+        self.assertNotIn(_PRIVATE_CHECKOUT, redacted)
+        self.assertIn("Input/output error", redacted)
+
+    def test_show_local_paths_returns_a_spaced_diagnostic_verbatim(self) -> None:
+        diagnostic = f"launchctl bootstrap failed: {_SPACED_CHECKOUT}/agent.plist: denied"
+
+        self.assertEqual(
+            board_service.redact_diagnostic(diagnostic, show_local_paths=True), diagnostic
+        )
+
     def test_a_platform_without_launchd_refuses_instead_of_pretending(self) -> None:
         provider = board_service.select_provider(platform="linux", command_runner=self.host.run)
         payload = board_service.install_service(
@@ -892,6 +974,36 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertNotIn(str(self.root), json.dumps(payload))
         self.assertNotIn(str(self.other_checkout), json.dumps(payload))
         self.assertIn("rollback also failed", payload["message"])
+
+    def test_a_failure_naming_a_spaced_definition_path_publishes_no_part_of_it(self) -> None:
+        # The end-to-end shape of the redaction finding: launchd names the
+        # definition it could not load, and that path has a space in it. The
+        # operation knows the path it wrote, so the whole path goes and the
+        # reason stays -- no directory name survives in either rendering.
+        root = self.tmp / "Private Projects" / "LaunchAgents"
+        root.mkdir(parents=True)
+        host = FakeHost(root)
+        host.origins[str(self.checkout)] = "git@github.com:codemower-ai/code-mower.git"
+        host.bootstrap_failures.add("ai.codemower.board.5332")
+
+        payload = board_service.install_service(
+            self.spec(),
+            provider=host.provider(),
+            command_runner=host.run,
+            identity_probe=host.identity_probe,
+            settle_seconds=0.0,
+            refresh_seconds=0.1,
+            timeout_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+        published = json.dumps(payload) + board_service.render_operation_text(payload)
+
+        self.assertEqual(payload["status"], "apply_failed")
+        self.assertNotIn(str(root), published)
+        self.assertNotIn("Private Projects", published)
+        self.assertNotIn("Projects", published)
+        self.assertIn("Input/output error", payload["message"])
+        self.assertIn(lane_status.LOCAL_PATH_REDACTION, payload["message"])
 
     def test_show_local_paths_still_reveals_a_failure_diagnostic(self) -> None:
         self.host.bootstrap_failures.add("ai.codemower.board.5332")

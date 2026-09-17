@@ -33,7 +33,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
@@ -306,32 +306,99 @@ def redact_path(value: object, *, show_local_paths: bool) -> str:
 # and `path: /path` spellings a diagnostic actually uses.
 _PATH_IN_TEXT = re.compile(r"(?<![A-Za-z0-9_:/])(?:~|/)[A-Za-z0-9._~@+/-][^\s'\"]*")
 
+# Punctuation that ends a path where a diagnostic keeps writing afterwards, as
+# in `/path/to/a.plist: No such file`. A path may contain none of these, so a
+# run that ends with one is a path whose end is known.
+_PATH_TERMINATORS = (":", ";", ",", ")", "]", ">")
 
-def redact_diagnostic(value: object, *, show_local_paths: bool) -> str:
+
+def known_path_spellings(paths: Iterable[object]) -> tuple[str, ...]:
+    """Every spelling a known local path can appear under, longest first.
+
+    A diagnostic may name the same file as launchd was given it or with the
+    home prefix abbreviated, and replacing a longer path before a shorter one
+    keeps a parent directory from eating the child's replacement.
+    """
+
+    home = str(Path.home())
+    spellings: set[str] = set()
+    for item in paths:
+        text = _text(item)
+        if len(text) < 2 or not _looks_like_path(text):
+            continue
+        spellings.add(text)
+        if home and text.startswith(home + "/"):
+            spellings.add("~" + text[len(home) :])
+        if text.startswith("~/") and home:
+            spellings.add(home + text[1:])
+    return tuple(sorted(spellings, key=len, reverse=True))
+
+
+def _redact_diagnostic_line(line: str) -> str:
+    """One line of free-form diagnostic, with no path suffix left behind.
+
+    A path-shaped run ends at whitespace, so a path containing a space --
+    `/opt/Private Projects/agent.plist` -- matches only its first word and
+    substituting that run alone would publish the rest. Whether the words after
+    such a run continue the path or resume the message cannot be told apart from
+    the text, so when the run's end is not marked by punctuation the remainder of
+    the line is withheld rather than guessed at. Whatever came *before* the path
+    is kept either way: that is where the operation and the failure are named.
+    """
+
+    pieces: list[str] = []
+    position = 0
+    for match in _PATH_IN_TEXT.finditer(line):
+        pieces.append(line[position : match.start()])
+        pieces.append(lane_status.LOCAL_PATH_REDACTION)
+        position = match.end()
+        tail = line[position:]
+        # A run followed immediately by a quote or bracket ended there; one
+        # followed by a space may be the first word of a longer path.
+        if tail[:1].isspace() and not match.group(0).endswith(_PATH_TERMINATORS):
+            return "".join(pieces)
+    pieces.append(line[position:])
+    return "".join(pieces)
+
+
+def redact_diagnostic(
+    value: object, *, show_local_paths: bool, known_paths: Iterable[object] = ()
+) -> str:
     """Hide local paths inside a subprocess diagnostic, keeping the diagnostic.
 
     `launchctl` names the definition file it could not load, and that text is
     copied into operation messages and rollback details that print in both text
     and JSON. Redacting the whole string would throw away the reason the
-    operation failed, which is the only part an operator can act on, so only the
-    path-shaped runs are replaced and the rest is left to read as written.
+    operation failed, which is the only part an operator can act on.
+
+    So the paths whose exact spelling this operation already knows -- the
+    definition it wrote, the checkout it serves, the logs it opened -- are
+    replaced first, whole, however many spaces they contain. Only what is left
+    goes through the free-form pass, which cannot know where an unknown path
+    ends and therefore errs towards withholding.
     """
 
     text = _text(value)
     if show_local_paths or not text:
         return text
-    return _PATH_IN_TEXT.sub(lane_status.LOCAL_PATH_REDACTION, text)
+    for spelling in known_path_spellings(known_paths):
+        text = text.replace(spelling, lane_status.LOCAL_PATH_REDACTION)
+    return "\n".join(_redact_diagnostic_line(line) for line in text.split("\n"))
 
 
-def _redact_diagnostics(value: Any, *, show_local_paths: bool) -> Any:
+def _redact_diagnostics(value: Any, *, show_local_paths: bool, known_paths: Iterable[object] = ()) -> Any:
     """`redact_diagnostic` over a nested payload fragment, strings only."""
 
+    paths = tuple(known_paths)
     if isinstance(value, str):
-        return redact_diagnostic(value, show_local_paths=show_local_paths)
+        return redact_diagnostic(value, show_local_paths=show_local_paths, known_paths=paths)
     if isinstance(value, Mapping):
-        return {key: _redact_diagnostics(item, show_local_paths=show_local_paths) for key, item in value.items()}
+        return {
+            key: _redact_diagnostics(item, show_local_paths=show_local_paths, known_paths=paths)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
-        return [_redact_diagnostics(item, show_local_paths=show_local_paths) for item in value]
+        return [_redact_diagnostics(item, show_local_paths=show_local_paths, known_paths=paths) for item in value]
     return value
 
 
@@ -1289,6 +1356,7 @@ def validate_binding(
                 redact_diagnostic(
                     service.message or "service definition is unreadable",
                     show_local_paths=show_local_paths,
+                    known_paths=(service.definition_path, service.repo_path, spec.repo_path),
                 ),
             )
         )
@@ -1889,6 +1957,7 @@ def _apply(
                     spec,
                     expected,
                     show_local_paths=show_local_paths,
+                    known_paths=_provider_known_paths(provider, spec.label),
                 )
     try:
         provider.write_definition(spec.label, rendered)
@@ -1907,6 +1976,7 @@ def _apply(
             spec,
             expected,
             show_local_paths=show_local_paths,
+            known_paths=_provider_known_paths(provider, spec.label),
             rollback=restore,
         )
     ok, detail = provider.bootstrap(spec.label)
@@ -1914,7 +1984,15 @@ def _apply(
         rollback = _rollback(provider, spec, previous_text)
         status = "rollback_failed" if not rollback["ok"] else "apply_failed"
         message = detail if rollback["ok"] else f"{detail}; rollback also failed: {rollback['detail']}"
-        return _operation_payload(status, message, spec, expected, show_local_paths=show_local_paths, rollback=rollback)
+        return _operation_payload(
+            status,
+            message,
+            spec,
+            expected,
+            show_local_paths=show_local_paths,
+            known_paths=_provider_known_paths(provider, spec.label),
+            rollback=rollback,
+        )
 
     health = delayed_health(
         spec,
@@ -2159,7 +2237,14 @@ def restart_service(
             ok, detail = provider.bootstrap(spec.label)
             restarted_message = "loaded the installed definition, which was not running, and validated its binding"
         if not ok:
-            return _operation_payload("apply_failed", detail, spec, expected, show_local_paths=show_local_paths)
+            return _operation_payload(
+                "apply_failed",
+                detail,
+                spec,
+                expected,
+                show_local_paths=show_local_paths,
+                known_paths=_provider_known_paths(provider, spec.label),
+            )
         health = delayed_health(
             spec,
             provider=provider,
@@ -2291,7 +2376,11 @@ def remove_service(
     # `remove` builds its payloads here rather than through `_operation_payload`,
     # so the same sanitizing the shared chokepoint does has to happen at the
     # source: every message below is built from this string.
-    detail = redact_diagnostic(raw_detail, show_local_paths=show_local_paths)
+    detail = redact_diagnostic(
+        raw_detail,
+        show_local_paths=show_local_paths,
+        known_paths=(service.definition_path, service.repo_path),
+    )
     if not ok:
         # The definition is how this service is discovered at all: `status`,
         # `remove` and the `board stop` keepalive guard all scan definition
@@ -2377,6 +2466,28 @@ def remove_service(
     return payload
 
 
+def _provider_known_paths(provider: Any, label: str) -> tuple[str, ...]:
+    """The definition path a provider diagnostic names, when it can be asked."""
+
+    try:
+        return (str(provider.definition_path(label)),)
+    except Exception:  # pragma: no cover - a provider that cannot say still redacts
+        return ()
+
+
+def spec_known_paths(spec: ServiceSpec, *extra: object) -> tuple[str, ...]:
+    """The local paths this operation put into the definition, plus any given.
+
+    These are the paths a provider diagnostic is most likely to name back, and
+    knowing their exact spelling is what lets `redact_diagnostic` replace them
+    whole -- spaces included -- instead of falling back to withholding the rest
+    of the line.
+    """
+
+    candidates: list[object] = [spec.repo_path, spec.log_path, spec.error_log_path, *spec.arguments, *extra]
+    return known_path_spellings(candidates)
+
+
 def _operation_payload(
     status: str,
     message: str,
@@ -2385,6 +2496,7 @@ def _operation_payload(
     *,
     delayed: Mapping[str, Any] | None = None,
     show_local_paths: bool = False,
+    known_paths: Iterable[object] = (),
     **extra: Any,
 ) -> dict[str, Any]:
     # Every operation payload passes through here, which makes it the one place
@@ -2392,10 +2504,11 @@ def _operation_payload(
     # and `rollback.detail` are built from `launchctl` output, which names the
     # definition file by path; without this they print the checkout location in
     # both text and JSON while `repo_path` beside them says it is hidden.
+    paths = spec_known_paths(spec, *known_paths)
     payload: dict[str, Any] = {
         "schema": BOARD_SERVICE_SCHEMA,
         "status": status,
-        "message": redact_diagnostic(message, show_local_paths=show_local_paths),
+        "message": redact_diagnostic(message, show_local_paths=show_local_paths, known_paths=paths),
         "provider": LAUNCHD_PROVIDER,
         "label": spec.label,
         "repo": spec.repo,
@@ -2404,10 +2517,12 @@ def _operation_payload(
         "repo_path": redact_path(str(spec.repo_path), show_local_paths=show_local_paths),
         "repo_path_redacted": not show_local_paths,
         "digest": expected_digest,
-        **_redact_diagnostics(extra, show_local_paths=show_local_paths),
+        **_redact_diagnostics(extra, show_local_paths=show_local_paths, known_paths=paths),
     }
     if delayed is not None:
-        payload["delayed_health"] = _redact_diagnostics(dict(delayed), show_local_paths=show_local_paths)
+        payload["delayed_health"] = _redact_diagnostics(
+            dict(delayed), show_local_paths=show_local_paths, known_paths=paths
+        )
     return payload
 
 
@@ -2460,7 +2575,11 @@ def service_status(
         if not service.readable:
             row["binding"] = {
                 "status": "fail",
-                "message": redact_diagnostic(service.message, show_local_paths=show_local_paths),
+                "message": redact_diagnostic(
+                    service.message,
+                    show_local_paths=show_local_paths,
+                    known_paths=(service.definition_path, service.repo_path),
+                ),
             }
             rows.append(row)
             continue

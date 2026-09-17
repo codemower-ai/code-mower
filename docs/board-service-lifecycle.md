@@ -300,3 +300,14 @@ FILE` writes the exact definition for local review without printing it.
 
 The `digest` field names a definition without revealing its contents, so
 "the same definition is still installed" can be stated in public evidence.
+
+Provider diagnostics get the same treatment. `launchctl` names the definition
+file it could not load, and that string is published in `message` and
+`rollback.detail`. The paths an operation already knows the exact spelling of --
+the definition it wrote, the checkout it serves, the logs it opened -- are
+replaced whole, however many spaces they contain, so the failure reason survives
+beside `[local path hidden]`. A path this run does not know is matched by shape,
+and a shape-matched run ends at whitespace: if such a path is not closed by
+punctuation, the rest of that line is withheld rather than published as a
+suffix. What came before the path -- the operation and the failure -- is kept
+either way, and `--show-local-paths` still prints the diagnostic verbatim.
