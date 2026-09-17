@@ -144,7 +144,8 @@ their installation.
 
 ```bash
 GRAPHIFY_REVISION="$(git rev-parse HEAD)"
-code-mower context-graph build --pin-file "$GRAPHIFY_ROOT/pin.json"   --indexer "$GRAPHIFY_INDEXER" --revision "$GRAPHIFY_REVISION"
+code-mower context-graph build --pin-file "$GRAPHIFY_ROOT/pin.json" \
+  --indexer "$GRAPHIFY_INDEXER" --revision "$GRAPHIFY_REVISION"
 ```
 
 The census comes from `git ls-tree -r` against that **commit** -- not the
@@ -164,7 +165,8 @@ it. A provider run that admitted an incomplete census publishes a generation
 **4. Register the graph as a local context connection.**
 
 ```bash
-code-mower context-graph connect --connection local-graph   --repository owner/repo --recipient claude:builder --recipient codex:reviewer
+code-mower context-graph connect --connection local-graph \
+  --repository owner/repo --recipient claude:builder --recipient codex:reviewer
 code-mower context-graph connection-status --connection local-graph
 ```
 
@@ -176,7 +178,8 @@ decision that belongs to the connection, not to any individual query.
 **5. Ask one bounded question.**
 
 ```bash
-code-mower context-graph query --question impact --target parse_config   --authorization AUTH.json --packet-out /tmp/packet.json --json
+code-mower context-graph query --question impact --target parse_config \
+  --authorization AUTH.json --packet-out /tmp/packet.json --json
 ```
 
 `--question` is one of `impact`, `dependency`, `symbol`, or `related_tests`.
@@ -191,7 +194,8 @@ evidence goes to the `--packet-out` file, created `0600`, or nowhere at all.
 
 ```bash
 GRAPHIFY_REVISION="$(git rev-parse HEAD)"
-code-mower context-graph refresh --pin-file "$GRAPHIFY_ROOT/pin.json"   --indexer "$GRAPHIFY_INDEXER" --revision "$GRAPHIFY_REVISION"
+code-mower context-graph refresh --pin-file "$GRAPHIFY_ROOT/pin.json" \
+  --indexer "$GRAPHIFY_INDEXER" --revision "$GRAPHIFY_REVISION"
 ```
 
 Nothing watches the working tree, so nothing refreshes on your behalf. When
