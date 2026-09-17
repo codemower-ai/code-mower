@@ -63,7 +63,7 @@ class ArtifactTests(unittest.TestCase):
             self.assertRegex(digest, r'^[0-9a-f]{64}\Z', f'{path}: malformed accepted file digest')
         serialized = (json.dumps(baseline, indent=2, sort_keys=True) + '\n').encode('utf-8')
         self.assertEqual(hashlib.sha256(serialized).hexdigest(),
-                         '6036e7daccf07b3ab5f458315e5e8a04feeb00190bae35c4fb1e243ef519e55e',
+                         '9f84721d8839f712b42c268a939fb2f4837492281c662b7099360c5c7e37c3e5',
                          'Complete accepted baseline differs from the independently approved value')
         return baseline
 
@@ -268,7 +268,8 @@ print(init._render_workflow_template(source.read_text(), {}), end='')
         all_paths = [p.relative_to(output).as_posix() for p in output.rglob('*') if p.is_file()]
         self.assertIn('.github/workflows/builder-lineage-producer.yml', all_paths)
         self.assertIn('tools/lanes/lineage-producer.sh', all_paths)
-        # Existing live init/runner/workflow inputs are byte-identical to accepted base.
+        # Existing live inputs match the accepted baseline, including explicitly
+        # approved workflow updates documented alongside the fixture.
         paths = ['src/code_mower/init.py', 'tools/lanes/run_mac_lane.sh',
                  'templates/lanes/run_mac_lane.sh', 'src/code_mower/templates/lanes/run_mac_lane.sh']
         paths.extend(p.relative_to(ROOT).as_posix() for p in (ROOT/'.github/workflows').glob('*'))

@@ -109,6 +109,8 @@ def round_fixture(root, n=1, writer="destination-writer", config=None, runtime="
 
 
 # Complete approved baseline from accepted commit e818a3b639dfe903bdc16aff3674af98a5a08233.
+# The CI workflow digest includes #951's required Board qualification job,
+# approved in PR #1003's baseline work order (issuecomment-5707959862).
 # Expectations are fixed independently of the candidate and available without Git history.
 ACCEPTED_BASELINE = {'accepted_base': 'e818a3b639dfe903bdc16aff3674af98a5a08233',
  'modules': {'src/code_mower/builder_runs.py': {'definitions': {'BuilderInference': '4324ee0dd83a3091bcb788b89402e26337294acf9c735b55e46292ddfa6994c0',
@@ -272,7 +274,7 @@ ACCEPTED_BASELINE = {'accepted_base': 'e818a3b639dfe903bdc16aff3674af98a5a08233'
                                                                   '14cef7b5ee10ef0b5dd80bed58c2b59a196568aea24768a9a105b5bbc0817de6',
                                                                   '00ee41c0a680c0bafc712cebfd45a249372b727fb6ff6c25ae75d1d01f9c1656',
                                                                   '7f0d608f78e3f586988f58d336cfabb575f9cd24462c6dbc9197c8c98213ba6f']}},
- 'unchanged_files': {'.github/workflows/ci.yml': 'df0083c724ae7007528951557363ede1adbe6bce9ddce48dc753bc3751f2e581',
+ 'unchanged_files': {'.github/workflows/ci.yml': '72b14770014e402099575a8568dd91dc66d07822fe9984322810d743e5620d9b',
                      '.github/workflows/claude-audit-labeler.yml': 'ac21c697ddf2a134f4e89cc6738cbaeb770f6ea76abf76823edd409ed0618e5e',
                      '.github/workflows/claude-clear-stale.yml': '7381379101486bc9ee97805b071301f01eb4b2655ca796cfde84110ea3784b58',
                      '.github/workflows/cloud-dogfood.yml': '9fe6b19a1214449ea8537efed12cfc6c6146c8e2f11a407ca782030e9b903b95',
