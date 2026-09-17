@@ -45,6 +45,9 @@ class FakeHost:
         self.origins: dict[str, str] = {}
         self.identities: dict[int, dict[str, object]] = {}
         self.bootstrap_failures: set[str] = set()
+        # A `launchctl bootout` that fails leaves the job exactly where it was:
+        # still loaded, still supervised, still holding its port.
+        self.bootout_failures: set[str] = set()
         self.write_failures: set[str] = set()
         self.next_pid = 900
         self.calls: list[list[str]] = []
@@ -186,6 +189,8 @@ class FakeHost:
             return _completed("")
         if action == "bootout":
             label = argv[1].rsplit("/", 1)[-1]
+            if label in self.bootout_failures:
+                return _completed("", returncode=1, stderr="Boot-out failed: 5: Input/output error\n")
             if label not in self.loaded:
                 return _completed("", returncode=1, stderr="No such process\n")
             self._stop(label)
@@ -956,6 +961,47 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertEqual(self.host.loaded["ai.codemower.board.5332"], serving_pid)
         self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
 
+    def test_a_replacement_is_refused_while_the_old_job_is_still_loaded(self) -> None:
+        # The definition on disk is the only description of the job launchd
+        # holds, and the replacement swaps it atomically. Writing it over a job
+        # that could not be unloaded loses the original contents: the bootstrap
+        # then fails because the label is occupied, and rollback preserves the
+        # replacement rather than an original that is by then gone.
+        spec = self.spec()
+        self.install(spec)
+        original = (self.root / f"{spec.label}.plist").read_text(encoding="utf-8")
+        serving_pid = self.host.loaded[spec.label]
+        self.host.bootout_failures.add(spec.label)
+
+        payload = self.restart(self.spec(record_events=False), replace=True)
+
+        self.assertEqual(payload["status"], "unload_failed")
+        self.assertIn("left exactly as it was", payload["message"])
+        # Nothing on the host moved: same definition, same job, same listener.
+        self.assertEqual((self.root / f"{spec.label}.plist").read_text(encoding="utf-8"), original)
+        self.assertEqual(self.host.loaded[spec.label], serving_pid)
+        self.assertEqual(self.host.listeners[5332], serving_pid)
+        self.assertEqual(self.host.job_arguments[spec.label], list(spec.arguments))
+        # And the service is still described by its own definition, so status,
+        # remove and the board stop guard all still reach it.
+        installed = self.host.provider().read_service(spec.label)
+        self.assertEqual(installed.digest, board_service.definition_digest(board_service.render_definition(spec)))
+        self.assertTrue(installed.loaded)
+
+    def test_a_replacement_proceeds_when_the_old_job_is_confirmed_absent(self) -> None:
+        # `bootout` failing because there is no such job is not the same fact as
+        # failing while launchd still holds it. A definition whose job was
+        # already booted out is replaced normally.
+        spec = self.spec()
+        self.install(spec)
+        self.host.provider().bootout(spec.label)
+        changed = self.spec(record_events=False)
+
+        payload = self.restart(changed, replace=True)
+
+        self.assertEqual(payload["status"], "restarted")
+        self.assertEqual(self.host.job_arguments[spec.label], list(changed.arguments))
+
     def test_a_console_script_reported_with_its_interpreter_is_still_healthy(self) -> None:
         spec = self.spec()
         self.install(spec)
@@ -1720,6 +1766,43 @@ class BoardStopSelectorTest(ServiceHarness):
         self.assertTrue(rows[5332]["managed"])
         self.assertEqual(rows[5332]["service_supervision"], "unknown")
         self.assertIn("supervision unconfirmed", board.render_inventory_text(inventory))
+
+    def test_a_supervised_listener_is_managed_even_on_a_port_its_definition_does_not_name(
+        self,
+    ) -> None:
+        # An installed definition can name a port that is not the one launchd is
+        # currently serving: the plist was edited, or the job was bootstrapped
+        # from an earlier version of it. Finding the service only under its
+        # on-disk port misses the listener it is actually supervising, so
+        # `board list` calls it transient and `board stop --yes` signals a
+        # process launchd restarts within moments.
+        spec = self.spec()
+        self.install(spec)
+        supervised_pid = self.host.relaunch_on(spec.label, self.spec(port=5342).arguments)
+
+        inventory = board.board_inventory_payload(
+            command_runner=self.host.run,
+            status_probe=None,
+            service_probe=lambda: self.host.provider().list_services(),
+        )
+        rows = {row["port"]: row for row in inventory["boards"]}
+        payload = self._stop(port=5342, yes=True)
+
+        # launchd named this exact pid as the job it is running; no port on disk
+        # can contradict that.
+        self.assertEqual(self.host.loaded[spec.label], supervised_pid)
+        self.assertTrue(rows[5342]["managed"])
+        self.assertEqual(rows[5342]["service_label"], spec.label)
+        self.assertEqual(rows[5342]["service_supervision"], "confirmed")
+        self.assertEqual(payload["status"], "managed_service")
+        self.assertEqual(payload["_signalled"], [])
+        self.assertEqual(payload["managed_service"]["label"], spec.label)
+        # The refusal names the port actually being served, and still points at
+        # the selector `board service` resolves this definition by.
+        self.assertIn("port 5342 is served by", payload["message"])
+        self.assertIn("installed definition names port 5332", payload["message"])
+        self.assertIn("board service remove --port 5332", payload["message"])
+        self.assertIn(spec.label, self.host.loaded)
 
     def test_stop_exit_codes_separate_refusals_from_selector_errors(self) -> None:
         self.assertEqual(board._stop_exit_code("stopped"), 0)

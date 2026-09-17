@@ -64,6 +64,7 @@ None of these change any local state:
 | `external_supervisor` | the port is held by a process a different supervisor owns |
 | `port_conflict` | the port is held by an unrelated local process |
 | `ambiguous_repository` | the selector matches more than one managed service |
+| `unload_failed` | the service being replaced could not be unloaded and launchd will not confirm the job absent; its definition was left exactly as it was |
 | `rollback_failed` | an apply failed *and* the previous definition could not be restored, or the definition it wrote could not be taken back off the host |
 
 `--host` is validated against the same loopback rule `board serve` enforces,
@@ -91,6 +92,16 @@ stop` keepalive guard apply the same rule: a listener is managed only when its
 pid is the one launchd supervises for that label, so a transient Board that took
 a stopped service's port is labelled transient and can still be stopped.
 
+That lookup goes through the pid *first*, and without reference to any port. An
+installed definition can name a port that is not the one launchd is currently
+serving -- the plist was edited, or the job was bootstrapped from an earlier
+version of it -- and a service found only under its on-disk port would be missing
+for the listener it is actually supervising, so `board stop --yes` would signal a
+process launchd restarts. The definition's port remains the fallback for the one
+case with no pid to match: a service whose supervision launchd would not confirm.
+The refusal names the port being served and the installed port when they differ,
+since `board service remove --port` selects by the latter.
+
 A supervisor that could not be *asked* is a third answer, and it is kept as one.
 When `launchctl print` times out or fails for a reason launchd does not
 characterise as a missing job, the load state is `unknown` rather than absent:
@@ -116,7 +127,13 @@ and the `board stop` keepalive guard could no longer see it. That case reports
 `--replace` is the only way to take over an existing definition for a port, and
 the replacement is atomic: the definition file is swapped with `os.replace`, and
 a failed bootstrap restores exactly the previous definition or reports
-`rollback_failed`. A write that fails outright leaves the previous definition on
+`rollback_failed`. The swap is also the point at which the original contents
+stop existing, so it happens only once the old job is established as unloaded --
+a `bootout` that succeeded, or the same positively-confirmed absence `remove`
+requires. Writing over a job launchd still holds would fail the bootstrap anyway
+(launchd will not accept a label its domain already holds) and the rollback
+would then preserve the replacement rather than an original that is by then
+gone, so that case refuses as `unload_failed` and changes nothing. A write that fails outright leaves the previous definition on
 disk untouched, so recovery there is to load it again rather than to restore it;
 either way the payload's `rollback` field says whether the previous service came
 back.

@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import metadata
 from pathlib import Path
 from threading import Lock, Thread
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 from . import __version__ as CODE_MOWER_VERSION
@@ -5081,11 +5081,24 @@ def _command_looks_like_board(command: str) -> bool:
     return lane_status.command_looks_like_code_mower_board(command)
 
 
+class _ManagedServiceIndex(NamedTuple):
+    """Managed Board services, indexed by both things that can identify one.
+
+    `by_pid` is the process launchd says it is supervising right now; `by_port`
+    is the port the definition on disk names. They are usually the same service,
+    but they are not the same fact, and only one of them survives an installed
+    definition drifting from the arguments launchd currently holds.
+    """
+
+    by_pid: dict[int, Any]
+    by_port: dict[int, Any]
+
+
 def _managed_service_index(
     command_runner: lane_status.CommandRunner,
     service_probe: Callable[[], list[Any]] | None,
-) -> dict[int, Any]:
-    """Managed Board services keyed by the port they own.
+) -> _ManagedServiceIndex:
+    """Managed Board services, keyed by supervised pid and by definition port.
 
     A transient Board dies when it is signaled; a keepalive-managed one is
     restarted by its supervisor within moments. Stop has to be able to tell
@@ -5099,17 +5112,21 @@ def _managed_service_index(
             else board_service.managed_services(command_runner=command_runner)
         )
     except OSError:
-        return {}
-    index: dict[int, Any] = {}
+        return _ManagedServiceIndex({}, {})
+    by_pid: dict[int, Any] = {}
+    by_port: dict[int, Any] = {}
     for service in services or []:
         port = getattr(service, "port", None)
         if isinstance(port, int):
-            index[port] = service
-    return index
+            by_port[port] = service
+        pid = getattr(service, "pid", None)
+        if isinstance(pid, int) and pid > 0 and getattr(service, "loaded", False):
+            by_pid[pid] = service
+    return _ManagedServiceIndex(by_pid, by_port)
 
 
 def _managed_listener_service(
-    listener: Mapping[str, Any], index: Mapping[int, Any]
+    listener: Mapping[str, Any], index: _ManagedServiceIndex
 ) -> tuple[Any | None, bool]:
     """The managed service serving this listener, and whether that is confirmed.
 
@@ -5130,6 +5147,16 @@ def _managed_listener_service(
     kept: only a positively confirmed-absent job makes a listener stoppable,
     and an unknown one is refused with the service named but its supervision
     marked unconfirmed rather than asserted.
+
+    So the pid is asked first, and without reference to any port. An installed
+    definition can name a port that is not the one launchd is currently serving
+    -- the plist was edited, or the job was bootstrapped from an earlier version
+    of it -- and a service found only under its on-disk port would then be
+    missing for the listener it is actually supervising. That listener would be
+    labelled transient and `board stop --yes` would signal a process launchd
+    restarts. The port index remains for the case the pid cannot settle: a job
+    whose supervision is unknown has no pid to match, and is still the service
+    installed on that port.
     """
 
     try:
@@ -5137,17 +5164,21 @@ def _managed_listener_service(
         pid = int(listener.get("pid") or 0)
     except (TypeError, ValueError):
         return None, False
-    service = index.get(port)
+    if pid > 0:
+        supervised = index.by_pid.get(pid)
+        if supervised is not None:
+            # launchd named this exact pid as the job it is running. Nothing on
+            # disk can contradict that, so no port is consulted.
+            return supervised, True
+    service = index.by_port.get(port)
     if service is None:
         return None, False
     if getattr(service, "load_state", board_service.JOB_ABSENT) == board_service.JOB_UNKNOWN:
         return service, False
-    if pid <= 0 or not getattr(service, "loaded", False):
-        return None, False
-    service_pid = getattr(service, "pid", None)
-    if not isinstance(service_pid, int) or service_pid != pid:
-        return None, False
-    return service, True
+    # The definition names this port but launchd is not supervising this pid:
+    # a booted-out service leaves its plist behind, and a transient Board is
+    # free to take the port it vacated.
+    return None, False
 
 
 def _default_pid_alive(pid: int) -> bool:
@@ -5429,9 +5460,14 @@ def stop_board(
     managed_index = _managed_service_index(command_runner, service_probe)
     managed_match = None
     supervision_confirmed = False
+    managed_listener_port: int | None = None
     for item in matches:
         managed_match, supervision_confirmed = _managed_listener_service(item, managed_index)
         if managed_match is not None:
+            try:
+                managed_listener_port = int(item.get("port") or -1)
+            except (TypeError, ValueError):
+                managed_listener_port = None
             break
     if matches and managed_match is not None:
         label = getattr(managed_match, "label", "")
@@ -5442,9 +5478,22 @@ def stop_board(
             "port": managed_port,
             "supervision": "confirmed" if supervision_confirmed else "unknown",
         }
+        # The definition's port is the selector `board service` resolves by, and
+        # it is not always the port the supervised process is actually holding.
+        # Saying both keeps the refusal true and the suggested command usable.
+        served = (
+            f"port {managed_listener_port}"
+            if managed_listener_port is not None and managed_listener_port != managed_port
+            else f"port {managed_port}"
+        )
+        drifted = (
+            ""
+            if served == f"port {managed_port}"
+            else f" (its installed definition names port {managed_port})"
+        )
         payload["message"] = (
             (
-                f"port {managed_port} is served by managed Board service {label}, which would "
+                f"{served} is served by managed Board service {label}{drifted}, which would "
                 "immediately reclaim it; nothing was stopped. Use code-mower board service "
                 f"restart or code-mower board service remove --port {managed_port} --yes instead."
             )

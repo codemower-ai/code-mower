@@ -1713,7 +1713,32 @@ def _apply(
         except OSError:
             previous_text = ""
     if previous is not None:
-        provider.bootout(spec.label)
+        # The definition on disk is the only description of the job launchd is
+        # holding, and `write_definition` swaps it atomically: overwriting it
+        # while the old job is still loaded loses the original contents and
+        # leaves the running service described by a definition that is not its
+        # own. The bootstrap below would fail anyway -- launchd will not accept
+        # a label its domain already holds -- and the rollback would then
+        # preserve the replacement rather than restore an original that is by
+        # then gone. So the unload has to be established first, on the same
+        # terms `remove` and `_rollback` already use: a bootout that reports
+        # success, or an independently confirmed-absent job.
+        unloaded, unload_detail = provider.bootout(spec.label)
+        if not unloaded:
+            still_loaded, _pid = _job_load_state(provider, spec.label)
+            if still_loaded:
+                return _operation_payload(
+                    "unload_failed",
+                    (
+                        (unload_detail or "the installed service could not be unloaded")
+                        + "; its definition was left exactly as it was rather than replaced under a "
+                        "job launchd still holds. Run code-mower board service status to see what "
+                        "launchd reports for this label, then retry."
+                    ),
+                    spec,
+                    expected,
+                    show_local_paths=show_local_paths,
+                )
     try:
         provider.write_definition(spec.label, rendered)
     except OSError as exc:
