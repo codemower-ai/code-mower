@@ -1356,9 +1356,16 @@ run_provider() {
       # the immutable base this checkout sits on, and the branch reserved for it
       # before launch. The supervisor claims that branch and refuses the round
       # if anything already holds it.
+      #
+      # --lineage-created is where it names the pull request it discovered,
+      # written before its chain is published. That file, not the successful
+      # attribution output, is what files the private record below: publication
+      # posts the public marker before it reads it back and reconciles labels,
+      # so a failure inside it can publish the chain and never reach the output.
       supervise_args+=(--lineage-issue "$num" --lineage-branch "$creation_branch"
         --lineage-base "$lineage_base" --lineage-writer "$lineage_writer"
-        --lineage-store "$creation_store" --lineage-output "${log%.log}.lineage.json")
+        --lineage-store "$creation_store" --lineage-output "${log%.log}.lineage.json"
+        --lineage-created "${log%.log}.created.json")
     elif [ "$kind" = "issue" ] && [ "$mode" != "audit" ] && [ -n "$continuation_before" ]; then
       # Rerunning an issue whose pull request this lane already created is a
       # delivery to that pull request, so it takes the same continuation path a
@@ -1574,12 +1581,12 @@ case "$supervision_reason" in
   timeout|output_overflow|interrupted) supervisor_ended=1 ;;
 esac
 
-# A supervised creation round publishes its chain inside the supervisor, before
-# this runner reads anything back, and leaves its private record filed under the
-# issue it was launched for. The delivered pull request's number is the only
-# place a later fix round -- or a rerun of this same issue -- looks for that
-# record, so the relocation happens here, on the number the supervisor itself
-# discovered and published.
+# A supervised creation round mints and publishes its chain inside the
+# supervisor, before this runner reads anything back, and leaves its private
+# record filed under the issue it was launched for. The delivered pull request's
+# number is the only place a later fix round -- or a rerun of this same issue --
+# looks for that record, so the relocation happens here, on the number the
+# supervisor itself discovered.
 #
 # It deliberately does not wait for delivery classification. That step is
 # independently fallible: an incomplete after-snapshot alone ends the run at the
@@ -1587,23 +1594,43 @@ esac
 # The chain would stay published on the created head with no record to extend,
 # and every later round would answer `lineage_head_pending` from there on.
 #
+# It does not wait for publication to have succeeded either, which is why the
+# number is read from the round's own pre-publication `.created.json` rather
+# than from the `.lineage.json` attribution only a completed publication writes.
+# `publish` posts the public marker first and then reads it back and reconciles
+# labels, so a failure after that post leaves the chain published and the
+# attribution never written: the same stranded record, reached by a different
+# route.
+#
+# Filing a record whose publication posted nothing costs nothing. It names a
+# chain the public history does not carry, and the next round on that pull
+# request reads the record and publishes every episode it holds.
+#
 # A destination that already exists belongs to some other round and is left
 # untouched: a stranded record costs a chain restart, overwriting one would cost
 # another pull request its history.
-creation_published=""
-if [ -n "$creation_branch" ] && [ -s "${log%.log}.lineage.json" ]; then
-  creation_published=1
+if [ -n "$creation_branch" ] && [ -s "${log%.log}.created.json" ]; then
   creation_delivered_pr="$(jq -r --arg repo "$REPO" '
-    if ((.dimensions.pr_repo // "") | ascii_downcase) == ($repo | ascii_downcase)
-    then (.dimensions.pr_number // "") else "" end' \
-    "${log%.log}.lineage.json" 2>/dev/null || printf '')"
+    if ((.repo // "") | ascii_downcase) == ($repo | ascii_downcase)
+    then (.pr_number // "" | tostring) else "" end' \
+    "${log%.log}.created.json" 2>/dev/null || printf '')"
   creation_delivered_store="${HOME}/.local/share/code-mower/lineage/${repo_key}/${creation_delivered_pr}"
   if ! printf '%s' "$creation_delivered_pr" | grep -Eq '^[1-9][0-9]*$'; then
-    echo "${LANE}: published creation round named no pull request in ${REPO}; its private lineage record stays under issue #${num}" >&2
+    echo "${LANE}: creation round named no pull request in ${REPO}; its private lineage record stays under issue #${num}" >&2
   elif [ -d "$creation_store" ] && { [ -e "$creation_delivered_store" ] \
     || ! mv "$creation_store" "$creation_delivered_store"; }; then
     echo "${LANE}: created pull request #${creation_delivered_pr} keeps its private lineage record under issue #${num}" >&2
   fi
+fi
+
+# Whether that round also got as far as publishing exact attribution, which is
+# the only thing that makes the weaker post-hoc builder record redundant. A
+# round that discovered a pull request but could not publish it still takes that
+# path, so a partially applied publication loses no attribution it could have
+# had.
+creation_published=""
+if [ -n "$creation_branch" ] && [ -s "${log%.log}.lineage.json" ]; then
+  creation_published=1
 fi
 
 # Read the target again before the runner writes anything to it. This snapshot

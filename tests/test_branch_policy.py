@@ -317,7 +317,8 @@ class GeneratedRunnerTests(unittest.TestCase):
                         base_sha: str | None = None,
                         supervise_log: Path | None = None,
                         lineage_store_pr: int | None = None,
-                        published_creation_pr: int | None = None,
+                        discovered_creation_pr: int | None = None,
+                        publication_completes: bool = True,
                         after_snapshot_fails: bool = False,
                         lineage_listing: list[str] | None = None,
                         ) -> tuple[subprocess.CompletedProcess, str, dict]:
@@ -339,9 +340,13 @@ class GeneratedRunnerTests(unittest.TestCase):
         pull request of that number would carry, which is what marks a rerun as
         continuing an existing chain rather than bootstrapping a new one.
 
-        ``published_creation_pr`` makes the supervised creation round behave as
-        one that published: it writes the attribution output naming that pull
-        request and leaves the private record under the issue.
+        ``discovered_creation_pr`` makes the supervised creation round behave as
+        one that discovered and bound that pull request: it names it in the
+        pre-publication output and leaves the private record under the issue.
+        ``publication_completes`` then decides whether the round also got as far
+        as writing the attribution output a completed publication writes --
+        ``False`` is the partially applied publication, which posts the public
+        marker and then fails before that output exists.
         ``after_snapshot_fails`` makes every post-delivery ``gh pr view`` fail,
         which is the incomplete after-snapshot that ends the run at the
         undelivered path. ``lineage_listing`` is extended with the private
@@ -471,11 +476,12 @@ printf 'fake codex completed\\n'
                 # creation round would read the real repository, and this fixture
                 # is about what the runner passes, not about the round itself.
                 #
-                # ``published_creation_pr`` stands in for the one effect a real
-                # creation round leaves behind before returning: the chain is
-                # already minted and published, the attribution output names the
-                # pull request the supervisor discovered, and the private record
-                # is still filed under the issue the round was launched for.
+                # ``discovered_creation_pr`` stands in for the effects a real
+                # creation round leaves behind before returning: the private
+                # record is filed under the issue the round was launched for,
+                # and the pull request the supervisor discovered is named in the
+                # output written before publication starts. The attribution
+                # output only follows when publication ran to completion.
                 recorder.write_text(
                     """#!/usr/bin/env bash
 set -euo pipefail
@@ -487,12 +493,14 @@ if [ "${1:-}" = "supervise" ]; then
   lineage_issue=""
   lineage_store=""
   lineage_output=""
+  lineage_creation_output=""
   for arg in "$@"; do
     if [ -n "$skip" ]; then
       case "$skip" in
         --lineage-issue) lineage_issue="$arg" ;;
         --lineage-store) lineage_store="$arg" ;;
         --lineage-output) lineage_output="$arg" ;;
+        --lineage-created) lineage_creation_output="$arg" ;;
       esac
       skip=""
       continue
@@ -509,23 +517,28 @@ if [ "${1:-}" = "supervise" ]; then
       continue
     fi
     case "$arg" in
-      --lineage-issue|--lineage-branch|--lineage-before|--lineage-base|--lineage-writer|--lineage-store|--lineage-output)
+      --lineage-issue|--lineage-branch|--lineage-before|--lineage-base|--lineage-writer|--lineage-store|--lineage-output|--lineage-created)
         skip="$arg"; continue ;;
     esac
     filtered+=("$arg")
   done
-  if [ -n "__PUBLISHED_CREATION_PR__" ] && [ -n "$lineage_issue" ] \
-    && [ -n "$lineage_store" ] && [ -n "$lineage_output" ]; then
+  if [ -n "__DISCOVERED_CREATION_PR__" ] && [ -n "$lineage_issue" ] \
+    && [ -n "$lineage_store" ] && [ -n "$lineage_creation_output" ]; then
     mkdir -p "$lineage_store"
-    printf '%s\\n' '{"dimensions":{"pr_repo":"__REPO__","pr_number":"__PUBLISHED_CREATION_PR__"}}' \
-      > "$lineage_output"
+    printf '%s\\n' '{"schema":"code_mower.lineageCreated.v1","repo":"__REPO__","pr_number":__DISCOVERED_CREATION_PR__}' \
+      > "$lineage_creation_output"
+    if [ -n "__PUBLICATION_COMPLETES__" ] && [ -n "$lineage_output" ]; then
+      printf '%s\\n' '{"dimensions":{"pr_repo":"__REPO__","pr_number":"__DISCOVERED_CREATION_PR__"}}' \
+        > "$lineage_output"
+    fi
   fi
   set -- "${filtered[@]}"
 fi
 exec __REAL_LANE_DELIVERY__ "$@"
 """.replace("__SUPERVISE_LOG__", shlex.quote(str(supervise_log)))
-   .replace("__PUBLISHED_CREATION_PR__",
-            "" if published_creation_pr is None else str(published_creation_pr))
+   .replace("__DISCOVERED_CREATION_PR__",
+            "" if discovered_creation_pr is None else str(discovered_creation_pr))
+   .replace("__PUBLICATION_COMPLETES__", "1" if publication_completes else "")
    .replace("__REPO__", repo)
    .replace("__REAL_LANE_DELIVERY__",
             shlex.quote(_LANE_DELIVERY_ENV["CODE_MOWER_LANE_DELIVERY_CMD"])),
@@ -635,6 +648,13 @@ exec __REAL_LANE_DELIVERY__ "$@"
         store = self._flag(argv, "--lineage-store") or ""
         self.assertTrue(store.endswith("/lineage/owner__repo/issue-12"), store)
         self.assertTrue((self._flag(argv, "--lineage-output") or "").endswith(".lineage.json"))
+        # The round is also told where to name the pull request it discovers,
+        # which is what this runner files the private record on -- and it is a
+        # different file from the attribution only a completed publication
+        # writes, because a publication can post the marker and then fail.
+        created = self._flag(argv, "--lineage-created") or ""
+        self.assertTrue(created.endswith(".created.json"), created)
+        self.assertNotEqual(created, self._flag(argv, "--lineage-output"))
         # An issue-targeted round has no pre-existing pull request to hand over
         # or to snapshot, and the supervisor refuses the combination outright.
         self.assertNotIn("--lineage-before", argv)
@@ -714,6 +734,7 @@ exec __REAL_LANE_DELIVERY__ "$@"
         # reservation to claim, and the writer has not changed, so no handoff.
         self.assertNotIn("--lineage-issue", argv)
         self.assertNotIn("--lineage-branch", argv)
+        self.assertNotIn("--lineage-created", argv)
         self.assertNotIn("--lineage-create", argv)
         self.assertNotIn("--lineage-handoff", argv)
 
@@ -728,7 +749,7 @@ exec __REAL_LANE_DELIVERY__ "$@"
         self.assertIn("carries no private lineage record", completed.stdout)
 
     def _published_creation_lane(self, **kwargs):
-        """A creation round that published its chain before returning."""
+        """A creation round that discovered its pull request before returning."""
         own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
                        author="chatgpt-codex-connector[bot]")
         return self._supervise_argv(
@@ -744,7 +765,7 @@ exec __REAL_LANE_DELIVERY__ "$@"
         # to extend and each of them answers `lineage_head_pending` instead.
         listing: list[str] = []
         completed, argv, _prompt, _guard = self._published_creation_lane(
-            published_creation_pr=77, after_snapshot_fails=True, lineage_listing=listing)
+            discovered_creation_pr=77, after_snapshot_fails=True, lineage_listing=listing)
         self.assertEqual(self._flag(argv, "--lineage-issue"), "12")
         # The run really did end where the finding says it ends.
         self.assertEqual(completed.returncode, 3, completed.stderr)
@@ -757,13 +778,29 @@ exec __REAL_LANE_DELIVERY__ "$@"
         # written on top of the exact one this round already published.
         listing: list[str] = []
         completed, argv, _prompt, _guard = self._published_creation_lane(
-            published_creation_pr=77, lineage_listing=listing)
+            discovered_creation_pr=77, lineage_listing=listing)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(self._flag(argv, "--lineage-issue"), "12")
+        self.assertEqual(listing, ["77"])
+        self.assertNotIn("builder provenance record skipped", completed.stderr)
+
+    def test_a_publication_that_posted_and_then_failed_still_files_the_record(self) -> None:
+        # `publish` posts the public marker before it reads it back and
+        # reconciles labels, so a failure after that post leaves the chain
+        # published on the created head and the round's attribution output never
+        # written. Filing the record only on that output would strand it under
+        # the issue in exactly the case the chain most needs continuing: the
+        # created pull request's own fix round, and a rerun of this issue, look
+        # only under the delivered number.
+        listing: list[str] = []
+        completed, argv, _prompt, _guard = self._published_creation_lane(
+            discovered_creation_pr=77, publication_completes=False, lineage_listing=listing)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(self._flag(argv, "--lineage-issue"), "12")
         self.assertEqual(listing, ["77"])
 
-    def test_a_creation_round_that_published_nothing_files_no_record(self) -> None:
-        # No published chain, so there is no exact attribution to file and
+    def test_a_creation_round_that_discovered_nothing_files_no_record(self) -> None:
+        # No pull request discovered, so there is nothing to attribute and
         # nothing to relocate; the run keeps the post-hoc path it always had.
         listing: list[str] = []
         completed, argv, _prompt, _guard = self._published_creation_lane(lineage_listing=listing)
@@ -784,16 +821,28 @@ exec __REAL_LANE_DELIVERY__ "$@"
                 # was installed from.
                 self.assertIn('--lineage-before "$continuation_before"', text)
                 self.assertIn('--lineage-store "$continuation_store"', text)
-                # A published creation round files its record on the number the
-                # supervisor discovered, and does it before the independently
-                # fallible delivery classification -- in every copy, or the
-                # chain strands wherever this runner was installed from.
+                # A creation round files its record on the number the supervisor
+                # discovered, and does it before the independently fallible
+                # delivery classification -- in every copy, or the chain strands
+                # wherever this runner was installed from.
+                self.assertIn('--lineage-created "${log%.log}.created.json"', text)
                 self.assertIn("creation_published=1", text)
                 self.assertIn('&& [ -z "$creation_published" ]; then', text)
                 self.assertLess(
                     text.index('mv "$creation_store" "$creation_delivered_store"'),
                     text.index('capture_target_state "$after_state"'),
                     "the record must be filed before the after-snapshot is even read")
+                # And it is filed on the round's own pre-publication evidence,
+                # never on the attribution only a completed publication writes:
+                # a publication that posts the marker and then fails publishes
+                # the chain without ever reaching that output.
+                self.assertLess(
+                    text.index('[ -s "${log%.log}.created.json" ]'),
+                    text.index('mv "$creation_store" "$creation_delivered_store"'))
+                self.assertLess(
+                    text.index('mv "$creation_store" "$creation_delivered_store"'),
+                    text.index('[ -s "${log%.log}.lineage.json" ]'),
+                    "publication success may not gate filing the record")
 
     def test_runner_refuses_an_existing_policy_branch_it_does_not_own(self) -> None:
         # fix/12-nv-accessible-label is the one name the policy allows for

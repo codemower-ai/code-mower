@@ -683,6 +683,11 @@ class CreationLauncherTests(unittest.TestCase):
         patch("code_mower.lane_delivery.observed_creation_branch",
               return_value=(BRANCH, CREATED)).start()
         self.attribution = patch("code_mower.builder_runs.record_lineage_builder").start()
+        # The discovered pull request is named on disk for real, because the
+        # runner reads exactly those bytes to file the private record.
+        self.artifacts = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.artifacts, ignore_errors=True)
+        self.created_output = self.artifacts / "run.created.json"
 
     def args(self, **changes):
         return argparse.Namespace(**(dict(
@@ -690,8 +695,12 @@ class CreationLauncherTests(unittest.TestCase):
             writer_repo=REPO, writer_lane="claude", lineage_writer="claude--writer",
             lineage_issue=1020, lineage_base=BASE, lineage_before=None, lineage_handoff=None,
             lineage_branch=BRANCH, lineage_store=Path("/producer-state"),
-            lineage_output=Path("/out/event.json"),
+            lineage_output=Path("/out/event.json"), lineage_created=self.created_output,
         ) | changes))
+
+    def named_creation(self):
+        """What the round wrote down about the pull request it discovered."""
+        return json.loads(self.created_output.read_text(encoding="utf-8"))
 
     def unused(self, **changes):
         """The repository as it stands before launch: nothing holds the branch."""
@@ -722,6 +731,40 @@ class CreationLauncherTests(unittest.TestCase):
         self.assertEqual(observation.decision.current_writer, "claude")
         self.assertEqual(observation.chain.episodes[0].kind, "creation")
         self.assertEqual(self.attribution.call_args.args[1].lane, "claude")
+        # The same pull request is named for the runner, which is the only way
+        # the private record reaches the number a later round reads it under.
+        self.assertEqual(self.named_creation(),
+                         dict(schema="code_mower.lineageCreated.v1", repo=REPO, pr_number=PR))
+
+    def test_a_publication_that_posted_and_then_failed_still_names_the_creation(self):
+        """The strandable case: the chain is public, the round's own output is not.
+
+        ``publish`` posts the public marker before it reads the marker back and
+        reconciles labels, so a failure in either leaves the chain published on
+        the created head while the successful-attribution output is never
+        written. The private record is filed under the issue, and only the
+        delivered number is ever looked at again -- by a fix round on the created
+        pull request and by a rerun of the same issue -- so nothing could extend
+        the published chain and every later round would answer
+        ``lineage_head_pending``. Naming the pull request before publication
+        starts is what the runner files the record on.
+        """
+        io = self.unused()
+        # The launcher binds ``publish`` when the round starts, so the failing
+        # publication has to be in place before that, not only before ``finish``.
+        with patch("code_mower.builder_lineage_producer.publish",
+                   side_effect=ProducerRefusal("published marker unreadable")) as publication:
+            observer, finish = lane_delivery._start_creation_round(
+                self.args(), io=io, runtime_observation=lambda: "ready")
+            observer.started(38, 38)
+            observer.finish(quiescent=True)
+            io.writer_created()
+            with self.assertRaises(ProducerRefusal):
+                finish(self.result())
+        publication.assert_called_once()
+        self.attribution.assert_not_called()
+        self.assertEqual(self.named_creation(),
+                         dict(schema="code_mower.lineageCreated.v1", repo=REPO, pr_number=PR))
 
     def test_launcher_refuses_an_unfinished_or_failed_round_without_publishing(self):
         io = self.unused()
@@ -825,6 +868,9 @@ class CreationLauncherTests(unittest.TestCase):
         self.attribution.assert_not_called()
         self.assertIsNone(MemoryStore.records[
             (observer.control.store.root, observer.control.key)].get("lineage_created"))
+        # Nothing was created, so nothing is named, and the runner has no record
+        # to file: the issue keeps whatever this round left under it.
+        self.assertFalse(self.created_output.exists())
 
     def test_launcher_still_attributes_a_creation_that_declared_otherwise(self):
         """A declaration cannot excuse a round out of attributing what it created.
@@ -852,11 +898,13 @@ class CreationLauncherTests(unittest.TestCase):
                          ["lineage_created"],
                          dict(repo=REPO, pr_number=PR, branch=BRANCH, head_sha=CREATED))
         self.assertEqual(self.attribution.call_args.args[0].chain.episodes[0].kind, "creation")
+        self.assertEqual(self.named_creation()["pr_number"], PR)
 
     def test_launcher_refuses_incomplete_or_contradictory_selections(self):
         for reason, changes in (
                 ("no private store", dict(lineage_store=None)),
                 ("no attribution output", dict(lineage_output=None)),
+                ("no discovered pull request output", dict(lineage_created=None)),
                 ("no supervised writer", dict(lineage_writer=None)),
                 ("no reserved branch", dict(lineage_branch=None)),
                 ("existing pull request target", dict(lineage_before=Path("/before.json"))),
@@ -865,6 +913,17 @@ class CreationLauncherTests(unittest.TestCase):
                 with self.assertRaises(lane_delivery.LaneDeliveryError):
                     lane_delivery._start_creation_round(self.args(**changes), io=self.unused(),
                                                         runtime_observation=lambda: "ready")
+        # The mirror image: a delivery to an existing pull request reserves no
+        # branch and creates none to name, and either selection is refused
+        # before that round reads anything at all.
+        for reason, changes in (("a reserved branch", dict(lineage_branch=BRANCH)),
+                                ("a created pull request to name",
+                                 dict(lineage_created=self.created_output))):
+            with self.subTest(existing_pull_request=reason):
+                with self.assertRaises(lane_delivery.LaneDeliveryError):
+                    lane_delivery._start_lineage_round(
+                        self.args(**(dict(lineage_branch=None, lineage_created=None) | changes)),
+                        io=self.unused(), runtime_observation=lambda: "ready")
 
 
 class CreationFrontierTransportTests(unittest.TestCase):

@@ -1277,6 +1277,9 @@ def _add_supervise_parser(subparsers: Any) -> None:
     supervise.add_argument("--lineage-handoff", type=Path)
     supervise.add_argument("--lineage-handoff-root", type=Path)
     supervise.add_argument("--lineage-output", type=Path)
+    supervise.add_argument("--lineage-created", type=Path,
+                           help="Where an issue-targeted round names the pull request it discovered, "
+                                "written before its chain is published")
     # The remainder must not be named "command": that is the subparsers dest, and
     # argparse would overwrite the selected subcommand with the provider argv.
     supervise.add_argument(
@@ -2147,6 +2150,39 @@ def lineage_creation(round_observer, created, base_sha):
         observed.writer, observed.round_id, observed.transport)
 
 
+def record_created_pull(output, created):
+    """Name the discovered pull request before publication can have any effect.
+
+    A creation round's private record is filed under the issue it was launched
+    for, because the pull request it attributes did not exist when the store was
+    named. Only the delivered number is looked at afterwards -- by a fix round on
+    that pull request, and by a rerun of the same issue -- so the record has to
+    be relocated onto it, and this file is the only thing that can tell the
+    runner which number that is.
+
+    It is written between the record and publication deliberately. ``publish``
+    posts the public marker first and then reads it back and reconciles labels,
+    so a failure inside it leaves the chain published while the round's own
+    successful-attribution output is never written. Naming the pull request only
+    on that output would strand the private record under the issue in exactly
+    that case, and the published chain would stay bound to the created head with
+    nothing able to extend it: every later round answers ``lineage_head_pending``
+    from there on.
+
+    The bytes are metadata only -- the repository and the number the round
+    discovered -- and are replaced atomically, so a round interrupted mid-write
+    leaves the previous answer rather than a torn one.
+    """
+    payload = json.dumps(dict(schema="code_mower.lineageCreated.v1",
+                              repo=created.repo, pr_number=created.pr_number),
+                         allow_nan=False, sort_keys=True) + "\n"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staged = output.with_name(output.name + ".partial")
+    staged.write_text(payload, encoding="utf-8")
+    os.replace(staged, output)
+    return output
+
+
 def declined_creation(io, checkout, origin):
     """Whether a cleanly stopped round provably created nothing to attribute.
 
@@ -2214,6 +2250,11 @@ def _start_creation_round(args, *, io=None, runtime_observation=None):
     require_capabilities()
     if args.lineage_output is None:
         raise LaneDeliveryError("Attribution output required before launch")
+    # The round's private record cannot be filed on the pull request it
+    # attributes without somewhere to name it, and that has to be settled before
+    # launch: by the time it is needed, publication is one call away.
+    if args.lineage_created is None:
+        raise LaneDeliveryError("Discovered pull request output required before launch")
     if not (args.lineage_store and args.writer_repo and args.writer_lane and args.cwd
             and args.writer and args.lineage_writer and args.writer_state_dir
             and args.lineage_branch):
@@ -2263,6 +2304,10 @@ def _start_creation_round(args, *, io=None, runtime_observation=None):
         store.record(delivery, created, identity, authorities, io.history(created),
                      author=snapshot.author, labels=snapshot.labels, config=config,
                      runtime_observation=runtime_observation, create=True)
+        # The record now exists and publication has not started, which is the
+        # one moment at which naming the pull request cannot be lost to a
+        # partially applied publication.
+        record_created_pull(args.lineage_created, created)
         publication = publish(io, created, identity, authorities, store.read(created)["episodes"])
         record_lineage_builder(publication.observation, transport, args.lineage_output,
             created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat())
@@ -2282,6 +2327,10 @@ def _start_lineage_round(args, *, io=None, runtime_observation=None):
     # request; a delivery to an existing one already has its branch.
     if getattr(args, "lineage_branch", None):
         raise LaneDeliveryError("An existing pull request target has no branch to reserve")
+    # Nor a pull request to discover: this round's target is already the number
+    # its private record is filed under, so nothing here relocates it.
+    if getattr(args, "lineage_created", None):
+        raise LaneDeliveryError("An existing pull request target creates no pull request to name")
     config, identity, authorities = trusted_policy(args.cwd, args.lineage_base)
     before = lineage_target_state(args.writer_repo, json.loads(args.lineage_before.read_text()))
     io = io if io is not None else GitHub()
