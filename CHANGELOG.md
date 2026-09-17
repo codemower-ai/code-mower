@@ -68,6 +68,12 @@ later entries are regular releases.
 
 ### Fixed
 
+- Graphify inventories larger than 256 KiB now use a separate bounded 16 MiB
+  provider-manifest reader without relaxing file coverage or hash checks.
+  Oversized provider manifests explicitly refuse publication. The accepted
+  provider's `doc_ref` nodes are recognized as non-code exclusions, and related
+  test queries recognize JavaScript/TypeScript `.test`/`.spec` and `__tests__`
+  conventions and import relationships without claiming execution coverage.
 - Coworker fast-search responses with `source_id`, missing titles, or `Text`
   records now retain cited evidence with explicit uncertainty. Records without
   provenance are never given invented citations. Response-format failures,

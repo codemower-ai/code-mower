@@ -184,7 +184,22 @@ product constraint is that default traversals in the evaluated provider returned
 | `impact` | against the edges | `calls`, `imports`, `references`, `tests` | 2 |
 | `dependency` | along the edges | `calls`, `imports`, `references` | 2 |
 | `symbol` | both | all | 1 |
-| `related_tests` | against the edges, answering with test nodes only | `tests`, `calls`, `references` | 2 |
+| `related_tests` | against the edges, answering with test nodes only | `tests`, `calls`, `imports`, `references` | 2 |
+
+Test nodes are derived from source paths. Alongside the existing `test/`,
+`tests/`, `test_*`, `*_test` and `*_spec` conventions, the reader recognizes
+`__tests__/` path segments and `.test`/`.spec` filenames with JavaScript or
+TypeScript extensions (`js`, `jsx`, `ts`, `tsx`, `mjs`, `cjs`, `mts`, `cts`).
+This classification does not invent relationships: a test still has to be
+reachable through the supported edges and within the query's bounds.
+Imports are evidence that a test depends on a symbol or module, not proof that
+it executes or covers that code. The packet retains the provider's `imports`
+relationship instead of rewriting it as a test-coverage claim.
+
+The pinned extractor can also emit `doc_ref` nodes during code-only extraction,
+although its validator omits that type. These are accepted as declared non-code
+exclusions, like document nodes. They and their incident edges do not become
+code query results or source citations; unknown node types remain invalid.
 
 Each traversal is symbol-first: a target resolves to the symbols carrying that
 name, and only a target that names no symbol at all is read as a path. Each is

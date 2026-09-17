@@ -717,6 +717,54 @@ class TraversalTests(GraphWorkspace):
         result = self.query(question="related_tests")
         self.assertEqual([item.node.name for item in result.relations], ["test_parse_config"])
 
+    def test_related_tests_recognizes_frontend_paths_and_symbols(self) -> None:
+        paths = ["__tests__/config.ts", "src/__tests__/config.tsx"]
+        paths += [f"src/config.{kind}.{extension}"
+                  for kind in ("test", "spec")
+                  for extension in ("js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts")]
+        for path in paths:
+            for label in (path.rsplit("/", 1)[-1], "checks_configuration"):
+                with self.subTest(path=path, label=label):
+                    document = graph_document(nodes=[
+                        node("subject", "parse_config", "src/config.ts", 1),
+                        node("test", label, path, 1),
+                    ], edges=[edge("test", "subject", "calls", source_file=path, source_location="L1")])
+                    graph = query.load_graph(document, generation="a" * 32, commit="b" * 40)
+                    answer = query.run_query(graph, question="related_tests", target="parse_config")
+                    self.assertEqual([item.node.id for item in answer.relations], ["test"])
+                    self.assertEqual(answer.relations[0].node.citation, f"{path}#L1")
+
+    def test_frontend_test_conventions_do_not_match_ordinary_filenames(self) -> None:
+        for path in ("src/contest.ts", "src/__tests__helpers/config.ts", "src/config.test.ts.map",
+                     "src/config.specification.ts", "src/config.test.json", "src/config.test.py"):
+            with self.subTest(path=path):
+                document = graph_document(nodes=[node("ordinary", path.rsplit("/", 1)[-1], path, 1)])
+                graph = query.load_graph(document, generation="a" * 32, commit="b" * 40)
+                self.assertEqual(graph.nodes["ordinary"].kind, "file")
+
+    def test_related_tests_follows_imports_without_claiming_test_execution(self) -> None:
+        document = graph_document(nodes=[
+            node("subject", "configure", "src/config.ts", 1),
+            node("helper", "load_config", "src/helper.ts", 1),
+            node("direct", "config.test.ts", "src/config.test.ts", 1),
+            node("indirect", "helper.spec.ts", "src/helper.spec.ts", 1),
+            node("unrelated", "other.test.ts", "src/other.test.ts", 1),
+        ], edges=[
+            edge("direct", "subject", "imports"),
+            edge("helper", "subject", "imports"),
+            edge("indirect", "helper", "imports"),
+            edge("subject", "unrelated", "imports"),
+        ])
+        graph = query.load_graph(document, generation="a" * 32, commit="b" * 40)
+        answer = query.run_query(graph, question="related_tests", target="configure")
+        self.assertEqual({item.node.id for item in answer.relations}, {"direct", "indirect"})
+        for item in answer.relations:
+            self.assertEqual(item.via.relation, "imports")
+            self.assertIn(" imports ", query._relation_text("related_tests", item))
+        bounded = query.run_query(graph, question="related_tests", target="configure", depth=1)
+        self.assertEqual({item.node.id for item in bounded.relations}, {"direct"})
+        self.assertTrue(bounded.truncated)
+
     def test_symbol_is_a_one_hop_neighbourhood(self) -> None:
         result = self.query(question="symbol")
         self.assertEqual({item.depth for item in result.relations}, {1})
@@ -1381,6 +1429,23 @@ class MissingEndpointTests(unittest.TestCase):
         graph = query.load_graph(document, generation="a" * 32, commit="b" * 40)
         self.assertNotIn("n-doc", graph.nodes)
         self.assertEqual(graph.incomplete, frozenset())
+
+    def test_pinned_extractor_doc_refs_are_declared_non_code_exclusions(self) -> None:
+        document = graph_document()
+        document["nodes"].append(
+            node("n-doc-ref", "README.md", "src/config.ts", 1, file_type="doc_ref")
+        )
+        document["edges"].extend([
+            edge("n-config", "n-doc-ref", "references"),
+            edge("n-doc-ref", "n-load", "references"),
+        ])
+        graph = query.load_graph(document, generation="a" * 32, commit="b" * 40)
+        self.assertNotIn("n-doc-ref", graph.nodes)
+        self.assertFalse(any("n-doc-ref" in (item.source, item.target) for item in graph.edges))
+        self.assertEqual(graph.incomplete, frozenset())
+        result = query.run_query(graph, question="symbol", target="parse_config")
+        self.assertNotIn("provider_partial", result.omissions)
+        self.assertFalse(any(item.node.path == "src/config.ts" for item in result.relations))
 
     def test_an_undeclared_endpoint_marks_the_surviving_node(self) -> None:
         graph = query.load_graph(

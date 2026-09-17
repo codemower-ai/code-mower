@@ -138,11 +138,12 @@ GRAPH_DIRECTED_KEY = "directed"
 GRAPH_NODE_FIELDS = ("id", "label", "file_type", "source_file")
 GRAPH_EDGE_FIELDS = ("source", "target", "relation", "confidence", "source_file")
 
-#: The pinned validator's ``VALID_FILE_TYPES``. Only ``code`` is traversable
-#: here -- the others are the provider's document/paper/image/rationale/concept
+#: The pinned validator's ``VALID_FILE_TYPES``, plus ``doc_ref`` emitted by
+#: its extractor's document-reference pass (but omitted by its validator).
+#: Only ``code`` is traversable here -- the others are the provider's non-code
 #: corpora, which are not the repository relationships #914 is about and carry
 #: no line-checkable location in the bound commit.
-GRAPH_FILE_TYPES = frozenset({"code", "document", "paper", "image", "rationale", "concept"})
+GRAPH_FILE_TYPES = frozenset({"code", "document", "paper", "image", "rationale", "concept", "doc_ref"})
 CODE_FILE_TYPE = "code"
 
 #: The pinned validator's ``VALID_CONFIDENCES``, lowercased. The provider
@@ -211,9 +212,10 @@ EVIDENCE_CONFIDENCE = {"extracted": "extracted", "inferred": "inferred", "ambigu
 #: Path segments that make a code file a test in this repository's own layout.
 #: A derivation, like ``_node_kind`` itself, and deliberately conservative:
 #: naming a non-test file a test would put it in a ``related_tests`` answer.
-_TEST_PREFIXES = ("tests/", "test/")
-_TEST_DIRECTORIES = ("/tests/", "/test/")
+_TEST_PREFIXES = ("tests/", "test/", "__tests__/")
+_TEST_DIRECTORIES = ("/tests/", "/test/", "/__tests__/")
 _TEST_STEM_SUFFIXES = ("_test", "_spec")
+_JS_TEST_EXTENSIONS = frozenset({"js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts"})
 
 #: Relationship filters per question, and whether the traversal runs along
 #: edges or against them. ``impact`` asks who is affected by a change, which is
@@ -225,7 +227,7 @@ _TRAVERSALS: dict[str, tuple[str, frozenset[str]]] = {
     "impact": ("incoming", frozenset({"calls", "imports", "references", "tests", "inherits"})),
     "dependency": ("outgoing", frozenset({"calls", "imports", "references", "inherits"})),
     "symbol": ("both", RELATION_KINDS),
-    "related_tests": ("incoming", frozenset({"tests", "calls", "references"})),
+    "related_tests": ("incoming", frozenset({"tests", "calls", "imports", "references"})),
 }
 
 #: Depth ceilings per question. ``symbol`` is a neighbourhood, not a walk:
@@ -555,11 +557,13 @@ def _node_kind(path: str, label: str, node_type: Any) -> str:
         base = path.rsplit("/", 1)[-1]
         lowered = path.lower()
         stem = base.lower().rsplit(".", 1)[0]
+        extension = base.lower().rsplit(".", 1)[-1]
         is_test = (
             lowered.startswith(_TEST_PREFIXES)
             or any(directory in lowered for directory in _TEST_DIRECTORIES)
             or stem.startswith("test_")
             or stem.endswith(_TEST_STEM_SUFFIXES)
+            or (extension in _JS_TEST_EXTENSIONS and stem.endswith((".test", ".spec")))
         )
         if is_test:
             return "test"
@@ -573,7 +577,7 @@ class _ParsedNode:
     """One provider node record: its declared id, and the code node it is or is not.
 
     The id survives the ``code``-only filter on purpose. An edge onto an id the
-    document *declared* as a document, paper, image, rationale or concept is a
+    document *declared* as a document, paper, image, rationale, concept or doc_ref is a
     relationship this module has stated it does not query; an edge onto an id
     the document never declared at all is evidence the provider itself could
     not state. Without keeping the declared ids those two are the same dangling
@@ -588,7 +592,7 @@ def _node(value: Any) -> _ParsedNode:
     """One pinned-export node: a queryable code node, or a declared exclusion.
 
     A non-``code`` node is dropped rather than refused. The provider indexes
-    documents, papers, images, rationales and concepts into the same graph, and
+    documents, papers, images, rationales, concepts and doc_refs into the same graph, and
     those are not repository relationships: they carry no location in the bound
     commit, so no traversal here could cite one. Dropping them is bounded --
     every edge that named one becomes a dangling edge, which ``load_graph``
