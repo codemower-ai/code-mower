@@ -13,6 +13,7 @@ import yaml
 
 from . import __version__
 from . import package as package_module
+from .release_identity import check_release_identity
 from . import versioning as code_mower_versioning
 
 
@@ -1269,7 +1270,7 @@ def _workflow_dispatch_inputs(workflow: str) -> dict[str, Any]:
 
 
 def _dispatch_sha_gate_holds(
-    workflow: str, workflow_jobs: dict[str, Any], release_tag: str | None = None,
+    workflow: str, workflow_jobs: dict[str, Any],
 ) -> bool:
     """Require every dispatched build and publish to name the exact commit.
 
@@ -1278,7 +1279,6 @@ def _dispatch_sha_gate_holds(
     job refuses to let anything else run.
     """
 
-    release_tag = release_tag or _release_tag_for_version(__version__)
     expected = _workflow_dispatch_inputs(workflow).get("expected_sha")
     if not isinstance(expected, dict):
         return False
@@ -1292,7 +1292,7 @@ def _dispatch_sha_gate_holds(
         "inputs.expected_sha",
         "github.sha",
         "grep -Eq '^[0-9a-f]{40}$'",
-        f'test "$ACTUAL_REF" = "refs/tags/{release_tag}"',
+        '[[ "$ACTUAL_REF" == refs/tags/v* ]]',
         'test "$ACTUAL_SHA" = "$EXPECTED_SHA"',
     )
     if any(fragment not in identity_text for fragment in required_identity_fragments):
@@ -1304,6 +1304,46 @@ def _dispatch_sha_gate_holds(
 
 
 RELEASE_WORKFLOW_DISPATCH_COMMAND = "gh workflow run release.yml"
+
+
+def _public_identity_gate_holds(workflow_jobs: dict[str, Any]) -> bool:
+    identity = workflow_jobs.get("release-identity", {})
+    if not isinstance(identity, dict) or identity.get("if") or identity.get("continue-on-error"):
+        return False
+    steps = identity.get("steps", [])
+    validators = [
+        step for step in steps if isinstance(step, dict)
+        and 'python src/code_mower/release_identity.py --tag "$RELEASE_TAG"' in step.get("run", "")
+    ]
+    if len(validators) != 1:
+        return False
+    validator = validators[0]
+    if validator.get("if") or validator.get("continue-on-error"):
+        return False
+    if validator.get("env") != {
+        "RELEASE_TAG": "${{ github.event.release.tag_name || github.ref_name }}",
+        "ACTUAL_REF": "${{ github.ref }}",
+        "ACTUAL_SHA": "${{ github.sha }}",
+    }:
+        return False
+    if any(fragment not in validator.get("run", "") for fragment in (
+        "set -euo pipefail",
+        'test "$ACTUAL_REF" = "refs/tags/$RELEASE_TAG"',
+        'test "$(git rev-parse HEAD)" = "$ACTUAL_SHA"',
+    )):
+        return False
+    for job_name in ("release-identity", "build-distributions"):
+        job = workflow_jobs.get(job_name, {})
+        if not isinstance(job, dict):
+            return False
+        checkouts = [step for step in job.get("steps", []) if isinstance(step, dict)
+                     and str(step.get("uses", "")).startswith("actions/checkout@")]
+        if len(checkouts) != 1 or checkouts[0].get("with", {}).get("ref") != "${{ github.sha }}":
+            return False
+    return all(
+        _needs_job(workflow_jobs.get(job_name), "release-identity")
+        for job_name in ("build-distributions", "publish-testpypi", "publish-pypi")
+    )
 
 
 def _incomplete_dispatch_actions(
@@ -1453,6 +1493,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     version = init_version or pyproject_version
     materialized_versions = _materialized_package_versions(repo_path)
     release_tag = _release_tag_for_version(version) if version else ""
+    identity_problems = check_release_identity(repo_path, release_tag)
     package_index_spec = f"code-mower=={version}" if version else ""
     doc_blob = "\n".join(docs.values())
     runbook_doc = _document_section(
@@ -1563,6 +1604,13 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
 
     checks = [
         _release_check(
+            check_id="release-public-identity",
+            title="Selected release identity and immutable public text agree",
+            status="fail" if identity_problems else "pass",
+            evidence=f"{release_tag}: pyproject.toml, src/code_mower/__init__.py, README.md, CHANGELOG.md",
+            detail={"problems": identity_problems},
+        ),
+        _release_check(
             check_id="package-version-consistency",
             title="Package versions agree",
             status=(
@@ -1665,9 +1713,15 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             title="Dispatched release builds are bound to the expected commit",
             status=(
                 "pass"
-                if _dispatch_sha_gate_holds(workflow, workflow_jobs, release_tag)
+                if _dispatch_sha_gate_holds(workflow, workflow_jobs)
                 else "fail"
             ),
+            evidence=str(workflow_path),
+        ),
+        _release_check(
+            check_id="release-public-identity-gate",
+            title="Both release events validate immutable public text before building or publishing",
+            status="pass" if _public_identity_gate_holds(workflow_jobs) else "fail",
             evidence=str(workflow_path),
         ),
         _release_check(

@@ -1509,6 +1509,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/release_identity.py",
+      "target": "src/code_mower/release_identity.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/release_qualify.py",
       "target": "src/code_mower/release_qualify.py"
     },

@@ -36,6 +36,13 @@ release below.
 
 ### Fixed
 
+- Release publication now checks the selected tag against package metadata,
+  the opening README release statement, and the active CHANGELOG entry before
+  either TestPyPI or PyPI can run. The same release-readiness check runs in CI
+  before tagging and rejects unfinished publication promises. Release jobs
+  derive identity from the selected tag and pin checkouts to its event commit,
+  retaining the required expected-SHA assertion for manual dispatch (#1014).
+
 - The local lane runner can drive a repository whose name contains `.`. The
   stable lineage writer identity and the supervised round ID used to be the
   pasted `<lane>-<owner>__<name>` slug, which the supervised-round identifier

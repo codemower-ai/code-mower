@@ -330,7 +330,7 @@ class ReleaseHygieneTests(unittest.TestCase):
             ("[release-identity, verify-distributions]", "[verify-distributions]"),
             ("grep -Eq '^[0-9a-f]{40}$'", "true"),
             ('test "$ACTUAL_SHA" = "$EXPECTED_SHA"', "true"),
-            ('test "$ACTUAL_REF" = "refs/tags/v1.4.2"', "true"),
+            ('[[ "$ACTUAL_REF" == refs/tags/v* ]]', "true"),
         ):
             with self.subTest(old=old):
                 check = self._dispatch_sha_gate_check(

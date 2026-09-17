@@ -36,8 +36,29 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s\n' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
-          test "$ACTUAL_REF" = "refs/tags/v1.4.2"
+          [[ "$ACTUAL_REF" == refs/tags/v* ]]
           test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+
+      - name: Check out the event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Validate the selected tag and immutable public release text
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+          ACTUAL_REF: ${{ github.ref }}
+          ACTUAL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$ACTUAL_REF" = "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$ACTUAL_SHA"
+          python src/code_mower/release_identity.py --tag "$RELEASE_TAG"
 
   build-distributions:
     needs: release-identity
@@ -45,6 +66,8 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
