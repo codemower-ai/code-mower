@@ -53,8 +53,8 @@ class ReleaseIdentityTests(unittest.TestCase):
             ROOT, versioning.release_tag_for_version(__version__)), [])
 
     def test_published_v141_contradiction_is_rejected_independently_on_each_surface(self):
-        for surface, fixture in (("README.md", "v141-readme.md"),
-                                 ("CHANGELOG.md", "v141-changelog.md")):
+        for surface, fixture in (("README.md", "v141-readme.txt"),
+                                 ("CHANGELOG.md", "v141-changelog.txt")):
             with self.subTest(surface=surface):
                 self.write_release("1.4.1")
                 # Avoid a duplicate historical heading in this fixture.
