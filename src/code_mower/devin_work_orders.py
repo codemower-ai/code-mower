@@ -537,7 +537,8 @@ class DevinWorkOrders:
         pending = bool((record.get("message") or {}).get("pending"))
         if session.lifecycle is not None and (
             pending or (session.lifecycle["state"] in {"complete", "archived"}
-                        and (record.get("completion_rejection") or (round_number > 0 and not verified)))
+                        and (record.get("completion_rejection")
+                             or ((round_number > 0 or evidence is not None) and not verified)))
         ):
             session = replace(session, lifecycle=public_projection({
                 **session.lifecycle, "state": "uncertain", "reason": "result_not_ready",

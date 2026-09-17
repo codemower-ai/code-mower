@@ -205,6 +205,43 @@ class BoardRemoteTests(unittest.TestCase):
         self.assertEqual(output["records"][0]["work"]["runs"][0]["provider"], "another_provider")
         self.assertEqual(before, tree(self.root))
 
+    def test_hosted_devin_and_another_provider_share_the_board_contract(self):
+        states = [
+            ("new", None, "pending"), ("running", None, "running"),
+            ("running", "waiting_for_user", "waiting_for_user"),
+            ("running", "waiting_for_approval", "waiting_for_approval"),
+            ("exit", "finished", "complete"), ("error", None, "failed"),
+            ("exit", None, "terminated"), ("suspended", None, "suspended"),
+        ]
+        for status, detail, expected in states:
+            with self.subTest(status=status, detail=detail):
+                calls = []
+                def api(method, _url, body, _headers, *, calls=calls, status=status, detail=detail):
+                    calls.append((method, body))
+                    return {"session_id": "private-provider-reference", "status": status,
+                            "status_detail": detail, "structured_output": {"body": CANARY},
+                            "messages": [CANARY], "questions": [CANARY], "cost": 999}
+                provider = DevinProvider(DevinClient("org-test", "test-key", api_runner=api))
+                remote = RemoteSessions(self.root / "unused-private-store", provider)
+                durable = {"schema": "code_mower.remote_session.v1", "provider": "devin",
+                           "account": "org-test", "repo": "owner/repo",
+                           "binding": "private-provider-reference", "fingerprint": "opaque",
+                           "operations": {}, "state": "pending", "counts": {"dispatch": 1}}
+                # Unit boundary: fixture store reads, real hosted metadata GET
+                # normalization, real neutral lifecycle and Board producers.
+                with patch.object(remote.store, "read_only", return_value=durable), \
+                     patch.object(remote, "run", side_effect=AssertionError("mutation")):
+                    observed = remote.observe("local-work", repo="owner/repo", now=NOW)
+                self.assertTrue(observed.available)
+                self.assertEqual(observed.lifecycle["state"], expected)
+                snapshot = remote_work_input(self.work, round_number=0,
+                    runs=(RemoteRun(self.work.binding, 0, observed),), now=NOW)
+                record = render(self.root, snapshot)
+                self.assertEqual(record["work"]["runs"][0]["lifecycle"]["state"], expected)
+                self.assertEqual(calls, [("GET", None)])
+                self.assertNotIn(CANARY, json.dumps(record))
+                self.assertNotIn("private-provider-reference", json.dumps(record))
+
 
 class ReadOnlyRemoteTests(unittest.TestCase):
     def setUp(self):
@@ -380,6 +417,7 @@ class HostedBoardTests(WorkOrderCase):
         record = render(self.checkout, hosted_work_input(old, observed, expected_round=0, evidence=(review,), now=NOW))
         self.assertEqual(record["work"]["pull_request"]["head_sha"], OTHER)
         self.assertEqual(record["work"]["evidence"]["review"]["state"], "stale")
+        self.assertNotIn("implementation_complete", [run["phase"] for run in record["work"]["runs"]])
 
     def test_accepted_implementation_does_not_imply_provider_writer_has_stopped(self):
         self.provider.set_state(self.binding(), "running", result=self.claim())

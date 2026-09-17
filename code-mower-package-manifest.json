@@ -399,13 +399,13 @@
     },
     {
       "kind": "core",
-      "source": "src/code_mower/board_service.py",
-      "target": "src/code_mower/board_service.py"
+      "source": "src/code_mower/board_remote_observation.py",
+      "target": "src/code_mower/board_remote_observation.py"
     },
     {
       "kind": "core",
-      "source": "src/code_mower/board_remote_observation.py",
-      "target": "src/code_mower/board_remote_observation.py"
+      "source": "src/code_mower/board_service.py",
+      "target": "src/code_mower/board_service.py"
     },
     {
       "kind": "core",
