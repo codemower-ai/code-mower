@@ -669,3 +669,46 @@ class LaneStatusTests(TestCase):
         self.assertNotIn("/tmp/muse-lane", rendered)
         self.assertNotIn("secret.log", rendered)
         self.assertNotIn("timeout-seconds", rendered)
+
+
+class ListenerInventoryAvailabilityTests(TestCase):
+    """The empty inventory and the inventory that could not be taken, directly.
+
+    Every other caller reaches this through a fake host; these go at
+    `lane_status` itself, so the answered/unanswered distinction is asserted
+    against real `CompletedProcess` return codes rather than a fake's flag.
+    """
+
+    def test_a_tool_that_exits_one_has_answered_that_nothing_is_listening(self) -> None:
+        # `lsof` reports "nothing matched" by exiting 1 with no output. That is
+        # an answer, and the port really is free.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            return _completed("", returncode=1)
+
+        inventory = lane_status.local_listener_inventory(command_runner)
+
+        self.assertEqual((inventory["available"], inventory["listeners"]), (True, []))
+
+    def test_an_ss_fallback_that_exits_one_answers_for_a_missing_lsof(self) -> None:
+        # No `lsof` on the host is not an answer; the `ss` that follows it
+        # exiting 1 is, and the inventory is available on the strength of it.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["lsof"]:
+                raise OSError("no lsof here")
+            return _completed("", returncode=1)
+
+        inventory = lane_status.local_listener_inventory(command_runner)
+
+        self.assertEqual((inventory["available"], inventory["listeners"]), (True, []))
+
+    def test_neither_tool_answering_leaves_occupancy_unknown(self) -> None:
+        # A timeout and a crash are not "nothing is listening": the same empty
+        # list has to arrive marked unavailable so no caller reads it as free.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["lsof"]:
+                raise subprocess.TimeoutExpired(args, 3)
+            return _completed("", returncode=127)
+
+        inventory = lane_status.local_listener_inventory(command_runner)
+
+        self.assertEqual((inventory["available"], inventory["listeners"]), (False, []))

@@ -115,7 +115,7 @@ def _probe(command_runner: CommandRunner, args: Sequence[str]) -> tuple[bool, st
         return False, ""
     if completed.returncode == 0:
         return True, completed.stdout or ""
-    return completed.returncode in _INVENTORY_ANSWERED_RETURNCODES, ""
+    return completed.returncode in _ANSWERED_RETURNCODES, ""
 
 
 def _label_groups(pr: Mapping[str, Any]) -> dict[str, list[str]]:
