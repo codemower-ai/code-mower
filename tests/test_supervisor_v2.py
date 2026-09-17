@@ -315,6 +315,29 @@ class CompatibilityTests(V2Case):
 
 
 class FenceTests(V2Case):
+    def test_authorization_latency_cannot_outlive_claim_or_generation(self):
+        claim = self.started()
+        self.checkpoint(claim)
+        resolve = self.queue.resolve
+
+        def restart(*args, **kwargs):
+            value = resolve(*args, **kwargs)
+            self.agent.generation = "new_generation"
+            return value
+
+        with mock.patch.object(self.queue, "resolve", side_effect=restart):
+            self.assertEqual(self.send(claim)["status"]["reason"], "supervisor_restarted")
+        self.agent.generation = claim["generation"]
+
+        def expire(*args, **kwargs):
+            value = resolve(*args, **kwargs)
+            self.now = claim["expires_at"]
+            return value
+
+        with mock.patch.object(self.queue, "resolve", side_effect=expire):
+            self.assertEqual(self.send(claim)["status"]["reason"], "claim_expired")
+        self.assertIsNone(self.record()["pending"])
+
     def test_refuses_missing_and_invalid_usage_without_charging(self):
         claim = self.started()
         self.checkpoint(claim)

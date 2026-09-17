@@ -253,6 +253,11 @@ class Supervisor:
                 **({"request_key": request_key} if request_key else {}))
         except Exception:
             raise SupervisorError("claim_revoked") from None
+        # Resolution is an external boundary too; do not carry its starting
+        # timestamp through a slow authorization call.
+        now = self.clock()
+        if not isinstance(now, (int, float)) or not 0 < now < admission["expires_at"]:
+            raise SupervisorError("claim_expired")
         if not isinstance(task, AuthorizedTask) or task.admission != admission:
             raise SupervisorError("binding_mismatch")
         if self.runner not in task.registered_runners:
@@ -310,6 +315,10 @@ class Supervisor:
         if self.clock() >= claim["expires_at"]:
             raise SupervisorError("claim_expired")
         task = self._authorize(record["admission"], action, request_key=request_key)
+        if claim["generation"] != self.runtime.generation:
+            raise SupervisorError("supervisor_restarted")
+        if self.clock() >= claim["expires_at"]:
+            raise SupervisorError("claim_expired")
         if record["fingerprint"] != self._fingerprint(task):
             raise SupervisorError("binding_mismatch")
         return replace(task, order=replace(task.order, acu_limit=record["plan"]["builder_acu"]))
