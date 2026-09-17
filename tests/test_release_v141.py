@@ -189,13 +189,15 @@ class InstalledPromptPackTests(unittest.TestCase):
                 wheel = Path(supplied)
                 self.assertTrue(wheel.is_absolute() and wheel.is_file())
             else:
-                built = subprocess.run(
-                    [sys.executable, "-m", "pip", "wheel", "--no-deps",
-                     "--wheel-dir", str(root / "wheels"), str(ROOT)],
-                    cwd=root, capture_output=True, text=True, timeout=120,
+                # This historical v1.4.1 walkthrough only qualifies a supplied
+                # v1.4.1 artifact (see docs/v141-qualification.md). The
+                # checkout has since moved past 1.4.1, so building it here
+                # would install and assert against whatever version main
+                # currently carries, not v1.4.1; skip rather than misreport.
+                self.skipTest(
+                    "no CODE_MOWER_QUALIFICATION_WHEEL supplied; this historical "
+                    "v1.4.1 walkthrough does not build the current checkout"
                 )
-                self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
-                wheel, = (root / "wheels").glob("*.whl")
             installed = root / "installed"
             result = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "--no-deps", "--no-compile",

@@ -285,9 +285,11 @@ print(init._render_workflow_template(source.read_text(), {}), end='')
             if path not in activated:
                 content = (ROOT/path).read_bytes()
                 if path == '.github/workflows/release.yml':
-                    # #915 changes only the release tag binding; all other
-                    # accepted workflow bytes remain frozen by this comparison.
+                    # #915 and #952 change only the release tag binding; all
+                    # other accepted workflow bytes remain frozen by this
+                    # comparison.
                     content = content.replace(b'refs/tags/v1.4.1', b'refs/tags/v1.4.0')
+                    content = content.replace(b'refs/tags/v1.4.2', b'refs/tags/v1.4.0')
                 self.assertEqual(hashlib.sha256(content).hexdigest(), baseline[path],
                                  f'{path}: frozen accepted file bytes differ')
         # Normal init emits the pure tools helper, not the package delivery modules.
