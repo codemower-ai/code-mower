@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -38,6 +39,7 @@ class Provider(Protocol):
     def create(self, prompt: str, repo: str, limit: int, checkpoint: Callable) -> str: ...
     def reconcile(self, checkpoint: dict) -> str | None: ...
     def get(self, binding: str) -> Session: ...
+    def observe(self, binding: str) -> Session: ...
     def message(self, binding: str, prose: str) -> Session: ...
     def cancel(self, binding: str) -> Session: ...
 
@@ -66,6 +68,9 @@ class DevinProvider:
 
     def get(self, binding):
         return self.client.get(binding)
+
+    def observe(self, binding):
+        return self.client.observe(binding)
 
     def message(self, binding, prose):
         return self.client.send_message(binding, prose)
@@ -114,6 +119,12 @@ class FakeProvider:
             locked.write({"state": state, "reason": reason, "result": result})
         return self.get(binding)
 
+    def observe(self, binding):
+        value = self.store.read_only(binding)
+        if value is None:
+            raise RemoteError("provider_unavailable")
+        return Session(binding, value["state"], value["reason"])
+
     def message(self, binding, prose):
         return self.set_state(binding, "running")
 
@@ -146,7 +157,7 @@ def public_projection(record: dict) -> dict:
     }
 
 
-def _observe(record, snapshot):
+def _observe(record, snapshot, *, include_result=True):
     state = snapshot.state
     if state != "owner_action" and state not in STATES - {"uncertain"}:
         # A result must not turn an invalid provider state into valid completion.
@@ -159,7 +170,7 @@ def _observe(record, snapshot):
         pass
     elif state == "owner_action" and snapshot.reason == "approval_required":
         state = "waiting_for_approval"
-    elif snapshot.structured_output is not None:
+    elif include_result and snapshot.structured_output is not None:
         state = "complete"
     elif state == "owner_action":
         state = "waiting_for_user"
@@ -180,10 +191,105 @@ def _call(method, *args):
         raise RemoteError("provider_unavailable: run session status; inspect pending requests") from None
 
 
+@dataclass(frozen=True)
+class RemoteObservation:
+    """Safe metadata from one read; generation is an opaque local correlation key.
+
+    An embedding may retain this snapshot explicitly across refresh/restart.
+    Observation itself writes nothing, including no lifecycle or result cache.
+    """
+
+    generation: str
+    provider: str
+    lifecycle: dict | None
+    observed_at: datetime | None
+    checked_at: datetime
+    available: bool
+
+
+@dataclass(frozen=True)
+class RemoteWorkObservation:
+    """Provider-neutral hosted work metadata; no completion body or provider ID."""
+
+    generation: str
+    repository: str
+    issue: int
+    round_number: int
+    session: RemoteObservation
+    pr_number: int | None = None
+    head_sha: str | None = None
+    pr_state: str = "unknown"
+    github_available: bool = False
+    implementation_verified: bool = False
+
+
+def _observation_generation(record: dict, session: str) -> str:
+    return _digest([session, *(record.get(key) for key in
+                    ("schema", "provider", "account", "repo", "binding", "fingerprint",
+                     "operations"))])
+
+
 class RemoteSessions:
     def __init__(self, root: Path, provider: Provider):
         self.store = ContextStore(root)
         self.provider = provider
+
+    def observe(self, session: str, *, repo: str,
+                previous: RemoteObservation | None = None,
+                now: datetime | None = None) -> RemoteObservation:
+        """Read lifecycle only: no reconcile, mutation, lock or private result read.
+
+        Re-read the durable intent after GET, so a concurrent fix/cancel cannot
+        adopt a response or retained observation from an earlier generation.
+        Providers must implement the metadata-only seam; never fall back to get.
+        """
+        instant = now or datetime.now(timezone.utc)
+        if instant.tzinfo is None:
+            raise RemoteError("invalid_request")
+        key = _key(session)
+        record = self.store.read_only(key)
+        if (not record or record.get("schema") != SCHEMA
+                or record.get("provider") != self.provider.name
+                or record.get("account") != self.provider.account
+                or record.get("repo") != repo):
+            raise RemoteError("binding_mismatch")
+        generation = _observation_generation(record, session)
+        available = True
+        observed = instant
+        lifecycle = None
+        try:
+            if not record.get("binding"):
+                lifecycle = public_projection({**record, "state": "uncertain",
+                                               "reason": "reconcile_dispatch",
+                                               "next_action": "inspect_provider"})
+            elif any(op["state"] == "pending" for op in record["operations"].values()):
+                lifecycle = public_projection({**record, "state": "uncertain",
+                                               "reason": "inspect_provider_then_acknowledge",
+                                               "next_action": "acknowledge_delivered"})
+            else:
+                snapshot = self.provider.observe(record["binding"])
+                if snapshot.session_id != record["binding"]:
+                    raise RemoteError("binding_mismatch")
+                projected = dict(record)
+                _observe(projected, snapshot, include_result=False)
+                if snapshot.state == "archived":
+                    # Archival alone is not evidence that implementation finished.
+                    projected["reason"] = "result_not_ready"
+                lifecycle = public_projection(projected)
+        except Exception:
+            available, observed = False, None
+            if (isinstance(previous, RemoteObservation)
+                    and previous.generation == generation
+                    and previous.provider == self.provider.name
+                    and previous.observed_at is not None
+                    and previous.observed_at <= previous.checked_at <= instant
+                    and previous.lifecycle is not None):
+                lifecycle = public_projection(previous.lifecycle)
+                observed = previous.observed_at
+        current = self.store.read_only(key)
+        if current is None or _observation_generation(current, session) != generation:
+            raise RemoteError("binding_mismatch")
+        return RemoteObservation(generation, self.provider.name, lifecycle, observed, instant, available)
 
     def writer_state(self, session: str, *, repo: str) -> str:
         """Observe the bound writer, never infer exit from collected results."""

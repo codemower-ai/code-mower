@@ -184,6 +184,15 @@ class HostedReview:
         check_current(self.review, self.current)
         return status
 
+    def observe(self, *, previous=None, now=None):
+        """Lifecycle only; an informational finished review is never a PASS."""
+        check_current(self.review, self.current)
+        observation = self.remote.observe(
+            self.session, repo=self.review.repository, previous=previous, now=now,
+        )
+        check_current(self.review, self.current)
+        return observation
+
     def accept(self, *, _refresh: bool = True) -> ReviewEvidence:
         check_current(self.review, self.current)
         status = self.remote.run('status', self.session)

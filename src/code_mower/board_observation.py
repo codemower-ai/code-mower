@@ -413,7 +413,15 @@ def validate(value: object) -> dict[str, Any]:
             "waiting_for_user",
             "waiting_for_approval",
         }:
-            if source["freshness"] != "fresh" or heartbeat is None:
+            historical_remote = (
+                source["kind"] == "remote_session"
+                and run["lifecycle"] is not None
+                and source["observed_at"] == run["observed_at"]
+                and source["heartbeat_at"] == run["heartbeat_at"]
+                and ((source["freshness"] == "stale" and "stale_observation" in reasons)
+                     or (source["freshness"] == "unavailable" and "source_unavailable" in reasons))
+            )
+            if (source["freshness"] != "fresh" and not historical_remote) or heartbeat is None:
                 raise BoardObservationError("stale_live_claim")
         if run["phase"] == "provider_progress":
             if run["basis"] != "provider_reported" or run["reported_stage"] is None:

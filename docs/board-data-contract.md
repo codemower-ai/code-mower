@@ -688,6 +688,42 @@ adds no record and cannot abort the rest of the Board refresh. The Board never
 writes an observation, contacts a provider, repairs a record that fails the
 contract, or converts lease ownership alone into liveness.
 
+### Remote observation connection
+
+`board_remote_observation.remote_work_input` adapts provider-neutral lifecycle
+metadata to that same `LocalObservationInput`; `hosted_work_input` also binds
+hosted work-order evidence. The existing session/worktree resolver remains the
+single correlation authority. Embedders capture remote facts with
+`RemoteSessions.observe`, `DevinWorkOrders.observe`, or `HostedReview.observe`
+before passing the immutable input to Board. These explicit read-only methods
+are distinct from execution `status`/`collect`: they create no locks or files,
+reconcile no uncertain creates, collect no result bodies, and perform only
+metadata GETs. No provider credentials are discovered by Board.
+
+An embedding can retain the returned safe `RemoteObservation` (or hosted
+`RemoteWorkObservation`) and pass it as `previous` on its next observation,
+including after restart. A failed GET retains its original observation time
+and closed lifecycle reason while advancing only the check time and marking
+the source unavailable. Without a previous observation, the time and lifecycle
+are unknown. These methods do not persist a new cache or change the lifecycle
+state machine. Durable intent generations and hosted round bindings are checked
+before and after external reads; a changed binding refuses correlation instead
+of adopting an old result. Retained remote live phases require the matching
+historical source timestamp and a stale/unavailable reason. Board presents them
+as **last observed**, never as current execution or idle.
+
+Assignment, dispatch, provider running/stage, reported implementation completion,
+and independently observed merge state remain separate. Hosted observation
+rechecks PR identity and head through GitHub separately from previously verified
+implementation evidence; no private completion claim is read. Review/CI/gate
+facts require a separate fresh current PR observation. Review evidence also
+requires the exact round and full head: prior-round evidence is discarded and
+old-head or old-time review evidence is stale. A controller report contributes
+assignment intent only; its label-derived PASS and merge recommendation cannot
+become review or merge evidence. Raw provider references, questions, answers,
+messages, prompts, result bodies, private paths, and uncovered cost detail do
+not enter the Board contract. Cloud and Slack schemas are unchanged.
+
 By default the Board reads `*.json` files under
 `.code-mower/board/observations/`. Use `--observations-path PATH` for a custom
 local directory. A missing directory is reported as "nothing recorded yet",

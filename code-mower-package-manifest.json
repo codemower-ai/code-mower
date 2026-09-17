@@ -404,6 +404,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/board_remote_observation.py",
+      "target": "src/code_mower/board_remote_observation.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/board_store.py",
       "target": "src/code_mower/board_store.py"
     },
