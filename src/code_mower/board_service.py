@@ -69,6 +69,8 @@ SERVICE_STATUSES = (
     "port_conflict",
     "listener_inventory_unavailable",
     "external_supervisor",
+    "backup_failed",
+    "unload_failed",
     "apply_failed",
     "rollback_failed",
     "remove_incomplete",
@@ -1916,6 +1918,38 @@ def _apply(
 ) -> dict[str, Any]:
     """Replace a managed binding atomically, or restore what was there before."""
 
+    # The backup is acquired first, before a directory is created, a job is
+    # booted out or a byte is written. `previous_text` is the whole of the
+    # rollback: `_rollback` writes it back, and reads an empty one as "there was
+    # nothing here", which is why a failed read may never be spelled the same
+    # way as a definition that was genuinely absent. A read that fails after the
+    # original has already been unloaded and overwritten cannot be retried --
+    # the contents are gone by then -- so a definition this run was told is
+    # readable, and then cannot read, refuses the whole replacement while
+    # everything it would have replaced is still exactly where it was.
+    previous_text = ""
+    if previous is not None and previous.readable:
+        try:
+            previous_text = previous.definition_path.read_text(encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            return _operation_payload(
+                "backup_failed",
+                (
+                    "the installed definition could not be read for rollback "
+                    f"({exc.__class__.__name__}); it was left loaded and exactly as it was rather "
+                    "than replaced with no way back. Check that its file is readable, then retry."
+                ),
+                spec,
+                expected,
+                show_local_paths=show_local_paths,
+                known_paths=_provider_known_paths(provider, spec.label),
+                installed_readable=True,
+            )
+    # `previous_text` is now either the exact previous definition, or empty for
+    # the two cases where empty is the truth: no definition was installed, or
+    # `--replace` is knowingly taking over one that could not be read at all,
+    # whose contents were never recoverable and whose refusal said so.
+
     # Before anything is booted out: launchd cannot start a job whose log files
     # it cannot open, and a filesystem failure must not be discovered after the
     # previously working service has already been stopped.
@@ -1925,12 +1959,6 @@ def _apply(
             "apply_failed", log_failure, spec, expected, show_local_paths=show_local_paths
         )
 
-    previous_text = ""
-    if previous is not None and previous.readable:
-        try:
-            previous_text = previous.definition_path.read_text(encoding="utf-8")
-        except OSError:
-            previous_text = ""
     if previous is not None:
         # The definition on disk is the only description of the job launchd is
         # holding, and `write_definition` swaps it atomically: overwriting it

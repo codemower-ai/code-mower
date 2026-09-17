@@ -72,6 +72,7 @@ None of these change any local state:
 | `port_conflict` | the port is held by an unrelated local process |
 | `listener_inventory_unavailable` | neither `lsof` nor `ss` could be run, so port occupancy is unknown; an unchecked port is never treated as a free one |
 | `ambiguous_repository` | the selector matches more than one managed service |
+| `backup_failed` | the installed definition is readable but could not be read for rollback, so the replacement was refused before anything was unloaded or overwritten |
 | `unload_failed` | the service being replaced could not be unloaded and launchd will not confirm the job absent; its definition was left exactly as it was |
 | `rollback_failed` | an apply failed *and* the previous definition could not be restored, or the definition it wrote could not be taken back off the host |
 
@@ -145,6 +146,16 @@ gone, so that case refuses as `unload_failed` and changes nothing. A write that 
 disk untouched, so recovery there is to load it again rather than to restore it;
 either way the payload's `rollback` field says whether the previous service came
 back.
+
+The backup that rollback restores is read before any of that -- before a log
+directory is created, before the old job is booted out, before a byte is
+written. It is the whole of the rollback, and an empty one means "there was
+nothing installed here", so a read that failed may not be spelled the same way:
+doing so would let a failed bootstrap delete the replacement and report a
+successful rollback while the original was already gone. A definition discovery
+reported as readable that then cannot be read -- it was swapped underneath us,
+or its permissions changed -- refuses as `backup_failed` with everything it
+would have replaced still loaded and still on disk.
 
 Rolling back a *first* install means leaving nothing behind, and that is decided
 on the same terms as `remove`: the load state is read before anything is

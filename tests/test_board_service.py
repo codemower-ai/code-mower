@@ -10,6 +10,7 @@ validated everywhere and not only on the one machine that has launchd.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import plistlib
 import shlex
@@ -1609,6 +1610,112 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertEqual(payload["status"], "rollback_failed")
         self.assertIn("rollback also failed", payload["message"])
         self.assertFalse(payload["rollback"]["restored"])
+
+    def _watching_for_mutations(self, backup_path: Path, mutations: list[str]) -> board_service.LaunchdProvider:
+        """A provider whose backup read fails, recording every mutation it is asked for.
+
+        Only `definition_path` is swapped, so the label, the digest and the
+        definition actually on disk are the real ones: the failure being modelled
+        is the read, not the discovery that preceded it.
+        """
+
+        class ReadsTheBackupFromElsewhere(board_service.LaunchdProvider):
+            def read_service(self, label: str) -> board_service.ManagedService | None:
+                service = super().read_service(label)
+                if service is None:
+                    return None
+                return dataclasses.replace(service, definition_path=backup_path)
+
+            def bootout(self, label: str) -> tuple[bool, str]:
+                mutations.append("bootout")
+                return super().bootout(label)
+
+            def write_definition(self, label: str, text: str) -> Path:
+                mutations.append("write_definition")
+                return super().write_definition(label, text)
+
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                mutations.append("bootstrap")
+                return super().bootstrap(label)
+
+            def delete_definition(self, label: str) -> bool:
+                mutations.append("delete_definition")
+                return super().delete_definition(label)
+
+        return ReadsTheBackupFromElsewhere(
+            command_runner=self.host.run, root=self.root, uid=self.host.uid, platform="darwin"
+        )
+
+    def test_a_backup_that_cannot_be_read_refuses_before_anything_is_touched(self) -> None:
+        # `previous_text` is the whole of the rollback: `_rollback` writes it
+        # back, and reads an empty one as "there was nothing here" -- so a read
+        # that failed, spelled the same way, makes a failed bootstrap delete the
+        # replacement and report a successful rollback while the original is
+        # gone. The read is therefore taken before any mutation, and a failure
+        # refuses the replacement outright.
+        self.install(self.spec())
+        before = (self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8")
+        drifted = self.spec(repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332)
+        mutations: list[str] = []
+        # A directory, so the read raises IsADirectoryError on every platform CI
+        # runs rather than depending on file modes.
+        provider = self._watching_for_mutations(self.root, mutations)
+
+        payload = self._restart_with(provider, drifted, replace=True)
+
+        self.assertEqual(payload["status"], "backup_failed")
+        self.assertIn("could not be read for rollback", payload["message"])
+        self.assertIn("IsADirectoryError", payload["message"])
+        # Nothing was unloaded, written, bootstrapped or deleted.
+        self.assertEqual(mutations, [])
+        # And the original is still installed, still loaded, still serving.
+        self.assertEqual((self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8"), before)
+        self.assertIn("ai.codemower.board.5332", self.host.loaded)
+        self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
+
+    def test_a_backup_that_cannot_be_decoded_refuses_the_same_way(self) -> None:
+        # The other read failure: a definition that passed discovery as readable
+        # and is not UTF-8 by the time the backup is taken. A decode error is a
+        # ValueError rather than an OSError, and losing the original to it would
+        # be no less permanent.
+        self.install(self.spec())
+        before = (self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8")
+        # Outside the LaunchAgents root, so discovery still sees exactly the one
+        # installed definition and only the backup read is what fails.
+        binary = self.tmp / "swapped-under-us.plist"
+        binary.write_bytes(b"bplist00\xff\xfe\x00")
+        drifted = self.spec(repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332)
+        mutations: list[str] = []
+
+        payload = self._restart_with(self._watching_for_mutations(binary, mutations), drifted, replace=True)
+
+        self.assertEqual(payload["status"], "backup_failed")
+        self.assertIn("UnicodeDecodeError", payload["message"])
+        self.assertEqual(mutations, [])
+        self.assertEqual((self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8"), before)
+        self.assertIn("ai.codemower.board.5332", self.host.loaded)
+
+    def test_a_refused_backup_never_publishes_the_definition_path(self) -> None:
+        self.install(self.spec())
+        drifted = self.spec(repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332)
+
+        payload = self._restart_with(self._watching_for_mutations(self.root, []), drifted, replace=True)
+
+        self.assertEqual(payload["status"], "backup_failed")
+        self.assertNotIn(str(self.other_checkout), json.dumps(payload))
+        self.assertNotIn(str(self.root), json.dumps(payload))
+        self.assertTrue(payload["repo_path_redacted"])
+
+    def test_a_first_install_needs_no_backup_and_still_applies(self) -> None:
+        # The distinction the refusal rests on: an absent definition has nothing
+        # to back up, and must not be swept into the same refusal.
+        mutations: list[str] = []
+
+        payload = self._restart_with(self._watching_for_mutations(self.root, mutations), self.spec())
+
+        self.assertEqual(payload["status"], "installed")
+        self.assertIn("write_definition", mutations)
+        self.assertIn("ai.codemower.board.5332", self.host.loaded)
 
     def test_a_partially_registered_replacement_is_unloaded_before_restoring(self) -> None:
         # A bootstrap can register the job and *then* give up waiting for it.
