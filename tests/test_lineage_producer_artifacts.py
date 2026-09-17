@@ -67,7 +67,7 @@ class ArtifactTests(unittest.TestCase):
         # #1014 additionally authorizes the exact release-workflow identity gate
         # documented beside the fixture. Other digests and inventory are unchanged.
         self.assertEqual(hashlib.sha256(serialized).hexdigest(),
-                         '055c00e9a14cce3d8058a211478aad6624d4a3186db6f807ca8e3e231018ba58',
+                         '68acdf1d9b17a04205928b9e17a172bf793605a09c3749c2b616dfb113b65cb2',
                          'Complete accepted baseline differs from the independently approved value')
         return baseline
 

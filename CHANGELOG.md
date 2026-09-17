@@ -40,8 +40,9 @@ release below.
   the opening README release statement, and the active CHANGELOG entry before
   either TestPyPI or PyPI can run. The same release-readiness check runs in CI
   before tagging and rejects unfinished publication promises. Release jobs
-  derive identity from the selected tag and pin checkouts to its event commit,
-  retaining the required expected-SHA assertion for manual dispatch (#1014).
+  resolve the selected tag to its commit, validate that checkout, and pass the
+  exact SHA to the distribution build. Manual dispatch additionally requires
+  that tag commit to match the supplied expected SHA (#1014).
 
 - The local lane runner can drive a repository whose name contains `.`. The
   stable lineage writer identity and the supervised round ID used to be the

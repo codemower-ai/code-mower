@@ -120,8 +120,9 @@ def round_fixture(root, n=1, writer="destination-writer", config=None, runtime="
 # combined baseline; every other accepted digest stays frozen at the accepted
 # base, with the complete-baseline checksum in tests/test_lineage_producer_artifacts.py.
 # Authorized deviation (#1014): release.yml replaces the fixed release tag
-# with the selected tag, pins event-SHA checkouts, and validates immutable
-# public release text before either publication path. Only its digest changes.
+# with the selected tag, resolves its commit for the build checkout, and validates
+# immutable public release text before either publication path. PR #1016's fix
+# work order requires the tag-to-commit output binding. Only its digest changes.
 ACCEPTED_BASELINE = {'accepted_base': 'e818a3b639dfe903bdc16aff3674af98a5a08233',
  'modules': {'src/code_mower/builder_runs.py': {'definitions': {'BuilderInference': '4324ee0dd83a3091bcb788b89402e26337294acf9c735b55e46292ddfa6994c0',
                                                                 'PullRequestMetadata': '9026b80175ad20604b178df969a1b4afbc60fdb8f2d8f3a710d43d064870943f',
@@ -296,7 +297,7 @@ ACCEPTED_BASELINE = {'accepted_base': 'e818a3b639dfe903bdc16aff3674af98a5a08233'
                      '.github/workflows/dispatch-lanes.yml': 'cf6d9997cfbe9468e0883497ba68f223196332bf6fc99f4b6b8e8b1068cabdcd',
                      '.github/workflows/lane-mac-runner.yml': 'd771366c6e2ce3afc30a4919abd168b70e4a83fd19906e8ba534fed58ad606a7',
                      '.github/workflows/local-cli-audit.yml': '5305326fd50cc183d1f3d960bac2cf96019ebad4bf4dd5663a73bad545e19ccc',
-                     '.github/workflows/release.yml': '9741ec1cba3525510d610868b38afbd8eb725194d61886b7c040713342b85d3f',
+                     '.github/workflows/release.yml': '36b0a3d70c4f51aea240c54ab5c896313dd933c25626f5d2a6053374ed098208',
                      'src/code_mower/init.py': '429d12d80f9c9b43dc65781ccd8ee65d7994a45c4652a0a2705c0fcf369e265b',
                      'src/code_mower/templates/lanes/run_mac_lane.sh': '89139edb988d58104972c06ed7eeb5dc598804e001b8d9df2249ad4e4a101a5b',
                      'templates/lanes/run_mac_lane.sh': '89139edb988d58104972c06ed7eeb5dc598804e001b8d9df2249ad4e4a101a5b',

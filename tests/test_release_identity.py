@@ -5,11 +5,13 @@ from __future__ import annotations
 import copy
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 import yaml
 
@@ -177,7 +179,12 @@ class ReleaseIdentityWorkflowTests(unittest.TestCase):
     def test_readiness_checks_the_publish_wiring(self):
         jobs = self.workflow["jobs"]
         self.assertTrue(release_readiness._public_identity_gate_holds(jobs))
-        for mutation in ("conditional", "allowed-failure", "missing-validator", "unpinned-build", "unbound-ref"):
+        for mutation in (
+            "conditional", "allowed-failure", "missing-validator", "unpinned-build",
+            "event-sha-build", "event-sha-identity", "short-history", "unbound-ref",
+            "unresolved-tag", "unbound-head", "unbound-dispatch", "wrong-event",
+            "missing-output", "wrong-job-output", "conditional-checkout",
+        ):
             with self.subTest(mutation=mutation):
                 broken = copy.deepcopy(jobs)
                 step = broken["release-identity"]["steps"][-1]
@@ -189,8 +196,28 @@ class ReleaseIdentityWorkflowTests(unittest.TestCase):
                     step["run"] = "true"
                 elif mutation == "unpinned-build":
                     broken["build-distributions"]["steps"][0]["with"]["ref"] = "main"
-                else:
+                elif mutation == "event-sha-build":
+                    broken["build-distributions"]["steps"][0]["with"]["ref"] = "${{ github.sha }}"
+                elif mutation == "event-sha-identity":
+                    broken["release-identity"]["steps"][1]["with"]["ref"] = "${{ github.sha }}"
+                elif mutation == "short-history":
+                    broken["release-identity"]["steps"][1]["with"]["fetch-depth"] = 1
+                elif mutation == "conditional-checkout":
+                    broken["release-identity"]["steps"][1]["if"] = "false"
+                elif mutation == "unbound-ref":
                     step["run"] = step["run"].replace('test "$ACTUAL_REF" = "refs/tags/$RELEASE_TAG"', "true")
+                elif mutation == "unresolved-tag":
+                    step["run"] = step["run"].replace('refs/tags/$RELEASE_TAG^{commit}', "HEAD")
+                elif mutation == "unbound-head":
+                    step["run"] = step["run"].replace('test "$(git rev-parse HEAD)" = "$RESOLVED_SHA"', "true")
+                elif mutation == "unbound-dispatch":
+                    step["run"] = step["run"].replace('test "$RESOLVED_SHA" = "$EXPECTED_SHA"', "true")
+                elif mutation == "wrong-event":
+                    step["env"]["EVENT_NAME"] = "release"
+                elif mutation == "missing-output":
+                    step["run"] = step["run"].split("printf 'resolved-sha=")[0]
+                elif mutation == "wrong-job-output":
+                    broken["release-identity"]["outputs"]["resolved-sha"] = "${{ github.sha }}"
                 self.assertFalse(release_readiness._public_identity_gate_holds(broken))
 
     def test_same_validator_runs_for_dispatch_and_release_with_no_publish_bypass(self):
@@ -201,35 +228,159 @@ class ReleaseIdentityWorkflowTests(unittest.TestCase):
             self.assertIn("release-identity", jobs[publisher]["needs"])
         self.assertEqual(jobs["build-distributions"]["needs"], "release-identity")
         self.assertNotIn("v1.4.2", (ROOT / ".github/workflows/release.yml").read_text())
+        self.assertNotIn("github.sha", (ROOT / ".github/workflows/release.yml").read_text())
+        for publisher in ("publish-testpypi", "publish-pypi"):
+            steps = jobs[publisher]["steps"]
+            self.assertTrue(steps[0]["uses"].startswith("actions/download-artifact@"))
+            self.assertEqual(steps[0]["with"]["name"], "code-mower-dist")
+            self.assertFalse(any("checkout@" in step.get("uses", "") or "run" in step for step in steps))
 
-    def test_release_step_checks_checkout_ref_and_text_before_succeeding(self):
+    def make_repo(self, *, annotated=False):
         fixture = ReleaseIdentityTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
-        repo = fixture.repo
-        shutil.copy(ROOT / "src/code_mower/release_identity.py", repo / "src/code_mower/release_identity.py")
-        def git(*args):
-            return subprocess.check_output(["git", *args], cwd=repo, text=True).strip()
-        git("init", "-q")
-        git("add", ".")
-        git("-c", "user.name=Release Fixture", "-c", "user.email=fixture@example.invalid",
-            "-c", "commit.gpgsign=false", "commit", "-qm", "Release fixture")
-        sha = git("rev-parse", "HEAD")
-        script = self.workflow["jobs"]["release-identity"]["steps"][-1]["run"]
-        for tag, ref, actual, success in (
-            ("v1.5.0", "refs/tags/v1.5.0", sha, True),
-            ("v1.5.0", "refs/heads/v1.5.0", sha, False),
-            ("v1.5.0", "refs/tags/v1.5.1", sha, False),
-            ("v1.5.0", "refs/tags/v1.5.0", "b" * 40, False),
-            ("v1.5.1", "refs/tags/v1.5.1", sha, False),
-            ("v1.5.00", "refs/tags/v1.5.00", sha, False),
-        ):
-            with self.subTest(tag=tag, ref=ref, actual=actual):
-                result = subprocess.run(["bash", "-c", script], cwd=repo, text=True, capture_output=True,
-                                        env={**os.environ, "RELEASE_TAG": tag, "ACTUAL_REF": ref, "ACTUAL_SHA": actual})
-                self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
-        fixture.write("CHANGELOG.md", "## 1.5.0 — source candidate (publication pending #915)\n")
-        result = subprocess.run([sys.executable, str(repo / "src/code_mower/release_identity.py"),
-                                 "--tag", "v1.5.0", "--repo", str(repo)], capture_output=True, text=True)
+        self.repo = fixture.repo
+        shutil.copy(ROOT / "src/code_mower/release_identity.py", self.repo / "src/code_mower/release_identity.py")
+        self.git("init", "-qb", "main")
+        for key, value in (("user.name", "Release Fixture"), ("user.email", "fixture@example.invalid"),
+                           ("commit.gpgsign", "false"), ("tag.gpgsign", "false")):
+            self.git("config", key, value)
+        self.git("add", ".")
+        self.git("commit", "-qm", "Release fixture")
+        self.tag_sha = self.git("rev-parse", "HEAD")
+        self.git("tag", *( ["-a", "-m", "Release fixture"] if annotated else []), "v1.5.0")
+        if annotated:
+            self.assertNotEqual(self.git("rev-parse", "refs/tags/v1.5.0"), self.tag_sha)
+        fixture.write_release("1.5.1")
+        self.git("add", ".")
+        self.git("commit", "-qm", "Default branch advances past the release")
+        self.default_sha = self.git("rev-parse", "HEAD")
+        self.assertNotEqual(self.default_sha, self.tag_sha)
+        # An unqualified checkout could select this branch instead of the tag.
+        self.git("branch", "v1.5.0")
+        self.output = self.repo / "github-output"
+        return fixture
+
+    def git(self, *args, cwd=None):
+        return subprocess.check_output(["git", *args], cwd=cwd or self.repo, text=True, stderr=subprocess.PIPE).strip()
+
+    def context(self, event="release", *, tag="v1.5.0", ref=None, expected=None):
+        return {
+            "github": {"event_name": event, "sha": self.default_sha,
+                       "ref": ref or f"refs/tags/{tag}", "ref_name": tag,
+                       "event": {"action": "published", "release": {"tag_name": tag}} if event == "release" else {}},
+            "inputs": {"expected_sha": self.tag_sha if expected is None else expected},
+        }
+
+    def render(self, text, context):
+        """Evaluate only the context lookups/OR used by this workflow's refs and env."""
+        def value(match):
+            for alternative in match[1].split("||"):
+                result = context
+                for key in alternative.strip().split("."):
+                    result = result.get(key, "") if isinstance(result, dict) else ""
+                if result:
+                    return str(result)
+            return ""
+        return re.sub(r"\$\{\{\s*(.*?)\s*\}\}", value, text)
+
+    def run_step(self, step, context):
+        return subprocess.run(
+            ["bash", "-c", step["run"]], cwd=self.repo, text=True, capture_output=True,
+            env={**os.environ, "GITHUB_OUTPUT": str(self.output),
+                 "GITHUB_SHA": context["github"]["sha"],
+                 **{key: self.render(value, context) for key, value in step.get("env", {}).items()}},
+            timeout=30,
+        )
+
+    def validate(self, context, *, checkout=True):
+        self.output.write_text("")
+        steps = self.workflow["jobs"]["release-identity"]["steps"]
+        if context["github"]["event_name"] == "workflow_dispatch":
+            result = self.run_step(steps[0], context)
+            if result.returncode:
+                return result
+        if checkout:
+            self.git("checkout", "--detach", self.render(steps[1]["with"]["ref"], context))
+        return self.run_step(steps[-1], context)
+
+    def test_published_release_validates_and_builds_the_tag_even_when_event_sha_differs(self):
+        for annotated in (False, True):
+            with self.subTest(annotated=annotated):
+                self.make_repo(annotated=annotated)
+                context = self.context()
+                result = self.validate(context)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.git("rev-parse", "HEAD"), self.tag_sha)
+                self.assertEqual(self.output.read_text(), f"resolved-sha={self.tag_sha}\n")
+                jobs = self.workflow["jobs"]
+                context["steps"] = {"identity": {"outputs": dict(
+                    line.split("=", 1) for line in self.output.read_text().splitlines())}}
+                context["needs"] = {"release-identity": {"outputs": {
+                    key: self.render(value, context) for key, value in jobs["release-identity"]["outputs"].items()}}}
+                # A tag moving after validation must not change the downstream build.
+                self.git("tag", "-f", "v1.5.0", self.default_sha)
+                build_repo = self.repo / "build-checkout"
+                self.git("clone", "--quiet", "--no-hardlinks", str(self.repo), str(build_repo))
+                build_ref = self.render(jobs["build-distributions"]["steps"][0]["with"]["ref"], context)
+                self.git("checkout", "--detach", build_ref, cwd=build_repo)
+                self.assertEqual(self.git("rev-parse", "HEAD", cwd=build_repo), self.tag_sha)
+                # Package the downstream checkout, and inspect its actual wheel contents.
+                wheels = self.repo / "wheels"
+                built = subprocess.run(
+                    [sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheels), str(build_repo)],
+                    capture_output=True, text=True, timeout=120,
+                )
+                self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+                wheel, = wheels.glob("*.whl")
+                with zipfile.ZipFile(wheel) as artifact:
+                    self.assertEqual(artifact.read("code_mower/__init__.py").decode(), '__version__ = "1.5.0"\n')
+                    metadata = artifact.read("code_mower-1.5.0.dist-info/METADATA").decode()
+                    self.assertIn(versioning.public_baseline_sentence("1.5.0"), metadata)
+
+    def test_manual_dispatch_compares_the_resolved_tag_commit_with_expected_sha(self):
+        for annotated in (False, True):
+            with self.subTest(annotated=annotated):
+                self.make_repo(annotated=annotated)
+                for expected in ("", "not-a-sha", "a" * 39, self.default_sha, self.tag_sha):
+                    with self.subTest(expected=expected):
+                        result = self.validate(self.context("workflow_dispatch", expected=expected))
+                        self.assertEqual(result.returncode == 0, expected == self.tag_sha, result.stdout + result.stderr)
+                        self.assertEqual(bool(self.output.read_text()), expected == self.tag_sha)
+
+    def test_release_step_rejects_wrong_ref_missing_tag_and_wrong_checkout(self):
+        self.make_repo()
+        for event in ("release", "workflow_dispatch"):
+            for ref in ("refs/heads/v1.5.0", "refs/tags/v1.5.1"):
+                with self.subTest(event=event, ref=ref):
+                    result = self.validate(self.context(event, ref=ref))
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(self.output.read_text(), "")
+        self.git("checkout", "--detach", self.default_sha)
+        result = self.validate(self.context(), checkout=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("transient", result.stdout)
+        self.assertEqual(self.output.read_text(), "")
+        self.git("tag", "-d", "v1.5.0")
+        result = self.validate(self.context(), checkout=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.output.read_text(), "")
+
+    def test_tag_version_and_public_text_failures_never_emit_a_build_sha(self):
+        fixture = self.make_repo()
+        for tag in ("v1.5.1", "v1.5.00"):
+            with self.subTest(tag=tag):
+                self.git("tag", tag, self.tag_sha)
+                result = self.validate(self.context(tag=tag))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.output.read_text(), "")
+        self.git("checkout", "--detach", self.tag_sha)
+        fixture.write("CHANGELOG.md", "## 1.5.0 — source candidate (publication pending #915)\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "Unfinished tagged public text")
+        self.git("tag", "-f", "v1.5.0")
+        for event in ("release", "workflow_dispatch"):
+            with self.subTest(event=event):
+                result = self.validate(self.context(event, expected=self.git("rev-parse", "HEAD")))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("transient", result.stdout)
+                self.assertEqual(self.output.read_text(), "")

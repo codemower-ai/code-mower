@@ -329,7 +329,7 @@ class ReleaseHygieneTests(unittest.TestCase):
             ("    needs: release-identity\n", "    needs: verify-distributions\n"),
             ("[release-identity, verify-distributions]", "[verify-distributions]"),
             ("grep -Eq '^[0-9a-f]{40}$'", "true"),
-            ('test "$ACTUAL_SHA" = "$EXPECTED_SHA"', "true"),
+            ('test "$RESOLVED_SHA" = "$EXPECTED_SHA"', "true"),
             ('[[ "$ACTUAL_REF" == refs/tags/v* ]] || exit 1', "true"),
         ):
             with self.subTest(old=old):
@@ -339,22 +339,21 @@ class ReleaseHygieneTests(unittest.TestCase):
 
                 self.assertEqual(check["status"], "fail")
 
-    def test_release_identity_guard_rejects_wrong_expected_commits(self) -> None:
+    def test_release_identity_guard_requires_a_full_expected_sha_and_tag_ref(self) -> None:
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         )
         step = workflow["jobs"]["release-identity"]["steps"][0]
         release_sha = "a" * 40
         cases = (
-            ("", "refs/tags/v1.4.2", release_sha),
-            ("not-a-sha", "refs/tags/v1.4.2", release_sha),
-            ("b" * 40, "refs/tags/v1.4.2", release_sha),
-            (release_sha, "refs/heads/main", release_sha),
+            ("", "refs/tags/v1.4.2"),
+            ("not-a-sha", "refs/tags/v1.4.2"),
+            (release_sha, "refs/heads/main"),
         )
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "identity.sh"
             script.write_text(step["run"], encoding="utf-8")
-            for expected, ref, actual in cases:
+            for expected, ref in cases:
                 with self.subTest(expected=expected, ref=ref):
                     result = subprocess.run(
                         ["bash", str(script)],
@@ -364,7 +363,6 @@ class ReleaseHygieneTests(unittest.TestCase):
                             **os.environ,
                             "EXPECTED_SHA": expected,
                             "ACTUAL_REF": ref,
-                            "ACTUAL_SHA": actual,
                         },
                     )
 
@@ -377,7 +375,6 @@ class ReleaseHygieneTests(unittest.TestCase):
                     **os.environ,
                     "EXPECTED_SHA": release_sha,
                     "ACTUAL_REF": "refs/tags/v1.4.2",
-                    "ACTUAL_SHA": release_sha,
                 },
             )
 

@@ -58,10 +58,14 @@ package. Never rewrite a published tag to correct the wording.
 
 Ordinary release-readiness CI invokes the same checker using the source
 version's intended tag, so contradictions are reviewable before tagging. The
-release workflow derives identity from the dispatched tag or published release
-tag, checks the event commit, and pins both checkouts to that SHA. Both TestPyPI
-and PyPI publication depend on this check. Manual dispatch still requires the
-exact expected 40-character commit SHA; a branch dispatch fails closed.
+release workflow checks out the exact dispatched tag or published release tag
+with full tag history, resolves lightweight and annotated tags to their commit,
+and proves that checked-out HEAD equals that commit before checking the public
+text. It exports the validated 40-character SHA to the distribution build,
+which checks out that SHA; event `github.sha` is not used as source identity.
+Both TestPyPI and PyPI consume only the resulting verified distributions.
+Manual dispatch additionally requires the resolved tag commit to equal the
+supplied `expected_sha`; a branch dispatch or mismatched tag ref fails closed.
 
 TestPyPI qualification may call its artifact a candidate in instruction
 sections. Historical CHANGELOG entries and `Unreleased` are outside the active

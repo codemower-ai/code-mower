@@ -1284,23 +1284,24 @@ def _dispatch_sha_gate_holds(
         return False
     if expected.get("required") is not True or expected.get("type") != "string":
         return False
-    # ``safe_dump`` doubles the single quotes inside the step's shell script.
-    identity_text = _job_text(workflow_jobs.get("release-identity")).replace("''", "'")
-    if not identity_text:
+    if not _public_identity_gate_holds(workflow_jobs):
         return False
-    required_identity_fragments = (
-        "inputs.expected_sha",
-        "github.sha",
+    guards = [
+        step for step in workflow_jobs["release-identity"].get("steps", [])
+        if isinstance(step, dict)
+        and step.get("if") == "${{ github.event_name == 'workflow_dispatch' }}"
+        and step.get("env") == {
+            "EXPECTED_SHA": "${{ inputs.expected_sha }}",
+            "ACTUAL_REF": "${{ github.ref }}",
+        }
+    ]
+    if len(guards) != 1 or guards[0].get("continue-on-error"):
+        return False
+    return all(fragment in guards[0].get("run", "") for fragment in (
+        "set -euo pipefail",
         "grep -Eq '^[0-9a-f]{40}$'",
         '[[ "$ACTUAL_REF" == refs/tags/v* ]] || exit 1',
-        'test "$ACTUAL_SHA" = "$EXPECTED_SHA"',
-    )
-    if any(fragment not in identity_text for fragment in required_identity_fragments):
-        return False
-    return all(
-        _needs_job(workflow_jobs.get(job_name), "release-identity")
-        for job_name in ("build-distributions", "publish-testpypi", "publish-pypi")
-    )
+    ))
 
 
 RELEASE_WORKFLOW_DISPATCH_COMMAND = "gh workflow run release.yml"
@@ -1320,25 +1321,46 @@ def _public_identity_gate_holds(workflow_jobs: dict[str, Any]) -> bool:
     validator = validators[0]
     if validator.get("if") or validator.get("continue-on-error"):
         return False
+    if validator.get("id") != "identity" or identity.get("outputs") != {
+        "resolved-sha": "${{ steps.identity.outputs.resolved-sha }}",
+    }:
+        return False
     if validator.get("env") != {
         "RELEASE_TAG": "${{ github.event.release.tag_name || github.ref_name }}",
         "ACTUAL_REF": "${{ github.ref }}",
-        "ACTUAL_SHA": "${{ github.sha }}",
+        "EVENT_NAME": "${{ github.event_name }}",
+        "EXPECTED_SHA": "${{ inputs.expected_sha }}",
     }:
         return False
     if any(fragment not in validator.get("run", "") for fragment in (
         "set -euo pipefail",
         'test "$ACTUAL_REF" = "refs/tags/$RELEASE_TAG"',
-        'test "$(git rev-parse HEAD)" = "$ACTUAL_SHA"',
+        'RESOLVED_SHA="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"',
+        "printf '%s\\n' \"$RESOLVED_SHA\" | grep -Eq '^[0-9a-f]{40}$'",
+        'test "$(git rev-parse HEAD)" = "$RESOLVED_SHA"',
+        'if [ "$EVENT_NAME" = workflow_dispatch ]; then\n'
+        '  test "$RESOLVED_SHA" = "$EXPECTED_SHA"\nfi',
+        'python src/code_mower/release_identity.py --tag "$RELEASE_TAG"\n'
+        'printf \'resolved-sha=%s\\n\' "$RESOLVED_SHA" >> "$GITHUB_OUTPUT"',
     )):
         return False
-    for job_name in ("release-identity", "build-distributions"):
+    for job_name, ref in (
+        ("release-identity", "refs/tags/${{ github.event.release.tag_name || github.ref_name }}"),
+        ("build-distributions", "${{ needs.release-identity.outputs.resolved-sha }}"),
+    ):
         job = workflow_jobs.get(job_name, {})
         if not isinstance(job, dict):
             return False
         checkouts = [step for step in job.get("steps", []) if isinstance(step, dict)
                      and str(step.get("uses", "")).startswith("actions/checkout@")]
-        if len(checkouts) != 1 or checkouts[0].get("with", {}).get("ref") != "${{ github.sha }}":
+        if len(checkouts) != 1:
+            return False
+        checkout = checkouts[0]
+        if checkout.get("if") or checkout.get("continue-on-error"):
+            return False
+        if checkout.get("with", {}).get("ref") != ref:
+            return False
+        if job_name == "release-identity" and checkout["with"].get("fetch-depth") != 0:
             return False
     return all(
         _needs_job(workflow_jobs.get(job_name), "release-identity")
