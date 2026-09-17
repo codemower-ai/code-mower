@@ -2,7 +2,7 @@
 
 The v1.4.2 source candidate is not yet published or qualified. Pinned index
 commands below apply after publication; candidate checks use the verified
-artifact. Track acceptance in [#915](https://github.com/codemower-ai/code-mower/issues/915).
+artifact. Track acceptance in [#952](https://github.com/codemower-ai/code-mower/issues/952).
 
 Code Mower requires Python 3.12 or newer. Use one install path per machine or
 agent, then verify the installed command before touching a repository.

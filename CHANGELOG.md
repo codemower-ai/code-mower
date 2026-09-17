@@ -7,33 +7,6 @@ later entries are regular releases.
 
 ## 1.4.2 — source candidate (publication pending)
 
-- Prepare the Board clarity release: version, changelog, release notes and
-  current docs updated for v1.4.2, distinguishing local Board visibility from
-  future Slack/cloud mappings (#921).
-- Package/release qualification contracts updated for the accepted #951
-  head-bound evidence and #961 persistent-service work already on `main`;
-  this source PR adds no new cloud event fields.
-  See [candidate notes](docs/v142-release-notes.md) and the
-  [evidence matrix](docs/v142-qualification.md) for inclusion and limitations.
-  Publication, installed-package acceptance, the three-Board restart
-  verification, and the #951 bounded hosted Devin canary remain pending #952.
-
-## 1.4.1 — source candidate (publication pending)
-
-- Add inert `init --graphify` guidance for the accepted separate-environment
-  0.9.58 pin; keep default installation free of Graphify dependencies/indexing.
-- Clarify starter-to-installed Devin verification and 12-hour session lease
-  discovery, renewal and same-ID cross-process release.
-- Prepare versioned release gates, package materialization and qualification
-  evidence for the accepted stabilization, lineage and Graphify baseline.
-  See [candidate notes](docs/v141-release-notes.md) for inclusion and limitations.
-  Publication, installed-package acceptance and release-specific scorecard,
-  campaign, Board and cloud evidence remain pending #915.
-
-## Unreleased
-
-### Added
-
 - `code-mower board service` manages a persistent local Board: render a
   reviewable definition, install, inspect, restart, and remove it. macOS uses
   launchd; other platforms refuse rather than calling a transient process a
@@ -42,13 +15,46 @@ later entries are regular releases.
   another supervisor on the port, or an ambiguous repository selection. The
   serving gate validates port, repository slug, exact private repository path,
   installed version, serving version, and the exact argument list behind a
-  delayed health check. Exact local paths stay local.
+  delayed health check. Exact local paths stay local (#961).
   See [Board service lifecycle](docs/board-service-lifecycle.md).
 - `code-mower board stop --repo OWNER/REPO` resolves one exact known binding.
   Selectors must agree: an ambiguous, duplicate, or contradicting
   repository/port/PID selection stops nothing, and a port a keepalive-managed
-  service would immediately reclaim is refused instead of reported as stopped.
-  `board list` now marks each Board managed or transient.
+  service would immediately reclaim is refused instead of reported as
+  stopped. `board list` now marks each Board managed or transient (#961).
+- Board's work-first Now/Timeline/Releases/Health views, provider-neutral
+  remote lifecycle observations, exact local work observations, and the
+  qualified independent head-bound evidence and session-visibility
+  composition are accepted on `main` (#999, #1000, #1001, #1002, #1003 / #951).
+  This source PR adds no new cloud event fields; Slack-specific and hosted
+  cloud mappings remain #921.
+- Version, changelog, release notes, current docs, and package/release
+  qualification contracts updated for v1.4.2, distinguishing local Board
+  visibility from future Slack/cloud mappings.
+  See [candidate notes](docs/v142-release-notes.md) and the
+  [evidence matrix](docs/v142-qualification.md) for inclusion and limitations.
+  Publication, installed-package acceptance, restart verification against the
+  two observed local Board services (port 5332, `codemower-ai/code-mower`,
+  plus one additional private-repository port, each restarted by its
+  classified managed-or-transient posture), and the #951 bounded hosted
+  Devin canary remain pending #952.
+
+## 1.4.1 — published
+
+- Added inert `init --graphify` guidance for the accepted separate-environment
+  0.9.58 pin; default installation stays free of Graphify dependencies/indexing.
+- Clarified starter-to-installed Devin verification and 12-hour session lease
+  discovery, renewal and same-ID cross-process release.
+- Shipped versioned release gates, package materialization and qualification
+  evidence for the accepted stabilization, lineage and Graphify baseline.
+  See [release notes](docs/v141-release-notes.md) for inclusion and limitations.
+  Publication, installed-package acceptance and the release-specific
+  scorecard, campaign, Board and cloud evidence completed the #915 closeout.
+
+## Unreleased
+
+### Added
+
 - Staged trusted lineage producer primitives for supervised takeover and same-writer
   delivery persistence, authenticated semantic publication, explicit builder-label
   reconciliation, and transport-preserving attribution. Independent workflow and

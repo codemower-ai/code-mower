@@ -49,7 +49,7 @@ For a repository that already has generated Code Mower support, follow
 `.code-mower.generated` tree.
 
 `1.4.2` is the supervised-pilot source candidate; publication and installed
-qualification remain pending #915. These pinned install commands apply after
+qualification remain pending #952. These pinned install commands apply after
 publication. To follow a future prerelease line
 instead of pinning this exact build:
 
@@ -90,8 +90,10 @@ with `code-mower session lease renew --session-id SESSION_ID` if work continues;
 `code-mower session show --current` finds its matching brief. Use `--dry-run`
 for a preview or `--no-lease` for a saved read-only brief. Participant selection
 alone does not qualify an orchestrator; Devin requires a qualified supervisor.
-The v1.4.2 source candidate includes role admission and exact startup lease commands;
-these changes do not alter the published `v1.4.0` artifact.
+Role admission and exact startup lease commands shipped in the published
+`v1.4.1` artifact; the v1.4.2 candidate inherits them unchanged and adds only
+the Board clarity work described in [candidate notes](v142-release-notes.md).
+These commands do not alter the published `v1.4.0` artifact.
 
 Run this from a clean checkout of the repository you want to pilot:
 

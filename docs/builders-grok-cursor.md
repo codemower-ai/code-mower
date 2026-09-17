@@ -69,7 +69,7 @@ and its required `target_json`, `policy_json`, `authority_json`, and
 producer owns the explicit-input contract; do not derive these inputs from PR
 metadata or execute PR code/configuration to obtain them. The 1.4.2 source
 candidate remains unqualified and unpublished; activation against the released
-package remains gated by #915.
+package remains gated by #952.
 
 Treat each PR branch as single-writer. The owning `builder:<lane>` identity is
 the only lane that should push commits to that branch; other builders and audit

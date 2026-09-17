@@ -8946,8 +8946,7 @@ def main():
     def test_release_readiness_fails_when_a_board_doctor_assertion_is_deleted(self) -> None:
         for assertion in (
             '--json >"$BOARD_DOCTOR_DIR/5332.json"',
-            '--json >"$BOARD_DOCTOR_DIR/5342.json"',
-            '--json >"$BOARD_DOCTOR_DIR/5344.json"',
+            '--json >"$BOARD_DOCTOR_DIR/5333.json"',
             'if report.get("status") != owner_queue:',
             'raise SystemExit(f"restarted Board doctors are not release-ready:'
             ' {problems}")',
@@ -9031,8 +9030,7 @@ def main():
         for assertion in (
             'and row.get("repo") == expected_repo',
             'raise SystemExit("serving mode requires PORT=REPO for every port")',
-            '"5332=codemower-ai/code-mower" "5342=$BOARD_5342_REPO"'
-            ' "5344=$BOARD_5344_REPO"',
+            '"5332=codemower-ai/code-mower" "5333=$BOARD_5333_REPO"',
         ):
             with self.subTest(assertion=assertion):
                 check = self._asserted_runbook_check(
@@ -9362,19 +9360,28 @@ def main():
 
     def test_runbook_board_restart_waits_and_polls_every_port(self) -> None:
         runbook = self._runbook_section()
-        boards = runbook.partition("### 15. Restart the three Boards")[2]
+        boards = runbook.partition("### 15. Restart the reconciled Board inventory")[2]
 
         self.assertIn(
             'test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)"'
             ' = "$RELEASE_SHA"',
             boards,
         )
-        self.assertIn("code-mower board stop --port \"$BOARD_PORT\" --yes --json", boards)
-        self.assertIn('board_wait.py" gone "$BOARD_PORT"', boards)
+        # A transient stop is bound by both --repo and --port, so a reused
+        # port cannot make it stop a different repository's listener.
+        self.assertIn(
+            "code-mower board stop --repo codemower-ai/code-mower --port 5332 --yes --json",
+            boards,
+        )
+        self.assertIn(
+            'code-mower board stop --repo "$BOARD_5333_REPO" --port 5333 --yes --json',
+            boards,
+        )
+        self.assertIn('board_wait.py" gone 5332', boards)
+        self.assertIn('board_wait.py" gone 5333', boards)
         self.assertIn('board_wait.py" serving \\', boards)
         self.assertIn(
-            '"5332=codemower-ai/code-mower" "5342=$BOARD_5342_REPO"'
-            ' "5344=$BOARD_5344_REPO"',
+            '"5332=codemower-ai/code-mower" "5333=$BOARD_5333_REPO"',
             boards,
         )
         self.assertIn('and row.get("repo") == expected_repo', boards)
@@ -9382,12 +9389,97 @@ def main():
             'raise SystemExit("serving mode requires PORT=REPO for every port")',
             boards,
         )
+        # A managed port is restarted in place, never replaced by a transient
+        # `nohup ... serve`, and its status is verified before and after.
+        self.assertIn("code-mower board service restart --repo codemower-ai/code-mower", boards)
+        self.assertIn('code-mower board service restart --repo "$BOARD_5333_REPO"', boards)
+        self.assertIn("--replace --json", boards)
+        self.assertIn("code-mower board service status --port 5332 --json", boards)
+        self.assertIn("code-mower board service status --port 5333 --json", boards)
+        self.assertIn('test "$BOARD_5332_MODE_AFTER" = "$BOARD_5332_MODE"', boards)
+        self.assertIn('test "$BOARD_5333_MODE_AFTER" = "$BOARD_5333_MODE"', boards)
         self.assertIn("code-mower board doctor", boards)
         self.assertNotIn("board reset --", boards)
         self.assertNotIn("pkill", boards)
-        for port in ("5332", "5342", "5344"):
+        for port in ("5332", "5333"):
             with self.subTest(port=port):
                 self.assertIn(port, boards)
+        self.assertNotIn("5342", boards)
+        self.assertNotIn("5344", boards)
+
+    def test_runbook_board_service_mode_fails_closed_on_unclassifiable_status(self) -> None:
+        runbook = self._runbook_section()
+        boards = runbook.partition("### 15. Restart the reconciled Board inventory")[2]
+        snippet = boards.partition('cat >"$RELEASE_ENV/board_service_mode.py" <<\'PY\'')[2]
+        snippet = snippet.partition("\nPY\n")[0]
+        snippet = snippet.rpartition("\nmain()")[0]
+        namespace: dict[str, object] = {}
+        exec(compile(snippet, "board_service_mode.py", "exec"), namespace)  # noqa: S102
+        classify = namespace["main"]
+
+        def run(port: str, payload: object) -> tuple[int, str]:
+            out = StringIO()
+            with mock.patch.object(sys, "argv", ["board_service_mode.py", port]), \
+                mock.patch.object(sys, "stdin", StringIO(json.dumps(payload))), \
+                redirect_stdout(out):
+                try:
+                    classify()
+                    return 0, out.getvalue().strip()
+                except SystemExit as exc:
+                    return 1, str(exc)
+
+        SCHEMA = "code_mower.boardServiceStatus.v1"
+
+        code, result = run(
+            "5332", {"schema": SCHEMA, "status": "not_installed", "services": []}
+        )
+        self.assertEqual((code, result), (0, "transient"))
+
+        code, result = run(
+            "5332",
+            {"schema": SCHEMA, "status": "ok", "services": [{"port": 5332}]},
+        )
+        self.assertEqual((code, result), (0, "managed"))
+
+        # A stale-but-installed binding is still managed; restart heals it.
+        code, result = run(
+            "5332",
+            {"schema": SCHEMA, "status": "delayed_health_failed", "services": [{"port": 5332}]},
+        )
+        self.assertEqual((code, result), (0, "managed"))
+
+        for label, payload in (
+            ("unsupported_platform", {
+                "schema": SCHEMA, "status": "unsupported_platform", "services": [],
+            }),
+            ("wrong_port_row", {
+                "schema": SCHEMA, "status": "ok", "services": [{"port": 5333}],
+            }),
+            ("ambiguous_extra_row", {
+                "schema": SCHEMA,
+                "status": "ok",
+                "services": [{"port": 5332}, {"port": 5332}],
+            }),
+            ("not_installed_with_a_row", {
+                "schema": SCHEMA,
+                "status": "not_installed",
+                "services": [{"port": 5332}],
+            }),
+            # Unrelated or changed JSON must not be accepted just because it
+            # happens to carry a matching status/services shape.
+            ("wrong_schema", {
+                "schema": "code_mower.somethingElse.v1",
+                "status": "ok",
+                "services": [{"port": 5332}],
+            }),
+            ("missing_schema", {"status": "ok", "services": [{"port": 5332}]}),
+            # A non-dict row must not raise AttributeError from `.get`.
+            ("non_dict_row", {"schema": SCHEMA, "status": "ok", "services": ["not-a-row"]}),
+            ("non_dict_payload", ["not-an-object"]),
+        ):
+            with self.subTest(case=label):
+                code, _ = run("5332", payload)
+                self.assertEqual(code, 1)
 
     def test_release_readiness_requires_duplicate_identity_rejection(self) -> None:
         for assertion in (
@@ -10297,16 +10389,14 @@ def main():
                 {
                     "BOARD_DOCTOR_DIR": str(doctor_dir),
                     "BOARD_5332_REPO": "codemower-ai/code-mower",
-                    "BOARD_5342_REPO": "private-owner/second",
-                    "BOARD_5344_REPO": "private-owner/third",
+                    "BOARD_5333_REPO": "private-owner/second",
                 },
             )
 
     def _board_doctor_reports(self, **overrides: dict) -> dict[str, dict]:
         reports = {
             "5332": self._board_doctor_report("codemower-ai/code-mower"),
-            "5342": self._board_doctor_report("private-owner/second"),
-            "5344": self._board_doctor_report("private-owner/third"),
+            "5333": self._board_doctor_report("private-owner/second"),
         }
         reports.update(overrides)
         return reports
@@ -10316,7 +10406,7 @@ def main():
         warned = self._run_board_doctor_gate(
             self._board_doctor_reports(
                 **{
-                    "5342": self._board_doctor_report(
+                    "5333": self._board_doctor_report(
                         "private-owner/second", owner_queue="warn"
                     )
                 }
@@ -10327,7 +10417,7 @@ def main():
         self.assertEqual(warned.returncode, 0, warned.stderr)
         self.assertEqual(
             json.loads(warned.stdout)["board_doctors_release_ready"],
-            ["5332", "5342", "5344"],
+            ["5332", "5333"],
         )
 
     def test_runbook_board_doctor_gate_rejects_unrelated_degradation(self) -> None:
@@ -10336,7 +10426,7 @@ def main():
         degraded["status"] = "warn"
 
         result = self._run_board_doctor_gate(
-            self._board_doctor_reports(**{"5342": degraded})
+            self._board_doctor_reports(**{"5333": degraded})
         )
 
         self.assertEqual(result.returncode, 1)
@@ -10348,7 +10438,7 @@ def main():
         )
 
         result = self._run_board_doctor_gate(
-            self._board_doctor_reports(**{"5342": mismatched})
+            self._board_doctor_reports(**{"5333": mismatched})
         )
 
         self.assertEqual(result.returncode, 1)
@@ -10359,7 +10449,7 @@ def main():
         duplicated["checks"].insert(0, {"id": "gate.health", "status": "fail"})
 
         result = self._run_board_doctor_gate(
-            self._board_doctor_reports(**{"5342": duplicated})
+            self._board_doctor_reports(**{"5333": duplicated})
         )
 
         self.assertEqual(result.returncode, 1)
@@ -10380,11 +10470,11 @@ def main():
         for label, report in cases.items():
             with self.subTest(report=label):
                 result = self._run_board_doctor_gate(
-                    self._board_doctor_reports(**{"5342": report})
+                    self._board_doctor_reports(**{"5333": report})
                 )
 
                 self.assertEqual(result.returncode, 1)
-                self.assertIn("5342 doctor", result.stderr)
+                self.assertIn("5333 doctor", result.stderr)
 
     def _cloud_doctor_report(self, checks: list[dict] | None = None, **overrides) -> dict:
         report = {
@@ -11013,7 +11103,13 @@ def main():
         for text in (readme, current_state, rollout):
             self.assertIn(current_status, " ".join(text.split()))
         self.assertIn(
-            "The current package-index release entrypoint is `code-mower==1.4.2`",
+            "The current published package-index release entrypoint is\n"
+            "  `code-mower==1.4.1` (GitHub tag `v1.4.1`)",
+            public_release,
+        )
+        self.assertIn(
+            "The target package-index entrypoint after\n"
+            "  v1.4.2's acceptance is `code-mower==1.4.2` (GitHub tag `v1.4.2`)",
             public_release,
         )
         self.assertIn("The current supervised-pilot release includes", public_release)

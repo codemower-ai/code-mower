@@ -21,16 +21,21 @@ no cloud event fields; Slack-specific and hosted-cloud mappings remain #921.
 - Package/release qualification contracts and the post-merge runbook moved
   forward to bind the exact v1.4.2 release commit, tag and artifacts.
 - Cold-install and 1.4.1-to-1.4.2 upgrade rehearsal coverage, installed-
-  version/Board doctor and three-service restart verification guidance.
+  version/Board doctor and multi-service restart verification guidance for
+  the Board processes named in #952, pending exact-inventory reconciliation.
 - Dry-run-first allowlisted metadata upload guidance; no new field is
   required for release, and no upload is applied by this source change.
 
 ## Remaining boundaries carried over from v1.4.1
 
 Repository-aware `board stop --repo` landed via #961 and is exercised by
-#951's local qualification; installed-version agreement across all three
-Board processes is verified as part of the post-merge runbook, not by this
-source PR. Isolated non-keyring Codex campaign authentication remains #983.
+#951's local qualification; installed-version agreement across the two
+observed local Board processes named in #952 (port 5332,
+`codemower-ai/code-mower`, plus one additional private-repository port) is
+verified as part of the post-merge runbook, not by this
+source PR, and each port's managed-versus-transient posture is classified
+from `code-mower board service status` rather than assumed. Isolated
+non-keyring Codex campaign authentication remains #983.
 No new paid hosted Devin session is authorized by this release procedure.
 
 The privacy boundary is unchanged. Upload only the maintained metadata

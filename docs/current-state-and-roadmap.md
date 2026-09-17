@@ -24,9 +24,9 @@ dry-run-first.
 
 The current source candidate is `v1.4.2`, with target install spec
 `code-mower==1.4.2`. Publication and installed-package qualification are pending
-[#915](https://github.com/codemower-ai/code-mower/issues/915).
+[#952](https://github.com/codemower-ai/code-mower/issues/952).
 
-The published v1.4.0 baseline requires Python 3.12 or newer. It provides:
+The published v1.4.0 and v1.4.1 baselines require Python 3.12 or newer. Each provides:
 
 - pipx, uv tool, and contributor installation paths;
 - safe setup previews and selectable participants;
@@ -137,10 +137,13 @@ sequence from the stabilization epic is:
    plus [#974](https://github.com/codemower-ai/code-mower/issues/974) evidence
    verification. #963 is accepted through the #990/#991/#992 replacement stages
    and final #997 integration, not the unaccepted #989 draft.
-2. Ship those fixes together with Graphify as `v1.4.2`
+2. Graphify shipped together with those fixes as `v1.4.1`
    ([#915](https://github.com/codemower-ai/code-mower/issues/915)).
-3. Ship Board as `v1.4.2`. Board work is underway;
-   [#935](https://github.com/codemower-ai/code-mower/issues/935) is complete.
+3. Ship Board as `v1.4.2`. Board's code is accepted on `main`, including
+   [#935](https://github.com/codemower-ai/code-mower/issues/935),
+   #956/#957/#999/#1000/#1002, #961 via PR #1001, and #951's PR #1003; #951
+   stays open only for its bounded hosted Devin canary, and #952 is the
+   release PR.
 4. Supervised Slack remains planned for `v1.5.0`; its runtime work is deferred
    until the sequence above is complete.
 
@@ -155,9 +158,10 @@ qualification, transport capability, repository policy, and runtime readiness.
 It rejects an unqualified Devin orchestrator before lease or session writes and
 checks bounded hosted builder admission before new work. See
 [Participant Qualification](participant-qualification.md). These are main-line
-stabilization changes awaiting the next package. Effective-authority rendering
+stabilization changes that shipped in `v1.4.1`. Effective-authority rendering
 ([#955](https://github.com/codemower-ai/code-mower/issues/955)) is accepted through #988;
-neither is part of the immutable `v1.4.0` artifact.
+neither is part of the immutable `v1.4.0` artifact, and both are part of the
+published `v1.4.1` artifact.
 
 Each step below is an independently gated epic rather than one cross-cutting
 implementation PR.
@@ -187,7 +191,7 @@ evidence-only verification of existing hosted aggregate freshness; a confirmed
 hosted defect becomes a separately recorded implementation child and its own
 hosted PR rather than an assumed fix.
 
-### 2. Graphify Repository Context — `v1.4.2` ([#902](https://github.com/codemower-ai/code-mower/issues/902) / release [#915](https://github.com/codemower-ai/code-mower/issues/915))
+### 2. Graphify Repository Context — `v1.4.1` ([#902](https://github.com/codemower-ai/code-mower/issues/902) / release [#915](https://github.com/codemower-ai/code-mower/issues/915))
 
 Graphify is a repository-context provider beside Coworker, not a participant.
 Its runtime source is accepted on main: the
@@ -200,26 +204,36 @@ decision, and `code-mower context-graph`, described in the
 #982) consumes
 a pinned structured JSON contract and generates bounded impact, dependency,
 symbol, and related-test packets in one shape for Claude, Codex, and Devin.
-Release #915 prepares that accepted source and stabilization baseline for the
-package. The release-specific comparative scorecard, installed artifacts,
-publication, campaign, Board and fresh aggregate evidence remain pending.
+Release #915 shipped that accepted source and stabilization baseline as
+`v1.4.1`, completing the release-specific comparative scorecard, campaign,
+Board, and fresh aggregate evidence as part of that closeout.
 
 Installation stays opt-in, no command requires an index to exist, and Code
 Mower owns refresh policy rather than parsing human-oriented MCP prose.
 
 ### 3. Board Clarity And Session Visibility — `v1.4.2` ([#945](https://github.com/codemower-ai/code-mower/issues/945) / release [#952](https://github.com/codemower-ai/code-mower/issues/952))
 
-Board implementation is underway rather than unstarted.
+Board implementation is accepted on `main`, not underway.
 [#935](https://github.com/codemower-ai/code-mower/issues/935) is complete and
 merged with [#973](https://github.com/codemower-ai/code-mower/issues/973);
 [#956](https://github.com/codemower-ai/code-mower/issues/956) and
-[#957](https://github.com/codemower-ai/code-mower/issues/957) are drafts behind
-main that need refreshing before review. Remaining work is presentation and
-producers, persistent Board services
-([#961](https://github.com/codemower-ai/code-mower/issues/961)), and integrated
-qualification ([#951](https://github.com/codemower-ai/code-mower/issues/951)),
-then the release PR #952. #961 is required before #951 and #952, and #951
-consumes #975, #955, #962, #963, and #976 through its integration dependencies.
+[#957](https://github.com/codemower-ai/code-mower/issues/957) are merged, as
+are the work-first Now/Timeline/Releases/Health views
+([#1000](https://github.com/codemower-ai/code-mower/issues/1000)), exact
+local work observations
+([#999](https://github.com/codemower-ai/code-mower/issues/999)),
+provider-neutral remote lifecycle observations
+([#1002](https://github.com/codemower-ai/code-mower/issues/1002)), and
+persistent Board services with stale-keepalive rejection during release
+restart ([#961](https://github.com/codemower-ai/code-mower/issues/961), via
+[PR #1001](https://github.com/codemower-ai/code-mower/pull/1001)).
+#951's integrated qualification code (independent head-bound evidence and
+session-visibility composition, via
+[PR #1003](https://github.com/codemower-ai/code-mower/pull/1003)) is also
+merged; #951 itself stays open only for its bounded hosted Devin canary,
+which is tracked separately from this merged code evidence. Remaining work
+is the release PR #952, which does not add cloud fields and does not claim
+#951's pending hosted canary.
 
 Board is a read model over one closed local observation model. Missing or stale
 evidence stays explicitly unknown or last-observed; Board never infers runtime
@@ -250,16 +264,15 @@ documentation work.
 
 1. Complete `v1.4.0` stabilization on main: the seven #979 implementation PRs
    plus the #974 evidence verification.
-2. Ship those main-only fixes together with Graphify as `v1.4.2` through #915,
-   after #914.
+2. Graphify shipped together with those main-only fixes as `v1.4.1` through
+   #915, after #914.
 3. Ship Board as `v1.4.2` through #952, after #961 and #951.
 4. Merge the supervised Slack runtime last, accepted in #923 for `v1.5.0`.
 
 Elapsed time, implementation difficulty, or an open draft PR never changes this
-release order. An explicit evidence-backed Graphify deferral recorded in
-#915/#902 may satisfy that one dependency. Merged post-`v1.4.0` fixes, including
-#935/#973, count as on main until a later published package is verified to
-contain them.
+release order. Graphify's #915/#902 dependency is satisfied: it shipped as
+`v1.4.1`. Merged post-`v1.4.0` fixes, including #935/#973, count as on main
+until a later published package is verified to contain them.
 
 Each child issue should produce one reviewable PR with one branch writer,
 independent current-head review, the normal gate, and package-level validation.

@@ -10,7 +10,8 @@ manual until the output is useful on your codebase.
 To see the value loop before you touch a product repository, open the
 [Demo Calibration Example](../examples/demo-calibration/README.md), the
 [Board Demo Rehearsal](../examples/board-demo/README.md), and the
-[First-User Demo Transcript](first-user-demo-transcript.md).
+[First-User Demo Transcript](first-user-demo-transcript.md) (a v1.4.0
+illustrative shape, not the current v1.4.2 pin).
 
 ## 1. Install
 
@@ -37,7 +38,7 @@ code-mower --version
 ```
 
 `1.4.2` is the supervised-pilot source candidate; publication and installed
-qualification remain pending #915. These pinned install commands apply after
+qualification remain pending #952. These pinned install commands apply after
 publication. If you want a future prerelease instead
 of this exact release target, use:
 

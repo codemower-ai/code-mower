@@ -2,7 +2,7 @@
 
 The v1.4.2 source candidate is not yet published or qualified. Pinned index
 commands below apply after publication; candidate checks use the verified
-artifact. Track acceptance in [#915](https://github.com/codemower-ai/code-mower/issues/915).
+artifact. Track acceptance in [#952](https://github.com/codemower-ai/code-mower/issues/952).
 
 This is the release-gate rehearsal for Code Mower's early-adopter path. It
 installs Code Mower into a clean virtual environment, creates a fresh toy Git
@@ -351,7 +351,7 @@ TestPyPI rather than from an identically versioned package on another index:
 code-mower release qualify \
   --release-tag v1.4.2 \
   --package-spec code-mower==1.4.2 \
-  --output /tmp/code-mower-v141-testpypi-qualification.json \
+  --output /tmp/code-mower-v142-testpypi-qualification.json \
   --package-source testpypi \
   --execute
 ```
@@ -379,7 +379,7 @@ code-mower migration package-install-rehearsal \
   --allow-package-index \
   --upgrade-pip \
   --python "$(command -v python3.12)" \
-  --work-dir /tmp/code-mower-v141-pypi-rehearsal \
+  --work-dir /tmp/code-mower-v142-pypi-rehearsal \
   --json
 ```
 

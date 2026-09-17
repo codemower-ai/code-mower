@@ -3145,7 +3145,7 @@ def render_init_plan(
             "mode": "guidance_only",
             "package_spec": "graphifyy==0.9.58",
             "wheel_sha256": "e239803288e91c723d6e30540860bd6d5a1dc3f0914b9fc1104b0233e98aaeb8",
-            "guidance": "https://github.com/codemower-ai/code-mower/blob/v1.4.2/docs/graphify-setup.md",
+            "guidance": "https://github.com/codemower-ai/code-mower/blob/v1.4.1/docs/graphify-setup.md",
             "instructions": (
                 "Acquire the exact wheel in a separate environment and verify its SHA-256 "
                 "before installation. Review docs/graphify-setup.md and the containment "

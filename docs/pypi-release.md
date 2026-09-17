@@ -139,7 +139,7 @@ publish inputs set to `false` and confirm `build-distributions` and
 ## v1.4.2 Post-Merge Release Runbook
 
 Complete the [candidate and installed-package evidence matrix](v142-qualification.md),
-including #876 and the installed lineage replay, alongside these gates. Run
+including #999/#1000/#1001/#1002/#1003 and the installed lineage replay, alongside these gates. Run
 these steps in this order after the release pull request merges. Every
 irreversible step binds its inputs and asserts them before it runs: the exact
 merge commit OID, the tag target, the workflow run identity and job posture, and
@@ -171,7 +171,7 @@ built or installed from it.
 
 ```bash
 set -euo pipefail
-RELEASE_CHECKOUT="$(mktemp -d /tmp/code-mower-v141-release-src.XXXXXX)/code-mower"
+RELEASE_CHECKOUT="$(mktemp -d /tmp/code-mower-v142-release-src.XXXXXX)/code-mower"
 git clone --no-checkout "https://github.com/$REPO.git" "$RELEASE_CHECKOUT"
 git -C "$RELEASE_CHECKOUT" fetch origin "$RELEASE_SHA"
 git -C "$RELEASE_CHECKOUT" checkout --detach "$RELEASE_SHA"
@@ -194,7 +194,7 @@ reintroduce another package source.
 
 ```bash
 set -euo pipefail
-RELEASE_ENV="$(mktemp -d /tmp/code-mower-v141-release-env.XXXXXX)"
+RELEASE_ENV="$(mktemp -d /tmp/code-mower-v142-release-env.XXXXXX)"
 python3.12 -m venv "$RELEASE_ENV/venv"
 RELEASE_PYTHON="$RELEASE_ENV/venv/bin/python"
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
@@ -385,7 +385,7 @@ gh run watch "$TESTPYPI_RUN_ID" --repo "$REPO" --exit-status
 "$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_run.py" "$REPO" \
   "$TESTPYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" v1.4.2 success skipped
 
-TESTPYPI_DIST_DIR="$(mktemp -d /tmp/code-mower-v141-testpypi-dist.XXXXXX)"
+TESTPYPI_DIST_DIR="$(mktemp -d /tmp/code-mower-v142-testpypi-dist.XXXXXX)"
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   PIP_CONFIG_FILE=/dev/null python3.12 -m pip --isolated download code-mower==1.4.2 \
   --no-cache-dir --no-deps --only-binary :all: \
@@ -416,7 +416,7 @@ print(json.dumps({"source": "testpypi", "artifacts": digests}, sort_keys=True))
 PY
 TESTPYPI_WHEEL="$TESTPYPI_DIST_DIR/code_mower-1.4.2-py3-none-any.whl"
 test -f "$TESTPYPI_WHEEL"
-TESTPYPI_WORK_DIR="$(mktemp -d /tmp/code-mower-v141-testpypi-rehearsal.XXXXXX)"
+TESTPYPI_WORK_DIR="$(mktemp -d /tmp/code-mower-v142-testpypi-rehearsal.XXXXXX)"
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   PIP_CONFIG_FILE=/dev/null \
   "$RELEASE_CLI" migration package-install-rehearsal \
@@ -449,7 +449,7 @@ gh run watch "$PYPI_RUN_ID" --repo "$REPO" --exit-status
 "$RELEASE_PYTHON" "$RELEASE_ENV/assert_release_run.py" "$REPO" \
   "$PYPI_RUN_ID" workflow_dispatch "$RELEASE_SHA" v1.4.2 skipped success
 
-PYPI_WORK_DIR="$(mktemp -d /tmp/code-mower-v141-pypi-rehearsal.XXXXXX)"
+PYPI_WORK_DIR="$(mktemp -d /tmp/code-mower-v142-pypi-rehearsal.XXXXXX)"
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   PIP_CONFIG_FILE=/dev/null "$RELEASE_CLI" migration package-install-rehearsal \
   --package-spec code-mower==1.4.2 \
@@ -463,7 +463,7 @@ env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
 
 ```bash
 set -euo pipefail
-PROD_DIST_DIR="$(mktemp -d /tmp/code-mower-v141-prod-dist.XXXXXX)"
+PROD_DIST_DIR="$(mktemp -d /tmp/code-mower-v142-prod-dist.XXXXXX)"
 gh run download "$PYPI_RUN_ID" --repo "$REPO" \
   --name code-mower-dist --dir "$PROD_DIST_DIR"
 sha256sum "$PROD_DIST_DIR"/*
@@ -473,7 +473,7 @@ sha256sum "$PROD_DIST_DIR"/*
 
 ```bash
 set -euo pipefail
-PYPI_DOWNLOAD_DIR="$(mktemp -d /tmp/code-mower-v141-pypi-download.XXXXXX)"
+PYPI_DOWNLOAD_DIR="$(mktemp -d /tmp/code-mower-v142-pypi-download.XXXXXX)"
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   PIP_CONFIG_FILE=/dev/null python3.12 -m pip --isolated download code-mower==1.4.2 \
   --no-cache-dir --no-deps --no-binary :all: \
@@ -812,7 +812,7 @@ or missing rows fail. This procedure grants no Devin orchestration authority.
 
 ```bash
 set -euo pipefail
-CAMPAIGN_DIR="$(mktemp -d /tmp/code-mower-v141-campaign.XXXXXX)"
+CAMPAIGN_DIR="$(mktemp -d /tmp/code-mower-v142-campaign.XXXXXX)"
 code-mower release campaign create \
   --release-tag v1.4.2 \
   --package-spec code-mower==1.4.2 \
@@ -821,7 +821,7 @@ code-mower release campaign create \
   --qualification-context cold_install \
   --package-source pypi \
   --repo-slug codemower-ai/code-mower \
-  --issue 915 --release-pr "$RELEASE_PR" \
+  --issue 952 --release-pr "$RELEASE_PR" \
   --apply --json >"$CAMPAIGN_DIR/create.json"
 code-mower release campaign watch --release-tag v1.4.2 \
   --interval 10 --timeout 3600 --json >"$CAMPAIGN_DIR/watch.json"
@@ -974,7 +974,7 @@ Both provider results must pass. Keep credentials and result prose in private
 local evidence. Record known caps, unknown settlement, stored receipts and
 observed aggregate freshness separately; zero observed usage is not billing.
 
-### 15. Restart the three Boards from the release, waiting on each stop
+### 15. Restart the reconciled Board inventory from the release, waiting on each stop
 
 The port 5332 Board must serve the exact v1.4.2 release checkout because its
 pre-release repository path is stale. Assert that checkout first, then stop each
@@ -984,10 +984,8 @@ port.
 
 ```bash
 set -euo pipefail
-BOARD_5342_REPO="REUSE_PRIVATE_INVENTORIED_SLUG"
-BOARD_5342_REPO_PATH="REUSE_PRIVATE_INVENTORIED_PATH"
-BOARD_5344_REPO="REUSE_PRIVATE_INVENTORIED_SLUG"
-BOARD_5344_REPO_PATH="REUSE_PRIVATE_INVENTORIED_PATH"
+BOARD_5333_REPO="REUSE_PRIVATE_INVENTORIED_SLUG"
+BOARD_5333_REPO_PATH="REUSE_PRIVATE_INVENTORIED_PATH"
 test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"
 # The fresh clone predates the tag, so the published tag is fetched into it
 # before its target is asserted against the release commit.
@@ -1040,8 +1038,7 @@ main()
 PY
 "$RELEASE_PYTHON" "$RELEASE_ENV/assert_board_repo_paths.py" \
   "codemower-ai/code-mower=$RELEASE_CHECKOUT" \
-  "$BOARD_5342_REPO=$BOARD_5342_REPO_PATH" \
-  "$BOARD_5344_REPO=$BOARD_5344_REPO_PATH"
+  "$BOARD_5333_REPO=$BOARD_5333_REPO_PATH"
 
 cat >"$RELEASE_ENV/board_wait.py" <<'PY'
 """Bounded waits on the Board inventory: gone after a stop, serving after a start.
@@ -1118,36 +1115,115 @@ def main() -> None:
 main()
 PY
 
-code-mower board list --json
-for BOARD_PORT in 5332 5342 5344; do
-  code-mower board stop --port "$BOARD_PORT" --yes --json
-  "$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" gone "$BOARD_PORT"
-done
-
 test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"
 test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"
-nohup code-mower board serve --repo codemower-ai/code-mower \
-  --repo-path "$RELEASE_CHECKOUT" --host 127.0.0.1 \
-  --port 5332 --record-events >/tmp/code-mower-board-5332.log 2>&1 &
-nohup code-mower board serve --repo "$BOARD_5342_REPO" \
-  --repo-path "$BOARD_5342_REPO_PATH" --host 127.0.0.1 \
-  --port 5342 --record-events >/tmp/code-mower-board-5342.log 2>&1 &
-nohup code-mower board serve --repo "$BOARD_5344_REPO" \
-  --repo-path "$BOARD_5344_REPO_PATH" --host 127.0.0.1 \
-  --port 5344 --record-events >/tmp/code-mower-board-5344.log 2>&1 &
-"$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" serving \
-  "5332=codemower-ai/code-mower" "5342=$BOARD_5342_REPO" "5344=$BOARD_5344_REPO"
 
-BOARD_DOCTOR_DIR="$(mktemp -d /tmp/code-mower-v141-board-doctor.XXXXXX)"
+# Each port is restarted by its own observed posture, not a blind stop/serve.
+# #961's managed services refuse `board stop` (status=managed_service, exit
+# nonzero); replacing a managed service with a transient `nohup ... serve`
+# would downgrade its supervision, so a managed port is restarted in place
+# with `board service restart --replace` instead. `board service status`
+# itself exits nonzero for every status except `ok`, so its raw exit code is
+# ignored here and the captured JSON is classified explicitly instead.
+cat >"$RELEASE_ENV/board_service_mode.py" <<'PY'
+"""Classify one port's `board service status` payload, failing closed.
+
+Only an exact `not_installed` with zero matching rows is transient. A
+managed service stays managed through `delayed_health_failed` -- restart is
+what heals a stale binding, not a reason to treat it as unmanaged. Anything
+else (a wrong or missing schema, `unsupported_platform`, more than one
+matching row, a non-object row, a row for another port, or malformed JSON)
+fails the runbook instead of guessing a posture or raising AttributeError on
+an unexpected shape.
+"""
+
+import json
+import sys
+
+BOARD_SERVICE_STATUS_SCHEMA = "code_mower.boardServiceStatus.v1"
+
+
+def main() -> None:
+    port = int(sys.argv[1])
+    try:
+        payload = json.loads(sys.stdin.read())
+    except json.JSONDecodeError:
+        raise SystemExit(f"port {port}: board service status did not return JSON")
+    if not isinstance(payload, dict):
+        raise SystemExit(f"port {port}: board service status payload is not an object")
+    if payload.get("schema") != BOARD_SERVICE_STATUS_SCHEMA:
+        raise SystemExit(f"port {port}: board service status schema is {payload.get('schema')!r}")
+    status = payload.get("status")
+    services = payload.get("services")
+    if status == "not_installed" and services == []:
+        print("transient")
+        return
+    if (
+        status in ("ok", "delayed_health_failed")
+        and isinstance(services, list)
+        and len(services) == 1
+        and isinstance(services[0], dict)
+        and services[0].get("port") == port
+    ):
+        print("managed")
+        return
+    raise SystemExit(f"port {port}: board service status is not a classifiable posture: {payload!r}")
+
+
+main()
+PY
+
+BOARD_5332_STATUS_JSON="$(code-mower board service status --port 5332 --json 2>/dev/null || true)"
+BOARD_5333_STATUS_JSON="$(code-mower board service status --port 5333 --json 2>/dev/null || true)"
+BOARD_5332_MODE="$(printf '%s' "$BOARD_5332_STATUS_JSON" | "$RELEASE_PYTHON" "$RELEASE_ENV/board_service_mode.py" 5332)"
+BOARD_5333_MODE="$(printf '%s' "$BOARD_5333_STATUS_JSON" | "$RELEASE_PYTHON" "$RELEASE_ENV/board_service_mode.py" 5333)"
+
+if [ "$BOARD_5332_MODE" = "managed" ]; then
+  code-mower board service restart --repo codemower-ai/code-mower \
+    --repo-path "$RELEASE_CHECKOUT" --port 5332 --replace --json
+else
+  # A stop selector needs both --repo and --port: a port-only selector could
+  # stop a different repository's listener if the port was reused after
+  # reconciliation moved between checking status and stopping it.
+  code-mower board stop --repo codemower-ai/code-mower --port 5332 --yes --json
+  "$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" gone 5332
+  nohup code-mower board serve --repo codemower-ai/code-mower \
+    --repo-path "$RELEASE_CHECKOUT" --host 127.0.0.1 \
+    --port 5332 --record-events >/tmp/code-mower-board-5332.log 2>&1 &
+fi
+
+if [ "$BOARD_5333_MODE" = "managed" ]; then
+  code-mower board service restart --repo "$BOARD_5333_REPO" \
+    --repo-path "$BOARD_5333_REPO_PATH" --port 5333 --replace --json
+else
+  code-mower board stop --repo "$BOARD_5333_REPO" --port 5333 --yes --json
+  "$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" gone 5333
+  nohup code-mower board serve --repo "$BOARD_5333_REPO" \
+    --repo-path "$BOARD_5333_REPO_PATH" --host 127.0.0.1 \
+    --port 5333 --record-events >/tmp/code-mower-board-5333.log 2>&1 &
+fi
+
+"$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" serving \
+  "5332=codemower-ai/code-mower" "5333=$BOARD_5333_REPO"
+
+# The restart must not silently change a port's supervision posture: a
+# managed service stays managed, and a transient process is never left
+# installed as a managed service it was not before.
+BOARD_5332_STATUS_JSON_AFTER="$(code-mower board service status --port 5332 --json 2>/dev/null || true)"
+BOARD_5333_STATUS_JSON_AFTER="$(code-mower board service status --port 5333 --json 2>/dev/null || true)"
+BOARD_5332_MODE_AFTER="$(printf '%s' "$BOARD_5332_STATUS_JSON_AFTER" | "$RELEASE_PYTHON" "$RELEASE_ENV/board_service_mode.py" 5332)"
+BOARD_5333_MODE_AFTER="$(printf '%s' "$BOARD_5333_STATUS_JSON_AFTER" | "$RELEASE_PYTHON" "$RELEASE_ENV/board_service_mode.py" 5333)"
+test "$BOARD_5332_MODE_AFTER" = "$BOARD_5332_MODE"
+test "$BOARD_5333_MODE_AFTER" = "$BOARD_5333_MODE"
+
+BOARD_DOCTOR_DIR="$(mktemp -d /tmp/code-mower-v142-board-doctor.XXXXXX)"
 code-mower board doctor --repo codemower-ai/code-mower \
   --repo-path "$RELEASE_CHECKOUT" --json >"$BOARD_DOCTOR_DIR/5332.json"
-code-mower board doctor --repo "$BOARD_5342_REPO" \
-  --repo-path "$BOARD_5342_REPO_PATH" --json >"$BOARD_DOCTOR_DIR/5342.json"
-code-mower board doctor --repo "$BOARD_5344_REPO" \
-  --repo-path "$BOARD_5344_REPO_PATH" --json >"$BOARD_DOCTOR_DIR/5344.json"
+code-mower board doctor --repo "$BOARD_5333_REPO" \
+  --repo-path "$BOARD_5333_REPO_PATH" --json >"$BOARD_DOCTOR_DIR/5333.json"
 BOARD_DOCTOR_DIR="$BOARD_DOCTOR_DIR" \
   BOARD_5332_REPO="codemower-ai/code-mower" \
-  BOARD_5342_REPO="$BOARD_5342_REPO" BOARD_5344_REPO="$BOARD_5344_REPO" \
+  BOARD_5333_REPO="$BOARD_5333_REPO" \
   "$RELEASE_PYTHON" - <<'PY'
 import json
 import os
@@ -1203,7 +1279,7 @@ def exact_doctor_checks(rows: object, port: str) -> tuple[dict | None, list[str]
 
 doctor_dir = Path(os.environ["BOARD_DOCTOR_DIR"])
 problems = []
-for port in ("5332", "5342", "5344"):
+for port in ("5332", "5333"):
     expected_repo = os.environ[f"BOARD_{port}_REPO"]
     report = json.loads((doctor_dir / f"{port}.json").read_text(encoding="utf-8"))
     if report.get("schema") != BOARD_DOCTOR_SCHEMA:
@@ -1228,7 +1304,7 @@ for port in ("5332", "5342", "5344"):
         )
 if problems:
     raise SystemExit(f"restarted Board doctors are not release-ready: {problems}")
-print(json.dumps({"board_doctors_release_ready": ["5332", "5342", "5344"]}))
+print(json.dumps({"board_doctors_release_ready": ["5332", "5333"]}))
 PY
 ```
 
@@ -1273,7 +1349,7 @@ compared, never printed.
 
 ```bash
 set -euo pipefail
-CLOUD_DIR="$(mktemp -d /tmp/code-mower-v141-cloud.XXXXXX)"
+CLOUD_DIR="$(mktemp -d /tmp/code-mower-v142-cloud.XXXXXX)"
 # Supply both privately, for example by sourcing a protected token env file.
 # Never echo them and never write them into release evidence.
 : "${CODE_MOWER_CLOUD_TEAM_ID:?private cloud team id is required}"
@@ -1319,7 +1395,7 @@ print(json.dumps({"cloud_identity": "bound", "source": resolution.source}))
 PY
 grep -q '"cloud_identity": "bound"' "$CLOUD_DIR/identity.json"
 grep -q '"source": "install_id"' "$CLOUD_DIR/identity.json"
-CLOUD_DOCTOR_BUNDLE_DIR="$(mktemp -d /tmp/code-mower-v141-cloud-doctor.XXXXXX)"
+CLOUD_DOCTOR_BUNDLE_DIR="$(mktemp -d /tmp/code-mower-v142-cloud-doctor.XXXXXX)"
 env -u CODE_MOWER_CLOUD_TOKEN -u CODE_MOWER_CLOUD_ENDPOINT \
   code-mower cloud doctor "$CLOUD_DOCTOR_BUNDLE_DIR" \
   --install-id "$CODE_MOWER_INSTALL_ID" \
@@ -1567,7 +1643,7 @@ print(json.dumps({
 }))
 PY
 
-BOARD_SNAPSHOT_DIR="$(mktemp -d /tmp/code-mower-v141-board-snapshot.XXXXXX)"
+BOARD_SNAPSHOT_DIR="$(mktemp -d /tmp/code-mower-v142-board-snapshot.XXXXXX)"
 # The checkout is re-bound to the released commit immediately before the
 # snapshot runs, and the producer is also told to require that exact commit and
 # a clean worktree while it collects, so the emitted evidence names the source
@@ -1900,6 +1976,85 @@ values must match the retained previewed identity. The snapshot additionally
 carries the exact commit and clean state of the checkout it read, which must be
 the release commit, and the command itself is required to fail unless that
 checkout stays exactly that commit and clean while the snapshot is collected.
+
+### 17. Rehearse the 1.4.1-to-1.4.2 upgrade in place, preserving existing state
+
+Cold install alone does not prove upgrade safety: install the exact
+digest-bound `v1.4.1` artifact, create representative state a real
+installation would already hold, then upgrade in place to the exact
+digest-verified `v1.4.2` artifact already downloaded in step 9 -- never a
+fresh index re-resolution, which could silently install a different build
+than the one this runbook verified -- and assert both the version
+transition and that the preserved state survived untouched. This targets
+headless Linux, so hashing uses `$RELEASE_PYTHON`'s own `hashlib`, not the
+macOS-only `shasum`.
+
+```bash
+set -euo pipefail
+CODE_MOWER_PYTHON="$(command -v python3.12)"
+test -n "$CODE_MOWER_PYTHON"
+UPGRADE_ENV="$(mktemp -d /tmp/code-mower-v142-upgrade-env.XXXXXX)"
+"$CODE_MOWER_PYTHON" -m venv "$UPGRADE_ENV"
+
+cat >"$RELEASE_ENV/sha256_of.py" <<'PY'
+"""Print one file's SHA-256 digest, portable to headless Linux."""
+
+import hashlib
+import sys
+
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())
+PY
+
+# Bind the exact v1.4.1 source wheel by digest, the same way step 9 already
+# binds v1.4.2; the upgrade installs this exact downloaded file, not
+# whatever the index resolves at rehearsal time.
+V141_DOWNLOAD_DIR="$(mktemp -d /tmp/code-mower-v142-v141-download.XXXXXX)"
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null "$UPGRADE_ENV/bin/pip" download --no-cache-dir \
+  --no-deps --index-url https://pypi.org/simple/ --dest "$V141_DOWNLOAD_DIR" \
+  code-mower==1.4.1
+V141_WHEEL="$V141_DOWNLOAD_DIR/code_mower-1.4.1-py3-none-any.whl"
+test -s "$V141_WHEEL"
+V141_WHEEL_SHA256="$("$RELEASE_PYTHON" "$RELEASE_ENV/sha256_of.py" "$V141_WHEEL")"
+test -n "$V141_WHEEL_SHA256"
+
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null "$UPGRADE_ENV/bin/pip" install --no-cache-dir \
+  --index-url https://pypi.org/simple/ "${V141_WHEEL}[coworker]"
+test "$("$UPGRADE_ENV/bin/code-mower" --version)" = "code-mower 1.4.1"
+
+UPGRADE_REPO="$(mktemp -d /tmp/code-mower-v142-upgrade-repo.XXXXXX)"
+git -C "$UPGRADE_REPO" init -q
+"$UPGRADE_ENV/bin/code-mower" init --packaged-starter --profile deep_review \
+  --apply --output-dir "$UPGRADE_REPO/.code-mower.generated" \
+  --skip-actionlint --skip-github-labels
+PRESERVED_CONFIG_SHA256_BEFORE="$("$RELEASE_PYTHON" "$RELEASE_ENV/sha256_of.py" \
+  "$UPGRADE_REPO/.code-mower.generated/code-mower.yml")"
+
+# The exact wheel this runbook already digest-verified in step 9 -- not a
+# fresh `code-mower==1.4.2` index resolution.
+V142_WHEEL="$PYPI_DOWNLOAD_DIR/code_mower-1.4.2-py3-none-any.whl"
+test -s "$V142_WHEEL"
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
+  PIP_CONFIG_FILE=/dev/null "$UPGRADE_ENV/bin/pip" install --no-cache-dir \
+  --index-url https://pypi.org/simple/ --upgrade "${V142_WHEEL}[coworker]"
+test "$("$UPGRADE_ENV/bin/code-mower" --version)" = "code-mower 1.4.2"
+
+PRESERVED_CONFIG_SHA256_AFTER="$("$RELEASE_PYTHON" "$RELEASE_ENV/sha256_of.py" \
+  "$UPGRADE_REPO/.code-mower.generated/code-mower.yml")"
+test "$PRESERVED_CONFIG_SHA256_AFTER" = "$PRESERVED_CONFIG_SHA256_BEFORE"
+
+"$UPGRADE_ENV/bin/code-mower" doctor "$UPGRADE_REPO/.code-mower.generated/code-mower.yml" \
+  --profile deep_review --json
+```
+
+Record `$V141_WHEEL_SHA256` and the `$PYPI_VERIFIED_MAP` entry for
+`code_mower-1.4.2-py3-none-any.whl` (already bound in step 9) alongside this
+rehearsal's outcome. A failed upgrade, a changed preserved-config digest, or
+a version string that does not read exactly `code-mower 1.4.2` after the
+upgrade fails this step; do not record upgrade coverage as passed on a
+cold-install substitute or an index re-resolution that bypassed the verified
+artifacts.
 
 ## Cache Bypass And Propagation Triage
 

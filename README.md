@@ -11,9 +11,9 @@ repository policy, reviewer promotion, and exceptional decisions.
 
 The current source candidate is `v1.4.2`, with target install spec
 `code-mower==1.4.2`. Publication and installed-package qualification are pending
-[#915](https://github.com/codemower-ai/code-mower/issues/915). The published
-`v1.4.0` artifacts remain unchanged. Install commands below target v1.4.2 after
-publication; candidate rehearsals use the exact verified artifact.
+[#952](https://github.com/codemower-ai/code-mower/issues/952). The published
+`v1.4.0` and `v1.4.1` artifacts remain unchanged. Install commands below target
+v1.4.2 after publication; candidate rehearsals use the exact verified artifact.
 
 Documentation on `main` follows the source on `main`. After v1.4.2 publication, start with the
 [`v1.4.2` guide](https://github.com/codemower-ai/code-mower/blob/v1.4.2/docs/try-in-10-minutes.md).
@@ -249,7 +249,7 @@ boundaries are recorded in
 - [Upgrade An Existing Repository](docs/upgrade-existing-repo.md)
 - [Quickstart Reference](docs/quickstart.md)
 - [Troubleshooting](docs/troubleshooting.md)
-- [First Run Transcript](docs/first-run-transcript.md)
+- [First Run Transcript](docs/first-run-transcript.md) (v1.4.0 illustrative shape, not the current v1.4.2 pin)
 
 ### Sessions, Builders, And Reviewers
 
