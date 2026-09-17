@@ -62,8 +62,10 @@ class ArtifactTests(unittest.TestCase):
             self.assertIsInstance(digest, str, f'{path}: accepted file digest must be text')
             self.assertRegex(digest, r'^[0-9a-f]{64}\Z', f'{path}: malformed accepted file digest')
         serialized = (json.dumps(baseline, indent=2, sort_keys=True) + '\n').encode('utf-8')
+        # Refreshed for the #1004 / PR #1005 authorized regeneration of the Claude and
+        # Codex audit labeler workflows; every other accepted digest is unchanged.
         self.assertEqual(hashlib.sha256(serialized).hexdigest(),
-                         '6036e7daccf07b3ab5f458315e5e8a04feeb00190bae35c4fb1e243ef519e55e',
+                         '62f88bf88658f4e936624873248ca7247474b3193900f73ed905d4e9d6f4f78a',
                          'Complete accepted baseline differs from the independently approved value')
         return baseline
 
