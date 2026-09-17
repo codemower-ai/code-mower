@@ -62,8 +62,11 @@ class ArtifactTests(unittest.TestCase):
             self.assertIsInstance(digest, str, f'{path}: accepted file digest must be text')
             self.assertRegex(digest, r'^[0-9a-f]{64}\Z', f'{path}: malformed accepted file digest')
         serialized = (json.dumps(baseline, indent=2, sort_keys=True) + '\n').encode('utf-8')
+        # PR #1003's integration work order (issuecomment-5708285589) accepts both
+        # #951's CI qualification and #1004 / PR #1005's regenerated audit labelers.
+        # Every other accepted digest and the complete inventory remain unchanged.
         self.assertEqual(hashlib.sha256(serialized).hexdigest(),
-                         '9f84721d8839f712b42c268a939fb2f4837492281c662b7099360c5c7e37c3e5',
+                         '8c9bf0d3b348d11746fa7cbb092206e58d9ddb4d4f30ad130fdc45df4cbf7411',
                          'Complete accepted baseline differs from the independently approved value')
         return baseline
 
