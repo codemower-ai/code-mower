@@ -95,11 +95,27 @@ def run_command(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _stdout(command_runner: CommandRunner, args: Sequence[str]) -> str:
+    return _probe(command_runner, args)[1]
+
+
+# Exiting 1 is an answer, not a failure: `lsof` says "nothing matched" that way,
+# and so do `git config --get` and `ps -p`. A tool that raises, times out, or
+# exits with anything else did not answer at all, and the two have to stay
+# distinguishable -- conflating them is how "the port is free" gets inferred
+# from "we could not look".
+_ANSWERED_RETURNCODES = (0, 1)
+
+
+def _probe(command_runner: CommandRunner, args: Sequence[str]) -> tuple[bool, str]:
+    """Run a command, reporting whether it answered as well as what it said."""
+
     try:
         completed = command_runner(args)
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return (completed.stdout or "") if completed.returncode == 0 else ""
+        return False, ""
+    if completed.returncode == 0:
+        return True, completed.stdout or ""
+    return completed.returncode in _INVENTORY_ANSWERED_RETURNCODES, ""
 
 
 def _label_groups(pr: Mapping[str, Any]) -> dict[str, list[str]]:
@@ -509,12 +525,30 @@ def _ss_listeners(text: str) -> list[dict[str, Any]]:
     return found
 
 
-def _listener_inventory(command_runner: CommandRunner) -> list[dict[str, Any]]:
-    text = _stdout(command_runner, ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-FnPcn"])
+def _listener_inventory(command_runner: CommandRunner) -> tuple[bool, list[dict[str, Any]]]:
+    """Every local TCP listener, paired with whether the host could be asked.
+
+    An empty list means one of two opposite things -- nothing is listening, or
+    neither `lsof` nor `ss` could be run -- and a caller deciding whether to
+    mutate local state has to tell them apart. The flag carries that: `True`
+    means a tool answered and this is the inventory, `False` means occupancy is
+    unknown and no conclusion about the port may be drawn from the list.
+    """
+
+    answered, text = _probe(command_runner, ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-FnPcn"])
     if text:
-        return _listeners(text)
-    text = _stdout(command_runner, ["ss", "-H", "-ltnp"])
-    return _ss_listeners(text) if text else []
+        return True, _listeners(text)
+    fallback_answered, fallback_text = _probe(command_runner, ["ss", "-H", "-ltnp"])
+    if fallback_text:
+        return True, _ss_listeners(fallback_text)
+    return (answered or fallback_answered), []
+
+
+def local_listener_inventory(command_runner: CommandRunner = _run_command) -> dict[str, Any]:
+    """`local_listeners`, with the availability of the answer kept alongside it."""
+
+    available, listeners = _listener_inventory(command_runner)
+    return {"available": available, "listeners": listeners}
 
 
 def local_listeners(command_runner: CommandRunner = _run_command) -> list[dict[str, Any]]:
@@ -524,9 +558,13 @@ def local_listeners(command_runner: CommandRunner = _run_command) -> list[dict[s
     right inventory for "which Boards are running here" and the wrong one for
     "is this port free": a Node server on 5332 is not a Board, but it does hold
     the port, and an apply that treats the port as free would fight it.
+
+    Returns the listeners alone. A caller that acts on emptiness -- "this port
+    is free", "this port was released" -- must use `local_listener_inventory`
+    instead, so an inventory that could not be taken is not read as an empty one.
     """
 
-    return _listener_inventory(command_runner)
+    return _listener_inventory(command_runner)[1]
 
 
 def _process_cwd(pid: int, command_runner: CommandRunner) -> str:
@@ -557,9 +595,11 @@ def command_looks_like_code_mower_board(command: str) -> bool:
 
 
 def collect_local_boards(command_runner: CommandRunner = _run_command) -> dict[str, Any]:
-    listeners = _listener_inventory(command_runner)
-    if not listeners:
+    available, listeners = _listener_inventory(command_runner)
+    if not available:
         return {"available": False, "boards": [], "message": "local listener inventory unavailable"}
+    if not listeners:
+        return {"available": True, "boards": [], "message": "no local TCP listeners"}
     boards = []
     for listener in listeners:
         pid = int(listener["pid"])

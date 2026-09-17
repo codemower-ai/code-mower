@@ -42,6 +42,14 @@ class FakeHost:
         # A port can genuinely be held by more than one process; the primary
         # mapping holds one per port, this holds the rest.
         self.extra_listeners: list[tuple[int, int]] = []
+        # Two processes can hold the same port on different addresses without
+        # either failing to bind, so the address a listener answers on is part
+        # of the inventory rather than a constant.
+        self.listener_addresses: dict[int, str] = {}
+        # A host where the listener inventory cannot be taken at all: `lsof`
+        # cannot run and there is no `ss` to fall back to. Distinct from a host
+        # where nothing is listening, which `lsof` reports by exiting 1.
+        self.listener_inventory_available = True
         self.origins: dict[str, str] = {}
         self.identities: dict[int, dict[str, object]] = {}
         self.bootstrap_failures: set[str] = set()
@@ -108,11 +116,14 @@ class FakeHost:
                 self.listeners.pop(port, None)
                 self.identities.pop(port, None)
 
-    def add_foreign_listener(self, port: int, *, command: str, ppid: int) -> int:
+    def add_foreign_listener(
+        self, port: int, *, command: str, ppid: int, address: str = "127.0.0.1"
+    ) -> int:
         pid = self.next_pid
         self.next_pid += 1
         self.processes[pid] = {"argv": shlex.split(command), "cwd": "/tmp/foreign", "ppid": ppid}
         self.listeners[port] = pid
+        self.listener_addresses[pid] = address
         return pid
 
     def relaunch_on(self, label: str, arguments: Sequence[str]) -> int:
@@ -159,7 +170,11 @@ class FakeHost:
             return self._lsof(argv[1:])
         if argv[:1] == ["git"]:
             return _completed(self.origins.get(argv[2], "") + "\n") if len(argv) > 2 else _completed("", returncode=1)
-        return _completed("", returncode=1)
+        # This host has launchctl, ps, lsof and git, and nothing else. A binary
+        # that is not installed raises rather than exiting non-zero, which is
+        # how `ss` behaves on macOS -- and the only way a caller can tell "the
+        # tool answered, nothing matched" from "there was no tool to ask".
+        raise FileNotFoundError(f"{argv[0] if argv else ''}: command not found")
 
     def _launchctl(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         action = argv[0] if argv else ""
@@ -240,7 +255,13 @@ class FakeHost:
 
     def _lsof(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         if "-iTCP" in argv:
+            if not self.listener_inventory_available:
+                # `lsof` could not answer at all. Not the same as exiting 1 with
+                # nothing to report, which is the answer "no process holds it".
+                raise FileNotFoundError("lsof: command not found")
             if not self.listeners and not self.extra_listeners:
+                # The real `lsof` exits 1 when no file matched, which is how it
+                # says the host has no listeners.
                 return _completed("", returncode=1)
             lines = []
             held = sorted([*self.listeners.items(), *self.extra_listeners])
@@ -250,7 +271,8 @@ class FakeHost:
                 # `code-mower` would make a Node server on 5332 look Board-shaped
                 # and hide exactly the misclassification this inventory must not
                 # make.
-                lines.extend([f"p{pid}", f"c{self._process_name(pid)}", f"n127.0.0.1:{port}"])
+                address = self.listener_addresses.get(pid, "127.0.0.1")
+                lines.extend([f"p{pid}", f"c{self._process_name(pid)}", f"n{address}:{port}"])
             return _completed("\n".join(lines) + "\n")
         if "-d" in argv:
             pid = int(argv[argv.index("-p") + 1])
@@ -905,6 +927,53 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertIn("process.repo_path", binding["failing_checks"])
         self.assertNotIn(str(self.other_checkout), json.dumps(binding))
 
+    def test_a_port_shared_with_another_process_fails_the_gate(self) -> None:
+        # Two processes can hold one port on different addresses without either
+        # failing to bind. The serving gate has to apply the bar `port_ownership`
+        # applies before an apply -- every listener is this process -- or status
+        # reports a validated binding that the next restart refuses outright.
+        spec = self.spec()
+        self.install(spec)
+        managed_pid = self.host.loaded["ai.codemower.board.5332"]
+        foreign_pid = self.host.add_foreign_listener(
+            5332, command="/usr/local/bin/node /srv/dashboard/server.js", ppid=4242, address="[::1]"
+        )
+        self.host.listeners[5332] = managed_pid
+        self.host.extra_listeners.append((5332, foreign_pid))
+
+        binding = board_service.validate_binding(
+            spec,
+            provider=self.host.provider(),
+            command_runner=self.host.run,
+            identity_probe=self.host.identity_probe,
+        )
+        ownership = board_service.port_ownership(
+            5332, provider=self.host.provider(), label=spec.label, command_runner=self.host.run
+        )
+
+        self.assertIn("binding.port", binding["failing_checks"])
+        # The gate and the apply guard agree; the whole point of the finding.
+        self.assertEqual(ownership["state"], "foreign")
+        port_check = next(item for item in binding["checks"] if item["id"] == "binding.port")
+        self.assertEqual(port_check["listener_count"], 2)
+        self.assertIn("shared", port_check["message"])
+
+    def test_a_port_that_cannot_be_inventoried_fails_the_gate(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        self.host.listener_inventory_available = False
+
+        binding = board_service.validate_binding(
+            spec,
+            provider=self.host.provider(),
+            command_runner=self.host.run,
+            identity_probe=self.host.identity_probe,
+        )
+
+        self.assertIn("binding.port", binding["failing_checks"])
+        port_check = next(item for item in binding["checks"] if item["id"] == "binding.port")
+        self.assertFalse(port_check["listener_inventory_available"])
+
     def test_a_stale_serving_version_fails_the_gate(self) -> None:
         spec = self.spec()
         self.install(spec)
@@ -1441,6 +1510,67 @@ class BoardServiceLifecycleTest(ServiceHarness):
 
         self.assertEqual(ownership["state"], "foreign")
         self.assertEqual(ownership["pid"], foreign_pid)
+
+    def test_an_inventory_that_cannot_be_taken_is_not_an_empty_one(self) -> None:
+        # `lsof` exiting 1 is an answer -- nothing holds the port -- and `lsof`
+        # that cannot run at all, with no `ss` to fall back to, is not. The two
+        # arrive as the same empty list, so the inventory has to carry which
+        # one it is or "free" gets inferred from "we could not look".
+        empty = board_service.port_listener_inventory(5332, self.host.run)
+        self.host.listener_inventory_available = False
+        unknown = board_service.port_listener_inventory(5332, self.host.run)
+
+        self.assertEqual((empty["available"], empty["listeners"]), (True, []))
+        self.assertEqual((unknown["available"], unknown["listeners"]), (False, []))
+
+    def test_a_port_that_cannot_be_checked_is_never_called_free(self) -> None:
+        # Nothing is installed and nothing is listening, so the only thing
+        # standing between this install and a keepalive job bootstrapped into a
+        # conflict it retries forever is refusing to guess at occupancy.
+        self.host.listener_inventory_available = False
+
+        ownership = board_service.port_ownership(
+            5332, provider=self.host.provider(), label="ai.codemower.board.5332", command_runner=self.host.run
+        )
+        payload = self.install(self.spec())
+
+        self.assertEqual(ownership["state"], "unknown")
+        self.assertEqual(payload["status"], "listener_inventory_unavailable")
+        # Fails closed: no definition written, no job bootstrapped.
+        self.assertEqual(self.host.loaded, {})
+        self.assertFalse((self.root / "ai.codemower.board.5332.plist").exists())
+
+    def test_a_restart_refuses_while_port_occupancy_is_unknown(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        installed = (self.root / "ai.codemower.board.5332.plist").read_bytes()
+        loaded = dict(self.host.loaded)
+        self.host.listener_inventory_available = False
+
+        payload = self.restart(spec, replace=True)
+
+        self.assertEqual(payload["status"], "listener_inventory_unavailable")
+        self.assertEqual(self.host.loaded, loaded)
+        self.assertEqual((self.root / "ai.codemower.board.5332.plist").read_bytes(), installed)
+
+    def test_removal_does_not_claim_a_released_port_it_could_not_check(self) -> None:
+        # The definition really was deleted and that is reported. "Released its
+        # port" is a second claim resting on an inventory that was never taken.
+        self.install(self.spec())
+        self.host.listener_inventory_available = False
+
+        payload = board_service.remove_service(
+            provider=self.host.provider(),
+            port=5332,
+            command_runner=self.host.run,
+            settle_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+
+        self.assertEqual(payload["status"], "remove_incomplete")
+        self.assertTrue(payload["definition_deleted"])
+        self.assertFalse(payload["definition_present"])
+        self.assertIn("could not be checked", payload["message"])
 
     def test_an_unreadable_definition_still_owns_the_port_it_is_serving(self) -> None:
         # Ownership is the supervised pid, and a definition that cannot be

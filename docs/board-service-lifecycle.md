@@ -39,7 +39,7 @@ must pass before an operation reports success:
 | `process.arguments` | the running job's argument list, as launchd reports it, equals the definition exactly |
 | `process.repo_path` | the running process is bound to the exact private repository path |
 | `process.supervisor` | the process is supervised, so it survives the invoking shell |
-| `binding.port` | the service process, and not something else, holds the port |
+| `binding.port` | the service process, and nothing else, holds the port -- every listener on it is that process, the same bar an apply enforces |
 | `binding.repo` | the port serves the expected repository slug |
 | `binding.installed_version` | the served installed version matches this installation |
 | `binding.serving_version` | the serving version is not stale against the installed one |
@@ -63,6 +63,7 @@ None of these change any local state:
 | `ownership_mismatch` | another managed label owns the port, or `--repo-path` was not proven to be a checkout of `--repo` |
 | `external_supervisor` | the port is held by a process a different supervisor owns |
 | `port_conflict` | the port is held by an unrelated local process |
+| `listener_inventory_unavailable` | neither `lsof` nor `ss` could be run, so port occupancy is unknown; an unchecked port is never treated as a free one |
 | `ambiguous_repository` | the selector matches more than one managed service |
 | `unload_failed` | the service being replaced could not be unloaded and launchd will not confirm the job absent; its definition was left exactly as it was |
 | `rollback_failed` | an apply failed *and* the previous definition could not be restored, or the definition it wrote could not be taken back off the host |
@@ -215,6 +216,12 @@ launchd prints for a missing job, is absence. Any other failure -- a timeout, a
 launchd that could not be reached -- is unknown, and an unknown job is treated as
 still loaded, so removal keeps the definition and reports `remove_incomplete`
 instead of stranding a keepalive service with nothing left to manage it by.
+
+"The port was released" is a separate claim from "the definition is gone", and it
+rests on the local listener inventory. When neither `lsof` nor `ss` can be run,
+that inventory was never taken -- so removal reports the deleted definition
+honestly and still returns `remove_incomplete`, because an operator who read
+`removed` as a free port would start a replacement into whatever is still there.
 
 ### Definitions that do not describe one service
 

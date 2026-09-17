@@ -67,6 +67,7 @@ SERVICE_STATUSES = (
     "ownership_mismatch",
     "stale_arguments",
     "port_conflict",
+    "listener_inventory_unavailable",
     "external_supervisor",
     "apply_failed",
     "rollback_failed",
@@ -1046,13 +1047,33 @@ def port_listeners(port: int, command_runner: lane_status.CommandRunner) -> list
     firmly as a Board does. Asking the Board-shaped inventory would call those
     ports free and let an apply mutate local state into a conflict, or report a
     port released while another process still owns it.
+
+    The listeners alone, which is enough to answer "who holds this port" and not
+    enough to answer "is this port free": an empty list is also what a host
+    returns when the inventory could not be taken. Callers that act on emptiness
+    use `port_listener_inventory`.
     """
 
-    listeners = []
-    for item in lane_status.local_listeners(command_runner):
-        if isinstance(item, Mapping) and int(item.get("port") or -1) == int(port):
-            listeners.append(dict(item))
-    return listeners
+    return port_listener_inventory(port, command_runner)["listeners"]
+
+
+def port_listener_inventory(port: int, command_runner: lane_status.CommandRunner) -> dict[str, Any]:
+    """`port_listeners`, with whether the host could be asked kept alongside it.
+
+    No listeners and no inventory look identical in a list, and they are
+    opposite facts: the first says the port is free, the second says nobody
+    knows. Every decision that turns emptiness into an action -- install here,
+    replace this, report the port released, pass the binding gate -- reads this
+    rather than the bare list, and refuses while `available` is false.
+    """
+
+    inventory = lane_status.local_listener_inventory(command_runner)
+    listeners = [
+        dict(item)
+        for item in inventory["listeners"]
+        if isinstance(item, Mapping) and int(item.get("port") or -1) == int(port)
+    ]
+    return {"available": bool(inventory["available"]), "listeners": listeners}
 
 
 def port_ownership(
@@ -1065,9 +1086,9 @@ def port_ownership(
     """Who holds a port, in the only terms an apply decision may use.
 
     `free`, `managed_self`, `managed_other` (another Code Mower label),
-    `external_supervisor` (a supervised process that is not ours), or
-    `foreign` (a process we cannot claim). Only `free` and `managed_self` may
-    be replaced.
+    `external_supervisor` (a supervised process that is not ours), `foreign`
+    (a process we cannot claim), or `unknown` (the local listener inventory
+    could not be taken at all). Only `free` and `managed_self` may be replaced.
 
     Ownership is proved against the pid launchd is supervising, never against a
     definition that merely names the port. A managed job that is stopped or
@@ -1078,7 +1099,19 @@ def port_ownership(
     one unowned listener on the port is enough to refuse.
     """
 
-    listeners = port_listeners(port, command_runner)
+    inventory = port_listener_inventory(port, command_runner)
+    listeners = inventory["listeners"]
+    if not inventory["available"]:
+        # Not "nothing holds this port": neither `lsof` nor `ss` could be run,
+        # so nothing at all is known about the port. Calling that free would
+        # bootstrap a keepalive job straight into a conflict it then retries
+        # forever, which is the failure this lifecycle exists to remove.
+        return {
+            "state": "unknown",
+            "pid": None,
+            "label": "",
+            "detail": "the local listener inventory could not be read, so port occupancy is unknown",
+        }
     if not listeners:
         return {"state": "free", "pid": None, "label": ""}
     supervised = {
@@ -1293,17 +1326,33 @@ def validate_binding(
                 parent_pid=parent,
             )
         )
-        listeners = port_listeners(spec.port, command_runner)
+        # The same bar `port_ownership` applies before an apply: every listener
+        # on the port has to be this process. Mere membership passes a port the
+        # service shares with something else on another address -- a binding
+        # `restart` then refuses, and a conflicting listener arriving during
+        # delayed health is accepted instead of failing the window.
+        inventory = port_listener_inventory(spec.port, command_runner)
+        listeners = inventory["listeners"]
         listener_pids = {int(item.get("pid") or -1) for item in listeners}
-        port_match = pid in listener_pids
+        port_match = bool(inventory["available"]) and bool(listeners) and listener_pids == {pid}
+        if not inventory["available"]:
+            port_message = "the local listener inventory could not be read, so the port binding is unproven"
+        elif not listeners:
+            port_message = "nothing is listening on the expected port"
+        elif port_match:
+            port_message = "the service process exclusively holds the expected port"
+        elif pid in listener_pids:
+            port_message = "the expected port is shared with another listening process"
+        else:
+            port_message = "the expected port is held by another process"
         checks.append(
             _check(
                 "binding.port",
                 "pass" if port_match else "fail",
-                "the service process holds the expected port"
-                if port_match
-                else "the expected port is held by another process",
+                port_message,
                 port=spec.port,
+                listener_inventory_available=bool(inventory["available"]),
+                listener_count=len(listeners),
             )
         )
     else:
@@ -1652,6 +1701,15 @@ def _ownership_conflict(
     state = str(ownership.get("state") or "")
     if state in {"free", "managed_self"}:
         return None
+    if state == "unknown":
+        return _operation_payload(
+            "listener_inventory_unavailable",
+            f"port {spec.port} occupancy could not be checked because neither lsof nor ss could be "
+            "run; nothing was changed",
+            spec,
+            expected,
+            show_local_paths=show_local_paths,
+        )
     if state == "managed_other":
         return _operation_payload(
             "ownership_mismatch",
@@ -2167,7 +2225,11 @@ def remove_service(
     definition_present = bool(getattr(provider, "definition_exists", lambda _label: not deleted)(service.label))
     if settle_seconds:
         sleeper(max(0.0, float(settle_seconds)))
-    remaining = port_listeners(service.port, command_runner) if service.port else []
+    remaining: dict[str, Any] = (
+        port_listener_inventory(service.port, command_runner)
+        if service.port
+        else {"available": True, "listeners": []}
+    )
     payload = {
         "schema": BOARD_SERVICE_SCHEMA,
         "label": service.label,
@@ -2194,11 +2256,23 @@ def remove_service(
             "this port as free"
         )
         return payload
-    if remaining:
+    if remaining["listeners"]:
         payload["status"] = "remove_incomplete"
         payload["message"] = (
             f"the definition was removed but port {service.port} is still held; "
             "inspect the remaining listener before starting a replacement"
+        )
+        return payload
+    if not remaining["available"]:
+        # The definition is gone, which is real and is reported. "Released its
+        # port" is a second claim, and it rests on an inventory that could not
+        # be taken -- an operator who reads it as a free port starts a
+        # replacement into whatever is still there.
+        payload["status"] = "remove_incomplete"
+        payload["message"] = (
+            "the managed Board service was removed, but port "
+            f"{service.port} could not be checked because neither lsof nor ss could be run; "
+            "confirm the port is free before starting a replacement"
         )
         return payload
     payload["status"] = "removed"
