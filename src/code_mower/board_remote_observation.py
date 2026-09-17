@@ -107,13 +107,11 @@ def remote_work_input(
         if observed.kind in {"review", "ci", "gate"}:
             exact = _same_work(observed.binding, work.binding)
             fresh = _fresh(observed.observed_at, instant, stale_after_seconds)
-            if observed.kind == "review" and (not exact or not fresh):
+            if observed.state not in {"unknown", "not_started"} and (not exact or not fresh):
                 observed = replace(observed, state="stale")
-            elif not exact or not fresh or not pr_current:
-                observed = replace(observed, state="unknown", source_available=False)
             if not pr_current:
                 observed = replace(observed, state="unknown", source_available=False)
-        elif observed.kind != "review_request":
+        elif observed.kind not in {"review_request", "gate_publisher"}:
             # A controller or audit artifact cannot vouch for merge/assignment.
             raise LocalObservationError("evidence_unavailable")
         adapted_evidence.append(observed)

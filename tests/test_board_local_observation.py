@@ -11,7 +11,7 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from code_mower import cli, session_current
+from code_mower import builder_lineage, cli, session_current
 from code_mower.board_local_observation import (
     LocalEvidenceObservation,
     LocalObservationInput,
@@ -215,7 +215,15 @@ class LocalBoardObservationTests(unittest.TestCase):
                 "posted_comment_url": None,
             }
 
-            review = review_from_audit_artifact(artifact, binding=exact, observed_at=NOW)
+            target = builder_lineage.Target(REPOSITORY, 949, "codex/949-work", HEAD)
+            lineage = builder_lineage.resolve(
+                builder_lineage.Chain.from_arrivals(target, ()),
+                builder_lineage.Identity({"enabled": True, "labels": {"builder:codex": "codex"}}),
+                "", ["builder:codex"],
+            )
+            review = review_from_audit_artifact(
+                artifact, binding=exact, observed_at=NOW, lineage=lineage,
+            )
 
             assert review.state == "pass"
             assert not hasattr(review, "comment_body")

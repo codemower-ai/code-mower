@@ -23,12 +23,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from . import context_session, session_current, session_lease
+from . import builder_lineage, context_session, session_current, session_lease
 from .board_observation import SCHEMA, derive_primary, ordered_reasons, validate
 from .context_contract import ContextError
 from .lane_delivery import DELIVERY_OUTCOME_SCHEMA
 from .provider_runners import validate_audit_verdict_artifact_payload
 from .remote_session import RemoteError, public_projection
+from .review_authority import review_authority
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,127}\Z")
@@ -117,6 +118,16 @@ class LocalEvidenceObservation:
 
 
 @dataclass(frozen=True)
+class LocalPolicyObservation:
+    """Explicit GitHub/trusted policy facts, independent of an audit verdict."""
+
+    binding: WorkBinding
+    observed_at: datetime
+    reasons: tuple[str, ...] = ()
+    source_available: bool = True
+
+
+@dataclass(frozen=True)
 class LocalWorkObservation:
     """One local work item and all facts a maintained adapter has observed."""
 
@@ -127,6 +138,7 @@ class LocalWorkObservation:
     evidence: tuple[LocalEvidenceObservation, ...] = ()
     assigned_provider: str | None = None
     assigned_role: str = "builder"
+    policy: LocalPolicyObservation | None = None
 
 
 @dataclass(frozen=True)
@@ -360,6 +372,8 @@ def run_from_delivery_outcome(
         lane_id = _safe_identifier(lane)
         delivered = delivery["delivered"]
         phase = "implementation_complete" if delivered else "failed"
+        if not delivered and provider.get("supervision") == "interrupted":
+            phase = "cancelled"
         return LocalRunObservation(
             id=_opaque(str(event.get("event_id") or ""), "run"),
             binding=binding,
@@ -380,8 +394,15 @@ def review_from_audit_artifact(
     *,
     binding: WorkBinding,
     observed_at: datetime,
+    lineage: builder_lineage.Lineage | None = None,
+    policy: Mapping[str, Any] | None = None,
 ) -> LocalEvidenceObservation:
-    """Project an existing exact-head audit artifact without private prose."""
+    """Admit an independent, authoritative exact-head audit without private prose.
+
+    The caller supplies the resolved exact-head lineage and trusted base policy,
+    never a provider's self-reported qualification or a mutable done label.
+    Missing/identity-only lineage cannot confer authority.
+    """
     try:
         payload = validate_audit_verdict_artifact_payload(dict(artifact))
         if (
@@ -390,6 +411,12 @@ def review_from_audit_artifact(
             or payload.get("head_sha_start") != binding.head_sha
             or payload.get("head_sha_end") != binding.head_sha
             or payload.get("quarantined") is True
+            or not isinstance(lineage, builder_lineage.Lineage)
+            or lineage.target is None
+            or (lineage.target.repo, lineage.target.pr_number, lineage.target.head_sha)
+            != (binding.repository, binding.pr_number, binding.head_sha)
+            or not builder_lineage.admit(lineage, payload["lane_id"])
+            or not review_authority(payload["lane_id"], config=policy)["merge_authority"]
         ):
             raise LocalObservationError("identity_mismatch")
         verdict = str(payload.get("verdict") or "").lower()
@@ -620,30 +647,34 @@ def _derive_state(
         return "merged"
     if evidence["review"]["state"] == "blocked":
         reasons.add("changes_requested")
-        return "changes_requested"
     if evidence["ci"]["state"] == "failed":
         reasons.add("ci_failed")
     if evidence["gate"]["state"] == "failed":
         reasons.add("gate_failed")
     if evidence["review"]["state"] == "running":
         reasons.add("review_in_progress")
-        return "in_review"
     if evidence["review"]["state"] == "stale":
         reasons.add("review_stale")
     if evidence["ci"]["state"] == "pending":
         reasons.add("ci_pending")
     if evidence["gate"]["state"] == "pending":
         reasons.add("gate_pending")
+    if evidence["review"]["state"] == "blocked":
+        return "changes_requested"
+    if evidence["review"]["state"] == "running":
+        return "in_review"
     if (
         evidence["review"]["state"] == "pass"
         and evidence["ci"]["state"] == "pass"
+        and evidence["ci"]["coverage"] == "full"
         and evidence["gate"]["state"] == "pass"
         and evidence["merge"]["state"] == "ready"
+        and not reasons
+        and not phases & (_LIVE_PHASES | {"assigned", "dispatched"})
     ):
         reasons.add("ready_to_merge")
         return "ready_to_merge"
-    if evidence["review"]["state"] == "pass":
-        reasons.add("human_review_required")
+    if "human_review_required" in reasons:
         return "ready_for_human_review"
     if phases & {"observed_running", "provider_progress", "waiting_for_user", "waiting_for_approval"}:
         return "building"
@@ -696,6 +727,29 @@ def _produce_work(
     reasons: set[str] = set()
     if not _fresh(work.observed_at, now, stale_after_seconds):
         reasons.add("stale_observation")
+    if work.policy is not None:
+        policy = work.policy
+        if not isinstance(policy, LocalPolicyObservation):
+            raise LocalObservationError("evidence_unavailable")
+        _validate_binding(policy.binding)
+        if (not _same_work(work.binding, policy.binding)
+                or _utc(policy.observed_at) > now
+                or len(set(policy.reasons)) != len(policy.reasons)
+                or set(policy.reasons) - {
+                    "update_required", "human_review_required", "approval_required",
+                    "user_input_required",
+                }):
+            raise LocalObservationError("evidence_unavailable")
+        fresh = _fresh(policy.observed_at, now, stale_after_seconds)
+        sources.append(_source(id="policyobs", kind="github", now=now,
+                               observed_at=policy.observed_at,
+                               available=policy.source_available, fresh=fresh))
+        if not policy.source_available:
+            reasons.add("source_unavailable")
+        elif not fresh:
+            reasons.add("stale_observation")
+        else:
+            reasons.update(policy.reasons)
 
     rendered_runs: list[dict[str, Any]] = []
     seen_runs: set[str] = set()
@@ -844,15 +898,16 @@ def _produce_work(
         if not item.source_available:
             reasons.add("source_unavailable")
             continue
+        fresh = _fresh(observed, now, stale_after_seconds)
+        if not fresh:
+            reasons.add("stale_observation")
         if item.kind in _HEAD_EVIDENCE:
             state = item.state
             exact_head = item.binding.head_sha == work.binding.head_sha
             if state not in {"unknown", "not_started"} and not exact_head:
                 state = "stale"
                 reasons.add("review_stale" if item.kind == "review" else "update_required")
-            elif state in {"running", "pending"} and not _fresh(
-                observed, now, stale_after_seconds
-            ):
+            elif state not in {"unknown", "not_started"} and not fresh:
                 state = "stale"
                 reasons.add("review_stale" if item.kind == "review" else "stale_observation")
             evidence[item.kind] = {

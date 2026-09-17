@@ -263,9 +263,9 @@ def _validate_evidence(work: Mapping[str, Any], sources: Mapping[str, Mapping[st
         "assignment": {"assigned", "unassigned", "unknown"},
         "review_request": {"requested", "not_requested", "unknown"},
         "review": {"not_started", "running", "pass", "blocked", "stale", "unknown"},
-        "ci": {"not_started", "pending", "pass", "failed", "unknown"},
+        "ci": {"not_started", "pending", "pass", "failed", "stale", "unknown"},
         "gate_publisher": {"not_started", "pending", "pass", "failed", "unknown"},
-        "gate": {"not_started", "pending", "pass", "failed", "unknown"},
+        "gate": {"not_started", "pending", "pass", "failed", "stale", "unknown"},
         "merge": {
             "none",
             "draft",
