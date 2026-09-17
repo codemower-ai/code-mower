@@ -11,10 +11,11 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from code_mower import cli, session_current
+from code_mower import builder_lineage, cli, session_current
 from code_mower.board_local_observation import (
     LocalEvidenceObservation,
     LocalObservationInput,
+    LocalPolicyObservation,
     LocalProcessObservation,
     LocalRunObservation,
     LocalWorkObservation,
@@ -215,7 +216,15 @@ class LocalBoardObservationTests(unittest.TestCase):
                 "posted_comment_url": None,
             }
 
-            review = review_from_audit_artifact(artifact, binding=exact, observed_at=NOW)
+            target = builder_lineage.Target(REPOSITORY, 949, "codex/949-work", HEAD)
+            lineage = builder_lineage.resolve(
+                builder_lineage.Chain.from_arrivals(target, ()),
+                builder_lineage.Identity({"enabled": True, "labels": {"builder:codex": "codex"}}),
+                "", ["builder:codex"],
+            )
+            review = review_from_audit_artifact(
+                artifact, binding=exact, observed_at=NOW, lineage=lineage,
+            )
 
             assert review.state == "pass"
             assert not hasattr(review, "comment_body")
@@ -339,6 +348,15 @@ class LocalBoardObservationTests(unittest.TestCase):
                 current_session_resolver=active_resolver,
             )
 
+            assert record["work"]["stage"] != "ready_to_merge"
+            # Missing policy is not evidence that no human requirement applies.
+            from dataclasses import replace
+            record = observe_local_work(
+                repository=REPOSITORY, start=root,
+                snapshot=LocalObservationInput(work=replace(
+                    work, policy=LocalPolicyObservation(exact, NOW),
+                )), now=NOW, current_session_resolver=active_resolver,
+            )
             assert record["work"]["stage"] == "ready_to_merge"
             assert record["work"]["reasons"] == ["ready_to_merge"]
             for kind in ("review", "ci", "gate"):

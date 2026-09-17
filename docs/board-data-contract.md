@@ -674,6 +674,15 @@ Slack-specific control, no form, and no non-GET request.
 
 ## Board Observations
 
+The integrated head-bound qualification and operator checklist are in
+[Local Board qualification](board-qualification.md). Local policy observations
+are explicit and exactly bound: review PASS alone does not create a human
+requirement. Stale CI/gate observations retain their original head and source
+timestamps, and sampled CI cannot establish merge readiness. Collapsed work
+rows show each source's freshness/coverage; full as well as partial measurements
+name their coverage denominator. When no blocking route is recorded, the view
+offers an observation/review follow-up without adding a workflow mutation.
+
 `code_mower.boardObservations.v1` is the local observation block embedded in the
 board's `/api/status` response as `observations`. It is a **consumer** of the
 frozen `code_mower.boardObservation.v1` contract: the Board reads file records,

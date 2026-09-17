@@ -2106,11 +2106,11 @@ _BOARD_HTML = """<!doctype html>
   <div class="sr" id="announce" role="status" aria-live="polite" aria-atomic="true"></div>
   <main>
     <section class="view" id="panel-now" role="tabpanel" aria-labelledby="tab-now" tabindex="0">
-      <div class="summary" id="summary"></div>
       <!-- Work first: current work, its evidence, and who is responsible come
            before aggregate productivity and release history, so the first
            viewport answers "what needs doing now", not "what happened". -->
       <section class="card"><h2 id="work-heading">Work</h2><div id="worklist"></div></section>
+      <div class="summary" id="summary"></div>
       <section class="card"><h2>Work Now</h2><div class="rows" id="worknow"></div></section>
       <section class="card"><h2>Participants</h2><div class="rows" id="participants"></div></section>
       <section class="card"><h2>Owner Queue</h2><div class="rows" id="owner"></div></section>
@@ -3039,9 +3039,8 @@ _BOARD_HTML = """<!doctype html>
       const total = measured(measurement?.total);
       // Partial coverage is reported as the counted evidence it is. Nothing is
       // extrapolated to a whole and no ratio is turned into a percentage.
-      return coverage === "partial" && observed !== null && total !== null
-        ? `${shown} from ${observed} of ${total} recorded`
-        : shown;
+      if (!["partial", "complete"].includes(coverage) || observed === null || total === null) return NOT_RECORDED;
+      return `${shown} from ${observed} of ${total} recorded${coverage === "complete" ? " (complete coverage)" : ""}`;
     }
     function sourceNote(source) {
       if (!source) return "source not recorded";
@@ -3122,6 +3121,13 @@ _BOARD_HTML = """<!doctype html>
         evidenceItem("lease", "orchestrator lease", evidence.lease, sources[text(evidence.lease?.source_id)]),
         evidenceItem("assignment", "assignment", evidence.assignment, sources[text(evidence.assignment?.source_id)], {note: "An assignment is a record of intent, not of execution."})
       ];
+      if (!["approval_required", "user_input_required", "human_review_required"].some(reason => reasons.includes(reason))) {
+        const policy = sources.policyobs;
+        const observed = text(policy?.freshness) === "fresh" && text(policy?.coverage) === "complete";
+        policyItems.push(evidenceItem("human_policy", "human policy",
+          observed ? {state: "no recorded requirement"} : null, policy,
+          {note: "A passing audit does not establish policy approval. Only an explicit current policy observation can establish that no human requirement was recorded."}));
+      }
       for (const reason of ["approval_required", "user_input_required", "human_review_required"]) {
         if (reasons.includes(reason)) {
           policyItems.push({
@@ -3144,7 +3150,8 @@ _BOARD_HTML = """<!doctype html>
           evidenceItem("review", "review verdict", evidence.review, sources[text(evidence.review?.source_id)])
         ]},
         {name: "ci", label: "CI", items: [
-          evidenceItem("ci", "checks", evidence.ci, sources[text(evidence.ci?.source_id)])
+          evidenceItem("ci", "checks", evidence.ci, sources[text(evidence.ci?.source_id)],
+            {note: text(evidence.ci?.coverage) === "sampled" ? "Sampled checks only; required CI is not established." : "CI coverage is independent of review and gate evidence."})
         ]},
         {name: "gate", label: "Gate", items: [
           evidenceItem("gate", "code-mower/gate verdict", evidence.gate, sources[text(evidence.gate?.source_id)]),
@@ -3478,6 +3485,28 @@ _BOARD_HTML = """<!doctype html>
     // from one record, but whether the record set behind it is complete and
     // whether the snapshot carrying it was confirmed are facts about the
     // payload, and an idle claim depends on both.
+    function workRoute(work, freshness) {
+      // Recorded blocking routes always win. With no route, offer an observed
+      // follow-up from the observed phase; never invent a policy requirement.
+      if (text(work.primary?.action) && work.primary.action !== "none") return {
+        action: lookup(ACTION_LABELS, work.primary.action, "no next action recorded"),
+        actor: lookup(ACTOR_LABELS, work.primary.actor, "no responsible role recorded")
+      };
+      if (!freshness.current) return {action: "refresh work evidence", actor: "orchestrator"};
+      if (work.stage === "merged") return {action: "no next action recorded", actor: "no responsible role recorded"};
+      const phases = arrayOf(work.runs).map(run => text(run?.phase));
+      if (phases.some(phase => ["observed_running", "provider_progress"].includes(phase))) {
+        return {action: "observe implementation progress", actor: "orchestrator"};
+      }
+      if (phases.some(phase => ["assigned", "dispatched"].includes(phase))) {
+        return {action: "confirm execution starts", actor: "orchestrator"};
+      }
+      if (phases.includes("implementation_complete") && work.pull_request?.number
+          && ["unknown", "not_started"].includes(text(work.evidence?.review?.state))) {
+        return {action: "request exact-head review", actor: "orchestrator"};
+      }
+      return {action: "inspect remaining work evidence", actor: "orchestrator"};
+    }
     function workRow(record, nowMs, coverage, authority) {
       const kind = text(record?.kind);
       const key = workKey(record);
@@ -3519,6 +3548,7 @@ _BOARD_HTML = """<!doctype html>
       if (kind === "work") {
         const work = record.work || {};
         const states = workStates(work);
+        const route = workRoute(work, freshness);
         return {
           ...base,
           reference: text(work.reference) || "work",
@@ -3529,8 +3559,8 @@ _BOARD_HTML = """<!doctype html>
           headline_class: states[0].class,
           pr_number: work.pull_request?.number ?? null,
           head_sha: text(work.pull_request?.head_sha),
-          action_label: lookup(ACTION_LABELS, work.primary?.action, "no next action recorded"),
-          actor_label: lookup(ACTOR_LABELS, work.primary?.actor, "no responsible role recorded"),
+          action_label: route.action,
+          actor_label: route.actor,
           assignments: arrayOf(work.runs).map(run => `${text(run?.provider)} ${text(run?.role)} ${runDisplay(run).label}`),
           reasons: arrayOf(work.reasons).map(text),
           groups: evidenceGroups(record),
@@ -4406,11 +4436,13 @@ _BOARD_HTML = """<!doctype html>
     function workRowHtml(row, selected, prs) {
       const id = rowElementId(row.key);
       const assignments = row.assignments.length ? `assignments: ${row.assignments.join("; ")}` : "assignments: not recorded";
+      const sourceSummary = arrayOf(row.record?.sources).map(source => `${text(source.kind)}: ${text(source.freshness)} (${text(source.coverage)})`).join("; ");
       return `<li class="workrow${selected ? " selected" : ""}">
         <button type="button" class="rowbtn" id="${id}" data-key="${esc(row.key)}" aria-expanded="${selected}" aria-controls="workdetail">
           <span class="line"><span class="ref">${esc(row.reference)}</span>${stateCue(row.states[0])}<span class="pill">stage: ${esc(row.stage_label)}</span>${cuePill(row.freshness.label, row.freshness.class)}</span>
           <span class="line"><span>next: <b>${esc(row.action_label)}</b></span><span class="muted">responsible: ${esc(row.actor_label)}</span><span class="muted">last update: ${esc(row.update_text)}</span></span>
           <span class="line muted">${esc(assignments)}</span>
+          <span class="line muted">sources: ${esc(sourceSummary || "not recorded")}</span>
         </button>
         ${selected ? workDetailHtml(row, id, prs) : ""}
       </li>`;
@@ -4566,6 +4598,8 @@ _BOARD_HTML = """<!doctype html>
       // `observation` above and every work row below descend from this one
       // reading.
       const snapshot = snapshotAuthority(data, transport);
+      const observationRows = workRows(data, nowMs, transport);
+      const currentWork = observationRows.find(row => row.kind === "work" && row.stage !== "merged");
       // A status poll that did not complete makes every recorded next action a
       // past one, so the page states the action that is actually current --
       // get this page talking to the Board server again -- wherever it states
@@ -4574,7 +4608,7 @@ _BOARD_HTML = """<!doctype html>
       // summary line has always carried.
       const nextAction = snapshot.transport_confirmed === false
         ? TRANSPORT_NEXT_ACTION
-        : (data.next_action || "inspect");
+        : (currentWork?.action_label || data.next_action || "inspect");
       // The one place the page composes "and here is why this emptiness is not
       // a finding", so every absence claim on it is qualified the same way and
       // by the same two facts.
@@ -4711,7 +4745,6 @@ _BOARD_HTML = """<!doctype html>
       // read the records the Board was given; they never produce one, resolve
       // a session, or reach a provider to fill a gap in one.
       const observations = data.observations || {};
-      const observationRows = workRows(data, nowMs, transport);
       workState = {
         rows: observationRows,
         prs,
@@ -4740,6 +4773,7 @@ _BOARD_HTML = """<!doctype html>
       const attentionRows = observationRows.filter(row => ["owner", "maintainer", "reviewer", "builder", "orchestrator"].includes(text(row.record?.work?.primary?.actor)));
       put("chrome", [
         `<span>Now: <b>${esc(nextAction)}</b></span>`,
+        currentWork && snapshot.transport_confirmed !== false ? `<span>responsible: ${esc(currentWork.actor_label)}</span>` : "",
         cuePill(obs.label, obs.class),
         `<span class="pill wide">${esc(countOf(remoteAvailable, prs.length))} open PRs</span>`,
         // The count is of what was read, so it is labelled as such whenever

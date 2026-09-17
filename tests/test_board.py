@@ -6894,8 +6894,9 @@ class BoardWorkFirstViewTests(TestCase):
         self.assertIn("stage: building", row)
         self.assertIn("assignments: codex builder observed running", row)
         self.assertIn("last update: 50s ago", row)
-        self.assertIn("responsible: no responsible role recorded", row)
-        self.assertIn("next: <b>no next action recorded</b>", row)
+        self.assertIn("responsible: orchestrator", row)
+        self.assertIn("observe implementation progress", row)
+        self.assertIn("next: <b>observe implementation progress</b>", row)
 
         reviewed = _render_board_sequence(
             [{"payload": _observation_payload([_observation_fixture("reviewed")])}]
