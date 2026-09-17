@@ -128,6 +128,23 @@ if [ "${#lane_delivery[@]}" -gt 0 ]; then
     exit 2
   fi
 fi
+# lineage-capabilities is answered by the installed CLI's own capability list, so
+# a pre-change installation reports success while not knowing that the canonical
+# writer derivation is now required. Probe writer-id explicitly here, at the same
+# gate: every real use of it sits after target selection, handoff reservation and
+# acceptance, the acceptance comment and writer registration, so discovering an
+# unknown subcommand there would refuse only after those effects. The derivation
+# is pure, so this probe has no effect of its own; a fixed slug keeps it
+# independent of --repo validation, and a dotted one proves the installed
+# derivation answers with identities LineageRound accepts.
+writer_id_probe="$("${lane_delivery[@]}" writer-id --lane "$LANE" \
+  --repo "owner/writer-id.probe" --run probe 2>/dev/null || true)"
+printf '%s' "$writer_id_probe" | jq -e '
+  def accepted: type == "string" and test("^[A-Za-z0-9_-]{1,100}$");
+  (.writer | accepted) and (.round_id | accepted)' >/dev/null 2>&1 || {
+  echo "unsupported installed lineage capability: lane-delivery writer-id is required; release activation requires #915" >&2
+  exit 2
+}
 if [ -n "$HANDOFF_SOURCE_LANE" ] || [ -n "$HANDOFF_EXPECTED_HEAD" ] || [ -n "$HANDOFF_SOURCE_FILE" ]; then
   [ -n "$HANDOFF_SOURCE_LANE" ] && [ -n "$HANDOFF_EXPECTED_HEAD" ] && [ -n "$HANDOFF_SOURCE_FILE" ] || {
     echo "--handoff-source-lane, --handoff-expected-head, and --handoff-source-file are required together" >&2
@@ -1178,7 +1195,21 @@ before_state="${log%.log}.before.json"
 after_state="${log%.log}.after.json"
 status_file="${log%.log}.status.json"
 writer_state_dir="$("$LANE_PYTHON" -c 'from pathlib import Path; print((Path.home() / ".local/share/code-mower/local-writers").resolve())')"
-writer_alias="${LANE}-${repo_key}-${stamp}-$$"
+# LineageRound accepts only [A-Za-z0-9_-]{1,100} for the stable writer identity
+# and for the supervised round ID, while a repository name may legally contain
+# ".". Both identities come from the one canonical derivation the installed
+# lane-delivery owns, because a second derivation here could disagree with the
+# supervisor about who the writer is.
+writer_identity="$("${lane_delivery[@]}" writer-id --lane "$LANE" --repo "$REPO" --run "${stamp}-$$")" || {
+  echo "${LANE}: refusing to run; no canonical lineage writer identity for ${REPO}" >&2
+  exit 2
+}
+writer_alias="$(printf '%s\n' "$writer_identity" | jq -r '.round_id // empty')"
+lineage_writer="$(printf '%s\n' "$writer_identity" | jq -r '.writer // empty')"
+[ -n "$writer_alias" ] && [ -n "$lineage_writer" ] || {
+  echo "${LANE}: refusing to run; the canonical lineage writer identity for ${REPO} is unusable" >&2
+  exit 2
+}
 writer_source="${log%.log}.source.json"
 ( umask 077; jq -n --arg writer "$writer_alias" --arg state_dir "$writer_state_dir" \
   '{transport:"local_process",writer:$writer,state_dir:$state_dir}' > "$writer_source" )
@@ -1224,7 +1255,7 @@ run_provider() {
     if [ "$kind" = "pr" ] && [ "$mode" != "audit" ]; then
       lineage_store="${HOME}/.local/share/code-mower/lineage/${repo_key}/${num}"
       supervise_args+=(--lineage-before "$before_state" --lineage-base "$lineage_base"
-        --lineage-writer "${LANE}-${repo_key}" --lineage-output "${log%.log}.lineage.json")
+        --lineage-writer "$lineage_writer" --lineage-output "${log%.log}.lineage.json")
       if [ -d "$lineage_store" ] || [ -n "$handoff_file" ]; then
         supervise_args+=(--lineage-store "$lineage_store")
         [ -d "$lineage_store" ] || supervise_args+=(--lineage-create)

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hashlib
 import json
 import os
 import re
@@ -1222,6 +1223,26 @@ def _add_scan_prompt_parser(subparsers: Any) -> None:
     scan.add_argument("--json", action="store_true")
 
 
+def _add_writer_id_parser(subparsers: Any) -> None:
+    writer_id = subparsers.add_parser(
+        "writer-id",
+        help="Derive the canonical lineage writer identity and supervised round ID.",
+    )
+    writer_id.add_argument("--lane", required=True)
+    writer_id.add_argument("--repo", required=True)
+    writer_id.add_argument("--run", default=None,
+                           help="Caller-owned per-run suffix for the supervised round ID")
+
+
+def _writer_id_main(args: argparse.Namespace) -> int:
+    payload = {"lane": args.lane, "repo": args.repo,
+               "writer": lineage_writer_id(args.lane, args.repo)}
+    if args.run is not None:
+        payload["round_id"] = lineage_writer_id(args.lane, args.repo, run=args.run)
+    print(json.dumps(payload, sort_keys=True))
+    return 0
+
+
 def _add_supervise_parser(subparsers: Any) -> None:
     supervise = subparsers.add_parser(
         "supervise",
@@ -1263,6 +1284,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_handoff_parser(subparsers)
     _add_scan_prompt_parser(subparsers)
     _add_supervise_parser(subparsers)
+    _add_writer_id_parser(subparsers)
     admit = subparsers.add_parser("admit-builder", help="Check role admission against the trusted fresh-base checkout")
     admit.add_argument("--checkout", type=Path, required=True)
     admit.add_argument("--lane", required=True)
@@ -1305,6 +1327,8 @@ def main(argv: list[str] | None = None) -> int:
             return _scan_prompt_main(args)
         if args.command == "supervise":
             return _supervise_main(args)
+        if args.command == "writer-id":
+            return _writer_id_main(args)
         if args.command == "admit-builder":
             return _admit_builder_main(args)
         if args.command == "runtime":
@@ -1574,6 +1598,79 @@ def _lineage_checkout(checkout, target):
                                        timeout=10, stderr=subprocess.DEVNULL).strip()
     if git("rev-parse", "HEAD") != target.head_sha or git("branch", "--show-current") != target.branch:
         raise ProducerRefusal("Observed delivery checkout head or exact branch differs.")
+
+
+#: The alphabet :class:`LineageRound` accepts for a stable writer identity and
+#: for a supervised round ID. It is deliberately narrower than a repository
+#: slug, so identities are derived rather than pasted.
+LINEAGE_ID_PATTERN = r"[A-Za-z0-9_-]{1,100}"
+
+
+def lineage_writer_id(lane: Any, repo: Any, *, run: Any = None) -> str:
+    """Canonical lineage identity for ``lane`` writing to ``repo``.
+
+    ``LineageRound`` accepts only ``LINEAGE_ID_PATTERN`` for both the stable
+    writer identity and the supervised round ID, while a repository name may
+    legally contain ``.``. The runner used to paste ``<lane>-<owner>__<name>``
+    into both, so an otherwise eligible dotted or very long slug was refused
+    before the provider ever launched.
+
+    Every historical identifier ``LineageRound`` already accepted is preserved
+    exactly, including a name containing ``--``: persisted private lineage
+    records hold that stable writer, and :func:`lineage_continuation` refuses
+    unless the derived writer still equals it, so rewriting one would strand the
+    repository after its next round launched. Only what the historical form
+    could not represent is encoded: a slug outside the accepted alphabet or the
+    100-character cap, an owner/name boundary that does not decode back to this
+    exact slug, or an owner that would make the identity read as an encoded one.
+
+    Encoding is ``<lane>--<readable>-<24 hex of sha256(lane + "\\n" + slug)>``.
+    For one lane the two namespaces are disjoint: an encoded identity always
+    begins ``<lane>--`` and a preserved one never does, because an owner
+    starting with ``-`` is encoded instead. Within the encoded namespace
+    ``readable`` carries no ``-``, so the digest of the exact lane and slug
+    always decodes out, keeping slugs that sanitize or truncate alike apart.
+    Identities are only ever compared inside one lane: a private lineage record
+    is keyed by the exact target, and both :func:`lineage_continuation` and
+    ``ProducerStore.record`` compare the observed transport as well as the
+    writer, so the lane is never carried by this string alone.
+
+    ``run`` appends a caller-owned, already-accepted suffix (the runner passes
+    its timestamp and PID) so one derivation serves both identities.
+    """
+    if not isinstance(lane, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", lane):
+        raise LaneDeliveryError("Canonical lineage identity requires an exact lane name")
+    if not isinstance(repo, str):
+        raise LaneDeliveryError("Canonical lineage identity requires an OWNER/REPO slug")
+    owner, separator, name = repo.partition("/")
+    if not separator or not owner or not name or "/" in name:
+        raise LaneDeliveryError("Canonical lineage identity requires an OWNER/REPO slug")
+    if run is not None and (not isinstance(run, str)
+                            or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", run)):
+        raise LaneDeliveryError("Canonical lineage identity requires an accepted run suffix")
+    suffix = "" if run is None else f"-{run}"
+    key = f"{owner}__{name}"
+    preserved = f"{lane}-{key}{suffix}"
+    # Preserve the historical identifier whenever it is accepted as-is, decodes
+    # back to this exact slug, and cannot be read as an encoded identity. An
+    # owner carrying "__" would otherwise let two repositories share one
+    # preserved identity; an owner starting with "-" would put a preserved
+    # identity inside the encoded "<lane>--" namespace.
+    if (re.fullmatch(LINEAGE_ID_PATTERN, preserved)
+            and not preserved.startswith(f"{lane}--")
+            and key.partition("__")[::2] == (owner, name)):
+        return preserved
+    digest = hashlib.sha256(f"{lane}\n{repo}".encode("utf-8")).hexdigest()[:24]
+    room = 100 - len(f"{lane}--{digest}{suffix}") - 1
+    if room < 1:
+        raise LaneDeliveryError("Canonical lineage identity does not fit the accepted alphabet")
+    # Hyphens are sanitized away too, so the separator before the digest is the
+    # first "-" after the marker and the exact digest always decodes out.
+    readable = re.sub(r"[^A-Za-z0-9_]", "_", key)[:room]
+    derived = f"{lane}--{readable}-{digest}{suffix}"
+    if not re.fullmatch(LINEAGE_ID_PATTERN, derived):  # pragma: no cover - defensive
+        raise LaneDeliveryError("Canonical lineage identity does not fit the accepted alphabet")
+    return derived
 
 
 class LineageRound:
