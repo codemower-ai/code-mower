@@ -374,6 +374,21 @@ class LifecycleTests(SupervisorCase):
         self.assertNotEqual(result["status"]["state"], "complete")
         self.assertEqual(len(self.reviews.requests), 1)
 
+    def test_changed_head_during_review_routing_decision_prevents_audit_dispatch(self):
+        claim = self.started()
+        self.complete()
+        self.agent.after = lambda: setattr(self.github, "pr", replace(self.github.pr, head_sha="b" * 40))
+        self.assertNotEqual(self.result(claim)["status"]["state"], "reviewing")
+        self.assertEqual(self.reviews.requests, [])
+
+    def test_revocation_during_final_review_observation_invalidates_completion(self):
+        claim = self.started()
+        self.complete()
+        self.result(claim)
+        self.reviews.review = self.reviews.gate = "passed"
+        self.agent.after = lambda: setattr(self.reviews, "after_observe", lambda: setattr(self.queue, "active", False))
+        self.assertEqual(self.result(claim)["status"]["reason"], "claim_revoked")
+
     def test_gate_change_during_completion_decision_does_not_complete(self):
         claim = self.started()
         self.complete()

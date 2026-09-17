@@ -176,7 +176,8 @@ def failure(reason: str, *, state="rejected") -> dict:
               "not_registered": "configure_supervisor",
               "claim_expired": "new_authorization", "claim_revoked": "new_authorization"}.get(reason, "owner_action")
     return validate("result", dict(schema="code_mower.supervisor_result.v1", claim=None,
-                                   status=_status(state=state, reason=reason, next_action=action), target=None))
+                                   status=_status(state=state, reason=reason, next_action=action,
+                                                  writer="unknown", review_writer="unknown"), target=None))
 
 
 class Supervisor:
@@ -493,6 +494,10 @@ class Supervisor:
         decision = self._decide(locked, record, task, "result")
         task = self._check(record, claim, "result")
         if decision["decision"] == "review" and record["review_target"] is None:
+            latest = self.builder.observe(task, collect=True)
+            if latest.target != target or latest.writer != "terminated":
+                raise SupervisorError("head_changed")
+            self._check(record, claim, "result")
             self._review_allowed(task, target, reviewer)
             record.update(pending="review", review_target=record["target"])
             locked.write(record)
@@ -512,6 +517,7 @@ class Supervisor:
             review = self._review_observation(task, target, reviewer)
             if review["review"] != "passed" or review["gate"] != "passed" or review["writer"] != "terminated":
                 raise SupervisorError("review_unavailable")
+            self._check(record, claim, "result")
             self._observed(record, latest, collect=True)
             record["status"].update(state="complete", reason="none", next_action="none")
         elif decision["decision"] in {"wait", "owner_action"}:
