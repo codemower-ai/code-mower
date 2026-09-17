@@ -291,6 +291,42 @@ def redact_path(value: object, *, show_local_paths: bool) -> str:
     return text if show_local_paths else lane_status.LOCAL_PATH_REDACTION
 
 
+# A local path embedded in free-form text, such as the definition path launchd
+# names when it refuses to load one. The lookbehind keeps `Input/output` and
+# `owner/repo` whole -- a slash that continues a word is not the start of a path
+# -- and keeps `http://host` out of it, while still catching the `--flag=/path`
+# and `path: /path` spellings a diagnostic actually uses.
+_PATH_IN_TEXT = re.compile(r"(?<![A-Za-z0-9_:/])(?:~|/)[A-Za-z0-9._~@+/-][^\s'\"]*")
+
+
+def redact_diagnostic(value: object, *, show_local_paths: bool) -> str:
+    """Hide local paths inside a subprocess diagnostic, keeping the diagnostic.
+
+    `launchctl` names the definition file it could not load, and that text is
+    copied into operation messages and rollback details that print in both text
+    and JSON. Redacting the whole string would throw away the reason the
+    operation failed, which is the only part an operator can act on, so only the
+    path-shaped runs are replaced and the rest is left to read as written.
+    """
+
+    text = _text(value)
+    if show_local_paths or not text:
+        return text
+    return _PATH_IN_TEXT.sub(lane_status.LOCAL_PATH_REDACTION, text)
+
+
+def _redact_diagnostics(value: Any, *, show_local_paths: bool) -> Any:
+    """`redact_diagnostic` over a nested payload fragment, strings only."""
+
+    if isinstance(value, str):
+        return redact_diagnostic(value, show_local_paths=show_local_paths)
+    if isinstance(value, Mapping):
+        return {key: _redact_diagnostics(item, show_local_paths=show_local_paths) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_diagnostics(item, show_local_paths=show_local_paths) for item in value]
+    return value
+
+
 def _redact_argument(value: str) -> str:
     """Hide the local path in one argument, whatever spelling carries it.
 
@@ -1238,7 +1274,16 @@ def validate_binding(
         checks.append(_check("service.label", "fail", "no managed service definition is installed for this port"))
         return _binding_payload(spec, checks, None, show_local_paths=show_local_paths, expected_digest=expected)
     if not service.readable:
-        checks.append(_check("service.label", "fail", service.message or "service definition is unreadable"))
+        checks.append(
+            _check(
+                "service.label",
+                "fail",
+                redact_diagnostic(
+                    service.message or "service definition is unreadable",
+                    show_local_paths=show_local_paths,
+                ),
+            )
+        )
         return _binding_payload(spec, checks, service, show_local_paths=show_local_paths, expected_digest=expected)
 
     checks.append(
@@ -2211,7 +2256,11 @@ def remove_service(
             "matches": resolved["matches"],
         }
     service = resolved["service"]
-    ok, detail = provider.bootout(service.label)
+    ok, raw_detail = provider.bootout(service.label)
+    # `remove` builds its payloads here rather than through `_operation_payload`,
+    # so the same sanitizing the shared chokepoint does has to happen at the
+    # source: every message below is built from this string.
+    detail = redact_diagnostic(raw_detail, show_local_paths=show_local_paths)
     if not ok:
         # The definition is how this service is discovered at all: `status`,
         # `remove` and the `board stop` keepalive guard all scan definition
@@ -2307,10 +2356,15 @@ def _operation_payload(
     show_local_paths: bool = False,
     **extra: Any,
 ) -> dict[str, Any]:
+    # Every operation payload passes through here, which makes it the one place
+    # a provider diagnostic can be sanitized before it is published. `message`
+    # and `rollback.detail` are built from `launchctl` output, which names the
+    # definition file by path; without this they print the checkout location in
+    # both text and JSON while `repo_path` beside them says it is hidden.
     payload: dict[str, Any] = {
         "schema": BOARD_SERVICE_SCHEMA,
         "status": status,
-        "message": message,
+        "message": redact_diagnostic(message, show_local_paths=show_local_paths),
         "provider": LAUNCHD_PROVIDER,
         "label": spec.label,
         "repo": spec.repo,
@@ -2319,10 +2373,10 @@ def _operation_payload(
         "repo_path": redact_path(str(spec.repo_path), show_local_paths=show_local_paths),
         "repo_path_redacted": not show_local_paths,
         "digest": expected_digest,
-        **extra,
+        **_redact_diagnostics(extra, show_local_paths=show_local_paths),
     }
     if delayed is not None:
-        payload["delayed_health"] = dict(delayed)
+        payload["delayed_health"] = _redact_diagnostics(dict(delayed), show_local_paths=show_local_paths)
     return payload
 
 
@@ -2373,7 +2427,10 @@ def service_status(
             "arguments_redacted": not show_local_paths,
         }
         if not service.readable:
-            row["binding"] = {"status": "fail", "message": service.message}
+            row["binding"] = {
+                "status": "fail",
+                "message": redact_diagnostic(service.message, show_local_paths=show_local_paths),
+            }
             rows.append(row)
             continue
         if service.port and service.repo and service.repo_path:

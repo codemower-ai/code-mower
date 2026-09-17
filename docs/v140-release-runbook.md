@@ -1084,6 +1084,13 @@ replaces a stale managed binding atomically or stops with a diagnostic; and the
 delayed health check validates the exact private binding before the restart is
 reported as successful. See [Board service lifecycle](board-service-lifecycle.md).
 
+Ports still held by the previous procedure's `nohup` Boards are migrated before
+the first managed restart. `--replace` takes over a *managed* definition, so a
+transient listener on the port makes the install refuse rather than seize it:
+the confirmed transient Board is stopped and its port waited free first. An
+already-managed port is not stopped -- its restart below is idempotent -- and a
+listener that cannot be confirmed transient stops the step for the owner.
+
 ```bash
 set -euo pipefail
 BOARD_5342_REPO="REUSE_PRIVATE_INVENTORIED_SLUG"
@@ -1237,6 +1244,72 @@ code-mower board service render --repo "$BOARD_5342_REPO" \
 code-mower board service render --repo "$BOARD_5344_REPO" \
   --repo-path "$BOARD_5344_REPO_PATH" --port 5344 \
   --output "$BOARD_SERVICE_DIR/5344.plist"
+
+# Migrate first. `--replace` is a takeover of a *managed* definition, so a port
+# still held by the previous procedure's nohup Board makes the first managed
+# restart refuse with port_conflict or external_supervisor -- and abort the
+# whole step under `set -e`. Only a confirmed transient Board is stopped here;
+# an already-managed port is left for the idempotent restart below, and a
+# listener whose supervision cannot be confirmed is left for the owner.
+cat >"$RELEASE_ENV/transient_boards.py" <<'PY'
+"""Print the ports whose current Board is a confirmed transient listener.
+
+Three answers, not two. A managed port must not be stopped -- its supervisor
+would reclaim it immediately, and the managed restart already handles it
+idempotently. A port whose listener cannot be classified, or an inventory that
+could not be taken at all, is not a transient Board either; neither is silently
+skipped, because "we could not look" must not read as "nothing is there".
+Only ports are printed.
+"""
+
+import json
+import subprocess
+import sys
+
+
+def main() -> None:
+    ports = [int(value) for value in sys.argv[1:]]
+    if not ports:
+        raise SystemExit("no Board ports supplied")
+    completed = subprocess.run(
+        ["code-mower", "board", "list", "--json"],
+        check=True, capture_output=True, text=True,
+    )
+    payload = json.loads(completed.stdout)
+    if not payload.get("available"):
+        raise SystemExit("the local Board inventory could not be taken; migrate by hand")
+    rows = {
+        int(row.get("port") or 0): row
+        for row in payload.get("boards") or []
+        if isinstance(row, dict)
+    }
+    transient = []
+    for port in ports:
+        row = rows.get(port)
+        if row is None:
+            continue
+        if "managed" not in row:
+            raise SystemExit(f"board {port} listener is unclassified; migrate it by hand")
+        if row.get("managed"):
+            continue
+        transient.append(port)
+    print(json.dumps({"transient": transient, "ports": sorted(ports)}))
+
+
+main()
+PY
+BOARD_TRANSIENT_PORTS="$(
+  "$RELEASE_PYTHON" "$RELEASE_ENV/transient_boards.py" 5332 5342 5344 \
+    | "$RELEASE_PYTHON" -c 'import json,sys; print(" ".join(str(p) for p in json.load(sys.stdin)["transient"]))'
+)"
+# `board stop` still applies its own refusals -- managed_service, an external
+# or unknown supervisor, an ambiguous or mismatched selector -- and any of them
+# exits nonzero here rather than being worked around. Each stop is waited out
+# before the next, so a port is confirmed released and not merely signalled.
+for BOARD_PORT in $BOARD_TRANSIENT_PORTS; do
+  code-mower board stop --port "$BOARD_PORT" --yes --json
+  "$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" gone "$BOARD_PORT"
+done
 
 # Managed restart. Each restart replaces a stale managed binding atomically or
 # stops with a diagnostic, then waits through the delayed health check before

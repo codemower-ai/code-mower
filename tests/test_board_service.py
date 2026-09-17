@@ -224,7 +224,13 @@ class FakeHost:
         if action == "bootstrap":
             label = Path(argv[2]).name[: -len(".plist")]
             if label in self.bootstrap_failures:
-                return _completed("", returncode=1, stderr="Bootstrap failed: 5: Input/output error\n")
+                # Real `launchctl` names the definition file it could not load,
+                # which is how a local path reaches an operation message at all.
+                return _completed(
+                    "",
+                    returncode=1,
+                    stderr=f"Bootstrap failed: 5: Input/output error\nPath: {argv[2]}\n",
+                )
             # launchd will not bootstrap a label its domain already holds, so a
             # rollback that writes a definition back without first unloading the
             # job it replaced cannot look like it succeeded here.
@@ -506,6 +512,48 @@ class BoardServiceContractTest(ServiceHarness):
 
         self.assertEqual(
             board_service.redact_arguments(arguments, show_local_paths=True), arguments
+        )
+
+    def test_a_launchctl_diagnostic_keeps_its_reason_and_loses_its_paths(self) -> None:
+        # `launchctl` names the definition file it could not load. Redacting the
+        # whole string would throw away the only part an operator can act on, so
+        # the reason stays and the path-shaped runs go.
+        diagnostic = (
+            "launchctl bootstrap failed: Load failed: 5: Input/output error while reading "
+            f"{_PRIVATE_CHECKOUT}/Library/LaunchAgents/ai.codemower.board.5332.plist"
+        )
+
+        redacted = board_service.redact_diagnostic(diagnostic, show_local_paths=False)
+
+        self.assertNotIn(_PRIVATE_CHECKOUT, redacted)
+        self.assertIn(lane_status.LOCAL_PATH_REDACTION, redacted)
+        # The failure is still readable, including the slash inside "Input/output":
+        # a slash that continues a word does not begin a path.
+        self.assertIn("Load failed: 5: Input/output error", redacted)
+        self.assertIn("launchctl bootstrap failed", redacted)
+
+    def test_a_home_relative_diagnostic_path_is_redacted_too(self) -> None:
+        redacted = board_service.redact_diagnostic(
+            "launchctl bootout failed: ~/Library/LaunchAgents/ai.codemower.board.5332.plist: "
+            "No such process",
+            show_local_paths=False,
+        )
+
+        self.assertNotIn("~/Library", redacted)
+        self.assertIn("No such process", redacted)
+
+    def test_a_repository_slug_is_not_mistaken_for_a_path(self) -> None:
+        # `owner/repo` and `http://host/path` both carry slashes and neither is
+        # a local path; over-redacting them would make diagnostics unreadable.
+        text = "the definition serves codemower-ai/code-mower via http://127.0.0.1:5332/health"
+
+        self.assertEqual(board_service.redact_diagnostic(text, show_local_paths=False), text)
+
+    def test_show_local_paths_returns_a_diagnostic_verbatim(self) -> None:
+        diagnostic = f"launchctl bootstrap failed: {_PRIVATE_CHECKOUT}/x.plist"
+
+        self.assertEqual(
+            board_service.redact_diagnostic(diagnostic, show_local_paths=True), diagnostic
         )
 
     def test_a_platform_without_launchd_refuses_instead_of_pretending(self) -> None:
@@ -799,6 +847,45 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertIn("next login", payload["rollback"]["detail"])
         self.assertTrue((self.root / "ai.codemower.board.5332.plist").exists())
         self.assertIn("Rollback: failed", board_service.render_operation_text(payload))
+
+    def test_a_failed_apply_reports_why_without_publishing_the_definition_path(self) -> None:
+        # The failure reason is the actionable part and stays; the definition
+        # path launchd names in it is local and goes. Without this the operation
+        # message printed the checkout location in both text and JSON while
+        # `repo_path` in the same payload said local paths were hidden.
+        self.host.bootstrap_failures.add("ai.codemower.board.5332")
+
+        payload = self.install(self.spec())
+
+        self.assertEqual(payload["status"], "apply_failed")
+        self.assertNotIn(str(self.root), payload["message"])
+        self.assertNotIn(str(self.root), json.dumps(payload))
+        self.assertNotIn(str(self.root), board_service.render_operation_text(payload))
+        self.assertIn("Input/output error", payload["message"])
+        self.assertIn(lane_status.LOCAL_PATH_REDACTION, payload["message"])
+
+    def test_a_failed_rollback_detail_hides_the_definition_path_too(self) -> None:
+        # `rollback.detail` is built from the same `launchctl` output and is
+        # printed beside the message in both renderings, so it is sanitized by
+        # the same chokepoint rather than separately.
+        self.install(self.spec())
+        self.host.bootstrap_failures.add("ai.codemower.board.5332")
+        drifted = self.spec(repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332)
+
+        payload = self.restart(drifted, replace=True)
+
+        self.assertEqual(payload["status"], "rollback_failed")
+        self.assertNotIn(str(self.root), json.dumps(payload))
+        self.assertNotIn(str(self.other_checkout), json.dumps(payload))
+        self.assertIn("rollback also failed", payload["message"])
+
+    def test_show_local_paths_still_reveals_a_failure_diagnostic(self) -> None:
+        self.host.bootstrap_failures.add("ai.codemower.board.5332")
+
+        payload = self.install(self.spec(), show_local_paths=True)
+
+        self.assertEqual(payload["status"], "apply_failed")
+        self.assertIn(str(self.root), payload["message"])
 
     def test_a_definition_that_cannot_be_decoded_is_unreadable_not_a_traceback(self) -> None:
         spec = self.spec()
