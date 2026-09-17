@@ -85,7 +85,15 @@ CAMPAIGN_CONFIG_KEYS = (
 
 #: ``provider_config`` flag: the isolated campaign home stores its login in
 #: the OS keyring, so a host without a desktop session keyring cannot hold it.
+#: A provider that also offers an explicitly selected non-keyring isolated
+#: source declares :data:`CAMPAIGN_AUTH_MODE_ENV_KEY` alongside it; the flag
+#: then describes the default mode, not every supported one.
 CAMPAIGN_AUTH_KEYRING_REQUIRED_KEY = "campaign_auth_keyring_required"
+
+#: ``provider_config`` key naming the environment variable that selects one
+#: provider's isolated campaign credential source. Its presence is what makes
+#: doctor resolve and report a mode at all.
+CAMPAIGN_AUTH_MODE_ENV_KEY = "campaign_auth_mode_env"
 
 #: Environment variables whose presence marks a Linux desktop session.
 DESKTOP_SESSION_ENV_VARS = ("DISPLAY", "WAYLAND_DISPLAY")
@@ -235,6 +243,118 @@ def headless_linux_host(
 AUTH_ERROR_UNAUTHENTICATED = "campaign_auth_unauthenticated"
 AUTH_ERROR_PROBE_TIMEOUT = "campaign_auth_probe_timeout"
 AUTH_ERROR_PROBE_UNAVAILABLE = "campaign_auth_probe_unavailable"
+AUTH_ERROR_UNSUPPORTED_MODE = "campaign_auth_unsupported_mode"
+AUTH_ERROR_SOURCE_MISSING = "campaign_auth_source_missing"
+AUTH_ERROR_SOURCE_UNUSABLE = "campaign_auth_source_unusable"
+
+#: Reported when the operator selected a credential source Code Mower does not
+#: support. It is deliberately a ``warn`` and never a skip: a skip would leave
+#: the provider in ``ready_providers``, which is exactly the readiness pass an
+#: unsupported mode must never earn.
+AUTH_STATE_UNSUPPORTED_MODE = "unsupported_mode"
+
+#: Detail key reporting whether the isolated home now carries the selected
+#: mode's restricted configuration. A bounded boolean: never a path, a
+#: permission bit, or a filesystem error message.
+CAMPAIGN_AUTH_HOME_PREPARED_KEY = "campaign_auth_home_prepared"
+
+#: Bounded source words mirrored from :mod:`code_mower.campaign_adapters`.
+CAMPAIGN_AUTH_SOURCE_PRESENT = "present"
+CAMPAIGN_AUTH_SOURCE_MISSING = "missing"
+CAMPAIGN_AUTH_SOURCE_UNUSABLE = "unusable"
+CAMPAIGN_AUTH_SOURCE_EXTERNAL = "external"
+
+
+def campaign_auth_mode_env_name(lane: Any) -> str:
+    """Return the variable selecting one lane's isolated credential source."""
+    provider_config = getattr(lane, "provider_config", None)
+    if not isinstance(provider_config, Mapping):
+        return ""
+    return str(provider_config.get(CAMPAIGN_AUTH_MODE_ENV_KEY) or "").strip()
+
+
+@dataclass(frozen=True)
+class CampaignAuthSource:
+    """Bounded, non-secret description of one lane's credential source."""
+
+    mode: str
+    supported: bool
+    keyring_required: bool
+    state: str
+
+    def as_detail(self) -> dict[str, Any]:
+        detail: dict[str, Any] = {
+            "campaign_auth_mode": self.mode,
+            "campaign_auth_mode_supported": self.supported,
+        }
+        if self.state:
+            detail["campaign_auth_source"] = self.state
+        return detail
+
+
+def resolve_campaign_auth_source(
+    lane: Any,
+    provider: str,
+    env: Mapping[str, str] | None = None,
+) -> CampaignAuthSource:
+    """Resolve which isolated credential source one lane will actually use.
+
+    Doctor and the adapter share this resolution, so the readiness a doctor run
+    reports is the readiness the adapter enforces. A lane that declares no mode
+    variable keeps its declared keyring requirement and reports no mode.
+    """
+    from code_mower.campaign_adapters import (
+        CODEX_AUTH_MODE_FILE,
+        CODEX_AUTH_SOURCE_EXTERNAL,
+        codex_campaign_auth_source_state,
+        resolve_codex_campaign_auth_mode,
+    )
+
+    lane_keyring_required = campaign_auth_keyring_required(lane)
+    if not campaign_auth_mode_env_name(lane) or provider != "codex":
+        return CampaignAuthSource(
+            mode="",
+            supported=True,
+            keyring_required=lane_keyring_required,
+            state="",
+        )
+    try:
+        mode = resolve_codex_campaign_auth_mode(env)
+    except ValueError:
+        # Fail closed: an unrecognized selection is neither keyring nor file,
+        # so no probe runs and no mode-specific remediation is guessed.
+        return CampaignAuthSource(
+            mode="",
+            supported=False,
+            keyring_required=lane_keyring_required,
+            state="",
+        )
+    if mode != CODEX_AUTH_MODE_FILE:
+        return CampaignAuthSource(
+            mode=mode,
+            supported=True,
+            keyring_required=lane_keyring_required,
+            state=CODEX_AUTH_SOURCE_EXTERNAL,
+        )
+    from code_mower.campaign_adapters import (
+        CODEX_AUTH_SOURCE_UNUSABLE,
+        _default_codex_campaign_home,
+    )
+
+    try:
+        # The home location is resolved exactly as ``prepare_codex_campaign_home``
+        # and the adapter resolve it, so the state reported here is the state of
+        # the home the probe is about to run against.
+        home = _default_codex_campaign_home().expanduser()
+        state = codex_campaign_auth_source_state(home, mode)
+    except (OSError, ValueError):
+        state = CODEX_AUTH_SOURCE_UNUSABLE
+    return CampaignAuthSource(
+        mode=mode,
+        supported=True,
+        keyring_required=False,
+        state=state,
+    )
 
 #: ``(argv, timeout_seconds, child_env) -> CompletedProcess``. Never a shell.
 CampaignAuthProbeRunner = Callable[
@@ -338,22 +458,62 @@ def campaign_auth_probe_requested(env: Mapping[str, str] | None = None) -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
-def campaign_auth_probe_env(provider: str) -> tuple[dict[str, str], str]:
+def campaign_auth_probe_env(
+    provider: str,
+    auth_mode: str = "",
+) -> tuple[dict[str, str], str]:
     """Return the adapter's own child environment, or a bounded error code.
 
     The probe must observe the same isolated provider home the adapter uses,
-    so it reuses the adapter's environment builder rather than a copy of it.
+    so it reuses the adapter's environment builder rather than a copy of it --
+    including the selected credential source, which decides both the config
+    the home is prepared with and which session variables reach the child.
     """
     from code_mower.campaign_adapters import (
+        DEFAULT_CODEX_AUTH_MODE,
         build_adapter_child_env,
         prepare_codex_campaign_home,
     )
 
+    mode = auth_mode or DEFAULT_CODEX_AUTH_MODE
     try:
-        codex_home = prepare_codex_campaign_home() if provider == "codex" else None
-        return build_adapter_child_env(provider, codex_home=codex_home), ""
+        codex_home = (
+            prepare_codex_campaign_home(auth_mode=mode) if provider == "codex" else None
+        )
+        return (
+            build_adapter_child_env(provider, codex_home=codex_home, codex_auth_mode=mode),
+            "",
+        )
     except (OSError, ValueError):
         return {}, AUTH_ERROR_PROBE_UNAVAILABLE
+
+
+def campaign_auth_prepare_home(provider: str, auth_mode: str) -> bool:
+    """Prepare one lane's isolated home for the selected mode, without probing.
+
+    Doctor is the documented step that writes the isolated home's restricted
+    configuration, and the operator then runs the provider's own login against
+    that configuration. The configuration names the credential store, so it has
+    to be written for the selected mode even when no credential exists yet: a
+    home carried over from keyring mode would otherwise still tell the login to
+    store the new credential in a keyring the targeted headless host does not
+    have. Preparation creates no credential and runs no probe, so a home with
+    no login stays exactly as unauthenticated as it was.
+
+    Returns whether the home now carries the selected mode's configuration. A
+    refused home -- the non-regular or symlinked credential file keyring and
+    file mode both reject -- reports ``False`` rather than raising, because the
+    caller is already reporting that refusal as the owner's action.
+    """
+    from code_mower.campaign_adapters import prepare_codex_campaign_home
+
+    if provider != "codex" or not auth_mode:
+        return False
+    try:
+        prepare_codex_campaign_home(auth_mode=auth_mode)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def campaign_auth_location_label(lane: Any) -> str:
@@ -378,6 +538,21 @@ def _campaign_auth_location_phrase(lane: Any, canonical: str) -> str:
     return label or f"isolated {canonical} campaign home"
 
 
+def _headless_mode_remediation(canonical: str, lane: Any, mode_env: str) -> str:
+    """Remediation naming the supported headless alternative to the keyring."""
+    auth_phrase = _campaign_auth_location_phrase(lane, canonical)
+    return (
+        f"The {auth_phrase} stores its login in the OS keyring, and this "
+        "Linux host has no desktop session to provide one. Either select the "
+        f"supported headless credential source with {mode_env}=file and "
+        "authenticate that home once (steps in docs/release-qualification.md, "
+        f"Provider Adapter Setup), dispatch {canonical} release campaigns from "
+        "a host with a desktop session keyring, run doctor here with "
+        "--hosted-builders or --orchestrator-only, or set "
+        f"{CAMPAIGN_AUTH_PROBE_ENV}=0 to leave this lane capability-only."
+    )
+
+
 def _remediation(
     canonical: str,
     state: str,
@@ -387,6 +562,9 @@ def _remediation(
 ) -> str:
     auth_phrase = _campaign_auth_location_phrase(lane, canonical)
     if state == AUTH_STATE_UNAUTHENTICATED and keyring_unavailable:
+        mode_env = campaign_auth_mode_env_name(lane)
+        if mode_env:
+            return _headless_mode_remediation(canonical, lane, mode_env)
         return (
             f"The {auth_phrase} stores its login in the OS keyring, and this "
             "Linux host has no desktop session to provide one. Dispatch "
@@ -429,6 +607,144 @@ def _detail(
     if error:
         detail["error"] = error
     return detail
+
+
+def _owner_action_detail(
+    *,
+    canonical: str,
+    lane: Any,
+    state: str,
+    enabled: bool,
+    timeout_seconds: int,
+    error: str,
+    source: CampaignAuthSource,
+) -> dict[str, Any]:
+    """Build the shared bounded detail for a blocking campaign-auth warning."""
+    detail = _detail(
+        canonical=canonical,
+        lane=lane,
+        state=state,
+        enabled=enabled,
+        timeout_seconds=timeout_seconds,
+        error=error,
+    )
+    detail.update(source.as_detail())
+    detail["actionable"] = enabled
+    detail["optional"] = not enabled
+    if enabled:
+        detail["owner_action"] = True
+    return detail
+
+
+def _unsupported_mode_check(
+    *,
+    lane: Any,
+    canonical: str,
+    enabled: bool,
+    timeout_seconds: int,
+    source: CampaignAuthSource,
+) -> DoctorCheck:
+    """Report an unrecognized credential selection without probing anything.
+
+    The selected value is never echoed: it came from the operator's
+    environment and could name anything, so only the bounded supported
+    vocabulary reaches the message, the detail, and doctor JSON.
+    """
+    mode_env = campaign_auth_mode_env_name(lane)
+    supported = ", ".join(_supported_campaign_auth_modes())
+    return DoctorCheck(
+        name=CAMPAIGN_AUTH_CHECK_NAME,
+        status=STATUS_WARN,
+        lane=canonical,
+        message=(
+            f"{canonical} campaign authentication selects an unsupported "
+            f"credential source ({mode_env})"
+        ),
+        detail=_owner_action_detail(
+            canonical=canonical,
+            lane=lane,
+            state=AUTH_STATE_UNSUPPORTED_MODE,
+            enabled=enabled,
+            timeout_seconds=timeout_seconds,
+            error=AUTH_ERROR_UNSUPPORTED_MODE,
+            source=source,
+        ),
+        remediation=(
+            f"Set {mode_env} to one of: {supported} (or unset it to keep the "
+            "default), then re-run `code-mower doctor --adoption --campaign`. "
+            "See docs/release-qualification.md, Provider Adapter Setup."
+        ),
+    )
+
+
+def _missing_source_check(
+    *,
+    lane: Any,
+    canonical: str,
+    enabled: bool,
+    timeout_seconds: int,
+    location_label: str,
+    source: CampaignAuthSource,
+    home_prepared: bool,
+) -> DoctorCheck:
+    """Report a selected credential source that is absent or not usable."""
+    unusable = source.state == CAMPAIGN_AUTH_SOURCE_UNUSABLE
+    auth_phrase = _campaign_auth_location_phrase(lane, canonical)
+    if unusable:
+        remediation = (
+            f"The {auth_phrase} holds a {source.mode}-mode credential that is "
+            "not a private regular file. Remove it and authenticate that home "
+            "again using the login steps in docs/release-qualification.md "
+            "(Provider Adapter Setup)."
+        )
+    elif home_prepared:
+        # The home now carries the selected mode's configuration, so the
+        # documented login stores the credential in the selected source.
+        remediation = (
+            f"Authenticate the {auth_phrase} once for {source.mode} mode using "
+            "the login steps in docs/release-qualification.md (Provider Adapter "
+            "Setup), then re-run `code-mower doctor --adoption --campaign`."
+        )
+    else:
+        # Without that configuration the login would fall back to whatever
+        # store the home already named, so say so before sending the operator
+        # to a login step that would silently target the wrong source.
+        remediation = (
+            f"The {auth_phrase} could not be prepared for {source.mode} mode, "
+            "so its restricted configuration does not select that credential "
+            "source yet. Make sure the campaign home location is writable by "
+            "this user, re-run `code-mower doctor --adoption --campaign`, then "
+            "authenticate that home using the login steps in "
+            "docs/release-qualification.md (Provider Adapter Setup)."
+        )
+    detail = _owner_action_detail(
+        canonical=canonical,
+        lane=lane,
+        state=AUTH_STATE_UNAUTHENTICATED,
+        enabled=enabled,
+        timeout_seconds=timeout_seconds,
+        error=(AUTH_ERROR_SOURCE_UNUSABLE if unusable else AUTH_ERROR_SOURCE_MISSING),
+        source=source,
+    )
+    # A bounded fact about the isolated home, never a path or a permission bit.
+    detail[CAMPAIGN_AUTH_HOME_PREPARED_KEY] = home_prepared
+    return DoctorCheck(
+        name=CAMPAIGN_AUTH_CHECK_NAME,
+        status=STATUS_WARN,
+        lane=canonical,
+        message=(
+            f"{canonical} {location_label} {source.mode}-mode credential source "
+            f"is {'not usable' if unusable else 'missing'}"
+        ),
+        detail=detail,
+        remediation=remediation,
+    )
+
+
+def _supported_campaign_auth_modes() -> tuple[str, ...]:
+    from code_mower.campaign_adapters import SUPPORTED_CODEX_AUTH_MODES
+
+    return tuple(SUPPORTED_CODEX_AUTH_MODES)
 
 
 def check_campaign_auth_readiness(
@@ -600,12 +916,47 @@ def check_campaign_auth_readiness(
 
     timeout_seconds = campaign_auth_probe_timeout(lane)
     location_label = campaign_auth_location_label(lane)
-    keyring_unavailable = campaign_auth_keyring_required(lane) and headless_linux_host(
-        current_env
-    )
-
     provider = str(getattr(lane, "provider", "") or canonical)
-    child_env, env_error = campaign_auth_probe_env(provider)
+    source = resolve_campaign_auth_source(lane, provider, current_env)
+
+    if not source.supported:
+        # An unrecognized credential source is an owner action, never a skip:
+        # a skip would leave this provider in ``ready_providers`` and let an
+        # unsupported mode earn the readiness pass it must never earn.
+        return _unsupported_mode_check(
+            lane=lane,
+            canonical=canonical,
+            enabled=enabled,
+            timeout_seconds=timeout_seconds,
+            source=source,
+        )
+
+    if source.state in {CAMPAIGN_AUTH_SOURCE_MISSING, CAMPAIGN_AUTH_SOURCE_UNUSABLE}:
+        # The selected file-mode source is absent or is not a private regular
+        # file. The probe would only rediscover that, so report the bounded
+        # source state and the login the operator still owes instead.
+        #
+        # The home is still prepared for the selected mode first. Doctor is the
+        # documented step that writes that restricted configuration, and the
+        # operator's next step is a provider login against it: returning here
+        # without preparing would leave a home migrated from keyring mode still
+        # naming the keyring store, so the login the remediation asks for would
+        # try to store the new credential in a keyring this headless host does
+        # not have. Preparing creates no credential and starts no probe.
+        home_prepared = campaign_auth_prepare_home(provider, source.mode)
+        return _missing_source_check(
+            lane=lane,
+            canonical=canonical,
+            enabled=enabled,
+            timeout_seconds=timeout_seconds,
+            location_label=location_label,
+            source=source,
+            home_prepared=home_prepared,
+        )
+
+    keyring_unavailable = source.keyring_required and headless_linux_host(current_env)
+
+    child_env, env_error = campaign_auth_probe_env(provider, source.mode)
     output = ""
     if env_error:
         error = env_error
@@ -645,6 +996,7 @@ def check_campaign_auth_readiness(
                     timeout_seconds=timeout_seconds,
                 ),
                 **auth_probe_output_detail(output),
+                **source.as_detail(),
             },
         )
 
@@ -660,6 +1012,7 @@ def check_campaign_auth_readiness(
             error=error,
         )
         detail.update(auth_probe_output_detail(output))
+        detail.update(source.as_detail())
         detail["actionable"] = False
         detail["optional"] = True
         return DoctorCheck(
@@ -680,11 +1033,12 @@ def check_campaign_auth_readiness(
         error=error,
     )
     detail.update(auth_probe_output_detail(output))
+    detail.update(source.as_detail())
     detail["actionable"] = enabled
     detail["optional"] = not enabled
     if enabled:
         detail["owner_action"] = True
-    if campaign_auth_keyring_required(lane):
+    if source.keyring_required:
         detail["keyring_required"] = True
         detail["host_keyring_available"] = not keyring_unavailable
     return DoctorCheck(
@@ -710,14 +1064,25 @@ def check_campaign_auth_readiness(
 __all__ = (
     "AUTH_ERROR_PROBE_TIMEOUT",
     "AUTH_ERROR_PROBE_UNAVAILABLE",
+    "AUTH_ERROR_SOURCE_MISSING",
+    "AUTH_ERROR_SOURCE_UNUSABLE",
     "AUTH_ERROR_UNAUTHENTICATED",
+    "AUTH_ERROR_UNSUPPORTED_MODE",
     "AUTH_STATE_AUTHENTICATED",
     "AUTH_STATE_NOT_REQUESTED",
     "AUTH_STATE_SKIPPED",
     "AUTH_STATE_UNAUTHENTICATED",
     "AUTH_STATE_UNKNOWN",
+    "AUTH_STATE_UNSUPPORTED_MODE",
     "CAMPAIGN_AUTH_CHECK_NAME",
+    "CAMPAIGN_AUTH_HOME_PREPARED_KEY",
     "CAMPAIGN_AUTH_KEYRING_REQUIRED_KEY",
+    "CAMPAIGN_AUTH_MODE_ENV_KEY",
+    "CAMPAIGN_AUTH_SOURCE_EXTERNAL",
+    "CAMPAIGN_AUTH_SOURCE_MISSING",
+    "CAMPAIGN_AUTH_SOURCE_PRESENT",
+    "CAMPAIGN_AUTH_SOURCE_UNUSABLE",
+    "CampaignAuthSource",
     "CAMPAIGN_AUTH_LOCATION_LABEL_KEY",
     "CAMPAIGN_AUTH_LOGGED_OUT_EXIT_CODES_KEY",
     "CAMPAIGN_AUTH_LOGGED_OUT_MARKERS_KEY",
@@ -738,12 +1103,15 @@ __all__ = (
     "campaign_auth_location_label",
     "campaign_auth_logged_out_exit_codes",
     "campaign_auth_logged_out_markers",
+    "campaign_auth_mode_env_name",
+    "campaign_auth_prepare_home",
     "campaign_auth_probe_args",
     "campaign_auth_probe_env",
     "campaign_auth_probe_requested",
     "campaign_auth_probe_timeout",
     "check_campaign_auth_readiness",
     "headless_linux_host",
+    "resolve_campaign_auth_source",
     "resolve_campaign_intent",
     "run_campaign_auth_probe",
 )

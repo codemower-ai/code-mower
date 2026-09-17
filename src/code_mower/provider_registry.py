@@ -148,9 +148,16 @@ REFERENCE_PROVIDERS: dict[str, ProviderLane] = {
                 "not logged in",
                 "not authenticated",
             ),
-            # The isolated campaign home is keyring-only, so a headless Linux
-            # host without a desktop session keyring cannot hold its login.
+            # The isolated campaign home is keyring-backed by default, so a
+            # headless Linux host without a desktop session keyring cannot hold
+            # its login unless the operator explicitly selects the supported
+            # file-backed source below.
             "campaign_auth_keyring_required": True,
+            # Explicit opt-in selecting which supported isolated credential
+            # source the campaign home uses. Unset keeps keyring mode. Doctor
+            # and the campaign adapter resolve it through the same helper, so
+            # an unsupported value fails closed in both.
+            "campaign_auth_mode_env": "CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE",
         },
     ),
     "claude_review": ProviderLane(

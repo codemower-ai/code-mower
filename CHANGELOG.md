@@ -14,6 +14,26 @@ The lineage-contract and Coworker-citation entries that were previously listed
 here shipped in the published `v1.4.1` artifact and are recorded under that
 release below.
 
+### Added
+
+- Release campaigns can authenticate their isolated Codex home on a headless
+  Linux host that has no OS keyring. `CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE=file`
+  explicitly selects the maintained CLI's file credential store for that home;
+  unset (or `keyring`) keeps the released keyring-only behaviour unchanged. The
+  CLI's `auto` and `ephemeral` stores are refused because neither names one
+  explicit, durable source, and any unrecognized value fails closed in both the
+  campaign adapter and doctor rather than becoming a readiness pass. File mode
+  keeps the same restricted provider configuration, workspace containment, and
+  `0700`/`0600` credential boundary; it adds no ambient-home or ambient-token
+  fallback, copies no credential into the model-readable workspace, and drops
+  the keyring session variables from the adapter's child environment. Doctor
+  and the adapter resolve the source through one shared helper, so a missing or
+  unusable credential is a bounded owner action that removes Codex from
+  `ready_providers`, and the headless keyring remediation now names the
+  supported alternative. Ordinary adoption with no campaign intent still asks
+  the owner for nothing. See `docs/release-qualification.md`, "Headless Linux
+  campaign authentication".
+
 ### Fixed
 
 - Graphify inventories larger than 256 KiB now use a separate bounded 16 MiB
