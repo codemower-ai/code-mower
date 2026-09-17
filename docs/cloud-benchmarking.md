@@ -5,7 +5,7 @@ reports, and the local Board without a hosted account. CodeMower.com is an
 optional destination for longitudinal team reporting and future aggregate
 benchmarks.
 
-## Current v1.4.2 Source Surface
+## Current v1.4.2 Release Surface
 
 The current client can:
 

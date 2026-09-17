@@ -1,7 +1,7 @@
 # Friendly-User Rollout Plan
 
-Current source target: v1.4.2. Publication and installed qualification remain
-pending #952; release invitations and pinned index installs follow that acceptance.
+Current release: v1.4.2, published and qualified. Release invitations and
+pinned index installs target `code-mower==1.4.2`.
 
 This is the operating plan for the first 5-10 friendly users before Code Mower
 widens to 20-50 early adopters.
@@ -34,9 +34,10 @@ export CODE_MOWER_PYTHON="$(command -v python3.12)"
 pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.2
 ```
 
-The current source candidate is `v1.4.2`, with target install spec
-`code-mower==1.4.2`. Publication and installed-package qualification are pending
-[#952](https://github.com/codemower-ai/code-mower/issues/952).
+The current package-index release baseline is `v1.4.2`, with pinned package
+install spec `code-mower==1.4.2`. Release evidence is recorded on the GitHub
+release and in the first-user install rehearsal. See the
+[v1.4.2 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.4.2).
 
 ## Invite Criteria
 

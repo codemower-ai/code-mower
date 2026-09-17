@@ -6,11 +6,26 @@ Status: **adopt, as an optional and bounded local provider**. Recorded
 [epic #868](https://github.com/codemower-ai/code-mower/issues/868), and carried
 forward to [epic #902](https://github.com/codemower-ai/code-mower/issues/902).
 
-This document does not announce a shipped Graphify integration. Code Mower still
-has no Graphify dependency, no indexer, no graph cache, and no graph provider in
-any default install path. The decision records that a bounded local provider is
-worth building behind the repository-context contract; it changes nothing a user
-installs or runs today.
+> **Historical record. Graphify has since shipped.** This page is the dated
+> evaluation that produced the adopt decision on 2026-09-12, and its
+> present-tense statements describe the repository as it stood *then*. The
+> optional local Graphify provider shipped in `v1.4.1` and is available in the
+> published `v1.4.2` release. For what exists today, read
+> [Optional Graphify Setup](graphify-setup.md),
+> [the revision-bound lifecycle](context-graph-lifecycle.md), and
+> [bounded queries and context packets](context-graph-queries.md). The
+> benchmark evidence and thresholds below are preserved as recorded and are not
+> rewritten.
+
+As of the date above, this document did not announce a shipped Graphify
+integration. Code Mower then had no Graphify dependency, no indexer, no graph
+cache, and no graph provider in any default install path. The decision records
+that a bounded local provider was worth building behind the repository-context
+contract; it changed nothing a user installed or ran on that date.
+
+What is still true after shipping: Graphify remains **optional**, separately
+installed into an operator-owned environment, explicitly activated, and outside
+the base dependency set.
 
 ## Decision
 
@@ -184,12 +199,14 @@ depth and node budgets, truncation reported as `truncated` plus a
 are validated against the bound commit's tracked tree before any of it reaches
 a recipient.
 
-## Boundary
+## Boundary as recorded
 
-Graphify stays out of v1.3.1 and does not block Coworker's 1.3.0 or 1.3.1
-completion. This change adds no dependency, no background service, no provider
-subscription, and no mandatory indexing step; the runtime dependency arrives, if
-at all, with the implementing change under epic #902.
+Graphify stayed out of v1.3.1 and did not block Coworker's 1.3.0 or 1.3.1
+completion. The change recorded here added no dependency, no background service,
+no provider subscription, and no mandatory indexing step; the runtime dependency
+would arrive, if at all, with the implementing change under epic #902. It did:
+the optional provider shipped in `v1.4.1` and is still opt-in, with no base
+dependency and no mandatory indexing step.
 
 The fixture in `tests/fixtures/local_graph_contract.json` is invented content
 against a generic public example tree. It proves the extension point only; it is

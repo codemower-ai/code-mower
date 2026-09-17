@@ -60,6 +60,15 @@ comes back with stale arguments, fails the gate instead of passing on a single
 early probe. The payload reports `delayed_health` with its state, the settle and
 refresh windows, and how many refreshes it took.
 
+When that window closes without a validating binding, the operation reports
+`delayed_health_failed`: the service applied but its binding never validated.
+This is the one failure that is *not* in the fail-closed table below, and the
+difference matters. The refusals below are decided before anything is applied
+and leave no local state behind; `delayed_health_failed` is decided after
+launchd already holds the job, so the definition stays installed and
+`board service status` keeps reporting the failing binding until you repair or
+remove it.
+
 ## Fail-closed refusals
 
 None of these change any local state:
@@ -131,7 +140,6 @@ services are discovered by scanning definition files, so deleting one whose job
 survived would strand a running, self-restarting service where `status`, `remove`
 and the `board stop` keepalive guard could no longer see it. That case reports
 `remove_incomplete` and leaves the definition in place.
-| `delayed_health_failed` | the service applied but its binding never validated |
 
 `--replace` is the only way to take over an existing definition for a port, and
 the replacement is atomic: the definition file is swapped with `os.replace`, and

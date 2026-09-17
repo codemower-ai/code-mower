@@ -299,6 +299,7 @@ was not returned stays unknown; replay performs authorization, not another
 organization search.
 
 The synthetic local-repository graph fixture uses the common packet validation
-and evidence renderer for all six roles without OAuth identity fields. This
-preserves an extension point for later Graphify evaluation; it does not install
-or qualify Graphify in v1.4.0.
+and evidence renderer for all six roles without OAuth identity fields. It
+exercises the extension point that the shipped optional Graphify provider uses;
+a passing fixture neither installs Graphify nor qualifies a provider build. See
+[Optional Graphify Setup](graphify-setup.md).

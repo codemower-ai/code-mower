@@ -46,7 +46,7 @@ history opens the repository. They should be able to confirm:
 
 ## Current v1.0 Baseline
 
-The target public-release baseline is `v1.4.2` (publication pending #952) of the standalone
+The public-release baseline is the published `v1.4.2` of the standalone
 package. Before widening the release, record:
 
 - non-editable package-install rehearsal in a clean venv;

@@ -1,8 +1,10 @@
 # First-User Install Rehearsal
 
-The v1.4.2 source candidate is not yet published or qualified. Pinned index
-commands below apply after publication; candidate checks use the verified
-artifact. Track acceptance in [#952](https://github.com/codemower-ai/code-mower/issues/952).
+v1.4.2 is published. The pinned index commands below install the current
+release; verify the exact command path and version after installing. Release
+evidence is on the
+[v1.4.2 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.4.2)
+and in the [v1.4.2 qualification record](v142-qualification.md).
 
 This is the release-gate rehearsal for Code Mower's early-adopter path. It
 installs Code Mower into a clean virtual environment, creates a fresh toy Git

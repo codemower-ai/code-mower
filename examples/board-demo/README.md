@@ -21,13 +21,24 @@ From the repository root:
 code-mower board events --store-path examples/board-demo/board-events.jsonl
 ```
 
-To open the local browser Board with the same sample history and spend data:
+To serve the local browser Board with the same sample history and spend data:
 
 ```bash
 code-mower board serve \
   --repo example/widget-service \
   --store-path examples/board-demo/board-events.jsonl \
   --spend-path examples/board-demo/reviewer-spend.json
+```
+
+This starts a loopback server and prints the URL. It does not open a browser.
+Add `--open` if you want Code Mower to launch your browser at that URL:
+
+```bash
+code-mower board serve \
+  --repo example/widget-service \
+  --store-path examples/board-demo/board-events.jsonl \
+  --spend-path examples/board-demo/reviewer-spend.json \
+  --open
 ```
 
 The live GitHub panel may say the demo repository is unavailable. That is fine:

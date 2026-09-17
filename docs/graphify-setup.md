@@ -1,8 +1,25 @@
 # Optional Graphify setup
 
-Graphify is opt-in local code context. Default Claude + Codex installation adds
-no Graphify dependency, indexing step, hook or background service. To inspect
-the guidance from a fresh directory or your selected repository configuration:
+Graphify shipped in v1.4.1 and is available in the published v1.4.2 release as
+an **optional** local repository-graph provider. It is separately installed into
+an operator-owned environment, explicitly activated, and outside the base
+dependency set: a default Claude + Codex installation adds no Graphify
+dependency, indexing step, hook or background service.
+
+What a graph covers, and what it does not:
+
+- Only the **tracked** tree of one immutable commit is indexed. Untracked and
+  ignored files are never written into the build, so they have no path into a
+  graph.
+- Symlinks and submodules are skipped and recorded as skipped.
+- Committed private state -- `.git`, `.graph`, `.graphify`, `graphify-out`,
+  `.code-mower` -- is skipped at any depth.
+- Nothing **watches the working tree**. There is no hook, watcher, or background
+  service; a graph becomes stale the moment `HEAD` moves, and you refresh it
+  explicitly.
+
+To inspect the guidance from a fresh directory or your selected repository
+configuration:
 
 ```bash
 code-mower init --graphify
@@ -106,3 +123,98 @@ results to the consuming revision. Stale, incomplete, oversized or unresolved
 citations do not establish fresh context. Without a provider, ordinary setup and
 review remain available. Do not upload graph, query, path, citation or source
 content; the release scorecard contains sanitized measurements only.
+
+## Ramp-up in order
+
+Once the provider environment exists and the pin file is saved, this is the
+whole path from nothing to a first answer. Each step is explicit; none of it
+runs on its own.
+
+**1. Check the posture before building anything.**
+
+```bash
+code-mower context-graph doctor --pin-file "$GRAPHIFY_ROOT/pin.json"
+```
+
+`doctor` builds nothing. It reports `skip` rather than `fail` when nothing is
+pinned or built, because an operator who never opted in has nothing wrong with
+their installation.
+
+**2. Build one generation, bound to an immutable tracked commit.**
+
+```bash
+GRAPHIFY_REVISION="$(git rev-parse HEAD)"
+code-mower context-graph build --pin-file "$GRAPHIFY_ROOT/pin.json"   --indexer "$GRAPHIFY_INDEXER" --revision "$GRAPHIFY_REVISION"
+```
+
+The census comes from `git ls-tree -r` against that **commit** -- not the
+working tree and not the index. Uncommitted edits are invisible to the build by
+construction.
+
+**3. Confirm the published generation is usable.**
+
+```bash
+code-mower context-graph status --json
+```
+
+`status` exits non-zero when the graph is not usable, so a script can branch on
+it. A provider run that admitted an incomplete census publishes a generation
+`status` calls `partial` and refuses, rather than describing it as `current`.
+
+**4. Register the graph as a local context connection.**
+
+```bash
+code-mower context-graph connect --connection local-graph   --repository owner/repo --recipient claude:builder --recipient codex:reviewer
+code-mower context-graph connection-status --connection local-graph
+```
+
+A local connection has no principal, no workspace and no credential. Nothing is
+written to the OS credential vault, no browser opens, and no endpoint is
+contacted. Which repositories and recipients are approved is an authorization
+decision that belongs to the connection, not to any individual query.
+
+**5. Ask one bounded question.**
+
+```bash
+code-mower context-graph query --question impact --target parse_config   --authorization AUTH.json --packet-out /tmp/packet.json --json
+```
+
+`--question` is one of `impact`, `dependency`, `symbol`, or `related_tests`.
+`--target` is a symbol name or a repository-relative path. `AUTH.json` is a file
+you name, carrying exactly `connection`, `policy`, `repository` and `work_item`;
+see [bounded queries and context packets](context-graph-queries.md) for its
+contents and for what each question traverses. Standard output is metadata only
+-- counts, states, the bound revision and generation, and omission codes. The
+evidence goes to the `--packet-out` file, created `0600`, or nowhere at all.
+
+**6. Refresh explicitly after the revision changes.**
+
+```bash
+GRAPHIFY_REVISION="$(git rev-parse HEAD)"
+code-mower context-graph refresh --pin-file "$GRAPHIFY_ROOT/pin.json"   --indexer "$GRAPHIFY_INDEXER" --revision "$GRAPHIFY_REVISION"
+```
+
+Nothing watches the working tree, so nothing refreshes on your behalf. When
+`HEAD` moves, the published generation is stale for the new revision and
+authorization fails outright rather than answering today's question with
+yesterday's code. `refresh` rebuilds and atomically publishes a new generation.
+A packet bound to the previous generation is refused at load, which is the
+intended outcome, not a regression.
+
+**7. Tear down when you are finished.**
+
+```bash
+code-mower context-graph disconnect --connection local-graph
+code-mower context-graph remove
+```
+
+`disconnect` disables the connection and drops the packets it authorized.
+`remove` deletes this checkout's private graph state. The operator-owned
+provider environment from
+[Separate acquisition environment](#separate-acquisition-environment) is yours
+to keep or delete separately; Code Mower never touches it.
+
+A separate open pull request,
+[#1007](https://github.com/codemower-ai/code-mower/pull/1007), is working on
+further Graphify real-pilot compatibility. It is not merged and not released;
+nothing on this page depends on it.

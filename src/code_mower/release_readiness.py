@@ -104,6 +104,24 @@ def _read_text_if_exists(path: Path) -> str:
         return ""
 
 
+def _links_to_repository_doc(markdown: str, label: str, relative_path: str) -> bool:
+    """Whether ``markdown`` links ``label`` at ``relative_path``.
+
+    README.md is also the built package's long description, where a relative
+    destination resolves against the package index rather than the repository,
+    so repository links there are absolute GitHub URLs. Both spellings satisfy
+    this check; only the label and the file it lands on are required.
+    """
+
+    pattern = re.compile(
+        r"\[" + re.escape(label) + r"\]\(\s*<?([^)\s>]+)>?[^)]*\)"
+    )
+    for destination in pattern.findall(markdown):
+        if destination.partition("#")[0].rstrip("/").endswith(relative_path):
+            return True
+    return False
+
+
 def _python_package_version(repo_path: Path) -> str:
     init_text = _read_text_if_exists(repo_path / "src" / "code_mower" / "__init__.py")
     match = re.search(r"__version__\s*=\s*[\"']([^\"']+)[\"']", init_text)
@@ -1762,10 +1780,13 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             title="Public support, security, and conduct docs are linked from README",
             status=(
                 "pass"
-                if (
-                    "[Support](SUPPORT.md)" in docs.get("README.md", "")
-                    and "[Security Policy](SECURITY.md)" in docs.get("README.md", "")
-                    and "[Code of Conduct](CODE_OF_CONDUCT.md)" in docs.get("README.md", "")
+                if all(
+                    _links_to_repository_doc(docs.get("README.md", ""), label, relative_path)
+                    for label, relative_path in (
+                        ("Support", "SUPPORT.md"),
+                        ("Security Policy", "SECURITY.md"),
+                        ("Code of Conduct", "CODE_OF_CONDUCT.md"),
+                    )
                 )
                 else "fail"
             ),

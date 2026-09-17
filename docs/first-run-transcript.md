@@ -1,7 +1,7 @@
 # First Run Transcript
 
 Historical: this transcript is pinned to the published `v1.4.0` shape and is
-not updated for the current `v1.4.2` candidate. Use [Install And
+not updated for the current published `v1.4.2` release. Use [Install And
 Bootstrap](install.md) and [Try Code Mower In 10
 Minutes](try-in-10-minutes.md) for current guidance.
 

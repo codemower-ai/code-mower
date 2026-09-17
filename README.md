@@ -9,14 +9,25 @@ The current release is supervised-pilot, bring-your-own-agent-loop software.
 It is not a drop-in unattended merge gate. Humans still own credentials,
 repository policy, reviewer promotion, and exceptional decisions.
 
-The current source candidate is `v1.4.2`, with target install spec
-`code-mower==1.4.2`. Publication and installed-package qualification are pending
-[#952](https://github.com/codemower-ai/code-mower/issues/952). The published
-`v1.4.0` and `v1.4.1` artifacts remain unchanged. Install commands below target
-v1.4.2 after publication; candidate rehearsals use the exact verified artifact.
+The current package-index release baseline is `v1.4.2`, with pinned package
+install spec `code-mower==1.4.2`. Release evidence is recorded on the GitHub
+release and in the first-user install rehearsal. v1.4.2 was published from
+release commit `55339bf1acf76d33be5937e80bdaad772e0b2bf5` under the annotated
+`v1.4.2` tag; see the
+[v1.4.2 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.4.2)
+and the [v1.4.2 qualification record](https://github.com/codemower-ai/code-mower/blob/main/docs/v142-qualification.md). The published
+`v1.4.0` and `v1.4.1` artifacts remain unchanged. Every install command below
+targets the published release.
 
-Documentation on `main` follows the source on `main`. After v1.4.2 publication, start with the
-[`v1.4.2` guide](https://github.com/codemower-ai/code-mower/blob/v1.4.2/docs/try-in-10-minutes.md).
+One qualification boundary stays open and is not claimed by v1.4.2: the bounded
+hosted Devin canary tracked by
+[#951](https://github.com/codemower-ai/code-mower/issues/951), which needs an
+explicit owner authorization before it can run.
+
+Documentation on `main` follows the source on `main`. To read the guide exactly as
+v1.4.2 shipped it, use the
+[`v1.4.2` guide](https://github.com/codemower-ai/code-mower/blob/v1.4.2/docs/try-in-10-minutes.md);
+the pages on `main` are the maintained current versions.
 
 ## What Code Mower Adds
 
@@ -49,10 +60,16 @@ command -v code-mower
 code-mower --version
 ```
 
-Hosted agents and CI machines can use `uv tool install`; contributors should
-use `scripts/dev-python` and an editable virtual environment. The
-[Install And Bootstrap](docs/install.md) guide gives the exact cold-install,
-upgrade, optional Coworker, and contributor commands.
+`command -v code-mower` should print the path you expect and `code-mower
+--version` should print `code-mower 1.4.2` before you point Code Mower at a
+repository. If you do not have pipx, install it from the
+[official pipx installation guide](https://pipx.pypa.io/stable/installation/).
+
+Hosted agents and CI machines can use `uv tool install` after installing uv
+from the [official uv installation guide](https://docs.astral.sh/uv/getting-started/installation/);
+contributors should use `scripts/dev-python` and an editable virtual
+environment. The [Install And Bootstrap](https://github.com/codemower-ai/code-mower/blob/main/docs/install.md) guide gives the exact
+cold-install, upgrade, optional Coworker, and contributor commands.
 
 From the repository you want to pilot:
 
@@ -69,16 +86,16 @@ repository, start a provider, enable auto-merge, or upload data. Review and
 edit the generated configuration before opening the setup PR.
 
 To inspect representative output first, use the
-[synthetic calibration example](examples/demo-calibration/README.md) and
-[Board demo](examples/board-demo/README.md).
+[synthetic calibration example](https://github.com/codemower-ai/code-mower/blob/main/examples/demo-calibration/README.md) and
+[Board demo](https://github.com/codemower-ai/code-mower/blob/main/examples/board-demo/README.md).
 
-Follow [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md) to run Codex
+Follow [Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/try-in-10-minutes.md) to run Codex
 and Claude manually against that first PR. Automation tokens, recurring
 dispatch, branch-protection changes, and auto-merge are not prerequisites for
 the manual reviewer-gate pilot.
 
 After the first peer-review loop works, follow
-[Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md) to add automated
+[Build Loop In 30 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/build-loop-in-30-minutes.md) to add automated
 builder dispatch and the stricter promoted-pilot repository settings.
 
 ## Participants And Sessions
@@ -117,8 +134,8 @@ Codex, Claude Code, and Cursor are qualified for the shared session, telemetry,
 lease, and Jira-authority contract in v1.4.2. Devin, Grok Bot, Antigravity,
 Muse, and custom hosts are recognized for briefs and provenance, while their
 execution remains an explicit handoff or provider-specific transport. See
-[Participants And Sessions](docs/sessions.md) and the
-[Provider Matrix](docs/provider-matrix.md).
+[Participants And Sessions](https://github.com/codemower-ai/code-mower/blob/main/docs/sessions.md) and the
+[Provider Matrix](https://github.com/codemower-ai/code-mower/blob/main/docs/provider-matrix.md).
 
 ## Optional Organizational Context
 
@@ -142,7 +159,7 @@ code-mower session context feedback .code-mower/sessions/SESSION.json \
 
 Every delivery and feedback read reauthorizes online. Private evidence and
 private review findings must not be copied into tracked files or public logs.
-Start with [Optional Organizational Context Setup](docs/context-setup.md).
+Start with [Optional Organizational Context Setup](https://github.com/codemower-ai/code-mower/blob/main/docs/context-setup.md).
 
 ## Roles
 
@@ -177,7 +194,7 @@ code-mower calibration auto-discover \
 
 Review every proposed disposition. Promote a lane only after known-clean and
 known-blocked evidence satisfies the
-[lane promotion policy](docs/lane-promotion-policy.md).
+[lane promotion policy](https://github.com/codemower-ai/code-mower/blob/main/docs/lane-promotion-policy.md).
 
 ## Local Status And Board
 
@@ -202,8 +219,27 @@ code-mower board reset --repo OWNER/REPO --yes
 ```
 
 The Board includes the owner queue, reviewer verdict history and spend/latency
-when those local inputs exist. Local paths are redacted by default. The Board
-does not upload data.
+when those local inputs exist. It binds to loopback only. Local paths are
+redacted by default. The Board does not upload data.
+
+To keep one Board running across logout and reboot, install it as a persistent
+local service. macOS is the supported platform, through launchd; every other
+platform refuses rather than calling a transient process a service:
+
+```bash
+code-mower board service render --repo OWNER/REPO --repo-path . --port 5332
+code-mower board service install --repo OWNER/REPO --repo-path . --port 5332
+code-mower board service status --json
+code-mower board service restart --repo OWNER/REPO --repo-path . --port 5332
+code-mower board service remove --repo OWNER/REPO --yes
+```
+
+`render` prints the exact definition before anything is applied. `board stop
+--repo OWNER/REPO` resolves one exact known binding and refuses an ambiguous,
+duplicate, or contradicting selection, and it refuses a port a keepalive-managed
+service would immediately reclaim. See
+[Board Service Lifecycle](https://github.com/codemower-ai/code-mower/blob/main/docs/board-service-lifecycle.md) for the serving gate,
+delayed health, and the fail-closed refusals.
 
 ## Optional Cloud Sharing
 
@@ -217,8 +253,8 @@ code-mower cloud board-snapshot --repo-slug OWNER/REPO --json
 
 Neither command uploads without `--yes`. Default bundles exclude source code,
 raw diffs, model transcripts, raw stdout/stderr, auth output, issue body text,
-local secret values, and secrets. See [Cloud Sharing](docs/cloud-sharing.md)
-and the [Cloud Data Contract](docs/cloud-data-contract.md).
+local secret values, and secrets. See [Cloud Sharing](https://github.com/codemower-ai/code-mower/blob/main/docs/cloud-sharing.md)
+and the [Cloud Data Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/cloud-data-contract.md).
 
 ## Current Capabilities And Limits
 
@@ -236,68 +272,100 @@ and the [Cloud Data Contract](docs/cloud-data-contract.md).
 
 GitLab, Bitbucket, broad unattended rollout, uncalibrated merge gates, Devin
 peer-orchestrator/reviewer parity, a hosted work-order CLI, a required Graphify
-dependency, and Slack worker delivery are outside the v1.4.2 candidate. The current priorities and
-boundaries are recorded in
-[Current State And Roadmap](docs/current-state-and-roadmap.md).
+dependency, and Slack worker delivery are outside v1.4.2. The current priorities
+and boundaries are recorded in
+[Current State And Roadmap](https://github.com/codemower-ai/code-mower/blob/main/docs/current-state-and-roadmap.md).
+
+## Optional Repository Context Graph
+
+Graphify shipped in v1.4.1 as an optional local repository-graph provider and
+remains available in v1.4.2. It is separately installed into an operator-owned
+environment, explicitly activated, and outside the base dependency set: a
+default Claude + Codex install adds no Graphify dependency, no indexer, no
+background service, and no watcher.
+
+```bash
+code-mower init --graphify
+code-mower context-graph doctor
+code-mower context-graph status --json
+```
+
+`init --graphify` only renders acquisition and pin guidance; it installs and
+indexes nothing. Start with
+[Optional Graphify Setup](https://github.com/codemower-ai/code-mower/blob/main/docs/graphify-setup.md) for the acquisition and
+ramp-up flow, [Local Repository Graph Lifecycle](https://github.com/codemower-ai/code-mower/blob/main/docs/context-graph-lifecycle.md)
+for what a build is allowed to see and where its state lives, and
+[Bounded Queries And Context Packets](https://github.com/codemower-ai/code-mower/blob/main/docs/context-graph-queries.md) for the
+four questions and the packet contract.
 
 ## Documentation
 
 ### Install And First Use
 
-- [Install And Bootstrap](docs/install.md)
-- [Try Code Mower In 10 Minutes](docs/try-in-10-minutes.md)
-- [Upgrade An Existing Repository](docs/upgrade-existing-repo.md)
-- [Quickstart Reference](docs/quickstart.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [First Run Transcript](docs/first-run-transcript.md) (v1.4.0 illustrative shape, not the current v1.4.2 pin)
+- [Install And Bootstrap](https://github.com/codemower-ai/code-mower/blob/main/docs/install.md)
+- [Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/try-in-10-minutes.md)
+- [Upgrade An Existing Repository](https://github.com/codemower-ai/code-mower/blob/main/docs/upgrade-existing-repo.md)
+- [Quickstart Reference](https://github.com/codemower-ai/code-mower/blob/main/docs/quickstart.md)
+- [Troubleshooting](https://github.com/codemower-ai/code-mower/blob/main/docs/troubleshooting.md)
+- [First Run Transcript](https://github.com/codemower-ai/code-mower/blob/main/docs/first-run-transcript.md) (v1.4.0 illustrative shape, not the current v1.4.2 pin)
+
+### Local Board And Repository Context
+
+- [Board Data Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/board-data-contract.md)
+- [Board Service Lifecycle](https://github.com/codemower-ai/code-mower/blob/main/docs/board-service-lifecycle.md)
+- [Board Demo Rehearsal](https://github.com/codemower-ai/code-mower/blob/main/examples/board-demo/README.md)
+- [Optional Graphify Setup](https://github.com/codemower-ai/code-mower/blob/main/docs/graphify-setup.md)
+- [Local Repository Graph Lifecycle](https://github.com/codemower-ai/code-mower/blob/main/docs/context-graph-lifecycle.md)
+- [Bounded Queries And Context Packets](https://github.com/codemower-ai/code-mower/blob/main/docs/context-graph-queries.md)
+- [Graphify Evaluation Record](https://github.com/codemower-ai/code-mower/blob/main/docs/graphify-evaluation.md) (historical decision, 2026-09-12)
 
 ### Sessions, Builders, And Reviewers
 
-- [Participants And Sessions](docs/sessions.md)
-- [Build Loop In 30 Minutes](docs/build-loop-in-30-minutes.md)
-- [Build Loop Operations](docs/build-loop.md)
-- [Planning And Work Orders](docs/planning-work-orders.md)
-- [Builder Experiments](docs/builder-experiments.md)
-- [Orchestrator Prompt Pack](docs/orchestrator-prompt-pack.md)
-- [Provider Matrix](docs/provider-matrix.md)
-- [Provider Calibration Scorecard](docs/provider-calibration-scorecard.md)
-- [Devin Peer-Support Qualification](docs/devin-peer-support-qualification.md)
-- [Lane Standing Instructions](docs/lanes/README.md)
-- [Codex Lane](docs/lanes/codex.md)
-- [Claude Lane](docs/lanes/claude.md)
-- [Cursor Lane](docs/lanes/cursor.md)
-- [Devin Lane](docs/lanes/devin.md)
-- [Self-Hosted Mac Runner](docs/self-hosted-mac-runner.md)
-- [Local Audit Runner](docs/local-audit-runner.md)
+- [Participants And Sessions](https://github.com/codemower-ai/code-mower/blob/main/docs/sessions.md)
+- [Build Loop In 30 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/build-loop-in-30-minutes.md)
+- [Build Loop Operations](https://github.com/codemower-ai/code-mower/blob/main/docs/build-loop.md)
+- [Planning And Work Orders](https://github.com/codemower-ai/code-mower/blob/main/docs/planning-work-orders.md)
+- [Builder Experiments](https://github.com/codemower-ai/code-mower/blob/main/docs/builder-experiments.md)
+- [Orchestrator Prompt Pack](https://github.com/codemower-ai/code-mower/blob/main/docs/orchestrator-prompt-pack.md)
+- [Provider Matrix](https://github.com/codemower-ai/code-mower/blob/main/docs/provider-matrix.md)
+- [Provider Calibration Scorecard](https://github.com/codemower-ai/code-mower/blob/main/docs/provider-calibration-scorecard.md)
+- [Devin Peer-Support Qualification](https://github.com/codemower-ai/code-mower/blob/main/docs/devin-peer-support-qualification.md)
+- [Lane Standing Instructions](https://github.com/codemower-ai/code-mower/blob/main/docs/lanes/README.md)
+- [Codex Lane](https://github.com/codemower-ai/code-mower/blob/main/docs/lanes/codex.md)
+- [Claude Lane](https://github.com/codemower-ai/code-mower/blob/main/docs/lanes/claude.md)
+- [Cursor Lane](https://github.com/codemower-ai/code-mower/blob/main/docs/lanes/cursor.md)
+- [Devin Lane](https://github.com/codemower-ai/code-mower/blob/main/docs/lanes/devin.md)
+- [Self-Hosted Mac Runner](https://github.com/codemower-ai/code-mower/blob/main/docs/self-hosted-mac-runner.md)
+- [Local Audit Runner](https://github.com/codemower-ai/code-mower/blob/main/docs/local-audit-runner.md)
 
 ### Context And Trackers
 
-- [Optional Organizational Context Setup](docs/context-setup.md)
-- [Coworker Connections](docs/context-connections.md)
-- [Context Delivery And Private Review](docs/context-delivery.md)
-- [Context Provider Contract](docs/context-provider-contract.md)
-- [Context Packet Schema](docs/context-packet-schema.md)
-- [Jira Cloud Setup](docs/jira-cloud-setup.md)
-- [Jira Adoption Rehearsal](docs/jira-adoption-rehearsal.md)
-- [Work Tracker Data Contract](docs/tracker-data-contract.md)
+- [Optional Organizational Context Setup](https://github.com/codemower-ai/code-mower/blob/main/docs/context-setup.md)
+- [Coworker Connections](https://github.com/codemower-ai/code-mower/blob/main/docs/context-connections.md)
+- [Context Delivery And Private Review](https://github.com/codemower-ai/code-mower/blob/main/docs/context-delivery.md)
+- [Context Provider Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/context-provider-contract.md)
+- [Context Packet Schema](https://github.com/codemower-ai/code-mower/blob/main/docs/context-packet-schema.md)
+- [Jira Cloud Setup](https://github.com/codemower-ai/code-mower/blob/main/docs/jira-cloud-setup.md)
+- [Jira Adoption Rehearsal](https://github.com/codemower-ai/code-mower/blob/main/docs/jira-adoption-rehearsal.md)
+- [Work Tracker Data Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/tracker-data-contract.md)
 
 ### Trust, Operations, And Project Records
 
-- [Architecture](docs/architecture.md)
-- [Current State And Roadmap](docs/current-state-and-roadmap.md)
-- [Lane Promotion Policy](docs/lane-promotion-policy.md)
-- [Privacy And Threat Model](docs/privacy-threat-model.md)
-- [Board Data Contract](docs/board-data-contract.md)
-- [Cloud Data Contract](docs/cloud-data-contract.md)
-- [Release Qualification](docs/release-qualification.md)
-- [Public Release Checklist](docs/public-release-checklist.md)
-- [v1.4.2 Release Notes](docs/v142-release-notes.md)
-- [Release History And Archived Plans](docs/release-history.md)
-- [Changelog](CHANGELOG.md)
-- [Contributing](CONTRIBUTING.md)
-- [Support](SUPPORT.md)
-- [Security Policy](SECURITY.md)
-- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Architecture](https://github.com/codemower-ai/code-mower/blob/main/docs/architecture.md)
+- [Current State And Roadmap](https://github.com/codemower-ai/code-mower/blob/main/docs/current-state-and-roadmap.md)
+- [Lane Promotion Policy](https://github.com/codemower-ai/code-mower/blob/main/docs/lane-promotion-policy.md)
+- [Privacy And Threat Model](https://github.com/codemower-ai/code-mower/blob/main/docs/privacy-threat-model.md)
+- [Cloud Data Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/cloud-data-contract.md)
+- [Release Qualification](https://github.com/codemower-ai/code-mower/blob/main/docs/release-qualification.md)
+- [Public Release Checklist](https://github.com/codemower-ai/code-mower/blob/main/docs/public-release-checklist.md)
+- [v1.4.2 Release Notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v142-release-notes.md)
+- [v1.4.2 Qualification Record](https://github.com/codemower-ai/code-mower/blob/main/docs/v142-qualification.md)
+- [Release History And Archived Plans](https://github.com/codemower-ai/code-mower/blob/main/docs/release-history.md)
+- [Changelog](https://github.com/codemower-ai/code-mower/blob/main/CHANGELOG.md)
+- [Contributing](https://github.com/codemower-ai/code-mower/blob/main/CONTRIBUTING.md)
+- [Support](https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md)
+- [Security Policy](https://github.com/codemower-ai/code-mower/blob/main/SECURITY.md)
+- [Code of Conduct](https://github.com/codemower-ai/code-mower/blob/main/CODE_OF_CONDUCT.md)
 
 ## License
 

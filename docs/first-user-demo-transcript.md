@@ -1,7 +1,7 @@
 # First-User Demo Transcript
 
 Historical: this transcript is pinned to the published `v1.4.0` shape and is
-not updated for the current `v1.4.2` candidate. Use [Quickstart](quickstart.md)
+not updated for the current published `v1.4.2` release. Use [Quickstart](quickstart.md)
 and [First-User Install Rehearsal](first-user-install-rehearsal.md) for
 current guidance.
 

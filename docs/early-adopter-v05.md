@@ -1,7 +1,7 @@
 # Code Mower Early Adopter Guide
 
-Current source target: v1.4.2. Publication and installed qualification remain
-pending #952; release invitations and pinned index installs follow that acceptance.
+Current release: v1.4.2, published and qualified. Release invitations and
+pinned index installs target `code-mower==1.4.2`.
 
 This document records the historical v0.5 early-adopter product plan. The
 current public install path is the v1.4.2 supervised-pilot release; use

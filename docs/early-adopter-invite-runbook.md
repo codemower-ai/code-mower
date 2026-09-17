@@ -1,7 +1,7 @@
 # Early Adopter Invite Runbook
 
-Current source target: v1.4.2. Publication and installed qualification remain
-pending #952; release invitations and pinned index installs follow that acceptance.
+Current release: v1.4.2, published and qualified. Release invitations and
+pinned index installs target `code-mower==1.4.2`.
 
 Use this runbook for the first 5-10 friendly users before widening Code Mower
 to 20-50 early OSS users.

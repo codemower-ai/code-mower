@@ -37,9 +37,8 @@ pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.2
 code-mower --version
 ```
 
-`1.4.2` is the supervised-pilot source candidate; publication and installed
-qualification remain pending #952. These pinned install commands apply after
-publication. If you want a future prerelease instead
+`1.4.2` is the published supervised-pilot release. These pinned install
+commands install it today. If you want a future prerelease instead
 of this exact release target, use:
 
 ```bash
@@ -79,8 +78,12 @@ after writers stop, release with `code-mower session lease release --session-id
 SESSION_ID`. Use `session start --dry-run` for a preview or `--no-lease` for a
 saved read-only brief. Devin orchestration is unqualified and acquires no lease.
 
-Optional local Graphify guidance is available with `code-mower init --graphify`.
-It adds no dependency, indexing or default context; see [setup](graphify-setup.md).
+Graphify is a shipped optional local repository-graph provider. It is
+separately installed into an operator-owned environment, explicitly activated,
+and outside the base dependency set. `code-mower init --graphify` renders the
+acquisition and pin guidance only: it adds no dependency, no indexing step and
+no default context. See [Optional Graphify Setup](graphify-setup.md) for the
+ramp-up flow.
 
 ## 2. Authenticate GitHub
 
@@ -450,10 +453,18 @@ an explicit `--port` fails with a friendly conflict instead. The printed URL is
 local to that machine or VM unless you create your own tunnel. `lanes status`
 discovers local Board listeners best-effort across common macOS and Linux tools;
 if listener inventory is restricted, GitHub PR/check status still reports.
-Use `code-mower board list` to see local Board listeners with repo/version and
-restart hints. Use `code-mower board stop --port PORT --yes` or
-`code-mower board stop --pid PID --yes` only when you want to stop a listener
-that the inventory identified as a high-confidence Code Mower Board process.
+Use `code-mower board list` to see local Board listeners with repo/version,
+restart hints, and whether each one is managed or transient. Use
+`code-mower board stop --repo OWNER/REPO --yes`, `code-mower board stop --port
+PORT --yes`, or `code-mower board stop --pid PID --yes` only when you want to
+stop a listener that the inventory identified as a high-confidence Code Mower
+Board process. Selectors must agree: an ambiguous, duplicate, or contradicting
+repository/port/PID selection stops nothing, and a port that a keepalive-managed
+service would immediately reclaim is refused instead of being reported as
+stopped. To keep one Board running across logout and reboot, install it as a
+persistent service -- macOS only, through launchd -- with
+`code-mower board service`; see
+[Board Service Lifecycle](board-service-lifecycle.md).
 Visible Board timestamps render in the browser's local timezone and keep the
 original UTC value in hover text for precise handoffs.
 The Board header shows the Code Mower version currently serving the page and

@@ -1,7 +1,14 @@
 # v1.4.1 qualification and evidence matrix
 
-This is an unexecuted release procedure. The Codex source PR owns source changes
-only. The supervisor runs the canonical full suite once, the independent exact
+> **v1.4.1 is a completed release.** This page preserves the prepublication
+> procedure written before release #915 ran, including its then-`Pending`
+> outcome column. It is kept as the historical record rather than rewritten.
+> Final v1.4.1 evidence is on the
+> [v1.4.1 GitHub release](https://github.com/codemower-ai/code-mower/releases/tag/v1.4.1);
+> the current release is [v1.4.2](v142-qualification.md).
+
+This was an unexecuted release procedure when written. The Codex source PR owns
+source changes only. The supervisor runs the canonical full suite once, the independent exact
 current-head Claude review and CI/`code-mower/gate`, then serializes merge and
 owner-authorized release operations. Preserve v1.4.0 artifacts and historical
 campaign truth. Do not create paid hosted Devin sessions from an old runbook.

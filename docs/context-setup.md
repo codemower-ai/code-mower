@@ -2,9 +2,12 @@
 
 Start with the ordinary Claude + Codex installation. Coworker is optional and is
 never a participant or an implicit account inherited from your host tool. A
-future repository-context provider, such as Graphify, can use the same policy,
-packet and readiness contracts with its own capability and authorization checks.
-Graphify is not installed or required by this feature.
+repository-context provider uses the same policy, packet and readiness contracts
+with its own capability and authorization checks. Graphify is the shipped
+example: it is optional functionality, separately installed into an
+operator-owned environment and explicitly activated, and it is neither installed
+nor required by this Coworker feature. See
+[Optional Graphify Setup](graphify-setup.md).
 
 ## Select a connection
 

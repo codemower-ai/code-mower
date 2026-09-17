@@ -1,39 +1,205 @@
-"""Version-identity and Board-boundary regressions for the v1.4.2 release, #952."""
+"""Published-identity and Board-boundary regressions for the v1.4.2 release.
+
+Release #952 is closed: v1.4.2 was published from release commit
+``55339bf1acf76d33be5937e80bdaad772e0b2bf5`` under the annotated ``v1.4.2`` tag.
+These tests protect the *published* identity in current-facing documentation.
+They deliberately assert on facts -- version pins, evidence identifiers, link
+shape, packaged-template agreement -- rather than on sentence wording, so
+ordinary editorial passes do not break them.
+"""
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 
-from code_mower import __version__, release_readiness
+from code_mower import __version__, release_readiness, versioning
 from code_mower import package as package_module
 
 ROOT = Path(__file__).resolve().parents[1]
+RELEASE_COMMIT = "55339bf1acf76d33be5937e80bdaad772e0b2bf5"
+AUDITED_HEAD = "32706cf5a01af5863d6c713b83dfb196efde6d4c"
+WHEEL_SHA256 = "f8bf24dd8a982ed5ab28302e837cd5d2aeece6d984ed1c44fcb4688c3fb7a522"
+SDIST_SHA256 = "aff202eea9748ab3734ea6b90ba3b48ea5aea1e21ae87fba03b77b64d5cdec42"
+
+#: Current-facing pages a new user or agent may follow. Historical release
+#: notes, qualification records for earlier versions, and archived transcripts
+#: are deliberately excluded: they are preserved, not reconciled.
+CURRENT_FACING_DOCS = (
+    "README.md",
+    "docs/install.md",
+    "docs/quickstart.md",
+    "docs/try-in-10-minutes.md",
+    "docs/current-state-and-roadmap.md",
+    "docs/release-history.md",
+    "docs/public-release-checklist.md",
+    "docs/oss-v1-checklist.md",
+    "docs/early-adopter-invite-runbook.md",
+    "docs/early-adopter-v05.md",
+    "docs/friendly-user-rollout-v05.md",
+    "docs/first-user-install-rehearsal.md",
+    "docs/sessions.md",
+    "docs/github-setup.md",
+    "docs/builders-grok-cursor.md",
+    "docs/graphify-setup.md",
+    "docs/v142-release-notes.md",
+    "docs/v142-qualification.md",
+)
+
+#: Wording that describes v1.4.2 as unpublished. Any of these in a
+#: current-facing page is a stale-candidate regression.
+STALE_CANDIDATE_PHRASES = (
+    "source candidate",
+    "not yet published",
+    "publication pending",
+    "pending #952",
+    "pending [#952]",
+    "apply after publication",
+)
 
 
-class PublicReleaseChecklistCandidateStatusTests(unittest.TestCase):
-    def test_current_entrypoint_is_141_and_142_is_the_target_not_current(self):
-        checklist = (ROOT / "docs/public-release-checklist.md").read_text(encoding="utf-8")
+def _read(relative):
+    return (ROOT / relative).read_text(encoding="utf-8")
+
+
+class PublishedIdentityTests(unittest.TestCase):
+    def test_current_docs_do_not_describe_v142_as_an_unpublished_candidate(self):
+        offenders = []
+        for relative in CURRENT_FACING_DOCS:
+            lowered = _read(relative).lower()
+            for phrase in STALE_CANDIDATE_PHRASES:
+                if phrase in lowered:
+                    offenders.append(f"{relative}: {phrase!r}")
+        self.assertEqual(offenders, [], "\n" + "\n".join(offenders))
+
+    def test_current_docs_do_not_still_call_v141_the_current_release(self):
+        # v1.4.1 must stay nameable as history, but no current-facing page may
+        # present it as the entrypoint a reader should install.
+        for relative in CURRENT_FACING_DOCS:
+            with self.subTest(doc=relative):
+                text = " ".join(_read(relative).split())
+                self.assertNotIn("current published package-index release entrypoint is `code-mower==1.4.1`", text)
+                self.assertNotIn("The current package-index release baseline is `v1.4.1`", text)
+
+    def test_shared_baseline_sentence_matches_the_published_version(self):
+        sentence = versioning.public_baseline_sentence(__version__)
+        self.assertIn("`v1.4.2`", sentence)
+        self.assertIn("`code-mower==1.4.2`", sentence)
+        for relative in ("README.md", "docs/current-state-and-roadmap.md",
+                         "docs/friendly-user-rollout-v05.md"):
+            with self.subTest(doc=relative):
+                self.assertIn(sentence, " ".join(_read(relative).split()))
+
+    def test_release_records_bind_the_exact_published_evidence(self):
+        for relative in ("docs/v142-release-notes.md", "docs/v142-qualification.md"):
+            with self.subTest(doc=relative):
+                text = _read(relative)
+                self.assertIn(RELEASE_COMMIT, text)
+                self.assertIn(AUDITED_HEAD, text)
+                self.assertIn(WHEEL_SHA256, text)
+                self.assertIn(SDIST_SHA256, text)
+                self.assertIn("35189302150", text)
+
+    def test_release_records_point_readers_past_the_immutable_tag_snapshots(self):
+        # The v1.4.2 tag carries the prepublication copies of both pages and is
+        # never rewritten, so each page on main has to say so.
+        for relative in ("docs/v142-release-notes.md", "docs/v142-qualification.md"):
+            with self.subTest(doc=relative):
+                text = _read(relative)
+                self.assertIn("tag", text)
+                self.assertIn("prepublication", text)
+
+    def test_951_stays_an_open_unclaimed_boundary(self):
+        for relative in ("README.md", "docs/v142-release-notes.md",
+                         "docs/v142-qualification.md",
+                         "docs/current-state-and-roadmap.md"):
+            with self.subTest(doc=relative):
+                text = _read(relative)
+                self.assertIn("#951", text)
+                self.assertIn("not claimed", " ".join(text.split()).lower())
+
+    def test_no_current_doc_claims_the_hosted_canary_ran(self):
+        for relative in CURRENT_FACING_DOCS:
+            with self.subTest(doc=relative):
+                text = " ".join(_read(relative).split()).lower()
+                for claim in ("hosted devin canary passed",
+                              "hosted canary passed",
+                              "canary completed"):
+                    self.assertNotIn(claim, text)
+
+    def test_release_triggered_verification_skip_is_explained_not_reported_as_failure(self):
+        qualification = " ".join(_read("docs/v142-qualification.md").split())
+        self.assertIn("35189721623", qualification)
+        self.assertIn("intentionally skipped", qualification)
+
+
+class ReadmeLinkTests(unittest.TestCase):
+    """The README is the PyPI long description; relative links do not resolve there."""
+
+    LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)\)")
+    BLOB_PREFIX = "https://github.com/codemower-ai/code-mower/blob/main/"
+
+    def test_readme_has_no_relative_links(self):
+        readme = _read("README.md")
+        relative = [
+            destination
+            for destination in self.LINK_RE.findall(readme)
+            if not destination.startswith(("http://", "https://", "mailto:", "#"))
+        ]
+        self.assertEqual(relative, [], "README links must be absolute for PyPI")
+
+    def test_readme_repository_links_point_at_files_that_exist(self):
+        readme = _read("README.md")
+        missing = []
+        checked = 0
+        for destination in self.LINK_RE.findall(readme):
+            if not destination.startswith(self.BLOB_PREFIX):
+                continue
+            checked += 1
+            relative = destination[len(self.BLOB_PREFIX):].partition("#")[0]
+            if not (ROOT / relative).exists():
+                missing.append(relative)
+        self.assertGreater(checked, 20, "expected the README doc index to be absolute")
+        self.assertEqual(missing, [])
+
+    def test_pyproject_still_ships_the_readme_as_the_long_description(self):
+        pyproject = _read("pyproject.toml")
+        self.assertIn('readme = "README.md"', pyproject)
+
+
+class PackagedTemplateConsistencyTests(unittest.TestCase):
+    LANE_README = "templates/lanes/README.md"
+    PACKAGED_LANE_README = "src/code_mower/templates/lanes/README.md"
+
+    def test_repo_and_packaged_lane_readme_are_identical(self):
+        self.assertEqual(_read(self.LANE_README), _read(self.PACKAGED_LANE_README))
+
+    def test_both_lane_readmes_document_the_supported_never_expiry(self):
+        for relative in (self.LANE_README, self.PACKAGED_LANE_README):
+            with self.subTest(template=relative):
+                self.assertIn("`YYYY-MM-DD`, or `never` for a non-expiring token.",
+                              _read(relative))
+
+    def test_never_expiry_is_what_init_actually_advertises(self):
+        init_source = _read("src/code_mower/init.py")
+        self.assertIn("(YYYY-MM-DD or never)", init_source)
+
+
+class PublicReleaseChecklistTests(unittest.TestCase):
+    def test_checklist_names_v142_as_the_published_entrypoint(self):
+        checklist = " ".join(_read("docs/public-release-checklist.md").split())
         self.assertIn(
-            "The current published package-index release entrypoint is\n"
-            "  `code-mower==1.4.1` (GitHub tag `v1.4.1`)",
+            "The current published package-index release entrypoint is "
+            "`code-mower==1.4.2` (GitHub tag `v1.4.2`)",
             checklist,
         )
-        self.assertIn(
-            "The target package-index entrypoint after\n"
-            "  v1.4.2's acceptance is `code-mower==1.4.2` (GitHub tag `v1.4.2`)",
-            checklist,
-        )
-        # Never re-introduce the ambiguous "current entrypoint is v1.4.2"
-        # framing while v1.4.2 is still an unpublished candidate.
-        self.assertNotIn("current package-index release entrypoint is `code-mower==1.4.2`", checklist)
-        self.assertNotIn("The corresponding GitHub tag is\n  `v1.4.2`", checklist)
 
 
 class RoadmapDocFactsTests(unittest.TestCase):
     def test_role_policy_and_effective_authority_are_recorded_as_shipped(self):
-        roadmap = (ROOT / "docs/current-state-and-roadmap.md").read_text(encoding="utf-8")
+        roadmap = _read("docs/current-state-and-roadmap.md")
         self.assertIn(
             "These are main-line\nstabilization changes that shipped in `v1.4.1`.",
             roadmap,
@@ -42,52 +208,94 @@ class RoadmapDocFactsTests(unittest.TestCase):
         self.assertIn("both are part of the\npublished `v1.4.1` artifact", roadmap)
 
     def test_graphify_915_closeout_is_recorded_complete_not_pending(self):
-        roadmap = (ROOT / "docs/current-state-and-roadmap.md").read_text(encoding="utf-8")
+        roadmap = _read("docs/current-state-and-roadmap.md")
         self.assertIn(
             "completing the release-specific comparative scorecard, campaign,\n"
             "Board, and fresh aggregate evidence as part of that closeout",
             roadmap,
         )
         self.assertNotIn("remain separately tracked release-specific follow-ups", roadmap)
-        self.assertNotIn("remain pending", roadmap.partition("Release #915")[2][:200])
 
-    def test_board_section_names_the_merging_prs_not_just_issues(self):
-        roadmap = (ROOT / "docs/current-state-and-roadmap.md").read_text(encoding="utf-8")
-        self.assertIn("via\n[PR #1001](https://github.com/codemower-ai/code-mower/pull/1001)", roadmap)
-        self.assertIn("via\n[PR #1003](https://github.com/codemower-ai/code-mower/pull/1003)", roadmap)
-        self.assertIn("#961 via PR #1001", roadmap)
-        self.assertNotIn("are drafts behind\nmain that need refreshing", roadmap)
+    def test_all_three_v14_releases_are_recorded_as_shipped(self):
+        roadmap = " ".join(_read("docs/current-state-and-roadmap.md").split())
+        self.assertIn("`v1.4.0`, `v1.4.1` and `v1.4.2` have all shipped", roadmap)
+        self.assertIn("Board shipped as `v1.4.2` from release commit `55339bf`", roadmap)
         self.assertNotIn("Board work is underway", roadmap)
+        self.assertNotIn("Board implementation is accepted on `main`, not underway", roadmap)
+
+    def test_v150_slack_is_the_active_phase_and_no_longer_deferred(self):
+        roadmap = " ".join(_read("docs/current-state-and-roadmap.md").split())
+        self.assertIn("active, `v1.5.0`", roadmap)
+        self.assertIn("This is the current roadmap phase.", roadmap)
+        self.assertNotIn(
+            "This runtime work is deferred until the sequence above is complete.",
+            roadmap,
+        )
+
+    def test_board_prs_are_linked_as_pulls_and_952_is_not_called_a_pr(self):
+        roadmap = _read("docs/current-state-and-roadmap.md")
+        for number in (999, 1000, 1001, 1002, 1003, 1006):
+            with self.subTest(pull=number):
+                self.assertIn(
+                    f"https://github.com/codemower-ai/code-mower/pull/{number}",
+                    roadmap,
+                )
+                self.assertNotIn(
+                    f"https://github.com/codemower-ai/code-mower/issues/{number}",
+                    roadmap,
+                )
+        # #952 and #961 are issues, not pull requests.
+        for number in (951, 952, 961):
+            with self.subTest(issue=number):
+                self.assertNotIn(
+                    f"https://github.com/codemower-ai/code-mower/pull/{number}",
+                    roadmap,
+                )
+        self.assertNotIn("the release PR #952", roadmap)
 
 
 class ChangelogAndRunbookInclusionTests(unittest.TestCase):
-    def test_changelog_v142_section_lists_the_actually_shipping_board_work(self):
-        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    def test_unreleased_section_is_first(self):
+        changelog = _read("CHANGELOG.md")
+        self.assertLess(
+            changelog.index("## Unreleased"),
+            changelog.index("## 1.4.2"),
+            "Unreleased belongs above the released sections",
+        )
+
+    def test_changelog_v142_section_is_marked_published_and_lists_the_board_work(self):
+        changelog = _read("CHANGELOG.md")
+        self.assertIn("## 1.4.2 — published", changelog)
+        self.assertNotIn("## 1.4.2 — source candidate", changelog)
         v142_section = changelog.partition("## 1.4.2")[2].partition("\n## 1.4.1")[0]
-        unreleased_section = changelog.partition("## Unreleased")[2]
         self.assertIn("code-mower board service", v142_section)
         self.assertIn("code-mower board stop --repo OWNER/REPO", v142_section)
         self.assertIn("#999", v142_section)
         self.assertIn("#1003", v142_section)
-        # Work that actually ships in 1.4.2 is not left double-booked under
-        # Unreleased.
-        self.assertNotIn("code-mower board service` manages", unreleased_section)
-        self.assertNotIn("board stop --repo OWNER/REPO", unreleased_section)
+        self.assertIn(RELEASE_COMMIT, v142_section)
+
+    def test_unreleased_section_does_not_double_book_released_work(self):
+        changelog = _read("CHANGELOG.md")
+        unreleased = changelog.partition("## Unreleased")[2].partition("\n## 1.4.2")[0]
+        self.assertNotIn("code-mower board service` manages", unreleased)
+        self.assertNotIn("board stop --repo OWNER/REPO", unreleased)
+        # PR #1007 is open, not merged; it is neither released nor on main.
+        self.assertNotIn("#1007", changelog)
 
     def test_changelog_v141_section_is_marked_published_not_pending(self):
-        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        changelog = _read("CHANGELOG.md")
         self.assertIn("## 1.4.1 — published", changelog)
         self.assertNotIn("## 1.4.1 — source candidate", changelog)
 
     def test_current_runbook_names_the_actual_v142_required_inclusion(self):
-        runbook = (ROOT / "docs/pypi-release.md").read_text(encoding="utf-8")
+        runbook = _read("docs/pypi-release.md")
         self.assertIn("#999/#1000/#1001/#1002/#1003", runbook)
         self.assertNotIn("including #876", runbook)
 
 
 class UpgradeRehearsalTests(unittest.TestCase):
     def test_runbook_binds_a_real_141_to_142_upgrade_with_preserved_state(self):
-        runbook = (ROOT / "docs/pypi-release.md").read_text(encoding="utf-8")
+        runbook = _read("docs/pypi-release.md")
         step = runbook.partition(
             "### 17. Rehearse the 1.4.1-to-1.4.2 upgrade in place, preserving existing state"
         )[2]
@@ -123,13 +331,13 @@ class UpgradeRehearsalTests(unittest.TestCase):
         # A cold install cannot substitute for having actually upgraded.
         self.assertIn("do not record upgrade coverage as passed on a\ncold-install substitute", step)
 
-    def test_release_notes_and_qualification_claim_upgrade_coverage_that_exists(self):
-        release_notes = (ROOT / "docs/v142-release-notes.md").read_text(encoding="utf-8")
-        qualification = (ROOT / "docs/v142-qualification.md").read_text(encoding="utf-8")
-        runbook = (ROOT / "docs/pypi-release.md").read_text(encoding="utf-8")
-        self.assertIn("1.4.1-to-1.4.2 upgrade rehearsal", release_notes)
+    def test_release_records_claim_upgrade_coverage_that_exists(self):
+        release_notes = _read("docs/v142-release-notes.md")
+        qualification = _read("docs/v142-qualification.md")
+        runbook = _read("docs/pypi-release.md")
+        self.assertIn("1.4.1-to-1.4.2 upgrade", release_notes)
         self.assertIn("upgrade from v1.4.1", qualification)
-        # The claim in the candidate docs must point at a runbook step that
+        # The claim in the release docs must point at a runbook step that
         # actually exists, not an unimplemented promise.
         self.assertIn("### 17. Rehearse the 1.4.1-to-1.4.2 upgrade in place", runbook)
 
@@ -148,29 +356,36 @@ class VersionIdentityTests(unittest.TestCase):
 
 class RunbookIdentityTests(unittest.TestCase):
     def test_pypi_release_doc_carries_the_v142_runbook_heading(self):
-        doc = (ROOT / "docs/pypi-release.md").read_text(encoding="utf-8")
+        doc = _read("docs/pypi-release.md")
         self.assertIn(
             f"## v1.4.2 {release_readiness.POST_MERGE_RUNBOOK_HEADING}",
             doc,
         )
 
     def test_release_notes_and_qualification_docs_exist_for_v142(self):
-        release_notes = (ROOT / "docs/v142-release-notes.md").read_text(encoding="utf-8")
-        qualification = (ROOT / "docs/v142-qualification.md").read_text(encoding="utf-8")
+        release_notes = _read("docs/v142-release-notes.md")
+        qualification = _read("docs/v142-qualification.md")
         self.assertIn("# Code Mower v1.4.2 Release Notes", release_notes)
         self.assertIn("v1.4.2 qualification and evidence matrix", qualification)
-        # v1.4.1's own historical documents must remain untouched.
+        # v1.4.1's own historical documents must remain present.
         self.assertTrue((ROOT / "docs/v141-release-notes.md").is_file())
         self.assertTrue((ROOT / "docs/v141-qualification.md").is_file())
 
+    def test_preserved_v141_candidate_docs_carry_a_completed_release_banner(self):
+        for relative in ("docs/v141-release-notes.md", "docs/v141-qualification.md"):
+            with self.subTest(doc=relative):
+                text = " ".join(_read(relative).split())
+                self.assertIn("v1.4.1 is a completed release", text)
+                self.assertIn("releases/tag/v1.4.1", text)
+
     def test_release_history_orders_v142_before_v141_before_v131(self):
-        release_history = (ROOT / "docs/release-history.md").read_text(encoding="utf-8")
+        release_history = _read("docs/release-history.md")
         self.assertLess(
-            release_history.index("[v1.4.2 source candidate notes](v142-release-notes.md)"),
-            release_history.index("[v1.4.1 source candidate notes](v141-release-notes.md)"),
+            release_history.index("[v1.4.2 release notes](v142-release-notes.md)"),
+            release_history.index("[v1.4.1 release notes](v141-release-notes.md)"),
         )
         self.assertLess(
-            release_history.index("[v1.4.1 source candidate notes](v141-release-notes.md)"),
+            release_history.index("[v1.4.1 release notes](v141-release-notes.md)"),
             release_history.index("[v1.3.1 release notes](v131-release-notes.md)"),
         )
 
@@ -186,7 +401,7 @@ STALE_BOARD_COUNT_PHRASES = (
 
 class BoardRestartBoundaryTests(unittest.TestCase):
     def test_qualification_doc_names_the_verified_two_service_inventory(self):
-        qualification = (ROOT / "docs/v142-qualification.md").read_text(encoding="utf-8")
+        qualification = _read("docs/v142-qualification.md")
         # A read-only `board list --json` verified exactly two live local
         # Board services pre-release: 5332 (the public repo) plus one
         # additional private-repository port. Posture (managed vs transient)
@@ -197,25 +412,35 @@ class BoardRestartBoundaryTests(unittest.TestCase):
         for phrase in STALE_BOARD_COUNT_PHRASES:
             with self.subTest(phrase=phrase):
                 self.assertNotIn(phrase, qualification)
-        self.assertIn("serving ==", qualification)
-        self.assertIn("1.4.2", qualification)
+        self.assertIn("serving == installed == 1.4.2", qualification)
 
-    def test_release_notes_do_not_claim_951_hosted_canary_or_close_951(self):
-        release_notes = (ROOT / "docs/v142-release-notes.md").read_text(encoding="utf-8")
-        self.assertIn("bounded hosted Devin canary is still pending", release_notes)
-        self.assertIn("does not claim the hosted result or close", release_notes)
-
-    def test_release_notes_name_the_verified_two_service_inventory(self):
-        release_notes = (ROOT / "docs/v142-release-notes.md").read_text(encoding="utf-8")
-        self.assertIn("two\nobserved local Board processes", release_notes)
+    def test_release_notes_record_the_verified_two_service_restart(self):
+        release_notes = _read("docs/v142-release-notes.md")
         self.assertIn("port 5332", release_notes)
+        self.assertIn("private-repository Board", release_notes)
         for phrase in STALE_BOARD_COUNT_PHRASES:
             with self.subTest(phrase=phrase):
                 self.assertNotIn(phrase, release_notes)
 
+    def test_board_service_lifecycle_table_has_no_stranded_row(self):
+        lifecycle = _read("docs/board-service-lifecycle.md")
+        refusals = lifecycle.partition("## Fail-closed refusals")[2]
+        stranded = [
+            line
+            for index, line in enumerate(refusals.splitlines())
+            if line.startswith("| `")
+            and index
+            and not refusals.splitlines()[index - 1].startswith("|")
+        ]
+        self.assertEqual(stranded, [], "a table row is stranded outside its table")
+        # delayed_health_failed is decided after the apply, so it belongs with
+        # delayed health rather than with the no-state-change refusals.
+        delayed = lifecycle.partition("## Delayed health")[2].partition("## Fail-closed")[0]
+        self.assertIn("delayed_health_failed", delayed)
+
     def test_current_runbook_and_hygiene_use_reconciled_board_heading(self):
-        runbook = (ROOT / "docs/pypi-release.md").read_text(encoding="utf-8")
-        hygiene = (ROOT / "tests/test_release_hygiene.py").read_text(encoding="utf-8")
+        runbook = _read("docs/pypi-release.md")
+        hygiene = _read("tests/test_release_hygiene.py")
         self.assertIn(
             "### 15. Restart the reconciled Board inventory from the release",
             runbook,
@@ -229,6 +454,57 @@ class BoardRestartBoundaryTests(unittest.TestCase):
                 self.assertNotIn(phrase, runbook)
         # v1.4.0's own historical runbook is immutable and out of scope here.
         self.assertTrue((ROOT / "docs/v140-release-runbook.md").is_file())
+
+
+class BoardAndGraphifyDiscoverabilityTests(unittest.TestCase):
+    def test_readme_surfaces_the_persistent_board_service_and_its_platform_boundary(self):
+        readme = " ".join(_read("README.md").split())
+        self.assertIn("code-mower board service", readme)
+        self.assertIn("launchd", readme)
+        self.assertIn("every other platform refuses", readme)
+        self.assertIn("board-service-lifecycle.md", readme)
+
+    def test_readme_navigates_to_graphify_setup_lifecycle_and_queries(self):
+        readme = _read("README.md")
+        for target in ("docs/graphify-setup.md",
+                       "docs/context-graph-lifecycle.md",
+                       "docs/context-graph-queries.md"):
+            with self.subTest(target=target):
+                self.assertIn(target, readme)
+
+    def test_graphify_setup_documents_the_ramp_up_flow_and_its_exclusions(self):
+        setup = _read("docs/graphify-setup.md")
+        for command in ("context-graph doctor",
+                        "context-graph build",
+                        "context-graph status",
+                        "context-graph connect",
+                        "context-graph connection-status",
+                        "context-graph query",
+                        "context-graph refresh",
+                        "context-graph disconnect",
+                        "context-graph remove"):
+            with self.subTest(command=command):
+                self.assertIn(command, setup)
+        collapsed = " ".join(setup.split())
+        for exclusion in ("Untracked and\n  ignored files", "Symlinks and submodules",
+                          "Committed private state"):
+            with self.subTest(exclusion=exclusion):
+                self.assertIn(" ".join(exclusion.split()), collapsed)
+        self.assertIn("Nothing watches the working tree", collapsed)
+
+    def test_graphify_evaluation_is_framed_as_a_dated_historical_record(self):
+        evaluation = " ".join(_read("docs/graphify-evaluation.md").split())
+        self.assertIn("Historical record. Graphify has since shipped.", evaluation)
+        self.assertIn("2026-09-12", evaluation)
+        self.assertIn("graphify-setup.md", evaluation)
+        # The recorded benchmark evidence is preserved, not rewritten.
+        self.assertIn("Clean-room experiment", evaluation)
+
+    def test_board_demo_does_not_claim_serve_opens_a_browser(self):
+        demo = " ".join(_read("examples/board-demo/README.md").split())
+        self.assertIn("It does not open a browser.", demo)
+        self.assertIn("--open", demo)
+        self.assertNotIn("To open the local browser Board", demo)
 
 
 class InstalledPromptPackTests(unittest.TestCase):
