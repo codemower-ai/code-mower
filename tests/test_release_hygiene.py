@@ -10903,18 +10903,35 @@ def main():
         self.assertEqual(check_ids["public-docs-linked-from-readme"]["status"], "fail")
         self.assertEqual(check_ids["public-support-redaction-guidance"]["status"], "fail")
 
-    def test_public_doc_link_requires_a_path_segment_boundary(self) -> None:
-        accepted = (
-            "SUPPORT.md",
-            "./SUPPORT.md",
-            "/SUPPORT.md",
-            "SUPPORT.md#getting-help",
-            "https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md",
-            "https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md?plain=1",
-            "https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md#getting-help",
-        )
-        for destination in accepted:
-            with self.subTest(destination=destination):
+    def test_public_doc_link_resolves_the_destination_to_the_actual_document(
+        self,
+    ) -> None:
+        accepted = {
+            "relative": "SUPPORT.md",
+            "relative_dot_slash": "./SUPPORT.md",
+            "relative_traversal_that_lands_on_the_file": "docs/../SUPPORT.md",
+            "relative_trailing_slash": "SUPPORT.md/",
+            "relative_fragment": "SUPPORT.md#getting-help",
+            "relative_query": "SUPPORT.md?plain=1",
+            "absolute_blob": (
+                "https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md"
+            ),
+            "absolute_blob_on_a_tag": (
+                "https://github.com/codemower-ai/code-mower/blob/v1.4.2/SUPPORT.md"
+            ),
+            "absolute_raw": (
+                "https://github.com/codemower-ai/code-mower/raw/main/SUPPORT.md"
+            ),
+            "absolute_query": (
+                "https://github.com/codemower-ai/code-mower/blob/main/SUPPORT.md?plain=1"
+            ),
+            "absolute_fragment": (
+                "https://github.com/codemower-ai/code-mower/blob/main/"
+                "SUPPORT.md#getting-help"
+            ),
+        }
+        for label, destination in accepted.items():
+            with self.subTest(accepted=label):
                 self.assertTrue(
                     release_readiness._links_to_repository_doc(
                         f"See [Support]({destination}) for help.\n",
@@ -10923,16 +10940,36 @@ def main():
                     )
                 )
 
-        rejected = (
-            "OTHER_SUPPORT.md",
-            "docs/OTHER_SUPPORT.md",
-            "nested/docs/OTHER_SUPPORT.md",
-            "https://github.com/codemower-ai/code-mower/blob/main/docs/OTHER_SUPPORT.md",
-            "OTHER_SUPPORT.md#getting-help",
-            "OTHER_SUPPORT.md?plain=1",
-        )
-        for destination in rejected:
-            with self.subTest(destination=destination):
+        rejected = {
+            # A nested path is a different document, and nothing in this
+            # repository puts SUPPORT.md under docs/.
+            "nested_relative_path_that_does_not_exist": "docs/SUPPORT.md",
+            "nested_absolute_path_that_does_not_exist": (
+                "https://github.com/codemower-ai/code-mower/blob/main/docs/SUPPORT.md"
+            ),
+            # An unrelated URL that merely ends in the required filename.
+            "unrelated_host": "https://example.com/SUPPORT.md",
+            "unrelated_host_nested": "https://example.com/code-mower/SUPPORT.md",
+            "another_github_owner": (
+                "https://github.com/someone-else/code-mower/blob/main/SUPPORT.md"
+            ),
+            "another_github_repository": (
+                "https://github.com/codemower-ai/other-repo/blob/main/SUPPORT.md"
+            ),
+            "scheme_relative": "//github.com/codemower-ai/code-mower/blob/main/SUPPORT.md",
+            # GitHub does not resolve a site-root path against the repository.
+            "site_root": "/SUPPORT.md",
+            # Names that merely end in the required one.
+            "sibling_suffix": "OTHER_SUPPORT.md",
+            "nested_sibling_suffix": "docs/OTHER_SUPPORT.md",
+            "deeply_nested_sibling_suffix": "nested/docs/OTHER_SUPPORT.md",
+            "sibling_suffix_fragment": "OTHER_SUPPORT.md#getting-help",
+            "sibling_suffix_query": "OTHER_SUPPORT.md?plain=1",
+            # Escapes the repository root README.md sits at.
+            "parent_traversal": "../SUPPORT.md",
+        }
+        for label, destination in rejected.items():
+            with self.subTest(rejected=label):
                 self.assertFalse(
                     release_readiness._links_to_repository_doc(
                         f"See [Support]({destination}) for help.\n",
@@ -10946,6 +10983,20 @@ def main():
             "lookalike": "\n".join(
                 [
                     "[Support](docs/OTHER_SUPPORT.md)",
+                    "[Security Policy](SECURITY.md)",
+                    "[Code of Conduct](CODE_OF_CONDUCT.md)",
+                ]
+            ),
+            "nested_path_that_does_not_exist": "\n".join(
+                [
+                    "[Support](docs/SUPPORT.md)",
+                    "[Security Policy](SECURITY.md)",
+                    "[Code of Conduct](CODE_OF_CONDUCT.md)",
+                ]
+            ),
+            "foreign_url": "\n".join(
+                [
+                    "[Support](https://example.com/SUPPORT.md)",
                     "[Security Policy](SECURITY.md)",
                     "[Code of Conduct](CODE_OF_CONDUCT.md)",
                 ]
@@ -10965,7 +11016,13 @@ def main():
                 ]
             ),
         }
-        expected = {"lookalike": "fail", "exact": "pass", "absolute": "pass"}
+        expected = {
+            "lookalike": "fail",
+            "nested_path_that_does_not_exist": "fail",
+            "foreign_url": "fail",
+            "exact": "pass",
+            "absolute": "pass",
+        }
 
         for label, readme in readmes.items():
             with self.subTest(readme=label), tempfile.TemporaryDirectory() as tmp:

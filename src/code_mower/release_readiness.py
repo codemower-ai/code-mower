@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 import tempfile
 from pathlib import Path
@@ -60,6 +61,17 @@ PUBLIC_HYGIENE_DOC_PATHS = (
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/dependabot.yml",
 )
+REPOSITORY_SLUG = "codemower-ai/code-mower"
+# The absolute spellings that address a file inside this repository's tree:
+# ``blob`` renders it, ``raw`` serves it, and the segment between the view and
+# the path is the git ref. Any other host, owner, or repository addresses a
+# different tree, however its URL happens to end.
+_REPOSITORY_FILE_URL_PATTERN = re.compile(
+    r"^https://github\.com/"
+    + re.escape(REPOSITORY_SLUG)
+    + r"/(?:blob|raw)/[^/]+/(?P<path>.+)$"
+)
+_URI_SCHEME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 PACKAGE_INDEX_SETUP_URLS = {
     "github_environments": (
         "https://github.com/codemower-ai/code-mower/settings/environments"
@@ -104,30 +116,66 @@ def _read_text_if_exists(path: Path) -> str:
         return ""
 
 
+def _repository_destination_path(destination: str) -> str:
+    """The repository-relative path ``destination`` addresses, else ``""``.
+
+    A destination is resolved, not pattern-matched, so the answer is the one
+    file a reader lands on. Two spellings resolve:
+
+    * a relative path, normalized against the repository root, which is where
+      README.md sits;
+    * an absolute GitHub URL for *this* repository, reduced to the path under
+      its ref.
+
+    Everything else -- another repository, another host, a ``mailto:``, a
+    scheme-relative ``//host/...``, or a site-root ``/SUPPORT.md`` that GitHub
+    does not resolve against the repository -- addresses nothing in this tree
+    and returns ``""``. A query string or fragment only decorates a
+    destination, so both are dropped before resolving.
+    """
+
+    trimmed = destination.strip().partition("#")[0].partition("?")[0]
+    if not trimmed:
+        return ""
+
+    repository_url = _REPOSITORY_FILE_URL_PATTERN.match(trimmed)
+    if repository_url:
+        candidate = repository_url.group("path")
+    elif (
+        _URI_SCHEME_PATTERN.match(trimmed)
+        or trimmed.startswith("//")
+        or trimmed.startswith("/")
+    ):
+        return ""
+    else:
+        candidate = trimmed
+
+    normalized = posixpath.normpath(candidate)
+    if normalized in {".", ".."} or normalized.startswith("../"):
+        return ""
+    return normalized
+
+
 def _links_to_repository_doc(markdown: str, label: str, relative_path: str) -> bool:
     """Whether ``markdown`` links ``label`` at ``relative_path``.
 
     README.md is also the built package's long description, where a relative
     destination resolves against the package index rather than the repository,
-    so repository links there are absolute GitHub URLs. Both spellings satisfy
-    this check; only the label and the file it lands on are required.
-
-    The destination has to land on ``relative_path`` at a path-segment
-    boundary, so a neighbouring file whose name merely ends in the required
-    one -- ``docs/OTHER_SUPPORT.md`` for ``SUPPORT.md`` -- does not count. A
-    query string or fragment decorates the destination without changing which
-    file it resolves to, so both are dropped before the comparison.
+    so repository links there are absolute GitHub URLs for this repository.
+    Both spellings satisfy this check, and each has to resolve to
+    ``relative_path`` itself -- a neighbouring or nested file such as
+    ``docs/SUPPORT.md`` is a different document, and an unrelated URL that
+    merely ends in ``/SUPPORT.md`` is a different repository.
     """
 
     pattern = re.compile(
         r"\[" + re.escape(label) + r"\]\(\s*<?([^)\s>]+)>?[^)]*\)"
     )
-    nested_suffix = "/" + relative_path
-    for destination in pattern.findall(markdown):
-        path = destination.partition("#")[0].partition("?")[0].rstrip("/")
-        if path == relative_path or path.endswith(nested_suffix):
-            return True
-    return False
+    required = posixpath.normpath(relative_path)
+    return any(
+        _repository_destination_path(destination) == required
+        for destination in pattern.findall(markdown)
+    )
 
 
 def _python_package_version(repo_path: Path) -> str:
