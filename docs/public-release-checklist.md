@@ -1,8 +1,8 @@
 # Code Mower Public Release Checklist
 
-The v1.4.1 source candidate is not yet published or qualified. Pinned index
+The v1.4.2 source candidate is not yet published or qualified. Pinned index
 commands below apply after publication; candidate checks use the verified
-artifact. Track acceptance in [#915](https://github.com/codemower-ai/code-mower/issues/915).
+artifact. Track acceptance in [#952](https://github.com/codemower-ai/code-mower/issues/952).
 
 Use this checklist for public OSS readiness and 1.x hardening. The standalone
 `code-mower` repository is public; the remaining work is to make the first
@@ -15,12 +15,15 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has public releases and reports its version with
   `code-mower --version`.
-- The current package-index release entrypoint is `code-mower==1.4.1`, with
+- The current published package-index release entrypoint is
+  `code-mower==1.4.1` (GitHub tag `v1.4.1`), with
   `code-mower doctor --adoption --repo OWNER/REPO` as the human-facing
   first-run setup diagnostic and `code-mower lanes status --repo OWNER/REPO`
-  as the operator snapshot. The corresponding GitHub tag is
-  `v1.4.1`; `doctor --preflight` and `doctor --v05` remain
-  compatibility presets for scripts.
+  as the operator snapshot. The target package-index entrypoint after
+  v1.4.2's acceptance is `code-mower==1.4.2` (GitHub tag `v1.4.2`), tracked
+  by [#952](https://github.com/codemower-ai/code-mower/issues/952);
+  `doctor --preflight` and `doctor --v05` remain compatibility presets for
+  scripts.
 - The current supervised-pilot release includes Python 3.12+ install hardening,
   hosted-builder doctor postures, non-expiring token diagnostics, native
   redacted lane status, local Board, Board history, spend/verdict timelines,

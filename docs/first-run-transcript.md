@@ -1,5 +1,10 @@
 # First Run Transcript
 
+Historical: this transcript is pinned to the published `v1.4.0` shape and is
+not updated for the current `v1.4.2` candidate. Use [Install And
+Bootstrap](install.md) and [Try Code Mower In 10
+Minutes](try-in-10-minutes.md) for current guidance.
+
 This page shows the intended first-run shape before a user installs anything.
 It is a static transcript, not a guarantee that every machine will produce the
 same provider warnings.

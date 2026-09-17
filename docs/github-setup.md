@@ -839,7 +839,7 @@ or bootstrap job should fail on warnings.
 
 ## Non-GitHub Systems
 
-The Code Mower 1.4.1 source candidate remains GitHub-first.
+The Code Mower 1.4.2 source candidate remains GitHub-first.
 
 GitLab is the best next source-control target because merge requests,
 discussions, labels, approval rules, pipelines, and API concepts map closely to

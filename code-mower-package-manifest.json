@@ -2170,6 +2170,6 @@
     "module": "code_mower",
     "name": "code-mower",
     "source_layout": "src/code_mower",
-    "version": "1.4.1"
+    "version": "1.4.2"
   }
 }
