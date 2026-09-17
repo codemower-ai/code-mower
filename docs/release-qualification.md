@@ -316,6 +316,86 @@ Supported placeholders: `{command}` (resolved binary), `{release_tag}`, `{packag
 
 Codex campaign runs use an isolated `CODEX_HOME` at `~/.config/code-mower/provider-homes/codex` (override with `CODE_MOWER_CODEX_CAMPAIGN_HOME`). Code Mower creates its non-secret restricted config automatically and refuses a readable `auth.json`. Authenticate that home once with `CODEX_HOME="$HOME/.config/code-mower/provider-homes/codex" codex login --device-auth -c 'cli_auth_credentials_store="keyring"' --enable secret_auth_storage`; the explicit login flags make Codex store that home-specific credential in the OS keyring even before Code Mower has created the config file. The adapter preserves the real OS `HOME` only so the platform keyring can locate the user's login keychain; Codex configuration and state remain isolated under `CODEX_HOME`, ambient token variables are removed, and the root-deny policy lets the agent write only its disposable workspace. Network remains available for package installation. A previous result file is removed before every adapter attempt, and a failed run never leaves stale evidence for a caller to accept.
 
+#### Headless Linux campaign authentication
+
+The keyring-backed home above needs an OS keyring, which a headless Linux host
+with no desktop session does not have: ordinary `codex`/`claude` logins keep
+working there while the isolated campaign lane stays unavailable. Set
+`CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE` to select which supported isolated
+credential source that home uses:
+
+| Value | Credential source | When to use it |
+| --- | --- | --- |
+| unset or `keyring` (default) | OS keyring, via `cli_auth_credentials_store = "keyring"` | Any host with a desktop session keyring. Unchanged from previous releases. |
+| `file` | `$CODEX_HOME/auth.json`, via `cli_auth_credentials_store = "file"` | Headless Linux, where no keyring exists. |
+
+Nothing else is accepted. The maintained Codex CLI also defines `auto` and
+`ephemeral`; Code Mower refuses both, because `auto` silently falls back
+between two credential sources and `ephemeral` cannot outlive the login step.
+Any unrecognized value fails closed: the adapter refuses to run and doctor
+reports `campaign_auth_unsupported_mode` as an owner action, so an unsupported
+mode can never become a readiness pass.
+
+To set up file mode on a headless host:
+
+1. `export CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE=file` for every shell that runs
+   Code Mower campaigns or doctor, and export it in the service/runner
+   environment too. Doctor and the adapter must see the same value.
+2. Create the isolated home's restricted configuration:
+   `code-mower doctor --adoption --campaign`. It reports the credential source
+   as `missing` until step 3.
+3. Authenticate that home once, with the credential on **stdin**:
+
+   ```bash
+   export CODEX_HOME="$HOME/.config/code-mower/provider-homes/codex"
+   printf '%s\n' "$OPENAI_API_KEY" | codex login --with-api-key
+   ```
+
+   Or use the device-code flow, which needs a browser on some other machine
+   but none on this host:
+
+   ```bash
+   CODEX_HOME="$HOME/.config/code-mower/provider-homes/codex" \
+     codex login --device-auth -c 'cli_auth_credentials_store="file"'
+   ```
+
+4. Re-run `code-mower doctor --adoption --campaign`. Codex returns to
+   `ready_providers` once the probe reports the home authenticated.
+
+What file mode does and does not change:
+
+- **The credential boundary is the same one keyring mode had.** The isolated
+  home stays `0700`, Code Mower forces the credential file to `0600` and
+  refuses a symlink or any non-regular file in its place, and the restricted
+  provider configuration is byte-for-byte the same: `default_permissions =
+  "campaign"`, `":root" = "deny"`, `":minimal" = "read"`, and write access only
+  to the disposable workspace. The campaign home is never inside that
+  workspace, and the credential is never copied into it.
+- **There is no silent fallback.** File mode is entered only by that explicit
+  variable. Ambient `OPENAI_API_KEY`/`CODEX_API_KEY`, ambient homes, and
+  GitHub or cloud tokens are still stripped from the adapter's child
+  environment in both modes, and `codex login status` deliberately ignores the
+  ambient API-key environment, so a readiness pass always reflects the isolated
+  home's own stored credential.
+- **No secret travels through argv.** `codex login --with-api-key` reads the
+  key from stdin. Code Mower never reads, copies, or logs the credential: the
+  only thing it derives from it is the bounded word `present`, `missing`, or
+  `unusable`, which is all that reaches doctor JSON, reports, or generated
+  setup.
+- **The keyring session variables are dropped.** `DBUS_SESSION_BUS_ADDRESS`
+  and `XDG_RUNTIME_DIR` reach the child only in keyring mode, since file mode
+  never consults a Secret Service.
+- **Keyring mode is untouched.** An adopter who never sets the variable keeps
+  the released behaviour exactly, including the refusal to run against a home
+  that contains a readable `auth.json`.
+
+Remaining operator actions on a headless host: install the Codex CLI, run the
+login in step 3 whenever the credential is first created, rotated, or revoked,
+and keep the exported variable in the campaign environment. Normal CLI login,
+transport installation, and campaign readiness stay separate concerns --
+ordinary adoption with no campaign intent still reports a non-blocking
+`not_requested` skip and asks the owner for nothing.
+
 An explicit `--retry-provider` never accepts a pre-existing result file for that provider -- the stale file is removed before the new attempt runs, so a retry can only be satisfied by fresh evidence. A retry advances only the retried provider: every other participant keeps its recorded state, evidence, and attempt, dispatch, and completion timestamps (aggregate campaign fields still recompute), and newly arrived evidence for them waits for the next ordinary resume. The superseded attempt leaves one bounded metadata-only summary per retry (`attempt_history`, most recent 5: timestamps, state, outcome, error code, elapsed time, and -- when the superseded result was discovered on a linked surface -- its `result_source` -- never results, output, paths, or secrets). Retained entries are rebuilt from those allowed fields on every retry, so a malformed or hand-edited stored history is sanitized (unknown/nested fields dropped, malformed entries discarded, an unusable `result_source` dropped) rather than copied verbatim.
 
 ### macOS Claude sandbox certificate path
@@ -342,6 +422,7 @@ Release-qualification note: a macOS Claude cold install of an exact PyPI release
 An installed CLI and a valid argv contract do not prove the isolated home the adapter runs under is authenticated: without this check, a campaign is dispatched and only then fails with a generic adapter error, after paid work has started.
 
 - **Codex isolated auth probe**: Where Codex exposes `codex login status` (20s budget), doctor probes the isolated home. Authenticated passes; confirmed logged-out produces an actionable warning and removes Codex from `ready_providers`. Timeouts or probe errors degrade safely to a skip.
+- **Codex isolated credential source**: Doctor resolves `CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE` through the same helper the adapter uses, so both apply one readiness rule (see [Headless Linux campaign authentication](#headless-linux-campaign-authentication)). An unsupported value, or a `file`-mode home whose credential is missing or is not a private regular file, is an actionable warning that removes Codex from `ready_providers` -- never a skip that would leave it ready. On a headless Linux host in keyring mode, the remediation now names `CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE=file` alongside the existing desktop-keyring, `--hosted-builders`/`--orchestrator-only`, and probe-off options. Detail carries only the bounded `campaign_auth_mode` and `campaign_auth_source` words: no path, no account, no credential.
 - **Antigravity & Muse ambient-home opt-ins**: Antigravity and Muse require trusted ambient-home opt-ins (`ANTIGRAVITY_CLI_USE_AMBIENT_HOME=1`, `MUSE_CLI_USE_AMBIENT_HOME=1` or `META_API_KEY`/`META_API_KEY_FILE`). Doctor models these requirements directly: missing opt-ins produce an actionable warning and prevent the provider from being reported `campaign-ready`.
 - **Antigravity campaign isolation & --new-project capability**: Every maintained Antigravity campaign invocation includes `--new-project` and excludes continue/resume flags (`--continue`, `-c`, `--conversation`, `--resume`, `-i`, `--prompt-interactive`) to guarantee session isolation inside a fresh project boundary. Both the adapter and doctor campaign readiness call the same bounded capability check (`agy --help`) before writing prompts, invoking provider work, or declaring Antigravity ready. When `--new-project` is unsupported, doctor excludes Antigravity from `ready_providers` with bounded actionable metadata and remediation instructing to upgrade to a version whose `--help` exposes `--new-project` (without claiming an unverified minimum version). Probe output, prompts, paths, and secrets are strictly excluded from evidence.
 - **Structured-result capability**: Doctor distinguishes executable/auth readiness from structured-result capability using a bounded offline fixture (zero token spend, zero network). `doctor.campaign.readiness` detail breaks down `command`, `auth`, and `structured_result` per provider without leaking paths or command output.
