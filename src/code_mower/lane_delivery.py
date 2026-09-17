@@ -1615,12 +1615,25 @@ def lineage_writer_id(lane: Any, repo: Any, *, run: Any = None) -> str:
     into both, so an otherwise eligible dotted or very long slug was refused
     before the provider ever launched.
 
-    An ordinary slug keeps exactly that historical identifier. Anything the
-    accepted alphabet, the 100-character cap, or unique decoding cannot carry is
-    encoded once: a readable prefix plus a digest of the exact lane and slug.
-    The preserved form never contains ``--`` and the encoded form always starts
-    ``<lane>--``, so a repository can never inherit another repository's
-    identity, and two slugs that sanitize alike stay apart through the digest.
+    Every historical identifier ``LineageRound`` already accepted is preserved
+    exactly, including a name containing ``--``: persisted private lineage
+    records hold that stable writer, and :func:`lineage_continuation` refuses
+    unless the derived writer still equals it, so rewriting one would strand the
+    repository after its next round launched. Only what the historical form
+    could not represent is encoded: a slug outside the accepted alphabet or the
+    100-character cap, an owner/name boundary that does not decode back to this
+    exact slug, or an owner that would make the identity read as an encoded one.
+
+    Encoding is ``<lane>--<readable>-<24 hex of sha256(lane + "\\n" + slug)>``.
+    For one lane the two namespaces are disjoint: an encoded identity always
+    begins ``<lane>--`` and a preserved one never does, because an owner
+    starting with ``-`` is encoded instead. Within the encoded namespace
+    ``readable`` carries no ``-``, so the digest of the exact lane and slug
+    always decodes out, keeping slugs that sanitize or truncate alike apart.
+    Identities are only ever compared inside one lane: a private lineage record
+    is keyed by the exact target, and both :func:`lineage_continuation` and
+    ``ProducerStore.record`` compare the observed transport as well as the
+    writer, so the lane is never carried by this string alone.
 
     ``run`` appends a caller-owned, already-accepted suffix (the runner passes
     its timestamp and PID) so one derivation serves both identities.
@@ -1638,19 +1651,23 @@ def lineage_writer_id(lane: Any, repo: Any, *, run: Any = None) -> str:
     suffix = "" if run is None else f"-{run}"
     key = f"{owner}__{name}"
     preserved = f"{lane}-{key}{suffix}"
-    # Preserve the historical identifier only when it is accepted as-is and
-    # decodes back to this exact slug. An owner or name carrying "__" would
-    # otherwise let two different repositories share one preserved identity.
-    if (re.fullmatch(LINEAGE_ID_PATTERN, preserved) and "--" not in preserved
+    # Preserve the historical identifier whenever it is accepted as-is, decodes
+    # back to this exact slug, and cannot be read as an encoded identity. An
+    # owner carrying "__" would otherwise let two repositories share one
+    # preserved identity; an owner starting with "-" would put a preserved
+    # identity inside the encoded "<lane>--" namespace.
+    if (re.fullmatch(LINEAGE_ID_PATTERN, preserved)
+            and not preserved.startswith(f"{lane}--")
             and key.partition("__")[::2] == (owner, name)):
         return preserved
     digest = hashlib.sha256(f"{lane}\n{repo}".encode("utf-8")).hexdigest()[:24]
     room = 100 - len(f"{lane}--{digest}{suffix}") - 1
-    if room < 0:
+    if room < 1:
         raise LaneDeliveryError("Canonical lineage identity does not fit the accepted alphabet")
-    # Hyphens are sanitized away too, so the only "--" is the encoding marker.
+    # Hyphens are sanitized away too, so the separator before the digest is the
+    # first "-" after the marker and the exact digest always decodes out.
     readable = re.sub(r"[^A-Za-z0-9_]", "_", key)[:room]
-    derived = f"{lane}--{readable}-{digest}{suffix}" if readable else f"{lane}--{digest}{suffix}"
+    derived = f"{lane}--{readable}-{digest}{suffix}"
     if not re.fullmatch(LINEAGE_ID_PATTERN, derived):  # pragma: no cover - defensive
         raise LaneDeliveryError("Canonical lineage identity does not fit the accepted alphabet")
     return derived

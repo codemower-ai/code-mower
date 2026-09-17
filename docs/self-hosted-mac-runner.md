@@ -308,12 +308,16 @@ head metadata only. No new hosted session is created by a handoff.
 
 The stable writer identity and the supervised round ID in those artifacts come
 from one canonical derivation, `code-mower lane-delivery writer-id --lane <lane>
---repo <owner/repo>`. A repository name may legally contain `.`, which the
-supervised-round identifier alphabet does not accept, so a slug that the
-alphabet or the 100-character cap cannot carry is encoded as
-`<lane>--<readable>-<digest of the exact lane and slug>`. An ordinary slug keeps
-the `<lane>-<owner>__<name>` identity it already has, so existing private writer
-state stays addressable.
+--repo <owner/repo>`. Every `<lane>-<owner>__<name>` identity the supervised
+round already accepted is preserved exactly, so existing private writer state
+stays addressable and a continuation still matches its stored writer. A
+repository name may legally contain `.`, which the supervised-round identifier
+alphabet does not accept, so a slug that the alphabet, the 100-character cap, or
+a unique `owner__name` boundary cannot carry is encoded instead as
+`<lane>--<readable>-<digest of the exact lane and slug>`. An encoded identity
+always begins `<lane>--` and a preserved one never does, so the two namespaces
+stay disjoint. Operator note: the derivation never rewrites a stored identity,
+so no migration of private lineage records is required.
 
 Code Mower asks the existing local supervisor to stop its own process group, or
 cancels the bound remote session through the existing idempotent lifecycle. It

@@ -42,11 +42,15 @@ release below.
   alphabet (`[A-Za-z0-9_-]{1,100}`) rejects, so an otherwise eligible dotted or
   very long slug was refused before the provider ever launched. Both identities
   now come from one canonical derivation, exposed as `code-mower lane-delivery
-  writer-id`, which preserves the existing identifier for ordinary slugs and
-  otherwise encodes the slug with a digest of the exact lane and repository, so
-  two repositories can never share one writer identity. Round validation is
-  unchanged, and an installed CLI without the derivation is refused by the
-  runner's existing capability gate rather than at launch.
+  writer-id`. It preserves every identifier the supervised round already
+  accepted, so no persisted private lineage record is rewritten and a
+  continuation still matches its stored writer; only a slug the alphabet, the
+  100-character cap, or a unique `owner__name` boundary cannot carry is encoded
+  with a digest of the exact lane and repository. An encoded identity always
+  begins `<lane>--` and a preserved one never does, so two repositories can
+  never share one writer identity. Round validation is unchanged, and an
+  installed CLI without the derivation is refused by the runner's existing
+  capability gate rather than at launch.
 
 - Graphify inventories larger than 256 KiB now use a separate bounded 16 MiB
   provider-manifest reader without relaxing file coverage or hash checks.

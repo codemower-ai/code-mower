@@ -3,9 +3,11 @@
 A repository name may legally contain ``.``, while ``LineageRound`` accepts only
 ``[A-Za-z0-9_-]{1,100}`` for the stable writer identity and the supervised round
 ID. The runner used to paste ``<lane>-<owner>__<name>`` into both, so a dotted or
-very long slug was refused before the provider ever launched. These rows own the
-one canonical derivation, the runner wiring that uses it, and the supervised
-round that a dotted slug must now reach.
+very long slug was refused before the provider ever launched. Every identity the
+round already accepted stays exactly as it is, because persisted private lineage
+records hold it and a continuation refuses on an inexact writer. These rows own
+the one canonical derivation, that preservation, the runner wiring that uses it,
+and the supervised round that a dotted slug must now reach.
 """
 import contextlib
 import io as io_module
@@ -20,11 +22,18 @@ from code_mower import lane_delivery as delivery
 from code_mower.builder_lineage import History, Target
 from code_mower.builder_lineage_producer import Snapshot
 from lineage_consumer_fixtures import AUTHORS, complete_pr, git, pinned_repo, policy
+from lineage_producer_fixtures import (
+    AUTHORITY, BRANCH, POLICY, TRANSPORT, MemoryStore, episode, sha,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNERS = (ROOT/"tools/lanes/run_mac_lane.sh", ROOT/"templates/lanes/run_mac_lane.sh",
            ROOT/"src/code_mower/templates/lanes/run_mac_lane.sh")
 DOTTED = "owner/repo.example"
+#: A legal slug whose pasted identity LineageRound already accepted, so private
+#: lineage records for it hold that exact stable writer.
+DASHED = "owner/a--b"
+HISTORICAL_DASHED = "claude-owner__a--b"
 LANES = ("claude", "codex", "devin")
 
 
@@ -40,15 +49,48 @@ class CanonicalWriterIdentity(unittest.TestCase):
             ("claude", "codemower-ai/code-mower", "claude-codemower-ai__code-mower"),
             ("codex", "owner/repo", "codex-owner__repo"),
             ("devin", "Owner-9/some_repo", "devin-Owner-9__some_repo"),
+            # A name may legally contain '--'; LineageRound already accepted
+            # this identity, so private records hold it and it is never rewritten.
+            ("claude", DASHED, HISTORICAL_DASHED),
+            ("claude", "owner/a--b--c", "claude-owner__a--b--c"),
+            ("codex", "own-er/le--ading", "codex-own-er__le--ading"),
         ):
             with self.subTest(repo=repo):
                 self.assertEqual(delivery.lineage_writer_id(lane, repo), expected)
                 self.assertAccepted(expected)
 
+    def test_every_accepted_historical_identity_is_preserved_verbatim(self):
+        # The migration hazard: an identity LineageRound already accepted is
+        # stored in private lineage records, so re-encoding it strands the
+        # repository at lineage_continuation()'s exact writer equality check.
+        # Only a genuinely ambiguous owner/name boundary is exempt, which the
+        # encoded rows below cover. 86 and 87 straddle the 100-character cap for
+        # a six-character lane.
+        slugs = ["owner/repo", "codemower-ai/code-mower", "owner/a--b", "owner/a--", "o/n",
+                 "owner/" + "n" * 86, "owner/" + "n" * 87, "Owner_9/Repo-9",
+                 "own/er__repo", "o/__b", "owner/repo_example-7d4b3c99832ebb9513776661"]
+        for lane in LANES:
+            for repo in slugs:
+                for run in (None, "20260917T091500Z-4242"):
+                    historical = f"{lane}-{repo.replace('/', '__')}"
+                    historical += "" if run is None else f"-{run}"
+                    if not re.fullmatch(delivery.LINEAGE_ID_PATTERN, historical):
+                        continue
+                    with self.subTest(lane=lane, repo=repo, run=run):
+                        self.assertEqual(delivery.lineage_writer_id(lane, repo, run=run),
+                                         historical)
+                        # For one lane the preserved and encoded namespaces are
+                        # disjoint: only an encoded identity begins '<lane>--'.
+                        self.assertFalse(historical.startswith(lane + "--"), historical)
+
     def test_dotted_long_and_hostile_slugs_become_accepted_identifiers(self):
         slugs = [DOTTED, "owner/repo.js", "owner/.hidden.name.", "owner/" + "n" * 100,
-                 "o" * 39 + "/" + "n" * 100, "owner/repo..name", "owner/a--b",
-                 "owner/éé", "owner/repo name", "owner/repo;rm -rf", "o_/_b"]
+                 "o" * 39 + "/" + "n" * 100, "owner/repo..name", "owner/éé",
+                 "owner/repo name", "owner/repo;rm -rf", "o_/_b", "own__er/repo",
+                 # Not a legal GitHub owner, and never a historical identity:
+                 # an owner starting with '-' would otherwise land the preserved
+                 # identity inside the encoded '<lane>--' namespace.
+                 "-owner/repo"]
         for lane in LANES:
             for repo in slugs:
                 with self.subTest(lane=lane, repo=repo):
@@ -65,8 +107,15 @@ class CanonicalWriterIdentity(unittest.TestCase):
                  "owner/repo..example", "owner/" + "n" * 100, "owner/" + "n" * 99,
                  "owner/" + "n" * 100 + ".git", "own/er__repo", "own__er/repo",
                  "owner/repo", "owner/repo.", "o_/_b", "o/__b",
-                 # A slug shaped like an encoded identity must not claim one.
-                 "owner/repo_example-7d4b3c99832ebb9513776661"]
+                 # Preserved identities carrying the encoding marker, next to
+                 # the encoded identities of slugs that sanitize to the same
+                 # readable text.
+                 DASHED, "owner/a--b--c", "owner/a__b", "owner/a..b", "owner/a-_b",
+                 # A slug shaped like an encoded identity must not claim one:
+                 # the preserved form keeps a single '-' after the lane, and an
+                 # owner starting with '-' is encoded rather than preserved.
+                 "owner/repo_example-7d4b3c99832ebb9513776661", "-owner/repo",
+                 "-owner__repo/x"]
         identities = {}
         for lane in LANES:
             for repo in slugs:
@@ -254,6 +303,81 @@ class SupervisedDottedSlugRound(unittest.TestCase):
         self.assertIn("ProducerRefusal", errors)
         self.assertEqual(self.io.target().head_sha, head)
         self.assertFalse(output.exists())
+
+
+class HistoricalRecordContinuation(unittest.TestCase):
+    """A persisted historical writer must still be the derived writer.
+
+    ``owner/a--b`` is a legal slug whose pasted ``claude-owner__a--b`` identity
+    ``LineageRound`` already accepted, so a private lineage record holds it.
+    Deriving anything else launches the provider and only then refuses at
+    ``lineage_continuation()``'s exact writer equality check, leaving the round
+    unrecordable and unpublishable.
+    """
+
+    ROUNDS = "/dashed-rounds"
+    STORE = "/dashed-producer-state"
+
+    def setUp(self):
+        from code_mower.builder_lineage_producer import ProducerStore
+        MemoryStore.records, MemoryStore.effects = {}, []
+        self.addCleanup(patch.stopall)
+        patch("code_mower.builder_lineage_producer.ContextStore", MemoryStore).start()
+        patch("code_mower.lane_handoff.ContextStore", MemoryStore).start()
+        patch.object(delivery, "_lineage_checkout").start()
+        self.memory = MemoryStore
+        self.store = ProducerStore(Path(self.STORE))
+
+    def target(self, n):
+        # The approved producer fixtures, moved onto the dashed slug.
+        return Target(DASHED, 42, BRANCH, sha(n))
+
+    def persist_historical_record(self):
+        """The record an earlier accepted round already wrote for this slug."""
+        record = dict(schema="code_mower.lineageProducer.v1", repo=DASHED, pr_number=42,
+            branch=BRANCH, episodes=[episode(1, repo=DASHED).to_mapping()],
+            writer=HISTORICAL_DASHED, round_id=HISTORICAL_DASHED + "-20260916T101500Z-11",
+            transport=TRANSPORT.__dict__)
+        self.memory.records[(self.STORE, self.store._key(self.target(1)))] = record
+        previous = self.store.read(self.target(1))
+        self.assertEqual(previous["writer"], HISTORICAL_DASHED)
+        return previous
+
+    def stopped_round(self, writer, round_id):
+        observer = delivery.LineageRound(Path(self.ROUNDS), round_id, writer, self.target(1),
+            TRANSPORT, Path(self.ROUNDS + "/checkout"), config={},
+            runtime_observation=lambda: "ready")
+        observer.started(11, 11)
+        observer.finish(quiescent=True)
+        return observer
+
+    def test_the_derived_writer_continues_the_persisted_historical_record(self):
+        previous = self.persist_historical_record()
+        writer = delivery.lineage_writer_id("claude", DASHED)
+        round_id = delivery.lineage_writer_id("claude", DASHED, run="20260917T091500Z-77")
+        self.assertEqual(writer, HISTORICAL_DASHED)
+        self.assertNotEqual(round_id, previous["round_id"])
+        observer = self.stopped_round(writer, round_id)
+        continuation = delivery.lineage_continuation(observer, self.target(2), previous)
+        self.assertEqual(continuation.writer, HISTORICAL_DASHED)
+        self.assertEqual(continuation.episode.writer_state, "same_writer")
+        self.assertEqual(continuation.episode.sequence, 2)
+        # Recordable, so the round still reaches publication as it did before.
+        self.assertTrue(self.store.record(continuation, self.target(2), POLICY, AUTHORITY,
+            History([]), author="source-bot", labels=["builder:codex"], config={},
+            runtime_observation=lambda: "ready"))
+        self.assertEqual(len(self.store.read(self.target(2))["episodes"]), 2)
+
+    def test_a_re_encoded_writer_would_refuse_the_same_persisted_record(self):
+        # The exact failure the preserved identity avoids, shown against the
+        # same record: the round launches and the continuation is then refused.
+        from code_mower.builder_lineage_producer import ProducerRefusal
+        previous = self.persist_historical_record()
+        encoded = delivery.lineage_writer_id("claude", DOTTED)
+        self.assertNotEqual(encoded, HISTORICAL_DASHED)
+        observer = self.stopped_round(encoded, encoded + "-20260917T091500Z-77")
+        with self.assertRaises(ProducerRefusal):
+            delivery.lineage_continuation(observer, self.target(2), previous)
 
 
 if __name__ == "__main__":  # pragma: no cover - direct execution convenience
