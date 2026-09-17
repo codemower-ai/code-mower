@@ -12,6 +12,7 @@ import copy
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -313,6 +314,8 @@ class GeneratedRunnerTests(unittest.TestCase):
                         explicit_issue_target: bool = False,
                         candidate_issues: str | None = None,
                         gh_call_log: Path | None = None,
+                        base_sha: str | None = None,
+                        supervise_log: Path | None = None,
                         ) -> tuple[subprocess.CompletedProcess, str, dict]:
         """Run the generated codex runner against a fake provider that opens a PR.
 
@@ -322,6 +325,12 @@ class GeneratedRunnerTests(unittest.TestCase):
         ``existing_branch`` makes the fake ``git ls-remote`` advertise that branch
         as already present on origin and ``existing_branch_prs`` is the ``gh pr
         list --head`` JSON attached to it.
+
+        ``base_sha`` is what the fake ``git rev-parse`` reports for the immutable
+        launch base. ``supervise_log`` records the exact ``lane-delivery
+        supervise`` argv this runner builds, one argument per line, and strips
+        the lineage selection from the invocation that actually runs so the
+        fixture stays offline while still inspecting what was passed.
         """
         ls_remote = "exit 0"
         if existing_branch is not None:
@@ -397,12 +406,17 @@ fi
 if [ "${1:-}" = "-C" ] && [ "${3:-}" = "ls-remote" ]; then
   __LS_REMOTE__
 fi
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "rev-parse" ] && [ "${4:-}" = "origin/main^{commit}" ]; then
+  __REV_PARSE__
+fi
 if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--git-path" ]; then
   printf '%s\\n' ".git/${3}"
   exit 0
 fi
 exit 0
-""".replace("owner/repo", repo).replace("__LS_REMOTE__", ls_remote),
+""".replace("owner/repo", repo).replace("__LS_REMOTE__", ls_remote).replace(
+                    "__REV_PARSE__",
+                    f"printf '%s\\n' '{base_sha}'; exit 0" if base_sha else ":"),
                 encoding="utf-8",
             )
             fake_git.chmod(0o755)
@@ -417,6 +431,51 @@ printf 'fake codex completed\\n'
                 encoding="utf-8",
             )
             enable_fake_codex_sandbox(fake_codex)
+            lane_delivery_env = dict(_LANE_DELIVERY_ENV)
+            if supervise_log is not None:
+                recorder = bin_dir / "recording-lane-delivery"
+                # The runner's own argv is the evidence, so it is written down
+                # verbatim before anything consumes it. The lineage selection is
+                # then dropped from the invocation that actually runs: starting a
+                # creation round would read the real repository, and this fixture
+                # is about what the runner passes, not about the round itself.
+                recorder.write_text(
+                    """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "supervise" ]; then
+  printf '%s\\n' "$@" > __SUPERVISE_LOG__
+  filtered=()
+  skip=0
+  provider_argv=0
+  for arg in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    # Everything after the first -- is the provider's own argv and is passed
+    # through untouched.
+    if [ "$provider_argv" = 1 ]; then
+      filtered+=("$arg")
+      continue
+    fi
+    if [ "$arg" = "--" ]; then
+      provider_argv=1
+      filtered+=("$arg")
+      continue
+    fi
+    case "$arg" in
+      --lineage-issue|--lineage-branch|--lineage-base|--lineage-writer|--lineage-store|--lineage-output)
+        skip=1; continue ;;
+    esac
+    filtered+=("$arg")
+  done
+  set -- "${filtered[@]}"
+fi
+exec __REAL_LANE_DELIVERY__ "$@"
+""".replace("__SUPERVISE_LOG__", shlex.quote(str(supervise_log)))
+   .replace("__REAL_LANE_DELIVERY__",
+            shlex.quote(_LANE_DELIVERY_ENV["CODE_MOWER_LANE_DELIVERY_CMD"])),
+                    encoding="utf-8",
+                )
+                recorder.chmod(0o755)
+                lane_delivery_env["CODE_MOWER_LANE_DELIVERY_CMD"] = str(recorder)
             argv = [str(runner), "--lane", "codex", "--repo", repo, "--max-minutes", "1"]
             if explicit_issue_target:
                 argv.extend(["--target", "issue:12"])
@@ -431,7 +490,7 @@ printf 'fake codex completed\\n'
                     "PROMPT_LOG": str(prompt_log),
                     "EXISTING_OPEN_PRS_JSON": existing_issue_prs,
                     "GH_CALL_LOG": str(gh_call_log) if gh_call_log else "",
-                    **_LANE_DELIVERY_ENV,
+                    **lane_delivery_env,
                 },
                 text=True,
                 capture_output=True,
@@ -475,6 +534,89 @@ printf 'fake codex completed\\n'
         self.assertEqual(guard["allowed_branch_expected_head"], "absent")
         self.assertNotIn("allowed_pattern", guard)
         self.assertEqual(guard["allowed_prefixes"], [])
+
+    # Creation lineage (codemower-ai/code-mower#1020) attests the pull request
+    # an issue-targeted round opens. These rows read the argv the runner itself
+    # builds for `lane-delivery supervise`, because the contract only holds if
+    # the real issue path passes the origin binding; calling the supervisor
+    # helper directly would prove nothing about this runner.
+    LANE_PREFIX_TEMPLATE = "{lane}/{issue_number}-{slug}"
+    CREATED_BRANCH = "codex/12-nv-accessible-label"
+
+    def _supervise_argv(self, **kwargs) -> tuple[subprocess.CompletedProcess, list[str], str, dict]:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "supervise-argv"
+            completed, prompt, guard = self._run_codex_lane(supervise_log=log, **kwargs)
+            argv = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        return completed, argv, prompt, guard
+
+    @staticmethod
+    def _flag(argv: list[str], flag: str) -> str | None:
+        return argv[argv.index(flag) + 1] if flag in argv else None
+
+    def test_issue_runner_launches_a_creation_round_bound_to_the_reserved_branch(self) -> None:
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        base = "d" * 40
+        completed, argv, prompt, guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE,
+            base_sha=base)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        # The round is bound to the issue it was launched for, the branch the
+        # runner reserved before launch, and the immutable base this checkout
+        # sits on -- not to anything the writer chooses afterwards.
+        self.assertEqual(self._flag(argv, "--lineage-issue"), "12")
+        self.assertEqual(self._flag(argv, "--lineage-branch"), self.CREATED_BRANCH)
+        self.assertEqual(self._flag(argv, "--lineage-base"), base)
+        self.assertTrue((self._flag(argv, "--lineage-writer") or "").startswith("codex"))
+        store = self._flag(argv, "--lineage-store") or ""
+        self.assertTrue(store.endswith("/lineage/owner__repo/issue-12"), store)
+        self.assertTrue((self._flag(argv, "--lineage-output") or "").endswith(".lineage.json"))
+        # An issue-targeted round has no pre-existing pull request to hand over
+        # or to snapshot, and the supervisor refuses the combination outright.
+        self.assertNotIn("--lineage-before", argv)
+        self.assertNotIn("--lineage-handoff", argv)
+        self.assertNotIn("--lineage-create", argv)
+        # The reserved branch is the one name the writer is told to push and the
+        # only one the guard authorizes, so the reservation is not advisory.
+        self.assertIn("push exactly the branch " + self.CREATED_BRANCH, prompt)
+        self.assertEqual(guard["allowed_branch"], self.CREATED_BRANCH)
+        self.assertEqual(guard["allowed_prefixes"], [])
+
+    def test_a_policy_branch_outside_the_lane_prefixes_keeps_the_plain_bootstrap(self) -> None:
+        # fix/12-... cannot be reserved by this lane, and the no-PR bootstrap
+        # this runner has always performed must survive that, not refuse.
+        own = self._pr(77, "fix/12-nv-accessible-label", labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, argv, _prompt, _guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+        self.assertIn("is outside this lane's prefixes", completed.stdout)
+
+    def test_an_existing_lane_owned_policy_branch_starts_no_creation_round(self) -> None:
+        # Continuing work that already has a branch is not a creation, and the
+        # reservation would refuse it; the runner must not ask for one.
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, argv, _prompt, _guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE,
+            existing_branch=self.CREATED_BRANCH, existing_branch_head="c" * 40,
+            existing_branch_prs=json.dumps([own]))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+
+    def test_every_runner_copy_passes_the_same_creation_origin_binding(self) -> None:
+        for path in (ROOT / "tools/lanes/run_mac_lane.sh",
+                     ROOT / "templates/lanes/run_mac_lane.sh",
+                     ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh"):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(runner=path.name, parent=path.parent.as_posix()):
+                self.assertIn('--lineage-issue "$num" --lineage-branch "$creation_branch"', text)
+                self.assertIn('--lineage-store "$creation_store"', text)
 
     def test_runner_refuses_an_existing_policy_branch_it_does_not_own(self) -> None:
         # fix/12-nv-accessible-label is the one name the policy allows for

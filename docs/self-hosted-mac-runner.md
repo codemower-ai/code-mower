@@ -327,6 +327,22 @@ installation would otherwise report success and only fail once the runner needed
 the derivation — after those effects. The probe derives a fixed slug and writes
 nothing, so it has no effect of its own.
 
+An issue-targeted run has no pull request to publish lineage on, so the runner
+supervises the creation itself: it passes `--lineage-issue`, the branch it
+resolved and reserved before launch as `--lineage-branch`, the immutable
+`--lineage-base` the checkout sits on, the canonical `--lineage-writer`, and a
+private store and output. This applies to exactly the bootstrap case — the
+repository configures `delivery_policy.branch_template`, no pull request closes
+the issue yet, the resolved branch exists nowhere on the remote, and its name is
+inside that lane's own configured prefixes. Every other issue run continues a
+pull request or a branch that already exists and keeps the long-standing no-PR
+bootstrap, with post-hoc attribution as before. The reserved branch is the same
+one name the pre-push guard authorizes and the prompt tells the writer to push,
+so the writer never chooses it. Once a created pull request is observed, its
+private record moves from `lineage/<owner>__<name>/issue-<n>` onto the delivered
+pull request number, so the next fix round continues that chain; a destination
+that already exists belongs to another round and is left alone.
+
 Code Mower asks the existing local supervisor to stop its own process group, or
 cancels the bound remote session through the existing idempotent lifecycle. It
 then independently verifies raw writer exit or suspension. A logical completed

@@ -586,6 +586,12 @@ HOOK
 target_pr_branch=""
 target_pr_head=""
 policy_branch_expected_head=""
+# Non-empty only for an issue-targeted bootstrap that may attest the pull
+# request it creates: the single branch reserved for that round before launch.
+creation_branch=""
+# The created pull request has no number at launch, so its private record
+# starts under the issue the round was launched for.
+creation_store=""
 # This bounded owner action contains no source binding or provider diagnostics.
 # Its exact-head marker also deduplicates invalid/missing private source input.
 handoff_owner_action() {
@@ -899,6 +905,25 @@ if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
         exit 1
         ;;
     esac
+  fi
+  # Creation lineage attests the pull request this run opens, so it applies to
+  # exactly the bootstrap case: nothing closes the issue yet, the policy branch
+  # exists nowhere on the remote, and the name is inside this lane's own
+  # prefixes. Every other issue run is a continuation of a pull request or a
+  # branch that already exists; the reservation in the creation contract refuses
+  # those anyway, and refusing them here as well would take away the no-PR
+  # bootstrap this runner has always performed. The one branch reserved for the
+  # round is the branch the guard already pins and the prompt already names, so
+  # the writer is never free to choose a different one.
+  if [ "$issue_pr_status" = "none" ] && [ "$policy_branch_expected_head" = "absent" ]; then
+    if printf '%s\n' "$lane_branch_prefixes_json" \
+      | jq -e --arg branch "$resolved_branch" \
+          'any(.[]; . as $prefix | ($branch | ascii_downcase | startswith($prefix)))' >/dev/null; then
+      creation_branch="$resolved_branch"
+      creation_store="${HOME}/.local/share/code-mower/lineage/${repo_key}/issue-${num}"
+    else
+      echo "${LANE}: policy branch ${resolved_branch} is outside this lane's prefixes (${lane_branch_prefixes_display}); issue #${num} runs without creation lineage"
+    fi
   fi
 elif [ "$kind" = "pr" ] && [ "$mode" != "audit" ] && [ -n "$repo_branch_pattern" ]; then
   # A policy-bound fix round writes exactly the validated target branch: the
@@ -1261,6 +1286,15 @@ run_provider() {
         [ -d "$lineage_store" ] || supervise_args+=(--lineage-create)
       fi
       [ -z "$handoff_file" ] || supervise_args+=(--lineage-handoff "$handoff_file" --lineage-handoff-root "$HANDOFF_STATE_DIR")
+    elif [ "$kind" = "issue" ] && [ "$mode" != "audit" ] && [ -n "$creation_branch" ]; then
+      # An issue-targeted round has no pre-existing pull request, so it carries
+      # no --lineage-before and no handoff: what it is bound to is the issue,
+      # the immutable base this checkout sits on, and the branch reserved for it
+      # before launch. The supervisor claims that branch and refuses the round
+      # if anything already holds it.
+      supervise_args+=(--lineage-issue "$num" --lineage-branch "$creation_branch"
+        --lineage-base "$lineage_base" --lineage-writer "$lineage_writer"
+        --lineage-store "$creation_store" --lineage-output "${log%.log}.lineage.json")
     fi
     [ -n "$provider_stdin" ] && supervise_args+=(--stdin-file "$provider_stdin")
     "${lane_delivery[@]}" supervise "${supervise_args[@]}" -- "$@"
@@ -1699,7 +1733,20 @@ fi
 # validated delivery, with fresh exact metadata and immutable policy/history.
 if [ "$mode" != "audit" ] && [ "$kind" = "issue" ] && [ "$observed_transition" = "pr_opened" ]; then
   delivered_pr="$(jq -r '.pr_number // empty' "$after_state")"
-  if ! "${lane_delivery[@]}" lineage-record --repo "$REPO" --pr "$delivered_pr" \
+  if [ -n "$creation_branch" ] && [ -s "${log%.log}.lineage.json" ]; then
+    # The supervised creation round already published exact attribution for the
+    # one pull request it is bound to, so the weaker post-hoc record would only
+    # restate it. Move the private record onto the delivered number instead, so
+    # the next fix round continues this chain rather than starting a new one. A
+    # destination that already exists belongs to some other round and is left
+    # untouched: a stranded record costs a chain restart, overwriting one would
+    # cost another pull request its history.
+    delivered_store="${HOME}/.local/share/code-mower/lineage/${repo_key}/${delivered_pr}"
+    if [ -d "$creation_store" ] && printf '%s' "$delivered_pr" | grep -Eq '^[1-9][0-9]*$' \
+      && [ ! -e "$delivered_store" ] && ! mv "$creation_store" "$delivered_store"; then
+      echo "${LANE}: created pull request #${delivered_pr} keeps its private lineage record under issue #${num}" >&2
+    fi
+  elif ! "${lane_delivery[@]}" lineage-record --repo "$REPO" --pr "$delivered_pr" \
       --base "$lineage_base" --lane "$LANE" --output "${log%.log}.builder.json"; then
     echo "${LANE}: builder provenance record skipped; trusted lineage attribution refused" >&2
   fi
