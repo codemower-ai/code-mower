@@ -1259,6 +1259,8 @@ def _add_supervise_parser(subparsers: Any) -> None:
     supervise.add_argument("--writer-repo")
     supervise.add_argument("--writer-lane")
     supervise.add_argument("--lineage-before", type=Path)
+    supervise.add_argument("--lineage-issue", type=int,
+                           help="Supervise an issue-targeted round that creates the pull request itself")
     supervise.add_argument("--lineage-base")
     supervise.add_argument("--lineage-store", type=Path)
     supervise.add_argument("--lineage-create", action="store_true")
@@ -1534,7 +1536,9 @@ def _supervise_main(args: argparse.Namespace) -> int:
         raise LaneDeliveryError("supervise requires a command after --")
     writer = None
     finish_lineage = None
-    if args.lineage_before:
+    if getattr(args, "lineage_issue", None) is not None:
+        writer, finish_lineage = _start_creation_round(args)
+    elif args.lineage_before:
         writer, finish_lineage = _start_lineage_round(args)
     elif args.writer:
         from .lane_handoff import LocalWriter
@@ -1752,6 +1756,228 @@ def lineage_continuation(round_observer, after, previous):
         destination_lane=observed.transport.lane, expected_head=observed.before.head_sha,
         resulting_head=after.head_sha, writer_state="same_writer", kind="continuation"),
         observed.writer, observed.round_id, observed.transport)
+
+
+@dataclass(frozen=True)
+class CreationOrigin:
+    """The immutable issue-targeted binding one creation round is launched with.
+
+    The issue number never reaches published metadata. It names the unit of work
+    whose single created pull request may be attributed, so two rounds launched
+    against different issues can never share one supervised creation record.
+    """
+    repo: str
+    issue_number: int
+    base_sha: str
+
+    def __post_init__(self) -> None:
+        from .builder_lineage_producer import ProducerRefusal
+        for name in ("repo", "base_sha"):
+            value = getattr(self, name)
+            if not isinstance(value, str):
+                raise ProducerRefusal("Exact creation origin text required.")
+            object.__setattr__(self, name, value.strip().lower())
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*", self.repo):
+            raise ProducerRefusal("Exact OWNER/REPO creation origin required.")
+        if type(self.issue_number) is not int or self.issue_number <= 0:
+            raise ProducerRefusal("Exact positive issue number required.")
+        if not re.fullmatch(r"[0-9a-f]{40}", self.base_sha):
+            raise ProducerRefusal("Immutable 40-hex starting base required.")
+
+
+def _creation_repository(checkout):
+    from .builder_lineage_producer import ProducerRefusal
+    path = Path(checkout)
+    if path != path.resolve() or not (path / ".git").exists():
+        raise ProducerRefusal("Known creation checkout unavailable.")
+    return path
+
+
+def _creation_checkout(checkout, origin):
+    """A creation round may only start from the exact immutable base it declares."""
+    from .builder_lineage_producer import ProducerRefusal
+    path = _creation_repository(checkout)
+    head = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"],
+                                   text=True, timeout=10, stderr=subprocess.DEVNULL).strip()
+    if head != origin.base_sha:
+        raise ProducerRefusal("Creation checkout head differs from the immutable base.")
+    return path
+
+
+def observed_creation_branch(checkout, origin):
+    """Read the exact branch and head the stopped writer left in its own checkout.
+
+    Only the supervised writer knows which branch it created, so the branch is
+    observed rather than declared. The immutable base must be a real ancestor of
+    that head: a branch that never grew out of the launch base is not this
+    round's creation, and an unmoved head created nothing at all.
+    """
+    from .builder_lineage_producer import ProducerRefusal
+    path = _creation_repository(checkout)
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(path), *args], text=True,
+                                       timeout=10, stderr=subprocess.DEVNULL).strip()
+    branch, head = git("branch", "--show-current"), git("rev-parse", "HEAD")
+    if not branch or head == origin.base_sha:
+        raise ProducerRefusal("Stopped writer left no created branch above the base.")
+    try:
+        subprocess.run(["git", "-C", str(path), "merge-base", "--is-ancestor",
+                        origin.base_sha, head], check=True, timeout=10,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.SubprocessError:
+        raise ProducerRefusal("Created head does not descend from the immutable base.") from None
+    return branch, head
+
+
+def discover_created_pull(io, origin, branch, head_sha):
+    """Bind the observed created branch to exactly one readable pull request.
+
+    Ambiguity fails closed in both directions: no pull request for the observed
+    branch, or more than one ever opened from it, leaves this round unable to
+    name what it created.
+    """
+    from .builder_lineage import Target
+    from .builder_lineage_producer import ProducerRefusal
+    raw = io.pulls_for_branch(origin.repo, branch)
+    if len(raw) != 1:
+        raise ProducerRefusal("Ambiguous or absent created pull request for the observed branch.")
+    entry = raw[0]
+    if (not isinstance(entry, dict) or entry.get("state") != "open"
+            or not isinstance(entry.get("base"), dict)
+            or not isinstance(entry["base"].get("repo"), dict)
+            or not isinstance(entry.get("head"), dict)):
+        raise ProducerRefusal("Complete open created pull request metadata required.")
+    created = Target(entry["base"]["repo"].get("full_name"), entry.get("number"),
+                     entry["head"].get("ref"), entry["head"].get("sha"))
+    if (created.repo, created.branch, created.head_sha) != (origin.repo, branch, head_sha):
+        raise ProducerRefusal("Created pull request differs from the observed branch head.")
+    return created
+
+
+class LineageCreationRound:
+    """An issue-targeted supervised round; there is no pull request to bind yet.
+
+    Registration happens before launch against the immutable base the checkout
+    actually sits on. Stop/reap observation, quiescence, the stable named writer
+    and the unique non-reusable round ID remain the existing LocalWriter
+    evidence that LineageRound already depends on.
+    """
+    def __init__(self, root, round_id, writer, origin, transport, checkout, *,
+                 config, runtime_observation):
+        from .builder_lineage_producer import ProducerRefusal, require_producer
+        from .lane_handoff import LocalWriter
+        require_producer(transport, config, runtime_observation)
+        if not isinstance(origin, CreationOrigin) or any(
+                not isinstance(v, str) or not re.fullmatch(LINEAGE_ID_PATTERN, v)
+                for v in (round_id, writer)):
+            raise ProducerRefusal("Exact named supervised creation round required.")
+        self.checkout = _creation_checkout(checkout, origin)
+        self.control = LocalWriter(root, round_id)
+        self.control.register(repo=origin.repo, lane=transport.lane, checkout=self.checkout)
+        self.round_id, self.writer, self.origin, self.transport = round_id, writer, origin, transport
+        with self.control.store.locked(self.control.key) as locked:
+            record = locked.read()
+            record["lineage_creation"] = self._binding()
+            locked.write(record)
+
+    def _binding(self):
+        return dict(round_id=self.round_id, writer=self.writer,
+                    origin=dict(repo=self.origin.repo, issue_number=self.origin.issue_number,
+                                base_sha=self.origin.base_sha),
+                    transport=self.transport.__dict__)
+
+    def stop_requested(self):
+        return self.control.stop_requested()
+
+    def started(self, pid, pgid):
+        self.control.started(pid, pgid)
+
+    def finish(self, *, quiescent):
+        self.control.finish(quiescent=quiescent)
+
+    def observed(self):
+        from .builder_lineage_producer import ProducerRefusal
+        with self.control.store.locked(self.control.key) as locked:
+            record = locked.read()
+        if (not isinstance(record, dict) or record.get("schema") != "code_mower.localWriter.v1"
+                or record.get("lineage_creation") != self._binding()
+                or record.get("repo") != self.origin.repo
+                or record.get("lane") != self.transport.lane
+                or record.get("checkout") != str(self.checkout)
+                or record.get("finished") is not True or record.get("quiescent") is not True
+                or any(type(record.get(k)) is not int or record[k] <= 0 for k in ("pid", "pgid"))):
+            raise ProducerRefusal("Independent stopped/reaped named writer evidence required.")
+        return self
+
+
+def lineage_creation(round_observer, created, base_sha):
+    """One stopped issue-targeted round that opened exactly this pull request."""
+    from .builder_lineage import Episode
+    from .builder_lineage_producer import ProducerRefusal, _delivery
+    if not isinstance(round_observer, LineageCreationRound):
+        raise ProducerRefusal("A supervised creation round observer is required.")
+    observed = round_observer.observed()
+    if (created.repo, base_sha) != (observed.origin.repo, observed.origin.base_sha):
+        raise ProducerRefusal("Created pull request is outside the supervised creation origin.")
+    return _delivery(Episode(sequence=1, repo=created.repo, pr_number=created.pr_number,
+        branch=created.branch, source_lane=observed.transport.lane,
+        destination_lane=observed.transport.lane, expected_head=base_sha,
+        resulting_head=created.head_sha, writer_state="terminated", kind="creation"),
+        observed.writer, observed.round_id, observed.transport)
+
+
+def _start_creation_round(args, *, io=None, runtime_observation=None):
+    """One launcher lifetime owns an issue-targeted round and its created PR.
+
+    Nothing is published before the writer is independently observed to have
+    stopped, the created branch is read back from its own checkout, and exactly
+    one readable pull request is bound to that exact branch head.
+    """
+    from .builder_lineage_producer import GitHub, ProducerStore, Transport, exact_snapshot, publish
+    from .provider_runners.lineage import require_capabilities, trusted_policy
+    from . import lane_runtime
+    require_capabilities()
+    if args.lineage_output is None:
+        raise LaneDeliveryError("Attribution output required before launch")
+    if not (args.lineage_store and args.writer_repo and args.writer_lane and args.cwd
+            and args.writer and args.lineage_writer and args.writer_state_dir):
+        raise LaneDeliveryError("Creation lineage requires the supervised writer bindings and a private store")
+    if args.lineage_before or args.lineage_handoff:
+        raise LaneDeliveryError("Creation lineage has no pre-existing pull request target")
+    config, identity, authorities = trusted_policy(args.cwd, args.lineage_base)
+    origin = CreationOrigin(args.writer_repo, args.lineage_issue, args.lineage_base)
+    transport = Transport(args.writer_lane, "devin_cli" if args.writer_lane == "devin" else args.writer_lane,
+                          args.writer_lane + "_cli", "local_cli")
+    prefixes = [prefix for prefix, lane in identity.branch_prefixes if lane == transport.lane]
+    if not prefixes:
+        raise LaneDeliveryError("Creation requires a configured branch prefix for this lane")
+    io = io if io is not None else GitHub()
+    if runtime_observation is None:
+        def runtime_observation():
+            lane_runtime.prepare(args.cwd, sys.executable)
+            return "ready"
+    store = ProducerStore(args.lineage_store)
+    observer = LineageCreationRound(args.writer_state_dir, args.writer, args.lineage_writer,
+        origin, transport, args.cwd, config=config, runtime_observation=runtime_observation)
+
+    def finish(result):
+        from .builder_runs import record_lineage_builder
+        observer.observed()
+        if result.reason != "completed" or result.exit_code != 0:
+            raise LaneDeliveryError("No completed supervised delivery")
+        branch, head_sha = observed_creation_branch(observer.checkout, origin)
+        if not any(branch.lower().startswith(prefix) for prefix in prefixes):
+            raise LaneDeliveryError("Created branch is outside this lane's configured prefixes")
+        created = discover_created_pull(io, origin, branch, head_sha)
+        snapshot = exact_snapshot(io, created)
+        delivery = lineage_creation(observer, created, origin.base_sha)
+        store.record(delivery, created, identity, authorities, io.history(created),
+                     author=snapshot.author, labels=snapshot.labels, config=config,
+                     runtime_observation=runtime_observation, create=True)
+        publication = publish(io, created, identity, authorities, store.read(created)["episodes"])
+        record_lineage_builder(publication.observation, transport, args.lineage_output,
+            created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat())
+    return observer, finish
 
 
 def _start_lineage_round(args, *, io=None, runtime_observation=None):

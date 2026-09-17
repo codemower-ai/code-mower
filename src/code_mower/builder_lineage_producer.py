@@ -12,8 +12,8 @@ import re
 import subprocess
 
 from .builder_lineage import (
-    Authorities, Chain, ContractError, Episode, History, Identity, LINEAGE_MARKER,
-    Target, parse_markers, render, resolve,
+    Authorities, Chain, ContractError, Episode, FIRST_EPISODE_KINDS, History, Identity,
+    LINEAGE_MARKER, Target, parse_markers, render, resolve,
 )
 from .context_store import ContextStore, strict_json
 
@@ -285,8 +285,10 @@ class ProducerStore:
             raw = locked.read()
             if raw is None and create:
                 previous = []
-                if delivery.episode.sequence != 1 or delivery.episode.kind != "handoff":
-                    raise ProducerRefusal("Creation requires a first verified takeover.")
+                # A chain starts either at a verified takeover of an existing PR
+                # or at the verified creation of the PR by this very lane.
+                if delivery.episode.sequence != 1 or delivery.episode.kind not in FIRST_EPISODE_KINDS:
+                    raise ProducerRefusal("Creation requires a first verified takeover or PR creation.")
             else:
                 raw = self._read(raw, target)
                 previous = raw["episodes"]
@@ -341,6 +343,20 @@ class GitHub:
     def history(self, target):
         return fetch_history(lambda page, size: self._json(
             f"repos/{target.repo}/issues/{target.pr_number}/comments?per_page={size}&page={page}"))
+
+    def pulls_for_branch(self, repo, branch):
+        """Every PR ever opened from one same-repository branch, in one finite read.
+
+        ``state=all`` is deliberate: a closed or superseded pull request on the
+        same branch still makes the creation ambiguous, and a caller that only
+        saw the open one would bind a creation episode to the wrong PR.
+        """
+        owner = repo.split("/")[0]
+        raw = self._json(f"repos/{repo}/pulls?state=all&per_page=100"
+                         f"&head={owner}:{branch}")
+        if not isinstance(raw, list) or len(raw) >= 100:
+            raise ProducerRefusal("Complete readable created pull request list required.")
+        return raw
 
     def post(self, target, body):
         self._json(f"repos/{target.repo}/issues/{target.pr_number}/comments",

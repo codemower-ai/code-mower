@@ -23,6 +23,10 @@ LINEAGE_SCHEMA = "code_mower.builderLineage.v1"
 LINEAGE_MARKER = "CODE_MOWER_BUILDER_LINEAGE"
 CONTINUATION_WRITER_STATE = "same_writer"
 HANDOFF_WRITER_STATES = frozenset({"terminated", "completed", "cancelled"})
+# A creation records the same independently observed writer exit as a handoff,
+# because the only writer it can name is the lane that opened the pull request.
+CREATION_WRITER_STATES = HANDOFF_WRITER_STATES
+FIRST_EPISODE_KINDS = frozenset({"handoff", "creation"})
 
 
 class ContractError(ValueError):
@@ -160,6 +164,17 @@ class Episode:
             if (values["source_lane"] == values["destination_lane"]
                     or values["writer_state"] not in HANDOFF_WRITER_STATES):
                 raise ContractError("handoff requires distinct lanes and a verified stopped writer")
+        elif values["kind"] == "creation":
+            # An issue-targeted lane opens the pull request itself: it is the only
+            # contributor, it starts from an immutable base that is not the created
+            # head, and only its own observed exit can name it. A creation is the
+            # origin of a chain here, never a later episode.
+            if (values["sequence"] != 1
+                    or values["source_lane"] != values["destination_lane"]
+                    or values["expected_head"] == values["resulting_head"]
+                    or values["writer_state"] not in CREATION_WRITER_STATES):
+                raise ContractError("creation requires the first episode, one lane, "
+                                    "an immutable distinct base and a verified stopped writer")
         elif values["kind"] == "continuation":
             if (values["source_lane"] != values["destination_lane"]
                     or values["writer_state"] != CONTINUATION_WRITER_STATE):
@@ -346,8 +361,8 @@ class Chain:
             if episode.sequence != index:
                 raise ContractError("episode sequences must be contiguous from 1")
             if index == 1:
-                if episode.kind != "handoff":
-                    raise ContractError("first episode must be a handoff")
+                if episode.kind not in FIRST_EPISODE_KINDS:
+                    raise ContractError("first episode must be a handoff or a creation")
             else:
                 previous = ordered[index - 2]
                 if (episode.expected_head, episode.source_lane) != (
