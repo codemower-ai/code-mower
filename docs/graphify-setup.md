@@ -86,6 +86,11 @@ configuration files with `PIP_CONFIG_FILE=/dev/null`. `--isolated` alone still
 permits global/site configuration and a file selected by `PIP_CONFIG_FILE`;
 those sources must not add an alternate index or local dependency source.
 
+The next two paragraphs are **post-`v1.4.2`**: they describe current `main` and
+arrived with [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007),
+so they are not part of the published `v1.4.2` package. See
+[Published `v1.4.2` versus current `main`](#published-v142-versus-current-main).
+
 Install any required language extras into this same separate environment before
 the contained build. For SQL inputs, select `[sql]` on the verified local wheel
 using the same canonical-index restrictions; keep the accepted provider version
@@ -221,8 +226,13 @@ to keep or delete separately; Code Mower never touches it.
 ## Published `v1.4.2` versus current `main`
 
 The published `v1.4.2` package on the package index contains the optional
-Graphify integration exactly as it originally shipped. Everything above
-describes that package.
+Graphify integration exactly as it originally shipped. The base setup and
+ramp-up above -- acquisition, the separate contained offline build, and steps 1
+through 7 -- describe that published package. The paragraphs above that are
+explicitly marked post-`v1.4.2` describe current `main` instead: the
+language-extras and runtime-ownership paragraphs under
+[Separate acquisition environment](#separate-acquisition-environment) are the
+only ones so marked today.
 
 [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007) has since
 merged to `main` with further real-pilot compatibility fixes: a bounded 16 MiB
@@ -241,10 +251,15 @@ not a Graphify upgrade: `graphifyy` `0.9.58` and the recorded wheel digest above
 stay exactly as they are.
 
 Because a published generation is never rewritten in place, installing that
-later release does not repair a generation you already built. A generation built
-before it can be partial -- a frontend inventory whose oversized provider
-manifest was refused, or inputs left unprocessed by a missing language parser.
-After upgrading, rebuild it explicitly with `code-mower context-graph refresh`
+later release does not repair a generation you already built. That matters only
+for a generation one of #1007's compatibility gaps actually affected -- most
+often an older frontend generation left **partial**: one whose oversized
+provider manifest was refused, or one whose inputs a missing language parser
+could not process. Those are the generations to rebuild.
+
+This is not a blanket rebuild of everything built before that future release.
+Ask `code-mower context-graph status --json` first: a generation it already
+reports usable is unaffected and needs no rebuild. If it reports `partial`,
+rebuild that generation explicitly with `code-mower context-graph refresh`
 (step 6), which publishes a new generation at the same revision, then confirm
-`code-mower context-graph status --json` reports it usable rather than
-`partial`.
+`status` reports it usable rather than `partial`.

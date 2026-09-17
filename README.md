@@ -302,8 +302,10 @@ The published v1.4.2 package contains that originally shipped integration.
 Further real-pilot compatibility fixes -- a bounded provider-manifest reader,
 `doc_ref` exclusions, and JavaScript/TypeScript test-convention recognition --
 merged to `main` after the release and are intended for the next appropriate
-release. The accepted `0.9.58` provider pin is unchanged, and a generation built
-before that release has to be rebuilt explicitly; upgrading does not repair one.
+release. The accepted `0.9.58` provider pin is unchanged. Upgrading never
+repairs a generation already built, so a generation those gaps left `partial` --
+most often an older partial frontend generation -- has to be rebuilt explicitly;
+one `code-mower context-graph status --json` already reports usable does not.
 See [Optional Graphify Setup](https://github.com/codemower-ai/code-mower/blob/main/docs/graphify-setup.md#published-v142-versus-current-main).
 
 ## Documentation

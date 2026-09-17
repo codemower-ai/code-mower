@@ -531,6 +531,76 @@ class BoardAndGraphifyDiscoverabilityTests(unittest.TestCase):
         self.assertIn("/pull/1007", roadmap)
         self.assertIn("the published `v1.4.2` package does not contain them", roadmap)
 
+    def test_graphify_setup_does_not_claim_every_paragraph_is_the_published_package(self):
+        """#1007's paragraphs sit above the boundary section, so "everything
+        above" would be false. The page must scope the claim to the base setup
+        and ramp-up, and mark the post-v1.4.2 paragraphs where they appear."""
+        raw = _read("docs/graphify-setup.md")
+        setup = " ".join(raw.split())
+        # The false blanket claim must not come back in any spelling.
+        for blanket in ("Everything above describes that package",
+                        "Everything above describes the published",
+                        "All of the above describes that package"):
+            with self.subTest(phrase=blanket):
+                self.assertNotIn(blanket.lower(), setup.lower())
+        # The published package is claimed only for the base setup and ramp-up.
+        self.assertIn("The base setup and ramp-up above", setup)
+        self.assertIn("describe that published package", setup)
+        # The #1007 paragraphs are marked where a reader meets them, above the
+        # boundary section, and the boundary section points back at that mark.
+        marker = "The next two paragraphs are **post-`v1.4.2`**"
+        self.assertIn(marker, setup)
+        self.assertLess(
+            raw.index("The next two paragraphs are"),
+            raw.index("## Published `v1.4.2` versus current `main`"),
+            "the post-v1.4.2 marker must precede the boundary section it explains",
+        )
+        self.assertIn("explicitly marked post-`v1.4.2` describe current `main`", setup)
+        # Both #1007 paragraphs still sit under the acquisition heading the
+        # boundary section names.
+        acquisition = raw.split("## Separate acquisition environment", 1)[1]
+        acquisition = acquisition.split("## Separate contained offline build", 1)[0]
+        self.assertIn("Install any required language extras", acquisition)
+        self.assertIn("If runtime ownership checks refuse", acquisition)
+        self.assertIn("The next two paragraphs are", acquisition)
+
+    def test_rebuild_guidance_is_scoped_to_generations_the_1007_gaps_affected(self):
+        """Not every generation built before the next release needs a rebuild --
+        only one the #1007 compatibility gaps left partial."""
+        pages = {
+            "docs/graphify-setup.md": _read("docs/graphify-setup.md"),
+            "README.md": _read("README.md"),
+            "docs/current-state-and-roadmap.md": _read(
+                "docs/current-state-and-roadmap.md"
+            ),
+        }
+        # Wording that tells every reader to rebuild regardless of state.
+        overclaims = (
+            "a generation built before that release has to be rebuilt explicitly",
+            "a generation built before that future release must be rebuilt",
+            "every generation built before",
+            "all generations built before",
+            "any generation built before that release must be rebuilt",
+        )
+        for relative, raw in pages.items():
+            collapsed = " ".join(raw.split()).lower()
+            for phrase in overclaims:
+                with self.subTest(doc=relative, phrase=phrase):
+                    self.assertNotIn(phrase, collapsed)
+            with self.subTest(doc=relative, requirement="partial-scoped"):
+                # The rebuild is tied to the partial state, not to a build date.
+                self.assertIn("partial", collapsed)
+                self.assertIn("frontend generation", collapsed)
+            with self.subTest(doc=relative, requirement="usable-is-exempt"):
+                # A generation status already reports usable is left alone.
+                self.assertIn("context-graph status --json", collapsed)
+                self.assertIn("already reports usable", collapsed)
+
+        setup = " ".join(pages["docs/graphify-setup.md"].split())
+        self.assertIn("This is not a blanket rebuild", setup)
+        self.assertIn("is unaffected and needs no rebuild", setup)
+        self.assertIn("If it reports `partial`", setup)
+
     def test_no_current_doc_calls_1007_open_or_unmerged(self):
         """#1007 merged at b863e638. Nothing current may still call it open."""
         stale = (

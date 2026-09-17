@@ -237,9 +237,13 @@ explicit refusal of an oversized provider manifest, `doc_ref` nodes as declared
 non-code exclusions, and JavaScript/TypeScript test-convention and `imports`
 recognition in `related_tests`. They are on `main` and intended for the next
 appropriate release; the published `v1.4.2` package does not contain them. The
-accepted `0.9.58` provider pin is unchanged, and a generation built before that
-future release must be rebuilt explicitly -- upgrading Code Mower does not
-repair one, because a published generation is never rewritten in place.
+accepted `0.9.58` provider pin is unchanged. Because a published generation is
+never rewritten in place, upgrading Code Mower repairs no generation already
+built -- but only the generations those compatibility gaps actually affected
+need rebuilding. A generation they left `partial`, most often an older partial
+frontend generation, must be rebuilt explicitly with
+`code-mower context-graph refresh`; one `code-mower context-graph status --json`
+already reports usable does not.
 
 ### 3. Board Clarity And Session Visibility -- shipped in `v1.4.2` ([#945](https://github.com/codemower-ai/code-mower/issues/945) / release [#952](https://github.com/codemower-ai/code-mower/issues/952))
 
