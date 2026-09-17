@@ -1033,12 +1033,14 @@ def _setup_drift_config_source_line(payload: dict[str, Any]) -> str | None:
 def _setup_drift_comparison_lines(payload: dict[str, Any]) -> list[str]:
     """Render the operands and the classification legend, or nothing when absent."""
 
-    comparison = payload.get("comparison") or {}
-    if not isinstance(comparison, Mapping):
+    comparison = payload.get("comparison")
+    if not isinstance(comparison, Mapping) or not comparison:
         return []
-    source = comparison.get("source") or {}
-    target = comparison.get("target") or {}
-    if not isinstance(source, Mapping) or not isinstance(target, Mapping):
+    source = comparison.get("source")
+    target = comparison.get("target")
+    if not isinstance(source, Mapping) or not source:
+        return []
+    if not isinstance(target, Mapping) or not target:
         return []
     source_label = str(source.get("label") or SETUP_DRIFT_SOURCE_LABEL)
     target_label = str(target.get("label") or SETUP_DRIFT_TARGET_LABEL)

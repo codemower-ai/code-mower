@@ -64,7 +64,9 @@ release below.
   grace, and an unavailable listener inventory is still reported as a tooling
   gap rather than retried. The observation is never synthesized: the reported
   Boards are whatever the final poll returned, and the timing evidence
-  (`startup_grace`) is recorded alongside the check.
+  (`startup_grace`) is recorded alongside the check. Waiting is opt-in: the
+  `doctor` command asks for it because a person is reading that snapshot, while
+  library callers keep the single observation.
 
 - The local lane runner can drive a repository whose name contains `.`. The
   stable lineage writer identity and the supervised round ID used to be the

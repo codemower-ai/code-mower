@@ -346,11 +346,14 @@ by group. Keep `--json` for the complete machine-readable evidence, and use
 is a reading order, not a smaller check set.
 
 A Board that was just started can still be binding its port when a doctor
-snapshot runs. Board visibility now gets one short bounded re-observation in
-that case only, so the snapshot agrees with `code-mower board list`. A Board
-that is visible is reported immediately, so a stopped, wrong-repository,
-stale-version, or unhealthy Board is never hidden by the wait. Set
-`CODE_MOWER_BOARD_STARTUP_GRACE_SECONDS=0` to turn the wait off.
+snapshot runs. `code-mower doctor` now re-observes Board visibility for a short
+bounded grace in that case only, so the snapshot agrees with `code-mower board
+list`. A Board that is visible is reported immediately, so a stopped,
+wrong-repository, stale-version, or unhealthy Board is never hidden by the wait,
+and a host with no `lsof`/`ss` still reports the missing listener inventory
+without retrying. Set `CODE_MOWER_BOARD_STARTUP_GRACE_SECONDS=0` to turn the
+wait off; the JSON report records the timing it actually used under
+`startup_grace`.
 
 For an existing repository with older Code Mower generated files, inspect drift
 before copying a newly generated tree into the repo:

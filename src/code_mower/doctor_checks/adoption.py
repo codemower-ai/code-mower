@@ -1449,9 +1449,10 @@ def check_adoption_campaign_readiness(
 
     # 5. Board Visibility Check
     #
-    # A Board that is still binding its port when this snapshot runs gets one
-    # short bounded re-observation. A visible Board is reported immediately, so
-    # the grace can never mask a stopped or unhealthy one.
+    # With a `board_startup_grace` (the `doctor` command supplies one), a Board
+    # that is still binding its port when this snapshot runs gets one short
+    # bounded re-observation. A visible Board is reported immediately, so the
+    # grace can never mask a stopped or unhealthy one.
     board_observation = lane_status.observe_local_boards(
         runner,
         grace=board_startup_grace,

@@ -8,7 +8,7 @@ from dataclasses import replace
 import json
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 if __package__ in {None, ""}:
     module_dir = Path(__file__).resolve().parent
@@ -52,6 +52,21 @@ _apply_first_run_defaults = _doctor_checks.apply_first_run_defaults
 detect_repo_slug = _doctor_checks.detect_repo_slug
 normalize_repo_slug = _doctor_checks.normalize_repo_slug
 check_adoption_campaign_readiness = _doctor_checks.check_adoption_campaign_readiness
+
+
+def board_startup_grace() -> Any:
+    """The bounded Board startup grace this command opts into.
+
+    `code-mower board serve` and a doctor snapshot are often run back to back,
+    so this run re-observes a not-yet-visible Board for a short bounded budget
+    (`CODE_MOWER_BOARD_STARTUP_GRACE_SECONDS`, `0` to disable). A visible Board
+    is reported with no wait, so nothing about a stopped, wrong-repository,
+    stale-version, or unhealthy Board is deferred.
+    """
+
+    from code_mower import lane_status
+
+    return lane_status.StartupGrace()
 
 
 def _source_repo_uses_starter_config(cwd: Path, config_path: Path) -> bool:
@@ -410,6 +425,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             provider_credential_file=args.provider_credential_file,
             provider_profile=args.provider_profile,
             provider_config_dir=args.provider_config_dir,
+            # A doctor snapshot is read by a person who may have just started a
+            # Board, so this run opts into the bounded startup grace. Library
+            # callers keep the single observation.
+            board_startup_grace=board_startup_grace(),
             **({'context_online': True} if args.context_online else {}),
             **({'context_state_dir': args.context_state_dir} if args.context_state_dir is not None else {}),
         )

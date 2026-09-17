@@ -716,6 +716,11 @@ def collect_local_boards(command_runner: CommandRunner = _run_command) -> dict[s
 # - an unavailable listener inventory (no `lsof`/`ss`) is a tooling gap rather
 #   than a startup race, so it is reported immediately too;
 # - nothing is ever synthesized: the final observation is the reported one.
+#
+# Waiting is opt-in: `observe_local_boards` with no `grace` observes exactly
+# once, like `collect_local_boards`. The caller that took a snapshot the user is
+# reading -- `code-mower doctor` -- passes a `StartupGrace`, so no library
+# caller starts waiting on a Board it never asked about.
 
 BOARD_STARTUP_GRACE_SECONDS = 2.0
 BOARD_STARTUP_POLL_INTERVAL_SECONDS = 0.25
@@ -817,9 +822,12 @@ def observe_local_boards(
     grace: StartupGrace | None = None,
     env: Mapping[str, str] | None = None,
 ) -> BoardObservation:
-    """Collect local Boards, re-observing briefly only while one may be starting."""
+    """Collect local Boards, re-observing briefly only while one may be starting.
 
-    settings = grace or StartupGrace()
+    Without `grace` this is one observation, exactly like `collect_local_boards`.
+    """
+
+    settings = grace if grace is not None else StartupGrace(budget_seconds=0.0)
     poll_interval = max(float(settings.poll_interval_seconds), 0.0)
 
     def collect() -> Mapping[str, Any]:

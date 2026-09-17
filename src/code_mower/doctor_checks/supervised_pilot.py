@@ -194,9 +194,10 @@ def check_supervised_pilot_board_visibility(
 ) -> DoctorCheck:
     """Report whether a local Code Mower Board listener is visible.
 
-    A Board that is still binding its port when the snapshot is taken gets a
-    short bounded re-observation (see `lane_status.observe_local_boards`); a
-    visible Board is reported immediately and is never masked by that grace.
+    With a `board_startup_grace`, a Board that is still binding its port when
+    the snapshot is taken gets a short bounded re-observation (see
+    `lane_status.observe_local_boards`); a visible Board is reported immediately
+    and is never masked by that grace. Without one this is a single observation.
     """
 
     observation = lane_status.observe_local_boards(

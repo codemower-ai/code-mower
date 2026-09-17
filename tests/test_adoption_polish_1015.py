@@ -359,6 +359,31 @@ class BoardStartupGraceTests(unittest.TestCase):
         self.assertEqual(clock.slept, [])
         self.assertEqual(observation.grace["reason"], lane_status.BOARD_GRACE_DISABLED)
 
+    def test_waiting_is_opt_in_so_library_callers_observe_once(self) -> None:
+        # No `grace` means exactly one observation, like `collect_local_boards`.
+        # Only the doctor snapshot opts into waiting.
+        with mock.patch.object(
+            lane_status, "collect_local_boards", return_value=_NO_BOARDS
+        ) as collector:
+            observation = lane_status.observe_local_boards()
+
+        self.assertEqual(collector.call_count, 1)
+        self.assertFalse(observation.grace["applied"])
+        self.assertEqual(observation.grace["reason"], lane_status.BOARD_GRACE_DISABLED)
+
+    def test_the_doctor_snapshot_opts_into_the_bounded_grace(self) -> None:
+        from code_mower import doctor
+
+        grace = doctor.board_startup_grace()
+
+        self.assertIsInstance(grace, lane_status.StartupGrace)
+        # Budget unset means the environment or the short default decides it.
+        self.assertIsNone(grace.budget_seconds)
+        self.assertEqual(
+            lane_status.resolve_board_grace_seconds(grace.budget_seconds, env={}),
+            lane_status.BOARD_STARTUP_GRACE_SECONDS,
+        )
+
     def test_the_reported_boards_are_always_the_final_observation(self) -> None:
         # The grace re-runs the same read-only observation, so it can only
         # report what the last poll returned. A Board that answers late is
@@ -564,6 +589,38 @@ class AdoptionStartupSequenceRegressionTests(unittest.TestCase):
             lane_status.BOARD_GRACE_NOT_VISIBLE_AFTER_GRACE,
         )
         self.assertLessEqual(check.detail["startup_grace"]["waited_seconds"], 1.0)
+
+
+class DoctorSnapshotWiringTests(unittest.TestCase):
+    def test_run_doctor_forwards_the_board_startup_grace(self) -> None:
+        from code_mower.doctor_checks import runner as doctor_runner
+
+        grace = FakeClock().grace()
+        captured: dict[str, Any] = {}
+
+        def fake_campaign(**kwargs: Any) -> tuple[Any, ...]:
+            captured["campaign"] = kwargs.get("board_startup_grace")
+            return ()
+
+        def fake_pilot(checks: Any, **kwargs: Any) -> tuple[Any, ...]:
+            captured["pilot"] = kwargs.get("board_startup_grace")
+            return ()
+
+        with mock.patch.object(
+            doctor_runner, "check_adoption_campaign_readiness", fake_campaign
+        ), mock.patch.object(doctor_runner, "check_supervised_pilot", fake_pilot):
+            doctor_runner.run_doctor(
+                config_path=ROOT / "src/code_mower/templates/code-mower.example.yml",
+                provider_templates_path=ROOT / "src/code_mower/templates/providers.yml",
+                profile="recommended",
+                adoption=True,
+                supervised_pilot=True,
+                repo_slug="owner/repo",
+                board_startup_grace=grace,
+            )
+
+        self.assertIs(captured["campaign"], grace)
+        self.assertIs(captured["pilot"], grace)
 
 
 class PromptPackSplitTests(unittest.TestCase):
