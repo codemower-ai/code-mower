@@ -67,7 +67,7 @@ no builder sidecar. Use the separately staged
 and its required `target_json`, `policy_json`, `authority_json`, and
 `transport_json` inputs for reviewed integration by a trusted caller. That
 producer owns the explicit-input contract; do not derive these inputs from PR
-metadata or execute PR code/configuration to obtain them. The 1.4.1 source
+metadata or execute PR code/configuration to obtain them. The 1.4.2 source
 candidate remains unqualified and unpublished; activation against the released
 package remains gated by #915.
 

@@ -9,14 +9,14 @@ The current release is supervised-pilot, bring-your-own-agent-loop software.
 It is not a drop-in unattended merge gate. Humans still own credentials,
 repository policy, reviewer promotion, and exceptional decisions.
 
-The current source candidate is `v1.4.1`, with target install spec
-`code-mower==1.4.1`. Publication and installed-package qualification are pending
+The current source candidate is `v1.4.2`, with target install spec
+`code-mower==1.4.2`. Publication and installed-package qualification are pending
 [#915](https://github.com/codemower-ai/code-mower/issues/915). The published
-`v1.4.0` artifacts remain unchanged. Install commands below target v1.4.1 after
+`v1.4.0` artifacts remain unchanged. Install commands below target v1.4.2 after
 publication; candidate rehearsals use the exact verified artifact.
 
-Documentation on `main` follows the source on `main`. After v1.4.1 publication, start with the
-[`v1.4.1` guide](https://github.com/codemower-ai/code-mower/blob/v1.4.1/docs/try-in-10-minutes.md).
+Documentation on `main` follows the source on `main`. After v1.4.2 publication, start with the
+[`v1.4.2` guide](https://github.com/codemower-ai/code-mower/blob/v1.4.2/docs/try-in-10-minutes.md).
 
 ## What Code Mower Adds
 
@@ -44,7 +44,7 @@ one stable `pipx` installation:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.1
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.2
 command -v code-mower
 code-mower --version
 ```
@@ -114,7 +114,7 @@ ID with `session lease renew --session-id SESSION_ID` or `session lease release
 --dry-run` or `--no-lease` for read-only work.
 
 Codex, Claude Code, and Cursor are qualified for the shared session, telemetry,
-lease, and Jira-authority contract in v1.4.1. Devin, Grok Bot, Antigravity,
+lease, and Jira-authority contract in v1.4.2. Devin, Grok Bot, Antigravity,
 Muse, and custom hosts are recognized for briefs and provenance, while their
 execution remains an explicit handoff or provider-specific transport. See
 [Participants And Sessions](docs/sessions.md) and the
@@ -222,7 +222,7 @@ and the [Cloud Data Contract](docs/cloud-data-contract.md).
 
 ## Current Capabilities And Limits
 
-| Area | v1.4.1 posture |
+| Area | v1.4.2 posture |
 | --- | --- |
 | Default builders and reviewers | Claude Code + Codex |
 | Session hosts | Codex, Claude Code, and Cursor qualified; other identities recognized but require explicit handoff/provider transport |
@@ -236,7 +236,7 @@ and the [Cloud Data Contract](docs/cloud-data-contract.md).
 
 GitLab, Bitbucket, broad unattended rollout, uncalibrated merge gates, Devin
 peer-orchestrator/reviewer parity, a hosted work-order CLI, a required Graphify
-dependency, and Slack worker delivery are outside the v1.4.1 candidate. The current priorities and
+dependency, and Slack worker delivery are outside the v1.4.2 candidate. The current priorities and
 boundaries are recorded in
 [Current State And Roadmap](docs/current-state-and-roadmap.md).
 
@@ -291,7 +291,7 @@ boundaries are recorded in
 - [Cloud Data Contract](docs/cloud-data-contract.md)
 - [Release Qualification](docs/release-qualification.md)
 - [Public Release Checklist](docs/public-release-checklist.md)
-- [v1.4.1 Release Notes](docs/v141-release-notes.md)
+- [v1.4.2 Release Notes](docs/v142-release-notes.md)
 - [Release History And Archived Plans](docs/release-history.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)

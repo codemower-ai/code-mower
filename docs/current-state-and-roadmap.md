@@ -22,8 +22,8 @@ dry-run-first.
 
 ## Current Source Candidate And Published Baseline
 
-The current source candidate is `v1.4.1`, with target install spec
-`code-mower==1.4.1`. Publication and installed-package qualification are pending
+The current source candidate is `v1.4.2`, with target install spec
+`code-mower==1.4.2`. Publication and installed-package qualification are pending
 [#915](https://github.com/codemower-ai/code-mower/issues/915).
 
 The published v1.4.0 baseline requires Python 3.12 or newer. It provides:
@@ -137,7 +137,7 @@ sequence from the stabilization epic is:
    plus [#974](https://github.com/codemower-ai/code-mower/issues/974) evidence
    verification. #963 is accepted through the #990/#991/#992 replacement stages
    and final #997 integration, not the unaccepted #989 draft.
-2. Ship those fixes together with Graphify as `v1.4.1`
+2. Ship those fixes together with Graphify as `v1.4.2`
    ([#915](https://github.com/codemower-ai/code-mower/issues/915)).
 3. Ship Board as `v1.4.2`. Board work is underway;
    [#935](https://github.com/codemower-ai/code-mower/issues/935) is complete.
@@ -187,7 +187,7 @@ evidence-only verification of existing hosted aggregate freshness; a confirmed
 hosted defect becomes a separately recorded implementation child and its own
 hosted PR rather than an assumed fix.
 
-### 2. Graphify Repository Context — `v1.4.1` ([#902](https://github.com/codemower-ai/code-mower/issues/902) / release [#915](https://github.com/codemower-ai/code-mower/issues/915))
+### 2. Graphify Repository Context — `v1.4.2` ([#902](https://github.com/codemower-ai/code-mower/issues/902) / release [#915](https://github.com/codemower-ai/code-mower/issues/915))
 
 Graphify is a repository-context provider beside Coworker, not a participant.
 Its runtime source is accepted on main: the
@@ -250,7 +250,7 @@ documentation work.
 
 1. Complete `v1.4.0` stabilization on main: the seven #979 implementation PRs
    plus the #974 evidence verification.
-2. Ship those main-only fixes together with Graphify as `v1.4.1` through #915,
+2. Ship those main-only fixes together with Graphify as `v1.4.2` through #915,
    after #914.
 3. Ship Board as `v1.4.2` through #952, after #961 and #951.
 4. Merge the supervised Slack runtime last, accepted in #923 for `v1.5.0`.

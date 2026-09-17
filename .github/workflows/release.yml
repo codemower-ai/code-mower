@@ -36,7 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s\n' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
-          test "$ACTUAL_REF" = "refs/tags/v1.4.1"
+          test "$ACTUAL_REF" = "refs/tags/v1.4.2"
           test "$ACTUAL_SHA" = "$EXPECTED_SHA"
 
   build-distributions:

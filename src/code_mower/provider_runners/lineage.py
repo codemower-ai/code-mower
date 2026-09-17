@@ -51,7 +51,7 @@ def acquire(repo, number, payload, *, checkout, base_sha, fetch_comments,
 
 
 def require_capabilities():
-    """Explicit installed boundary; #915 must qualify published 1.4.1 activation."""
+    """Explicit installed boundary; #915 must qualify published 1.4.2 activation."""
     try:
         from .. import builder_lineage as core, builder_lineage_producer as producer
         from .. import lane_delivery, lane_handoff, builder_runs

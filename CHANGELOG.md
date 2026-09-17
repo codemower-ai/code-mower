@@ -5,6 +5,19 @@ project used alpha/beta prerelease tags while the first-user setup path,
 provider posture, and optional cloud sharing loop were hardening; v1.0 and
 later entries are regular releases.
 
+## 1.4.2 — source candidate (publication pending)
+
+- Prepare the Board clarity release: version, changelog, release notes and
+  current docs updated for v1.4.2, distinguishing local Board visibility from
+  future Slack/cloud mappings (#921).
+- Package/release qualification contracts updated for the accepted #951
+  head-bound evidence and #961 persistent-service work already on `main`;
+  this source PR adds no new cloud event fields.
+  See [candidate notes](docs/v142-release-notes.md) and the
+  [evidence matrix](docs/v142-qualification.md) for inclusion and limitations.
+  Publication, installed-package acceptance, the three-Board restart
+  verification, and the #951 bounded hosted Devin canary remain pending #952.
+
 ## 1.4.1 — source candidate (publication pending)
 
 - Add inert `init --graphify` guidance for the accepted separate-environment
