@@ -16,6 +16,16 @@ release below.
 
 ### Added
 
+- Supervisor v2 owns checkpointed `clarify` answers and explicitly authorized
+  `fix` requests under the original claim, provider binding, live lease and
+  cumulative ACU cap (#1017). Private input resolution, fsynced pending intents,
+  exact-head independent review, bounded fix/review allowances and saved
+  duplicate outcomes prevent implicit recovery or ambiguous message replay.
+  The packaged v1 schema, fixtures and five-operation enum remain frozen.
+  This source contract is intended for v1.5; private bridge development may use
+  an exact reviewed source pin, but live canaries and deployment require the
+  final v1.5 package. No hosted canary or provider qualification is claimed.
+
 - Release campaigns can authenticate their isolated Codex home on a headless
   Linux host that has no OS keyring. `CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE=file`
   explicitly selects the maintained CLI's file credential store for that home;

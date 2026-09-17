@@ -19,7 +19,19 @@ from .devin_work_orders import DevinWorkOrders, PacketContext, WorkOrder
 from .remote_session import public_projection
 from .role_eligibility import decide_role, require_role
 from .session import build_session
-from .supervisor_contract import SCHEMA, SupervisorError, digest, validate
+from .supervisor_contract import SCHEMA, SupervisorError, digest, validate as validate_v1
+from . import supervisor_contract_v2 as v2
+from .supervisor_checkpoint import AuthorizedInput, _usage, builder_snapshot, guarded_engine, message_fence
+
+
+def validate(kind, value):
+    # Version selection is explicit in every versioned record. v1 never accepts v2.
+    validator = v2.validate if isinstance(value, dict) and str(value.get("schema", "")).endswith(".v2") else validate_v1
+    return validator(kind, value)
+
+
+def _version(value):
+    return "v2" if value.get("schema") == v2.SCHEMA or str(value.get("schema", "")).endswith(".v2") else "v1"
 
 
 @dataclass(frozen=True, repr=False)
@@ -40,10 +52,11 @@ class AuthorizedTask:
     checkout: Path
     config: dict
     context: PacketContext | None = None
+    checkpoint_input: AuthorizedInput | None = None
 
 
 class Authorization(Protocol):
-    def resolve(self, admission: dict, action: str) -> AuthorizedTask:
+    def resolve(self, admission: dict, action: str, *, request_key: str = "") -> AuthorizedTask:
         """Independently reauthorize this caller/action; raise on revocation.
 
         Bind tenant/repository/work/run/operation and grant to private stored
@@ -75,6 +88,9 @@ class Observation:
     writer: str
     target: builder_lineage.Target | None = None
     merge: str = "unknown"
+    binding: str | None = None
+    checkpoint: str | None = None
+    round_number: int = 0
 
 
 class Builder(Protocol):
@@ -82,9 +98,13 @@ class Builder(Protocol):
     transport: str
     identity: str
 
-    def dispatch(self, task: AuthorizedTask) -> Observation: ...
-    def observe(self, task: AuthorizedTask, *, collect: bool) -> Observation: ...
-    def cancel(self, task: AuthorizedTask, *, request: str) -> Observation: ...
+    def dispatch(self, task: AuthorizedTask, **checks) -> Observation: ...
+    def observe(self, task: AuthorizedTask, *, collect: bool, **checks) -> Observation: ...
+    def cancel(self, task: AuthorizedTask, *, request: str, **checks) -> Observation: ...
+    def binding(self, task: AuthorizedTask) -> str: ...
+    def check_usage(self, task: AuthorizedTask, *, guard) -> None: ...
+    def resume(self, task: AuthorizedTask, action: str, *, request: str, prose: str,
+               target: builder_lineage.Target | None, **checks) -> Observation: ...
 
 
 class Reviews(Protocol):
@@ -127,15 +147,22 @@ class HostedBuilder:
         return digest([str(engine.store.root), str(engine.remote.store.root),
                        engine.remote.provider.name, engine.remote.provider.account])
 
-    def _run(self, task, command, **kwargs):
+    def _run(self, task, command, *, guard=None, expected_round=0, expected_binding=None,
+             before_message=None, **kwargs):
         # Re-evaluate the current repository policy at every new execution.
         engine = DevinWorkOrders(self.engine.store.root, self.engine.remote, self.engine.github,
                                  config=task.config, runtime=self.engine.runtime)
+        if expected_binding is not None:
+            binding, _ = builder_snapshot(engine, task.order, {"state": "pending"}, expected_round)
+            if binding != expected_binding:
+                raise SupervisorError("binding_mismatch")
+        if guard is not None:
+            engine = guarded_engine(engine, guard, before_message)
         value = engine.run(command, task.order, apply=True, **kwargs)
         if "session" not in value:
             raise SupervisorError("builder_unavailable")
-        if value["round"] != 0:
-            # v1 authorizes one bounded round, never an implicit fix/recovery.
+        if value["round"] != expected_round:
+            # Only the supervisor may advance the exact saved round.
             raise SupervisorError("binding_mismatch")
         target, merge = None, "unknown"
         if value.get("verified_pr"):
@@ -148,21 +175,41 @@ class HostedBuilder:
                 raise SupervisorError("head_changed")
             merge = current.state
         writer = engine.remote.writer_state(engine._key(task.order), repo=task.order.repository)
-        return Observation(value["session"], writer, target, merge)
+        binding, checkpoint = builder_snapshot(engine, task.order, value["session"], value["round"])
+        return Observation(value["session"], writer, target, merge, binding, checkpoint, value["round"])
 
-    def dispatch(self, task):
-        return self._run(task, "dispatch", context=task.context)
+    def dispatch(self, task, **checks):
+        return self._run(task, "dispatch", context=task.context, **checks)
 
-    def observe(self, task, *, collect):
-        return self._run(task, "collect" if collect else "status")
+    def observe(self, task, *, collect, **checks):
+        return self._run(task, "collect" if collect else "status", **checks)
 
-    def cancel(self, task, *, request):
-        return self._run(task, "cancel", request=request)
+    def cancel(self, task, *, request, **checks):
+        return self._run(task, "cancel", request=request, **checks)
+
+    def binding(self, task):
+        return builder_snapshot(self.engine, task.order, {"state": "pending"}, 0)[0]
+
+    def check_usage(self, task, *, guard):
+        guard()
+        # Use the durable private binding without opening a second lifecycle.
+        from .remote_session import _key
+        saved = self.engine.remote.store.read_only(_key(self.engine._key(task.order)))
+        _usage(self.engine.remote.provider, saved["binding"], task.order.acu_limit, guard)
+
+    def resume(self, task, action, *, request, prose, target, guard, expected_binding,
+               before_resume, **checks):
+        def before_message(binding, _prose):
+            message_fence(self.engine, task, action, target, binding, expected_binding, guard, before_resume)
+        return self._run(task, action, request=request, prose=prose,
+                         reviewed_head=target.head_sha if target else "", context=task.context,
+                         guard=guard, expected_binding=expected_binding,
+                         before_message=before_message, **checks)
 
 
-def _status(**changes):
+def _status(*, version="v1", **changes):
     return validate("status", dict(
-        schema="code_mower.supervisor_status.v1", state="waiting", reason="none",
+        schema="code_mower.supervisor_status." + version, state="waiting", reason="none",
         next_action="none", implementation="pending", writer="not_started",
         review="not_requested", review_writer="not_started", gate="unknown", merge="unknown",
         lifecycle=public_projection({"state": "pending"}),
@@ -170,14 +217,15 @@ def _status(**changes):
     ) | changes)
 
 
-def failure(reason: str, *, state="rejected") -> dict:
+def failure(reason: str, *, state="rejected", version="v1") -> dict:
     action = {"supervisor_unavailable": "configure_supervisor",
               "supervisor_unqualified": "configure_supervisor",
               "not_registered": "configure_supervisor",
               "claim_expired": "new_authorization", "claim_revoked": "new_authorization"}.get(reason, "owner_action")
-    return validate("result", dict(schema="code_mower.supervisor_result.v1", claim=None,
-                                   status=_status(state=state, reason=reason, next_action=action,
-                                                  writer="unknown", review_writer="unknown"), target=None))
+    return validate("result", dict(schema="code_mower.supervisor_result." + version, claim=None,
+                                   status=_status(version=version, state=state, reason=reason, next_action=action,
+                                                  writer="unknown", review_writer="unknown"), target=None,
+                                   **({"checkpoint": None} if version == "v2" else {})))
 
 
 class Supervisor:
@@ -194,14 +242,15 @@ class Supervisor:
         # reserve a second writer for the same work under a different run ID.
         return "s" + digest([binding[k] for k in ("tenant", "repository", "work")])[:62]
 
-    def _authorize(self, admission, action):
+    def _authorize(self, admission, action, *, request_key=""):
         if admission["runner"] != self.runner:
             raise SupervisorError("binding_mismatch")
         now = self.clock()
         if not isinstance(now, (int, float)) or not 0 < now < admission["expires_at"]:
             raise SupervisorError("claim_expired")
         try:
-            task = self.authorization.resolve(validate("admission", admission), action)
+            task = self.authorization.resolve(validate("admission", admission), action,
+                **({"request_key": request_key} if request_key else {}))
         except Exception:
             raise SupervisorError("claim_revoked") from None
         if not isinstance(task, AuthorizedTask) or task.admission != admission:
@@ -251,8 +300,8 @@ class Supervisor:
         return digest([task.admission, asdict(task.order), task.slack_request,
                        task.session["id"], lease["acquired_at"], str(task.checkout.resolve()), self.builder.identity])
 
-    def _check(self, record, claim, action):
-        if record is None or record.get("schema") != SCHEMA or record["claim"] != claim:
+    def _check(self, record, claim, action, *, request_key=""):
+        if record is None or record.get("schema") not in {SCHEMA, v2.SCHEMA} or record["claim"] != claim:
             raise SupervisorError("binding_mismatch")
         if record["revoked"]:
             raise SupervisorError("claim_revoked")
@@ -260,7 +309,7 @@ class Supervisor:
             raise SupervisorError("supervisor_restarted")
         if self.clock() >= claim["expires_at"]:
             raise SupervisorError("claim_expired")
-        task = self._authorize(record["admission"], action)
+        task = self._authorize(record["admission"], action, request_key=request_key)
         if record["fingerprint"] != self._fingerprint(task):
             raise SupervisorError("binding_mismatch")
         return replace(task, order=replace(task.order, acu_limit=record["plan"]["builder_acu"]))
@@ -295,8 +344,9 @@ class Supervisor:
 
     @staticmethod
     def _result(record):
-        return validate("result", dict(schema="code_mower.supervisor_result.v1",
-            claim=record["claim"], status=record["status"], target=record["target"]))
+        return validate("result", dict(schema="code_mower.supervisor_result." + _version(record),
+            claim=record["claim"], status=record["status"], target=record["target"],
+            **({"checkpoint": record.get("checkpoint")} if _version(record) == "v2" else {})))
 
     def _receipt(self, record):
         # A duplicate admission/handoff is a saved receipt, not a fresh result
@@ -308,6 +358,7 @@ class Supervisor:
         return self._result(record | dict(status=status, target=None))
 
     def admit(self, admission: dict) -> dict:
+        version = _version(admission) if isinstance(admission, dict) else "v1"
         try:
             admission = validate("admission", admission)
             task = self._authorize(admission, "admit")
@@ -320,10 +371,13 @@ class Supervisor:
                         self._check(record, record["claim"], "admit")
                     # A duplicate never calls the agent or creates new work.
                     return self._receipt(record)
-                record = dict(schema=SCHEMA, admission=admission, fingerprint=self._fingerprint(task),
+                record = dict(schema=admission["schema"], admission=admission, fingerprint=self._fingerprint(task),
                               scope_digest=digest(asdict(task.order)), claim=None, plan=None,
                               pending=None, calls=0, started=False, revoked=False, cancel=False,
-                              review_target=None, status=_status(), target=None)
+                              review_target=None, status=_status(version=version), target=None)
+                if version == "v2":
+                    record.update(round=0, builder_binding=None, checkpoint=None, requests={},
+                                  clarification_answers=0, fix_requests=0, review_requests=0)
                 locked.write(record)
                 try:
                     plan = self._decide(locked, record, task, "admit")
@@ -333,45 +387,74 @@ class Supervisor:
                     if plan["decision"] != "accept":
                         raise SupervisorError("policy_denied")
                     record["plan"] = plan
-                    record["claim"] = validate("claim", dict(schema="code_mower.supervisor_claim.v1",
+                    record["claim"] = validate("claim", dict(schema="code_mower.supervisor_claim." + version,
                         binding=admission["binding"], grant=admission["grant"], runner=self.runner,
                         session=task.session["id"], generation=plan["generation"], token=uuid.uuid4().hex,
                         scope_digest=record["scope_digest"], expires_at=min(admission["expires_at"], int(self.clock()) + 900)))
-                    record["status"] = _status(state="claimed", next_action="status")
+                    record["status"] = _status(version=version, state="claimed", next_action="status")
                 except Exception as exc:
                     reason = exc.args[0] if isinstance(exc, SupervisorError) else "supervisor_unavailable"
-                    record["status"] = failure(reason, state="waiting")["status"]
+                    record["status"] = failure(reason, state="waiting", version=version)["status"]
                 locked.write(record)
                 return self._result(record)
         except SupervisorError as exc:
-            return failure(exc.args[0])
+            return failure(exc.args[0], version=version)
         except Exception:
-            return failure("supervisor_unavailable", state="waiting")
+            return failure("supervisor_unavailable", state="waiting", version=version)
+
+    def _builder_call(self, record, claim, action, method, task, **kwargs):
+        if _version(record) == "v2":
+            def guard():
+                self._check(record, claim, action)
+            kwargs.update(guard=guard, expected_round=record["round"],
+                          expected_binding=record["builder_binding"])
+        return getattr(self.builder, method)(task, **kwargs)
 
     def _observed(self, record, observed, *, collect):
         if not isinstance(observed, Observation):
             raise SupervisorError("invalid_contract")
+        if _version(record) == "v2":
+            if (not observed.binding or not observed.checkpoint
+                    or record["builder_binding"] not in {None, observed.binding}
+                    or observed.round_number != record["round"]):
+                raise SupervisorError("binding_mismatch")
+            record.update(builder_binding=observed.binding, checkpoint=observed.checkpoint)
         changes = dict(lifecycle=validate("lifecycle", observed.lifecycle), writer=observed.writer)
         if collect:
             record["target"] = asdict(observed.target) if observed.target is not None else None
             changes.update(implementation="verified" if observed.target else "pending", merge=observed.merge)
         # Completion, exit, gate and merge are independent observations.
+        if _version(record) == "v2" and not record["cancel"]:
+            state = observed.lifecycle["state"]
+            if state in {"waiting_for_user", "waiting_for_approval"}:
+                changes.update(state=state,
+                    reason="user_input_required" if state == "waiting_for_user" else "approval_required",
+                    next_action="clarify" if state == "waiting_for_user" else "owner_action")
         record["status"] = validate("status", record["status"] | changes)
 
-    def _review_allowed(self, task, target, reviewer):
+    def _review_allowed(self, task, target, reviewer, *, guard=lambda: None):
+        guard()
         selected = {m["id"] for m in task.session["participants"] if m.get("reviewer")}
         if reviewer not in selected or self.reviews.ready(reviewer) is not True:
             raise SupervisorError("review_unavailable")
+        guard()
         require_role(decide_role(reviewer, "reviewer", config=task.config,
                                 runtime="ready"), execution=True)
         lineage = self.reviews.lineage(task, target)
+        guard()
         if (lineage.target != target or self.builder.product not in lineage.contributors
                 or not builder_lineage.admit(lineage, reviewer)):
             raise SupervisorError("review_unavailable")
 
-    def operate(self, action: str, claim: dict) -> dict:
+    def operate(self, action: str, claim: dict, *, request_key: str | None = None) -> dict:
         """Authenticated re-entry. No operation retries an ambiguous mutation."""
+        version = _version(claim) if isinstance(claim, dict) else "v1"
+        if version == "v2" and action in {"clarify", "fix"}:
+            from .supervisor_checkpoint import operate
+            return operate(self, action, claim, request_key=request_key)
         try:
+            if request_key is not None:
+                raise SupervisorError("invalid_contract")
             if action not in {"handoff", "renew", "status", "result", "cancel"}:
                 raise SupervisorError("invalid_contract")
             claim = validate("claim", claim)
@@ -407,13 +490,13 @@ class Supervisor:
                     require_role(decide_role(self.builder.product, "builder", config=task.config,
                         transport=self.builder.transport, runtime="ready", bounded=True), execution=True)
                     record["pending"] = "dispatch"
-                    record["status"] = _status(state="uncertain", writer="unknown",
+                    record["status"] = _status(version=version, state="uncertain", writer="unknown",
                                                 reason="handoff_uncertain", next_action="owner_action")
                     locked.write(record)
-                    observed = self.builder.dispatch(task)
+                    observed = self._builder_call(record, claim, action, "dispatch", task)
                     self._check(record, claim, action)
                     record.update(started=True, pending=None)
-                    record["status"] = _status(state="running", next_action="status")
+                    record["status"] = _status(version=version, state="running", next_action="status")
                     self._observed(record, observed, collect=False)
                 elif action == "cancel":
                     if record["cancel"]:
@@ -422,7 +505,7 @@ class Supervisor:
                     record["status"] = record["status"] | dict(state="uncertain", reason="cancel_uncertain", next_action="owner_action")
                     locked.write(record)
                     if record["started"]:
-                        self._observed(record, self.builder.cancel(task, request=claim["token"]), collect=False)
+                        self._observed(record, self._builder_call(record, claim, action, "cancel", task, request=claim["token"]), collect=False)
                         self._check(record, claim, action)
                     if record["review_target"] is not None:
                         target = builder_lineage.Target.from_mapping(record["review_target"])
@@ -440,7 +523,7 @@ class Supervisor:
                         implementation="pending", review="pending" if record["review_target"] else "not_requested",
                         gate="unknown", merge="unknown")
                     locked.write(record)
-                    self._observed(record, self.builder.observe(task, collect=action == "result"), collect=action == "result")
+                    self._observed(record, self._builder_call(record, claim, action, "observe", task, collect=action == "result"), collect=action == "result")
                     self._check(record, claim, action)
                     if record["cancel"]:
                         if record["review_target"] is not None:
@@ -454,9 +537,9 @@ class Supervisor:
                 locked.write(record)
                 return self._result(record)
         except SupervisorError as exc:
-            return failure(exc.args[0])
+            return failure(exc.args[0], version=version)
         except Exception:
-            return failure("recovery_required", state="uncertain")
+            return failure("recovery_required", state="uncertain", version=version)
 
     @staticmethod
     def _cancel_status(record):
@@ -475,6 +558,8 @@ class Supervisor:
     def _collect(self, locked, record, task, claim):
         status = record["status"]
         if record["target"] is None:
+            if status["state"] in {"waiting_for_user", "waiting_for_approval"}:
+                return
             status.update(reason="result_not_ready", next_action="result")
             return
         if status["writer"] != "terminated":
@@ -494,14 +579,18 @@ class Supervisor:
         decision = self._decide(locked, record, task, "result")
         task = self._check(record, claim, "result")
         if decision["decision"] == "review" and record["review_target"] is None:
-            latest = self.builder.observe(task, collect=True)
+            latest = self._builder_call(record, claim, "result", "observe", task, collect=True)
             if latest.target != target or latest.writer != "terminated":
                 raise SupervisorError("head_changed")
             self._check(record, claim, "result")
             self._review_allowed(task, target, reviewer)
+            if _version(record) == "v2":
+                if record["review_requests"] >= record["admission"]["limits"]["review_requests"]:
+                    raise SupervisorError("budget_exhausted")
+                record["review_requests"] += 1
             record.update(pending="review", review_target=record["target"])
             locked.write(record)
-            self.reviews.request(task, target, reviewer, key=claim["token"])
+            self.reviews.request(task, target, reviewer, key=claim["token"] + ("-" + str(record["round"]) if _version(record) == "v2" else ""))
             self._check(record, claim, "result")
             record["pending"] = None
             status.update(state="reviewing", review="pending", review_writer="unknown", reason="none", next_action="result")
@@ -509,7 +598,7 @@ class Supervisor:
               and status["gate"] == "passed" and status["review_writer"] == "terminated"):
             # Exact-head collection repeated after the runtime's decision prevents
             # its latency from turning a stale audit into completion.
-            latest = self.builder.observe(task, collect=True)
+            latest = self._builder_call(record, claim, "result", "observe", task, collect=True)
             if latest.target != target or latest.writer != "terminated":
                 raise SupervisorError("head_changed")
             self._check(record, claim, "result")
@@ -523,6 +612,11 @@ class Supervisor:
         elif decision["decision"] in {"wait", "owner_action"}:
             status.update(state="reviewing", reason="review_failed" if status["review"] == "failed" else "gate_pending",
                           next_action="owner_action" if decision["decision"] == "owner_action" else "result")
+            if (_version(record) == "v2" and status["review"] == "failed"
+                    and status["review_writer"] == "terminated"
+                    and record["fix_requests"] < record["admission"]["limits"]["fix_requests"]
+                    and record["review_requests"] < record["admission"]["limits"]["review_requests"]):
+                status["next_action"] = "fix"
         else:
             raise SupervisorError("policy_denied")
 

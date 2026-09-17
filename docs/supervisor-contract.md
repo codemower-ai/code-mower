@@ -1,6 +1,9 @@
-# Qualified supervisor adapter v1
+# Qualified supervisor adapter v1 and v2
 
-Issue #977 adds `code_mower.supervisor`, the maintained OSS boundary between a
+The initial sections describe frozen v1. The opt-in v2 extension is specified in
+[Checkpointed clarification and bounded fixes](#checkpointed-clarification-and-bounded-fixes-v2-1017).
+
+Issue #977 introduced `code_mower.supervisor`, the maintained OSS boundary between a
 privately authorized Slack task and a configured Code Mower supervisor. The
 initial runtime is **Codex**, using its existing repository-policy orchestrator
 eligibility. Claude remains an eligible independent reviewer when excluded from
@@ -202,3 +205,110 @@ These fixtures are offline integration evidence, not live hosted completion or
 cancellation evidence. Those verifications belong to #919/#920 and final #923,
 with the explicit campaign cap and private authorization in place. Only closed
 metadata, test outcomes, PR and head provenance should enter public evidence.
+
+
+## Checkpointed clarification and bounded fixes (v2, #1017)
+
+`code_mower.supervisor.v2` is an **opt-in, separately packaged contract**. Load
+`supervisor_contract_v2.schema.json` and `supervisor_contract_v2.fixtures.json`
+with `importlib.resources`, and use `supervisor_contract_v2.validate`/`decode`
+and `public_status`. Every v1 record, fixture, validator and consumer remains
+supported. The v1 operation enum is still exactly handoff/renew/status/result/
+cancel; a v1 claim cannot call v2 operations or migrate into a new writer.
+V2 uses the existing decision-only `supervisor_decision.v1` runtime protocol:
+Codex still decides admission, handoff and independent review/completion, and
+never sends messages or grants recovery itself.
+
+V2 admission adds integer `limits.clarification_answers` (0–32) and
+`limits.fix_requests` (0–8). `limits.review_requests` (1–9) covers the first
+independent review plus any reviews after fixes. These are pre-authorized
+**total campaign allowances**, frozen with the original scope, builder cap and
+selected reviewer. Set either mutation allowance to zero to prohibit it.
+Renewal, answers and fixes cannot enlarge any allowance. A fix also requires
+room for its subsequent independent review. Runtime calls retain their original
+separate budget. Every attempted mutation with a persisted intent consumes its
+allowance, even if its response is lost.
+
+| V2 operation | Wire metadata | Additional private authorization and observations |
+| --- | --- | --- |
+| `clarify` | v2 request schema, action, exact v2 claim, `request_key` | An observed `waiting_for_user` checkpoint, answer resolved from private input, unchanged original scope and remaining answer allowance. |
+| `fix` | v2 request schema, action, exact v2 claim, `request_key` | Original fix/review allowances, exact open PR/branch/reviewed head, bounded private finding reference, failed independent review and terminated builder and review runtimes. |
+
+`request_key` is 1–64 ASCII letters, digits, underscores or hyphens. It is a
+stable idempotency key scoped to the claim, **not authorization**. The five
+existing operations have v2 schema/claim equivalents without a request key.
+Unknown fields (including prose, approval flags, limits, paths, finding bodies
+or provider IDs) are rejected. No public or Slack message body becomes authority.
+
+For either new operation, the embedding implements
+`Authorization.resolve(admission, action, *, request_key=...)`. Every invocation
+independently authenticates the caller and re-reads current private task/grant
+state. The returned `AuthorizedTask.checkpoint_input` is an `AuthorizedInput`
+from `code_mower.supervisor_checkpoint`: the exact validated request, private
+prose, observed private checkpoint, original `scope_digest`, and—for a fix—the
+exact `builder_lineage.Target` and a bounded `finding_ref`. The private store
+must authorize the answer or finding scope against that actor, grant revision,
+work and review. Never construct this object by copying untrusted ingress text.
+The supervisor checks the request and input binding again before and after
+external calls. Resolver failures, changed inputs, lease replacement, revoked
+grants, changed provider accounts and runtime restarts fail closed.
+
+```python
+from code_mower import supervisor_contract_v2
+
+# The authenticated bridge validates metadata; the resolver supplies private input.
+request = supervisor_contract_v2.decode("request", wire_bytes)
+receipt = supervisor.operate(request["action"], request["claim"],
+                             request_key=request["request_key"])
+public = supervisor_contract_v2.public_status(receipt)
+```
+
+A private v2 result includes a `checkpoint` digest for correlation with the
+input store. It binds the original provider session/account, work-order round,
+observed lifecycle state and durable remote mutation history. It is not a
+provider question ID or a capability, and never enters public status. The
+provider must still report the appropriate checkpoint immediately before the
+message. Approval remains a distinct `waiting_for_approval` state with
+`approval_required` / `owner_action`; **neither operation approves a provider
+request or disables safe mode**. Only the existing message lifecycle is used.
+
+The supervisor compares exact work/run/session/claim, grant revision, runtime
+generation, provider binding, lease acquisition and original scope. The maintained
+`HostedBuilder` wraps the already configured `DevinWorkOrders` / `RemoteSessions`
+connections with reauthorization checks around external calls. It checks fresh
+provider usage below the original cumulative ACU cap before reserving a mutation
+and immediately before sending. Missing or invalid usage fails closed. The
+provider's original hard cap remains unchanged. A fix rechecks the reviewed head,
+writer termination and contributor/reviewer independence before sending, clears
+old completion/review evidence, and uses a fresh round-specific audit key after
+new exact-head completion. There is no replacement session, fallback provider,
+new reviewer, review/merge grant or extra recovery allowance.
+
+Before entering the maintained message/fix lifecycle, `ContextStore` writes and
+fsyncs a pending intent (file and directory) under the original work reservation.
+It stores only private bindings/input digests and closed outcomes, never input
+prose. Concurrent duplicates serialize on that reservation. A completed duplicate
+returns its saved outcome after fresh authorization; it does not poll or resend.
+This is a **receipt**, not current completion evidence; use `result` to collect
+current exact-head completion. Input changes under the same key are conflicts.
+Crashes before/after a send, timeouts, ambiguous delivery and failed outcome
+writes leave `mutation_uncertain` / `owner_action`. New keys, renewal, handoff,
+status and cancellation cannot blindly replay a pending mutation. There is no
+wire acknowledgement/recovery operation: an operator must reconcile the private
+provider and lifecycle records through the existing owner recovery boundary.
+A restarted runtime cannot reuse the old claim. No automatic refund, takeover
+or new admission is a recovery mechanism.
+
+V2 public status adds only closed `waiting_for_user` / `waiting_for_approval`
+states, reasons and `clarify` / `fix` actions. Claim/input/checkpoint digests,
+provider identifiers, PR bindings, paths and prose stay in private records;
+`remote_session.v1` lifecycle metadata is unchanged. The supervisor root and all
+provider/work-order roots must stay private, stable and outside Git.
+
+Run `python -m unittest discover -s tests -p 'test_supervisor*.py'` for fake-only
+compatibility, resume, crash, ambiguity, revocation, checkpoint, allowance and
+exact-head coverage. Fixtures explicitly mark `live_hosted_evidence: false`.
+The private #920 bridge may develop against an exact independently reviewed
+post-v1.4.2 source pin. **Live canaries and deployment require the final v1.5
+package** containing the accepted contract; this change does not publish a
+release, run a canary, install credentials or add Slack/hosted queue logic.

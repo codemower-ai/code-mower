@@ -32,15 +32,16 @@ def digest(value) -> str:
                                      separators=(",", ":")).encode()).hexdigest()
 
 
-def _check(value, rule, depth=0):
+def _check(value, rule, depth=0, *, document=None):
     if depth > 16:
         raise SupervisorError("invalid_contract")
     if "$ref" in rule:
-        return _check(value, schema()["$defs"][rule["$ref"].rsplit("/", 1)[1]], depth + 1)
+        return _check(value, (document or schema())["$defs"][rule["$ref"].rsplit("/", 1)[1]],
+                      depth + 1, document=document)
     if "anyOf" in rule:
         for child in rule["anyOf"]:
             try:
-                _check(value, child, depth + 1)
+                _check(value, child, depth + 1, document=document)
                 return
             except SupervisorError:
                 pass
@@ -57,7 +58,7 @@ def _check(value, rule, depth=0):
         if set(value) != set(rule["required"]):
             raise SupervisorError("invalid_contract")
         for key, child in value.items():
-            _check(child, rule["properties"][key], depth + 1)
+            _check(child, rule["properties"][key], depth + 1, document=document)
     elif kind == "string":
         if (not rule.get("minLength", 0) <= len(value) <= rule.get("maxLength", 256)
                 or ("pattern" in rule and re.fullmatch(rule["pattern"], value) is None)):
