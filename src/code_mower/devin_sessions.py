@@ -358,6 +358,14 @@ class DevinClient:
     def get(self, session_id: str) -> Session:
         return normalize_session(self._request("GET", self._path(session_id)), session_id)
 
+    def observe(self, session_id: str) -> Session:
+        """GET lifecycle metadata without consuming messages or structured results."""
+        data = self._request("GET", self._path(session_id))
+        return normalize_session(
+            {key: data[key] for key in ("session_id", "status", "status_detail", "is_archived")
+             if key in data}, session_id,
+        )
+
     def send_message(self, session_id: str, message: str) -> Session:
         if not isinstance(message, str) or not message.strip():
             raise DevinApiError("invalid_request")

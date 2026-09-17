@@ -91,13 +91,15 @@ class LocalRunObservation:
     role: str
     phase: str
     basis: str
-    observed_at: datetime
+    observed_at: datetime | None
     source_kind: str = "local_runner"
     event_at: datetime | None = None
     heartbeat_at: datetime | None = None
     reported_stage: str | None = None
     lifecycle: Mapping[str, Any] | None = None
     source_available: bool = True
+    retain_remote_observation: bool = False
+    checked_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -600,6 +602,20 @@ def _no_work(
 def _derive_state(
     runs: Sequence[dict[str, Any]], evidence: Mapping[str, Mapping[str, Any]], reasons: set[str]
 ) -> str:
+    # A review/merge fact does not erase an independently observed provider wait
+    # or failure (a completed implementation can still have an active writer).
+    phases = {run["phase"] for run in runs}
+    if any(run["phase"] == "failed" and (run.get("lifecycle") or {}).get("state") != "suspended"
+           for run in runs):
+        reasons.add("provider_failed")
+    if any((run.get("lifecycle") or {}).get("state") == "suspended" for run in runs):
+        reasons.add("provider_suspended")
+    if phases & {"cancelled"}:
+        reasons.add("cancelled")
+    if phases & {"waiting_for_user"}:
+        reasons.add("user_input_required")
+    if phases & {"waiting_for_approval"}:
+        reasons.add("approval_required")
     if evidence["merge"]["state"] == "merged":
         return "merged"
     if evidence["review"]["state"] == "blocked":
@@ -629,15 +645,6 @@ def _derive_state(
     if evidence["review"]["state"] == "pass":
         reasons.add("human_review_required")
         return "ready_for_human_review"
-    phases = {run["phase"] for run in runs}
-    if phases & {"failed"}:
-        reasons.add("provider_failed")
-    if phases & {"cancelled"}:
-        reasons.add("cancelled")
-    if phases & {"waiting_for_user"}:
-        reasons.add("user_input_required")
-    if phases & {"waiting_for_approval"}:
-        reasons.add("approval_required")
     if phases & {"observed_running", "provider_progress", "waiting_for_user", "waiting_for_approval"}:
         return "building"
     if phases & {"assigned", "dispatched"}:
@@ -705,9 +712,19 @@ def _produce_work(
         _safe_identifier(run.provider)
         if run.source_kind not in _ALLOWED_SOURCE_KINDS:
             raise LocalObservationError("run_unavailable")
-        observed = _utc(run.observed_at)
+        observed = _utc(run.observed_at) if run.observed_at is not None else None
+        checked = _utc(run.checked_at) if run.checked_at is not None else now
+        if checked > now or (observed is not None and observed > checked):
+            raise LocalObservationError("invalid_timestamp")
         event = _utc(run.event_at) if run.event_at is not None else None
         heartbeat = _utc(run.heartbeat_at) if run.heartbeat_at is not None else None
+        if observed is None:
+            if run.source_available or event is not None or heartbeat is not None:
+                raise LocalObservationError("invalid_timestamp")
+            sources.append(_source(id=f"runobs{index}", kind=run.source_kind, now=checked,
+                                   observed_at=None, available=False))
+            reasons.add("source_unavailable")
+            continue
         if observed > now or (event is not None and event > observed) or (
             heartbeat is not None and heartbeat > observed
         ):
@@ -718,7 +735,7 @@ def _produce_work(
             _source(
                 id=source_id,
                 kind=run.source_kind,
-                now=now,
+                now=checked,
                 observed_at=observed,
                 event_at=event,
                 heartbeat_at=heartbeat,
@@ -728,16 +745,22 @@ def _produce_work(
         )
         if not run.source_available:
             reasons.add("source_unavailable")
-            continue
+            if not run.retain_remote_observation:
+                continue
         if run.phase in _LIVE_PHASES and (not fresh or heartbeat is None):
             reasons.add("stale_observation")
-            continue
+            if not run.retain_remote_observation or heartbeat is None:
+                continue
+        if not fresh:
+            reasons.add("stale_observation")
         lifecycle = None
         if run.lifecycle is not None:
             try:
                 lifecycle = public_projection(dict(run.lifecycle))
             except (RemoteError, TypeError, ValueError):
                 raise LocalObservationError("run_unavailable") from None
+        if run.retain_remote_observation and (run.source_kind != "remote_session" or lifecycle is None):
+            raise LocalObservationError("run_unavailable")
         rendered_runs.append(
             {
                 "id": run.id,

@@ -9,7 +9,8 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Protocol
 
@@ -28,7 +29,9 @@ from .context_packets import _handle, load_authorized
 from .context_store import ContextStore
 from .devin_sessions import REPO, DevinClient
 from .provider_capabilities import resolve_transport
-from .remote_session import DevinProvider, RemoteError, RemoteSessions, public_projection
+from .remote_session import (
+    DevinProvider, RemoteError, RemoteSessions, RemoteWorkObservation, public_projection,
+)
 from .role_eligibility import require_builder
 from .yaml_subset import ConfigError
 from .work_orders import WORK_ORDER_SCHEMA
@@ -479,6 +482,75 @@ class DevinWorkOrders:
             return result
         return public_projection({**result, "state": "running",
                                   "reason": "result_not_ready", "next_action": "status"})
+
+    def observe(self, order: WorkOrder, *, previous: RemoteWorkObservation | None = None,
+                now: datetime | None = None) -> RemoteWorkObservation:
+        """Read hosted progress and independently verify PR identity/head.
+
+        Unlike status/collect this creates no reservation, performs no lifecycle
+        write and never reads a claim, result artifact, usage or review prose.
+        The outer work-order generation fences the crash window before a fix
+        reaches RemoteSessions. Any race refuses the entire observation.
+        """
+        key = self._key(order)
+        record = self.store.read_only(key)
+        if not record or record.get("binding") != self._binding(order):
+            raise RemoteError("work_order_binding_mismatch")
+        round_number = record.get("round")
+        if type(round_number) is not int or not 0 <= round_number <= 100:
+            raise RemoteError("work_order_binding_mismatch")
+        generation = _hash([record["binding"], round_number, record.get("message"),
+                            record.get("completion_rejection")])
+        prior = previous.session if (
+            isinstance(previous, RemoteWorkObservation) and previous.generation == generation
+            and previous.repository == order.repository and previous.issue == order.issue
+            and previous.round_number == round_number
+        ) else None
+        session = self.remote.observe(key, repo=order.repository, previous=prior, now=now)
+        pr = None
+        github_available = False
+        try:
+            page = _github_call(self.github.candidates, order.repository, order.branch, limit=2)
+            if not isinstance(page, Candidates) or page.complete is not True or len(page.items) > 1:
+                raise RemoteError("ambiguous_pull_request")
+            if page.items:
+                candidate = page.items[0]
+                claim = {"schema": COMPLETION_SCHEMA, "round": round_number,
+                         "repository": order.repository, "issue": order.issue,
+                         "pr_number": candidate.number, "head_sha": candidate.head_sha}
+                self._verify(order, claim, round_number)
+                current = _github_call(self.github.read, order.repository, candidate.number)
+                if current != candidate or record.get("pr_number") not in (None, current.number):
+                    raise RemoteError("pull_request_binding_mismatch")
+                pr = current
+            github_available = True
+        except Exception:
+            # No cached current-head or merge assertion on a failed GitHub read.
+            pass
+        evidence = record.get("evidence")
+        verified = bool(pr is not None and isinstance(evidence, dict)
+                        and evidence.get("repository") == order.repository
+                        and evidence.get("issue") == order.issue
+                        and evidence.get("pr_number") == pr.number
+                        and evidence.get("head_sha") == pr.head_sha
+                        and not record.get("completion_rejection"))
+        pending = bool((record.get("message") or {}).get("pending"))
+        if session.lifecycle is not None and (
+            pending or (session.lifecycle["state"] in {"complete", "archived"}
+                        and (record.get("completion_rejection")
+                             or ((round_number > 0 or evidence is not None) and not verified)))
+        ):
+            session = replace(session, lifecycle=public_projection({
+                **session.lifecycle, "state": "uncertain", "reason": "result_not_ready",
+                "next_action": "status",
+            }))
+        if self.store.read_only(key) != record:
+            raise RemoteError("work_order_binding_mismatch")
+        return RemoteWorkObservation(
+            generation, order.repository, order.issue, round_number, session,
+            pr.number if pr else None, pr.head_sha if pr else None,
+            pr.state if pr else "unknown", github_available, verified,
+        )
 
     def run(self, command: str, order: WorkOrder, *, apply: bool = False,
             request: str = "", prose: str = "", reviewed_head: str = "",

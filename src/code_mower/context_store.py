@@ -196,6 +196,32 @@ class ContextStore:
         self.root = Path(root) if root is not None else default_context_root()
         self._vault = vault
 
+    def read_only(self, connection: str) -> dict[str, Any] | None:
+        """Read one atomically published record without creating a store or lock.
+
+        Observation consumers must compare the record again after external I/O.
+        No credential backend or auxiliary artifact is opened by this method.
+        """
+        name = _identifier(connection)
+        if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
+            raise ContextError("private context connections require supported POSIX file protections")
+        try:
+            if not self.root.is_absolute() or self.root.resolve() != self.root:
+                raise ContextError("private context store is unavailable or unsafe")
+            if any((parent / ".git").exists() for parent in (self.root, *self.root.parents)):
+                raise ContextError("context state must stay outside Git repositories")
+            try:
+                fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            except FileNotFoundError:
+                return None
+            try:
+                _private(fd, directory=True)
+                return LockedConnection(fd, name, None).read()
+            finally:
+                os.close(fd)
+        except OSError:
+            raise ContextError("private context store is unavailable or unsafe") from None
+
     @contextmanager
     def locked(self, connection: str, *, timeout_seconds: float = 35) -> Iterator[LockedConnection]:
         name = _identifier(connection)

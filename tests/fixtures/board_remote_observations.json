@@ -1,0 +1,14 @@
+[
+  {"name":"pending","state":"pending","reason":"none","phase":"dispatched"},
+  {"name":"active","state":"running","reason":"none","phase":"observed_running"},
+  {"name":"provider_stage","state":"running","reason":"none","phase":"provider_progress","reported_stage":"testing"},
+  {"name":"waiting_for_user","state":"waiting_for_user","reason":"user_input_required","phase":"waiting_for_user"},
+  {"name":"waiting_for_approval","state":"waiting_for_approval","reason":"approval_required","phase":"waiting_for_approval"},
+  {"name":"succeeded","state":"complete","reason":"none","phase":"implementation_complete"},
+  {"name":"failed","state":"failed","reason":"session_failed","phase":"failed"},
+  {"name":"cancelled","state":"terminated","reason":"none","phase":"cancelled"},
+  {"name":"suspended","state":"suspended","reason":"session_suspended","phase":"failed"},
+  {"name":"creation_unknown","state":"uncertain","reason":"reconcile_dispatch","phase":"dispatched"},
+  {"name":"stale","state":"running","reason":"none","phase":"observed_running","age_seconds":600},
+  {"name":"unavailable","state":"waiting_for_user","reason":"user_input_required","phase":"waiting_for_user","available":false,"age_seconds":120}
+]
