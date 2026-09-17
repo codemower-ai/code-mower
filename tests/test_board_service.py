@@ -29,6 +29,27 @@ def _completed(stdout: str = "", *, returncode: int = 0, stderr: str = "") -> su
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+def _joined_arguments(arguments: Sequence[str]) -> list[str]:
+    """Restate a rendered argv in the `--flag=value` spelling.
+
+    `binding_from_arguments` accepts both, so a definition may arrive in either
+    -- this builds the one this lane never renders, to test against it.
+    """
+
+    flags = {"--repo", "--repo-path", "--host", "--port"}
+    joined: list[str] = []
+    index = 0
+    values = [str(item) for item in arguments]
+    while index < len(values):
+        if values[index] in flags and index + 1 < len(values):
+            joined.append(f"{values[index]}={values[index + 1]}")
+            index += 2
+        else:
+            joined.append(values[index])
+            index += 1
+    return joined
+
+
 class FakeHost:
     """One dictionary of local state, answered as launchd, ps, lsof and git."""
 
@@ -433,6 +454,55 @@ class BoardServiceContractTest(ServiceHarness):
         self.assertEqual(spaced["port"], 5333)
         self.assertEqual(spaced["repo_path"], "/tmp/x")
 
+    def test_both_argument_spellings_are_redacted_the_same_way(self) -> None:
+        # The parser accepts either spelling, so the redactor has to hide the
+        # path in either. Testing only the standalone form left the joined one
+        # fully visible under an `arguments_redacted: true` payload.
+        redacted = board_service.redact_arguments(
+            [
+                "code-mower",
+                "board",
+                "serve",
+                "--repo=a/b",
+                "--port=5333",
+                "--repo-path=/Users/alice/private-checkout",
+                "--repo-path",
+                "/Users/alice/private-checkout",
+                "--record-events",
+            ],
+            show_local_paths=False,
+        )
+
+        self.assertNotIn("alice", " ".join(redacted))
+        # The option name is not private, and it is what makes a redacted argv
+        # readable; only its value is replaced.
+        self.assertEqual(redacted[5], f"--repo-path={lane_status.LOCAL_PATH_REDACTION}")
+        self.assertEqual(redacted[7], lane_status.LOCAL_PATH_REDACTION)
+        # Nothing that is not a path is touched.
+        self.assertEqual(redacted[3], "--repo=a/b")
+        self.assertEqual(redacted[4], "--port=5333")
+        self.assertEqual(redacted[8], "--record-events")
+
+    def test_a_home_relative_equals_form_path_is_redacted_too(self) -> None:
+        redacted = board_service.redact_arguments(
+            ["--repo-path=~/private-checkout", "--log-dir=~/logs"], show_local_paths=False
+        )
+
+        self.assertEqual(
+            redacted,
+            [
+                f"--repo-path={lane_status.LOCAL_PATH_REDACTION}",
+                f"--log-dir={lane_status.LOCAL_PATH_REDACTION}",
+            ],
+        )
+
+    def test_show_local_paths_returns_equals_form_arguments_verbatim(self) -> None:
+        arguments = ["--repo=a/b", "--repo-path=/Users/alice/private-checkout"]
+
+        self.assertEqual(
+            board_service.redact_arguments(arguments, show_local_paths=True), arguments
+        )
+
     def test_a_platform_without_launchd_refuses_instead_of_pretending(self) -> None:
         provider = board_service.select_provider(platform="linux", command_runner=self.host.run)
         payload = board_service.install_service(
@@ -546,6 +616,35 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertNotIn(str(self.checkout), json.dumps(redacted))
         self.assertNotIn(str(self.checkout), board_service.render_status_text(redacted))
         self.assertIn(str(self.checkout), json.dumps(shown))
+
+    def test_status_redacts_a_definition_written_in_equals_form(self) -> None:
+        # A definition this lane rendered always uses the standalone spelling,
+        # but `binding_from_arguments` accepts the joined one, so a definition
+        # installed by hand or by an older build is a service status has to
+        # describe -- without publishing the checkout it names.
+        spec = self.spec()
+        self.install(spec)
+        joined = _joined_arguments(spec.arguments)
+        path = self.root / f"{spec.label}.plist"
+        data = plistlib.loads(path.read_bytes())
+        data["ProgramArguments"] = joined
+        path.write_bytes(plistlib.dumps(data))
+        # launchd is the authority on a running job's argv, so the live
+        # arguments the gate reports carry the joined spelling as well.
+        self.host.relaunch_on(spec.label, joined)
+
+        redacted = board_service.service_status(
+            provider=self.host.provider(),
+            command_runner=self.host.run,
+            identity_probe=self.host.identity_probe,
+        )
+
+        self.assertNotIn(str(self.checkout), json.dumps(redacted))
+        self.assertNotIn(str(self.checkout), board_service.render_status_text(redacted))
+        row = redacted["services"][0]
+        self.assertTrue(row["arguments_redacted"])
+        self.assertIn(f"--repo-path={lane_status.LOCAL_PATH_REDACTION}", row["arguments"])
+        self.assertIn("--repo=codemower-ai/code-mower", row["arguments"])
 
     def test_restart_is_idempotent_when_the_definition_has_not_changed(self) -> None:
         self.install(self.spec())

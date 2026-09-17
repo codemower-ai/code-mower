@@ -291,6 +291,26 @@ def redact_path(value: object, *, show_local_paths: bool) -> str:
     return text if show_local_paths else lane_status.LOCAL_PATH_REDACTION
 
 
+def _redact_argument(value: str) -> str:
+    """Hide the local path in one argument, whatever spelling carries it.
+
+    `binding_from_arguments` accepts both `--repo-path /checkout` and
+    `--repo-path=/checkout`, so a definition may legitimately state its path in
+    either. Only the standalone form begins with `/` or `~`, so testing the
+    whole argument leaves the joined form fully visible while the payload still
+    claims `arguments_redacted`. The name of the option is not private and is
+    what makes a redacted argv readable, so only the value after the first `=`
+    is replaced.
+    """
+
+    if _looks_like_path(value):
+        return lane_status.LOCAL_PATH_REDACTION
+    name, separator, tail = value.partition("=")
+    if separator and _looks_like_path(tail):
+        return f"{name}={lane_status.LOCAL_PATH_REDACTION}"
+    return value
+
+
 def redact_arguments(arguments: Sequence[str], *, show_local_paths: bool) -> list[str]:
     """Keep argument *shape* public while hiding every local path inside it.
 
@@ -300,10 +320,7 @@ def redact_arguments(arguments: Sequence[str], *, show_local_paths: bool) -> lis
 
     if show_local_paths:
         return [str(item) for item in arguments]
-    return [
-        lane_status.LOCAL_PATH_REDACTION if _looks_like_path(str(item)) else str(item)
-        for item in arguments
-    ]
+    return [_redact_argument(str(item)) for item in arguments]
 
 
 def definition_digest(text: str) -> str:
