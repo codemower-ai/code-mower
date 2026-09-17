@@ -316,6 +316,7 @@ class GeneratedRunnerTests(unittest.TestCase):
                         gh_call_log: Path | None = None,
                         base_sha: str | None = None,
                         supervise_log: Path | None = None,
+                        lineage_store_pr: int | None = None,
                         ) -> tuple[subprocess.CompletedProcess, str, dict]:
         """Run the generated codex runner against a fake provider that opens a PR.
 
@@ -331,6 +332,9 @@ class GeneratedRunnerTests(unittest.TestCase):
         supervise`` argv this runner builds, one argument per line, and strips
         the lineage selection from the invocation that actually runs so the
         fixture stays offline while still inspecting what was passed.
+        ``lineage_store_pr`` pre-creates the private lineage record a delivered
+        pull request of that number would carry, which is what marks a rerun as
+        continuing an existing chain rather than bootstrapping a new one.
         """
         ls_remote = "exit 0"
         if existing_branch is not None:
@@ -358,6 +362,9 @@ class GeneratedRunnerTests(unittest.TestCase):
             bin_dir.mkdir()
             work_root = root / "work"
             (work_root / "codex" / repo_dir / ".git" / "hooks").mkdir(parents=True)
+            if lineage_store_pr is not None:
+                (root / ".local/share/code-mower/lineage" / repo_dir
+                 / str(lineage_store_pr)).mkdir(parents=True)
             prompt_log = root / "prompt.md"
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
@@ -461,7 +468,7 @@ if [ "${1:-}" = "supervise" ]; then
       continue
     fi
     case "$arg" in
-      --lineage-issue|--lineage-branch|--lineage-base|--lineage-writer|--lineage-store|--lineage-output)
+      --lineage-issue|--lineage-branch|--lineage-before|--lineage-base|--lineage-writer|--lineage-store|--lineage-output)
         skip=1; continue ;;
     esac
     filtered+=("$arg")
@@ -609,6 +616,62 @@ exec __REAL_LANE_DELIVERY__ "$@"
         self.assertIn("supervise", argv)
         self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
 
+    def _continuation_lane(self, **kwargs):
+        """An issue rerun whose pull request this lane already created.
+
+        The delivered pull request is open on the reserved branch at ``a``*40,
+        closes the issue, and the round moves its head to ``b``*40.
+        """
+        head = "a" * 40
+        open_pr = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                           author="chatgpt-codex-connector[bot]", head=head)
+        moved = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                         author="chatgpt-codex-connector[bot]", head="b" * 40)
+        return self._supervise_argv(
+            delivered_listing=json.dumps([moved]), template=self.LANE_PREFIX_TEMPLATE,
+            base_sha="d" * 40, existing_issue_prs=json.dumps([open_pr]),
+            existing_branch=self.CREATED_BRANCH, existing_branch_head=head,
+            existing_branch_prs=json.dumps([open_pr]),
+            # The branch comes from the open pull request, never from a fresh
+            # slug, so reaching the title lookup would mean this is not the
+            # rerun path under test.
+            title_lookup="printf 'title lookup must not run\\n' >&2; exit 99",
+            explicit_issue_target=True, **kwargs)
+
+    def test_rerunning_an_issue_continues_its_created_pull_requests_chain(self) -> None:
+        # The creation round published a chain bound to the head it delivered
+        # and moved the private record onto the delivered number. A rerun that
+        # advances that pull request without extending the chain leaves the
+        # published lineage on a head that no longer exists, which is what
+        # answers `lineage_head_pending` for later reviewers and fix rounds.
+        completed, argv, _prompt, _guard = self._continuation_lane(lineage_store_pr=77)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        # This is a delivery to an existing pull request, so it takes exactly
+        # the continuation path a fix round on that pull request takes.
+        self.assertTrue((self._flag(argv, "--lineage-before") or "").endswith(".continuation.json"))
+        self.assertEqual(self._flag(argv, "--lineage-base"), "d" * 40)
+        self.assertTrue((self._flag(argv, "--lineage-writer") or "").startswith("codex"))
+        store = self._flag(argv, "--lineage-store") or ""
+        self.assertTrue(store.endswith("/lineage/owner__repo/77"), store)
+        self.assertTrue((self._flag(argv, "--lineage-output") or "").endswith(".lineage.json"))
+        # Nothing is created here: the branch exists, so there is no
+        # reservation to claim, and the writer has not changed, so no handoff.
+        self.assertNotIn("--lineage-issue", argv)
+        self.assertNotIn("--lineage-branch", argv)
+        self.assertNotIn("--lineage-create", argv)
+        self.assertNotIn("--lineage-handoff", argv)
+
+    def test_a_pull_request_carrying_no_chain_keeps_the_unsupervised_rerun(self) -> None:
+        # Same rerun, no private record: there is no chain to continue, so the
+        # long-standing issue rerun is left exactly as it was rather than
+        # gaining a new pre-launch refusal surface.
+        completed, argv, _prompt, _guard = self._continuation_lane()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+        self.assertIn("carries no private lineage record", completed.stdout)
+
     def test_every_runner_copy_passes_the_same_creation_origin_binding(self) -> None:
         for path in (ROOT / "tools/lanes/run_mac_lane.sh",
                      ROOT / "templates/lanes/run_mac_lane.sh",
@@ -617,6 +680,11 @@ exec __REAL_LANE_DELIVERY__ "$@"
             with self.subTest(runner=path.name, parent=path.parent.as_posix()):
                 self.assertIn('--lineage-issue "$num" --lineage-branch "$creation_branch"', text)
                 self.assertIn('--lineage-store "$creation_store"', text)
+                # A rerun of a delivered issue continues that chain in every
+                # copy, or the published lineage strands wherever this runner
+                # was installed from.
+                self.assertIn('--lineage-before "$continuation_before"', text)
+                self.assertIn('--lineage-store "$continuation_store"', text)
 
     def test_runner_refuses_an_existing_policy_branch_it_does_not_own(self) -> None:
         # fix/12-nv-accessible-label is the one name the policy allows for

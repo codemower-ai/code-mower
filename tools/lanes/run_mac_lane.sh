@@ -592,6 +592,13 @@ creation_branch=""
 # The created pull request has no number at launch, so its private record
 # starts under the issue the round was launched for.
 creation_store=""
+# Non-empty only for an issue rerun that continues a pull request this lane
+# already created: the pull request number, its private record, and the
+# pull-request-shaped pre-launch snapshot the continuation is bound to.
+continuation_pr=""
+continuation_store=""
+continuation_before=""
+continuation_head=""
 # This bounded owner action contains no source binding or provider diagnostics.
 # Its exact-head marker also deduplicates invalid/missing private source input.
 handoff_owner_action() {
@@ -924,6 +931,22 @@ if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
     else
       echo "${LANE}: policy branch ${resolved_branch} is outside this lane's prefixes (${lane_branch_prefixes_display}); issue #${num} runs without creation lineage"
     fi
+  elif [ "$issue_pr_status" = "lane" ]; then
+    # Rerunning the issue a creation round already delivered is a continuation
+    # of that pull request's chain, not a new creation. Without one, a rerun
+    # that advances the head leaves the published chain bound to a head that no
+    # longer exists, and `resolve()` answers `lineage_head_pending` for every
+    # later reviewer and fix round. The creation round moved its private record
+    # onto the delivered number, so that record is what says a chain exists:
+    # only a pull request actually carrying one is routed here, and an issue
+    # rerun with no chain to continue keeps the long-standing bootstrap.
+    continuation_store="${HOME}/.local/share/code-mower/lineage/${repo_key}/${issue_pr_number}"
+    if [ -d "$continuation_store" ]; then
+      continuation_pr="$issue_pr_number"
+    else
+      continuation_store=""
+      echo "${LANE}: pull request #${issue_pr_number} carries no private lineage record; issue #${num} runs without lineage supervision"
+    fi
   fi
 elif [ "$kind" = "pr" ] && [ "$mode" != "audit" ] && [ -n "$repo_branch_pattern" ]; then
   # A policy-bound fix round writes exactly the validated target branch: the
@@ -1064,6 +1087,32 @@ capture_target_state() {
 
 snapshot_is_complete() {
   [ "$(jq -r '.snapshot_complete // false' "$1" 2>/dev/null || printf 'false')" = "true" ]
+}
+
+# An issue rerun that continues an existing pull request delivers to *that*
+# pull request, while the snapshot above stays issue-shaped because delivery
+# classification still compares the issue's own before/after state. Lineage
+# needs the pull request's own exact snapshot instead: its labels are the pull
+# request's, not the issue's, and the supervisor re-reads the same fields and
+# refuses the round if any of them moved between here and launch.
+capture_continuation_state() {
+  local pr_number="$1" out="$2" pr_json=""
+  pr_json="$(snapshot_lookup gh pr view "$pr_number" -R "$REPO" \
+    --json headRefOid,state,labels,headRefName,author 2>/dev/null)" || return 1
+  printf '%s\n' "$pr_json" \
+    | jq --arg number "$pr_number" '
+      {
+        kind: "pr",
+        number: $number,
+        pr_number: $number,
+        head_sha: ((.headRefOid // "") | ascii_downcase),
+        branch: .headRefName,
+        author: .author.login,
+        pr_state: (.state // ""),
+        labels: [ (.labels // [])[] | .name ],
+        runner_comment_id: "",
+        snapshot_complete: true
+      }' > "$out"
 }
 
 prompt_file="$(mktemp "${TMPDIR}/code-mower-prompt.XXXXXXXX")"
@@ -1242,6 +1291,21 @@ writer_source="${log%.log}.source.json"
 capture_target_state "$before_state"
 if [ "$kind" = "pr" ] && [ "$mode" != "audit" ]; then
   git -C "$work" checkout --quiet -B "$target_pr_branch" "$target_pr_head"
+elif [ -n "$continuation_pr" ] && [ "$mode" != "audit" ]; then
+  # A continuation round registers against the pull request as it stands now,
+  # and registration refuses unless this working copy already sits on that
+  # branch at that head -- the same binding a fix round on the pull request
+  # itself gets. The freshly read head must still be the one the branch
+  # ownership check already validated, so a push that landed since then refuses
+  # the round here rather than chaining onto a head nobody observed.
+  continuation_before="${log%.log}.continuation.json"
+  if ! capture_continuation_state "$continuation_pr" "$continuation_before" \
+    || ! continuation_head="$(jq -r '.head_sha // empty' "$continuation_before")" \
+    || [ -z "$continuation_head" ] || [ "$continuation_head" != "$policy_branch_expected_head" ] \
+    || ! git -C "$work" checkout --quiet -B "$resolved_branch" "$continuation_head"; then
+    echo "${LANE}: refusing issue #${num}; lineage-bearing pull request #${continuation_pr} could not be bound to this checkout for a continuation round" >&2
+    exit 2
+  fi
 fi
 # Delivery is judged by comparing this snapshot with the one taken afterwards.
 # If the before snapshot is already incomplete the comparison can never be
@@ -1295,6 +1359,15 @@ run_provider() {
       supervise_args+=(--lineage-issue "$num" --lineage-branch "$creation_branch"
         --lineage-base "$lineage_base" --lineage-writer "$lineage_writer"
         --lineage-store "$creation_store" --lineage-output "${log%.log}.lineage.json")
+    elif [ "$kind" = "issue" ] && [ "$mode" != "audit" ] && [ -n "$continuation_before" ]; then
+      # Rerunning an issue whose pull request this lane already created is a
+      # delivery to that pull request, so it takes the same continuation path a
+      # fix round on the pull request takes: no branch to reserve, because the
+      # branch exists and this round only extends the chain already published
+      # on it, and no handoff, because the writer has not changed.
+      supervise_args+=(--lineage-before "$continuation_before" --lineage-base "$lineage_base"
+        --lineage-writer "$lineage_writer" --lineage-store "$continuation_store"
+        --lineage-output "${log%.log}.lineage.json")
     fi
     [ -n "$provider_stdin" ] && supervise_args+=(--stdin-file "$provider_stdin")
     "${lane_delivery[@]}" supervise "${supervise_args[@]}" -- "$@"
