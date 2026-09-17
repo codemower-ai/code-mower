@@ -889,6 +889,10 @@ class CreationFrontierTransportTests(unittest.TestCase):
             return argparse.Namespace(stdout=json.dumps(payload))
         return run
 
+    def responding(self, body):
+        """A ``gh api`` stand-in returning one fixed response text."""
+        return lambda *args, **kwargs: argparse.Namespace(stdout=body)
+
     def test_the_frontier_read_stays_inside_the_transport_byte_budget(self):
         sizes = []
         with patch("code_mower.builder_lineage_producer.subprocess.run", self.fake_gh(sizes)):
@@ -912,13 +916,12 @@ class CreationFrontierTransportTests(unittest.TestCase):
         ):
             with self.subTest(reason=reason):
                 with patch("code_mower.builder_lineage_producer.subprocess.run",
-                           lambda *a, **k: argparse.Namespace(stdout=payload)):
+                           self.responding(payload)):
                     with self.assertRaises(ProducerRefusal):
                         GitHub().pull_frontier(REPO)
 
     def test_a_repository_with_no_pull_requests_has_a_zero_frontier(self):
-        with patch("code_mower.builder_lineage_producer.subprocess.run",
-                   lambda *a, **k: argparse.Namespace(stdout="[]")):
+        with patch("code_mower.builder_lineage_producer.subprocess.run", self.responding("[]")):
             self.assertEqual(GitHub().pull_frontier(REPO), 0)
 
 
