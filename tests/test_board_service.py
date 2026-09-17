@@ -175,6 +175,13 @@ class FakeHost:
             label = Path(argv[2]).name[: -len(".plist")]
             if label in self.bootstrap_failures:
                 return _completed("", returncode=1, stderr="Bootstrap failed: 5: Input/output error\n")
+            # launchd will not bootstrap a label its domain already holds, so a
+            # rollback that writes a definition back without first unloading the
+            # job it replaced cannot look like it succeeded here.
+            if label in self.loaded:
+                return _completed(
+                    "", returncode=1, stderr="Bootstrap failed: 37: Operation already in progress\n"
+                )
             self._start(label)
             return _completed("")
         if action == "bootout":
@@ -1036,6 +1043,85 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertIn("rollback also failed", payload["message"])
         self.assertFalse(payload["rollback"]["restored"])
 
+    def test_a_partially_registered_replacement_is_unloaded_before_restoring(self) -> None:
+        # A bootstrap can register the job and *then* give up waiting for it.
+        # Restoring the previous definition on top of a replacement launchd
+        # still holds would leave launchd supervising the replacement while the
+        # definition on disk describes the service it replaced, and the
+        # restoring bootstrap would fail because the label is already loaded.
+        self.install(self.spec())
+        before = (self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8")
+        drifted = self.spec(repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332)
+
+        class RegistersThenGivesUp(board_service.LaunchdProvider):
+            gave_up = False
+
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                ok, detail = super().bootstrap(label)
+                if not self.gave_up:
+                    self.gave_up = True
+                    return False, "timed out waiting for the job to answer"
+                return ok, detail
+
+        payload = self._restart_with(
+            RegistersThenGivesUp(
+                command_runner=self.host.run, root=self.root, uid=self.host.uid, platform="darwin"
+            ),
+            drifted,
+            replace=True,
+        )
+
+        self.assertEqual(payload["status"], "apply_failed")
+        self.assertTrue(payload["rollback"]["ok"])
+        self.assertTrue(payload["rollback"]["restored"])
+        # On disk and in launchd, what is left is the previous service -- not a
+        # replacement running against a definition that no longer describes it.
+        self.assertEqual((self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8"), before)
+        self.assertIn("ai.codemower.board.5332", self.host.loaded)
+        self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
+
+    def test_a_replacement_that_cannot_be_unloaded_leaves_the_definition_alone(self) -> None:
+        # The other half: if the replacement cannot be confirmed unloaded, the
+        # previous definition is not written under it. Overwriting the
+        # definition of a job launchd still supervises would leave neither the
+        # replacement nor the previous service described by what is on disk.
+        self.install(self.spec())
+        drifted = self.spec(repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332)
+        replacement_text = board_service.render_definition(drifted)
+
+        class WillNotUnload(board_service.LaunchdProvider):
+            booted_out = False
+
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                super().bootstrap(label)
+                return False, "timed out waiting for the job to answer"
+
+            def bootout(self, label: str) -> tuple[bool, str]:
+                if self.booted_out:
+                    return False, "Bootout failed: 125: Unknown error"
+                # The apply's own bootout of the previous service works; the
+                # rollback's attempt on the replacement is what fails.
+                self.booted_out = True
+                return super().bootout(label)
+
+        payload = self._restart_with(
+            WillNotUnload(
+                command_runner=self.host.run, root=self.root, uid=self.host.uid, platform="darwin"
+            ),
+            drifted,
+            replace=True,
+        )
+
+        self.assertEqual(payload["status"], "rollback_failed")
+        self.assertFalse(payload["rollback"]["ok"])
+        self.assertFalse(payload["rollback"]["restored"])
+        self.assertIn("could not be unloaded", payload["rollback"]["detail"])
+        self.assertEqual(
+            (self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8"),
+            replacement_text,
+        )
+        self.assertIn("Rollback: failed", board_service.render_operation_text(payload))
+
     def test_a_rollback_that_cannot_unload_the_job_keeps_its_definition(self) -> None:
         # launchd registered the job and then bootstrap gave up waiting for it,
         # so the apply failed with a job still supervised -- and the rollback's
@@ -1565,6 +1651,75 @@ class BoardStopSelectorTest(ServiceHarness):
         self.assertIn("service=none (transient)", board.render_inventory_text(inventory))
         self.assertEqual(payload["status"], "stopped")
         self.assertEqual([entry[0] for entry in payload["_signalled"]], [pid])
+
+    def test_a_repository_named_with_leading_punctuation_is_a_valid_selector(self) -> None:
+        # `owner/.github` is a real GitHub repository name and Board serves it.
+        # Imposing the *owner* naming rule on the repository component locked
+        # those repositories out of the service lifecycle and this selector
+        # while serving them worked.
+        dotted = self.tmp / "dot-github"
+        dotted.mkdir()
+        self.host.origins[str(dotted)] = "git@github.com:codemower-ai/.github.git"
+        installed = self.install(self.spec(repo="codemower-ai/.github", repo_path=dotted, port=5342))
+        pid = self._transient_board(5344, "codemower-ai/.github", dotted)
+
+        by_repo = self._stop(repo="codemower-ai/.github", port=5344, yes=True)
+        traversal = self._stop(repo="codemower-ai/..", yes=True)
+
+        self.assertEqual(installed["status"], "installed")
+        self.assertEqual(installed["repo"], "codemower-ai/.github")
+        self.assertEqual(by_repo["status"], "stopped")
+        self.assertEqual([entry[0] for entry in by_repo["_signalled"]], [pid])
+        # A component with no alphanumeric in it is path traversal, not a
+        # repository, and this slug becomes a path component downstream.
+        self.assertEqual(traversal["status"], "invalid_selector")
+        self.assertEqual(traversal["_signalled"], [])
+
+    def test_stop_refuses_a_port_whose_supervision_launchd_will_not_confirm(self) -> None:
+        # `launchctl print` failing for a reason launchd does not characterise
+        # as a missing job says nothing about whether it still supervises this
+        # service. Reading that as "not loaded" would make the listener look
+        # transient, so `board stop --yes` would signal a keepalive-managed
+        # Board and report the port released while launchd restarted it.
+        spec = self.spec()
+        self.install(spec)
+
+        def unreachable_launchd(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == ["launchctl", "print"]:
+                return _completed("", returncode=1, stderr="Could not connect to launchd\n")
+            return self.host.run(argv)
+
+        provider = board_service.LaunchdProvider(
+            command_runner=unreachable_launchd, root=self.root, uid=self.host.uid, platform="darwin"
+        )
+        service = provider.read_service(spec.label)
+        stopped: list[tuple[int, int]] = []
+        payload = board.stop_board(
+            port=5332,
+            yes=True,
+            command_runner=self.host.run,
+            killer=lambda pid, sig: stopped.append((pid, sig)),
+            service_probe=lambda: provider.list_services(),
+        )
+        inventory = board.board_inventory_payload(
+            command_runner=self.host.run,
+            status_probe=None,
+            service_probe=lambda: provider.list_services(),
+        )
+
+        self.assertEqual(service.load_state, board_service.JOB_UNKNOWN)
+        self.assertFalse(service.loaded)
+        self.assertEqual(payload["status"], "managed_service")
+        self.assertEqual(stopped, [])
+        self.assertEqual(payload["managed_service"]["supervision"], "unknown")
+        self.assertIn("could not be asked", payload["message"])
+        self.assertIn("ai.codemower.board.5332", self.host.loaded)
+        # And the inventory says the same thing rather than asserting it is
+        # supervised or calling it transient.
+        rows = {row["port"]: row for row in inventory["boards"]}
+        self.assertTrue(rows[5332]["managed"])
+        self.assertEqual(rows[5332]["service_supervision"], "unknown")
+        self.assertIn("supervision unconfirmed", board.render_inventory_text(inventory))
 
     def test_stop_exit_codes_separate_refusals_from_selector_errors(self) -> None:
         self.assertEqual(board._stop_exit_code("stopped"), 0)

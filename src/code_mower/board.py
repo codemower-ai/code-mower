@@ -5108,8 +5108,10 @@ def _managed_service_index(
     return index
 
 
-def _managed_listener_service(listener: Mapping[str, Any], index: Mapping[int, Any]) -> Any | None:
-    """The managed service actually serving this listener, or None.
+def _managed_listener_service(
+    listener: Mapping[str, Any], index: Mapping[int, Any]
+) -> tuple[Any | None, bool]:
+    """The managed service serving this listener, and whether that is confirmed.
 
     An installed definition names a port; it does not prove that whatever holds
     that port is the process launchd supervises. A booted-out service leaves its
@@ -5119,20 +5121,33 @@ def _managed_listener_service(listener: Mapping[str, Any], index: Mapping[int, A
     nothing would restart. Ownership is the launchd runtime pid, matched against
     the discovered listener -- the same bar `board service` applies before it
     claims a port.
+
+    A supervisor that *could not be asked* is neither of those answers.
+    `launchctl print` timing out or failing unexpectedly leaves `loaded` false
+    for want of a positive answer, and treating that as a transient Board lets
+    `board stop --yes` signal a keepalive-managed one and report the port
+    released while launchd restarts it within moments. So the third state is
+    kept: only a positively confirmed-absent job makes a listener stoppable,
+    and an unknown one is refused with the service named but its supervision
+    marked unconfirmed rather than asserted.
     """
 
     try:
         port = int(listener.get("port") or -1)
         pid = int(listener.get("pid") or 0)
     except (TypeError, ValueError):
-        return None
+        return None, False
     service = index.get(port)
-    if service is None or pid <= 0 or not getattr(service, "loaded", False):
-        return None
+    if service is None:
+        return None, False
+    if getattr(service, "load_state", board_service.JOB_ABSENT) == board_service.JOB_UNKNOWN:
+        return service, False
+    if pid <= 0 or not getattr(service, "loaded", False):
+        return None, False
     service_pid = getattr(service, "pid", None)
     if not isinstance(service_pid, int) or service_pid != pid:
-        return None
-    return service
+        return None, False
+    return service, True
 
 
 def _default_pid_alive(pid: int) -> bool:
@@ -5165,9 +5180,12 @@ def board_inventory_payload(
         if not isinstance(discovered, Mapping):
             continue
         item = dict(discovered)
-        managed = _managed_listener_service(item, services)
+        managed, supervision_confirmed = _managed_listener_service(item, services)
         item["managed"] = managed is not None
         item["service_label"] = getattr(managed, "label", "") if managed is not None else ""
+        item["service_supervision"] = (
+            ("confirmed" if supervision_confirmed else "unknown") if managed is not None else ""
+        )
         probed = status_probe(item) if status_probe else {}
         if isinstance(probed, Mapping) and probed.get("schema") in {BOARD_IDENTITY_SCHEMA, lane_status.LANE_STATUS_SCHEMA}:
             board_meta = probed.get("board") if isinstance(probed.get("board"), Mapping) else {}
@@ -5225,13 +5243,17 @@ def render_inventory_text(payload: Mapping[str, Any]) -> str:
         else:
             restart = " restart recommended" if board_item.get("restart_recommended") else ""
         cwd = f" cwd={board_item.get('cwd')}" if board_item.get("cwd") else ""
-        managed = (
-            f" service={board_item.get('service_label')}"
-            if board_item.get("managed")
-            else " service=none (transient)"
-            if "managed" in board_item
-            else ""
-        )
+        if board_item.get("managed"):
+            unconfirmed = (
+                " (supervision unconfirmed)"
+                if board_item.get("service_supervision") == "unknown"
+                else ""
+            )
+            managed = f" service={board_item.get('service_label')}{unconfirmed}"
+        elif "managed" in board_item:
+            managed = " service=none (transient)"
+        else:
+            managed = ""
         lines.append(
             f"- {board_item.get('url') or 'localhost'} pid={board_item.get('pid')} "
             f"repo={repo} version={version} health={health}{restart}{managed}{cwd}"
@@ -5406,19 +5428,34 @@ def stop_board(
     }
     managed_index = _managed_service_index(command_runner, service_probe)
     managed_match = None
+    supervision_confirmed = False
     for item in matches:
-        managed_match = _managed_listener_service(item, managed_index)
+        managed_match, supervision_confirmed = _managed_listener_service(item, managed_index)
         if managed_match is not None:
             break
     if matches and managed_match is not None:
         label = getattr(managed_match, "label", "")
         managed_port = getattr(managed_match, "port", None)
         payload["status"] = "managed_service"
-        payload["managed_service"] = {"label": label, "port": managed_port}
+        payload["managed_service"] = {
+            "label": label,
+            "port": managed_port,
+            "supervision": "confirmed" if supervision_confirmed else "unknown",
+        }
         payload["message"] = (
-            f"port {managed_port} is served by managed Board service {label}, which would "
-            "immediately reclaim it; nothing was stopped. Use code-mower board service "
-            f"restart or code-mower board service remove --port {managed_port} --yes instead."
+            (
+                f"port {managed_port} is served by managed Board service {label}, which would "
+                "immediately reclaim it; nothing was stopped. Use code-mower board service "
+                f"restart or code-mower board service remove --port {managed_port} --yes instead."
+            )
+            if supervision_confirmed
+            else (
+                f"managed Board service {label} is installed on port {managed_port} and launchd "
+                "could not be asked whether it still supervises it, so a stop could not be "
+                "proven to release the port rather than be undone; nothing was stopped. Run "
+                f"code-mower board service status --port {managed_port} once launchd answers, "
+                f"or use code-mower board service restart or remove --port {managed_port} --yes."
+            )
         )
         if not show_local_paths:
             _redact_inventory_paths(payload)

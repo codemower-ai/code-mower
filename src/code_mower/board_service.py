@@ -86,7 +86,18 @@ DEFAULT_REFRESH_SECONDS = 3.0
 DEFAULT_TIMEOUT_SECONDS = 60.0
 DELAYED_HEALTH_STATES = ("pass", "fail", "skipped")
 
-REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+# An owner and a repository are named by different rules, and imposing the
+# owner's on both is what rejects real slugs. A GitHub owner is alphanumerics
+# and hyphens and must start with an alphanumeric; a repository name may begin
+# with punctuation -- `owner/.github` is the canonical example, and Board serves
+# it happily -- so requiring a leading alphanumeric there locked those
+# repositories out of service render/install/restart and `board stop --repo`
+# while serving them worked. The one thing a repository component may not be is
+# a name with no alphanumeric in it at all: `.` and `..` are path traversal
+# rather than repositories, and this slug becomes a path component downstream.
+_OWNER_COMPONENT_RE = r"[A-Za-z0-9][A-Za-z0-9-]*"
+_REPO_COMPONENT_RE = r"[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*"
+REPO_SLUG_RE = re.compile(rf"^{_OWNER_COMPONENT_RE}/{_REPO_COMPONENT_RE}$")
 ORIGIN_SLUG_RE = re.compile(
     r"^(?:git@[^:]+:|(?:https?|ssh|git)://(?:[^@/]+@)?[^/]+/)(?P<slug>.+?)(?:\.git)?$"
 )
@@ -239,6 +250,12 @@ class ManagedService:
     digest: str
     loaded: bool = False
     pid: int | None = None
+    # `loaded` answers "is launchd known to hold this job", which collapses "it
+    # does not" and "launchd would not say" into one `False`. Anything deciding
+    # whether it is safe to *stop* caring about the job needs those apart, so
+    # the provider's three-state answer is carried alongside rather than
+    # reconstructed from a boolean that cannot express it.
+    load_state: str = JOB_ABSENT
     readable: bool = True
     message: str = ""
 
@@ -659,8 +676,10 @@ class LaunchdProvider:
         path = self.definition_path(label)
 
         def with_runtime(service: ManagedService) -> ManagedService:
-            loaded, pid = self.runtime(label)
-            return dataclasses.replace(service, loaded=loaded, pid=pid)
+            state, pid = self.runtime_state(label)
+            return dataclasses.replace(
+                service, loaded=state == JOB_LOADED, pid=pid, load_state=state
+            )
 
         # Read bytes, not text. A binary plist -- or a definition corrupted into
         # invalid UTF-8 -- makes `read_text` raise `UnicodeDecodeError`, which is
@@ -1817,6 +1836,26 @@ def _rollback(provider: Any, spec: ServiceSpec, previous_text: str) -> dict[str,
             "deleted": True,
             "unloaded": unloaded,
         }
+    # A bootstrap that reported failure may still have registered the job --
+    # timing out after launchd accepted it is exactly that -- so the replacement
+    # has to be unloaded before anything is restored. Writing the previous
+    # definition over it would leave launchd supervising the replacement while
+    # the definition on disk describes the service it replaced, and the
+    # restoring bootstrap would fail anyway because the label is already loaded.
+    # This is the same ordering the first-install rollback above follows.
+    unloaded, unload_detail = provider.bootout(spec.label)
+    still_loaded, _pid = _job_load_state(provider, spec.label)
+    if still_loaded:
+        return {
+            "ok": False,
+            "detail": (
+                "the replacement job could not be unloaded, so the previous definition was left "
+                "in place rather than written under a job launchd still supervises: "
+                + (unload_detail or "launchd still holds the job")
+            ),
+            "restored": False,
+            "unloaded": unloaded,
+        }
     try:
         provider.write_definition(spec.label, previous_text)
     except OSError as exc:
@@ -2153,6 +2192,10 @@ def service_status(
             "host": service.host,
             "keepalive": service.keepalive,
             "loaded": service.loaded,
+            # `loaded: false` alone cannot say whether launchd does not hold the
+            # job or merely would not answer, and an operator reading a status
+            # needs that apart as much as `board stop` does.
+            "load_state": service.load_state,
             "pid": service.pid,
             "digest": service.digest,
             "repo_path": redact_path(service.repo_path, show_local_paths=show_local_paths),

@@ -91,6 +91,21 @@ stop` keepalive guard apply the same rule: a listener is managed only when its
 pid is the one launchd supervises for that label, so a transient Board that took
 a stopped service's port is labelled transient and can still be stopped.
 
+A supervisor that could not be *asked* is a third answer, and it is kept as one.
+When `launchctl print` times out or fails for a reason launchd does not
+characterise as a missing job, the load state is `unknown` rather than absent:
+`board stop` refuses the port (`managed_service` with `supervision: unknown`)
+because a stop could not be proven to release it rather than be undone within
+moments, and `board list` names the service with its supervision marked
+unconfirmed instead of asserting it. Only a positively confirmed-absent job
+makes a listener on that port stoppable.
+
+An owner and a repository are named by different rules. `--repo` validates them
+separately, so `owner/.github` -- a real repository name, and one Board serves --
+is accepted by `render`, `install`, `restart` and `board stop --repo`. The one
+repository component refused is one with no alphanumeric character in it, since
+`.` and `..` are path traversal rather than repositories.
+
 `remove` will not delete a definition while launchd still holds its job. Managed
 services are discovered by scanning definition files, so deleting one whose job
 survived would strand a running, self-restarting service where `status`, `remove`
@@ -214,8 +229,12 @@ Selectors are not exclusive: every selector supplied must agree on one binding.
   stopped, with a pointer to `board service restart` or `board service remove`.
   Signaling it would report success while the supervisor immediately reclaimed
   the port.
+- A port whose managed service launchd would not answer about:
+  `managed_service` with `supervision: unknown`, nothing stopped. The stop could
+  not be proven to release the port rather than be undone.
 
-`board list` marks each Board `managed` with its service label, or transient.
+`board list` marks each Board `managed` with its service label, or transient,
+and says when that service's supervision is unconfirmed.
 
 ## Local paths stay local
 
