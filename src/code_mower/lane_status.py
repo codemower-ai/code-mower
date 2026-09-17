@@ -98,15 +98,25 @@ def _stdout(command_runner: CommandRunner, args: Sequence[str]) -> str:
     return _probe(command_runner, args)[1]
 
 
-# Exiting 1 is an answer, not a failure: `lsof` says "nothing matched" that way,
-# and so do `git config --get` and `ps -p`. A tool that raises, times out, or
-# exits with anything else did not answer at all, and the two have to stay
-# distinguishable -- conflating them is how "the port is free" gets inferred
-# from "we could not look".
+# Which nonzero exits count as an answer is each tool's own convention, so the
+# set travels with the call rather than being global. `lsof` says "nothing
+# matched" by exiting 1, and so do `git config --get` and `ps -p`; `ss` has no
+# such code, reporting an empty table by exiting 0 and reserving every nonzero
+# exit for a failure. A tool that raises, times out, or exits outside its own
+# answered set did not answer at all, and the two have to stay distinguishable
+# -- conflating them is how "the port is free" gets inferred from "we could not
+# look".
 _ANSWERED_RETURNCODES = (0, 1)
+_LSOF_ANSWERED_RETURNCODES = (0, 1)
+_SS_ANSWERED_RETURNCODES = (0,)
 
 
-def _probe(command_runner: CommandRunner, args: Sequence[str]) -> tuple[bool, str]:
+def _probe(
+    command_runner: CommandRunner,
+    args: Sequence[str],
+    *,
+    answered_returncodes: Sequence[int] = _ANSWERED_RETURNCODES,
+) -> tuple[bool, str]:
     """Run a command, reporting whether it answered as well as what it said."""
 
     try:
@@ -115,7 +125,7 @@ def _probe(command_runner: CommandRunner, args: Sequence[str]) -> tuple[bool, st
         return False, ""
     if completed.returncode == 0:
         return True, completed.stdout or ""
-    return completed.returncode in _ANSWERED_RETURNCODES, ""
+    return completed.returncode in answered_returncodes, ""
 
 
 def _label_groups(pr: Mapping[str, Any]) -> dict[str, list[str]]:
@@ -535,10 +545,18 @@ def _listener_inventory(command_runner: CommandRunner) -> tuple[bool, list[dict[
     unknown and no conclusion about the port may be drawn from the list.
     """
 
-    answered, text = _probe(command_runner, ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-FnPcn"])
+    answered, text = _probe(
+        command_runner,
+        ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-FnPcn"],
+        answered_returncodes=_LSOF_ANSWERED_RETURNCODES,
+    )
     if text:
         return True, _listeners(text)
-    fallback_answered, fallback_text = _probe(command_runner, ["ss", "-H", "-ltnp"])
+    fallback_answered, fallback_text = _probe(
+        command_runner,
+        ["ss", "-H", "-ltnp"],
+        answered_returncodes=_SS_ANSWERED_RETURNCODES,
+    )
     if fallback_text:
         return True, _ss_listeners(fallback_text)
     return (answered or fallback_answered), []

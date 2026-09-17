@@ -679,23 +679,40 @@ class ListenerInventoryAvailabilityTests(TestCase):
     against real `CompletedProcess` return codes rather than a fake's flag.
     """
 
-    def test_a_tool_that_exits_one_has_answered_that_nothing_is_listening(self) -> None:
+    def test_lsof_exiting_one_has_answered_that_nothing_is_listening(self) -> None:
         # `lsof` reports "nothing matched" by exiting 1 with no output. That is
-        # an answer, and the port really is free.
+        # an answer, and the port really is free -- even though the `ss`
+        # fallback that follows it fails outright.
         def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
-            return _completed("", returncode=1)
+            if args[:1] == ["lsof"]:
+                return _completed("", returncode=1)
+            raise OSError("no ss here")
 
         inventory = lane_status.local_listener_inventory(command_runner)
 
         self.assertEqual((inventory["available"], inventory["listeners"]), (True, []))
 
-    def test_an_ss_fallback_that_exits_one_answers_for_a_missing_lsof(self) -> None:
-        # No `lsof` on the host is not an answer; the `ss` that follows it
-        # exiting 1 is, and the inventory is available on the strength of it.
+    def test_an_ss_fallback_exiting_one_has_not_answered_for_a_missing_lsof(self) -> None:
+        # No `lsof` on the host is not an answer, and neither is `ss` exiting 1:
+        # `ss` has no "nothing matched" code, so 1 is a failure and occupancy
+        # stays unknown. Reading 1 as an answer here is what let a host with no
+        # working probe report every port free.
         def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
             if args[:1] == ["lsof"]:
                 raise OSError("no lsof here")
             return _completed("", returncode=1)
+
+        inventory = lane_status.local_listener_inventory(command_runner)
+
+        self.assertEqual((inventory["available"], inventory["listeners"]), (False, []))
+
+    def test_an_ss_fallback_exiting_zero_answers_for_a_missing_lsof(self) -> None:
+        # `ss` says "nothing is listening" by exiting 0 with an empty table.
+        # That is the fallback's answer, and it makes the inventory available.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["lsof"]:
+                raise OSError("no lsof here")
+            return _completed("", returncode=0)
 
         inventory = lane_status.local_listener_inventory(command_runner)
 
