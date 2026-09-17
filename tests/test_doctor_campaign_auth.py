@@ -649,8 +649,12 @@ class CampaignAuthProbeTests(unittest.TestCase):
         readiness = [c for c in checks if c.name == "doctor.campaign.readiness"]
         self.assertIn("codex", readiness[0].detail.get("ready_providers", []))
         rendered = _rendered(checks)
-        self.assertNotIn("keyring", rendered)
+        # The probe's own text never reaches doctor output. The bounded
+        # `campaign_auth_mode` word is a fixed Code Mower constant naming the
+        # selected credential store, not anything the provider printed.
+        self.assertNotIn("failed to read keyring entry", rendered)
         self.assertNotIn("user@example.com", rendered)
+        self.assertEqual(check.detail.get("campaign_auth_mode"), "keyring")
 
     def test_unsupported_subcommand_is_unknown_not_unauthenticated(self) -> None:
         """An older or newer CLI without `login status` stays campaign-ready."""

@@ -125,13 +125,49 @@ DEFAULT_PROVIDER_TIMEOUT_SECONDS = 870
 
 CODEX_MODEL_ENV_NAMES = ("CODE_MOWER_CODEX_MODEL", "CODEX_MODEL", "OPENAI_MODEL")
 CODEX_CAMPAIGN_HOME_ENV = "CODE_MOWER_CODEX_CAMPAIGN_HOME"
-CODEX_CAMPAIGN_CONFIG = """cli_auth_credentials_store = \"keyring\"
-default_permissions = \"campaign\"
 
-[features]
-secret_auth_storage = true
+#: Selects which supported Codex credential store the isolated campaign home
+#: uses. Unset means :data:`CODEX_AUTH_MODE_KEYRING`, so an existing adopter
+#: keeps the released keyring-only behaviour with no configuration change.
+CODEX_CAMPAIGN_AUTH_MODE_ENV = "CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE"
 
-[permissions.campaign.filesystem]
+#: Verified against the maintained Codex CLI's published configuration schema
+#: (``codex-rs/core/config.schema.json``, ``AuthCredentialsStoreMode``), which
+#: declares exactly four ``cli_auth_credentials_store`` values:
+#:
+#: * ``file``     -- "Persist credentials in CODEX_HOME/auth.json."
+#: * ``keyring``  -- "Persist credentials in the keyring. Fail if unavailable."
+#: * ``auto``     -- "Use keyring when available; otherwise, fall back to a
+#:   file in CODEX_HOME."
+#: * ``ephemeral`` -- "Store credentials in memory only for the current
+#:   process."
+#:
+#: Code Mower supports only the two modes that name one explicit, durable
+#: credential source. ``auto`` is refused because its silent keyring-to-file
+#: fallback means the operator cannot know which source a campaign actually
+#: used, and ``ephemeral`` is refused because it cannot survive the login step
+#: that precedes a campaign, let alone a restart.
+CODEX_AUTH_MODE_KEYRING = "keyring"
+CODEX_AUTH_MODE_FILE = "file"
+SUPPORTED_CODEX_AUTH_MODES = (CODEX_AUTH_MODE_KEYRING, CODEX_AUTH_MODE_FILE)
+DEFAULT_CODEX_AUTH_MODE = CODEX_AUTH_MODE_KEYRING
+#: Why each remaining maintained CLI mode is not a Code Mower campaign source.
+REFUSED_CODEX_AUTH_MODES = {
+    "auto": "silently falls back between keyring and file credential sources",
+    "ephemeral": "keeps credentials in memory only and cannot survive a restart",
+}
+
+#: The maintained CLI persists a ``file``-mode credential here, relative to
+#: ``CODEX_HOME``. Code Mower never reads, copies, or emits its contents; it
+#: only enforces the permissions of the containing isolated home.
+CODEX_CAMPAIGN_AUTH_FILENAME = "auth.json"
+
+#: Restricted provider configuration shared by every supported auth mode: the
+#: agent may read a minimal system root and write only its disposable
+#: workspace, and every other path starts denied. File mode does not relax any
+#: of it, so the credential it adds to the isolated home sits behind the same
+#: root deny plus the home's own ``0700``/``0600`` POSIX permissions.
+CODEX_CAMPAIGN_PERMISSIONS_CONFIG = """[permissions.campaign.filesystem]
 \":root\" = \"deny\"
 \":minimal\" = \"read\"
 \":workspace_roots\" = \"write\"
@@ -139,6 +175,55 @@ secret_auth_storage = true
 [permissions.campaign.network]
 enabled = true
 """
+
+#: ``secret_auth_storage`` selects the keyring *backend kind* in the maintained
+#: CLI, so it is written only for keyring mode and carries no meaning for a
+#: file-backed home.
+CODEX_CAMPAIGN_KEYRING_FEATURES = """[features]
+secret_auth_storage = true
+"""
+
+
+def build_codex_campaign_config(auth_mode: str = DEFAULT_CODEX_AUTH_MODE) -> str:
+    """Return the non-secret isolated campaign config for one supported mode.
+
+    Both modes keep the identical workspace-containment and root-deny policy;
+    only the declared credential store differs.
+    """
+    if auth_mode not in SUPPORTED_CODEX_AUTH_MODES:
+        raise ValueError("unsupported isolated campaign auth mode")
+    sections = [
+        f'cli_auth_credentials_store = "{auth_mode}"\ndefault_permissions = "campaign"\n'
+    ]
+    if auth_mode == CODEX_AUTH_MODE_KEYRING:
+        sections.append(CODEX_CAMPAIGN_KEYRING_FEATURES)
+    sections.append(CODEX_CAMPAIGN_PERMISSIONS_CONFIG)
+    return "\n".join(sections)
+
+
+#: Released keyring-mode rendering, unchanged by the file-mode addition.
+CODEX_CAMPAIGN_CONFIG = build_codex_campaign_config(CODEX_AUTH_MODE_KEYRING)
+
+
+def resolve_codex_campaign_auth_mode(env: Mapping[str, str] | None = None) -> str:
+    """Return the explicitly selected isolated campaign credential store.
+
+    An unset or empty selection is :data:`DEFAULT_CODEX_AUTH_MODE`, so the
+    released keyring behaviour is what an adopter who never opts in keeps. Any
+    other value -- including a maintained CLI mode Code Mower does not support
+    -- raises, so an unsupported mode fails closed in the adapter and can never
+    become a doctor readiness pass.
+    """
+    current_env = os.environ if env is None else env
+    raw = str(current_env.get(CODEX_CAMPAIGN_AUTH_MODE_ENV, "") or "").strip().lower()
+    if not raw:
+        return DEFAULT_CODEX_AUTH_MODE
+    if raw in SUPPORTED_CODEX_AUTH_MODES:
+        return raw
+    reason = REFUSED_CODEX_AUTH_MODES.get(raw)
+    if reason:
+        raise ValueError(f"unsupported isolated campaign auth mode: {reason}")
+    raise ValueError("unsupported isolated campaign auth mode")
 CLAUDE_MODEL_ENV_NAME = "CLAUDE_AUDIT_MODEL"
 CLAUDE_DEFAULT_MODEL = "sonnet"
 CLAUDE_BUDGET_ENV_NAME = "CLAUDE_AUDIT_MAX_BUDGET_USD"
@@ -258,6 +343,10 @@ ADAPTER_ENV_ALLOWLIST = (
     "DBUS_SESSION_BUS_ADDRESS",
     "XDG_RUNTIME_DIR",
 )
+
+#: The allowlisted names above that exist only to reach a Secret Service
+#: keyring. A campaign home that does not use a keyring does not get them.
+KEYRING_SESSION_ENV_NAMES = ("DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR")
 
 #: Full closed validator schema. This is the authoritative shape used by
 #: :func:`code_mower.release_qualify.validate_adoption_result_payload` and by
@@ -1249,22 +1338,87 @@ def run_provider_command(
     )
 
 
-def _default_codex_campaign_home() -> Path:
-    configured = os.environ.get(CODEX_CAMPAIGN_HOME_ENV, "").strip()
+def _default_codex_campaign_home(env: Mapping[str, str] | None = None) -> Path:
+    current_env = os.environ if env is None else env
+    configured = str(current_env.get(CODEX_CAMPAIGN_HOME_ENV, "") or "").strip()
     if configured:
         return Path(configured).expanduser()
     return Path.home() / ".config" / "code-mower" / "provider-homes" / "codex"
 
 
-def prepare_codex_campaign_home(codex_home: Path | None = None) -> Path:
-    """Create the non-secret, keyring-backed home used by campaign Codex runs."""
+#: Bounded, non-secret words describing whether the selected isolated
+#: credential source exists. Never a path, an account, or credential content.
+CODEX_AUTH_SOURCE_PRESENT = "present"
+CODEX_AUTH_SOURCE_MISSING = "missing"
+CODEX_AUTH_SOURCE_UNUSABLE = "unusable"
+CODEX_AUTH_SOURCE_EXTERNAL = "external"
+
+
+def _enforce_campaign_auth_file(home: Path) -> None:
+    """Reject anything but a private regular credential file, then tighten it.
+
+    File mode is the one supported source that leaves a credential on disk, so
+    the containing home stays ``0700`` and the credential itself is forced to
+    ``0600``. A symlink is refused outright: it would let a credential Code
+    Mower does not control decide what the isolated home reads.
+    """
+    auth_path = home / CODEX_CAMPAIGN_AUTH_FILENAME
+    if auth_path.is_symlink():
+        raise ValueError("isolated Codex campaign credential is a symlink")
+    if not auth_path.exists():
+        return
+    if not auth_path.is_file():
+        raise ValueError("isolated Codex campaign credential is not a regular file")
+    auth_path.chmod(0o600)
+
+
+def codex_campaign_auth_source_state(
+    home: Path,
+    auth_mode: str = DEFAULT_CODEX_AUTH_MODE,
+) -> str:
+    """Return the bounded state of one home's selected credential source.
+
+    Keyring mode reports :data:`CODEX_AUTH_SOURCE_EXTERNAL`: the credential
+    lives in the OS keyring, which Code Mower deliberately never reads. File
+    mode reports only whether the maintained CLI's credential file exists and
+    is usable -- never its contents, its size, or its path.
+    """
+    if auth_mode != CODEX_AUTH_MODE_FILE:
+        return CODEX_AUTH_SOURCE_EXTERNAL
+    auth_path = home / CODEX_CAMPAIGN_AUTH_FILENAME
+    try:
+        if auth_path.is_symlink() or (auth_path.exists() and not auth_path.is_file()):
+            return CODEX_AUTH_SOURCE_UNUSABLE
+        return CODEX_AUTH_SOURCE_PRESENT if auth_path.is_file() else CODEX_AUTH_SOURCE_MISSING
+    except OSError:
+        return CODEX_AUTH_SOURCE_UNUSABLE
+
+
+def prepare_codex_campaign_home(
+    codex_home: Path | None = None,
+    *,
+    auth_mode: str | None = None,
+) -> Path:
+    """Create the non-secret isolated home used by campaign Codex runs.
+
+    ``auth_mode`` defaults to the explicit selection in the environment, which
+    is itself keyring mode unless the operator opted in. Keyring mode is
+    unchanged: a credential file in the home means the home is not the
+    keyring-only boundary it claims to be, so it is refused. File mode is the
+    opt-in headless path and accepts exactly one credential file, under Code
+    Mower's own permissions.
+    """
+    mode = resolve_codex_campaign_auth_mode() if auth_mode is None else auth_mode
+    config = build_codex_campaign_config(mode)
     home = (codex_home or _default_codex_campaign_home()).expanduser().resolve()
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         home.chmod(0o700)
     except OSError:
         pass
-    if (home / "auth.json").exists():
+    if mode == CODEX_AUTH_MODE_FILE:
+        _enforce_campaign_auth_file(home)
+    elif (home / CODEX_CAMPAIGN_AUTH_FILENAME).exists():
         raise ValueError("isolated Codex home contains readable file credentials")
     config_path = home / "config.toml"
     with tempfile.NamedTemporaryFile(
@@ -1275,14 +1429,19 @@ def prepare_codex_campaign_home(codex_home: Path | None = None) -> Path:
         suffix=".toml",
         delete=False,
     ) as handle:
-        handle.write(CODEX_CAMPAIGN_CONFIG)
+        handle.write(config)
         staging = Path(handle.name)
     staging.chmod(0o600)
     os.replace(staging, config_path)
     return home
 
 
-def build_adapter_child_env(provider: str, *, codex_home: Path | None = None) -> dict[str, str]:
+def build_adapter_child_env(
+    provider: str,
+    *,
+    codex_home: Path | None = None,
+    codex_auth_mode: str = DEFAULT_CODEX_AUTH_MODE,
+) -> dict[str, str]:
     """Return the minimal ambient environment required by one provider CLI.
 
     Provider API keys, GitHub tokens, Code Mower cloud tokens, and unrelated
@@ -1291,8 +1450,14 @@ def build_adapter_child_env(provider: str, *, codex_home: Path | None = None) ->
     OS HOME needed to locate the platform keyring while CODEX_HOME points at
     Code Mower's isolated config and state directory. Muse's explicit key uses
     stdin.
+
+    A file-mode Codex home reads its credential from ``CODEX_HOME`` and never
+    consults a keyring, so the Secret Service session coordinates are dropped
+    from the child as well.
     """
     allowlist = list(ADAPTER_ENV_ALLOWLIST)
+    if provider == "codex" and codex_auth_mode == CODEX_AUTH_MODE_FILE:
+        allowlist = [name for name in allowlist if name not in KEYRING_SESSION_ENV_NAMES]
     child_env = build_allowlisted_child_env(
         allowlist,
         preserve_ambient_home=True,
@@ -1418,11 +1583,36 @@ def run_campaign_adapter(
     )
     prepared_codex_home: Path | None = None
     if provider == "codex":
+        # The adapter applies the same readiness rule doctor reports: an
+        # unsupported selection fails closed here rather than silently falling
+        # back to an ambient home or an ambient token.
         try:
-            prepared_codex_home = prepare_codex_campaign_home(codex_home)
+            codex_auth_mode = resolve_codex_campaign_auth_mode()
+        except ValueError as exc:
+            return _fail(provider, str(exc)[:180])
+        try:
+            prepared_codex_home = prepare_codex_campaign_home(
+                codex_home, auth_mode=codex_auth_mode
+            )
         except (OSError, ValueError):
-            return _fail(provider, "isolated keyring-backed auth home is not usable")
-    child_env = build_adapter_child_env(provider, codex_home=prepared_codex_home)
+            return _fail(
+                provider,
+                f"isolated {codex_auth_mode}-backed auth home is not usable",
+            )
+        if (
+            codex_campaign_auth_source_state(prepared_codex_home, codex_auth_mode)
+            == CODEX_AUTH_SOURCE_MISSING
+        ):
+            return _fail(
+                provider,
+                "isolated campaign home holds no file-mode credential; run the "
+                "documented login for it first",
+            )
+    child_env = build_adapter_child_env(
+        provider,
+        codex_home=prepared_codex_home,
+        codex_auth_mode=codex_auth_mode if provider == "codex" else DEFAULT_CODEX_AUTH_MODE,
+    )
 
     muse_api_key = ""
     if provider == "antigravity" and not _env_flag_enabled(ANTIGRAVITY_AMBIENT_HOME_ENV):
