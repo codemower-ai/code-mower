@@ -706,8 +706,16 @@ class BoardTests(TestCase):
         self.assertIn("port(s) 5332", payload["next_detail"])
 
     def test_board_inventory_payload_handles_missing_process_permissions(self) -> None:
+        # Neither probe can run: `lsof` is refused outright and the `ss`
+        # fallback exits nonzero. `lsof` exiting 1 would not belong here -- that
+        # is its answer that nothing is listening, not a failure to look.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["lsof"]:
+                raise PermissionError("operation not permitted")
+            return _completed("", returncode=1)
+
         payload = board.board_inventory_payload(
-            command_runner=lambda _args: _completed("", returncode=1),
+            command_runner=command_runner,
             status_probe=None,
         )
 

@@ -443,7 +443,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "session": "Prepare session briefs and manage private remote work.",
     "antigravity-cli": "Run an Antigravity/Gemini CLI structured audit lane.",
     "blind-review": "Coordinate hidden/blind review artifacts.",
-    "board": "Serve or record local lane visibility board data.",
+    "board": "Serve, record, or manage a persistent local lane visibility board.",
     "bootstrap": "Bootstrap generated support files and workflow fixtures.",
     "builder": "Record source-free builder run provenance.",
     "builder-experiment": "Capture builder-side experiment metadata.",

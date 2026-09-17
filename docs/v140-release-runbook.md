@@ -1070,13 +1070,26 @@ All three provider results must pass, and Devin's result must identify the
 hosted transport before peer support is claimed. Keep the profile selector,
 credentials, and result prose out of recorded evidence.
 
-### 15. Restart the three Boards from the release, waiting on each stop
+### 15. Restart the three Boards from the release as managed services
 
 The port 5332 Board must serve the exact v1.4.0 release checkout because its
-pre-release repository path is stale. Assert that checkout first, then stop each
-Board and wait through the bounded Board inventory until its listener is gone
-before starting the replacement, so no start races a dying listener on a fixed
-port.
+pre-release repository path is stale. Assert that checkout first, then restart
+each Board through its **managed service** rather than a shell-level `nohup`.
+
+A `nohup` Board dies with the invoking shell, and a pre-existing keepalive job
+can then reclaim its port from an older repository path while still answering
+the serving check. `code-mower board service` removes that whole class of
+failure: the service is supervised, so it survives the shell; the restart
+replaces a stale managed binding atomically or stops with a diagnostic; and the
+delayed health check validates the exact private binding before the restart is
+reported as successful. See [Board service lifecycle](board-service-lifecycle.md).
+
+Ports still held by the previous procedure's `nohup` Boards are migrated before
+the first managed restart. `--replace` takes over a *managed* definition, so a
+transient listener on the port makes the install refuse rather than seize it:
+the confirmed transient Board is stopped and its port waited free first. An
+already-managed port is not stopped -- its restart below is idempotent -- and a
+listener that cannot be confirmed transient stops the step for the owner.
 
 ```bash
 set -euo pipefail
@@ -1215,22 +1228,107 @@ main()
 PY
 
 code-mower board list --json
-for BOARD_PORT in 5332 5342 5344; do
+
+test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"
+test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"
+
+# Review each service definition before it is applied. The rendered plist is
+# written locally for review; the printed summary keeps local paths redacted.
+BOARD_SERVICE_DIR="$(mktemp -d /tmp/code-mower-board-service.XXXXXX)"
+code-mower board service render --repo codemower-ai/code-mower \
+  --repo-path "$RELEASE_CHECKOUT" --port 5332 \
+  --output "$BOARD_SERVICE_DIR/5332.plist"
+code-mower board service render --repo "$BOARD_5342_REPO" \
+  --repo-path "$BOARD_5342_REPO_PATH" --port 5342 \
+  --output "$BOARD_SERVICE_DIR/5342.plist"
+code-mower board service render --repo "$BOARD_5344_REPO" \
+  --repo-path "$BOARD_5344_REPO_PATH" --port 5344 \
+  --output "$BOARD_SERVICE_DIR/5344.plist"
+
+# Migrate first. `--replace` is a takeover of a *managed* definition, so a port
+# still held by the previous procedure's nohup Board makes the first managed
+# restart refuse with port_conflict or external_supervisor -- and abort the
+# whole step under `set -e`. Only a confirmed transient Board is stopped here;
+# an already-managed port is left for the idempotent restart below, and a
+# listener whose supervision cannot be confirmed is left for the owner.
+cat >"$RELEASE_ENV/transient_boards.py" <<'PY'
+"""Print the ports whose current Board is a confirmed transient listener.
+
+Three answers, not two. A managed port must not be stopped -- its supervisor
+would reclaim it immediately, and the managed restart already handles it
+idempotently. A port whose listener cannot be classified, or an inventory that
+could not be taken at all, is not a transient Board either; neither is silently
+skipped, because "we could not look" must not read as "nothing is there".
+Only ports are printed.
+"""
+
+import json
+import subprocess
+import sys
+
+
+def main() -> None:
+    ports = [int(value) for value in sys.argv[1:]]
+    if not ports:
+        raise SystemExit("no Board ports supplied")
+    completed = subprocess.run(
+        ["code-mower", "board", "list", "--json"],
+        check=True, capture_output=True, text=True,
+    )
+    payload = json.loads(completed.stdout)
+    if not payload.get("available"):
+        raise SystemExit("the local Board inventory could not be taken; migrate by hand")
+    rows = {
+        int(row.get("port") or 0): row
+        for row in payload.get("boards") or []
+        if isinstance(row, dict)
+    }
+    transient = []
+    for port in ports:
+        row = rows.get(port)
+        if row is None:
+            continue
+        if "managed" not in row:
+            raise SystemExit(f"board {port} listener is unclassified; migrate it by hand")
+        if row.get("managed"):
+            continue
+        transient.append(port)
+    print(json.dumps({"transient": transient, "ports": sorted(ports)}))
+
+
+main()
+PY
+BOARD_TRANSIENT_PORTS="$(
+  "$RELEASE_PYTHON" "$RELEASE_ENV/transient_boards.py" 5332 5342 5344 \
+    | "$RELEASE_PYTHON" -c 'import json,sys; print(" ".join(str(p) for p in json.load(sys.stdin)["transient"]))'
+)"
+# `board stop` still applies its own refusals -- managed_service, an external
+# or unknown supervisor, an ambiguous or mismatched selector -- and any of them
+# exits nonzero here rather than being worked around. Each stop is waited out
+# before the next, so a port is confirmed released and not merely signalled.
+for BOARD_PORT in $BOARD_TRANSIENT_PORTS; do
   code-mower board stop --port "$BOARD_PORT" --yes --json
   "$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" gone "$BOARD_PORT"
 done
 
-test "$(git -C "$RELEASE_CHECKOUT" rev-parse HEAD)" = "$RELEASE_SHA"
-test -z "$(git -C "$RELEASE_CHECKOUT" status --porcelain --untracked-files=all)"
-nohup code-mower board serve --repo codemower-ai/code-mower \
-  --repo-path "$RELEASE_CHECKOUT" --host 127.0.0.1 \
-  --port 5332 --record-events >/tmp/code-mower-board-5332.log 2>&1 &
-nohup code-mower board serve --repo "$BOARD_5342_REPO" \
-  --repo-path "$BOARD_5342_REPO_PATH" --host 127.0.0.1 \
-  --port 5342 --record-events >/tmp/code-mower-board-5342.log 2>&1 &
-nohup code-mower board serve --repo "$BOARD_5344_REPO" \
-  --repo-path "$BOARD_5344_REPO_PATH" --host 127.0.0.1 \
-  --port 5344 --record-events >/tmp/code-mower-board-5344.log 2>&1 &
+# Managed restart. Each restart replaces a stale managed binding atomically or
+# stops with a diagnostic, then waits through the delayed health check before
+# it reports success: settle, then refresh the whole binding gate (port,
+# repository slug, exact private repository path, installed version, serving
+# version, exact argument list) until it passes or the window closes.
+code-mower board service restart --repo codemower-ai/code-mower \
+  --repo-path "$RELEASE_CHECKOUT" --port 5332 --replace \
+  --settle-seconds 10 --timeout-seconds 120 --json
+code-mower board service restart --repo "$BOARD_5342_REPO" \
+  --repo-path "$BOARD_5342_REPO_PATH" --port 5342 --replace \
+  --settle-seconds 10 --timeout-seconds 120 --json
+code-mower board service restart --repo "$BOARD_5344_REPO" \
+  --repo-path "$BOARD_5344_REPO_PATH" --port 5344 --replace \
+  --settle-seconds 10 --timeout-seconds 120 --json
+
+# Independent delayed re-validation of every managed binding, plus the
+# inventory gate the pre-1.4.2 runbook used.
+code-mower board service status --json
 "$RELEASE_PYTHON" "$RELEASE_ENV/board_wait.py" serving \
   "5332=codemower-ai/code-mower" "5342=$BOARD_5342_REPO" "5344=$BOARD_5344_REPO"
 

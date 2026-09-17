@@ -13,7 +13,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 from . import config as code_mower_config
@@ -95,11 +95,70 @@ def run_command(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _stdout(command_runner: CommandRunner, args: Sequence[str]) -> str:
+    return _probe(command_runner, args).stdout
+
+
+# Which nonzero exits count as an answer is each tool's own convention, so the
+# set travels with the call rather than being global. `lsof` says "nothing
+# matched" by exiting 1, and so do `git config --get` and `ps -p`; `ss` has no
+# such code, reporting an empty table by exiting 0 and reserving every nonzero
+# exit for a failure. A tool that raises, times out, or exits outside its own
+# answered set did not answer at all, and the two have to stay distinguishable
+# -- conflating them is how "the port is free" gets inferred from "we could not
+# look".
+_ANSWERED_RETURNCODES = (0, 1)
+_LSOF_ANSWERED_RETURNCODES = (0, 1)
+_SS_ANSWERED_RETURNCODES = (0,)
+
+
+class ProbeResult(NamedTuple):
+    """What a probe answered, and anything it said about why it could not."""
+
+    answered: bool
+    stdout: str
+    diagnostic: str
+
+
+def _probe(
+    command_runner: CommandRunner,
+    args: Sequence[str],
+    *,
+    answered_returncodes: Sequence[int] = _ANSWERED_RETURNCODES,
+) -> ProbeResult:
+    """Run a command, reporting whether it answered as well as what it said."""
+
     try:
         completed = command_runner(args)
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return (completed.stdout or "") if completed.returncode == 0 else ""
+        return ProbeResult(False, "", "")
+    stdout = completed.stdout or ""
+    if completed.returncode == 0:
+        return ProbeResult(True, stdout, completed.stderr or "")
+    # An exit inside the tool's answered set still carries whatever the tool
+    # printed: an exit code alone cannot separate "nothing matched" from "here
+    # is why I could not look", so the diagnostic travels with the answer and
+    # the caller that acts on emptiness gets to read it.
+    return ProbeResult(
+        completed.returncode in answered_returncodes,
+        "",
+        f"{completed.stderr or ''}{stdout}",
+    )
+
+
+# `lsof` warns on stderr about filesystems it could not stat while still
+# answering completely about TCP listeners, and it emits those warnings with the
+# same exit 1 it uses for "nothing matched". A warning is a caveat; anything
+# else it says is a reason the inventory cannot be trusted.
+_WARNING_LINE = re.compile(r"^(?:[\w./-]+:\s*)?warning\b", re.IGNORECASE)
+
+
+def _diagnostic_is_error(diagnostic: str) -> bool:
+    """Whether a probe's output describes a failure rather than a caveat."""
+
+    return any(
+        line.strip() and not _WARNING_LINE.match(line.strip())
+        for line in diagnostic.splitlines()
+    )
 
 
 def _label_groups(pr: Mapping[str, Any]) -> dict[str, list[str]]:
@@ -509,12 +568,77 @@ def _ss_listeners(text: str) -> list[dict[str, Any]]:
     return found
 
 
-def _listener_inventory(command_runner: CommandRunner) -> list[dict[str, Any]]:
-    text = _stdout(command_runner, ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-FnPcn"])
+def _listener_inventory(command_runner: CommandRunner) -> tuple[bool, list[dict[str, Any]]]:
+    """Every local TCP listener, paired with whether the host could be asked.
+
+    An empty list means one of two opposite things -- nothing is listening, or
+    neither `lsof` nor `ss` could be run -- and a caller deciding whether to
+    mutate local state has to tell them apart. The flag carries that: `True`
+    means a tool answered and this is the inventory, `False` means occupancy is
+    unknown and no conclusion about the port may be drawn from the list.
+    """
+
+    answered, text = _listener_probe(
+        command_runner,
+        ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-FnPcn"],
+        _LSOF_ANSWERED_RETURNCODES,
+    )
     if text:
-        return _listeners(text)
-    text = _stdout(command_runner, ["ss", "-H", "-ltnp"])
-    return _ss_listeners(text) if text else []
+        return True, _listeners(text)
+    fallback_answered, fallback_text = _listener_probe(
+        command_runner,
+        ["ss", "-H", "-ltnp"],
+        _SS_ANSWERED_RETURNCODES,
+    )
+    if fallback_text:
+        return True, _ss_listeners(fallback_text)
+    return (answered or fallback_answered), []
+
+
+def _listener_probe(
+    command_runner: CommandRunner,
+    args: Sequence[str],
+    answered_returncodes: Sequence[int],
+) -> tuple[bool, str]:
+    """One listener probe, where an exit code alone does not settle the answer.
+
+    A tool that exits inside its answered set but explains a failure while doing
+    so has not taken the inventory. Reading that exit as a confirmed-empty one
+    is what let "we could not look" be reported as "the port is free".
+
+    The diagnostic only decides the *empty* case. A tool that listed listeners
+    has answered whatever else it said on the way, so output is trusted first.
+    """
+
+    result = _probe(command_runner, args, answered_returncodes=answered_returncodes)
+    if result.stdout:
+        return True, result.stdout
+    if _diagnostic_is_error(result.diagnostic):
+        return False, ""
+    return result.answered, ""
+
+
+def local_listener_inventory(command_runner: CommandRunner = _run_command) -> dict[str, Any]:
+    """`local_listeners`, with the availability of the answer kept alongside it."""
+
+    available, listeners = _listener_inventory(command_runner)
+    return {"available": available, "listeners": listeners}
+
+
+def local_listeners(command_runner: CommandRunner = _run_command) -> list[dict[str, Any]]:
+    """Every local TCP listener, unfiltered.
+
+    `collect_local_boards` narrows this to Board-shaped listeners, which is the
+    right inventory for "which Boards are running here" and the wrong one for
+    "is this port free": a Node server on 5332 is not a Board, but it does hold
+    the port, and an apply that treats the port as free would fight it.
+
+    Returns the listeners alone. A caller that acts on emptiness -- "this port
+    is free", "this port was released" -- must use `local_listener_inventory`
+    instead, so an inventory that could not be taken is not read as an empty one.
+    """
+
+    return _listener_inventory(command_runner)[1]
 
 
 def _process_cwd(pid: int, command_runner: CommandRunner) -> str:
@@ -545,9 +669,11 @@ def command_looks_like_code_mower_board(command: str) -> bool:
 
 
 def collect_local_boards(command_runner: CommandRunner = _run_command) -> dict[str, Any]:
-    listeners = _listener_inventory(command_runner)
-    if not listeners:
+    available, listeners = _listener_inventory(command_runner)
+    if not available:
         return {"available": False, "boards": [], "message": "local listener inventory unavailable"}
+    if not listeners:
+        return {"available": True, "boards": [], "message": "no local TCP listeners"}
     boards = []
     for listener in listeners:
         pid = int(listener["pid"])

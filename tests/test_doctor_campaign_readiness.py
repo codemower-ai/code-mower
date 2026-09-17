@@ -836,7 +836,17 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             self.assertFalse(check.detail.get("actionable"))
 
     def test_campaign_board_visibility_warns_when_inventory_unavailable(self) -> None:
+        # A total probe failure, not an empty inventory: `lsof` spends exit 1 on
+        # both, so the error diagnostic is what separates them, and `ss` reserves
+        # every nonzero exit for a failure.
         def fake_runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[0] == "lsof":
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=1,
+                    stdout="",
+                    stderr="lsof: no pwd entry for UID 501\n",
+                )
             return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
 
         with tempfile.TemporaryDirectory() as tmp:

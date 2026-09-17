@@ -669,3 +669,109 @@ class LaneStatusTests(TestCase):
         self.assertNotIn("/tmp/muse-lane", rendered)
         self.assertNotIn("secret.log", rendered)
         self.assertNotIn("timeout-seconds", rendered)
+
+
+class ListenerInventoryAvailabilityTests(TestCase):
+    """The empty inventory and the inventory that could not be taken, directly.
+
+    Every other caller reaches this through a fake host; these go at
+    `lane_status` itself, so the answered/unanswered distinction is asserted
+    against real `CompletedProcess` return codes rather than a fake's flag.
+    """
+
+    def test_lsof_exiting_one_has_answered_that_nothing_is_listening(self) -> None:
+        # `lsof` reports "nothing matched" by exiting 1 with no output. That is
+        # an answer, and the port really is free -- even though the `ss`
+        # fallback that follows it fails outright.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["lsof"]:
+                return _completed("", returncode=1)
+            raise OSError("no ss here")
+
+        inventory = lane_status.local_listener_inventory(command_runner)
+
+        self.assertEqual((inventory["available"], inventory["listeners"]), (True, []))
+
+    def test_an_ss_fallback_exiting_one_has_not_answered_for_a_missing_lsof(self) -> None:
+        # No `lsof` on the host is not an answer, and neither is `ss` exiting 1:
+        # `ss` has no "nothing matched" code, so 1 is a failure and occupancy
+        # stays unknown. Reading 1 as an answer here is what let a host with no
+        # working probe report every port free.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["lsof"]:
+                raise OSError("no lsof here")
+            return _completed("", returncode=1)
+
+        inventory = lane_status.local_listener_inventory(command_runner)
+
+        self.assertEqual((inventory["available"], inventory["listeners"]), (False, []))
+
+    def test_an_ss_fallback_exiting_zero_answers_for_a_missing_lsof(self) -> None:
+        # `ss` says "nothing is listening" by exiting 0 with an empty table.
+        # That is the fallback's answer, and it makes the inventory available.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["lsof"]:
+                raise OSError("no lsof here")
+            return _completed("", returncode=0)
+
+        inventory = lane_status.local_listener_inventory(command_runner)
+
+        self.assertEqual((inventory["available"], inventory["listeners"]), (True, []))
+
+    def test_lsof_exiting_one_with_an_error_has_not_answered(self) -> None:
+        # Exit 1 is `lsof`'s "nothing matched" *and* one of its failure codes.
+        # A diagnostic alongside it means the probe failed, so with no working
+        # `ss` behind it occupancy is unknown -- not confirmed empty.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["lsof"]:
+                return subprocess.CompletedProcess(
+                    [], 1, stdout="", stderr="lsof: no pwd entry for UID 501\n"
+                )
+            raise OSError("no ss here")
+
+        inventory = lane_status.local_listener_inventory(command_runner)
+
+        self.assertEqual((inventory["available"], inventory["listeners"]), (False, []))
+
+    def test_an_lsof_warning_is_a_caveat_and_still_answers(self) -> None:
+        # `lsof` warns about filesystems it could not stat while still answering
+        # completely about TCP listeners, and it emits those warnings with the
+        # same exit 1. Treating a warning as a failure would make every host
+        # with an unreadable mount report its ports unknowable.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["lsof"]:
+                return subprocess.CompletedProcess(
+                    [], 1, stdout="", stderr="lsof: WARNING: can't stat() nfs file system /net\n"
+                )
+            raise OSError("no ss here")
+
+        inventory = lane_status.local_listener_inventory(command_runner)
+
+        self.assertEqual((inventory["available"], inventory["listeners"]), (True, []))
+
+    def test_an_lsof_error_falls_through_to_a_working_ss(self) -> None:
+        # A failed `lsof` is not the end of the inventory: the fallback still
+        # gets asked, and its answer is the one that counts.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["lsof"]:
+                return subprocess.CompletedProcess([], 1, stdout="", stderr="lsof: internal error\n")
+            return _completed(
+                'LISTEN 0 4096 127.0.0.1:5332 0.0.0.0:* users:(("code-mower",pid=900,fd=7))\n'
+            )
+
+        inventory = lane_status.local_listener_inventory(command_runner)
+
+        self.assertTrue(inventory["available"])
+        self.assertEqual([row["port"] for row in inventory["listeners"]], [5332])
+
+    def test_neither_tool_answering_leaves_occupancy_unknown(self) -> None:
+        # A timeout and a crash are not "nothing is listening": the same empty
+        # list has to arrive marked unavailable so no caller reads it as free.
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:1] == ["lsof"]:
+                raise subprocess.TimeoutExpired(args, 3)
+            return _completed("", returncode=127)
+
+        inventory = lane_status.local_listener_inventory(command_runner)
+
+        self.assertEqual((inventory["available"], inventory["listeners"]), (False, []))
