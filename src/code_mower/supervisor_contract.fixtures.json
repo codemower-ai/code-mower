@@ -94,7 +94,8 @@
           }
         },
         "tracker_write": false,
-        "merge_authority": false
+        "merge_authority": false,
+        "review_writer": "not_started"
       },
       "target": null
     },

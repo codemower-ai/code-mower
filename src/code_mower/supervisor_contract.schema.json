@@ -249,7 +249,8 @@
         "merge",
         "lifecycle",
         "tracker_write",
-        "merge_authority"
+        "merge_authority",
+        "review_writer"
       ],
       "properties": {
         "schema": {
@@ -326,7 +327,8 @@
             "pending",
             "passed",
             "failed",
-            "unavailable"
+            "unavailable",
+            "cancelled"
           ]
         },
         "gate": {
@@ -353,6 +355,15 @@
         },
         "merge_authority": {
           "const": false
+        },
+        "review_writer": {
+          "enum": [
+            "not_started",
+            "running",
+            "suspended",
+            "terminated",
+            "unknown"
+          ]
         }
       }
     },
@@ -527,7 +538,8 @@
             "handoff",
             "status",
             "result",
-            "cancel"
+            "cancel",
+            "renew"
           ]
         },
         "claim": {

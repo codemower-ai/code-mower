@@ -30,9 +30,9 @@ bindings and explicitly set `live_hosted_evidence: false`.
 | --- | --- |
 | `admission` → `Supervisor.admit` | Exact opaque tenant/repository/work/run/operation binding, grant revision, runner, expiry and authorized limits. Contacts the configured runtime; no builder create. |
 | `claim` | Opaque token, exact admission binding and grant, saved session ID, runtime generation, scope digest and expiry. A private correlation record, **not authentication**. |
-| `request` → `Supervisor.operate(action, claim)` | Closed `handoff`, `status`, `result`, `cancel` operations. The authenticated bridge validates the request before calling the corresponding method. |
+| `request` → `Supervisor.operate(action, claim)` | Closed `handoff`, `renew`, `status`, `result`, `cancel` operations. The authenticated bridge validates the request before calling the corresponding method. |
 | `result` | Private claim and exact verified PR/branch/head target, plus closed status. No task prose or provider result is returned. |
-| `public_status(result)` | The only Board/cloud/public projection. Closed state/reason/action, implementation, writer, review, gate, merge and unchanged `remote_session.v1` lifecycle metadata. No arbitrary strings, identities, paths, hashes, provider references or private bindings. |
+| `public_status(result)` | The only Board/cloud/public projection. Closed state/reason/action, implementation, builder/review writer observations, review, gate, merge and unchanged `remote_session.v1` lifecycle metadata. No arbitrary strings, identities, paths, hashes, provider references or private bindings. |
 
 `#919` owns durable hosted receipts/queues and retention. `#920` owns the
 authenticated bridge, Slack transport and provider connections. They supply
@@ -52,7 +52,7 @@ bearer capability, or cache a positive authorization through revocation.
 context packet come from that same trusted resolution. The adapter also repeats
 Slack normalization and compares runner, repository and session bindings.
 
-Admission/handoff require start authority. Status requires status authority;
+Admission/handoff and live renewal require start authority. Status requires status authority;
 cancel requires an independently authenticated cancellation request. Result is
 the authenticated orchestrator collection route, never an inbound Slack
 completion command. Messages/clarifications and fixes require existing session
@@ -118,7 +118,12 @@ return the saved claim without calling the runtime again or creating a builder.
 Duplicate receipts carry no fresh exact-head completion assertion; only a fresh
 `result` call can report completion.
 
-A claim lasts at most 15 minutes and no later than its admission expiry. Every
+A claim lasts at most 15 minutes and no later than its admission expiry. `renew`
+can extend a still-live exact claim after another successful runtime acceptance,
+within that same admission expiry and original runtime-call allowance. It never
+resets scope, spend, run or delegation reservations. Old copies of a renewed
+claim fail closed; a duplicate admission can retrieve the current receipt after
+an ambiguous renewal response. An expired claim cannot be renewed. Every
 handoff/re-entry checks the exact stored claim, current authorization, runner,
 runtime generation, original private work-order fingerprint, provider connection
 and live session lease acquisition. Checks repeat after external/runtime calls
@@ -140,7 +145,7 @@ authentication/budget bindings. The hosting authorization service must reserve
 that allowance before resolving an executable task. No live or paid session is
 authorized by these fixtures, and no new recovery allowance is inferred.
 
-A durable pending marker precedes every runtime/builder/review mutation. A lost
+A durable pending marker precedes every runtime/builder/review invocation. A lost
 response, crash, disconnect or ambiguous handoff remains pending/uncertain and
 cannot cause a repeat create, review request or cancellation. Status never
 acknowledges uncertain delivery. A restart requires owner reconciliation through
@@ -149,11 +154,14 @@ unsafe or unknown writer exit never starts a replacement. This adapter provides
 no automatic recovery, fix-round, force-takeover or claim-reset operation.
 
 An authenticated cancellation before handoff prevents builder creation. After
-handoff, cancellation uses the exact existing remote operation and is reserved
-once. Acceptance is `cancel_pending` until a fresh writer observation proves
-termination. Ambiguous cancellation stays uncertain even if the transport says
+handoff, cancellation uses the exact existing remote operation and, when review
+has started, the exact audit broker request. It is reserved once. Acceptance is
+`cancel_pending` until fresh observations prove both runtimes terminated (or
+never started). Ambiguous cancellation stays uncertain even if the transport says
 it accepted the request. Cancellation does not need another model call, so it
-remains available when the runtime invocation budget is exhausted; revoked or
+remains available when the runtime invocation budget is exhausted. An unanswered
+decision can also be abandoned for cancellation because the decision runtime has
+no builder/review side effects; its invocation allowance is not refunded. Revoked or
 stale claims still require owner recovery using the original lifecycle binding.
 
 ## Result and review decisions
@@ -172,7 +180,7 @@ evidence and authoritative `code-mower/gate` state. It cannot synthesize a pass
 from the builder, a provider result, or the supervisor's decision.
 
 Completion requires the runtime's explicit decision, freshly verified PR/head,
-terminated writer, eligible independent passing review and passing gate. The
+terminated builder/review runtimes, eligible independent passing review and passing gate. The
 adapter repeats exact-head, writer, authorization, lineage and gate checks after
 the runtime decision. A changed head needs separately authorized review/recovery;
 the one-review allowance is never automatically expanded. Merge status is a

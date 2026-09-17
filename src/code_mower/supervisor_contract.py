@@ -77,9 +77,12 @@ def validate(kind: str, value) -> dict:
             if value["state"] == "complete" and (
                 value["implementation"] != "verified" or value["writer"] != "terminated"
                 or value["review"] != "passed" or value["gate"] != "passed"
+                or value["review_writer"] != "terminated"
             ):
                 raise SupervisorError("invalid_contract")
-            if value["state"] == "cancelled" and value["writer"] not in {"not_started", "terminated"}:
+            if value["state"] == "cancelled" and any(
+                value[key] not in {"not_started", "terminated"} for key in ("writer", "review_writer")
+            ):
                 raise SupervisorError("invalid_contract")
         if kind == "result":
             validate("status", value["status"])

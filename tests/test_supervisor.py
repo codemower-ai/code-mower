@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def decision(request):
     phase, status = request["phase"], request["status"]
-    action = {"admit": "accept", "handoff": "dispatch"}.get(phase)
+    action = {"admit": "accept", "renew": "accept", "handoff": "dispatch"}.get(phase)
     if action is None:
         action = ("review" if status["review"] == "not_requested" else
                   "complete" if status["review"] == "passed" and status["gate"] == "passed" else "wait")
@@ -74,6 +74,8 @@ class ReviewFixture:
         self.contributors = ("devin",)
         self.review = "pending"
         self.gate = "pending"
+        self.writer = None
+        self.cancellations = []
         self.after_observe = lambda: None
 
     def lineage(self, task, target):
@@ -89,9 +91,15 @@ class ReviewFixture:
         self.requests.append((target, reviewer, key))
 
     def observe(self, task, target, reviewer):
-        result = dict(head_sha=target.head_sha, reviewer=reviewer, review=self.review, gate=self.gate)
+        result = dict(head_sha=target.head_sha, reviewer=reviewer, review=self.review, gate=self.gate,
+                      writer=self.writer or ("terminated" if self.review == "passed" else "running"))
         self.after_observe()
         return result
+
+    def cancel(self, task, target, reviewer, *, key):
+        self.cancellations.append((target, reviewer, key))
+        self.writer = "terminated"
+        return self.writer
 
 
 class SupervisorCase(WorkOrderCase):
@@ -234,6 +242,22 @@ class AdmissionTests(SupervisorCase):
         session_lease.acquire_lease(root=self.checkout, repo=self.order.repository, orchestrator="codex",
             session_id="session_example", now=datetime.fromtimestamp(self.now + 1, timezone.utc))
         self.assertEqual(self.supervisor.operate("handoff", claim)["status"]["reason"], "binding_mismatch")
+
+    def test_live_renewal_rechecks_reachability_without_new_writer_or_budget(self):
+        claim = self.started()
+        calls = len(self.agent.calls)
+        self.now = claim["expires_at"] - 30
+        with mock.patch.object(self.provider, "create", wraps=self.provider.create) as create:
+            result = self.supervisor.operate("renew", claim)
+            renewed = result["claim"]
+            self.assertGreater(renewed["expires_at"], claim["expires_at"])
+            self.assertLessEqual(renewed["expires_at"], self.admission["expires_at"])
+            self.assertEqual(self.supervisor.operate("status", claim)["status"]["reason"], "binding_mismatch")
+            self.assertEqual(self.supervisor.operate("handoff", renewed)["status"]["state"], "running")
+            self.assertEqual(create.call_count, 0)
+        self.assertEqual(len(self.agent.calls), calls + 1)
+        self.now = renewed["expires_at"]
+        self.assertEqual(self.supervisor.operate("renew", renewed)["status"]["reason"], "claim_expired")
 
     def test_authorization_rechecked_after_agent_before_create(self):
         claim = self.admitted()
@@ -403,6 +427,54 @@ class LifecycleTests(SupervisorCase):
         self.assertEqual(self.supervisor.operate("cancel", claim)["status"]["state"], "cancelled")
         self.assertEqual(len(self.agent.calls), 2)
 
+    def test_disconnected_decision_can_be_cancelled_without_retrying_the_agent(self):
+        claim = self.started()
+        self.complete()
+        with mock.patch.object(self.agent, "decide", side_effect=RuntimeError(CANARY)) as agent:
+            self.assertEqual(self.result(claim)["status"]["reason"], "supervisor_unavailable")
+            self.assertEqual(self.supervisor.operate("cancel", claim)["status"]["state"], "cancelled")
+            self.assertEqual(agent.call_count, 1)
+
+    def test_cancellation_stops_the_exact_delegated_review_once(self):
+        claim = self.started()
+        self.complete()
+        self.result(claim)
+        result = self.supervisor.operate("cancel", claim)
+        self.assertEqual(result["status"]["state"], "cancelled")
+        self.assertEqual(result["status"]["review_writer"], "terminated")
+        self.supervisor.operate("cancel", claim)
+        self.assertEqual(self.reviews.cancellations, self.reviews.requests)
+
+    def test_cancellation_waits_for_review_exit_and_never_repeats_ambiguous_cancel(self):
+        claim = self.started()
+        self.complete()
+        self.result(claim)
+        with mock.patch.object(self.reviews, "cancel", return_value="running") as cancel:
+            self.assertEqual(self.supervisor.operate("cancel", claim)["status"]["reason"], "cancel_pending")
+            self.supervisor.operate("cancel", claim)
+            self.assertEqual(cancel.call_count, 1)
+        self.reviews.writer = "terminated"
+        self.assertEqual(self.supervisor.operate("status", claim)["status"]["state"], "cancelled")
+
+    def test_passing_review_with_live_review_runtime_is_not_completion(self):
+        claim = self.started()
+        self.complete()
+        self.result(claim)
+        self.reviews.review = self.reviews.gate = "passed"
+        self.reviews.writer = "running"
+        self.assertNotEqual(self.result(claim)["status"]["state"], "complete")
+
+    def test_duplicate_receipts_cannot_republish_stale_completion(self):
+        claim = self.started()
+        self.complete()
+        self.result(claim)
+        self.reviews.review = self.reviews.gate = "passed"
+        self.assertEqual(self.result(claim)["status"]["state"], "complete")
+        self.github.pr = replace(self.github.pr, head_sha="b" * 40)
+        for result in (self.supervisor.admit(self.admission), self.supervisor.operate("handoff", claim)):
+            self.assertNotEqual(result["status"]["state"], "complete")
+            self.assertIsNone(result["target"])
+
 
 class CodexRuntimeTests(SupervisorCase):
     def runtime(self, code):
@@ -426,7 +498,7 @@ assert 'shell_tool' in args and 'apps' in args and 'plugins' in args
 payload = json.loads(sys.stdin.read().split('\\n', 1)[1])
 r = payload['request']
 s = r['status']
-action = {'admit': 'accept', 'handoff': 'dispatch'}.get(r['phase'])
+action = {'admit': 'accept', 'renew': 'accept', 'handoff': 'dispatch'}.get(r['phase'])
 if action is None:
     action = 'review' if s['review'] == 'not_requested' else 'complete'
 reply = dict(schema='code_mower.supervisor_decision.v1', binding=r['binding'],
@@ -464,6 +536,14 @@ Path(args[args.index('--output-last-message') + 1]).write_text(json.dumps(reply)
 
 
 class ContractTests(unittest.TestCase):
+    def test_materialized_package_contains_runtime_contract_and_consumer_fixtures(self):
+        from code_mower.package_manifest import PACKAGE_FILES
+        targets = {target for _, target, _ in PACKAGE_FILES}
+        for target in ("supervisor.py", "supervisor_codex.py", "supervisor_contract.py",
+                       "supervisor_contract.schema.json", "supervisor_contract.fixtures.json"):
+            self.assertIn("src/code_mower/" + target, targets)
+        self.assertIn("docs/supervisor-contract.md", targets)
+
     def test_lifecycle_schema_matches_existing_contract_exactly(self):
         remote = json.loads((ROOT / "src/code_mower/remote_session.schema.json").read_text())
         self.assertEqual(schema()["$defs"]["lifecycle"], remote["$defs"]["metadata"])

@@ -48,7 +48,8 @@ class Authorization(Protocol):
 
         Bind tenant/repository/work/run/operation and grant to private stored
         state. Admission/handoff require start authority, status requires status,
-        cancel requires a newly authenticated cancellation, result requires the
+        renew requires continued start/supervisor authority, cancel requires a
+        newly authenticated cancellation, result requires the
         authenticated orchestrator collection route. A claim is not a grant.
         Return no stale cached positive decision. Bound dependency timeouts.
         """
@@ -93,14 +94,19 @@ class Reviews(Protocol):
     contributor history (#963/#975), not a builder-supplied list. ready checks
     the selected existing lane runtime. request uses the existing broker and a
     durable idempotency key; no fallback, grant, merge or tracker write is added.
-    observe returns only {head_sha, reviewer, review, gate}; gate comes from the
+    observe returns only {head_sha, reviewer, review, gate, writer}; gate comes from the
     authoritative code-mower/gate, not from the reviewer or builder's prose.
+    writer is an independent review-runtime exit observation. cancel must stop
+    that exact audit request through its existing lifecycle and return its
+    observed writer state; accepting a cancellation is not proof of termination.
     """
     def lineage(self, task: AuthorizedTask, target: builder_lineage.Target) -> builder_lineage.Lineage: ...
     def ready(self, reviewer: str) -> bool: ...
     def request(self, task: AuthorizedTask, target: builder_lineage.Target,
                 reviewer: str, *, key: str) -> None: ...
     def observe(self, task: AuthorizedTask, target: builder_lineage.Target, reviewer: str) -> dict: ...
+    def cancel(self, task: AuthorizedTask, target: builder_lineage.Target,
+               reviewer: str, *, key: str) -> str: ...
 
 
 class HostedBuilder:
@@ -136,9 +142,9 @@ class HostedBuilder:
             pr = value["verified_pr"]
             target = builder_lineage.Target(pr["repository"], pr["pr_number"],
                                             task.order.branch, pr["head_sha"])
-            current = engine.github.read(target.repo, target.pr_number)
+            current = engine.github.read(task.order.repository, target.pr_number)
             if (current.head_sha != target.head_sha or current.head_branch != target.branch
-                    or current.repository != target.repo):
+                    or current.repository.lower() != target.repo):
                 raise SupervisorError("head_changed")
             merge = current.state
         writer = engine.remote.writer_state(engine._key(task.order), repo=task.order.repository)
@@ -158,7 +164,7 @@ def _status(**changes):
     return validate("status", dict(
         schema="code_mower.supervisor_status.v1", state="waiting", reason="none",
         next_action="none", implementation="pending", writer="not_started",
-        review="not_requested", gate="unknown", merge="unknown",
+        review="not_requested", review_writer="not_started", gate="unknown", merge="unknown",
         lifecycle=public_projection({"state": "pending"}),
         tracker_write=False, merge_authority=False,
     ) | changes)
@@ -294,7 +300,7 @@ class Supervisor:
     def _receipt(self, record):
         # A duplicate admission/handoff is a saved receipt, not a fresh result
         # observation. Only operate('result') may report exact-head completion.
-        status = record["status"] | dict(implementation="pending", gate="unknown",
+        status = record["status"] | dict(implementation="pending", gate="unknown", merge="unknown",
             review="pending" if record["review_target"] else "not_requested")
         if status["state"] == "complete":
             status.update(state="reviewing", next_action="result")
@@ -353,7 +359,7 @@ class Supervisor:
 
     def _review_allowed(self, task, target, reviewer):
         selected = {m["id"] for m in task.session["participants"] if m.get("reviewer")}
-        if reviewer not in selected or not self.reviews.ready(reviewer):
+        if reviewer not in selected or self.reviews.ready(reviewer) is not True:
             raise SupervisorError("review_unavailable")
         require_role(decide_role(reviewer, "reviewer", config=task.config,
                                 runtime="ready"), execution=True)
@@ -365,14 +371,31 @@ class Supervisor:
     def operate(self, action: str, claim: dict) -> dict:
         """Authenticated re-entry. No operation retries an ambiguous mutation."""
         try:
-            if action not in {"handoff", "status", "result", "cancel"}:
+            if action not in {"handoff", "renew", "status", "result", "cancel"}:
                 raise SupervisorError("invalid_contract")
             claim = validate("claim", claim)
             with self.store.locked(self._key(claim)) as locked:
                 record = locked.read()
                 task = self._check(record, claim, action)
-                if record["pending"]:
+                # An unanswered decision cannot have delegated work: the runtime
+                # port has no side effects. Explicit cancellation may abandon it
+                # without replaying it or refunding its charged call allowance.
+                if record["pending"] and not (action == "cancel" and record["pending"] == "runtime"):
                     return self._uncertain(locked, record, "recovery_required")
+                if action == "renew":
+                    expiry = min(record["admission"]["expires_at"], int(self.clock()) + 900)
+                    if expiry <= claim["expires_at"] or record["cancel"]:
+                        return self._receipt(record)
+                    decision = self._decide(locked, record, task, "renew")
+                    self._check(record, claim, action)
+                    if decision["decision"] != "accept":
+                        raise SupervisorError("policy_denied")
+                    # Only a still-live exact claim can be renewed. Its run,
+                    # plan, invocation count and delegation reservations remain
+                    # unchanged; old claim copies fail equality on re-entry.
+                    record["claim"]["expires_at"] = expiry
+                    locked.write(record)
+                    return self._receipt(record)
                 if action == "handoff":
                     if record["started"] or record["cancel"]:
                         return self._receipt(record)
@@ -400,17 +423,30 @@ class Supervisor:
                     if record["started"]:
                         self._observed(record, self.builder.cancel(task, request=claim["token"]), collect=False)
                         self._check(record, claim, action)
+                    if record["review_target"] is not None:
+                        target = builder_lineage.Target.from_mapping(record["review_target"])
+                        writer = self.reviews.cancel(task, target, record["plan"]["reviewer"], key=claim["token"])
+                        if writer not in {"running", "suspended", "terminated", "unknown"}:
+                            raise SupervisorError("invalid_contract")
+                        record["status"]["review_writer"] = writer
+                        self._check(record, claim, action)
                     record["pending"] = None
                     self._cancel_status(record)
                 elif record["started"]:
                     # Never carry a completion verdict through a refresh failure.
                     record["target"] = None
                     record["status"] = record["status"] | dict(state="running", reason="none", next_action="status",
-                        implementation="pending", review="pending" if record["review_target"] else "not_requested", gate="unknown")
+                        implementation="pending", review="pending" if record["review_target"] else "not_requested",
+                        gate="unknown", merge="unknown")
                     locked.write(record)
                     self._observed(record, self.builder.observe(task, collect=action == "result"), collect=action == "result")
                     self._check(record, claim, action)
                     if record["cancel"]:
+                        if record["review_target"] is not None:
+                            target = builder_lineage.Target.from_mapping(record["review_target"])
+                            review = self._review_observation(task, target, record["plan"]["reviewer"])
+                            record["status"]["review_writer"] = review["writer"]
+                            self._check(record, claim, action)
                         self._cancel_status(record)
                     elif action == "result":
                         self._collect(locked, record, task, claim)
@@ -423,7 +459,10 @@ class Supervisor:
 
     @staticmethod
     def _cancel_status(record):
-        exited = record["status"]["writer"] in {"not_started", "terminated"}
+        exited = (record["status"]["writer"] in {"not_started", "terminated"}
+                  and record["status"]["review_writer"] in {"not_started", "terminated"})
+        if record["status"]["review_writer"] == "terminated":
+            record["status"]["review"] = "cancelled"
         record["status"].update(state="cancelled" if exited else "running",
             reason="none" if exited else "cancel_pending", next_action="none" if exited else "status")
 
@@ -450,7 +489,7 @@ class Supervisor:
                 status.update(review="unavailable", gate="unknown")
                 raise SupervisorError("head_changed")
             review = self._review_observation(task, target, reviewer)
-            status.update(review=review["review"], gate=review["gate"])
+            status.update(review=review["review"], gate=review["gate"], review_writer=review["writer"])
         decision = self._decide(locked, record, task, "result")
         task = self._check(record, claim, "result")
         if decision["decision"] == "review" and record["review_target"] is None:
@@ -460,8 +499,9 @@ class Supervisor:
             self.reviews.request(task, target, reviewer, key=claim["token"])
             self._check(record, claim, "result")
             record["pending"] = None
-            status.update(state="reviewing", review="pending", reason="none", next_action="result")
-        elif decision["decision"] == "complete" and status["review"] == "passed" and status["gate"] == "passed":
+            status.update(state="reviewing", review="pending", review_writer="unknown", reason="none", next_action="result")
+        elif (decision["decision"] == "complete" and status["review"] == "passed"
+              and status["gate"] == "passed" and status["review_writer"] == "terminated"):
             # Exact-head collection repeated after the runtime's decision prevents
             # its latency from turning a stale audit into completion.
             latest = self.builder.observe(task, collect=True)
@@ -470,7 +510,7 @@ class Supervisor:
             self._check(record, claim, "result")
             self._review_allowed(task, target, reviewer)
             review = self._review_observation(task, target, reviewer)
-            if review["review"] != "passed" or review["gate"] != "passed":
+            if review["review"] != "passed" or review["gate"] != "passed" or review["writer"] != "terminated":
                 raise SupervisorError("review_unavailable")
             self._observed(record, latest, collect=True)
             record["status"].update(state="complete", reason="none", next_action="none")
@@ -482,10 +522,11 @@ class Supervisor:
 
     def _review_observation(self, task, target, reviewer):
         review = self.reviews.observe(task, target, reviewer)
-        if (type(review) is not dict or set(review) != {"head_sha", "reviewer", "review", "gate"}
+        if (type(review) is not dict or set(review) != {"head_sha", "reviewer", "review", "gate", "writer"}
                 or review["head_sha"] != target.head_sha or review["reviewer"] != reviewer
-                or review["review"] not in {"pending", "passed", "failed", "unavailable"}
-                or review["gate"] not in {"pending", "passed", "failed", "unknown"}):
+                or review["review"] not in {"pending", "passed", "failed", "unavailable", "cancelled"}
+                or review["gate"] not in {"pending", "passed", "failed", "unknown"}
+                or review["writer"] not in {"running", "suspended", "terminated", "unknown"}):
             raise SupervisorError("review_unavailable")
         return review
 
