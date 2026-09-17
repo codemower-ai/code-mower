@@ -1942,11 +1942,11 @@ class ProviderLaunchTests(TemporaryWorkspace):
         """Provider output is unbounded input; the read is bounded at the stream.
 
         Slicing after ``read_bytes()`` would have allocated the whole document
-        first, so the assertion is not only that the build stays ``partial``:
+        first, so the assertion is not only that publication is refused:
         nothing in the collection path may read a provider file whole.
         """
         request = self.request()
-        oversized = b'{"' + CODE_INPUT.encode() + b'": "' + b"x" * lifecycle.MAX_MANIFEST_BYTES + b'"}'
+        oversized = b" " * (lifecycle.MAX_PROVIDER_MANIFEST_BYTES + 1)
 
         def fake_popen(argv, **kwargs):
             written = request.source_root / lifecycle._PROVIDER_OUTPUT_DIRECTORY
@@ -1962,8 +1962,59 @@ class ProviderLaunchTests(TemporaryWorkspace):
             indexer = lifecycle.subprocess_indexer("graphify", repository=self.repository, pin=PIN)
             with mock.patch.object(subprocess, "Popen", fake_popen):
                 with mock.patch.object(Path, "read_bytes", refuse_whole_file_read):
-                    result = indexer(request)
-        self.assertEqual(result.completeness, lifecycle.PARTIAL)
+                    with self.assertRaisesRegex(ContextError, "provider manifest exceeds its byte budget"):
+                        indexer(request)
+        self.assertFalse(request.output_path.exists())
+
+    def test_repository_sized_manifest_preserves_coverage_and_hash_checks(self) -> None:
+        paths = [f"src/components/component_{index:04d}.tsx" for index in range(3000)]
+        digest = hashlib.md5(b"x", usedforsecurity=False).hexdigest()
+        manifest = {path: manifest_row(digest) for path in paths}
+        raw = json.dumps(manifest).encode()
+        self.assertGreater(len(raw), lifecycle.MAX_MANIFEST_BYTES)
+        self.assertLess(len(raw), lifecycle.MAX_PROVIDER_MANIFEST_BYTES)
+        directory = self.root / "provider-output"
+        directory.mkdir()
+        path = directory / "manifest.json"
+        path.write_bytes(raw)
+        census = census_of(*paths)
+        digests = dict.fromkeys(paths, digest)
+        parsed = lifecycle._provider_manifest(directory)
+        result = lifecycle._read_completeness(parsed, census, digests)
+        self.assertEqual(result.completeness, lifecycle.COMPLETE)
+        self.assertEqual(result.indexed_files, len(paths))
+        for change in ("missing", "mismatch", "malformed"):
+            with self.subTest(change=change):
+                altered = dict(manifest)
+                if change == "missing":
+                    del altered[paths[-1]]
+                elif change == "mismatch":
+                    altered[paths[-1]] = manifest_row("0" * 32)
+                else:
+                    altered[paths[-1]] = {}
+                path.write_text(json.dumps(altered), encoding="utf-8")
+                result = lifecycle._read_completeness(
+                    lifecycle._provider_manifest(directory), census, digests
+                )
+                self.assertEqual(result.completeness, lifecycle.PARTIAL)
+
+    def test_provider_manifest_byte_boundary_is_separate_and_stream_bounded(self) -> None:
+        directory = self.root / "provider-output"
+        directory.mkdir()
+        (directory / "manifest.json").touch()
+        for length in (63, 64, 65):
+            with self.subTest(length=length):
+                stream = io.BytesIO(b"{}" + b" " * (length - 2))
+                with mock.patch.object(lifecycle, "MAX_PROVIDER_MANIFEST_BYTES", 64):
+                    with mock.patch.object(Path, "open", return_value=stream):
+                        with mock.patch.object(stream, "read", wraps=stream.read) as read:
+                            if length <= 64:
+                                self.assertEqual(lifecycle._provider_manifest(directory), {})
+                            else:
+                                with self.assertRaisesRegex(ContextError, "provider manifest exceeds"):
+                                    lifecycle._provider_manifest(directory)
+                            read.assert_called_once_with(65)
+        self.assertEqual(lifecycle.MAX_MANIFEST_BYTES, 262_144)
 
     def test_extraction_refuses_to_run_over_pre_existing_provider_state(self) -> None:
         """State that predates the run is a cache, and would be collected as output.

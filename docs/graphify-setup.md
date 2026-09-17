@@ -69,6 +69,19 @@ configuration files with `PIP_CONFIG_FILE=/dev/null`. `--isolated` alone still
 permits global/site configuration and a file selected by `PIP_CONFIG_FILE`;
 those sources must not add an alternate index or local dependency source.
 
+Install any required language extras into this same separate environment before
+the contained build. For SQL inputs, select `[sql]` on the verified local wheel
+using the same canonical-index restrictions; keep the accepted provider version
+and checksum unchanged. Missing parsers can otherwise leave inputs unprocessed
+and the generation partial.
+
+If runtime ownership checks refuse a Python installation or one of its linked
+libraries, recreate the environment from a suitable operator-owned runtime.
+Do not relax the ownership checks or broaden shared-runtime permissions. If
+the host sandbox refuses multiprocessing, include `"--max-workers", "1"` in
+the pin's `options` alongside `"--code-only", "--no-cluster"`. This selects the
+provider's supported serial extractor without bypassing containment.
+
 ## Separate contained offline build
 
 Save the [accepted pin JSON](context-graph-lifecycle.md#commands) as

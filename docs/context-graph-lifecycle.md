@@ -511,9 +511,13 @@ included. An unstamped file is `partial` however large the graph is. `partial`
 is the state `graph_status` refuses by default, so the failure is one an
 operator can see and act on.
 
-The manifest is provider output of unknown size, so it is read to one byte past
-the manifest bound and refused if it is longer, rather than loaded whole and
-measured afterwards. A bound checked on bytes already in memory bounds nothing.
+The provider manifest is a per-input inventory, so its **16 MiB** byte budget
+is separate from the **256 KiB** bound on Code Mower's compact generation
+manifest. It is read to one byte past its budget and an oversized inventory
+refuses publication with an explicit provider-manifest diagnostic. It is never
+loaded whole and measured afterwards. Existing coverage/hash checks and the
+total artifact budget still apply; a larger readable inventory does not excuse
+missing or mismatched rows. A bound checked on bytes already in memory bounds nothing.
 
 The provider's own stdout and stderr are the other unbounded output, and they
 are discarded at the kernel: `stdin`, `stdout` and `stderr` are all

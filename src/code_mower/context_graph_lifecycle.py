@@ -90,6 +90,10 @@ CURRENT_NAME = "current"
 #: stall a session on a pathological repository. Every one of these fails the
 #: build closed rather than truncating silently.
 MAX_MANIFEST_BYTES = 262_144
+#: The provider records one hash row per input, unlike our compact generation
+#: manifest. Give that inventory its own finite budget: 16 MiB accommodates
+#: roughly 50,000 ordinary 300-byte rows without widening lifecycle readers.
+MAX_PROVIDER_MANIFEST_BYTES = 16 * 1024 * 1024
 MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
 MAX_TRACKED_FILES = 50_000
 MAX_TRACKED_BYTES = 512 * 1024 * 1024
@@ -2713,11 +2717,13 @@ def _provider_manifest(output_directory: Path) -> Mapping[str, Any] | None:
         return None
     try:
         with path.open("rb") as stream:
-            raw = stream.read(MAX_MANIFEST_BYTES + 1)
+            raw = stream.read(MAX_PROVIDER_MANIFEST_BYTES + 1)
     except OSError:
         return None
-    if len(raw) > MAX_MANIFEST_BYTES:
-        return None
+    if len(raw) > MAX_PROVIDER_MANIFEST_BYTES:
+        raise ContextError(
+            "local graph provider manifest exceeds its byte budget; no generation was published"
+        )
     try:
         payload = json.loads(raw)
     except ValueError:
