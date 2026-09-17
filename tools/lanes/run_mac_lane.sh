@@ -128,6 +128,23 @@ if [ "${#lane_delivery[@]}" -gt 0 ]; then
     exit 2
   fi
 fi
+# lineage-capabilities is answered by the installed CLI's own capability list, so
+# a pre-change installation reports success while not knowing that the canonical
+# writer derivation is now required. Probe writer-id explicitly here, at the same
+# gate: every real use of it sits after target selection, handoff reservation and
+# acceptance, the acceptance comment and writer registration, so discovering an
+# unknown subcommand there would refuse only after those effects. The derivation
+# is pure, so this probe has no effect of its own; a fixed slug keeps it
+# independent of --repo validation, and a dotted one proves the installed
+# derivation answers with identities LineageRound accepts.
+writer_id_probe="$("${lane_delivery[@]}" writer-id --lane "$LANE" \
+  --repo "owner/writer-id.probe" --run probe 2>/dev/null || true)"
+printf '%s' "$writer_id_probe" | jq -e '
+  def accepted: type == "string" and test("^[A-Za-z0-9_-]{1,100}$");
+  (.writer | accepted) and (.round_id | accepted)' >/dev/null 2>&1 || {
+  echo "unsupported installed lineage capability: lane-delivery writer-id is required; release activation requires #915" >&2
+  exit 2
+}
 if [ -n "$HANDOFF_SOURCE_LANE" ] || [ -n "$HANDOFF_EXPECTED_HEAD" ] || [ -n "$HANDOFF_SOURCE_FILE" ]; then
   [ -n "$HANDOFF_SOURCE_LANE" ] && [ -n "$HANDOFF_EXPECTED_HEAD" ] && [ -n "$HANDOFF_SOURCE_FILE" ] || {
     echo "--handoff-source-lane, --handoff-expected-head, and --handoff-source-file are required together" >&2

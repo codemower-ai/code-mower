@@ -49,8 +49,10 @@ release below.
   with a digest of the exact lane and repository. An encoded identity always
   begins `<lane>--` and a preserved one never does, so two repositories can
   never share one writer identity. Round validation is unchanged, and an
-  installed CLI without the derivation is refused by the runner's existing
-  capability gate rather than at launch.
+  installed CLI without the derivation is refused by an explicit probe at the
+  runner's initial capability gate — before target selection, any handoff
+  reservation, acceptance or comment, writer registration, or a provider
+  launch — rather than at launch.
 
 - Graphify inventories larger than 256 KiB now use a separate bounded 16 MiB
   provider-manifest reader without relaxing file coverage or hash checks.

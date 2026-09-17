@@ -319,6 +319,14 @@ always begins `<lane>--` and a preserved one never does, so the two namespaces
 stay disjoint. Operator note: the derivation never rewrites a stored identity,
 so no migration of private lineage records is required.
 
+The runner probes `writer-id` explicitly at its initial capability gate, before
+target selection, any handoff reservation or acceptance, any comment, writer
+registration, or a provider launch. An installed CLI answers the older
+`lineage-capabilities` command from its own capability list, so a pre-change
+installation would otherwise report success and only fail once the runner needed
+the derivation — after those effects. The probe derives a fixed slug and writes
+nothing, so it has no effect of its own.
+
 Code Mower asks the existing local supervisor to stop its own process group, or
 cancels the bound remote session through the existing idempotent lifecycle. It
 then independently verifies raw writer exit or suspension. A logical completed

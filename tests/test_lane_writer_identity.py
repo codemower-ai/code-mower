@@ -380,5 +380,105 @@ class HistoricalRecordContinuation(unittest.TestCase):
             delivery.lineage_continuation(observer, self.target(2), previous)
 
 
+class PreChangeInstallationGate(unittest.TestCase):
+    """An installed CLI without the derivation must refuse before every effect.
+
+    ``lineage-capabilities`` is answered by the installed CLI's own capability
+    list, so a pre-change installation reports success without knowing that
+    ``writer-id`` is now required. The runner needs both identities only after
+    target selection and handoff processing, so discovering the unknown
+    subcommand there would stop the source writer, reserve and accept the
+    handoff and post its acceptance comment first. The refusal therefore comes
+    from an explicit, side-effect-free probe at the initial capability gate.
+    """
+
+    #: The probe, and the later derivation it deliberately does not replace.
+    PROBE = '--repo "owner/writer-id.probe" --run probe'
+    DERIVATION = '"${lane_delivery[@]}" writer-id --lane "$LANE" --repo "$REPO"'
+    #: Runner text performing an effect that the refusal has to precede.
+    EFFECTS = (
+        'gh pr list -R "$REPO" --state open --limit',
+        '"${lane_delivery[@]}" handoff "${handoff_args[@]}" --json',
+        'gh pr comment "$num" -R "$REPO" --body-file "$handoff_body_file"',
+        'writer_source="${log%.log}.source.json"',
+        "--reserve-launch",
+        "run_provider()",
+    )
+
+    def test_every_runner_copy_probes_the_derivation_at_the_capability_gate(self):
+        for path in RUNNERS:
+            with self.subTest(runner=str(path)):
+                text = path.read_text(encoding="utf-8")
+                probe = text.index(self.PROBE)
+                self.assertLess(text.index('"${lane_delivery[@]}" lineage-capabilities'), probe)
+                # Before argument-only handoff validation, and before every effect.
+                self.assertLess(probe, text.index('if [ -n "$HANDOFF_SOURCE_LANE" ]'))
+                for marker in self.EFFECTS:
+                    self.assertLess(probe, text.index(marker), marker)
+                # The real derivation and its fail-closed check stay where they are.
+                self.assertLess(probe, text.index(self.DERIVATION))
+                self.assertIn("lane-delivery writer-id is required", text)
+
+    def stub(self, directory, name, body):
+        path = directory/name
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o755)
+        return path
+
+    def test_a_pre_change_installation_refuses_before_any_modeled_effect(self):
+        import os
+        import shlex
+        import subprocess
+        import sys
+        from lineage_consumer_fixtures import fixture_shell_env
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            bin_dir = root/"bin"
+            bin_dir.mkdir()
+            effects, calls = root/"effects", root/"calls"
+            # Every modeled effect the runner could reach records itself and fails.
+            for command in ("gh", "git", "claude", "codex"):
+                self.stub(bin_dir, command,
+                          'printf "%s\\n" "$0 $*" >> ' + shlex.quote(str(effects)) + "\nexit 81\n")
+            # A pre-change CLI: it answers the legacy capability command and every
+            # subcommand it shipped, and knows nothing about writer-id.
+            legacy = ('printf "%s\\n" "$*" >> ' + shlex.quote(str(calls)) + "\n"
+                      'case "${1:-}" in\n'
+                      '  writer-id) echo "invalid choice: \'writer-id\'" >&2; exit 2 ;;\n'
+                      "  *) exit 0 ;;\n"
+                      "esac\n")
+            pinned = self.stub(bin_dir, "lane-delivery-pre-change", legacy)
+            self.stub(bin_dir, "code-mower", "shift\n" + legacy)
+            source_file = root/"handoff-source.json"
+            source_file.write_text(json.dumps({"transport": "local_process",
+                "writer": "devin-owner__repo", "state_dir": str(root/"writers")}))
+            base = os.environ | fixture_shell_env(root) | {
+                "HOME": str(root), "LANE_PYTHON": sys.executable,
+                "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]}
+            base.pop("CODE_MOWER_LANE_DELIVERY_CMD", None)
+            for mode in ("installed", "pin"):
+                env = dict(base)
+                if mode == "pin":
+                    env["CODE_MOWER_LANE_DELIVERY_CMD"] = str(pinned)
+                with self.subTest(mode=mode):
+                    result = subprocess.run(["bash", str(RUNNERS[0]),
+                        "--lane", "claude", "--repo", DOTTED, "--max-minutes", "1",
+                        "--target", "pr:42", "--handoff-source-lane", "devin",
+                        "--handoff-expected-head", "a"*40,
+                        "--handoff-source-file", str(source_file)],
+                        env=env, text=True, capture_output=True, check=False)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("lane-delivery writer-id is required", result.stderr)
+                    # No selection, source stop, reservation, acceptance comment,
+                    # writer registration or provider launch happened first.
+                    self.assertFalse(effects.exists(), result.stdout + result.stderr)
+                    recorded = calls.read_text(encoding="utf-8").splitlines()
+                    self.assertIn("lineage-capabilities", recorded)
+                    self.assertTrue(any(line.startswith("writer-id ") for line in recorded), recorded)
+                    self.assertFalse([line for line in recorded if line.startswith(
+                        ("handoff", "supervise", "classify", "transition", "lineage-record"))], recorded)
+                    calls.unlink()
+
+
 if __name__ == "__main__":  # pragma: no cover - direct execution convenience
     unittest.main()
