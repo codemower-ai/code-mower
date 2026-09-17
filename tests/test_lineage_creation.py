@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from code_mower import lane_delivery
+from code_mower import branch_policy, lane_delivery
 from code_mower.builder_lineage import (
     Authorities, Chain, ContractError, Episode, History, Identity, Target, admit,
     parse_markers, render, resolve,
@@ -37,7 +37,7 @@ AUTHORITY = Authorities(["lineage-publisher[bot]"])
 # one row each can still exercise them against a genuine directory.
 REAL_CHECKOUT = lane_delivery._lineage_checkout
 REAL_CREATION_CHECKOUT = lane_delivery._creation_checkout
-STATUS = ("status", "--porcelain", "--untracked-files=all")
+STATUS = ("status", "--porcelain", "-z", "--untracked-files=all")
 CLAUDE = Transport("claude", "claude", "claude_cli", "local_cli")
 CODEX = Transport("codex", "codex", "codex_cli", "local_cli")
 # The shared human owner login is deliberately unmapped: an issue-targeted run
@@ -476,13 +476,31 @@ class CreationDeliveryTests(unittest.TestCase):
                       side_effect=lambda argv, **kwargs: outputs[tuple(argv[3:])] + "\n"):
             self.assertEqual(REAL_CREATION_CHECKOUT("/creation-checkout", origin()),
                              Path("/creation-checkout"))
-            for reason, dirty in (("staged work", "M  src/code_mower/lane_delivery.py"),
-                                  ("modified work", " M tools/lanes/run_mac_lane.sh"),
-                                  ("untracked work", "?? src/code_mower/left_behind.py")):
+            for reason, dirty in (
+                    ("staged work", "M  src/code_mower/lane_delivery.py"),
+                    ("modified work", " M tools/lanes/run_mac_lane.sh"),
+                    ("untracked work", "?? src/code_mower/left_behind.py"),
+                    ("renamed work", "R  docs/lanes/new.md\0docs/lanes/old.md"),
+                    # A repository that tracks its own private state has
+                    # committable content there like anywhere else.
+                    ("staged private state", "A  .code-mower/tracked.json"),
+                    ("modified private state", " M .code-mower/tracked.json"),
+                    # Runner runtime alone is dropped; work beside it is not.
+                    ("work beside the runtime",
+                     "?? .code-mower/runtime/bin/python3\0?? src/code_mower/left_behind.py")):
                 with self.subTest(reason=reason):
-                    outputs[STATUS] = dirty
+                    outputs[STATUS] = dirty + "\0"
                     with self.assertRaises(ProducerRefusal):
                         REAL_CREATION_CHECKOUT("/creation-checkout", origin())
+            # The runner writes its own runtime into the checkout before the
+            # writer exists and installs no git exclusion for it, so a
+            # repository that does not ignore `.code-mower/` must still register
+            # a clean round rather than fail every creation before launch.
+            outputs[STATUS] = ("?? .code-mower/runtime/bin/python\0"
+                               "?? .code-mower/runtime/bin/python3\0"
+                               "?? .code-mower/lane-delivery/outcome.json\0")
+            self.assertEqual(REAL_CREATION_CHECKOUT("/creation-checkout", origin()),
+                             Path("/creation-checkout"))
             outputs[STATUS] = ""
             outputs[("rev-parse", "HEAD")] = CREATED
             with self.assertRaises(ProducerRefusal):
@@ -529,11 +547,24 @@ class CreationDeliveryTests(unittest.TestCase):
                         dict(branch="claude/../codex/1020"), dict(branch="claude//1020"),
                         dict(branch="claude/1020.lock"), dict(branch="claude/1020@{1}"),
                         dict(branch="claude/1020/"), dict(branch="claude/1020."),
-                        dict(branch="/claude/1020"), dict(branch="claude/" + "x" * 100)):
+                        dict(branch="/claude/1020"), dict(branch=".claude/1020"),
+                        dict(branch="claude/" + "x" * 200)):
             with self.subTest(changes=changes):
                 with self.assertRaises(ProducerRefusal):
                     origin(**changes)
         self.assertEqual(origin(repo="Owner/Repo").repo, REPO)
+        # The reserved branch is validated by the repository's one branch
+        # contract, not a stricter local spelling: a name `branch_policy` renders
+        # and the pre-push guard authorizes must still reach the writer, and
+        # lineage `Target` accepts exactly the same set when the episode is
+        # minted. A stricter rule here would abort the round after branch
+        # resolution and guard setup, before the writer ever launched.
+        for accepted in ("claude/1020-", "claude/1020.lockfile", "x",
+                         "claude/" + "x" * (branch_policy.MAX_BRANCH_LENGTH - 7)):
+            with self.subTest(accepted=accepted):
+                self.assertTrue(branch_policy.is_valid_ref(accepted))
+                self.assertEqual(origin(branch=accepted).branch, accepted)
+                self.assertEqual(Target(REPO, PR, accepted, CREATED).branch, accepted)
 
     def test_round_requires_an_exact_binding_and_named_identifiers(self):
         with self.assertRaises(ProducerRefusal):

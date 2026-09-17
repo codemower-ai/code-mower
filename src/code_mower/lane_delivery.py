@@ -1798,11 +1798,15 @@ class CreationOrigin:
             raise ProducerRefusal("Immutable 40-hex starting base required.")
         # A branch name is compared exactly everywhere it is used, and is read
         # back out of a checkout and a ref listing, so nothing that could make
-        # two spellings look alike is accepted.
-        if (not isinstance(self.branch, str)
-                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,100}", self.branch)
-                or any(part in self.branch for part in ("..", "//", "@{", ".lock"))
-                or self.branch.endswith((".", "/", "-"))):
+        # two spellings look alike is accepted. The rule is the repository's one
+        # branch contract, bound rather than restated: ``branch_policy`` resolves
+        # the branch the runner reserves and the pre-push guard authorizes, and
+        # lineage ``Target`` validates the same name again when the episode is
+        # minted. A stricter spelling here would refuse — after branch
+        # resolution and guard setup, and before the writer ever launched — a
+        # name both of those accept.
+        from .branch_policy import is_valid_ref
+        if not is_valid_ref(self.branch):
             raise ProducerRefusal("Exact reserved creation branch required.")
 
     @property
@@ -1863,6 +1867,45 @@ def _creation_repository(checkout):
     return path
 
 
+def _uncommitted_work(status):
+    """The porcelain entries a creation round refuses to absorb into its base.
+
+    Runner-owned private state is dropped rather than refused, and it has to be
+    dropped here rather than left to the repository: preparing this round's own
+    runtime writes ``.code-mower/runtime/bin/python*`` into the checkout before
+    the writer exists, no part of the runner installs a git exclusion for it,
+    and a repository that does not ignore ``.code-mower/`` would otherwise fail
+    every creation round on the runner's own files.
+
+    The roots dropped are exactly the ones the evidence contract already calls
+    private state, bound rather than copied, so a name added there does not have
+    to be remembered here. They are matched at the top level only: a nested
+    directory that happens to share one of those names is ordinary content. Only
+    *untracked* entries under them are dropped, too — a repository that
+    genuinely tracks a file under one of those roots has committable content
+    there, and a staged or modified one still refuses.
+
+    ``status`` is unstripped NUL-separated ``git status --porcelain -z`` output,
+    which leaves paths unquoted; a rename or copy entry carries its source in the
+    following field. It is read unstripped because an entry's first column is a
+    significant space: stripping would turn a modified worktree file into an
+    unreadable code.
+    """
+    from .context_graph import _names_private_state
+    fields, entries, index = status.split("\0"), [], 0
+    while index < len(fields):
+        entry, index = fields[index], index + 1
+        if not entry.strip():
+            continue
+        code, path = entry[:2], entry[3:]
+        if code[:1] in ("R", "C"):
+            index += 1
+        if code == "??" and _names_private_state(path.split("/")[:1]):
+            continue
+        entries.append(entry)
+    return entries
+
+
 def _creation_checkout(checkout, origin):
     """A creation round may only start from the exact immutable base it declares.
 
@@ -1874,17 +1917,19 @@ def _creation_checkout(checkout, origin):
     reviewer-exclusion check. A dirty checkout is therefore refused before the
     round is registered rather than attributed afterwards.
 
-    Ignored paths are deliberately excluded: the runner keeps its own private
-    state inside the checkout, and an ignored path is not committable content.
+    Ignored paths, and the runner's own untracked private state, are excluded by
+    :func:`_uncommitted_work`: neither is committable content this round could
+    absorb, and the runner writes the latter into the checkout itself.
     """
     from .builder_lineage_producer import ProducerRefusal
     path = _creation_repository(checkout)
-    def git(*args):
-        return subprocess.check_output(["git", "-C", str(path), *args], text=True,
-                                       timeout=10, stderr=subprocess.DEVNULL).strip()
+    def git(*args, strip=True):
+        text = subprocess.check_output(["git", "-C", str(path), *args], text=True,
+                                       timeout=10, stderr=subprocess.DEVNULL)
+        return text.strip() if strip else text
     if git("rev-parse", "HEAD") != origin.base_sha:
         raise ProducerRefusal("Creation checkout head differs from the immutable base.")
-    if git("status", "--porcelain", "--untracked-files=all"):
+    if _uncommitted_work(git("status", "--porcelain", "-z", "--untracked-files=all", strip=False)):
         raise ProducerRefusal("Creation checkout carries work beyond the immutable base.")
     return path
 
