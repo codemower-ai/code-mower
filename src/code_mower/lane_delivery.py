@@ -1261,6 +1261,8 @@ def _add_supervise_parser(subparsers: Any) -> None:
     supervise.add_argument("--lineage-before", type=Path)
     supervise.add_argument("--lineage-issue", type=int,
                            help="Supervise an issue-targeted round that creates the pull request itself")
+    supervise.add_argument("--lineage-branch",
+                           help="The single unused branch an issue-targeted round may create")
     supervise.add_argument("--lineage-base")
     supervise.add_argument("--lineage-store", type=Path)
     supervise.add_argument("--lineage-create", action="store_true")
@@ -1766,14 +1768,17 @@ class CreationOrigin:
     whose single created pull request may be attributed, so two rounds launched
     against different issues can never share one supervised creation record.
 
-    ``pull_frontier`` is the highest pull request number observed in the
-    repository before the writer was launched. Together with the targeted issue
-    it fixes the number below which no pull request can have been created by
-    this round, so a pre-existing pull request can never be claimed as created.
+    ``branch`` is the single branch this round is allowed to create, reserved
+    before the writer is launched. ``pull_frontier`` is the highest pull request
+    number observed in the repository at the same moment. Together with the
+    targeted issue they fix both what this round may claim and the number below
+    which nothing can have been created by it, so neither a pre-existing pull
+    request nor another writer's concurrent one can be claimed as created.
     """
     repo: str
     issue_number: int
     base_sha: str
+    branch: str
     pull_frontier: int
 
     def __post_init__(self) -> None:
@@ -1791,6 +1796,14 @@ class CreationOrigin:
             raise ProducerRefusal("Observed pre-launch pull request frontier required.")
         if not re.fullmatch(r"[0-9a-f]{40}", self.base_sha):
             raise ProducerRefusal("Immutable 40-hex starting base required.")
+        # A branch name is compared exactly everywhere it is used, and is read
+        # back out of a checkout and a ref listing, so nothing that could make
+        # two spellings look alike is accepted.
+        if (not isinstance(self.branch, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,100}", self.branch)
+                or any(part in self.branch for part in ("..", "//", "@{", ".lock"))
+                or self.branch.endswith((".", "/", "-"))):
+            raise ProducerRefusal("Exact reserved creation branch required.")
 
     @property
     def creation_floor(self) -> int:
@@ -1804,10 +1817,42 @@ class CreationOrigin:
         return max(self.pull_frontier, self.issue_number)
 
     @classmethod
-    def for_launch(cls, io, repo, issue_number, base_sha):
-        """Bind a round to the frontier read before its writer is launched."""
-        validated = cls(repo, issue_number, base_sha, 0)
-        return cls(validated.repo, issue_number, base_sha, io.pull_frontier(validated.repo))
+    def for_launch(cls, io, repo, issue_number, base_sha, branch):
+        """Bind a round to the branch and frontier read before its launch.
+
+        Both reads happen before the round is registered, and therefore before
+        the supervised writer exists at all: the frontier dates every pull
+        request the repository already had, and the reservation proves this
+        branch had neither a ref nor a pull request of its own.
+        """
+        validated = cls(repo=repo, issue_number=issue_number, base_sha=base_sha,
+                        branch=branch, pull_frontier=0)
+        frontier = io.pull_frontier(validated.repo)
+        reserve_creation_branch(io, validated.repo, validated.branch)
+        return cls(repo=validated.repo, issue_number=issue_number, base_sha=base_sha,
+                   branch=validated.branch, pull_frontier=frontier)
+
+
+def reserve_creation_branch(io, repo, branch):
+    """Refuse unless one creation round may exclusively claim ``branch``.
+
+    A pull request number above the pre-launch frontier proves only that the
+    pull request was opened after the round started, not that this round opened
+    it: another writer's concurrent pull request is numbered above the frontier
+    too, and a supervised writer that checked out its branch would otherwise
+    satisfy every other check. The branch is what separates them, so it is
+    claimed before launch and only when nothing else holds it.
+
+    A branch with no ref cannot already carry a pull request opened from it, and
+    an empty pull request list covers the case where the ref was opened from and
+    then deleted. Afterwards, the created pull request must sit on this exact
+    branch, so it can only be one this round's writer pushed and opened.
+    """
+    from .builder_lineage_producer import ProducerRefusal
+    if io.pulls_for_branch(repo, branch):
+        raise ProducerRefusal("Reserved creation branch already has a pull request.")
+    if io.branch_ref(repo, branch) is not None:
+        raise ProducerRefusal("Reserved creation branch already exists in the repository.")
 
 
 def _creation_repository(checkout):
@@ -1819,23 +1864,41 @@ def _creation_repository(checkout):
 
 
 def _creation_checkout(checkout, origin):
-    """A creation round may only start from the exact immutable base it declares."""
+    """A creation round may only start from the exact immutable base it declares.
+
+    The declared base is only the round's whole starting point if the checkout
+    holds nothing else. Work another lane left staged, modified or untracked is
+    invisible to a HEAD comparison, and the supervised writer could commit it
+    and open a pull request whose creation episode names only this lane —
+    dropping the contributor that actually wrote it from every later
+    reviewer-exclusion check. A dirty checkout is therefore refused before the
+    round is registered rather than attributed afterwards.
+
+    Ignored paths are deliberately excluded: the runner keeps its own private
+    state inside the checkout, and an ignored path is not committable content.
+    """
     from .builder_lineage_producer import ProducerRefusal
     path = _creation_repository(checkout)
-    head = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"],
-                                   text=True, timeout=10, stderr=subprocess.DEVNULL).strip()
-    if head != origin.base_sha:
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(path), *args], text=True,
+                                       timeout=10, stderr=subprocess.DEVNULL).strip()
+    if git("rev-parse", "HEAD") != origin.base_sha:
         raise ProducerRefusal("Creation checkout head differs from the immutable base.")
+    if git("status", "--porcelain", "--untracked-files=all"):
+        raise ProducerRefusal("Creation checkout carries work beyond the immutable base.")
     return path
 
 
 def observed_creation_branch(checkout, origin):
     """Read the exact branch and head the stopped writer left in its own checkout.
 
-    Only the supervised writer knows which branch it created, so the branch is
-    observed rather than declared. The immutable base must be a real ancestor of
-    that head: a branch that never grew out of the launch base is not this
-    round's creation, and an unmoved head created nothing at all.
+    The branch is still observed rather than declared: the writer has to have
+    ended on the branch reserved for this round before launch, and any other
+    branch it checked out — including one another writer had already published —
+    is refused here instead of being discovered as this round's creation. The
+    immutable base must be a real ancestor of the head it left: a branch that
+    never grew out of the launch base is not this round's creation, and an
+    unmoved head created nothing at all.
     """
     from .builder_lineage_producer import ProducerRefusal
     path = _creation_repository(checkout)
@@ -1845,6 +1908,8 @@ def observed_creation_branch(checkout, origin):
     branch, head = git("branch", "--show-current"), git("rev-parse", "HEAD")
     if not branch or head == origin.base_sha:
         raise ProducerRefusal("Stopped writer left no created branch above the base.")
+    if branch != origin.branch:
+        raise ProducerRefusal("Stopped writer left a branch this round never reserved.")
     try:
         subprocess.run(["git", "-C", str(path), "merge-base", "--is-ancestor",
                         origin.base_sha, head], check=True, timeout=10,
@@ -1867,9 +1932,18 @@ def discover_created_pull(io, origin, branch, head_sha):
     naming only this lane and drop every earlier contributor from the chain. The
     pre-launch frontier in ``origin`` is what makes that case decidable, so a
     pull request numbered at or below it is refused rather than attributed.
+
+    The frontier alone cannot separate this round's creation from another
+    writer's concurrent one, so the pull request must also sit on the branch
+    this round reserved before launch, and that branch must now point at the
+    exact head the stopped writer left in its own checkout. A branch that had no
+    ref at reservation and carries this writer's head afterwards was pushed
+    during this round, and the single pull request on it was opened from it.
     """
     from .builder_lineage import Target
     from .builder_lineage_producer import ProducerRefusal
+    if branch != origin.branch:
+        raise ProducerRefusal("Observed branch differs from the branch reserved before launch.")
     raw = io.pulls_for_branch(origin.repo, branch)
     if len(raw) != 1:
         raise ProducerRefusal("Ambiguous or absent created pull request for the observed branch.")
@@ -1885,6 +1959,8 @@ def discover_created_pull(io, origin, branch, head_sha):
         raise ProducerRefusal("Created pull request differs from the observed branch head.")
     if created.pr_number <= origin.creation_floor:
         raise ProducerRefusal("Pull request existed before the supervised creation round.")
+    if io.branch_ref(origin.repo, branch) != head_sha:
+        raise ProducerRefusal("Reserved creation branch does not carry the observed created head.")
     return created
 
 
@@ -1892,9 +1968,11 @@ class LineageCreationRound:
     """An issue-targeted supervised round; there is no pull request to bind yet.
 
     Registration happens before launch against the immutable base the checkout
-    actually sits on. Stop/reap observation, quiescence, the stable named writer
-    and the unique non-reusable round ID remain the existing LocalWriter
-    evidence that LineageRound already depends on.
+    actually sits on, which must carry nothing else, and against the one branch
+    reserved for this round while nothing else held it. Stop/reap observation,
+    quiescence, the stable named writer and the unique non-reusable round ID
+    remain the existing LocalWriter evidence that LineageRound already depends
+    on.
     """
     def __init__(self, root, round_id, writer, origin, transport, checkout, *,
                  config, runtime_observation):
@@ -1917,7 +1995,7 @@ class LineageCreationRound:
     def _binding(self):
         return dict(round_id=self.round_id, writer=self.writer,
                     origin=dict(repo=self.origin.repo, issue_number=self.origin.issue_number,
-                                base_sha=self.origin.base_sha,
+                                base_sha=self.origin.base_sha, branch=self.origin.branch,
                                 pull_frontier=self.origin.pull_frontier),
                     transport=self.transport.__dict__)
 
@@ -1934,7 +2012,8 @@ class LineageCreationRound:
         """The exact discovered creation this round may be bound to, if any."""
         from .builder_lineage import Target
         from .builder_lineage_producer import ProducerRefusal
-        if not isinstance(created, Target) or created.repo != self.origin.repo:
+        if not isinstance(created, Target) or (created.repo, created.branch) != (
+                self.origin.repo, self.origin.branch):
             raise ProducerRefusal("Created pull request is outside the supervised creation origin.")
         if created.pr_number <= self.origin.creation_floor:
             raise ProducerRefusal("Pull request existed before the supervised creation round.")
@@ -2022,6 +2101,11 @@ def _start_creation_round(args, *, io=None, runtime_observation=None):
     Nothing is published before the writer is independently observed to have
     stopped, the created branch is read back from its own checkout, and exactly
     one readable pull request is bound to that exact branch head.
+
+    The branch is the launcher's own pre-launch reservation, not something the
+    writer chooses afterwards: the caller names one branch inside this lane's
+    configured prefixes, it is claimed only while nothing else holds it, and the
+    supervised writer is required to have ended on exactly it.
     """
     from .builder_lineage_producer import GitHub, ProducerStore, Transport, exact_snapshot, publish
     from .provider_runners.lineage import require_capabilities, trusted_policy
@@ -2030,7 +2114,8 @@ def _start_creation_round(args, *, io=None, runtime_observation=None):
     if args.lineage_output is None:
         raise LaneDeliveryError("Attribution output required before launch")
     if not (args.lineage_store and args.writer_repo and args.writer_lane and args.cwd
-            and args.writer and args.lineage_writer and args.writer_state_dir):
+            and args.writer and args.lineage_writer and args.writer_state_dir
+            and args.lineage_branch):
         raise LaneDeliveryError("Creation lineage requires the supervised writer bindings and a private store")
     if args.lineage_before or args.lineage_handoff:
         raise LaneDeliveryError("Creation lineage has no pre-existing pull request target")
@@ -2040,10 +2125,14 @@ def _start_creation_round(args, *, io=None, runtime_observation=None):
     prefixes = [prefix for prefix, lane in identity.branch_prefixes if lane == transport.lane]
     if not prefixes:
         raise LaneDeliveryError("Creation requires a configured branch prefix for this lane")
+    if not any(args.lineage_branch.lower().startswith(prefix) for prefix in prefixes):
+        raise LaneDeliveryError("Reserved creation branch is outside this lane's configured prefixes")
     io = io if io is not None else GitHub()
     # Read before registration, so the frontier this round is bound to is always
-    # older than anything the supervised writer can open.
-    origin = CreationOrigin.for_launch(io, args.writer_repo, args.lineage_issue, args.lineage_base)
+    # older than anything the supervised writer can open, and the branch it may
+    # create is claimed while it is still provably unused.
+    origin = CreationOrigin.for_launch(io, args.writer_repo, args.lineage_issue, args.lineage_base,
+                                       args.lineage_branch)
     if runtime_observation is None:
         def runtime_observation():
             lane_runtime.prepare(args.cwd, sys.executable)
@@ -2083,6 +2172,10 @@ def _start_lineage_round(args, *, io=None, runtime_observation=None):
     require_capabilities()
     if args.lineage_output is None:
         raise LaneDeliveryError("Attribution output required before launch")
+    # A branch reservation only means anything for a round that creates the pull
+    # request; a delivery to an existing one already has its branch.
+    if getattr(args, "lineage_branch", None):
+        raise LaneDeliveryError("An existing pull request target has no branch to reserve")
     config, identity, authorities = trusted_policy(args.cwd, args.lineage_base)
     before = lineage_target_state(args.writer_repo, json.loads(args.lineage_before.read_text()))
     io = io if io is not None else GitHub()

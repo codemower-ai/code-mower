@@ -3,8 +3,9 @@
 Every row here is adversarial about the same thing: a creation episode may only
 be minted when one supervised lane is independently observed to have stopped and
 exactly one readable pull request is bound to the exact branch head that lane
-left behind. The accepted #963 handoff/continuation contracts are asserted
-unchanged, including the rendered public marker bytes.
+left behind — on a clean checkout, and on the one branch the round reserved
+while nothing else held it. The accepted #963 handoff/continuation contracts are
+asserted unchanged, including the rendered public marker bytes.
 """
 import argparse
 from pathlib import Path
@@ -28,12 +29,15 @@ ISSUE = 1020
 FRONTIER = 1020
 PR = 1021
 BRANCH = "claude/1020-creation"
+CODEX_BRANCH = "codex/1020-creation"
 BASE = sha(9)
 CREATED = sha(10)
 AUTHORITY = Authorities(["lineage-publisher[bot]"])
-# The real checkout observation, captured before any test patches it away, so one
-# row can still exercise it against a genuine directory.
+# The real checkout observations, captured before any test patches them away, so
+# one row each can still exercise them against a genuine directory.
 REAL_CHECKOUT = lane_delivery._lineage_checkout
+REAL_CREATION_CHECKOUT = lane_delivery._creation_checkout
+STATUS = ("status", "--porcelain", "--untracked-files=all")
 CLAUDE = Transport("claude", "claude", "claude_cli", "local_cli")
 CODEX = Transport("codex", "codex", "codex_cli", "local_cli")
 # The shared human owner login is deliberately unmapped: an issue-targeted run
@@ -60,7 +64,7 @@ def creation_episode(**changes):
 
 def origin(**changes):
     return lane_delivery.CreationOrigin(**(dict(repo=REPO, issue_number=ISSUE, base_sha=BASE,
-                                                pull_frontier=FRONTIER) | changes))
+                                                branch=BRANCH, pull_frontier=FRONTIER) | changes))
 
 
 def pull_payload(**changes):
@@ -148,15 +152,32 @@ class CreationContractTests(unittest.TestCase):
 class FakeGitHub:
     """Finite in-memory GitHub transport; every producer validation stays real."""
 
-    def __init__(self, *, pulls=None, target=None, labels=("builder:claude",), author="owner-login",
-                 frontier=FRONTIER):
+    def __init__(self, *, pulls=None, refs=None, target=None, labels=("builder:claude",),
+                 author="owner-login", frontier=FRONTIER):
         self.target = target if target is not None else created_target()
         self.pulls = [pull_payload()] if pulls is None else pulls
+        self.refs = self.pushed_refs() if refs is None else dict(refs)
         self.current_labels = tuple(labels)
         self.author = author
         self.frontier = frontier
         self.public = []
         self.effects = []
+
+    def pushed_refs(self):
+        """Every branch the readable pull requests sit on actually exists."""
+        return {entry["head"].get("ref"): entry["head"].get("sha") for entry in self.pulls
+                if isinstance(entry.get("head"), dict)}
+
+    def writer_created(self, *pulls):
+        """Apply exactly what only the supervised writer can leave behind.
+
+        Before launch the reserved branch has no ref and no pull request; this
+        is the push and the pull request the writer itself performs during the
+        round, so a launcher row observes the same two states the real one does.
+        """
+        self.pulls = list(pulls) if pulls else [pull_payload()]
+        self.refs = self.pushed_refs()
+        return self
 
     def pull_frontier(self, repo):
         self.effects.append(("frontier", repo))
@@ -165,6 +186,10 @@ class FakeGitHub:
     def pulls_for_branch(self, repo, branch):
         self.effects.append(("pulls", repo, branch))
         return self.pulls
+
+    def branch_ref(self, repo, branch):
+        self.effects.append(("ref", repo, branch))
+        return self.refs.get(branch)
 
     def snapshot(self, requested):
         self.effects.append("snapshot")
@@ -387,13 +412,81 @@ class CreationDeliveryTests(unittest.TestCase):
         self.assertEqual(lane_delivery.lineage_creation(observer, created_target(), BASE)
                          .episode.pr_number, PR)
 
-    def test_for_launch_binds_the_frontier_observed_before_registration(self):
-        io = FakeGitHub(frontier=1000)
-        bound = lane_delivery.CreationOrigin.for_launch(io, "Owner/Repo", ISSUE, BASE)
-        self.assertEqual((bound.repo, bound.pull_frontier), (REPO, 1000))
-        self.assertEqual(io.effects, [("frontier", REPO)])
+    def test_for_launch_binds_the_frontier_and_branch_observed_before_registration(self):
+        io = FakeGitHub(pulls=[], refs={}, frontier=1000)
+        bound = lane_delivery.CreationOrigin.for_launch(io, "Owner/Repo", ISSUE, BASE, BRANCH)
+        self.assertEqual((bound.repo, bound.branch, bound.pull_frontier), (REPO, BRANCH, 1000))
+        # Every observation is a read of the repository as it stands before the
+        # round is registered; nothing is written and nothing is launched yet.
+        self.assertEqual(io.effects, [("frontier", REPO), ("pulls", REPO, BRANCH), ("ref", REPO, BRANCH)])
         with self.assertRaises(ProducerRefusal):
-            lane_delivery.CreationOrigin.for_launch(io, "owner", ISSUE, BASE)
+            lane_delivery.CreationOrigin.for_launch(io, "owner", ISSUE, BASE, BRANCH)
+
+    def test_a_branch_anything_else_already_holds_can_never_be_reserved(self):
+        """The frontier cannot separate this round's creation from a concurrent one.
+
+        A pull request another writer opens after the frontier read is numbered
+        above it too, so a supervised writer that checked out that branch would
+        pass every remaining check and publish single-lane attribution for work
+        it did not do. The branch is what separates them, so it is claimed
+        before launch and only while provably nothing else holds it.
+        """
+        for reason, io in (
+                ("an existing pull request", FakeGitHub(refs={})),
+                ("a closed pull request on it", FakeGitHub(pulls=[pull_payload(state="closed")], refs={})),
+                ("an existing branch ref", FakeGitHub(pulls=[], refs={BRANCH: CREATED})),
+        ):
+            with self.subTest(reason=reason):
+                with self.assertRaises(ProducerRefusal):
+                    lane_delivery.CreationOrigin.for_launch(io, REPO, ISSUE, BASE, BRANCH)
+        unused = FakeGitHub(pulls=[], refs={"claude/other": CREATED})
+        self.assertEqual(lane_delivery.CreationOrigin.for_launch(unused, REPO, ISSUE, BASE, BRANCH).branch,
+                         BRANCH)
+
+    def test_discovery_requires_the_reserved_branch_to_carry_the_created_head(self):
+        """The reserved branch is the evidence the writer itself pushed it.
+
+        It had no ref when the round was registered, so a ref that now points at
+        the head the stopped writer left in its own checkout can only have been
+        pushed during the round — and the one pull request on it opened from it.
+        """
+        for reason, io, branch in (
+                ("the reserved branch was never pushed", FakeGitHub(refs={}), BRANCH),
+                ("the pushed branch moved past the writer", FakeGitHub(refs={BRANCH: sha(12)}), BRANCH),
+                ("another branch entirely", FakeGitHub(), "claude/other"),
+        ):
+            with self.subTest(reason=reason):
+                with self.assertRaises(ProducerRefusal):
+                    lane_delivery.discover_created_pull(io, origin(), branch, CREATED)
+        self.assertEqual(lane_delivery.discover_created_pull(FakeGitHub(), origin(), BRANCH, CREATED),
+                         created_target())
+
+    def test_registration_refuses_a_checkout_carrying_work_beyond_the_base(self):
+        """Uncommitted work in the checkout is not this round's immutable base.
+
+        Staged, modified or untracked work another lane left is invisible to a
+        HEAD comparison. The supervised writer could commit it and open a pull
+        request whose creation episode names only this lane, so the omitted
+        contributor would be admitted to review its own work.
+        """
+        outputs = {("rev-parse", "HEAD"): BASE, STATUS: ""}
+        with patch("code_mower.lane_delivery._creation_repository",
+                   side_effect=lambda checkout: Path(checkout)), \
+                patch("code_mower.lane_delivery.subprocess.check_output",
+                      side_effect=lambda argv, **kwargs: outputs[tuple(argv[3:])] + "\n"):
+            self.assertEqual(REAL_CREATION_CHECKOUT("/creation-checkout", origin()),
+                             Path("/creation-checkout"))
+            for reason, dirty in (("staged work", "M  src/code_mower/lane_delivery.py"),
+                                  ("modified work", " M tools/lanes/run_mac_lane.sh"),
+                                  ("untracked work", "?? src/code_mower/left_behind.py")):
+                with self.subTest(reason=reason):
+                    outputs[STATUS] = dirty
+                    with self.assertRaises(ProducerRefusal):
+                        REAL_CREATION_CHECKOUT("/creation-checkout", origin())
+            outputs[STATUS] = ""
+            outputs[("rev-parse", "HEAD")] = CREATED
+            with self.assertRaises(ProducerRefusal):
+                REAL_CREATION_CHECKOUT("/creation-checkout", origin())
 
     def test_observed_branch_requires_descent_from_the_immutable_base(self):
         import subprocess
@@ -419,13 +512,24 @@ class CreationDeliveryTests(unittest.TestCase):
             outputs[("branch", "--show-current")] = ""
             with self.assertRaises(ProducerRefusal):
                 lane_delivery.observed_creation_branch("/creation-checkout", origin())
+            # A writer that ended on any other branch — including one another
+            # writer had already published — never created this round's work.
+            outputs[("branch", "--show-current")] = "claude/other"
+            with self.assertRaises(ProducerRefusal):
+                lane_delivery.observed_creation_branch("/creation-checkout", origin())
 
     def test_creation_origin_refuses_incomplete_issue_bindings(self):
         for changes in (dict(repo="owner"), dict(repo=42), dict(issue_number=0),
                         dict(issue_number=True), dict(issue_number="1020"),
                         dict(base_sha="deadbeef"), dict(base_sha=None),
                         dict(pull_frontier=-1), dict(pull_frontier="1020"),
-                        dict(pull_frontier=None), dict(pull_frontier=True)):
+                        dict(pull_frontier=None), dict(pull_frontier=True),
+                        dict(branch=""), dict(branch=None), dict(branch=BRANCH.encode()),
+                        dict(branch=" " + BRANCH), dict(branch=BRANCH + " "),
+                        dict(branch="claude/../codex/1020"), dict(branch="claude//1020"),
+                        dict(branch="claude/1020.lock"), dict(branch="claude/1020@{1}"),
+                        dict(branch="claude/1020/"), dict(branch="claude/1020."),
+                        dict(branch="/claude/1020"), dict(branch="claude/" + "x" * 100)):
             with self.subTest(changes=changes):
                 with self.assertRaises(ProducerRefusal):
                     origin(**changes)
@@ -440,11 +544,12 @@ class CreationDeliveryTests(unittest.TestCase):
                 Path("/creation-checkout"), config={}, runtime_observation=lambda: "ready")
 
     def test_symmetric_codex_creation_round_records_and_admits_claude(self):
-        observer = self.round_fixture(transport=CODEX, round_id="codex-round")
-        io = FakeGitHub(pulls=[pull_payload(head={"ref": "codex/1020-creation", "sha": CREATED})],
-                        target=created_target(branch="codex/1020-creation"), labels=("builder:codex",))
+        binding = origin(branch=CODEX_BRANCH)
+        observer = self.round_fixture(transport=CODEX, round_id="codex-round", binding=binding)
+        io = FakeGitHub(pulls=[pull_payload(number=PR, head={"ref": CODEX_BRANCH, "sha": CREATED})],
+                        target=created_target(branch=CODEX_BRANCH), labels=("builder:codex",))
         created = observer.bind_created(
-            lane_delivery.discover_created_pull(io, origin(), "codex/1020-creation", CREATED))
+            lane_delivery.discover_created_pull(io, binding, CODEX_BRANCH, CREATED))
         delivery = lane_delivery.lineage_creation(observer, created, BASE)
         self.assertEqual(delivery.episode.destination_lane, "codex")
         self.assertTrue(self.record(delivery, created, labels=["builder:codex"]))
@@ -491,22 +596,28 @@ class CreationLauncherTests(unittest.TestCase):
             cwd=Path("/creation-checkout"), writer="creation-round-1", writer_state_dir=Path("/rounds"),
             writer_repo=REPO, writer_lane="claude", lineage_writer="claude--writer",
             lineage_issue=1020, lineage_base=BASE, lineage_before=None, lineage_handoff=None,
-            lineage_store=Path("/producer-state"), lineage_output=Path("/out/event.json"),
+            lineage_branch=BRANCH, lineage_store=Path("/producer-state"),
+            lineage_output=Path("/out/event.json"),
         ) | changes))
+
+    def unused(self, **changes):
+        """The repository as it stands before launch: nothing holds the branch."""
+        return FakeGitHub(pulls=[], refs={}, **changes)
 
     def result(self, reason="completed", exit_code=0):
         return argparse.Namespace(reason=reason, exit_code=exit_code)
 
     def test_launcher_publishes_after_an_independently_observed_exit(self):
-        io = FakeGitHub()
+        io = self.unused()
         observer, finish = lane_delivery._start_creation_round(
             self.args(), io=io, runtime_observation=lambda: "ready")
-        # The frontier is observed before the round is registered, never after
-        # the writer has had a chance to open anything.
-        self.assertEqual(io.effects[0], ("frontier", REPO))
-        self.assertEqual(observer.origin.pull_frontier, FRONTIER)
+        # The frontier and the branch reservation are both observed before the
+        # round is registered, never after the writer can open or push anything.
+        self.assertEqual(io.effects, [("frontier", REPO), ("pulls", REPO, BRANCH), ("ref", REPO, BRANCH)])
+        self.assertEqual((observer.origin.pull_frontier, observer.origin.branch), (FRONTIER, BRANCH))
         observer.started(31, 31)
         observer.finish(quiescent=True)
+        io.writer_created()
         finish(self.result())
         self.assertIn("post", io.effects)
         # The discovered pull request is bound into the stopped writer's own
@@ -520,7 +631,7 @@ class CreationLauncherTests(unittest.TestCase):
         self.assertEqual(self.attribution.call_args.args[1].lane, "claude")
 
     def test_launcher_refuses_an_unfinished_or_failed_round_without_publishing(self):
-        io = FakeGitHub()
+        io = self.unused()
         observer, finish = lane_delivery._start_creation_round(
             self.args(), io=io, runtime_observation=lambda: "ready")
         observer.started(32, 32)
@@ -533,27 +644,63 @@ class CreationLauncherTests(unittest.TestCase):
         self.attribution.assert_not_called()
 
     def test_launcher_refuses_a_branch_outside_this_lanes_prefixes(self):
-        io = FakeGitHub()
+        io = self.unused()
         with patch("code_mower.lane_delivery.observed_creation_branch",
-                   return_value=("codex/1020-creation", CREATED)):
+                   return_value=(CODEX_BRANCH, CREATED)):
             observer, finish = lane_delivery._start_creation_round(
                 self.args(), io=io, runtime_observation=lambda: "ready")
             observer.started(33, 33)
             observer.finish(quiescent=True)
+            io.writer_created()
             with self.assertRaises(lane_delivery.LaneDeliveryError):
                 finish(self.result())
         self.assertNotIn("post", io.effects)
+        # The branch is refused at launch too, before any round is registered.
+        with self.assertRaises(lane_delivery.LaneDeliveryError):
+            lane_delivery._start_creation_round(self.args(lineage_branch=CODEX_BRANCH),
+                                                io=self.unused(), runtime_observation=lambda: "ready")
 
     def test_launcher_refuses_a_pull_request_that_existed_before_launch(self):
         """End to end: an existing PR on the checked-out branch is not a creation."""
-        io = FakeGitHub(pulls=[pull_payload(number=FRONTIER)],
-                        target=created_target(pr_number=FRONTIER))
+        io = self.unused()
         observer, finish = lane_delivery._start_creation_round(
             self.args(), io=io, runtime_observation=lambda: "ready")
         observer.started(34, 34)
         observer.finish(quiescent=True)
+        io.writer_created(pull_payload(number=FRONTIER))
+        io.target = created_target(pr_number=FRONTIER)
         with self.assertRaises(ProducerRefusal):
             finish(self.result())
+        self.assertNotIn("post", io.effects)
+        self.attribution.assert_not_called()
+
+    def test_launcher_refuses_a_branch_another_writer_already_holds(self):
+        """The reservation is what a concurrent writer's pull request fails.
+
+        A pull request opened after the frontier read is numbered above it, so
+        the launcher would otherwise accept a writer that checked it out and
+        exited cleanly. Both the pre-launch claim and the post-exit branch are
+        refused instead.
+        """
+        for reason, io in (("an existing pull request", FakeGitHub(refs={})),
+                           ("an existing branch ref", FakeGitHub(pulls=[], refs={BRANCH: CREATED}))):
+            with self.subTest(reason=reason):
+                with self.assertRaises(ProducerRefusal):
+                    lane_delivery._start_creation_round(self.args(), io=io,
+                                                        runtime_observation=lambda: "ready")
+                self.assertNotIn("post", io.effects)
+        io = self.unused()
+        with patch("code_mower.lane_delivery.observed_creation_branch",
+                   return_value=("claude/other", CREATED)):
+            observer, finish = lane_delivery._start_creation_round(
+                self.args(), io=io, runtime_observation=lambda: "ready")
+            observer.started(35, 35)
+            observer.finish(quiescent=True)
+            # Another writer's concurrent pull request, numbered above the
+            # frontier and inside this lane's prefixes, on its own branch.
+            io.writer_created(pull_payload(number=PR + 1, head={"ref": "claude/other", "sha": CREATED}))
+            with self.assertRaises(ProducerRefusal):
+                finish(self.result())
         self.assertNotIn("post", io.effects)
         self.attribution.assert_not_called()
 
@@ -562,11 +709,12 @@ class CreationLauncherTests(unittest.TestCase):
                 ("no private store", dict(lineage_store=None)),
                 ("no attribution output", dict(lineage_output=None)),
                 ("no supervised writer", dict(lineage_writer=None)),
+                ("no reserved branch", dict(lineage_branch=None)),
                 ("existing pull request target", dict(lineage_before=Path("/before.json"))),
         ):
             with self.subTest(reason=reason):
                 with self.assertRaises(lane_delivery.LaneDeliveryError):
-                    lane_delivery._start_creation_round(self.args(**changes), io=FakeGitHub(),
+                    lane_delivery._start_creation_round(self.args(**changes), io=self.unused(),
                                                         runtime_observation=lambda: "ready")
 
 
