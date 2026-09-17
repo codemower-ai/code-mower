@@ -34,7 +34,37 @@ release below.
   the owner for nothing. See `docs/release-qualification.md`, "Headless Linux
   campaign authentication".
 
+- `code-mower migration setup-drift` now states what it compared. Text and JSON
+  name both operands — the generated setup from the installed Code Mower package
+  (source) and the tracked repository files (target) — define every
+  classification on those operands, and mark which side owns each reported path
+  (`side` in JSON, `side=` in text). Because the comparison is presence and
+  bytes, a `differs` entry explicitly does not claim either side is newer. The
+  preview/review/apply posture, redaction, standalone-pin hints, and
+  superseded-bridge guidance are unchanged, and every previously published JSON
+  key keeps its meaning; the metadata is additive, so an older report without a
+  `comparison` block still renders.
+
+- The optional Devin setup prompt moved out of the universal orchestrator prompt
+  into `docs/devin-setup-prompt.md`. The prompt pack keeps a short opt-in
+  pointer plus the authority and lease guardrails that apply to every
+  participant. Install and upgrade verification now lead with the maintained
+  concise doctor view (`doctor --adoption --repo OWNER/REPO --concise`) while
+  keeping the same posture available as full text (`--advanced`) and
+  machine-readable JSON (`--json`).
+
 ### Fixed
+
+- A doctor snapshot taken while a Board is still binding its port no longer
+  reports that no Board is running moments before `board list` lists it. Board
+  visibility gets one short bounded re-observation (default 2s, capped at 10s,
+  `CODE_MOWER_BOARD_STARTUP_GRACE_SECONDS=0` to disable) for exactly that case.
+  A visible Board is reported immediately with no wait, so a stopped,
+  wrong-repository, stale-version, or unhealthy Board is never hidden by the
+  grace, and an unavailable listener inventory is still reported as a tooling
+  gap rather than retried. The observation is never synthesized: the reported
+  Boards are whatever the final poll returned, and the timing evidence
+  (`startup_grace`) is recorded alongside the check.
 
 - The local lane runner can drive a repository whose name contains `.`. The
   stable lineage writer identity and the supervised round ID used to be the

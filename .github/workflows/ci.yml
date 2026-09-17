@@ -37,6 +37,11 @@ jobs:
         run: python scripts/privacy_scan.py
 
       - name: Unit tests
+        env:
+          # The Board startup grace is covered with injected timing, so the
+          # real-clock default only makes doctor snapshots in unrelated tests
+          # wait for a Board this runner will never start.
+          CODE_MOWER_BOARD_STARTUP_GRACE_SECONDS: "0"
         run: python -m unittest discover -s tests
 
       - name: Compile sources

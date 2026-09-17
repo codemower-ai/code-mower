@@ -10,7 +10,9 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -697,6 +699,191 @@ def collect_local_boards(command_runner: CommandRunner = _run_command) -> dict[s
                 }
             )
     return {"available": True, "boards": boards, "message": ""}
+
+
+# --- Board startup grace ---------------------------------------------------
+#
+# A snapshot taken moments after `code-mower board serve` starts can observe the
+# listener inventory before the Board has bound its port, and report "no Board
+# is running" just before `board list` succeeds. `observe_local_boards` re-runs
+# the same read-only observation for that one case, for a short bounded budget.
+#
+# The grace can only ever report what a later poll actually returned:
+#
+# - a Board that is already visible is reported immediately, with no delay, so a
+#   stopped, wrong-repository, stale-version, or unhealthy Board is never hidden
+#   or softened by waiting;
+# - an unavailable listener inventory (no `lsof`/`ss`) is a tooling gap rather
+#   than a startup race, so it is reported immediately too;
+# - nothing is ever synthesized: the final observation is the reported one.
+
+BOARD_STARTUP_GRACE_SECONDS = 2.0
+BOARD_STARTUP_POLL_INTERVAL_SECONDS = 0.25
+BOARD_STARTUP_MAX_GRACE_SECONDS = 10.0
+BOARD_STARTUP_GRACE_ENV = "CODE_MOWER_BOARD_STARTUP_GRACE_SECONDS"
+
+BOARD_GRACE_VISIBLE_IMMEDIATELY = "board_visible_on_first_observation"
+BOARD_GRACE_INVENTORY_UNAVAILABLE = "listener_inventory_unavailable"
+BOARD_GRACE_DISABLED = "startup_grace_disabled"
+BOARD_GRACE_VISIBLE_AFTER_GRACE = "board_visible_after_startup_grace"
+BOARD_GRACE_NOT_VISIBLE_AFTER_GRACE = "board_not_visible_after_startup_grace"
+
+
+@dataclass(frozen=True)
+class StartupGrace:
+    """Deterministically injectable timing for the Board startup grace."""
+
+    budget_seconds: float | None = None
+    poll_interval_seconds: float = BOARD_STARTUP_POLL_INTERVAL_SECONDS
+    sleep: Callable[[float], None] = time.sleep
+    monotonic: Callable[[], float] = time.monotonic
+
+
+@dataclass(frozen=True)
+class BoardObservation:
+    """The final local-Board observation, plus how it was reached."""
+
+    payload: Mapping[str, Any]
+    grace: dict[str, Any]
+
+    @property
+    def boards(self) -> list[Any]:
+        raw = self.payload.get("boards") if isinstance(self.payload, Mapping) else []
+        return list(raw) if isinstance(raw, list) else []
+
+    @property
+    def available(self) -> bool:
+        if not isinstance(self.payload, Mapping):
+            return False
+        return bool(self.payload.get("available", False))
+
+    @property
+    def visible(self) -> bool:
+        return bool(self.boards)
+
+
+def resolve_board_grace_seconds(
+    requested: float | None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> float:
+    """Resolve the grace budget from an explicit value, the environment, or the default.
+
+    An unparseable or negative environment value falls back to the default
+    rather than disabling or unbounding the grace, and every result is clamped
+    to `BOARD_STARTUP_MAX_GRACE_SECONDS` so no caller can turn a doctor snapshot
+    into a long poll.
+    """
+
+    current_env = os.environ if env is None else env
+    if requested is not None:
+        candidate = float(requested)
+    else:
+        raw = current_env.get(BOARD_STARTUP_GRACE_ENV)
+        if raw is None or str(raw).strip() == "":
+            candidate = BOARD_STARTUP_GRACE_SECONDS
+        else:
+            try:
+                candidate = float(str(raw).strip())
+            except ValueError:
+                candidate = BOARD_STARTUP_GRACE_SECONDS
+    if candidate < 0:
+        candidate = BOARD_STARTUP_GRACE_SECONDS
+    return min(candidate, BOARD_STARTUP_MAX_GRACE_SECONDS)
+
+
+def _board_grace_detail(
+    *,
+    applied: bool,
+    reason: str,
+    attempts: int,
+    budget_seconds: float,
+    waited_seconds: float,
+    poll_interval_seconds: float,
+) -> dict[str, Any]:
+    return {
+        "applied": applied,
+        "reason": reason,
+        "attempts": attempts,
+        "budget_seconds": round(float(budget_seconds), 3),
+        "waited_seconds": round(float(waited_seconds), 3),
+        "poll_interval_seconds": round(float(poll_interval_seconds), 3),
+    }
+
+
+def observe_local_boards(
+    command_runner: CommandRunner | None = None,
+    *,
+    grace: StartupGrace | None = None,
+    env: Mapping[str, str] | None = None,
+) -> BoardObservation:
+    """Collect local Boards, re-observing briefly only while one may be starting."""
+
+    settings = grace or StartupGrace()
+    poll_interval = max(float(settings.poll_interval_seconds), 0.0)
+
+    def collect() -> Mapping[str, Any]:
+        payload = (
+            collect_local_boards(command_runner)
+            if command_runner is not None
+            else collect_local_boards()
+        )
+        return payload if isinstance(payload, Mapping) else {}
+
+    payload = collect()
+    observation = BoardObservation(payload=payload, grace={})
+    budget = resolve_board_grace_seconds(settings.budget_seconds, env=env)
+
+    if observation.visible:
+        reason = BOARD_GRACE_VISIBLE_IMMEDIATELY
+    elif not observation.available:
+        reason = BOARD_GRACE_INVENTORY_UNAVAILABLE
+    elif budget <= 0 or poll_interval <= 0:
+        reason = BOARD_GRACE_DISABLED
+    else:
+        reason = ""
+
+    if reason:
+        return BoardObservation(
+            payload=payload,
+            grace=_board_grace_detail(
+                applied=False,
+                reason=reason,
+                attempts=1,
+                budget_seconds=budget,
+                waited_seconds=0.0,
+                poll_interval_seconds=poll_interval,
+            ),
+        )
+
+    started = settings.monotonic()
+    attempts = 1
+    while True:
+        remaining = budget - (settings.monotonic() - started)
+        if remaining <= 0:
+            break
+        settings.sleep(min(poll_interval, remaining))
+        payload = collect()
+        attempts += 1
+        observation = BoardObservation(payload=payload, grace={})
+        if observation.visible:
+            break
+    waited = max(settings.monotonic() - started, 0.0)
+    return BoardObservation(
+        payload=payload,
+        grace=_board_grace_detail(
+            applied=True,
+            reason=(
+                BOARD_GRACE_VISIBLE_AFTER_GRACE
+                if observation.visible
+                else BOARD_GRACE_NOT_VISIBLE_AFTER_GRACE
+            ),
+            attempts=attempts,
+            budget_seconds=budget,
+            waited_seconds=waited,
+            poll_interval_seconds=poll_interval,
+        ),
+    )
 
 
 def _provider(command: str) -> str:

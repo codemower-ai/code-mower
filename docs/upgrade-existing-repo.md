@@ -59,12 +59,26 @@ are actually part of that repository.
 The report classifies paths only; it does not include source, diffs,
 transcripts, issue body text, auth output, local secret values, or secrets.
 
-- `same`: current file already matches the generated output.
-- `differs`: review the file diff before copying the generated replacement.
-- `new`: generated file does not exist in the repo yet.
-- `missing-from-output`: existing Code Mower file is no longer generated.
-- `repo-only`: file appears Code Mower-related but is intentionally outside the
-  generator contract.
+It compares exactly two operands, and both the text and JSON reports name them:
+
+- source: the generated setup from the installed Code Mower package, for the
+  config and profile the report names;
+- target: the tracked repository files under `--repo-path`.
+
+Each classification is defined on those operands, by presence and bytes:
+
+- `same`: present on both sides with identical bytes.
+- `differs`: present on both sides with different bytes. Review the file before
+  copying the generated replacement.
+- `new`: present in the generated setup only, not tracked in this repository.
+- `repo-only`: tracked in this repository only; the current setup output does
+  not generate it.
+- `missing-from-output`: named by the setup plan but not readable from the
+  installed package, so no comparison was made for that path.
+
+A `differs` entry does not prove which side is newer — content alone cannot show
+that. Check the installed package version the report names and the repository
+history for the file before deciding which side to keep.
 
 Do not delete `repo-only` or `missing-from-output` files automatically. They may
 be product-specific shims, pinned wrappers, hand-written docs, or rollback
@@ -132,9 +146,17 @@ Run:
 
 ```bash
 bash .code-mower.generated/smoke-tests.sh
-code-mower doctor --adoption --repo OWNER/REPO
+code-mower doctor --adoption --repo OWNER/REPO --concise
+code-mower doctor --adoption --repo OWNER/REPO --json
 code-mower lanes status --repo OWNER/REPO
 ```
+
+`--concise` is the maintained reading order for this verification.
+It changes nothing about coverage — every check still runs — and the summary
+leads with active failures and owner actions, then counts the
+remaining warnings by group. Attach the `--json` output to the
+upgrade PR when you need the complete evidence, and use `--advanced` (or plain
+`doctor --adoption`) for the full text list of every check.
 
 Then commit the reviewed setup changes and open the upgrade PR. Run the usual
 peer audits and merge only when the current head has clean audit evidence and

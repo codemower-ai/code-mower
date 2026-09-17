@@ -8,7 +8,10 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+
+if TYPE_CHECKING:  # pragma: no cover - typing-only import
+    from code_mower import lane_status as lane_status_module
 
 
 from .campaign_auth import (
@@ -637,6 +640,7 @@ def check_adoption_campaign_readiness(
     provider_profile: str = "",
     provider_config_dir: Path | None = None,
     campaign_requested: bool = False,
+    board_startup_grace: lane_status_module.StartupGrace | None = None,
 ) -> tuple[DoctorCheck, ...]:
     """Validate release campaign readiness across configured providers and storage.
 
@@ -1444,7 +1448,16 @@ def check_adoption_campaign_readiness(
         )
 
     # 5. Board Visibility Check
-    board_info = lane_status.collect_local_boards(runner)
+    #
+    # A Board that is still binding its port when this snapshot runs gets one
+    # short bounded re-observation. A visible Board is reported immediately, so
+    # the grace can never mask a stopped or unhealthy one.
+    board_observation = lane_status.observe_local_boards(
+        runner,
+        grace=board_startup_grace,
+    )
+    board_info = board_observation.payload
+    board_grace = board_observation.grace
     raw_boards = board_info.get("boards") or []
     redacted_boards = [
         {
@@ -1471,6 +1484,7 @@ def check_adoption_campaign_readiness(
                     "available": True,
                     "board_count": len(redacted_boards),
                     "boards": redacted_boards,
+                    "startup_grace": board_grace,
                 },
             )
         )
@@ -1491,6 +1505,7 @@ def check_adoption_campaign_readiness(
                     "boards": [],
                     "optional": True,
                     "actionable": False,
+                    "startup_grace": board_grace,
                 },
                 remediation=(
                     "Start Code Mower Board with `code-mower board serve --repo OWNER/REPO` "
