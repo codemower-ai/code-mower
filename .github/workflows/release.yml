@@ -36,7 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s\n' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
-          [[ "$ACTUAL_REF" == refs/tags/v* ]]
+          [[ "$ACTUAL_REF" == refs/tags/v* ]] || exit 1
           test "$ACTUAL_SHA" = "$EXPECTED_SHA"
 
       - name: Check out the event commit

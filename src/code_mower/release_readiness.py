@@ -1292,7 +1292,7 @@ def _dispatch_sha_gate_holds(
         "inputs.expected_sha",
         "github.sha",
         "grep -Eq '^[0-9a-f]{40}$'",
-        '[[ "$ACTUAL_REF" == refs/tags/v* ]]',
+        '[[ "$ACTUAL_REF" == refs/tags/v* ]] || exit 1',
         'test "$ACTUAL_SHA" = "$EXPECTED_SHA"',
     )
     if any(fragment not in identity_text for fragment in required_identity_fragments):
