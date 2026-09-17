@@ -214,8 +214,19 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("python-version: ${{ matrix.python-version }}", workflow)
         self.assertIn("if: matrix.python-version == '3.12'", workflow)
         self.assertIn("  package:\n    name: package\n", workflow)
-        self.assertIn("    needs: package_matrix\n", workflow)
-        self.assertIn('test "${{ needs.package_matrix.result }}" = "success"', workflow)
+        jobs = yaml.safe_load(workflow)["jobs"]
+        package = jobs["package"]
+        self.assertCountEqual(package["needs"], ["package_matrix", "board_qualification"])
+        self.assertEqual(package["if"], "always()")
+        result_checks = "\n".join(step.get("run", "") for step in package["steps"])
+        for dependency in package["needs"]:
+            self.assertIn('test "${{ needs.' + dependency + '.result }}" = "success"', result_checks)
+        self.assertNotIn("continue-on-error", package)
+        self.assertTrue(all(not step.get("continue-on-error") for step in package["steps"]))
+        qualification = jobs["board_qualification"]
+        self.assertEqual(qualification["steps"][0]["with"]["ref"],
+                         "${{ github.event.pull_request.head.sha || github.sha }}")
+        self.assertNotIn("continue-on-error", qualification)
         self.assertIn("      - name: Unit tests\n", workflow)
         self.assertIn("      - name: Compile sources\n", workflow)
         self.assertIn('          --package-spec "$GITHUB_WORKSPACE"\n', workflow)
