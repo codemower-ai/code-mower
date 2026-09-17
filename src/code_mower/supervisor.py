@@ -576,9 +576,9 @@ class Supervisor:
 
     def _collect(self, locked, record, task, claim):
         status = record["status"]
+        if status["state"] in {"waiting_for_user", "waiting_for_approval"}:
+            return
         if record["target"] is None:
-            if status["state"] in {"waiting_for_user", "waiting_for_approval"}:
-                return
             status.update(reason="result_not_ready", next_action="result")
             return
         if status["writer"] != "terminated":

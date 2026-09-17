@@ -329,6 +329,26 @@ class CompatibilityTests(V2Case):
 
 
 class FenceTests(V2Case):
+    def test_verified_target_never_overrides_waiting_checkpoint(self):
+        claim = self.started()
+        self.complete()
+        observe = self.builder.observe
+
+        for state, reason in (("waiting_for_user", "user_input_required"),
+                              ("waiting_for_approval", "approval_required")):
+            with self.subTest(state=state):
+                def waiting(*args, state=state, reason=reason, **kwargs):
+                    observed = observe(*args, **kwargs)
+                    return replace(observed, lifecycle=observed.lifecycle | dict(state=state, reason=reason))
+
+                calls = len(self.agent.calls)
+                with mock.patch.object(self.builder, "observe", side_effect=waiting):
+                    result = self.supervisor.operate("result", claim)
+                self.assertEqual(result["status"]["state"], state, result)
+                self.assertIsNotNone(result["target"])
+                self.assertEqual(len(self.agent.calls), calls)
+                self.assertEqual(self.reviews.requests, [])
+
     def test_renewed_live_claim_can_retrieve_same_saved_answer(self):
         claim = self.started()
         value = self.checkpoint(claim)
