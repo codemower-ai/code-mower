@@ -13,6 +13,7 @@ import yaml
 
 from . import __version__
 from . import package as package_module
+from .release_identity import check_release_identity
 from . import versioning as code_mower_versioning
 
 
@@ -1269,7 +1270,7 @@ def _workflow_dispatch_inputs(workflow: str) -> dict[str, Any]:
 
 
 def _dispatch_sha_gate_holds(
-    workflow: str, workflow_jobs: dict[str, Any], release_tag: str | None = None,
+    workflow: str, workflow_jobs: dict[str, Any],
 ) -> bool:
     """Require every dispatched build and publish to name the exact commit.
 
@@ -1278,32 +1279,93 @@ def _dispatch_sha_gate_holds(
     job refuses to let anything else run.
     """
 
-    release_tag = release_tag or _release_tag_for_version(__version__)
     expected = _workflow_dispatch_inputs(workflow).get("expected_sha")
     if not isinstance(expected, dict):
         return False
     if expected.get("required") is not True or expected.get("type") != "string":
         return False
-    # ``safe_dump`` doubles the single quotes inside the step's shell script.
-    identity_text = _job_text(workflow_jobs.get("release-identity")).replace("''", "'")
-    if not identity_text:
+    if not _public_identity_gate_holds(workflow_jobs):
         return False
-    required_identity_fragments = (
-        "inputs.expected_sha",
-        "github.sha",
+    guards = [
+        step for step in workflow_jobs["release-identity"].get("steps", [])
+        if isinstance(step, dict)
+        and step.get("if") == "${{ github.event_name == 'workflow_dispatch' }}"
+        and step.get("env") == {
+            "EXPECTED_SHA": "${{ inputs.expected_sha }}",
+            "ACTUAL_REF": "${{ github.ref }}",
+        }
+    ]
+    if len(guards) != 1 or guards[0].get("continue-on-error"):
+        return False
+    return all(fragment in guards[0].get("run", "") for fragment in (
+        "set -euo pipefail",
         "grep -Eq '^[0-9a-f]{40}$'",
-        f'test "$ACTUAL_REF" = "refs/tags/{release_tag}"',
-        'test "$ACTUAL_SHA" = "$EXPECTED_SHA"',
-    )
-    if any(fragment not in identity_text for fragment in required_identity_fragments):
+        '[[ "$ACTUAL_REF" == refs/tags/v* ]] || exit 1',
+    ))
+
+
+RELEASE_WORKFLOW_DISPATCH_COMMAND = "gh workflow run release.yml"
+
+
+def _public_identity_gate_holds(workflow_jobs: dict[str, Any]) -> bool:
+    identity = workflow_jobs.get("release-identity", {})
+    if not isinstance(identity, dict) or identity.get("if") or identity.get("continue-on-error"):
         return False
+    steps = identity.get("steps", [])
+    validators = [
+        step for step in steps if isinstance(step, dict)
+        and 'python src/code_mower/release_identity.py --tag "$RELEASE_TAG"' in step.get("run", "")
+    ]
+    if len(validators) != 1:
+        return False
+    validator = validators[0]
+    if validator.get("if") or validator.get("continue-on-error"):
+        return False
+    if validator.get("id") != "identity" or identity.get("outputs") != {
+        "resolved-sha": "${{ steps.identity.outputs.resolved-sha }}",
+    }:
+        return False
+    if validator.get("env") != {
+        "RELEASE_TAG": "${{ github.event.release.tag_name || github.ref_name }}",
+        "ACTUAL_REF": "${{ github.ref }}",
+        "EVENT_NAME": "${{ github.event_name }}",
+        "EXPECTED_SHA": "${{ inputs.expected_sha }}",
+    }:
+        return False
+    if any(fragment not in validator.get("run", "") for fragment in (
+        "set -euo pipefail",
+        'test "$ACTUAL_REF" = "refs/tags/$RELEASE_TAG"',
+        'RESOLVED_SHA="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"',
+        "printf '%s\\n' \"$RESOLVED_SHA\" | grep -Eq '^[0-9a-f]{40}$'",
+        'test "$(git rev-parse HEAD)" = "$RESOLVED_SHA"',
+        'if [ "$EVENT_NAME" = workflow_dispatch ]; then\n'
+        '  test "$RESOLVED_SHA" = "$EXPECTED_SHA"\nfi',
+        'python src/code_mower/release_identity.py --tag "$RELEASE_TAG"\n'
+        'printf \'resolved-sha=%s\\n\' "$RESOLVED_SHA" >> "$GITHUB_OUTPUT"',
+    )):
+        return False
+    for job_name, ref in (
+        ("release-identity", "refs/tags/${{ github.event.release.tag_name || github.ref_name }}"),
+        ("build-distributions", "${{ needs.release-identity.outputs.resolved-sha }}"),
+    ):
+        job = workflow_jobs.get(job_name, {})
+        if not isinstance(job, dict):
+            return False
+        checkouts = [step for step in job.get("steps", []) if isinstance(step, dict)
+                     and str(step.get("uses", "")).startswith("actions/checkout@")]
+        if len(checkouts) != 1:
+            return False
+        checkout = checkouts[0]
+        if checkout.get("if") or checkout.get("continue-on-error"):
+            return False
+        if checkout.get("with", {}).get("ref") != ref:
+            return False
+        if job_name == "release-identity" and checkout["with"].get("fetch-depth") != 0:
+            return False
     return all(
         _needs_job(workflow_jobs.get(job_name), "release-identity")
         for job_name in ("build-distributions", "publish-testpypi", "publish-pypi")
     )
-
-
-RELEASE_WORKFLOW_DISPATCH_COMMAND = "gh workflow run release.yml"
 
 
 def _incomplete_dispatch_actions(
@@ -1453,6 +1515,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     version = init_version or pyproject_version
     materialized_versions = _materialized_package_versions(repo_path)
     release_tag = _release_tag_for_version(version) if version else ""
+    identity_problems = check_release_identity(repo_path, release_tag)
     package_index_spec = f"code-mower=={version}" if version else ""
     doc_blob = "\n".join(docs.values())
     runbook_doc = _document_section(
@@ -1563,6 +1626,13 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
 
     checks = [
         _release_check(
+            check_id="release-public-identity",
+            title="Selected release identity and immutable public text agree",
+            status="fail" if identity_problems else "pass",
+            evidence=f"{release_tag}: pyproject.toml, src/code_mower/__init__.py, README.md, CHANGELOG.md",
+            detail={"problems": identity_problems},
+        ),
+        _release_check(
             check_id="package-version-consistency",
             title="Package versions agree",
             status=(
@@ -1665,9 +1735,15 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             title="Dispatched release builds are bound to the expected commit",
             status=(
                 "pass"
-                if _dispatch_sha_gate_holds(workflow, workflow_jobs, release_tag)
+                if _dispatch_sha_gate_holds(workflow, workflow_jobs)
                 else "fail"
             ),
+            evidence=str(workflow_path),
+        ),
+        _release_check(
+            check_id="release-public-identity-gate",
+            title="Both release events validate immutable public text before building or publishing",
+            status="pass" if _public_identity_gate_holds(workflow_jobs) else "fail",
             evidence=str(workflow_path),
         ),
         _release_check(

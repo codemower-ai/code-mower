@@ -133,6 +133,15 @@ not know the original reference repos.
 
 Before tagging a public release, run these from a clean standalone checkout:
 
+First finalize the README opening release statement and the matching CHANGELOG
+entry in the reviewed release preparation PR. Follow the
+[immutable release text gate](pypi-release.md#immutable-release-text-gate-v150-onward):
+run `python src/code_mower/release_identity.py --tag vX.Y.Z` with the actual
+proposed tag before creating it. Publication progress belongs in the release
+issue, not in temporary promises inside the immutable public text. Independent
+review, CI, and the authoritative Code Mower gate must pass on the exact PR
+head before merge; release and publication still require the owner decision.
+
 ```bash
 scripts/dev-python -m venv .venv
 .venv/bin/python -m pip install -e ".[test]"
