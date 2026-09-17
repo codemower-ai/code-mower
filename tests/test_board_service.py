@@ -49,6 +49,10 @@ class FakeHost:
         # still loaded, still supervised, still holding its port.
         self.bootout_failures: set[str] = set()
         self.write_failures: set[str] = set()
+        # A host where `launchctl` itself cannot be reached: the capability
+        # probe fails, and so does every other question asked of launchd. The
+        # definitions on disk and the processes they started are untouched.
+        self.launchctl_reachable = True
         self.next_pid = 900
         self.calls: list[list[str]] = []
 
@@ -159,6 +163,8 @@ class FakeHost:
 
     def _launchctl(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         action = argv[0] if argv else ""
+        if not self.launchctl_reachable:
+            return _completed("", returncode=1, stderr="launchctl: Could not connect to launchd\n")
         if action == "version":
             return _completed("launchctl fake\n")
         if action == "print":
@@ -199,8 +205,18 @@ class FakeHost:
             label = argv[-1].rsplit("/", 1)[-1]
             if label not in self.loaded:
                 return _completed("", returncode=1, stderr="No such process\n")
-            self._stop(label)
-            self._start(label)
+            # `kickstart -k` restarts the job launchd already holds: it re-execs
+            # the argument list launchd registered when the job was bootstrapped
+            # and never rereads the definition on disk. A fake that reread the
+            # plist here would heal a stale runtime binding that the real
+            # launchd would bring straight back, and hide the fact that only a
+            # bootout and a bootstrap apply a changed definition.
+            registered = list(self.job_arguments.get(label) or [])
+            if not registered:
+                self._stop(label)
+                self._start(label)
+                return _completed("")
+            self.relaunch_on(label, registered)
             return _completed("")
         return _completed("", returncode=1)
 
@@ -526,6 +542,51 @@ class BoardServiceLifecycleTest(ServiceHarness):
         again = self.restart(self.spec())
         self.assertEqual(again["status"], "restarted")
         self.assertEqual(again["digest"], payload["digest"])
+
+    def test_replace_reloads_a_definition_launchd_holds_on_stale_arguments(self) -> None:
+        # The plist on disk is exactly the rendered one, but launchd registered
+        # this job from an earlier version of it. `kickstart -k` re-execs the
+        # registered argv and never rereads the file, so the shortcut would
+        # bring the same stale binding back and fail the gate on every restart.
+        # `--replace` has to reload the definition: bootout, then bootstrap.
+        spec = self.spec()
+        self.install(spec)
+        stale = [item for item in spec.arguments if item != "--record-events"]
+        self.host.relaunch_on(spec.label, stale)
+        definition = (self.root / f"{spec.label}.plist").read_text(encoding="utf-8")
+        self.host.calls.clear()
+
+        payload = self.restart(spec, replace=True)
+
+        self.assertEqual(payload["status"], "restarted")
+        self.assertEqual(payload["delayed_health"]["state"], "pass")
+        self.assertEqual(self.host.job_arguments[spec.label], list(spec.arguments))
+        self.assertIn(["launchctl", "bootout", f"gui/501/{spec.label}"], self.host.calls)
+        self.assertIn(
+            ["launchctl", "bootstrap", "gui/501", str(self.root / f"{spec.label}.plist")],
+            self.host.calls,
+        )
+        self.assertNotIn(["launchctl", "kickstart", "-k", f"gui/501/{spec.label}"], self.host.calls)
+        # The definition was never rewritten: it already said the right thing.
+        self.assertEqual((self.root / f"{spec.label}.plist").read_text(encoding="utf-8"), definition)
+        self.assertEqual(sorted(item.name for item in self.root.iterdir()), [f"{spec.label}.plist"])
+
+    def test_a_job_running_on_stale_arguments_is_refused_without_replace(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        stale = [item for item in spec.arguments if item != "--record-events"]
+        pid = self.host.relaunch_on(spec.label, stale)
+        self.host.calls.clear()
+
+        payload = self.restart(spec)
+
+        self.assertEqual(payload["status"], "stale_arguments")
+        self.assertIn("--replace", payload["message"])
+        # Nothing was touched: not the job, not its registered arguments.
+        self.assertEqual(self.host.loaded[spec.label], pid)
+        self.assertEqual(self.host.job_arguments[spec.label], stale)
+        self.assertNotIn(["launchctl", "kickstart", "-k", f"gui/501/{spec.label}"], self.host.calls)
+        self.assertNotIn(["launchctl", "bootout", f"gui/501/{spec.label}"], self.host.calls)
 
     def test_installing_an_already_installed_definition_reports_unchanged(self) -> None:
         self.install(self.spec())
@@ -1766,6 +1827,65 @@ class BoardStopSelectorTest(ServiceHarness):
         self.assertTrue(rows[5332]["managed"])
         self.assertEqual(rows[5332]["service_supervision"], "unknown")
         self.assertIn("supervision unconfirmed", board.render_inventory_text(inventory))
+
+    def test_installed_services_survive_a_launchctl_that_cannot_be_probed(self) -> None:
+        # `launchctl version` failing says nothing about what launchd holds: the
+        # definitions are still installed and their jobs may still be running.
+        # Answering "no managed services" would make every listener look
+        # transient, so `board stop --yes` would signal a keepalive-managed
+        # Board and report a port released that launchd reclaims immediately.
+        spec = self.spec()
+        self.install(spec)
+        self.host.launchctl_reachable = False
+        provider = self.host.provider()
+
+        available, _why = provider.available()
+        services = board_service.managed_services(provider=provider, command_runner=self.host.run)
+        stopped: list[tuple[int, int]] = []
+        payload = board.stop_board(
+            port=5332,
+            yes=True,
+            command_runner=self.host.run,
+            killer=lambda pid, sig: stopped.append((pid, sig)),
+            service_probe=lambda: board_service.managed_services(
+                provider=provider, command_runner=self.host.run
+            ),
+        )
+        inventory = board.board_inventory_payload(
+            command_runner=self.host.run,
+            status_probe=None,
+            service_probe=lambda: board_service.managed_services(
+                provider=provider, command_runner=self.host.run
+            ),
+        )
+
+        self.assertFalse(available)
+        self.assertEqual([item.label for item in services], [spec.label])
+        # Discovered, but claiming nothing about what launchd is supervising.
+        self.assertEqual(services[0].load_state, board_service.JOB_UNKNOWN)
+        self.assertFalse(services[0].loaded)
+        self.assertIsNone(services[0].pid)
+        self.assertEqual(payload["status"], "managed_service")
+        self.assertEqual(payload["managed_service"]["supervision"], "unknown")
+        self.assertEqual(stopped, [])
+        self.assertIn(spec.label, self.host.loaded)
+        rows = {row["port"]: row for row in inventory["boards"]}
+        self.assertTrue(rows[5332]["managed"])
+        self.assertEqual(rows[5332]["service_supervision"], "unknown")
+
+    def test_a_platform_without_launchd_still_reports_no_managed_services(self) -> None:
+        # The other half of the distinction: an unsupported platform has no
+        # managed-service implementation at all, so there is nothing installed
+        # to enumerate and a transient Board stays stoppable.
+        pid = self._transient_board(5332, "codemower-ai/code-mower", self.checkout)
+        provider = board_service.select_provider(platform="linux", command_runner=self.host.run)
+
+        services = board_service.managed_services(provider=provider, command_runner=self.host.run)
+        payload = self._stop(port=5332, yes=True)
+
+        self.assertEqual(services, [])
+        self.assertEqual(payload["status"], "stopped")
+        self.assertEqual([entry[0] for entry in payload["_signalled"]], [pid])
 
     def test_a_supervised_listener_is_managed_even_on_a_port_its_definition_does_not_name(
         self,

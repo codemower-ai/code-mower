@@ -188,6 +188,19 @@ logout, or a manual `launchctl bootout` -- there is no job to kickstart, so the
 existing definition is bootstrapped instead. Either way the delayed-health gate
 has to pass before the restart is called a restart.
 
+The definition on disk matching the rendered one is not the same fact as launchd
+*running* it. `kickstart -k` re-execs the argument list launchd registered when
+the job was bootstrapped; it never rereads the plist. A job registered from an
+earlier version of a definition therefore comes back on exactly the arguments
+that failed the gate the last time, and the shortcut would repeat that on every
+restart. So the registered argument list is compared against the definition
+first: when they disagree, `restart` refuses as `stale_arguments` and names
+`--replace`, and `restart --replace` reloads the definition through the same
+bootout-and-bootstrap replacement path -- with the same rollback guarantees --
+rather than kickstarting the stale job. A job launchd reports no argument list
+for is not drift: that is unknown, and the gate fails it on `process.arguments`
+without a replacement being inferred from silence.
+
 ### Removal
 
 `remove` reports `removed` only when the definition is actually gone from
@@ -252,6 +265,15 @@ Selectors are not exclusive: every selector supplied must agree on one binding.
 
 `board list` marks each Board `managed` with its service label, or transient,
 and says when that service's supervision is unconfirmed.
+
+A `launchctl` that cannot be probed at all is one of those unconfirmed cases,
+not an empty inventory. On macOS the installed definitions are enumerated even
+when the capability probe fails -- they are still in `LaunchAgents` and the jobs
+they describe may still be running -- and every one of them carries
+`supervision: unknown`, so `board stop --yes` refuses rather than signaling a
+listener launchd may reclaim. A platform with no managed-service implementation
+is the different answer: there is nothing installed to enumerate, so a Board
+found there is transient and stoppable.
 
 ## Local paths stay local
 

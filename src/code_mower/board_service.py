@@ -1889,6 +1889,34 @@ def _rollback(provider: Any, spec: ServiceSpec, previous_text: str) -> dict[str,
     return {"ok": ok, "detail": detail or "restored the previous definition", "restored": ok}
 
 
+def _runtime_arguments_drifted(provider: Any, spec: ServiceSpec) -> bool:
+    """Whether launchd is running this label on arguments the plist no longer has.
+
+    Only a concrete argument list launchd reported can say this. A provider that
+    cannot be asked, or a job launchd reports no argument list for, leaves the
+    question unanswered -- and an unanswered question is not drift, because
+    treating it as drift would turn every unreportable job into a replacement.
+    The gate fails that service on `process.arguments` either way; what is
+    decided here is only whether a restart should reload the definition rather
+    than kickstart the registered job.
+    """
+
+    reader = getattr(provider, "job_arguments", None)
+    if reader is None:
+        return False
+    try:
+        reported = reader(spec.label)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if reported is None:
+        return False
+    wanted = tuple(spec.arguments)
+    live = tuple(str(item) for item in reported)
+    # The same normalization the gate applies, so a console script reported with
+    # its interpreter is not mistaken for drift and reloaded on every restart.
+    return normalize_live_arguments(live, wanted) != wanted
+
+
 def restart_service(
     spec: ServiceSpec,
     *,
@@ -1944,7 +1972,28 @@ def restart_service(
             show_local_paths=show_local_paths,
             installed_repo=existing.repo,
         )
-    if existing.readable and existing.digest == expected:
+    definition_matches = existing.readable and existing.digest == expected
+    # The definition on disk matching the rendered one is not the same fact as
+    # launchd *running* it. `launchctl kickstart -k` re-execs the job launchd
+    # already registered; it never rereads the plist. A job registered from an
+    # earlier definition -- bootstrapped before the file was replaced, or before
+    # an upgrade rewrote the argv -- therefore comes back on exactly the
+    # arguments that failed the gate last time, and every restart repeats that.
+    # The only reload that applies the file is a bootout and a bootstrap, which
+    # is what the replacement path below already does under its rollback
+    # guarantees.
+    runtime_is_stale = definition_matches and existing.loaded and _runtime_arguments_drifted(provider, spec)
+    if runtime_is_stale and not replace:
+        return _operation_payload(
+            "stale_arguments",
+            "launchd is running this label on an argument list the installed definition no longer "
+            "carries; rerun with --replace to reload the definition into launchd",
+            spec,
+            expected,
+            show_local_paths=show_local_paths,
+            installed_repo=existing.repo,
+        )
+    if definition_matches and not runtime_is_stale:
         log_failure = ensure_log_directories(spec)
         if log_failure:
             return _operation_payload("apply_failed", log_failure, spec, expected, show_local_paths=show_local_paths)
@@ -1986,7 +2035,11 @@ def restart_service(
         expected=expected,
         previous=existing,
         succeeded_status="restarted",
-        succeeded_message="replaced the stale managed binding and validated the new one",
+        succeeded_message=(
+            "reloaded the definition launchd was running on stale arguments and validated the binding"
+            if runtime_is_stale
+            else "replaced the stale managed binding and validated the new one"
+        ),
         command_runner=command_runner,
         identity_probe=identity_probe,
         settle_seconds=settle_seconds,
@@ -2285,12 +2338,32 @@ def managed_services(
 
     active = provider or select_provider(platform=platform, command_runner=command_runner)
     available, _why = active.available()
-    if not available:
+    supported_platform = (
+        getattr(active, "name", "") == LAUNCHD_PROVIDER
+        and str(getattr(active, "platform", "")).startswith("darwin")
+    )
+    if not available and not supported_platform:
+        # No managed-service implementation exists for this platform at all, so
+        # there is nothing installed to enumerate. That is a different answer
+        # from the one below.
         return []
     try:
-        return active.list_services()
+        services = active.list_services()
     except OSError:
         return []
+    if available:
+        return services
+    # macOS, but `launchctl` could not be probed. The definitions are still
+    # installed and the jobs they describe may still be running: answering "no
+    # managed services" here would let `board stop --yes` signal a listener
+    # launchd restarts within moments, which is the same failure the unknown
+    # supervision state exists to refuse. Every service keeps its definition and
+    # loses its runtime claim, because no answer from this provider about what
+    # launchd holds can be trusted while the probe itself fails.
+    return [
+        dataclasses.replace(service, loaded=False, pid=None, load_state=JOB_UNKNOWN)
+        for service in services
+    ]
 
 
 def render_definition_text(payload: Mapping[str, Any]) -> str:
