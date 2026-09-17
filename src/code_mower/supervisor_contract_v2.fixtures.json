@@ -1,0 +1,265 @@
+{
+  "schema": "code_mower.supervisor_fixtures.v2",
+  "valid": {
+    "admission": {
+      "schema": "code_mower.supervisor.v2",
+      "binding": {
+        "tenant": "tenant_example",
+        "repository": "repo_binding_example",
+        "work": "work_example",
+        "run": "run_example",
+        "operation": "operation_example"
+      },
+      "grant": "grant_example",
+      "runner": "codex_remote",
+      "expires_at": 2000000000,
+      "limits": {
+        "builder_acu": 5,
+        "runtime_calls": 8,
+        "runtime_seconds": 30,
+        "review_requests": 2,
+        "clarification_answers": 2,
+        "fix_requests": 1
+      }
+    },
+    "claim": {
+      "schema": "code_mower.supervisor_claim.v2",
+      "binding": {
+        "tenant": "tenant_example",
+        "repository": "repo_binding_example",
+        "work": "work_example",
+        "run": "run_example",
+        "operation": "operation_example"
+      },
+      "grant": "grant_example",
+      "runner": "codex_remote",
+      "session": "session_example",
+      "generation": "generation_example",
+      "token": "claim_example",
+      "scope_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expires_at": 1999999999
+    },
+    "decision": {
+      "schema": "code_mower.supervisor_decision.v1",
+      "binding": {
+        "tenant": "tenant_example",
+        "repository": "repo_binding_example",
+        "work": "work_example",
+        "run": "run_example",
+        "operation": "operation_example"
+      },
+      "generation": "generation_example",
+      "scope_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "decision": "accept",
+      "builder_acu": 5,
+      "reviewer": "claude"
+    },
+    "result": {
+      "schema": "code_mower.supervisor_result.v2",
+      "claim": {
+        "schema": "code_mower.supervisor_claim.v2",
+        "binding": {
+          "tenant": "tenant_example",
+          "repository": "repo_binding_example",
+          "work": "work_example",
+          "run": "run_example",
+          "operation": "operation_example"
+        },
+        "grant": "grant_example",
+        "runner": "codex_remote",
+        "session": "session_example",
+        "generation": "generation_example",
+        "token": "claim_example",
+        "scope_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expires_at": 1999999999
+      },
+      "status": {
+        "schema": "code_mower.supervisor_status.v2",
+        "state": "claimed",
+        "reason": "none",
+        "next_action": "none",
+        "implementation": "pending",
+        "writer": "not_started",
+        "review": "not_requested",
+        "gate": "unknown",
+        "merge": "unknown",
+        "lifecycle": {
+          "schema": "code_mower.remote_session.v1",
+          "state": "pending",
+          "reason": "none",
+          "next_action": "none",
+          "counts": {
+            "dispatch": 0,
+            "message": 0,
+            "cancel": 0,
+            "collect": 0
+          }
+        },
+        "tracker_write": false,
+        "merge_authority": false,
+        "review_writer": "not_started"
+      },
+      "target": null,
+      "checkpoint": null
+    },
+    "request": {
+      "schema": "code_mower.supervisor_request.v2",
+      "action": "handoff",
+      "claim": {
+        "schema": "code_mower.supervisor_claim.v2",
+        "binding": {
+          "tenant": "tenant_example",
+          "repository": "repo_binding_example",
+          "work": "work_example",
+          "run": "run_example",
+          "operation": "operation_example"
+        },
+        "grant": "grant_example",
+        "runner": "codex_remote",
+        "session": "session_example",
+        "generation": "generation_example",
+        "token": "claim_example",
+        "scope_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expires_at": 1999999999
+      }
+    }
+  },
+  "scenarios": {
+    "duplicate_claim": "same claim; no new runtime call or builder create",
+    "ambiguous_handoff": "uncertain; owner_action; no repeat create",
+    "disconnect_restart": "supervisor_restarted; no replacement writer",
+    "cancellation": "cancelled only after observed writer termination",
+    "completion": "independent exact-head review and gate; merge remains separately observed",
+    "duplicate_answer": "saved outcome after fresh authorization; no second message",
+    "ambiguous_answer": "mutation_uncertain; owner_action; never resend",
+    "approval_refusal": "waiting_for_approval remains distinct; no approval operation",
+    "fix": "explicit original allowance; same writer and cumulative cap; fresh exact-head independent review"
+  },
+  "live_hosted_evidence": false,
+  "requests": [
+    {
+      "schema": "code_mower.supervisor_request.v2",
+      "action": "clarify",
+      "claim": {
+        "schema": "code_mower.supervisor_claim.v2",
+        "binding": {
+          "tenant": "tenant_example",
+          "repository": "repo_binding_example",
+          "work": "work_example",
+          "run": "run_example",
+          "operation": "operation_example"
+        },
+        "grant": "grant_example",
+        "runner": "codex_remote",
+        "session": "session_example",
+        "generation": "generation_example",
+        "token": "claim_example",
+        "scope_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expires_at": 1999999999
+      },
+      "request_key": "answer_example"
+    },
+    {
+      "schema": "code_mower.supervisor_request.v2",
+      "action": "fix",
+      "claim": {
+        "schema": "code_mower.supervisor_claim.v2",
+        "binding": {
+          "tenant": "tenant_example",
+          "repository": "repo_binding_example",
+          "work": "work_example",
+          "run": "run_example",
+          "operation": "operation_example"
+        },
+        "grant": "grant_example",
+        "runner": "codex_remote",
+        "session": "session_example",
+        "generation": "generation_example",
+        "token": "claim_example",
+        "scope_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expires_at": 1999999999
+      },
+      "request_key": "fix_example"
+    }
+  ],
+  "statuses": [
+    {
+      "schema": "code_mower.supervisor_status.v2",
+      "state": "waiting_for_user",
+      "reason": "user_input_required",
+      "next_action": "clarify",
+      "implementation": "pending",
+      "writer": "running",
+      "review": "not_requested",
+      "gate": "unknown",
+      "merge": "unknown",
+      "lifecycle": {
+        "schema": "code_mower.remote_session.v1",
+        "state": "waiting_for_user",
+        "reason": "user_input_required",
+        "next_action": "none",
+        "counts": {
+          "dispatch": 0,
+          "message": 0,
+          "cancel": 0,
+          "collect": 0
+        }
+      },
+      "tracker_write": false,
+      "merge_authority": false,
+      "review_writer": "not_started"
+    },
+    {
+      "schema": "code_mower.supervisor_status.v2",
+      "state": "waiting_for_approval",
+      "reason": "approval_required",
+      "next_action": "owner_action",
+      "implementation": "pending",
+      "writer": "running",
+      "review": "not_requested",
+      "gate": "unknown",
+      "merge": "unknown",
+      "lifecycle": {
+        "schema": "code_mower.remote_session.v1",
+        "state": "waiting_for_approval",
+        "reason": "approval_required",
+        "next_action": "none",
+        "counts": {
+          "dispatch": 0,
+          "message": 0,
+          "cancel": 0,
+          "collect": 0
+        }
+      },
+      "tracker_write": false,
+      "merge_authority": false,
+      "review_writer": "not_started"
+    },
+    {
+      "schema": "code_mower.supervisor_status.v2",
+      "state": "uncertain",
+      "reason": "mutation_uncertain",
+      "next_action": "owner_action",
+      "implementation": "pending",
+      "writer": "running",
+      "review": "not_requested",
+      "gate": "unknown",
+      "merge": "unknown",
+      "lifecycle": {
+        "schema": "code_mower.remote_session.v1",
+        "state": "pending",
+        "reason": "none",
+        "next_action": "none",
+        "counts": {
+          "dispatch": 0,
+          "message": 0,
+          "cancel": 0,
+          "collect": 0
+        }
+      },
+      "tracker_write": false,
+      "merge_authority": false,
+      "review_writer": "not_started"
+    }
+  ]
+}

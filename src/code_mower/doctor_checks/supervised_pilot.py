@@ -190,13 +190,23 @@ def _local_cli_blockers(checks: Sequence[DoctorCheck]) -> list[str]:
 def check_supervised_pilot_board_visibility(
     *,
     command_runner: lane_status.CommandRunner | None = None,
+    board_startup_grace: lane_status.StartupGrace | None = None,
 ) -> DoctorCheck:
-    """Report whether a local Code Mower Board listener is visible."""
+    """Report whether a local Code Mower Board listener is visible.
 
-    collector = lane_status.collect_local_boards
-    boards_payload = collector(command_runner) if command_runner else collector()
+    With a `board_startup_grace`, a Board that is still binding its port when
+    the snapshot is taken gets a short bounded re-observation (see
+    `lane_status.observe_local_boards`); a visible Board is reported immediately
+    and is never masked by that grace. Without one this is a single observation.
+    """
+
+    observation = lane_status.observe_local_boards(
+        command_runner,
+        grace=board_startup_grace,
+    )
+    boards_payload = observation.payload
     boards = boards_payload.get("boards") if isinstance(boards_payload, Mapping) else []
-    visible = bool(boards)
+    visible = observation.visible
     safe_boards = []
     if isinstance(boards, list):
         for board in boards[:5]:
@@ -222,6 +232,7 @@ def check_supervised_pilot_board_visibility(
             "board_count": len(safe_boards),
             "boards": safe_boards,
             "local_paths_redacted": True,
+            "startup_grace": observation.grace,
         },
         remediation=None
         if visible
@@ -404,6 +415,7 @@ def check_supervised_pilot(
     pilot_mode: str,
     adoption_posture: str,
     command_runner: lane_status.CommandRunner | None = None,
+    board_startup_grace: lane_status.StartupGrace | None = None,
 ) -> tuple[DoctorCheck, ...]:
     """Return the high-level supervised-pilot readiness checks."""
 
@@ -411,7 +423,10 @@ def check_supervised_pilot(
         pilot_mode=pilot_mode,
         adoption_posture=adoption_posture,
     )
-    board_check = check_supervised_pilot_board_visibility(command_runner=command_runner)
+    board_check = check_supervised_pilot_board_visibility(
+        command_runner=command_runner,
+        board_startup_grace=board_startup_grace,
+    )
     runner_check = check_supervised_pilot_runner_posture(
         (*checks, board_check),
         adoption_posture=adoption_posture,

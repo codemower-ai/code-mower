@@ -65,6 +65,14 @@ class CodexRuntime:
                         "No replacement writer, automatic retry, fix round, or increased allowance is authorized. "
                         "Echo binding, generation and scope_digest exactly in the structured decision.\n"
                     )
+                    if task.admission["schema"] == "code_mower.supervisor.v2":
+                        instructions += (
+                            "This task uses supervisor v2. checkpoint_budget contains the current "
+                            "work-order round and remaining original allowances. The adapter alone "
+                            "authorizes clarification/fix messages; do not initiate them. After an "
+                            "explicitly authorized resume, review the new exact head only if a review "
+                            "allowance remains. Never reset or increase any supplied allowance.\n"
+                        )
                     private_input = dict(request=request, session_instructions=task.session["instructions"],
                         participants=[m["id"] for m in task.session["participants"]],
                         approved_work=task.order.body)

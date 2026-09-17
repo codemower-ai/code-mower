@@ -129,6 +129,7 @@ def run_doctor(
     provider_config_dir: Path | None = None,
     context_online: bool = False,
     context_state_dir: Path | None = None,
+    board_startup_grace: Any = None,
 ) -> DoctorReport:
     config, templates, checks = load_inputs(config_path, provider_templates_path)
     # Devin is an explicit addition to the Claude + Codex default, so its stage
@@ -351,6 +352,7 @@ def run_doctor(
                 # variable exported. Doctor and dispatch must not disagree.
                 gh_auth_probe=release_campaigns.run_gh_auth_probe,
                 campaign_requested=campaign,
+                board_startup_grace=board_startup_grace,
             )
         )
 
@@ -402,6 +404,7 @@ def run_doctor(
                 repo_slug=repo_slug,
                 pilot_mode=pilot_mode,
                 adoption_posture=adoption_posture,
+                board_startup_grace=board_startup_grace,
             )
         )
 

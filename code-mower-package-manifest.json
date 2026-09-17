@@ -1609,6 +1609,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/supervisor_checkpoint.py",
+      "target": "src/code_mower/supervisor_checkpoint.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/supervisor_codex.py",
       "target": "src/code_mower/supervisor_codex.py"
     },
@@ -1626,6 +1631,21 @@
       "kind": "schema",
       "source": "src/code_mower/supervisor_contract.schema.json",
       "target": "src/code_mower/supervisor_contract.schema.json"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/supervisor_contract_v2.fixtures.json",
+      "target": "src/code_mower/supervisor_contract_v2.fixtures.json"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/supervisor_contract_v2.py",
+      "target": "src/code_mower/supervisor_contract_v2.py"
+    },
+    {
+      "kind": "schema",
+      "source": "src/code_mower/supervisor_contract_v2.schema.json",
+      "target": "src/code_mower/supervisor_contract_v2.schema.json"
     },
     {
       "kind": "config",

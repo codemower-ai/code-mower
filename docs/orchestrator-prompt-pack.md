@@ -76,6 +76,11 @@ Run the posture-appropriate doctor:
 - orchestrator-only host: code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
 - supervised pilot readiness: code-mower doctor --supervised-pilot --repo OWNER/REPO --json
 
+Read the posture-scoped summary first by rerunning the same posture with
+--concise instead of --json: every check still runs, and the summary leads with
+active failures and owner actions. Keep the --json output as the complete
+machine-readable evidence, and use --advanced for the full text list.
+
 Provider selection and a working CLI do not qualify an orchestrator. Devin is
 currently limited to bounded builder work and informational review; use a
 qualified supervisor such as Claude or Codex for orchestration. Check the
@@ -213,54 +218,27 @@ Grok Build, Gemini CLI, Hermes CLI, or Devin, stay informational unless the
 repository has already promoted that lane under docs/lane-promotion-policy.md.
 ```
 
-## Optional Devin Setup Prompt
+## Optional Devin Setup
 
-Use this only when the owner has asked for Devin. The default adoption is
-Claude + Codex, and this prompt adds no Devin work to a repository that did not
-select it. Role qualification and session leases stay as described in
-docs/participant-qualification.md; selecting a transport grants no review or
-merge authority.
+Skip this unless the owner has asked for Devin. The default adoption is
+Claude + Codex, and no prompt here adds Devin work to a repository that did not
+select it.
 
-```text
-The owner selected Devin for OWNER/REPO.
+The full opt-in setup prompt, with the transport preview/staging commands and
+the superseded-bridge guidance, lives in
+[Optional Devin Setup Prompt](devin-setup-prompt.md). Copy it from there when
+the owner selects Devin.
 
-Report the current posture first: run code-mower doctor CONFIG --profile PROFILE
---devin and read the selected transport, readiness, and next actions. Use the
-same CONFIG and PROFILE the repository actually uses; a bare run inspects the
-packaged starter instead. A checkout that has no code-mower.yml has no path to
-name: run code-mower doctor --packaged-starter --profile PROFILE --devin, which
-selects the maintained packaged starter wherever this installation keeps it, and
-use --packaged-starter in place of CONFIG only for discovery and setup
-preview/staging below. That selector
-ignores cwd-local config files and keeps the profile you name, so it reports the
-same posture from any directory; --easy does not, because it is a first-run
-profile alias whose starter fallback depends on what the working directory
-contains. Never substitute the starter for a repository configuration to shorten
-a command; it inspects a different posture.
+The guardrails stay here because they apply to every participant:
 
-To change transports, preview the selection with code-mower init CONFIG
---profile PROFILE --set-transport devin=devin_api_v3 --dry-run, then stage it
-with --apply --output-dir .code-mower.generated. Staging writes only that review
-tree: the active posture keeps reporting the installed configuration until the
-generated files are reviewed and installed through the normal setup PR.
-After starter adoption is reviewed and installed, explicitly switch verification
-to code-mower doctor code-mower.yml --profile PROFILE --devin. For an existing
-explicit configuration, verify with code-mower doctor CONFIG --profile PROFILE
---devin using that same original CONFIG. Never verify installed setup with
---packaged-starter: that immutable resource still describes the starter.
-Add --json to either verification command for machine-readable remediation;
-keep the same CONFIG and PROFILE in text and JSON. Do not embed an absolute
-package installation path in a setup or verification command.
-
-If the repository still carries .github/workflows/devin-audit-bridge.yml or
-.github/workflows/devin-audit-labeler.yml, report them as superseded by the
-maintained Sessions API v3 transport and propose removing exactly those files in
-the same reviewed PR. Do not delete or rewrite repository-owned workflow files
-yourself.
-
-Do not set up owner credentials, do not start paid sessions, and do not treat an
-ordinary CLI login as campaign readiness.
-```
+- Role qualification and session leases are unchanged by provider selection; see
+  docs/participant-qualification.md.
+- Selecting a transport grants no review or merge authority. Devin stays limited
+  to bounded builder work and informational review until the repository promotes
+  that lane under docs/lane-promotion-policy.md.
+- Do not delete or rewrite repository-owned workflow files. Propose the change in
+  a reviewed PR instead.
+- Do not set up owner credentials and do not start paid sessions.
 
 ## Owner Status Prompt
 
