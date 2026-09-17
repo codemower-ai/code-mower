@@ -209,6 +209,36 @@ CALIBRATION_EVIDENCE_ADDITIVE_KEYS = frozenset(
 )
 SETUP_DRIFT_SCHEMA = "code_mower.setupDrift.v1"
 SETUP_DRIFT_CLASSIFICATIONS = ("same", "differs", "new", "repo-only", "missing-from-output")
+SETUP_DRIFT_SOURCE_ID = "generated_setup"
+SETUP_DRIFT_SOURCE_LABEL = "generated setup from the installed Code Mower package"
+SETUP_DRIFT_TARGET_ID = "tracked_repository_files"
+SETUP_DRIFT_TARGET_LABEL = "tracked repository files"
+# Every classification is defined only by presence and byte-for-byte content on
+# the two named operands. Content alone cannot prove which side was written
+# later, so nothing here claims a "newer" or "older" side.
+SETUP_DRIFT_CLASSIFICATION_DEFINITIONS = {
+    "same": "present on both sides with identical bytes",
+    "differs": "present on both sides with different bytes; neither side is proven newer",
+    "new": f"present in {SETUP_DRIFT_SOURCE_LABEL} only; not tracked in this repository",
+    "repo-only": f"present in {SETUP_DRIFT_TARGET_LABEL} only; the current setup output does not generate it",
+    "missing-from-output": (
+        "named by the setup plan but not readable from the installed package, so no comparison was made"
+    ),
+}
+# Which operand holds the path, for the reader who needs the direction of a
+# difference rather than only its classification.
+SETUP_DRIFT_CLASSIFICATION_SIDES = {
+    "same": "both",
+    "differs": "both",
+    "new": "source_only",
+    "repo-only": "target_only",
+    "missing-from-output": "source_unreadable",
+}
+SETUP_DRIFT_COMPARISON_BASIS = "bytes"
+SETUP_DRIFT_COMPARISON_NOTE = (
+    "Classifications compare presence and bytes only. A differs entry does not say "
+    "which side is newer; check the installed package version and repository history."
+)
 SETUP_DRIFT_SETUP_FILENAMES = {
     "calibration-corpus.json",
     "code-mower.yml",
@@ -723,12 +753,82 @@ def _setup_drift_file(
         "path": path,
         "classification": classification,
         "tracked": tracked,
+        # Which operand holds this path, so a reader never has to infer the
+        # direction of a difference from the classification name alone.
+        "side": SETUP_DRIFT_CLASSIFICATION_SIDES.get(classification, "unknown"),
     }
     if generated_bytes is not None:
         item["generated_bytes"] = generated_bytes
     if repo_bytes is not None:
         item["repo_bytes"] = repo_bytes
     return item
+
+
+def _setup_drift_source_version() -> dict[str, str]:
+    """Name the package that produced the generated side, never its install path."""
+
+    from importlib import metadata
+
+    try:
+        from code_mower import __version__ as running_version
+    except ImportError:  # pragma: no cover - script entrypoint fallback.
+        running_version = ""
+    try:
+        installed = metadata.version("code-mower")
+    except metadata.PackageNotFoundError:
+        installed = ""
+    return {
+        "code_mower_version": running_version,
+        # Empty in a source checkout with no installed distribution metadata.
+        "installed_distribution_version": installed,
+    }
+
+
+def _setup_drift_config_display(config: str, source_kind: str) -> str:
+    """The config spelling to publish: a packaged starter shows its stable name."""
+
+    if source_kind == "packaged_starter":
+        return Path(config).name or "code-mower.example.yml"
+    return config
+
+
+def _setup_drift_comparison(
+    *,
+    repo_path: Path,
+    config: str,
+    config_source: str,
+    profile: str,
+    tracked_available: bool,
+) -> dict[str, Any]:
+    """State the two operands and define every classification in terms of them."""
+
+    return {
+        "basis": SETUP_DRIFT_COMPARISON_BASIS,
+        "note": SETUP_DRIFT_COMPARISON_NOTE,
+        "source": {
+            "id": SETUP_DRIFT_SOURCE_ID,
+            "label": SETUP_DRIFT_SOURCE_LABEL,
+            "kind": "generated_setup_output",
+            "config": _setup_drift_config_display(config, config_source),
+            "config_source": config_source,
+            "profile": profile,
+            **_setup_drift_source_version(),
+        },
+        "target": {
+            "id": SETUP_DRIFT_TARGET_ID,
+            "label": SETUP_DRIFT_TARGET_LABEL,
+            "kind": "tracked_repository_worktree",
+            "repo_path": str(repo_path),
+            "tracked_source": "git" if tracked_available else "unavailable",
+        },
+        "classifications": {
+            name: {
+                "definition": SETUP_DRIFT_CLASSIFICATION_DEFINITIONS[name],
+                "side": SETUP_DRIFT_CLASSIFICATION_SIDES[name],
+            }
+            for name in SETUP_DRIFT_CLASSIFICATIONS
+        },
+    }
 
 
 def _classify_setup_drift(
@@ -887,6 +987,13 @@ def render_setup_drift_report(
         "repo_path": str(repo_path),
         "config": str(config_path),
         "config_source": source_kind,
+        "comparison": _setup_drift_comparison(
+            repo_path=repo_path,
+            config=str(config_path),
+            config_source=source_kind,
+            profile=profile,
+            tracked_available=tracked_available,
+        ),
         "profile": profile,
         "builders": list(builder_lanes),
         "additional_repositories": list(added_repos),
@@ -923,6 +1030,45 @@ def _setup_drift_config_source_line(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _setup_drift_comparison_lines(payload: dict[str, Any]) -> list[str]:
+    """Render the operands and the classification legend, or nothing when absent."""
+
+    comparison = payload.get("comparison")
+    if not isinstance(comparison, Mapping) or not comparison:
+        return []
+    source = comparison.get("source")
+    target = comparison.get("target")
+    if not isinstance(source, Mapping) or not source:
+        return []
+    if not isinstance(target, Mapping) or not target:
+        return []
+    source_label = str(source.get("label") or SETUP_DRIFT_SOURCE_LABEL)
+    target_label = str(target.get("label") or SETUP_DRIFT_TARGET_LABEL)
+    version = str(source.get("code_mower_version") or "")
+    version_suffix = f" (code-mower {version})" if version else ""
+    tracked_source = str(target.get("tracked_source") or "")
+    tracked_suffix = f" (tracked_source={tracked_source})" if tracked_source else ""
+    lines = [
+        f"Compared: {source_label} (source) with {target_label} (target)",
+        f"Source: {source_label}{version_suffix}",
+        f"Target: {target_label}{tracked_suffix}",
+    ]
+    classifications = comparison.get("classifications") or {}
+    if isinstance(classifications, Mapping) and classifications:
+        lines.append("Classification legend:")
+        for name in SETUP_DRIFT_CLASSIFICATIONS:
+            entry = classifications.get(name)
+            if not isinstance(entry, Mapping):
+                continue
+            lines.append(
+                f"- {name}: {entry.get('definition', '')} [side={entry.get('side', 'unknown')}]"
+            )
+    note = str(comparison.get("note") or "")
+    if note:
+        lines.append(f"Note: {note}")
+    return lines
+
+
 def render_setup_drift_text(payload: dict[str, Any], *, limit: int = 50) -> str:
     counts = payload.get("counts") or {}
     lines = [
@@ -934,6 +1080,7 @@ def render_setup_drift_text(payload: dict[str, Any], *, limit: int = 50) -> str:
     config_source_line = _setup_drift_config_source_line(payload)
     if config_source_line is not None:
         lines.append(config_source_line)
+    lines.extend(_setup_drift_comparison_lines(payload))
     lines.extend(
         [
             "Counts: "
@@ -1000,6 +1147,8 @@ def render_setup_drift_text(payload: dict[str, Any], *, limit: int = 50) -> str:
     else:
         for item in changed[:limit]:
             details = []
+            if item.get("side"):
+                details.append(f"side={item['side']}")
             if "repo_bytes" in item:
                 details.append(f"repo={item['repo_bytes']}b")
             if "generated_bytes" in item:

@@ -1334,39 +1334,53 @@ class ConciseDoctorCliTests(unittest.TestCase):
 
 
 class PromptPackDevinGuidanceTests(unittest.TestCase):
+    """The #955 Devin guidance, now split by #1015 into pointer and detail.
+
+    The detailed prompt moved to `docs/devin-setup-prompt.md`; the universal
+    pack keeps the opt-in pointer and the authority/lease guardrails. Every
+    guarantee below still has to hold across the pair.
+    """
+
     def setUp(self):
-        self.text = (
-            Path(__file__).resolve().parents[1] / "docs" / "orchestrator-prompt-pack.md"
-        ).read_text(encoding="utf-8")
+        docs = Path(__file__).resolve().parents[1] / "docs"
+        self.text = (docs / "orchestrator-prompt-pack.md").read_text(encoding="utf-8")
+        self.companion = (docs / "devin-setup-prompt.md").read_text(encoding="utf-8")
 
     def test_optional_devin_section_is_opt_in_and_uses_supported_commands(self):
-        self.assertIn("## Optional Devin Setup Prompt", self.text)
+        self.assertIn("## Optional Devin Setup", self.text)
         self.assertIn("The default adoption is", self.text)
-        self.assertIn("--set-transport devin=devin_api_v3 --dry-run", self.text)
-        self.assertIn("code-mower doctor CONFIG --profile PROFILE", self.text)
-        self.assertIn(".code-mower.generated", self.text)
+        self.assertIn("devin-setup-prompt.md", self.text)
+        self.assertIn("# Optional Devin Setup Prompt", self.companion)
+        self.assertIn("The default adoption", self.companion)
+        self.assertIn("--set-transport devin=devin_api_v3 --dry-run", self.companion)
+        self.assertIn("code-mower doctor CONFIG --profile PROFILE", self.companion)
+        self.assertIn(".code-mower.generated", self.companion)
 
     def test_guidance_keeps_staging_and_authority_boundaries(self):
-        self.assertIn("selecting a transport grants no review or", self.text)
+        self.assertIn("grants no review or merge authority", self.text)
         self.assertIn("Do not delete or rewrite repository-owned workflow files", self.text)
         self.assertIn("do not start paid sessions", self.text)
+        self.assertIn("Do not delete or rewrite repository-owned workflow files", self.companion)
+        self.assertIn("do not start paid sessions", self.companion)
 
     def test_role_and_lease_guidance_is_referenced_not_restated(self):
         self.assertIn("docs/participant-qualification.md", self.text)
+        self.assertIn("participant-qualification.md", self.companion)
 
     def test_packaged_starter_posture_names_the_portable_selector(self):
         self.assertIn(
-            "code-mower doctor --packaged-starter --profile PROFILE --devin", self.text
+            "code-mower doctor --packaged-starter --profile PROFILE --devin", self.companion
         )
         self.assertIn(
-            "Never substitute the starter for a repository configuration", self.text
+            "Never substitute the starter for a repository configuration", self.companion
         )
 
     def test_the_prompt_pack_does_not_call_easy_a_packaged_starter_selector(self):
-        # `--easy` resolves against cwd-local files, so the pack must not offer it
-        # as the way to name the maintained package resource.
+        # `--easy` resolves against cwd-local files, so neither document may offer
+        # it as the way to name the maintained package resource.
         self.assertNotIn("code-mower doctor --easy --devin", self.text)
-        self.assertIn("--easy does not", self.text)
+        self.assertNotIn("code-mower doctor --easy --devin", self.companion)
+        self.assertIn("--easy does not", self.companion)
 
 
 if __name__ == "__main__":

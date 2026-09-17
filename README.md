@@ -337,6 +337,7 @@ See [Optional Graphify Setup](https://github.com/codemower-ai/code-mower/blob/ma
 - [Planning And Work Orders](https://github.com/codemower-ai/code-mower/blob/main/docs/planning-work-orders.md)
 - [Builder Experiments](https://github.com/codemower-ai/code-mower/blob/main/docs/builder-experiments.md)
 - [Orchestrator Prompt Pack](https://github.com/codemower-ai/code-mower/blob/main/docs/orchestrator-prompt-pack.md)
+- [Optional Devin Setup Prompt](https://github.com/codemower-ai/code-mower/blob/main/docs/devin-setup-prompt.md)
 - [Provider Matrix](https://github.com/codemower-ai/code-mower/blob/main/docs/provider-matrix.md)
 - [Provider Calibration Scorecard](https://github.com/codemower-ai/code-mower/blob/main/docs/provider-calibration-scorecard.md)
 - [Devin Peer-Support Qualification](https://github.com/codemower-ai/code-mower/blob/main/docs/devin-peer-support-qualification.md)
