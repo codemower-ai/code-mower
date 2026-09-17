@@ -352,7 +352,9 @@ list`. A Board that is visible is reported immediately, so a stopped,
 wrong-repository, stale-version, or unhealthy Board is never hidden by the wait,
 and a host with no `lsof`/`ss` still reports the missing listener inventory
 without retrying. Set `CODE_MOWER_BOARD_STARTUP_GRACE_SECONDS=0` to turn the
-wait off; the JSON report records the timing it actually used under
+wait off; any other value is a budget in seconds, capped at 10, and a value that
+is not a finite non-negative number falls back to the short default rather than
+lengthening the wait. The JSON report records the timing it actually used under
 `startup_grace`.
 
 For an existing repository with older Code Mower generated files, inspect drift

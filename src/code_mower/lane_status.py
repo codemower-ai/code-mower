@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shlex
@@ -774,10 +775,12 @@ def resolve_board_grace_seconds(
 ) -> float:
     """Resolve the grace budget from an explicit value, the environment, or the default.
 
-    An unparseable or negative environment value falls back to the default
-    rather than disabling or unbounding the grace, and every result is clamped
-    to `BOARD_STARTUP_MAX_GRACE_SECONDS` so no caller can turn a doctor snapshot
-    into a long poll.
+    An unparseable, non-finite, or negative environment value falls back to the
+    default rather than disabling or unbounding the grace, and every result is
+    clamped to `BOARD_STARTUP_MAX_GRACE_SECONDS` so no caller can turn a doctor
+    snapshot into a long poll. Non-finite values are rejected before the clamp
+    because `nan` compares false against everything, so `min()` would carry it
+    straight through and leave the remaining budget never spent.
     """
 
     current_env = os.environ if env is None else env
@@ -792,7 +795,7 @@ def resolve_board_grace_seconds(
                 candidate = float(str(raw).strip())
             except ValueError:
                 candidate = BOARD_STARTUP_GRACE_SECONDS
-    if candidate < 0:
+    if not math.isfinite(candidate) or candidate < 0:
         candidate = BOARD_STARTUP_GRACE_SECONDS
     return min(candidate, BOARD_STARTUP_MAX_GRACE_SECONDS)
 
@@ -828,7 +831,10 @@ def observe_local_boards(
     """
 
     settings = grace if grace is not None else StartupGrace(budget_seconds=0.0)
-    poll_interval = max(float(settings.poll_interval_seconds), 0.0)
+    raw_poll_interval = float(settings.poll_interval_seconds)
+    # A non-finite interval is no usable cadence, so it disables the grace the
+    # same way zero does rather than reaching `sleep()` as `nan`.
+    poll_interval = max(raw_poll_interval, 0.0) if math.isfinite(raw_poll_interval) else 0.0
 
     def collect() -> Mapping[str, Any]:
         payload = (

@@ -432,6 +432,81 @@ class BoardStartupGraceBudgetTests(unittest.TestCase):
                     lane_status.BOARD_STARTUP_GRACE_SECONDS,
                 )
 
+    def test_non_finite_environment_values_fall_back_to_the_default(self) -> None:
+        # `nan` parses as a float and is not negative, so it has to be rejected
+        # explicitly: it compares false against everything, which would carry it
+        # through the clamp and leave the budget never spent.
+        for raw in ("nan", "NaN", "-nan", "inf", "-inf", "infinity", "1e400"):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    lane_status.resolve_board_grace_seconds(
+                        None, env={lane_status.BOARD_STARTUP_GRACE_ENV: raw}
+                    ),
+                    lane_status.BOARD_STARTUP_GRACE_SECONDS,
+                )
+
+    def test_an_explicit_non_finite_budget_falls_back_to_the_default(self) -> None:
+        for requested in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(requested=requested):
+                self.assertEqual(
+                    lane_status.resolve_board_grace_seconds(requested, env={}),
+                    lane_status.BOARD_STARTUP_GRACE_SECONDS,
+                )
+
+    def test_a_nan_environment_budget_cannot_poll_forever(self) -> None:
+        # Regression: with a `nan` budget, `remaining <= 0` never became true
+        # while no Board was visible, so the doctor snapshot polled without a
+        # bound instead of respecting the cap.
+        clock = FakeClock()
+        calls = 0
+
+        def collector(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            if calls > 200:
+                raise AssertionError("the startup grace polled without a bound")
+            return _NO_BOARDS
+
+        with mock.patch.object(lane_status, "collect_local_boards", side_effect=collector):
+            observation = lane_status.observe_local_boards(
+                grace=lane_status.StartupGrace(
+                    poll_interval_seconds=0.25,
+                    sleep=clock.sleep,
+                    monotonic=clock.monotonic,
+                ),
+                env={lane_status.BOARD_STARTUP_GRACE_ENV: "nan"},
+            )
+
+        self.assertEqual(
+            observation.grace["budget_seconds"], lane_status.BOARD_STARTUP_GRACE_SECONDS
+        )
+        self.assertLessEqual(
+            observation.grace["waited_seconds"], lane_status.BOARD_STARTUP_MAX_GRACE_SECONDS
+        )
+        self.assertEqual(
+            observation.grace["reason"], lane_status.BOARD_GRACE_NOT_VISIBLE_AFTER_GRACE
+        )
+
+    def test_a_non_finite_poll_interval_disables_the_grace(self) -> None:
+        # No usable cadence means no waiting, rather than `sleep(nan)`.
+        clock = FakeClock()
+        with mock.patch.object(
+            lane_status, "collect_local_boards", return_value=_NO_BOARDS
+        ) as collector:
+            observation = lane_status.observe_local_boards(
+                grace=lane_status.StartupGrace(
+                    budget_seconds=1.0,
+                    poll_interval_seconds=float("nan"),
+                    sleep=clock.sleep,
+                    monotonic=clock.monotonic,
+                ),
+            )
+
+        self.assertEqual(collector.call_count, 1)
+        self.assertFalse(observation.grace["applied"])
+        self.assertEqual(observation.grace["reason"], lane_status.BOARD_GRACE_DISABLED)
+        self.assertEqual(clock.slept, [])
+
     def test_the_default_budget_stays_short(self) -> None:
         self.assertLessEqual(lane_status.BOARD_STARTUP_GRACE_SECONDS, 5.0)
         self.assertLessEqual(
