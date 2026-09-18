@@ -296,11 +296,22 @@ print(init._render_workflow_template(source.read_text(), {}), end='')
             '.github/workflows/codex-audit-labeler.yml',
             '.github/workflows/local-cli-audit.yml',
         }
-        self.assertCountEqual(paths, set(baseline) | {'.github/workflows/local-audit-publication.yml', '.github/workflows/local-audit-request.yml'},
-                              'Actual init/runner/workflow inventory differs from accepted baseline and #1022')
+        # #1027 adds the immutable candidate and installed-wheel CI rehearsal,
+        # and makes publication consume the retained pair. test_release_v150.py
+        # owns this successor contract; keep the historical baseline untouched.
+        release_workflows = {
+            '.github/workflows/release-candidate.yml',
+            '.github/workflows/release.yml',
+            '.github/workflows/ci.yml',
+        }
+        self.assertCountEqual(paths, set(baseline) | {
+            '.github/workflows/local-audit-publication.yml',
+            '.github/workflows/local-audit-request.yml',
+            '.github/workflows/release-candidate.yml',
+        }, 'Actual init/runner/workflow inventory differs from accepted baseline, #1022 and #1027')
         activated = {'src/code_mower/init.py', 'tools/lanes/run_mac_lane.sh',
             'templates/lanes/run_mac_lane.sh', 'src/code_mower/templates/lanes/run_mac_lane.sh',
-            '.github/workflows/code-mower-gate.yml'} | publication_workflows
+            '.github/workflows/code-mower-gate.yml'} | publication_workflows | release_workflows
         for path in paths:
             if path not in activated:
                 content = (ROOT/path).read_bytes()
