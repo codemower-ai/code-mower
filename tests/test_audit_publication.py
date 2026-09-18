@@ -57,7 +57,8 @@ def run_for(value, *, terminal=False, comment_id=91, **changes):
         head_repository=REPOSITORY,
         head_branch="main",
         head_sha=SOURCE,
-        display_title=pub.WORKFLOW_NAME,
+        name=pub.WORKFLOW_NAME,
+        display_title=pub.EVENT,
         status="completed" if terminal else "in_progress",
         conclusion="success" if terminal else None,
     )
@@ -366,13 +367,15 @@ class ContractTests(unittest.TestCase):
         bad = [
             dict(id=900),
             dict(path=".github/workflows/evil.yml"),
+            dict(path=None),
+            dict(name="Other workflow", display_title=pub.WORKFLOW_NAME),
+            dict(name=None),
             dict(event="workflow_dispatch"),
             dict(run_attempt=2),
             dict(head_branch="codex/topic"),
             dict(head_repository={"id": 90}),
             dict(repository={"id": 1234, "full_name": "other/repo"}),
             dict(head_sha="bad"),
-            dict(display_title="untrusted text"),
         ]
         for change in bad:
             api = MemoryGitHub()
@@ -380,6 +383,26 @@ class ContractTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(pub.Refused):
                 pub.publish(event_for(api.value), environment(), api, now=NOW)
             self.assertEqual(api.writes, [])
+
+    def test_repository_dispatch_title_does_not_define_publication_identity(self):
+        for title in (pub.EVENT, pub.WORKFLOW_NAME, "Custom run title", None):
+            with self.subTest(title=title):
+                api = MemoryGitHub()
+                api.run["display_title"] = title
+                pub.publish(event_for(api.value), environment(), api, now=NOW)
+                self.assertEqual([method for method, _, _ in api.writes], ["POST", "PATCH"])
+                api.run.update(status="completed", conclusion="success")
+                self.assertTrue(
+                    pub.attested(
+                        body=api.comments[0]["body"],
+                        comment_id=91,
+                        repo=REPO,
+                        issue_number=42,
+                        head_sha=HEAD,
+                        run=api.run,
+                        repository=REPOSITORY,
+                    )
+                )
 
     def test_head_moves_at_each_publication_boundary_fail_closed(self):
         for at in (1, 2, 3):
@@ -462,6 +485,10 @@ class ContractTests(unittest.TestCase):
         for changes in (
             dict(status="in_progress"),
             dict(conclusion="failure"),
+            dict(name="Other workflow", display_title=pub.WORKFLOW_NAME),
+            dict(name=None),
+            dict(path=".github/workflows/evil.yml"),
+            dict(path=None),
             dict(run_attempt=2),
             dict(publication_jobs=[]),
             dict(publication_jobs=[run["publication_jobs"][0]] * 2),
@@ -492,6 +519,51 @@ class ContractTests(unittest.TestCase):
 
 
 class WrapperTests(unittest.TestCase):
+    def test_metadata_upload_imports_support_package_from_job_workspace(self):
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / ".github/workflows/local-cli-audit.yml").read_text())
+        step = next(
+            s for s in workflow["jobs"]["audit"]["steps"]
+            if s.get("name") == "Upload Code Mower audit metadata"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            support = root / "support"
+            scripts = support / "scripts"
+            scripts.mkdir(parents=True)
+            selector = scripts / "dev-python"
+            selector.write_bytes((ROOT / "scripts/dev-python").read_bytes())
+            selector.chmod(0o755)
+            for directory, source in (
+                (support / "src", "import sys; print(sys.argv[2])\n"),
+                (root / "ambient", "raise AssertionError('wrong package')\n"),
+            ):
+                module = directory / "code_mower"
+                module.mkdir(parents=True)
+                (module / "__init__.py").write_text("")
+                (module / "cli.py").write_text(source)
+            env = dict(
+                os.environ,
+                SUPPORT_PATH=str(support),
+                PR_HEAD_PATH=str(root / "pr-head"),
+                PYTHONPATH=str(root / "ambient"),
+                CODE_MOWER_PYTHON=sys.executable,
+                CODE_MOWER_LOCAL_AUDIT_PATH=os.environ["PATH"],
+                CODE_MOWER_CLOUD_TOKEN="fixture-token",
+                CODE_MOWER_INSTALL_ID="fixture-install",
+                CODE_MOWER_REVIEWER_SPEND_PATH=str(root / "spend.json"),
+                RUNNER_TEMP=str(root),
+                GITHUB_REPOSITORY=REPO,
+                PR_NUMBER="42",
+            )
+            result = subprocess.run(
+                ["bash", "-c", step["run"]], cwd=root, env=env, capture_output=True, text=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), ["reviewer-runs", "dogfood"])
+            self.assertNotIn("fixture-token", result.stdout + result.stderr)
+
     def test_real_source_step_seals_blocked_without_leaking_tokens_or_output(self):
         import yaml
 
