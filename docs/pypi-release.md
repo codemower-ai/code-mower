@@ -65,9 +65,9 @@ version's intended tag, so contradictions are reviewable before tagging. The
 release workflow checks out the exact dispatched tag or published release tag
 with full tag history, resolves lightweight and annotated tags to their commit,
 and proves that checked-out HEAD equals that commit before checking the public
-text. It exports the validated 40-character SHA to the distribution build,
-which checks out that SHA; event `github.sha` is not used as source identity.
-Both TestPyPI and PyPI consume only the resulting verified distributions.
+text. It exports the validated 40-character SHA to candidate retrieval,
+which checks out that SHA and verifies the retained pair; event `github.sha`
+is not used as source identity. Both TestPyPI and PyPI consume only that pair.
 Manual dispatch additionally requires the resolved tag commit to equal the
 supplied `expected_sha`; a branch dispatch or mismatched tag ref fails closed.
 
@@ -85,7 +85,8 @@ substitute v1.5.0: its candidate-before-tag procedure is in the current runbook.
 
 ## Current Status
 
-- GitHub Release workflow builds distributions on every published release.
+- GitHub Release workflow retrieves and verifies the qualified candidate on
+  every published release; it does not rebuild the distributions.
 - The release workflow downloads the uploaded distributions and runs
   `twine check` before any optional PyPI publish job can start.
 - TestPyPI publishing is gated behind the `testpypi` GitHub environment.

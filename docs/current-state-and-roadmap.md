@@ -125,8 +125,8 @@ future hosted-service work.
 - Private Coworker delivery is limited to explicitly approved Claude, Codex, and
   Devin roles.
 - Graphify is a shipped optional bounded provider with no default dependency,
-  and Slack is an ingress foundation only: v1.4.2 delivers no Slack worker
-  results.
+  and Slack v1.5.0 adds explicit setup/doctor and supervisor v2. Private hosted
+  readiness and the two capped canaries remain independent acceptance gates.
 - Provider cost fields remain unknown when the provider does not return them.
 - A successful release campaign proves installation and operational transport,
   not builder quality or reviewer promotion readiness.
@@ -290,13 +290,16 @@ blocks dispatch, and selecting a provider never promotes its role. Ingress
 foundations [#916](https://github.com/codemower-ai/code-mower/issues/916) and
 [#917](https://github.com/codemower-ai/code-mower/issues/917) are merged and
 shipped in `v1.4.0`.
-Remaining work is OAuth, the qualified-supervisor adapter
-([#977](https://github.com/codemower-ai/code-mower/issues/977)), durable
-interactions, the bridge, paired telemetry, setup
-([#922](https://github.com/codemower-ai/code-mower/issues/922)), and release
-acceptance #923. Slack consumes the durable session lifecycle and event surface
-rather than scraping terminal or Board output, and carries no raw private
-context or private reviewer findings.
+The v1.5.0 public package includes the basic setup/doctor runbook (#1024),
+qualified-supervisor v2 contract and checkpointed clarification/fix semantics.
+The private implementation and acceptance stay in their owned repositories.
+#1027 prepares the immutable merge-SHA package; #918 consumes those bytes for
+private administration/readiness; #920 consumes them for one completion and
+one confirmed cancellation only after explicit numeric authorization; #923
+then tags and publishes the unchanged source SHA and independently reinstalls it.
+Slack telemetry/Board/cloud links and rich UX remain v1.5.1. Slack consumes the
+durable lifecycle instead of scraping terminal or Board output and carries no
+raw private context or private reviewer findings.
 
 The preceding phases are complete, so this runtime work is no longer deferred.
 Board readiness gates only Slack's end-to-end canary and final acceptance in

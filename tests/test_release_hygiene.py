@@ -10161,7 +10161,7 @@ def main():
     ) -> None:
         runbook = self._runbook_section()
         self.assertEqual(
-            release_readiness._release_create_binding_problems(runbook), []
+            release_readiness._release_create_binding_problems(runbook, "v1.4.2"), []
         )
 
         check = self._asserted_runbook_check(

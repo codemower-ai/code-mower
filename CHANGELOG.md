@@ -75,8 +75,10 @@ and the [qualification record](docs/v150-qualification.md).
   either TestPyPI or PyPI can run. The same release-readiness check runs in CI
   before tagging and rejects unfinished publication promises. Release jobs
   resolve the selected tag to its commit, validate that checkout, and pass the
-  exact SHA to the distribution build. Manual dispatch additionally requires
-  that tag commit to match the supplied expected SHA (#1014).
+  exact SHA to candidate verification. Manual dispatch additionally requires
+  that tag commit to match the supplied expected SHA (#1014). The immutable
+  merge-SHA wheel/sdist pair is built and qualified before tagging, then reused
+  without rebuilding for publication (#1027).
 
 - A doctor snapshot taken while a Board is still binding its port no longer
   reports that no Board is running moments before `board list` lists it. Board
