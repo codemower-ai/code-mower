@@ -231,6 +231,12 @@ assert all(importlib.util.find_spec(n) is None for n in ('slack_sdk', 'slack_bol
     assert output.stat().st_mode & 0o777 == 0o600
     hosted_manifest = json.loads(output.read_text())
     assert hosted_manifest["oauth_config"]["scopes"]["bot"] == ["commands"]
+    assert hosted_manifest["oauth_config"]["redirect_urls"] == [
+        "https://slack-oauth.messagebridge.app/callback"]
+    assert hosted_manifest["features"]["slash_commands"][0]["url"] == \
+        "https://codemower.com/api/slack/commands"
+    assert hosted_manifest["settings"]["interactivity"]["request_url"] == \
+        "https://codemower.com/api/slack/interactions"
     cli(py, "slack", "setup", "--manifest", output, "--yes", expected=1)
     checks.append("explicit_slack_setup_exclusive_private_manifest")
     report = json.loads(cli(py, "slack", "doctor", "--json", expected=1))
