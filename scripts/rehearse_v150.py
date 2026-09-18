@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -182,16 +183,23 @@ def rehearse(dist, sha, work):
                GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
                GIT_ALLOW_PROTOCOL="", GIT_NO_LAZY_FETCH="1")
     (work / "home").mkdir()
+    # Installer self-check/cache files are infrastructure state, and must not
+    # contaminate the empty home used to prove product startup has no effects.
+    (work / "installer-home").mkdir()
+    installer_env = {**env, "HOME": str(work / "installer-home")}
 
-    def command(*args, expected=0):
-        result = subprocess.run([str(a) for a in args], cwd=work, env=env,
+    def command(*args, expected=0, environment=None):
+        result = subprocess.run([str(a) for a in args], cwd=work, env=environment or env,
                                 text=True, capture_output=True, timeout=240)
         if result.returncode != expected:
-            raise RuntimeError(f"rehearsal command failed (expected {expected}, got {result.returncode}): {args[0]}")
+            # Report only isolated-program line numbers, never captured output
+            # that might contain graph content or product state.
+            lines = re.findall(r'File "<string>", line (\d+)', result.stderr)
+            raise RuntimeError(f"rehearsal command failed (expected {expected}, got {result.returncode}): {args[0]}; isolated lines={lines}")
         return result.stdout
 
     def pip(python, *args):
-        return command(python, "-m", "pip", "--isolated", *args)
+        return command(python, "-m", "pip", "--isolated", *args, environment=installer_env)
 
     def installed(python, code, *args, expected=0, git_repository=None):
         return command(python, "-I", "-c", installed_code(code, git_repository), *args, expected=expected)
@@ -202,7 +210,7 @@ def rehearse(dist, sha, work):
     wheel = dist / NAMES[0]
     checks = []
     fresh = work / "fresh"
-    command(sys.executable, "-m", "venv", fresh)
+    command(sys.executable, "-m", "venv", fresh, environment=installer_env)
     py = fresh / "bin/python"
     pip(py, "install", "--no-cache-dir", "--index-url", "https://pypi.org/simple/", wheel)
     pip(py, "check")
@@ -282,7 +290,7 @@ Path(sys.argv[1]).write_text(json.dumps(value))
 
     before = state_hashes()
     upgrade = work / "upgrade"
-    command(sys.executable, "-m", "venv", upgrade)
+    command(sys.executable, "-m", "venv", upgrade, environment=installer_env)
     py = upgrade / "bin/python"
     old = work / "rollback-artifact"
     old.mkdir()
