@@ -38,7 +38,11 @@ public channels and rich Slack UX are deferred to v1.5.1.
    hosted routes are fixed in the manifest: command and interactivity requests go
    to the application, while the OAuth redirect goes only through the dedicated,
    owner-controlled query-scrubbing relay before a query-free browser handoff to
-   the application.
+   the application. The fixed relay is the dedicated production `workers.dev`
+   route. It deliberately avoids a customer-zone custom domain because Cloudflare
+   Security Analytics samples all traffic for such a zone and can retain OAuth
+   query strings even when Worker logs and traces are disabled. Preview URLs stay
+   disabled, and no custom domain or zone route may expose the Worker.
    Do not substitute previews, localhost or private URLs. Verify the installed
    settings match: a generated file does not prove installation. See Slack's official
    [manifest](https://docs.slack.dev/reference/app-manifest/),

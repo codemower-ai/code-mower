@@ -214,7 +214,7 @@ class SetupTests(unittest.TestCase):
             manifest = json.loads(path.read_bytes())
             self.assertEqual(manifest["oauth_config"]["scopes"], {"bot": ["commands"]})
             self.assertEqual(manifest["oauth_config"]["redirect_urls"], [
-                "https://slack-oauth.messagebridge.app/callback"
+                "https://codemower-slack-oauth-ingress.jhuber.workers.dev/callback"
             ])
             self.assertEqual(manifest["features"]["slash_commands"][0]["url"],
                              "https://codemower.com/api/slack/commands")
