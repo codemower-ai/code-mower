@@ -47,7 +47,94 @@ RECEIPT = re.compile(r"Local audit pr=([1-9][0-9]*) comment=([1-9][0-9]*) digest
 
 
 class Refused(ValueError):
-    """A bounded failure that never includes submitted content."""
+    """An expected refusal; its arguments are never safe to print directly."""
+
+
+# Public diagnostic vocabulary. Keys must cover only literal refusal reasons;
+# values are stable codes, never derived from an exception or submitted data.
+# Unknown reasons and all other exception types fail closed as INTERNAL_ERROR.
+REFUSAL_CODES = {
+    "GitHub response size limit": "GITHUB_RESPONSE_SIZE_LIMIT",
+    "PR target/head changed": "PR_TARGET_HEAD_CHANGED",
+    "artifact already dispatched": "ARTIFACT_ALREADY_DISPATCHED",
+    "artifact is not merge authority": "ARTIFACT_IS_NOT_MERGE_AUTHORITY",
+    "artifact stale or future dated": "ARTIFACT_STALE_OR_FUTURE_DATED",
+    "audit head changed": "AUDIT_HEAD_CHANGED",
+    "comment publication mismatch": "COMMENT_PUBLICATION_MISMATCH",
+    "complete GitHub history exceeds page limit": "COMPLETE_GITHUB_HISTORY_EXCEEDS_PAGE_LIMIT",
+    "context-bound artifacts need their context-aware direct path": "CONTEXT_BOUND_ARTIFACT",
+    "duplicate JSON key": "DUPLICATE_JSON_KEY",
+    "duplicate publication reservations": "DUPLICATE_PUBLICATION_RESERVATIONS",
+    "input size limit": "INPUT_SIZE_LIMIT",
+    "invalid GitHub page": "INVALID_GITHUB_PAGE",
+    "invalid JSON": "INVALID_JSON",
+    "invalid artifact timestamp": "INVALID_ARTIFACT_TIMESTAMP",
+    "invalid comment size": "INVALID_COMMENT_SIZE",
+    "invalid dispatch schema": "INVALID_DISPATCH_SCHEMA",
+    "invalid local artifact": "INVALID_LOCAL_ARTIFACT",
+    "invalid local artifact timestamp": "INVALID_LOCAL_ARTIFACT_TIMESTAMP",
+    "invalid publication schema": "INVALID_PUBLICATION_SCHEMA",
+    "invalid publishing run": "INVALID_PUBLISHING_RUN",
+    "invalid repository": "INVALID_REPOSITORY",
+    "invalid review request": "INVALID_REVIEW_REQUEST",
+    "invalid run/comment id": "INVALID_RUN_COMMENT_ID",
+    "invalid source run/attempt": "INVALID_SOURCE_RUN_ATTEMPT",
+    "invalid target": "INVALID_TARGET",
+    "invalid workflow SHA": "INVALID_WORKFLOW_SHA",
+    "local repository/lane mismatch": "LOCAL_REPOSITORY_LANE_MISMATCH",
+    "local timestamp lacks timezone": "LOCAL_TIMESTAMP_LACKS_TIMEZONE",
+    "local verdict/trailer mismatch": "LOCAL_VERDICT_TRAILER_MISMATCH",
+    "missing or repeated publication metadata": "MISSING_OR_REPEATED_PUBLICATION_METADATA",
+    "missing publication receipt": "MISSING_PUBLICATION_RECEIPT",
+    "missing publication run": "MISSING_PUBLICATION_RUN",
+    "missing workflow identity": "MISSING_WORKFLOW_IDENTITY",
+    "noncanonical publication bytes": "NONCANONICAL_PUBLICATION_BYTES",
+    "publication already reserved": "PUBLICATION_ALREADY_RESERVED",
+    "publication comment not found at current head": "PUBLICATION_COMMENT_NOT_FOUND_AT_CURRENT_HEAD",
+    "publication digest mismatch": "PUBLICATION_DIGEST_MISMATCH",
+    "publication receipt missing or ambiguous": "PUBLICATION_RECEIPT_MISSING_OR_AMBIGUOUS",
+    "publication run not successful": "PUBLICATION_RUN_NOT_SUCCESSFUL",
+    "publication timed out; inspect the workflow run before retrying": "PUBLICATION_TIMED_OUT",
+    "published comment binding failed": "PUBLISHED_COMMENT_BINDING_FAILED",
+    "quarantined local artifact": "QUARANTINED_LOCAL_ARTIFACT",
+    "replayed publication": "REPLAYED_PUBLICATION",
+    "reservation lacks publishing run": "RESERVATION_LACKS_PUBLISHING_RUN",
+    "run lookup mismatch": "RUN_LOOKUP_MISMATCH",
+    "source reviewer seal missing or ambiguous": "SOURCE_REVIEWER_SEAL_MISSING_OR_AMBIGUOUS",
+    "unexpected publishing identity": "UNEXPECTED_PUBLISHING_IDENTITY",
+    "unsupported publication command": "UNSUPPORTED_PUBLICATION_COMMAND",
+    "unsupported publication schema": "UNSUPPORTED_PUBLICATION_SCHEMA",
+    "unsupported reviewer lane": "UNSUPPORTED_REVIEWER_LANE",
+    "unsupported verdict": "UNSUPPORTED_VERDICT",
+    "untrusted review request": "UNTRUSTED_REVIEW_REQUEST",
+    "untrusted review target": "UNTRUSTED_REVIEW_TARGET",
+    "untrusted source audit run": "UNTRUSTED_SOURCE_AUDIT_RUN",
+    "untrusted staging environment": "UNTRUSTED_STAGING_ENVIRONMENT",
+    "untrusted workflow name": "UNTRUSTED_WORKFLOW_NAME",
+    "untrusted workflow ref": "UNTRUSTED_WORKFLOW_REF",
+    "untrusted workflow/event": "UNTRUSTED_WORKFLOW_EVENT",
+    "workflow rerun refused": "WORKFLOW_RERUN_REFUSED",
+    "wrong PR/head": "WRONG_PR_HEAD",
+    "wrong comment binding": "WRONG_COMMENT_BINDING",
+    "wrong dispatch PR": "WRONG_DISPATCH_PR",
+    "wrong dispatch event": "WRONG_DISPATCH_EVENT",
+    "wrong dispatch repository": "WRONG_DISPATCH_REPOSITORY",
+    "wrong publication receipt": "WRONG_PUBLICATION_RECEIPT",
+    "wrong publishing run binding": "WRONG_PUBLISHING_RUN_BINDING",
+    "wrong reconciliation event": "WRONG_RECONCILIATION_EVENT",
+    "wrong repository": "WRONG_REPOSITORY",
+    "wrong run": "WRONG_RUN",
+    "wrong run repository": "WRONG_RUN_REPOSITORY",
+    "wrong staging binding": "WRONG_STAGING_BINDING",
+    "wrong workflow/ref/attempt": "WRONG_WORKFLOW_REF_ATTEMPT",
+}
+
+
+def refusal_code(error):
+    """Select a literal code without formatting untrusted exception arguments."""
+    if type(error) is Refused and len(error.args) == 1 and type(error.args[0]) is str:
+        return REFUSAL_CODES.get(error.args[0], "INTERNAL_ERROR")
+    return "INTERNAL_ERROR"
 
 
 def require(condition, reason):
@@ -743,12 +830,9 @@ def main():
         else:
             raise Refused("unsupported publication command")
         return 0
-    except Exception:
-        # Do not print exception payloads, paths, response bodies, or dispatch inputs.
-        print(
-            "Local audit publication refused; verify metadata, target, freshness and workflow identity.",
-            file=sys.stderr,
-        )
+    except Exception as error:
+        # Only a catalog code reaches stderr, never exception text or submitted data.
+        print(f"Local audit publication refused [{refusal_code(error)}].", file=sys.stderr)
         return 1
 
 
