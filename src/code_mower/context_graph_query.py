@@ -155,11 +155,21 @@ CODE_FILE_TYPE = "code"
 #: unsupported type stays an unexplained refusal: fail closed, name nothing.
 KNOWN_PROVIDER_FILE_TYPES: Mapping[str, str] = {"doc_ref": "1.5.0"}
 
-#: The provider releases this reader was reviewed against. A generation whose
-#: manifest names another release and then fails to read is a provider/reader
-#: mismatch the operator can resolve by rebuilding with a reviewed release or
-#: installing a Code Mower whose reader covers theirs.
-READER_PROVIDER_VERSIONS = frozenset({"0.9.58"})
+#: The provider releases this reader was reviewed against, as exact
+#: requirements: distribution and version together, the distribution in its
+#: normalized spelling. A version alone would let any distribution published at
+#: that number inherit the review. A generation whose manifest names another
+#: provider and then fails to read is a provider/reader mismatch the operator
+#: can resolve by rebuilding with a reviewed release or installing a Code Mower
+#: whose reader covers theirs.
+READER_PROVIDERS = frozenset({"graphifyy==0.9.58"})
+
+
+def _reviewed_provider(provider: Mapping[str, Any]) -> bool:
+    distribution, version = provider.get("distribution"), provider.get("version")
+    if not isinstance(distribution, str) or not isinstance(version, str):
+        return False
+    return f"{lifecycle._normalized_distribution(distribution)}=={version.strip()}" in READER_PROVIDERS
 
 #: The pinned validator's ``VALID_CONFIDENCES``, lowercased. The provider
 #: writes these uppercase; the packet contract's vocabulary is lowercase, and
@@ -510,10 +520,10 @@ class ReaderIncompatible(ContextError):
         self.provider = provider
 
     def remediation(self) -> dict[str, Any]:
-        reviewed = ", ".join(sorted(READER_PROVIDER_VERSIONS))
+        reviewed = ", ".join(sorted(READER_PROVIDERS))
         value: dict[str, Any] = {
             "installed_code_mower": CODE_MOWER_VERSION,
-            "reader_provider_versions": sorted(READER_PROVIDER_VERSIONS),
+            "reader_providers": sorted(READER_PROVIDERS),
         }
         if self.provider is not None:
             value["generation_provider"] = self.provider
@@ -944,8 +954,9 @@ def read_graph(state: lifecycle.GraphStateRoot, status: lifecycle.GenerationStat
         # built the generation. From a reviewed release it is a document this
         # reader has no account of, and stays an unexplained refusal. From an
         # unreviewed release it is the expected consequence of a provider the
-        # reader was never checked against, which has a concrete fix.
-        if provider.get("version") in READER_PROVIDER_VERSIONS:
+        # reader was never checked against, which has a concrete fix. Reviewed
+        # means this exact distribution at this exact version.
+        if _reviewed_provider(provider):
             raise
         raise ReaderIncompatible(
             "local graph was built by a provider release this Code Mower reader was not reviewed against",
@@ -1498,8 +1509,13 @@ def build_packet(
     # ``provider_partial`` covers both of its sources -- the generation's own
     # partial build, added just above, and a traversal that read a relationship
     # whose far end the document never declared. Neither is truncation, and a
-    # packet carrying either must not call itself complete.
-    packet_completeness = "partial" if truncated or "provider_partial" in omissions else "complete"
+    # packet carrying either must not call itself complete. Nor may one whose
+    # walk left an entity unresolved: ambiguity alone is a partial answer.
+    packet_completeness = (
+        "partial"
+        if truncated or "provider_partial" in omissions or "unresolved_entities" in omissions
+        else "complete"
+    )
     expiry = min(
         _timestamp(connection["expires_at"]),
         current + timedelta(seconds=limits["max_age_seconds"]),
@@ -1532,8 +1548,9 @@ def build_packet(
         # Two different completeness claims, reported separately so a bounded
         # answer is never read as a broken build. ``generation_completeness`` is
         # the published build's own; ``query_completeness`` is this answer's,
-        # partial whenever a budget, a depth or the document limit stopped it
-        # or the walk crossed a relationship the provider could not state.
+        # partial whenever a budget, a depth or the document limit stopped it,
+        # the walk crossed a relationship the provider could not state, or it
+        # left an entity unresolved.
         "generation_completeness": completeness,
         "query_completeness": packet_completeness,
         "truncated": truncated,
@@ -1683,7 +1700,7 @@ __all__: Sequence[str] = (
     "QUESTIONS",
     "QUERY_SCHEMA",
     "QueryResult",
-    "READER_PROVIDER_VERSIONS",
+    "READER_PROVIDERS",
     "READINESS_SCHEMA",
     "REQUIRED_UNAVAILABLE",
     "ReaderIncompatible",

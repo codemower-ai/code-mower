@@ -176,7 +176,8 @@ generation with `search: unavailable` exits non-zero. Read
 - `reader: incompatible` is a known provider/reader mismatch. The
   `remediation` block names your installed Code Mower and the release that
   reads the generation. Upgrade Code Mower; the generation needs no rebuild.
-  If it names an unreviewed provider release instead, refresh with the pinned
+  If it names an unreviewed provider instead (another release, or another
+  distribution at the same version), refresh with the pinned
   `graphifyy` `0.9.58`.
 - `reader: unreadable` means the generation holds something no reader has an
   account of. It fails closed on purpose; report it rather than working around

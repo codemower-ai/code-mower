@@ -121,14 +121,17 @@ release below.
   generation meeting the `v1.4.2` reader, reports `reader_incompatible`. Its
   remediation names the installed Code Mower and the release that reads it,
   and does not call the generation `unreadable`. A generation from an
-  unreviewed provider release gets a rebuild-or-upgrade remediation. Unknown
+  unreviewed provider gets a rebuild-or-upgrade remediation. Reviewed means
+  the exact distribution and version (`graphifyy==0.9.58`), not the version
+  alone. Unknown
   node types from the reviewed release still fail closed, and no verdict
   carries graph content, targets or local paths. Query summaries now report
   `generation_completeness` and `query_completeness` separately. A bounded
   answer that stopped at a budget, depth or document limit, or crossed an
   ambiguous relationship, stays `available` and usable, discloses
   `provider_has_more`, `unresolved_entities` or `document_limit`, and does not
-  mark the generation incomplete. Intended for `v1.5.0` together with #1007.
+  mark the generation incomplete. An answer whose only omission is
+  `unresolved_entities` is `partial` too. Intended for `v1.5.0` together with #1007.
 
 ## 1.4.2 — published
 

@@ -210,10 +210,12 @@ From #1029, a reader that meets `doc_ref` without supporting it reports that
 node type as a known provider/reader mismatch and names Code Mower `1.5.0` as
 the release that reads it. It does not call the generation `unreadable`. Other
 unknown node types stay unexplained refusals. When the generation was built by
-a provider release this reader was not reviewed against (`graphifyy` `0.9.58`
-today), an unknown node type is reported as `reader_incompatible` with a
-rebuild-or-upgrade remediation. Either way, search is unavailable until the
-reader and the generation agree.
+a provider this reader was not reviewed against, an unknown node type is
+reported as `reader_incompatible` with a rebuild-or-upgrade remediation.
+Reviewed means an exact requirement, distribution and version together
+(`graphifyy==0.9.58` today, the distribution compared in its normalized
+spelling), so another distribution published at `0.9.58` is not reviewed.
+Either way, search is unavailable until the reader and the generation agree.
 
 Each traversal is symbol-first: a target resolves to the symbols carrying that
 name, and only a target that names no symbol at all is read as a path. Each is
@@ -357,7 +359,8 @@ Confidence maps the provider's own qualification onto the contract's vocabulary:
 
 A partial packet is still an available answer. When a relationship budget, the
 depth limit, the seed bound, or the policy's document limit stops a query, or
-the query crosses an ambiguous relationship, the status stays `available` and
+the query crosses an ambiguous relationship or leaves a target unresolved, the
+status stays `available` and
 `dependent_work` stays `usable`. The omissions say what was left out and why.
 The query summary reports two completeness claims separately, so a bounded
 answer is never read as a broken build:
@@ -365,7 +368,7 @@ answer is never read as a broken build:
 | Summary field | Describes |
 | --- | --- |
 | `generation_completeness` | the published build's own `complete`/`partial`, from its manifest |
-| `query_completeness` | this answer: `partial` whenever an omission above applies |
+| `query_completeness` | this answer: `partial` whenever an omission above applies, including `unresolved_entities` alone |
 
 `completeness` keeps its earlier meaning, the packet's completeness, and
 equals `query_completeness`.

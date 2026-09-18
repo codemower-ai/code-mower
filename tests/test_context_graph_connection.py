@@ -879,6 +879,44 @@ class SearchReadinessTests(unittest.TestCase):
         self.assertEqual(context.summary["reason"], "reader_incompatible")
         self.assert_private(readiness, context.summary)
 
+    def test_a_same_version_provider_from_another_distribution_is_not_reviewed(self) -> None:
+        """The review covers ``graphifyy==0.9.58``, not every distribution at 0.9.58."""
+        other = lifecycle.GraphifyPin(distribution="other-provider", version="0.9.58", wheel_sha256="a" * 64)
+        self.publish(unknown_type_document(), pin=other)
+        readiness = self.readiness()
+        self.assertEqual(
+            (readiness["search"], readiness["reader"], readiness["reason"]),
+            ("unavailable", "incompatible", "reader_incompatible"),
+        )
+        remediation = readiness["remediation"]
+        self.assertEqual(remediation["generation_provider"], "other-provider==0.9.58")
+        self.assertEqual(remediation["reader_providers"], ["graphifyy==0.9.58"])
+        self.assertNotIn("required_code_mower", remediation)
+        self.assertNotIn("node_type", remediation)
+        self.assertIn("graphifyy==0.9.58", readiness["next_action"])
+        code, status, report, context = self.observed()
+        self.assertEqual(code, 1)
+        self.assertEqual(status["query_reader"]["reason"], "reader_incompatible")
+        self.assertEqual((report["search"], report["authorization"]), ("unavailable", "unavailable"))
+        self.assertEqual(context.status, query.REQUIRED_UNAVAILABLE)
+        self.assertEqual(context.summary["reason"], "reader_incompatible")
+        self.assert_private(readiness, status, report, context.summary)
+        self.assertNotIn("hologram", json.dumps([readiness, status, report, context.summary]))
+
+    def test_the_reviewed_provider_is_matched_by_its_normalized_requirement(self) -> None:
+        for distribution, version, reviewed in (
+            ("graphifyy", "0.9.58", True),
+            ("Graphifyy", "0.9.58", True),
+            ("graphifyy", "0.9.59", False),
+            ("other-provider", "0.9.58", False),
+            ("graphify", "0.9.58", False),
+            (None, "0.9.58", False),
+        ):
+            with self.subTest(distribution=distribution, version=version):
+                self.assertIs(
+                    query._reviewed_provider({"distribution": distribution, "version": version}), reviewed,
+                )
+
     def test_unknown_node_types_still_fail_closed(self) -> None:
         with self.assertRaises(query.UnsupportedNodeType):
             query.load_graph(unknown_type_document(), generation="a" * 32, commit="b" * 40)
@@ -938,6 +976,24 @@ class SearchReadinessTests(unittest.TestCase):
             self.assertIn(omission, context.summary["omissions"])
         self.assertNotIn("provider_partial", context.packet["omissions"])
         self.assertTrue(context.packet["truncated"])
+
+    def test_an_ambiguity_only_answer_is_partial_but_usable(self) -> None:
+        """No budget, depth or document limit applies; one relationship is ambiguous."""
+        document = wide_graph_document(3)
+        document["edges"][0]["confidence"] = "AMBIGUOUS"
+        self.publish(document)
+        code, status, report, _ = self.observed()
+        self.assertEqual(code, 0, status)
+        self.assertEqual((status["search"], report["authorization"]), ("available", "available"))
+        context = self.ask()
+        self.assertEqual((context.status, context.dependent_work), (query.AVAILABLE, "usable"))
+        self.assertEqual(context.summary["generation_completeness"], lifecycle.COMPLETE)
+        self.assertEqual(context.summary["query_completeness"], "partial")
+        self.assertEqual(context.summary["completeness"], "partial")
+        self.assertEqual(context.packet["completeness"], "partial")
+        self.assertFalse(context.packet["truncated"])
+        self.assertEqual(context.packet["omissions"], ["unresolved_entities"])
+        self.assertEqual(context.summary["omissions"], ["unresolved_entities"])
 
     def test_the_graphify_modules_remain_in_the_package_inventory(self) -> None:
         manifest = json.loads(
