@@ -85,6 +85,14 @@ WORKFLOW_TARGETS_BY_DRIVER = {
 }
 
 LOCAL_AUDIT_WORKFLOW_PATH = ".github/workflows/local-cli-audit.yml"
+AUDIT_PUBLICATION_WORKFLOW_PATH = ".github/workflows/local-audit-publication.yml"
+
+def _audit_workflow_paths(lane):
+    paths = LOCAL_AUDIT_WORKFLOW_PATH
+    if lane in {"claude", "codex"}:
+        paths += "," + AUDIT_PUBLICATION_WORKFLOW_PATH
+    return paths
+
 LOCAL_AUDIT_WORKFLOW_SOURCE = "self-hosted-local-audit-workflow-template"
 LOCAL_AUDIT_WORKFLOW_TEMPLATE = "templates/workflows/self-hosted-local-audit.yml.j2"
 LOCAL_AUDIT_RUNNER_LABEL = "code-mower-audit"
@@ -182,6 +190,11 @@ STARTER_DATA_FILES = (
 )
 
 PRODUCT_SUPPORT_FILES = (
+    ("tools/audit_publication.py", "audit_publication.py", "product-support-helper", "0644"),
+    ("tools/trailer_comment_labeler.py", "trailer_comment_labeler.py", "product-support-helper", "0644"),
+    ("tools/lane_configs/__init__.py", "lane_configs/__init__.py", "product-support-helper", "0644"),
+    ("tools/lane_configs/claude.py", "lane_configs/claude.py", "product-support-helper", "0644"),
+    ("tools/lane_configs/codex.py", "lane_configs/codex.py", "product-support-helper", "0644"),
     (
         "tools/builder_lineage.py",
         "builder_lineage.py",
@@ -617,7 +630,7 @@ def _workflow_entry_for_target(
         "trailer_prefix": _trailer_prefix_for_lane(trailer_lane),
         "authors_env": _authors_env_for_trailer_lane(trailer_lane),
         "bot_authors": _bot_author_csv(_default_trailer_bot_authors(trailer_lane), lane),
-        "github_actions_workflows": LOCAL_AUDIT_WORKFLOW_PATH if driver == "local_cli" else "",
+        "github_actions_workflows": _audit_workflow_paths(trailer_lane) if driver == "local_cli" else "",
     }
 
 
@@ -833,7 +846,7 @@ def _gate_health_lane_entry(
     trailer_lane = _trailer_lane_name(lane_id, lane)
     author_lane = _author_lane_name(lane_id, lane)
     github_actions_workflows = (
-        LOCAL_AUDIT_WORKFLOW_PATH if lane.get("driver") == "local_cli" else ""
+        _audit_workflow_paths(trailer_lane) if lane.get("driver") == "local_cli" else ""
     )
     return {
         "id": lane_id,
@@ -1291,7 +1304,7 @@ def _lane_standing_readme_entry(
 def _gate_lane_entry(lane_id: str, lane: Mapping[str, Any]) -> dict[str, Any]:
     labels = _labels_for(lane)
     trailer_lane = _trailer_lane_name(lane_id, lane)
-    github_actions_workflows = LOCAL_AUDIT_WORKFLOW_PATH if lane.get("driver") == "local_cli" else ""
+    github_actions_workflows = _audit_workflow_paths(trailer_lane) if lane.get("driver") == "local_cli" else ""
     return {
         "id": lane_id,
         "author_lane": _author_lane_name(lane_id, lane),
@@ -2793,6 +2806,15 @@ def render_init_plan(
         required_variables.add(owner_surface["dispatch_token_expires_var"])
         if any(str(entry.get("mac_runner") or "") == "true" for entry in builder_entries):
             required_variables.add(owner_surface["lane_runner_enabled_var"])
+    if any(entry["lane"] in {"claude", "codex"} for entry in local_audit_entries):
+        workflow_targets.add(AUDIT_PUBLICATION_WORKFLOW_PATH)
+        workflows.append({"lane": "local-audit-publication", "driver": "local_cli",
+                          "target": AUDIT_PUBLICATION_WORKFLOW_PATH})
+        generated_paths.add(AUDIT_PUBLICATION_WORKFLOW_PATH)
+        generated_files.append({"path": AUDIT_PUBLICATION_WORKFLOW_PATH,
+            "source": "local-audit-publication-workflow-template",
+            "copy_from": "templates/workflows/local-audit-publication.yml.j2",
+            "package_copy_from": "templates/workflows/local-audit-publication.yml.j2"})
     if local_audit_entries and LOCAL_AUDIT_WORKFLOW_PATH not in generated_paths:
         required_variables.add(owner_surface["local_audit_runner_enabled_var"])
         workflow_targets.add(LOCAL_AUDIT_WORKFLOW_PATH)

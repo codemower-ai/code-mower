@@ -109,3 +109,22 @@ mutation. Earlier malformed requests do not establish that a completed provider
 session refuses a correctly formed message or cancellation. Reconcile uncertain
 outcomes under the same private binding and key; never automatically create a new
 session or spend a new recovery allowance.
+
+## Local audit publication evidence
+
+For Claude/Codex workflow publication, record the local artifact's canonical
+metadata digest, PR/head, publisher run URL, created comment ID and terminal run
+conclusion. The public comment contains only allowlisted verdict metadata and
+existing lane/run trailers. A successful receipt job binds the exact metadata
+digest and comment ID; the existing gate and labeler verify that receipt through
+the Actions API. Neither a rendered trailer alone nor dispatch acceptance is a
+publication success.
+
+Check that the completed publisher wakes the matching labeler, moves `needs-*`
+to the correct `*-audit-done` or `*-audit-blocked` label, and dispatches the gate
+for the current head. Retain failed/neutral reservations: they prevent ambiguous
+retries from becoming a second signal. If a head moved, request a fresh audit at
+the new head. If delivery timed out, inspect the existing run rather than blindly
+reposting. No source, diff, prompt, transcript, local path, private repository name
+or raw provider output belongs in public evidence. See the
+[publication operations contract](local-audit-runner.md#verified-workflow-publication).

@@ -943,6 +943,8 @@ def github_actions_comment_attested(
     tokens: Sequence[GitHubToken],
     actions_run_lookup: Optional[Callable[[str], Mapping[str, Any]]] = None,
     commit_pull_requests_lookup: Optional[Callable[[str], Sequence[Mapping[str, Any]]]] = None,
+    repository_lookup: Optional[Callable[[], Mapping[str, Any]]] = None,
+    jobs_lookup: Optional[Callable[[str], Sequence[Mapping[str, Any]]]] = None,
 ) -> bool:
     """Return whether a github-actions[bot] audit comment is tied to this PR head."""
     trusted_workflows = tuple(parse_csv_set(",".join(workflow_paths)))
@@ -965,6 +967,32 @@ def github_actions_comment_attested(
 
     path = str(run.get("path") or "")
     if not workflow_path_matches(path, trusted_workflows):
+        return False
+    # Repository-dispatch runs execute at the default-branch SHA, so their PR
+    # binding is the canonical metadata/digest, not the run's source-code SHA.
+    try:
+        if __package__:
+            from . import audit_publication
+        else:
+            import audit_publication
+        if audit_publication.MARKER in body and path != audit_publication.WORKFLOW:
+            return False
+        if path == audit_publication.WORKFLOW:
+            if jobs_lookup:
+                jobs = list(jobs_lookup(marker.run_id))
+            else:
+                result = github_request_with_fallback("GET",
+                    f"/repos/{repo}/actions/runs/{marker.run_id}/jobs?per_page=100", tokens=token_list)
+                if not isinstance(result, dict) or result.get("total_count", 101) > 100:
+                    return False
+                jobs = result.get("jobs")
+            run = {**run, "publication_jobs": jobs}
+            repository = (repository_lookup() if repository_lookup else
+                github_request_with_fallback("GET", f"/repos/{repo}", tokens=token_list))
+            return audit_publication.attested(body=body, comment_id=comment_id,
+                repo=repo, issue_number=issue_number, head_sha=head_sha, run=run,
+                repository=repository) and str(run.get("id")) == marker.run_id
+    except Exception:
         return False
     if str(run.get("event") or "") not in TRUSTED_ACTIONS_AUDIT_EVENTS:
         return False

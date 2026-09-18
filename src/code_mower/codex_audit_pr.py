@@ -249,6 +249,8 @@ class AuditConfig:
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES
     max_diff_hard_limit_bytes: Optional[int] = None
     dry_run: bool = False
+    # Direct callers retain compatibility; the CLI defaults to workflow publication.
+    publication: str = "direct"
     # Structured audits are automation, not an interactive Codex session.
     # Default to ignoring user config so personal model/reasoning/plugin
     # settings cannot make audit runtime or behavior depend on the operator's
@@ -417,7 +419,15 @@ def _post_audit_comment(
     *,
     token: str,
     actions_run_id: Optional[str],
+    publication: str = "direct",
+    artifact_path: Optional[Path] = None,
 ) -> tuple[dict[str, Any], str]:
+    if publication == "workflow":
+        from code_mower.audit_publication import Refused, submit
+        if artifact_path is None:
+            raise Refused("workflow publication requires a saved verdict artifact")
+        posted = submit(artifact_path, token=token, lane="codex")
+        return posted, posted["body"]
     posted = post_pr_comment(repo, pr_number, body, token=token)
     if not actions_run_id:
         return posted, body
@@ -1945,7 +1955,7 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
     acquire_lineage(repo, pr_number, pr_meta, checkout=local_repo,
         base_sha=config.base_ref,
         fetch_comments=lambda: fetch_issue_comments(repo, pr_number, token=config.github_token),
-        reviewer="codex", reviewer_accounts=tuple(item.strip() for item in
+        reviewer="codex", reviewer_accounts=("github-actions[bot]",) if config.publication == "workflow" and config.merge_authority else tuple(item.strip() for item in
             os.environ.get("CODEX_BOT_AUTHORS", "codex-audit-bot,codex-audit-bot[bot]").split(",") if item.strip()),
         extra_authorities=decision_authorities)
 
@@ -2076,6 +2086,8 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                         comment_body,
                         token=config.github_token,
                         actions_run_id=actions_run_id,
+                        publication=config.publication if config.merge_authority else "direct",
+                        artifact_path=result.verdict_artifact_path,
                     )
                     result.comment_body = comment_body
                     result.posted_comment_url = posted.get("html_url")
@@ -2357,6 +2369,8 @@ def audit_pr(config: AuditConfig, repo: str, pr_number: int) -> AuditResult:
                 comment_body,
                 token=config.github_token,
                 actions_run_id=actions_run_id,
+                publication=config.publication if config.merge_authority else "direct",
+                artifact_path=result.verdict_artifact_path,
             )
             result.comment_body = comment_body
             result.posted_comment_url = posted.get("html_url")
@@ -2382,6 +2396,10 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap.add_argument("--pr", type=int, help="PR number")
     ap.add_argument("--context-revision", help="Require this explicitly attached private context input revision")
     ap.add_argument("--context-state-dir", type=Path, help="Private context store outside the repository")
+    ap.add_argument("--publication", choices=("workflow", "direct"), default="workflow",
+                    help="Merge-authority publication transport (default: workflow; direct is emergency compatibility).")
+    ap.add_argument("--publish-verdict-artifact", type=Path,
+                    help="Publish an existing structured verdict through the trusted workflow and wait; no provider call.")
     ap.add_argument(
         "--repost-verdict-artifact",
         type=Path,
@@ -2673,6 +2691,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                   f"{_local_audit_doc_hint()}",
                   file=sys.stderr)
         return 1
+    if args.publish_verdict_artifact is not None:
+        from code_mower.audit_publication import submit
+        try:
+            posted = submit(args.publish_verdict_artifact, token=token, lane="codex")
+        except Exception:
+            print("error: workflow publication failed closed; inspect the publication run", file=sys.stderr)
+            return 1
+        print(posted.get("html_url") or "published")
+        return 0
     if args.repost_verdict_artifact is not None:
         try:
             posted = repost_audit_verdict_artifact(
@@ -2749,6 +2776,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         max_diff_bytes=args.max_diff_bytes,
         max_diff_hard_limit_bytes=args.max_diff_hard_limit_bytes,
         dry_run=args.dry_run,
+            publication=args.publication,
         ignore_user_config=not args.use_user_config,
         venv_path=explicit_venv,
         disable_venv=disable_venv,

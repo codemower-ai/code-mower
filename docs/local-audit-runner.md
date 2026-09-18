@@ -27,16 +27,76 @@ claude -p "Reply with exactly: ok" --output-format json
 devin auth status >/dev/null 2>&1 && echo "devin auth ok" || { echo "devin auth NOT ready"; false; }
 ```
 
-Set `DISPATCH_TOKEN` as a human-owned PAT or GitHub App posting-token secret,
-and set `DISPATCH_TOKEN_EXPIRES_AT` as a repository variable with the expiry
-date in `YYYY-MM-DD` format, or `never` when the token has no expiration date.
-Runner jobs can post with `GITHUB_TOKEN`, but GitHub does not trigger
-`issue_comment` labeler workflows for comments created by the built-in token,
-so the labels will not flip without that posting token.
+Local Claude and Codex merge-authority audits normally publish through
+`.github/workflows/local-audit-publication.yml`. The self-hosted audit job uses
+its short-lived `GITHUB_TOKEN` to dispatch this default-branch workflow. The
+publisher posts as `github-actions[bot]`; the completed run wakes the existing
+labelers and gate through `workflow_run`, without relying on bot comment events.
+No additional bot account or long-lived bot credential is needed.
+
+For direct compatibility posting and other build-loop operations, keep the
+existing `DISPATCH_TOKEN` and expiry configuration. Direct human-authored audits
+still have the normal account-based reviewer floor.
+
+## Verified workflow publication
+
+Install the publisher, both updated labelers, gate, and generated `tools/`
+helpers together on the **default branch** before enabling the new wrapper.
+Use a source/candidate installation containing this feature until a release
+includes it; installing the currently pinned release alone does not activate
+new publication code. No release or deployment is performed by this setup.
+
+Claude/Codex CLI runs default to `--publication workflow`. To publish a saved
+structured verdict without invoking either provider again:
+
+```bash
+tools/run_claude_audit_pr.sh --publish-verdict-artifact /path/to/verdict.json
+tools/run_codex_audit_pr.sh --publish-verdict-artifact /path/to/verdict.json
+```
+
+The caller needs repository-dispatch access (Contents write), Pull requests read,
+Issues read and Actions read. The generated runner workflow grants these to its
+short-lived token. A local caller can use its existing authenticated token with
+those permissions. Publication waits up to 15 minutes for the terminal run and
+its verified comment. A dispatch timeout is an unknown delivery result: inspect
+the existing run and PR reservation before retrying. Do not rerun the model just
+to recover a publication result.
+
+Only canonical metadata leaves the machine: schema, numeric repository ID, PR
+number, reviewer lane, PASS/BLOCKED, full start/end head SHAs and artifact creation
+time. The repository name, comment prose, findings, code, prompts, transcript,
+paths and provider output stay local. The SHA-256 digest covers those exact
+canonical metadata bytes. The publisher accepts only equal full start/end SHAs,
+an open PR at that SHA, and artifacts no more than 24 hours old. UNKNOWN, STALE,
+quarantined, informational and context-bound artifacts cannot be promoted by
+this transport. Context-bound reviews retain their context-aware direct path;
+publication does not strip a context requirement into an unbound PASS.
+
+The publisher runs immutable default-branch code on GitHub's hosted runner and
+never checks out a PR. It creates a neutral reservation, rechecks the head,
+posts the existing lane trailer and `CODE_MOWER_AUDIT_RUN`, then checks the head
+again. An immutable receipt job binds the metadata digest to the created comment
+ID and publishing run. Consumers require successful run completion and that
+receipt; a copied or edited comment cannot acquire that binding. Reservations
+and successful run receipts reject a second publication of the same metadata.
+Deleting a comment does not make its receipt reusable. Re-running a workflow
+attempt is refused. Keep receipts and reservations for at least the 24-hour
+artifact lifetime. The global publication concurrency group serializes claims;
+GitHub may cancel an older queued dispatch, which requires inspecting its result.
+
+Dispatch access is the trust boundary for the local reviewer's assertion. The
+workflow verifies the assertion's structure and binding, not whether a model
+actually reviewed the code. Only trusted operators/supervised wrappers should
+have dispatch permission. It does not waive builder-lineage or context checks.
+
+For an explicit emergency/compatibility path, use `--publication direct` on a
+new audit or `--repost-verdict-artifact` to repost a saved direct comment. Those
+paths do not create the new workflow attestation and may require the existing
+owner decision process. There is no automatic fallback to direct posting.
 
 ## Wrapper Contract
 
-The Codex and Claude audit wrappers need a GitHub posting token and a separate
+The Codex and Claude audit wrappers need a GitHub token and a separate
 PR-head checkout.
 
 Token input must use one of these forms:

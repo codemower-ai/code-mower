@@ -11,7 +11,9 @@ on:
     types: [opened, synchronize, labeled]
 
 permissions:
-  contents: read
+  actions: read
+  # repository_dispatch publication uses only this short-lived workflow token.
+  contents: write
   issues: write
   pull-requests: write
 
@@ -134,8 +136,8 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
-          export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
+          export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"
           labels_file="${RUNNER_TEMP}/code-mower-local-audit-labels.txt"
           gh pr view "${PR_NUMBER}" \
             --repo "${GITHUB_REPOSITORY}" \
@@ -158,10 +160,11 @@ jobs:
             exit 1
           fi
 
-          token="${!CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV:-}"
-          if [ -z "${token}" ]; then
-            token="${GITHUB_TOKEN:-}"
-          fi
+          case "${CODE_MOWER_LOCAL_AUDIT_LANE}" in
+            codex|claude) token="${GITHUB_TOKEN:-}" ;;
+            *) token="${!CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV:-}"
+               token="${token:-${GITHUB_TOKEN:-}}" ;;
+          esac
           if [ -z "${token}" ]; then
             echo "::error::No GitHub token available for ${CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME} audit"
             exit 1

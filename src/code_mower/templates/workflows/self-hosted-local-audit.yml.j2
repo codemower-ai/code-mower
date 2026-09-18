@@ -11,7 +11,9 @@ on:
     types: [opened, synchronize, labeled]
 
 permissions:
-  contents: read
+  actions: read
+  # repository_dispatch publication uses only this short-lived workflow token.
+  contents: write
   issues: write
   pull-requests: write
 
@@ -156,10 +158,11 @@ __LOCAL_AUDIT_TOKEN_ENV_ASSIGNMENTS__
             exit 1
           fi
 
-          token="${!CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV:-}"
-          if [ -z "${token}" ]; then
-            token="${GITHUB_TOKEN:-}"
-          fi
+          case "${CODE_MOWER_LOCAL_AUDIT_LANE}" in
+            codex|claude) token="${GITHUB_TOKEN:-}" ;;
+            *) token="${!CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV:-}"
+               token="${token:-${GITHUB_TOKEN:-}}" ;;
+          esac
           if [ -z "${token}" ]; then
             echo "::error::No GitHub token available for ${CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME} audit"
             exit 1

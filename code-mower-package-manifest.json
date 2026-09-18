@@ -374,6 +374,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/audit_publication.py",
+      "target": "src/code_mower/audit_publication.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/blind_review_artifacts.py",
       "target": "src/code_mower/blind_review_artifacts.py"
     },
@@ -1209,7 +1214,7 @@
     },
     {
       "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/__init__.py",
+      "source": "tools/lane_configs/__init__.py",
       "target": "src/code_mower/lane_configs/__init__.py"
     },
     {
@@ -1224,12 +1229,12 @@
     },
     {
       "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/claude.py",
+      "source": "tools/lane_configs/claude.py",
       "target": "src/code_mower/lane_configs/claude.py"
     },
     {
       "kind": "lane-config",
-      "source": "src/code_mower/lane_configs/codex.py",
+      "source": "tools/lane_configs/codex.py",
       "target": "src/code_mower/lane_configs/codex.py"
     },
     {
@@ -1870,6 +1875,11 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "src/code_mower/templates/workflows/local-audit-publication.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "src/code_mower/templates/workflows/local-cli-audit.yml.j2"
     },
     {
@@ -1919,7 +1929,7 @@
     },
     {
       "kind": "labeler",
-      "source": "src/code_mower/trailer_comment_labeler.py",
+      "source": "tools/trailer_comment_labeler.py",
       "target": "src/code_mower/trailer_comment_labeler.py"
     },
     {
@@ -2185,6 +2195,11 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "templates/workflows/local-audit-publication.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "templates/workflows/local-cli-audit.yml.j2"
     },
     {
@@ -2211,6 +2226,11 @@
       "kind": "workflow",
       "source": "generated",
       "target": "templates/workflows/trailer-comment-labeler.yml.j2"
+    },
+    {
+      "kind": "core",
+      "source": "tools/audit_publication.py",
+      "target": "tools/audit_publication.py"
     },
     {
       "kind": "core",

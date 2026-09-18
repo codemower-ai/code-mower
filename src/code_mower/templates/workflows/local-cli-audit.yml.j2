@@ -26,7 +26,10 @@ jobs:
         run: |
           cat <<EOF
           Local CLI audit lanes should be run from a trusted checkout, then the
-          resulting audit comment should be posted back to PR #${PR_NUMBER}.
+          Claude/Codex merge-authority verdicts are published as metadata by the
+          trusted default-branch local-audit-publication.yml workflow. The wrapper
+          waits for a verified run receipt and comment on PR #${PR_NUMBER}.
+          Use --publication direct only for explicit emergency compatibility.
 
           Example command shapes:
             tools/run_codex_audit_pr.sh --repo "${GITHUB_REPOSITORY}" --pr "${PR_NUMBER}"
