@@ -15,7 +15,7 @@
     }]
   },
   "oauth_config": {
-    "redirect_urls": ["https://slack-oauth.messagebridge.app/callback"],
+    "redirect_urls": ["https://codemower-slack-oauth-ingress.code-mower.workers.dev/callback"],
     "scopes": {"bot": ["commands"]}
   },
   "settings": {

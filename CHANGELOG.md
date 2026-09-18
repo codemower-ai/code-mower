@@ -70,6 +70,13 @@ and the [qualification record](docs/v150-qualification.md).
 
 ### Fixed
 
+- The hosted Slack manifest now pins the dedicated production `workers.dev`
+  OAuth relay instead of a customer-zone custom domain. Cloudflare Security
+  Analytics samples all traffic for customer zones and can retain OAuth query
+  strings even when Worker logs and traces are disabled; the production route
+  keeps preview URLs, custom domains, and zone routes out of the callback path
+  (#1037). The prior v1.5.0 candidate is invalidated and must be rebuilt.
+
 - Release publication now checks the selected tag against package metadata,
   the opening README release statement, and the active CHANGELOG entry before
   either TestPyPI or PyPI can run. The same release-readiness check runs in CI
