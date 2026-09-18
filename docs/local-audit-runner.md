@@ -147,6 +147,19 @@ its verified comment. A dispatch timeout is an unknown delivery result: inspect
 the existing run and PR reservation before retrying. Do not rerun the model just
 to recover a publication result.
 
+Failed publisher commands emit exactly one bounded line:
+`Local audit publication refused [CODE].` Look up the code in `REFUSAL_CODES`
+in `tools/audit_publication.py` at the publication run's immutable workflow SHA.
+For example, `INVALID_DISPATCH_SCHEMA` identifies the dispatch payload shape,
+`WRONG_WORKFLOW_REF_ATTEMPT` identifies the hosted workflow environment binding,
+and `SOURCE_REVIEWER_SEAL_MISSING_OR_AMBIGUOUS` identifies the source seal check.
+The catalog contains only fixed reason/code literals; it never prints submitted
+values, exception text, response bodies, tokens, URLs, paths or identities.
+Unrecognized reasons and unexpected exceptions emit `INTERNAL_ERROR` with no
+traceback. A code does not relax any publication check or authorize a retry:
+inspect the existing reservation and receipt first, then reuse the same sealed
+metadata only while its original head and freshness checks still hold.
+
 Only canonical metadata leaves the machine: schema, numeric repository ID, PR
 number, reviewer lane, PASS/BLOCKED, full start/end head SHAs, artifact creation
 time, and the originating audit run ID/attempt. The repository name, comment prose, findings, code, prompts, transcript,

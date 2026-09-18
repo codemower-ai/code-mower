@@ -1,0 +1,30 @@
+{
+  "_metadata": {"major_version": 1, "minor_version": 1},
+  "display_information": {
+    "name": "Code Mower",
+    "description": "Private requests to a qualified Code Mower supervisor"
+  },
+  "features": {
+    "bot_user": {"display_name": "Code Mower", "always_online": false},
+    "slash_commands": [{
+      "command": "/codemower",
+      "url": "https://codemower.com/api/slack/commands",
+      "description": "Request a private supervised task action",
+      "usage_hint": "help|start|status|answer|cancel [alias]",
+      "should_escape": false
+    }]
+  },
+  "oauth_config": {
+    "redirect_urls": ["https://codemower.com/api/slack/oauth/callback"],
+    "scopes": {"bot": ["commands"]}
+  },
+  "settings": {
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://codemower.com/api/slack/interactions"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": true
+  }
+}

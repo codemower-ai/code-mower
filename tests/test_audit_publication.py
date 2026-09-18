@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
+from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 from functools import partial
+from io import BytesIO, StringIO
 import json
 import os
 from pathlib import Path
@@ -15,6 +18,7 @@ import textwrap
 import time
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from code_mower import audit_publication as pub, audit_labeler_lib as lib
 from code_mower import claude_audit_pr, codex_audit_pr, config, init, package
@@ -210,6 +214,233 @@ class MemoryGitHub:
         if path == "/issues/42/comments":
             return deepcopy(self.comments)
         raise AssertionError(path)
+
+
+class DiagnosticTests(unittest.TestCase):
+    PRIVATE = (
+        "PRIVATE_SENTINEL fixture-token /private/submitted/path "
+        "https://example.invalid/secret?token=fixture-token actor@example.invalid "
+        "\n::error::forged diagnostic\x1b[31m"
+    )
+
+    def check_main(self, code, *, api=None, event=None, env=None, raw=None):
+        api = api or MemoryGitHub()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            event_path, output_path = root / "private-event.json", root / "output"
+            event_path.write_text(
+                raw if raw is not None else json.dumps(event_for(api.value) if event is None else event)
+            )
+            stdout, stderr = StringIO(), StringIO()
+            with (
+                patch.dict(
+                    os.environ,
+                    environment() | {
+                        "GITHUB_REPOSITORY": REPO,
+                        "GH_TOKEN": "fixture-token",
+                        "GITHUB_EVENT_PATH": str(event_path),
+                        "GITHUB_OUTPUT": str(output_path),
+                    } | (env or {}),
+                    clear=True,
+                ),
+                patch.object(sys, "argv", ["audit_publication.py", "publish"]),
+                patch.object(pub, "GitHub", return_value=api),
+                patch.object(pub.time, "time", return_value=NOW),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                self.assertEqual(pub.main(), 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(stderr.getvalue(), f"Local audit publication refused [{code}].\n")
+            self.assertFalse(output_path.exists())
+        return api
+
+    def test_every_refusal_has_a_literal_catalog_code(self):
+        tree = ast.parse((ROOT / "src/code_mower/audit_publication.py").read_text())
+        catalog = next(
+            node.value for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "REFUSAL_CODES" for t in node.targets)
+        )
+        self.assertIsInstance(catalog, ast.Dict)
+        for node in catalog.keys + catalog.values:
+            self.assertIsInstance(node, ast.Constant)
+            self.assertIs(type(node.value), str)
+        codes = ast.literal_eval(catalog)
+        self.assertEqual(codes, pub.REFUSAL_CODES)
+        self.assertEqual(len(codes), len(catalog.keys))
+        self.assertEqual(len(set(codes.values())), len(codes))
+        for code in codes.values():
+            self.assertRegex(code, r"^[A-Z][A-Z0-9_]{0,63}$")
+            self.assertNotEqual(code, "INTERNAL_ERROR")
+
+        reasons = set()
+        for function in tree.body:
+            if not isinstance(function, (ast.FunctionDef, ast.ClassDef)):
+                continue
+            for node in ast.walk(function):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                    continue
+                if node.func.id not in ("require", "Refused"):
+                    continue
+                self.assertEqual(node.keywords, [])
+                self.assertEqual(len(node.args), 2 if node.func.id == "require" else 1)
+                reason = node.args[-1]
+                if function.name == "require":
+                    self.assertEqual(node.func.id, "Refused")
+                    self.assertEqual(ast.dump(reason), ast.dump(ast.Name(id="reason", ctx=ast.Load())))
+                else:
+                    self.assertIsInstance(reason, ast.Constant, f"dynamic refusal at {node.lineno}")
+                    self.assertIs(type(reason.value), str)
+                    reasons.add(reason.value)
+        self.assertEqual(reasons, set(codes))
+
+    def test_diagnostic_boundary_only_selects_catalog_literals(self):
+        # Pin the small output boundary: no str/repr/format of an exception,
+        # traceback, payload access or new logging sink can slip into it.
+        tree = ast.parse((ROOT / "src/code_mower/audit_publication.py").read_text())
+        selector = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "refusal_code")
+        expected = ast.parse('''
+def refusal_code(error):
+    if type(error) is Refused and len(error.args) == 1 and type(error.args[0]) is str:
+        return REFUSAL_CODES.get(error.args[0], "INTERNAL_ERROR")
+    return "INTERNAL_ERROR"
+''').body[0]
+        self.assertEqual(
+            [ast.dump(n) for n in selector.body[1:]],
+            [ast.dump(n) for n in expected.body],
+        )
+        main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+        self.assertEqual(len(main.body), 1)
+        self.assertIsInstance(main.body[0], ast.Try)
+        self.assertEqual(main.body[0].orelse, [])
+        self.assertEqual(main.body[0].finalbody, [])
+        expected_handler = ast.parse('''
+try:
+    pass
+except Exception as error:
+    print(f"Local audit publication refused [{refusal_code(error)}].", file=sys.stderr)
+    return 1
+''').body[0].handlers
+        self.assertEqual(
+            [ast.dump(n) for n in main.body[0].handlers],
+            [ast.dump(n) for n in expected_handler],
+        )
+        prints = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "print"]
+        self.assertEqual(len(prints), 1)
+
+    def test_every_allowlisted_reason_emits_only_its_stable_code(self):
+        for reason, code in pub.REFUSAL_CODES.items():
+            with self.subTest(code=code), patch.object(pub, "publish", side_effect=pub.Refused(reason)):
+                api = self.check_main(code)
+                self.assertEqual(api.writes, [])
+
+    def test_dynamic_reasons_objects_and_subclasses_remain_internal(self):
+        def forbidden(*args, **kwargs):
+            self.fail("diagnostic evaluated an untrusted exception or reason")
+
+        class HostileReason:
+            __str__ = __repr__ = __eq__ = __hash__ = forbidden
+
+        class HostileString(str):
+            __str__ = __repr__ = __eq__ = __hash__ = forbidden
+
+        class HostileRefused(pub.Refused):
+            __getattribute__ = __str__ = __repr__ = forbidden
+
+        reasons = [
+            (), (self.PRIVATE,), ("invalid JSON", self.PRIVATE),
+            (None,), (42,), ([self.PRIVATE],), ({"invalid JSON": self.PRIVATE},),
+            (self.PRIVATE.encode(),), (HostileReason(),), (HostileString("invalid JSON"),),
+        ]
+        reasons.extend((reason + self.PRIVATE,) for reason in pub.REFUSAL_CODES)
+        errors = [pub.Refused(*args) for args in reasons]
+        errors.append(HostileRefused("invalid JSON"))
+        for index, error in enumerate(errors):
+            with self.subTest(index=index), patch.object(pub, "publish", side_effect=error):
+                self.check_main("INTERNAL_ERROR")
+        with (
+            patch.object(pub.Refused, "__str__", forbidden),
+            patch.object(pub, "publish", side_effect=pub.Refused("invalid JSON")),
+        ):
+            self.check_main("INVALID_JSON")
+
+    def test_non_refused_exceptions_never_disclose_text_even_when_allowlisted(self):
+        for error in (
+            ValueError("invalid JSON"), RuntimeError(self.PRIVATE), KeyError(self.PRIVATE),
+            OSError(13, self.PRIVATE, "/private/submitted/path"),
+            HTTPError("https://example.invalid/secret", 403, self.PRIVATE, {}, BytesIO(self.PRIVATE.encode())),
+            UnicodeDecodeError("utf-8", self.PRIVATE.encode(), 0, 1, self.PRIVATE),
+        ):
+            if isinstance(error, HTTPError):
+                self.addCleanup(error.close)
+            with self.subTest(kind=type(error).__name__), patch.object(pub, "publish", side_effect=error):
+                self.check_main("INTERNAL_ERROR")
+
+    def test_standalone_helper_reports_safe_codes_without_site_packages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            event_path = Path(tmp) / "private-event.json"
+            env = os.environ | {
+                "GITHUB_REPOSITORY": REPO,
+                "GH_TOKEN": "fixture-token",
+                "GITHUB_EVENT_NAME": "repository_dispatch",
+                "GITHUB_EVENT_PATH": str(event_path),
+            }
+            for raw, code in (
+                (self.PRIVATE, "INVALID_JSON"),
+                (json.dumps({"action": self.PRIVATE}), "WRONG_DISPATCH_EVENT"),
+                ("[]", "INTERNAL_ERROR"),
+            ):
+                with self.subTest(code=code):
+                    event_path.write_text(raw)
+                    result = subprocess.run(
+                        [sys.executable, "-I", "-S", str(ROOT / "tools/audit_publication.py"), "publish"],
+                        env=env, capture_output=True, text=True, timeout=15,
+                    )
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(result.stdout, "")
+                    self.assertEqual(result.stderr, f"Local audit publication refused [{code}].\n")
+
+    def test_real_publisher_refusals_hide_payloads_and_environment(self):
+        event = event_for(artifact())
+        cases = [
+            ({"event": event | {"action": self.PRIVATE}}, "WRONG_DISPATCH_EVENT"),
+            ({"event": event | {"client_payload": {"private": self.PRIVATE}}}, "INVALID_DISPATCH_SCHEMA"),
+            ({"event": event | {"client_payload": event["client_payload"] | {"artifact": self.PRIVATE}}}, "INVALID_JSON"),
+            ({"event": event | {"client_payload": event["client_payload"] | {"digest": self.PRIVATE}}}, "PUBLICATION_DIGEST_MISMATCH"),
+            ({"event": event_for(artifact(lane=self.PRIVATE))}, "UNSUPPORTED_REVIEWER_LANE"),
+            ({"event": event_for(artifact(head_sha_start=self.PRIVATE))}, "AUDIT_HEAD_CHANGED"),
+            ({"env": {"GITHUB_WORKFLOW_REF": self.PRIVATE}}, "WRONG_WORKFLOW_REF_ATTEMPT"),
+            ({"env": {"GITHUB_EVENT_PATH": "/nonexistent/private-event.json"}}, "INTERNAL_ERROR"),
+            ({"raw": "[" * (pub.MAX_EVENT_BYTES + 1)}, "INPUT_SIZE_LIMIT"),
+            ({"raw": self.PRIVATE}, "INVALID_JSON"),
+            ({"raw": "[]"}, "INTERNAL_ERROR"),
+        ]
+        for kwargs, code in cases:
+            with self.subTest(code=code):
+                self.assertEqual(self.check_main(code, **kwargs).writes, [])
+        for key, code in (("path", "UNTRUSTED_WORKFLOW_EVENT"), ("name", "UNTRUSTED_WORKFLOW_NAME")):
+            api = MemoryGitHub()
+            api.run[key] = self.PRIVATE
+            self.assertEqual(self.check_main(code, api=api).writes, [])
+        api = MemoryGitHub()
+        with patch.object(api, "request", return_value={"private": self.PRIVATE}):
+            self.check_main("WRONG_DISPATCH_REPOSITORY", api=api)
+        self.assertEqual(api.writes, [])
+
+    def test_cleanup_still_runs_before_bounded_failure(self):
+        api = MemoryGitHub()
+        api.move_at = 2
+        self.check_main("PR_TARGET_HEAD_CHANGED", api=api)
+        self.assertEqual([method for method, _, _ in api.writes], ["POST", "PATCH"])
+        self.assertIn("Publication failed closed.", api.comments[0]["body"])
+        self.assertNotIn(pub.MARKER, api.comments[0]["body"])
+        api = MemoryGitHub()
+        api.fail_patch = True
+        self.check_main("INTERNAL_ERROR", api=api)
+        self.assertEqual([method for method, _, _ in api.writes], ["POST", "PATCH", "PATCH"])
+        self.assertIn("Publication failed closed.", api.comments[0]["body"])
+        self.assertNotIn(pub.MARKER, api.comments[0]["body"])
 
 
 class ContractTests(unittest.TestCase):

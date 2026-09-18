@@ -239,6 +239,11 @@
     },
     {
       "kind": "doc",
+      "source": "docs/slack-setup.md",
+      "target": "docs/slack-setup.md"
+    },
+    {
+      "kind": "doc",
       "source": "docs/supervisor-contract.md",
       "target": "docs/supervisor-contract.md"
     },
@@ -1609,6 +1614,16 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/slack_readiness.py",
+      "target": "src/code_mower/slack_readiness.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/slack_setup.py",
+      "target": "src/code_mower/slack_setup.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/supervisor.py",
       "target": "src/code_mower/supervisor.py"
     },
@@ -1821,6 +1836,11 @@
       "kind": "template",
       "source": "src/code_mower/templates/slack/app-manifest.json",
       "target": "src/code_mower/templates/slack/app-manifest.json"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/templates/slack/hosted-app-manifest.json",
+      "target": "src/code_mower/templates/slack/hosted-app-manifest.json"
     },
     {
       "kind": "workflow",

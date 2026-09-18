@@ -154,7 +154,16 @@ _DOCTOR_COMPAT_EXPORTS = (
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Slack has a deliberately separate output boundary: generic doctor output
+    # includes repository paths and provider details unsuitable for this surface.
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if "--slack" in raw_args:
+        from code_mower import slack_setup
+
+        raw_args.remove("--slack")
+        return slack_setup.main(["doctor", *raw_args])
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--slack", action="store_true", help="Run only the optional redacted Slack doctor; use --slack --help for probe options.")
     parser.add_argument('--context-online', action='store_true', help='Deliberately verify selected context authorization; never searches')
     parser.add_argument('--context-state-dir', type=Path, help='Private context store outside repositories')
     # Defaulted after parsing so that an explicit positional selection stays

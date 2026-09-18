@@ -548,6 +548,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                 "reviewer-metrics",
                 "saas-reviewer-labeler",
                 "session",
+                "slack",
                 "telemetry",
                 "trailer-comment-labeler",
                 "tracker",
