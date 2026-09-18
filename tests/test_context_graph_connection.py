@@ -897,6 +897,27 @@ class SearchReadinessTests(unittest.TestCase):
         self.assertEqual(context.summary["reason"], "unreadable")
         self.assert_private(readiness, status, report, context.summary)
 
+    def test_a_disconnected_status_does_not_read_the_graph(self) -> None:
+        """Disconnected cannot search, so the reader check is not paid for."""
+        self.publish(doc_ref_document())
+        store = self.connected()
+        with patch.object(query, "read_graph", wraps=query.read_graph) as reader:
+            report = connection.status(store, "local-graph", root=self.private)
+            self.assertEqual(reader.call_count, 1)
+            self.assertEqual(report["query_reader"]["reader"], "compatible")
+            connection.disconnect(store, "local-graph")
+            reader.reset_mock()
+            report = connection.status(store, "local-graph", root=self.private)
+        reader.assert_not_called()
+        self.assertEqual(report["query_reader"], {
+            "schema": query.READINESS_SCHEMA, "search": "unavailable",
+            "reader": "not_checked", "reason": "disconnected",
+        })
+        self.assertEqual((report["search"], report["authorization"]), ("unavailable", "unavailable"))
+        # The generation's own verdict is still reported beside it.
+        self.assertEqual(report["graph"]["state"], "current")
+        self.assert_private(report)
+
     def test_a_bounded_partial_query_stays_available_and_says_why(self) -> None:
         """Partial answer, complete generation: two facts, reported apart."""
         document = wide_graph_document(7)

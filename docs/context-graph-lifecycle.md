@@ -600,6 +600,7 @@ place of it:
 | --- | --- | --- | --- |
 | `available` | `compatible` | The reader consumed the generation; a query can answer from it. | none |
 | `unavailable` | `not_checked` | The generation is not usable; `reason` repeats its state. | build or refresh |
+| `unavailable` | `not_checked` | `connection-status` only: the connection is disconnected (`reason: disconnected`), so the graph is not read. | reconnect |
 | `unavailable` | `incompatible` | Known provider/reader mismatch. `remediation` names the installed Code Mower, the generation's provider release and the required Code Mower release, when one is known. | upgrade Code Mower, or rebuild with a reviewed provider release |
 | `unavailable` | `unreadable` | The reader has no account of what the generation contains, for example an unknown node type from the reviewed provider release. Fails closed. | treat as a defect; do not work around it |
 

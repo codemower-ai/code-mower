@@ -164,10 +164,15 @@ def status(store: ContextStore, name: str, *, root: Path | None = None,
     report = lifecycle.graph_status(repository, root=root, revision=revision)
     # The query's own read, not the lifecycle's verdict alone: a current,
     # complete generation this reader cannot consume must not be reported as
-    # searchable and then fail on the first question asked of it.
-    readiness = query.search_readiness(lifecycle.GraphStateRoot(repository, root=root), report)
+    # searchable and then fail on the first question asked of it. A
+    # disconnected connection cannot search whatever the reader says, so the
+    # graph artifact is not opened for it.
     verified = state["state"] == "verified"
-    search = readiness["search"] if verified else query.SEARCH_UNAVAILABLE
+    if verified:
+        readiness = query.search_readiness(lifecycle.GraphStateRoot(repository, root=root), report)
+    else:
+        readiness = query.reader_not_checked("disconnected")
+    search = readiness["search"]
     return {**_summary(state, search=search), "graph": report.shareable_summary(),
             "query_reader": readiness,
             "authorization": "available" if verified and report.usable

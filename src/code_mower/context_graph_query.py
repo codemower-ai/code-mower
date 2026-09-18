@@ -960,6 +960,12 @@ SEARCH_AVAILABLE = "available"
 SEARCH_UNAVAILABLE = "unavailable"
 
 
+def reader_not_checked(reason: str) -> dict[str, Any]:
+    """The readiness verdict when the graph was not opened: never searchable."""
+    return {"schema": READINESS_SCHEMA, "search": SEARCH_UNAVAILABLE,
+            "reader": "not_checked", "reason": reason}
+
+
 def search_readiness(state: lifecycle.GraphStateRoot, status: lifecycle.GenerationStatus) -> dict[str, Any]:
     """Whether the installed reader can answer from the published generation.
 
@@ -975,8 +981,7 @@ def search_readiness(state: lifecycle.GraphStateRoot, status: lifecycle.Generati
     remediation, which names releases and never graph content or paths.
     """
     if not status.usable:
-        return {"schema": READINESS_SCHEMA, "search": SEARCH_UNAVAILABLE,
-                "reader": "not_checked", "reason": status.state}
+        return reader_not_checked(status.state)
     try:
         read_graph(state, status)
     except ReaderIncompatible as error:
@@ -1690,6 +1695,7 @@ __all__: Sequence[str] = (
     "graph_context",
     "load_graph",
     "read_graph",
+    "reader_not_checked",
     "run_query",
     "search_readiness",
 )
