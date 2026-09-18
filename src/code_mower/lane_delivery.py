@@ -2324,7 +2324,12 @@ def _start_creation_round(args, *, io=None, runtime_observation=None):
         raise LaneDeliveryError("Creation lineage requires the supervised writer bindings and a private store")
     if args.lineage_before or args.lineage_handoff:
         raise LaneDeliveryError("Creation lineage has no pre-existing pull request target")
-    config, identity, authorities = trusted_policy(args.cwd, args.lineage_base)
+    # The runner names the checkout by whatever path its work root spells, and
+    # that may run through a symlink (``/tmp`` on macOS). The round is bound to
+    # the canonical checkout, exactly as ``LocalWriter.register`` records it,
+    # rather than refused for the spelling it was handed.
+    checkout = Path(args.cwd).resolve()
+    config, identity, authorities = trusted_policy(checkout, args.lineage_base)
     transport = Transport(args.writer_lane, "devin_cli" if args.writer_lane == "devin" else args.writer_lane,
                           args.writer_lane + "_cli", "local_cli")
     prefixes = [prefix for prefix, lane in identity.branch_prefixes if lane == transport.lane]
@@ -2339,11 +2344,11 @@ def _start_creation_round(args, *, io=None, runtime_observation=None):
                                        args.lineage_branch)
     if runtime_observation is None:
         def runtime_observation():
-            lane_runtime.prepare(args.cwd, sys.executable)
+            lane_runtime.prepare(checkout, sys.executable)
             return "ready"
     store = ProducerStore(args.lineage_store)
     observer = LineageCreationRound(args.writer_state_dir, args.writer, args.lineage_writer,
-        origin, transport, args.cwd, config=config, runtime_observation=runtime_observation)
+        origin, transport, checkout, config=config, runtime_observation=runtime_observation)
 
     def finish(result):
         from .builder_runs import record_lineage_builder
