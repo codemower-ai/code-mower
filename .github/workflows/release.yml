@@ -121,7 +121,8 @@ jobs:
           assert pr['state'] == 'MERGED' and pr['mergeCommit']['oid'] == os.environ['SOURCE_SHA']
           evidence = json.loads(Path('candidate/rehearsal.json').read_text())
           assert evidence['status'] == 'pass' and evidence['source_sha'] == os.environ['SOURCE_SHA']
-          assert evidence['artifact_sha256'] == candidate['artifacts']['code_mower-1.5.0-py3-none-any.whl']
+          wheel_name, = (name for name in candidate['artifacts'] if name.endswith('.whl'))
+          assert evidence['artifact_sha256'] == candidate['artifacts'][wheel_name]
           PY
           mkdir dist
           cp candidate/*.whl candidate/*.tar.gz dist/

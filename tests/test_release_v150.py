@@ -79,6 +79,19 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "private archive"):
             candidate.inspect(self.dist)
 
+    def test_mixed_extra_marker_cannot_hide_a_default_dependency(self):
+        wheel = self.dist / candidate.NAMES[0]
+        with zipfile.ZipFile(wheel) as archive:
+            files = {name: archive.read(name) for name in archive.namelist()}
+        files["code_mower-1.5.0.dist-info/METADATA"] += (
+            b'Requires-Dist: slack-sdk; python_version >= "3.12" or extra == "coworker"\n'
+        )
+        with zipfile.ZipFile(wheel, "w") as archive:
+            for name, content in files.items():
+                archive.writestr(name, content)
+        with self.assertRaisesRegex(ValueError, "base dependencies"):
+            candidate.inspect(self.dist)
+
     def test_dirty_or_wrong_checkout_does_not_build(self):
         for outputs in (("b" * 40,), (SHA, " M README.md")):
             with self.subTest(outputs=outputs), patch.object(candidate, "run", side_effect=outputs), \
@@ -101,6 +114,12 @@ class ReleaseContractTests(unittest.TestCase):
             with self.subTest(text=bad[:10]), patch.object(release_readiness, "_read_text_if_exists", return_value=bad):
                 order, assertions = release_readiness._candidate_runbook_checks(ROOT)
                 self.assertTrue(order or assertions)
+
+    def test_later_versions_do_not_revert_to_building_at_publication(self):
+        with patch.object(release_readiness, "_python_package_version", return_value="1.5.1"):
+            checks = release_readiness.render_release_readiness(ROOT)["checks"]
+        check = next(c for c in checks if c["id"] == "distribution-build-and-verify")
+        self.assertEqual(check["status"], "pass")
 
     def test_historical_v14_records_are_unchanged(self):
         # Recorded from the parent release-prep baseline. No Git history needed in sdist tests.

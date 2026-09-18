@@ -1527,6 +1527,8 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     repo_path = repo_path.expanduser().resolve()
     workflow_path = repo_path / ".github" / "workflows" / "release.yml"
     workflow = _read_text_if_exists(workflow_path)
+    candidate_workflow = _read_text_if_exists(repo_path / ".github/workflows/release-candidate.yml")
+    candidate_workflow_used = bool(candidate_workflow)
     ci_workflow_path = repo_path / ".github" / "workflows" / "ci.yml"
     ci_workflow = _read_text_if_exists(ci_workflow_path)
     workflow_jobs = _workflow_jobs(workflow)
@@ -1763,13 +1765,12 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                     "  build-distributions:\n" in workflow
                     and "  verify-distributions:\n" in workflow
                     and "    needs: build-distributions\n" in workflow
-                    and ("python -m build" in workflow if version != "1.5.0" else (
+                    and ("python -m build" in workflow if not candidate_workflow_used else (
                         "python scripts/release_candidate.py verify" in workflow
                         and "--require-candidate" in workflow
                         and "--name code-mower-candidate" in workflow
                         and "python -m build" not in workflow
-                        and "python scripts/release_candidate.py build" in _read_text_if_exists(
-                            repo_path / ".github/workflows/release-candidate.yml")
+                        and "python scripts/release_candidate.py build" in candidate_workflow
                     ))
                     and "python -m twine check dist/*" in workflow
                 )

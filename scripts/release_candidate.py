@@ -52,7 +52,11 @@ def inspect(dist: Path):
         require(metadata["Name"] == "code-mower" and metadata["Version"] == VERSION,
                 "wheel identity mismatch")
         deps = metadata.get_all("Requires-Dist", [])
-        base_deps = [dep for dep in deps if "extra ==" not in dep]
+        # Only a solely extra-gated dependency may be excluded from the base
+        # inventory. A mixed marker (Python/platform OR extra) can install by
+        # default and must not accidentally hide an added Slack dependency.
+        base_deps = [dep for dep in deps if not re.fullmatch(
+            r"extra\s*==\s*['\"](?:coworker|test)['\"]", dep.partition(";")[2].strip())]
         require(sorted(dep.lower().split(">=")[0] for dep in base_deps) == ["packaging", "pyyaml"],
                 "unexpected base dependencies")
         for module in MODULES:
@@ -74,7 +78,8 @@ def inspect(dist: Path):
     for names in (wheel_names, sdist_names):
         require(len(names) == len(set(names)), "duplicate archive paths")
         require(all(not name.startswith("/") and not
-                    ({"..", ".git", ".code-mower", "__pycache__", ".env"} & set(name.split("/")))
+                    ({"..", ".git", ".code-mower", ".graph", ".graphify", "graphify-out",
+                      "__pycache__", ".env"} & set(name.split("/")))
                     and not name.endswith((".pyc", ".pyo")) for name in names),
                 "unsafe or private archive inventory")
     return {"wheel_files": sorted(wheel_names), "sdist_files": sorted(sdist_names),

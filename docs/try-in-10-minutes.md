@@ -91,9 +91,9 @@ with `code-mower session lease renew --session-id SESSION_ID` if work continues;
 for a preview or `--no-lease` for a saved read-only brief. Participant selection
 alone does not qualify an orchestrator; Devin requires a qualified supervisor.
 Role admission and exact startup lease commands shipped in the published
-`v1.4.1` artifact; the published `v1.5.0` release inherits them unchanged and
+`v1.4.1` artifact; the published `v1.4.2` release inherits them unchanged and
 adds only the Board clarity work described in
-[the v1.5.0 release notes](v150-release-notes.md).
+[the v1.4.2 release notes](v142-release-notes.md).
 These commands do not alter the published `v1.4.0` artifact.
 
 Run this from a clean checkout of the repository you want to pilot:
