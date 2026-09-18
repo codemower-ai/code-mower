@@ -317,6 +317,7 @@ class GeneratedRunnerTests(unittest.TestCase):
                         base_sha: str | None = None,
                         supervise_log: Path | None = None,
                         trusted_creation_prefixes: tuple[str, ...] = ("codex/",),
+                        creation_branch_prs: str = "[]",
                         eligibility_log: Path | None = None,
                         unknown_eligibility_subcommand: bool = False,
                         lineage_store_pr: int | None = None,
@@ -487,13 +488,23 @@ printf 'fake codex completed\\n'
                 # output only follows when publication ran to completion.
                 #
                 # ``trusted_creation_prefixes`` is what the target repository's
-                # immutable-base policy declares for this lane, which is the only
-                # thing `creation-eligible` answers from. It is deliberately not
-                # the runner's own generated prefix set: an empty tuple is the
-                # shipped-example case where `builder_identity.branch_prefixes`
-                # names other lanes only, and the runner must still reach the
-                # ordinary bootstrap there. The refusal text mirrors the real
-                # subcommand's, which `tests/test_lineage_creation.py` pins.
+                # immutable-base policy declares for this lane, and
+                # ``creation_branch_prs`` is what the repository answers when
+                # the reservation asks whether any pull request was ever opened
+                # from the branch. Those are the two things `creation-eligible`
+                # answers from, and neither is anything the runner can see for
+                # itself: the prefixes are deliberately not the runner's own
+                # generated set -- an empty tuple is the shipped-example case
+                # where `builder_identity.branch_prefixes` names other lanes
+                # only -- and a closed pull request on a deleted branch is
+                # invisible to the runner's `git ls-remote`. The runner must
+                # reach the ordinary bootstrap in both cases. The refusal texts
+                # mirror the real subcommand's, which
+                # `tests/test_lineage_creation.py` pins.
+                #
+                # The stub also refuses a probe that does not name the
+                # repository under test, so no row can pass a creation round
+                # while the reservation is asked about the wrong repository.
                 recorder.write_text(
                     """#!/usr/bin/env bash
 set -euo pipefail
@@ -505,14 +516,18 @@ if [ "${1:-}" = "creation-eligible" ]; then
     exit 2
   fi
   eligible_branch=""
+  eligible_repo=""
   eligible_skip=""
   for arg in "$@"; do
     if [ -n "$eligible_skip" ]; then
-      case "$eligible_skip" in --lineage-branch) eligible_branch="$arg" ;; esac
+      case "$eligible_skip" in
+        --lineage-branch) eligible_branch="$arg" ;;
+        --writer-repo) eligible_repo="$arg" ;;
+      esac
       eligible_skip=""
       continue
     fi
-    case "$arg" in --cwd|--lineage-base|--writer-lane|--lineage-branch) eligible_skip="$arg" ;; esac
+    case "$arg" in --cwd|--lineage-base|--writer-lane|--writer-repo|--lineage-branch) eligible_skip="$arg" ;; esac
   done
   eligible_prefixes=__TRUSTED_CREATION_PREFIXES__
   if [ "$(printf '%s\\n' "$eligible_prefixes" | jq -r 'length')" = "0" ]; then
@@ -522,6 +537,14 @@ if [ "${1:-}" = "creation-eligible" ]; then
   if ! printf '%s\\n' "$eligible_prefixes" | jq -e --arg branch "$eligible_branch" \
       'any(.[]; . as $p | ($branch | ascii_downcase | startswith($p)))' >/dev/null; then
     printf 'lane-delivery: %s\\n' "Reserved creation branch is outside this lane's configured prefixes" >&2
+    exit 2
+  fi
+  if [ "$eligible_repo" != "__REPO__" ]; then
+    printf 'lane-delivery: %s\\n' "Creation eligibility requires the target repository" >&2
+    exit 2
+  fi
+  if [ "$(printf '%s\\n' __CREATION_BRANCH_PRS__ | jq -r 'length')" != "0" ]; then
+    printf 'lane-delivery: %s\\n' "Reserved creation branch already has a pull request." >&2
     exit 2
   fi
   exit 0
@@ -582,6 +605,7 @@ exec __REAL_LANE_DELIVERY__ "$@"
    .replace("__ELIGIBILITY_LOG__",
             shlex.quote("" if eligibility_log is None else str(eligibility_log)))
    .replace("__UNKNOWN_ELIGIBILITY__", "1" if unknown_eligibility_subcommand else "")
+   .replace("__CREATION_BRANCH_PRS__", shlex.quote(creation_branch_prs))
    .replace("__DISCOVERED_CREATION_PR__",
             "" if discovered_creation_pr is None else str(discovered_creation_pr))
    .replace("__PUBLICATION_COMPLETES__", "1" if publication_completes else "")
@@ -750,6 +774,34 @@ exec __REAL_LANE_DELIVERY__ "$@"
         self.assertIn("push exactly the branch " + self.CREATED_BRANCH, prompt)
         self.assertEqual(guard["allowed_branch"], self.CREATED_BRANCH)
 
+    def test_a_branch_a_closed_pull_request_once_used_keeps_the_bootstrap(self) -> None:
+        # The issue's previous pull request was closed and its branch deleted,
+        # and the issue is rerun. Nothing closes the issue, `git ls-remote`
+        # advertises no ref, and the branch is inside the policy's prefixes --
+        # so every signal this runner can read for itself says bootstrap-
+        # eligible. The reservation still refuses that name for the pull request
+        # once opened from it, which is why the runner has to ask rather than
+        # decide: gating on its own view selected a round the supervisor then
+        # refused before launching the provider, taking away an ordinary
+        # replacement run that had always worked.
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, argv, prompt, guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE,
+            creation_branch_prs=json.dumps([{"number": 61, "state": "closed"}]))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        # The provider still ran under the supervisor; only the lineage
+        # selection is withheld, and the run is never refused.
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+        self.assertIn("Reserved creation branch already has a pull request.",
+                      completed.stdout)
+        self.assertIn("runs without creation lineage", completed.stdout)
+        # Write authority and the branch the writer is told to push are the
+        # resolved policy branch either way; only the attestation is dropped.
+        self.assertIn("push exactly the branch " + self.CREATED_BRANCH, prompt)
+        self.assertEqual(guard["allowed_branch"], self.CREATED_BRANCH)
+
     def test_an_installed_cli_without_the_eligibility_probe_keeps_the_bootstrap(self) -> None:
         # `creation-eligible` is newer than the released CLI the runner may be
         # sitting on, and argparse answers an unknown subcommand with exit 2.
@@ -782,6 +834,10 @@ exec __REAL_LANE_DELIVERY__ "$@"
         self.assertEqual(probe[0], "creation-eligible")
         self.assertEqual(self._flag(probe, "--lineage-base"), base)
         self.assertEqual(self._flag(probe, "--writer-lane"), "codex")
+        # And about the repository the branch would be reserved in: the
+        # reservation half of the answer is a read of that repository's pull
+        # requests and refs, not of anything on this host.
+        self.assertEqual(self._flag(probe, "--writer-repo"), "owner/repo")
         self.assertEqual(self._flag(probe, "--lineage-branch"), self.CREATED_BRANCH)
         self.assertTrue((self._flag(probe, "--cwd") or "").endswith("/codex/owner__repo"),
                         self._flag(probe, "--cwd"))
@@ -958,6 +1014,12 @@ exec __REAL_LANE_DELIVERY__ "$@"
                 self.assertIn('creation-eligible --cwd "$work"', text)
                 self.assertIn('--lineage-base "$lineage_base" --writer-lane "$LANE"', text)
                 self.assertIn('--lineage-branch "$resolved_branch"', text)
+                # Including the reservation half of that answer, which needs the
+                # repository: a copy asking only about prefixes cannot see a
+                # branch a closed pull request already used, and would select a
+                # round the reservation refuses before the writer starts.
+                self.assertIn('--writer-repo "$REPO"', text.split(
+                    "creation-eligible --cwd")[1].split("creation_refusal=\"$(printf")[0])
                 self.assertNotIn('"$lane_branch_prefixes_json"', text.split(
                     "# Creation lineage attests")[1].split("elif [ \"$issue_pr_status\" = \"lane\" ]")[0])
                 self.assertLess(

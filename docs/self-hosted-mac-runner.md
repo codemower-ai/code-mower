@@ -339,16 +339,23 @@ continues a pull request or a branch that already exists and keeps the
 long-standing no-PR bootstrap, with post-hoc attribution as before.
 
 That last condition is asked of the supervisor, with `creation-eligible`, about
-the checkout at the immutable base the round would be bound to. The runner's
-embedded branch prefixes cannot answer it: they are generated, and supply
-`<lane>/` for every locally executed lane whether or not the repository declares
-it, while a creation round admits only a prefix
-`builder_identity.branch_prefixes` actually declares at that base. Any answer
-other than an admitted reservation — a lane the policy declares no prefix for, a
-branch outside the declared ones, an unreadable policy, or an installed CLI that
+the checkout at the immutable base the round would be bound to and the
+repository the branch would be reserved in. The runner cannot answer either half
+itself. Its embedded branch prefixes are generated, and supply `<lane>/` for
+every locally executed lane whether or not the repository declares it, while a
+creation round admits only a prefix `builder_identity.branch_prefixes` actually
+declares at that base. Its view of the branch is a remote ref, while a round
+admits only a name no pull request was ever opened from: an issue whose previous
+pull request was closed and whose branch was then deleted resolves to the same
+name and advertises no ref, and reserving it is still refused. Any answer other
+than an admitted reservation — a lane the policy declares no prefix for, a branch
+outside the declared ones, a branch some pull request already used or something
+else already pushed, an unreadable policy or repository, or an installed CLI that
 does not know the subcommand — keeps the ordinary bootstrap instead of refusing
-the run. The probe reads only that configuration and writes nothing, so it has
-no effect of its own. The reserved branch is the same
+the run. The probe only reads that configuration and the repository's pull
+requests and refs, and writes nothing, so it has no effect of its own; the
+reservation is taken again at launch and that later read is what a round is held
+to. The reserved branch is the same
 one name the pre-push guard authorizes and the prompt tells the writer to push,
 so the writer never chooses it. Once a created pull request is observed, its
 private record moves from `lineage/<owner>__<name>/issue-<n>` onto the delivered

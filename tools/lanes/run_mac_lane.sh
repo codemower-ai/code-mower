@@ -916,26 +916,34 @@ if [ "$kind" = "issue" ] && [ -n "$repo_branch_template" ]; then
   # Creation lineage attests the pull request this run opens, so it applies to
   # exactly the bootstrap case: nothing closes the issue yet, the policy branch
   # exists nowhere on the remote, and the target repository's own trusted policy
-  # admits a reservation of that name. Every other issue run is a continuation
-  # of a pull request or a branch that already exists; the reservation in the
-  # creation contract refuses those anyway, and refusing them here as well would
-  # take away the no-PR bootstrap this runner has always performed. The one
-  # branch reserved for the round is the branch the guard already pins and the
-  # prompt already names, so the writer is never free to choose a different one.
+  # admits an exclusive reservation of that name. Every other issue run is a
+  # continuation of a pull request or a branch that already exists; the
+  # reservation in the creation contract refuses those anyway, and refusing them
+  # here as well would take away the no-PR bootstrap this runner has always
+  # performed. The one branch reserved for the round is the branch the guard
+  # already pins and the prompt already names, so the writer is never free to
+  # choose a different one.
   #
   # Eligibility is asked of the supervisor that will enforce it, against the
-  # immutable base this checkout sits on. This runner's own prefixes cannot
-  # answer it: they are generated, and supply `<lane>/` for every locally
-  # executed lane whether or not `builder_identity.branch_prefixes` declares it,
-  # while a creation round admits only a declared one. Gating on the generated
-  # set selected rounds the supervisor then refused before launching anything,
-  # which took the bootstrap away from issue runs that had always worked. Any
-  # answer other than an accepted reservation -- including an installed CLI that
-  # does not know this subcommand -- keeps that bootstrap instead.
+  # immutable base this checkout sits on, and it is asked in full. This runner
+  # cannot answer either half itself. Its own prefixes are generated, and supply
+  # `<lane>/` for every locally executed lane whether or not
+  # `builder_identity.branch_prefixes` declares it, while a creation round
+  # admits only a declared one. Its own view of the branch is a remote ref,
+  # while a round admits only a name no pull request was ever opened from: an
+  # issue whose previous pull request was closed and whose branch was then
+  # deleted resolves to the same name, advertises no ref, and is still refused
+  # at reservation. Gating on either partial answer selected rounds the
+  # supervisor then refused before launching anything, which took the bootstrap
+  # away from issue runs that had always worked -- a replacement run for a
+  # closed pull request among them. Any answer other than an accepted
+  # reservation -- including an installed CLI that does not know this
+  # subcommand, and a repository whose pull requests or refs cannot be read --
+  # keeps that bootstrap instead.
   if [ "$issue_pr_status" = "none" ] && [ "$policy_branch_expected_head" = "absent" ]; then
     creation_refusal=""
     if ! creation_refusal="$("${lane_delivery[@]}" creation-eligible --cwd "$work" \
-        --lineage-base "$lineage_base" --writer-lane "$LANE" \
+        --lineage-base "$lineage_base" --writer-lane "$LANE" --writer-repo "$REPO" \
         --lineage-branch "$resolved_branch" 2>&1 >/dev/null)"; then
       creation_refusal="$(printf '%s' "${creation_refusal:-creation eligibility could not be established}" | tr '\n' ' ')"
     else

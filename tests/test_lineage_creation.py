@@ -928,16 +928,18 @@ class CreationLauncherTests(unittest.TestCase):
 
 
 class CreationEligibilityTests(unittest.TestCase):
-    """`creation-eligible`: the launcher's own prefix admission, asked in advance.
+    """`creation-eligible`: the launcher's own admission, asked in advance.
 
     The Mac runner has to decide whether to commit an issue run to creation
-    supervision before it launches anything, and it cannot answer from its own
-    embedded prefixes: those are generated and supply ``<lane>/`` for every
+    supervision before it launches anything, and it cannot answer either half
+    itself. Its embedded prefixes are generated and supply ``<lane>/`` for every
     locally executed lane, while a round admits only what the target
     repository's immutable-base ``builder_identity.branch_prefixes`` declares.
-    A runner gating on the generated set selected rounds this launcher then
-    refused, which took away the no-PR bootstrap those issue runs had. These
-    rows pin that the advance answer is the same answer, reason for reason.
+    Its view of the branch is a remote ref, while a round admits only a name no
+    pull request was ever opened from. A runner gating on either partial answer
+    selected rounds this launcher then refused, which took away the no-PR
+    bootstrap those issue runs had. These rows pin that the advance answer is
+    the same answer, reason for reason, and that asking it changes nothing.
     """
 
     # The shipped example configuration: prefixes are declared for the lanes it
@@ -948,26 +950,80 @@ class CreationEligibilityTests(unittest.TestCase):
         "require_verified_lineage": True,
     })
 
-    def eligible(self, identity, lane, branch):
-        """The probe's exit status and what it said, with nothing else stubbed."""
+    def eligible(self, identity, lane, branch, io=None):
+        """The probe's exit status and what it said, with nothing else stubbed.
+
+        ``io`` is the repository the reservation half is asked of; the default
+        is the bootstrap case the runner is deciding about, where the name
+        carries no ref and no pull request has ever been opened from it.
+        """
+        io = io if io is not None else FakeGitHub(pulls=[], refs={})
         with patch("code_mower.provider_runners.lineage.require_capabilities"), \
                 patch("code_mower.provider_runners.lineage.trusted_policy",
                       return_value=({}, identity, AUTHORITY)) as policy, \
+                patch("code_mower.builder_lineage_producer.GitHub", return_value=io), \
                 patch("sys.stderr", new_callable=io_module.StringIO) as err:
             rc = lane_delivery.main(["creation-eligible", "--cwd", "/creation-checkout",
                                      "--lineage-base", BASE, "--writer-lane", lane,
-                                     "--lineage-branch", branch])
+                                     "--writer-repo", REPO, "--lineage-branch", branch])
         # The question is always about the target checkout at the immutable base
         # the round would be bound to, never about the host this runs on.
         self.assertEqual(policy.call_args.args, (Path("/creation-checkout"), BASE))
         return rc, err.getvalue()
 
     def test_a_declared_prefix_admits_the_reservation_with_no_other_effect(self):
-        rc, said = self.eligible(POLICY, "claude", BRANCH)
+        unheld = FakeGitHub(pulls=[], refs={})
+        rc, said = self.eligible(POLICY, "claude", BRANCH, io=unheld)
         self.assertEqual((rc, said), (0, ""))
+        # Answering costs exactly the two reads a reservation is made of, asked
+        # about the repository and branch the round would claim. Nothing is
+        # posted, labelled, registered or minted by asking.
+        self.assertEqual(unheld.effects, [("pulls", REPO, BRANCH), ("ref", REPO, BRANCH)])
         # Lane by lane, against the same policy: each lane's own prefix only.
         self.assertEqual(self.eligible(POLICY, "codex", CODEX_BRANCH)[0], 0)
         self.assertNotEqual(self.eligible(POLICY, "codex", BRANCH)[0], 0)
+
+    def test_a_branch_a_closed_pull_request_once_used_is_not_admitted(self):
+        # The replacement run: the issue's previous pull request was closed and
+        # its branch deleted, so the resolved name advertises no ref and the
+        # runner's own view of it is indistinguishable from an unused one. The
+        # reservation still refuses it, so the probe has to refuse it too --
+        # otherwise the round is selected and then refused before the writer
+        # starts, and an ordinary rerun that used to bootstrap cannot run.
+        held = FakeGitHub(pulls=[pull_payload(state="closed")], refs={})
+        rc, said = self.eligible(POLICY, "claude", BRANCH, io=held)
+        self.assertEqual(rc, 2)
+        self.assertIn("Reserved creation branch already has a pull request.", said)
+        # Reason for reason with the launcher, which reserves the same branch of
+        # the same repository and stops before registering the round.
+        launcher = FakeGitHub(pulls=[pull_payload(state="closed")], refs={})
+        with self.assertRaises(ProducerRefusal) as raised:
+            lane_delivery.reserve_creation_branch(launcher, REPO, BRANCH)
+        self.assertIn(str(raised.exception), said)
+
+    def test_a_branch_something_else_already_pushed_is_not_admitted(self):
+        rc, said = self.eligible(POLICY, "claude", BRANCH,
+                                 io=FakeGitHub(pulls=[], refs={BRANCH: CREATED}))
+        self.assertEqual(rc, 2)
+        self.assertIn("Reserved creation branch already exists in the repository.", said)
+
+    def test_an_unreadable_repository_is_not_an_admitted_reservation(self):
+        # The transport refusing to answer is an unavailable answer, never an
+        # admitted reservation: the run keeps the long-standing bootstrap.
+        class Unreadable(FakeGitHub):
+            def pulls_for_branch(self, repo, branch):
+                raise ProducerRefusal("Complete readable created pull request list required.")
+
+        rc, said = self.eligible(POLICY, "claude", BRANCH, io=Unreadable(pulls=[], refs={}))
+        self.assertEqual(rc, 2)
+        self.assertIn("Complete readable created pull request list required.", said)
+
+    def test_a_refused_prefix_is_answered_before_the_repository_is_read(self):
+        # The cheap, offline half first: a lane the policy declares no prefix
+        # for costs no repository read at all.
+        unread = FakeGitHub(pulls=[], refs={})
+        self.assertEqual(self.eligible(self.OTHER_LANES, "claude", BRANCH, io=unread)[0], 2)
+        self.assertEqual(unread.effects, [])
 
     def test_the_probe_and_the_launcher_refuse_for_the_same_stated_reason(self):
         for reason, identity, branch in (
@@ -1010,7 +1066,8 @@ class CreationEligibilityTests(unittest.TestCase):
                 patch("sys.stderr", new_callable=io_module.StringIO):
             self.assertEqual(lane_delivery.main(
                 ["creation-eligible", "--cwd", "/creation-checkout", "--lineage-base", BASE,
-                 "--writer-lane", "claude", "--lineage-branch", BRANCH]), 2)
+                 "--writer-lane", "claude", "--writer-repo", REPO,
+                 "--lineage-branch", BRANCH]), 2)
 
 
 class CreationFrontierTransportTests(unittest.TestCase):

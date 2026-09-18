@@ -1324,6 +1324,7 @@ def main(argv: list[str] | None = None) -> int:
     eligible.add_argument("--cwd", required=True, type=Path)
     eligible.add_argument("--lineage-base", required=True)
     eligible.add_argument("--writer-lane", required=True)
+    eligible.add_argument("--writer-repo", required=True)
     eligible.add_argument("--lineage-branch", required=True)
     args = parser.parse_args(argv)
     if args.command == "handoff" and not args.source_branch_prefixes and args.lineage_store is None:
@@ -2264,15 +2265,33 @@ def _creation_eligible_main(args):
     """Answer, without effect, whether a creation round could reserve a branch.
 
     The runner asks before it commits an issue run to creation supervision, so
-    a repository whose trusted policy declares no prefix for this lane keeps the
-    no-PR bootstrap instead of being refused at launch.
+    a repository whose trusted policy declares no prefix for this lane, or a
+    branch this round could not exclusively claim, keeps the no-PR bootstrap
+    instead of being refused at launch.
+
+    Both admissions a launch makes are asked here, from the same functions the
+    launcher raises through. Asking only the policy's prefixes left the second
+    one invisible to the runner: a branch whose pull request was closed and
+    whose ref was then deleted advertises no ref at all, so the runner saw an
+    unused name while ``reserve_creation_branch`` still refused it for the pull
+    request once opened from it. That is an ordinary replacement run, and it
+    must reach the bootstrap rather than be refused before the writer starts.
+
+    The reservation is re-read at launch and that later read is what a round is
+    held to; this one only decides whether to ask for a round at all, and every
+    answer other than an admitted reservation keeps the bootstrap.
     """
+    from .builder_lineage_producer import GitHub, ProducerRefusal
     from .provider_runners.lineage import require_capabilities, trusted_policy
     require_capabilities()
     _, identity, _ = trusted_policy(args.cwd, args.lineage_base)
     refusal = creation_prefix_refusal(identity, args.writer_lane, args.lineage_branch)
     if refusal:
         raise LaneDeliveryError(refusal)
+    try:
+        reserve_creation_branch(GitHub(), args.writer_repo, args.lineage_branch)
+    except ProducerRefusal as exc:
+        raise LaneDeliveryError(str(exc)) from None
     return 0
 
 
