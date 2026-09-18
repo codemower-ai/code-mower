@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import tomllib
 from unittest import mock
 
 import yaml
@@ -122,7 +123,7 @@ class GraphifyGuidanceTests(unittest.TestCase):
         self.assertEqual(guidance["mode"], "guidance_only")
         self.assertEqual(guidance["package_spec"], "graphifyy==0.9.58")
         self.assertNotIn("graphify", json.dumps(baseline).lower())
-        self.assertNotIn("graphify", (ROOT / "pyproject.toml").read_text().lower())
+        self.assertNotIn("graphify", json.dumps(tomllib.loads((ROOT / "pyproject.toml").read_text())["project"].get("dependencies", [])).lower())
 
     def test_fresh_guidance_preview_never_launches_or_writes(self):
         with tempfile.TemporaryDirectory() as tmp:

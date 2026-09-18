@@ -89,6 +89,39 @@ jobs:
           --timeout 240
           --json
 
+  release_rehearsal:
+    name: release wheel rehearsal
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Check out the exact rehearsal source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+      - name: Build a pre-merge rehearsal pair
+        # No --release-pr: these bytes are explicitly ineligible for publication.
+        run: |
+          python -m pip install build twine
+          python scripts/release_candidate.py build --source "$GITHUB_WORKSPACE" \
+            --source-sha "$SOURCE_SHA" --dist "$RUNNER_TEMP/rehearsal-dist"
+      - name: Rehearse the exact installed wheel offline
+        run: |
+          python scripts/rehearse_v150.py --dist "$RUNNER_TEMP/rehearsal-dist" \
+            --source-sha "$SOURCE_SHA" --work-dir "$RUNNER_TEMP/rehearsal"
+      - name: Upload sanitized pre-merge evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-rehearsal-evidence
+          path: |
+            ${{ runner.temp }}/rehearsal-dist/candidate.json
+            ${{ runner.temp }}/rehearsal/rehearsal.json
+          if-no-files-found: error
+
   graph_containment:
     # The local-graph boundary, against the real kernel mechanism rather than a
     # stand-in for one. The unit suite skips these when a host offers no
@@ -212,10 +245,11 @@ jobs:
   package:
     name: package
     runs-on: ubuntu-latest
-    needs: [package_matrix, board_qualification]
+    needs: [package_matrix, board_qualification, release_rehearsal]
     if: always()
     steps:
       - name: Check matrix result
         run: |
           test "${{ needs.package_matrix.result }}" = "success"
           test "${{ needs.board_qualification.result }}" = "success"
+          test "${{ needs.release_rehearsal.result }}" = "success"

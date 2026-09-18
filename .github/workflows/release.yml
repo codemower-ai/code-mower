@@ -19,6 +19,10 @@ on:
         description: Exact 40-character release commit this dispatch must build.
         required: true
         type: string
+      candidate_run_id:
+        description: Successful immutable-candidate workflow run to publish without rebuilding.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -72,6 +76,10 @@ jobs:
   build-distributions:
     needs: release-identity
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     steps:
       - name: Check out the validated release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -83,11 +91,42 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build distributions
+      - name: Retrieve and verify the qualified candidate without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id || vars.CODE_MOWER_CANDIDATE_RUN_ID }}
+          SOURCE_SHA: ${{ needs.release-identity.outputs.resolved-sha }}
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install build
-          python -m build
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > "$RUNNER_TEMP/candidate-run.json"
+          python - "$RUNNER_TEMP/candidate-run.json" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          run = json.loads(Path(sys.argv[1]).read_text())
+          assert run['path'] == '.github/workflows/release-candidate.yml'
+          assert run['event'] == 'workflow_dispatch' and run['head_branch'] == 'main'
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+          assert run['repository']['full_name'] == 'codemower-ai/code-mower'
+          assert run['head_sha'] == os.environ['SOURCE_SHA']
+          assert run['run_attempt'] == 1
+          PY
+          gh run download "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name code-mower-candidate --dir candidate
+          python scripts/release_candidate.py verify --dist candidate \
+            --source-sha "$SOURCE_SHA" --require-candidate
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          from scripts.release_candidate import verify_rehearsal
+          candidate = json.loads(Path('candidate/candidate.json').read_text())
+          pr = json.loads(subprocess.check_output(['gh', 'pr', 'view', str(candidate['release_pr']),
+              '--repo', os.environ['GITHUB_REPOSITORY'], '--json', 'state,mergeCommit']))
+          assert pr['state'] == 'MERGED' and pr['mergeCommit']['oid'] == os.environ['SOURCE_SHA']
+          verify_rehearsal(Path('candidate'), candidate)
+          PY
+          mkdir dist
+          cp candidate/*.whl candidate/*.tar.gz dist/
 
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

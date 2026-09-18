@@ -9,24 +9,21 @@ The current release is supervised-pilot, bring-your-own-agent-loop software.
 It is not a drop-in unattended merge gate. Humans still own credentials,
 repository policy, reviewer promotion, and exceptional decisions.
 
-The current package-index release baseline is `v1.4.2`, with pinned package
-install spec `code-mower==1.4.2`. Release evidence is recorded on the GitHub
-release and in the first-user install rehearsal. v1.4.2 was published from
-release commit `55339bf1acf76d33be5937e80bdaad772e0b2bf5` under the annotated
-`v1.4.2` tag; see the
-[v1.4.2 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.4.2)
-and the [v1.4.2 qualification record](https://github.com/codemower-ai/code-mower/blob/main/docs/v142-qualification.md). The published
-`v1.4.0` and `v1.4.1` artifacts remain unchanged. Every install command below
-targets the published release.
+The current package-index release baseline is `v1.5.0`, with pinned package
+install spec `code-mower==1.5.0`. Release evidence is recorded on the GitHub
+release and in the first-user install rehearsal. See the
+[v1.5.0 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-notes.md)
+and [qualification record](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md)
+for the exact source, artifact digests and separately observed gates.
+Historical v1.4.x artifacts and qualification records remain unchanged.
 
-One qualification boundary stays open and is not claimed by v1.4.2: the bounded
-hosted Devin canary tracked by
-[#951](https://github.com/codemower-ai/code-mower/issues/951), which needs an
-explicit owner authorization before it can run.
+The bounded hosted Devin canary tracked by
+[#951](https://github.com/codemower-ai/code-mower/issues/951) is not claimed here;
+paid work requires explicit numeric owner authorization.
 
 Documentation on `main` follows the source on `main`. To read the guide exactly as
-v1.4.2 shipped it, use the
-[`v1.4.2` guide](https://github.com/codemower-ai/code-mower/blob/v1.4.2/docs/try-in-10-minutes.md);
+v1.5.0 ships it, use the
+[`v1.5.0` guide](https://github.com/codemower-ai/code-mower/blob/v1.5.0/docs/try-in-10-minutes.md);
 the pages on `main` are the maintained current versions.
 
 ## What Code Mower Adds
@@ -55,13 +52,13 @@ one stable `pipx` installation:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.2
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
 command -v code-mower
 code-mower --version
 ```
 
 `command -v code-mower` should print the path you expect and `code-mower
---version` should print `code-mower 1.4.2` before you point Code Mower at a
+--version` should print `code-mower 1.5.0` before you point Code Mower at a
 repository. If you do not have pipx, install it from the
 [official pipx installation guide](https://pipx.pypa.io/stable/installation/).
 
@@ -131,7 +128,7 @@ ID with `session lease renew --session-id SESSION_ID` or `session lease release
 --dry-run` or `--no-lease` for read-only work.
 
 Codex, Claude Code, and Cursor are qualified for the shared session, telemetry,
-lease, and Jira-authority contract in v1.4.2. Devin, Grok Bot, Antigravity,
+lease, and Jira-authority contract in v1.5.0. Devin, Grok Bot, Antigravity,
 Muse, and custom hosts are recognized for briefs and provenance, while their
 execution remains an explicit handoff or provider-specific transport. See
 [Participants And Sessions](https://github.com/codemower-ai/code-mower/blob/main/docs/sessions.md) and the
@@ -258,7 +255,7 @@ and the [Cloud Data Contract](https://github.com/codemower-ai/code-mower/blob/ma
 
 ## Current Capabilities And Limits
 
-| Area | v1.4.2 posture |
+| Area | v1.5.0 posture |
 | --- | --- |
 | Default builders and reviewers | Claude Code + Codex |
 | Session hosts | Codex, Claude Code, and Cursor qualified; other identities recognized but require explicit handoff/provider transport |
@@ -268,18 +265,18 @@ and the [Cloud Data Contract](https://github.com/codemower-ai/code-mower/blob/ma
 | Forge and merge gate | GitHub |
 | Cloud | Optional metadata/report upload; no upload by default |
 | Graphify | Optional bounded local repository-graph provider behind the packet contract; no default dependency and no network access for the provider |
-| Slack | Command and authenticated bounded ingress foundation only; no Slack worker delivery, results, or orchestration authority |
+| Slack | Explicit private-workspace setup/doctor and supervisor v2 contract; live hosted readiness and capped canaries are separate gates |
 
 GitLab, Bitbucket, broad unattended rollout, uncalibrated merge gates, Devin
 peer-orchestrator/reviewer parity, a hosted work-order CLI, a required Graphify
-dependency, and Slack worker delivery are outside v1.4.2. The current priorities
+dependency, Slack telemetry/Board links, and rich Slack UX are outside v1.5.0. The current priorities
 and boundaries are recorded in
 [Current State And Roadmap](https://github.com/codemower-ai/code-mower/blob/main/docs/current-state-and-roadmap.md).
 
 ## Optional Repository Context Graph
 
 Graphify shipped in v1.4.1 as an optional local repository-graph provider and
-remains available in v1.4.2. It is separately installed into an operator-owned
+remains available in v1.5.0. It is separately installed into an operator-owned
 environment, explicitly activated, and outside the base dependency set: a
 default Claude + Codex install adds no Graphify dependency, no indexer, no
 background service, and no watcher.
@@ -298,15 +295,16 @@ for what a build is allowed to see and where its state lives, and
 [Bounded Queries And Context Packets](https://github.com/codemower-ai/code-mower/blob/main/docs/context-graph-queries.md) for the
 four questions and the packet contract.
 
-The published v1.4.2 package contains that originally shipped integration.
-Further real-pilot compatibility fixes -- a bounded provider-manifest reader,
-`doc_ref` exclusions, and JavaScript/TypeScript test-convention recognition --
-merged to `main` after the release and are intended for the next appropriate
-release. The accepted `0.9.58` provider pin is unchanged. Upgrading never
-repairs a generation already built, so a generation those gaps left `partial` --
-most often an older partial frontend generation -- has to be rebuilt explicitly;
-one `code-mower context-graph status --json` already reports usable does not.
-See [Optional Graphify Setup](https://github.com/codemower-ai/code-mower/blob/main/docs/graphify-setup.md#published-v142-versus-current-main).
+v1.5.0 includes #1007's bounded 16 MiB provider-manifest reader, `doc_ref`
+non-code exclusions, JavaScript/TypeScript related-test conventions and import
+relationships, plus parser/runtime/single-worker guidance. #1031 makes search
+readiness agree with the installed query reader and preserves usable bounded
+partial answers. The accepted `graphifyy==0.9.58` pin is unchanged. Upgrade does
+not repair existing graphs: explicitly refresh affected/partial generations,
+such as an older partial frontend generation. Inspect
+`code-mower context-graph status --json`; a generation it already reports usable
+does not need rebuilding. See
+[Graphify upgrade guidance](https://github.com/codemower-ai/code-mower/blob/main/docs/graphify-setup.md#v150-compatibility-and-existing-generations).
 
 ## Documentation
 
@@ -317,7 +315,7 @@ See [Optional Graphify Setup](https://github.com/codemower-ai/code-mower/blob/ma
 - [Upgrade An Existing Repository](https://github.com/codemower-ai/code-mower/blob/main/docs/upgrade-existing-repo.md)
 - [Quickstart Reference](https://github.com/codemower-ai/code-mower/blob/main/docs/quickstart.md)
 - [Troubleshooting](https://github.com/codemower-ai/code-mower/blob/main/docs/troubleshooting.md)
-- [First Run Transcript](https://github.com/codemower-ai/code-mower/blob/main/docs/first-run-transcript.md) (v1.4.0 illustrative shape, not the current v1.4.2 pin)
+- [First Run Transcript](https://github.com/codemower-ai/code-mower/blob/main/docs/first-run-transcript.md) (v1.4.0 illustrative shape, not the current v1.5.0 pin)
 
 ### Local Board And Repository Context
 
@@ -338,7 +336,7 @@ See [Optional Graphify Setup](https://github.com/codemower-ai/code-mower/blob/ma
 - [Builder Experiments](https://github.com/codemower-ai/code-mower/blob/main/docs/builder-experiments.md)
 - [Orchestrator Prompt Pack](https://github.com/codemower-ai/code-mower/blob/main/docs/orchestrator-prompt-pack.md)
 - [Optional Devin Setup Prompt](https://github.com/codemower-ai/code-mower/blob/main/docs/devin-setup-prompt.md)
-- [Optional Private Slack Setup and Runbook](https://github.com/codemower-ai/code-mower/blob/main/docs/slack-setup.md) (v1.5.0 candidate; default setup unchanged)
+- [Optional Private Slack Setup and Runbook](https://github.com/codemower-ai/code-mower/blob/main/docs/slack-setup.md) (explicit opt-in; default setup unchanged)
 - [Provider Matrix](https://github.com/codemower-ai/code-mower/blob/main/docs/provider-matrix.md)
 - [Provider Calibration Scorecard](https://github.com/codemower-ai/code-mower/blob/main/docs/provider-calibration-scorecard.md)
 - [Devin Peer-Support Qualification](https://github.com/codemower-ai/code-mower/blob/main/docs/devin-peer-support-qualification.md)
@@ -370,7 +368,9 @@ See [Optional Graphify Setup](https://github.com/codemower-ai/code-mower/blob/ma
 - [Cloud Data Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/cloud-data-contract.md)
 - [Release Qualification](https://github.com/codemower-ai/code-mower/blob/main/docs/release-qualification.md)
 - [Public Release Checklist](https://github.com/codemower-ai/code-mower/blob/main/docs/public-release-checklist.md)
+- [v1.5.0 Release Notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-notes.md)
 - [v1.4.2 Release Notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v142-release-notes.md)
+- [v1.5.0 Qualification Record](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md)
 - [v1.4.2 Qualification Record](https://github.com/codemower-ai/code-mower/blob/main/docs/v142-qualification.md)
 - [Release History And Archived Plans](https://github.com/codemower-ai/code-mower/blob/main/docs/release-history.md)
 - [Changelog](https://github.com/codemower-ai/code-mower/blob/main/CHANGELOG.md)

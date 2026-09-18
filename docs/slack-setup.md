@@ -6,13 +6,12 @@ Claude + Codex: no Slack prompt, dependency, login or service. Slack conveys req
 the qualified supervisor owns execution. Hosted Devin is a bounded builder,
 never an orchestrator qualification.
 
-This guide describes the source candidate for v1.5.0. The published v1.4.2
-package does not contain these commands. Use a reviewed candidate for offline
+These commands are included in v1.5.0. Use its reviewed wheel for offline
 preparation; live operation requires the final immutable v1.5.0 package and
 separately qualified hosted deployment. The private bridge verifies its
 implementation lock and rejects editable/VCS installs for live operation.
 Version alone is insufficient. Live completion/cancellation qualification
-belongs to #923; this guide authorizes neither spend nor deployment. Telemetry
+belongs to #920 under #923; this guide authorizes neither spend nor deployment. Telemetry
 readiness, Board/cloud links, a general integrations picker, Slack Connect,
 public channels and rich Slack UX are deferred to v1.5.1.
 
@@ -91,7 +90,7 @@ public channels and rich Slack UX are deferred to v1.5.1.
    and bridge flags only after their owner-controlled deployment/logging gates
    pass. Explicitly enable host composition too; web configuration starts no
    worker. Missing supervision leaves work waiting/denied and prevents dispatch.
-   Qualify the two capped #923 canaries before treating the candidate as a
+   Qualify the two explicitly capped #920 canaries before treating the candidate as a
    supported live installation.
 
 ## Readiness and redaction

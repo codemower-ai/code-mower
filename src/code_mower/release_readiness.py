@@ -25,6 +25,7 @@ RELEASE_DOC_PATHS = (
     "docs/pypi-release.md",
     "docs/public-release-checklist.md",
     "docs/release-qualification.md",
+    "docs/v150-release-runbook.md",
 )
 REQUIRED_PUBLIC_PACKAGE_SPEC_DOC_PATHS = (
     "README.md",
@@ -1490,12 +1491,47 @@ def _job_text(job: Any) -> str:
     return yaml.safe_dump(job, sort_keys=True) if isinstance(job, dict) else ""
 
 
+def _candidate_runbook_checks(repo_path: Path) -> tuple[list[str], list[str]]:
+    """The v1.5 sequence qualifies the merge-SHA artifacts before tagging.
+
+    The v1.4 post-publication campaign runbook stays historical. Checking its
+    ordering against a new version would require tagging before qualification.
+    These are static documentation checks, not private acceptance evidence.
+    """
+    text = _read_text_if_exists(repo_path / "docs/v150-release-runbook.md")
+    order = (
+        "## 1. Review and merge", "## 2. Build and retain",
+        "gh workflow run release-candidate.yml", "## 3. Private acceptance",
+        "## 4. Explicitly authorize", "## 5. Owner decision",
+        'git tag -a v1.5.0 "$RELEASE_SHA"',
+        "-f publish_testpypi=false -f publish_pypi=false",
+        "-f publish_testpypi=false -f publish_pypi=true",
+        "## 6. Independent canonical reinstall",
+    )
+    assertions = (
+        "--json state --jq '.state')\" = MERGED",
+        "--json mergeCommit --jq '.mergeCommit.oid'",
+        "--require-candidate", "candidate.json", "rehearsal.json",
+        '-f candidate_run_id="$CANDIDATE_RUN_ID"',
+        'test "$(git rev-list -n 1 v1.5.0)" = "$RELEASE_SHA"',
+        "one completion and one confirmed", "aggregate campaign ACU",
+        "does not rebuild", "Never downgrade live v2 claims",
+        "independent exact-head audit", "authoritative gate",
+    )
+    return _unordered_markers(text, order), [item for item in assertions if item not in text]
+
+
 def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     """Inspect whether the standalone package is ready for package-index promotion."""
 
     repo_path = repo_path.expanduser().resolve()
     workflow_path = repo_path / ".github" / "workflows" / "release.yml"
     workflow = _read_text_if_exists(workflow_path)
+    candidate_workflow = _read_text_if_exists(repo_path / ".github/workflows/release-candidate.yml")
+    candidate_workflow_used = (
+        (repo_path / ".github/workflows/release-candidate.yml").exists()
+        or "scripts/release_candidate.py" in workflow
+    )
     ci_workflow_path = repo_path / ".github" / "workflows" / "ci.yml"
     ci_workflow = _read_text_if_exists(ci_workflow_path)
     workflow_jobs = _workflow_jobs(workflow)
@@ -1561,6 +1597,15 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         if runbook_doc
         else ["unknown release version"]
     )
+    if candidate_workflow_used:
+        missing_runbook_markers, missing_runbook_assertions = _candidate_runbook_checks(repo_path)
+        runbook_markers = ("docs/v150-release-runbook.md: candidate, private acceptance, canaries, tag, publish",)
+        runbook_assertions = ("merge SHA and retained artifact binding; explicit owner gates",)
+        # Legacy checks above describe the preserved v1.4 publication procedure.
+        # The new procedure has its own ordered gates and artifact assertions.
+        forbidden_runbook_markers = []
+        pip_isolation_problems = []
+        gate_order_problems = []
     public_hygiene_blobs = {
         relative_path: text.lower()
         for relative_path, text in public_hygiene_docs.items()
@@ -1716,14 +1761,25 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         ),
         _release_check(
             check_id="distribution-build-and-verify",
-            title="Release workflow builds and verifies distributions before publish",
+            title="Release workflows build once and verify distributions before publish",
             status=(
                 "pass"
                 if (
                     "  build-distributions:\n" in workflow
                     and "  verify-distributions:\n" in workflow
                     and "    needs: build-distributions\n" in workflow
-                    and "python -m build" in workflow
+                    and ("python -m build" in workflow if not candidate_workflow_used else (
+                        "python scripts/release_candidate.py verify" in workflow
+                        and "--require-candidate" in workflow
+                        and "--name code-mower-candidate" in workflow
+                        and "python -m build" not in workflow
+                        and "python scripts/release_candidate.py build" in candidate_workflow
+                        and '[[ "$GITHUB_SHA" == "$SOURCE_SHA" ]]' in candidate_workflow
+                        and '[[ "$GITHUB_RUN_ATTEMPT" == 1 ]]' in candidate_workflow
+                        and "assert run['head_sha'] == os.environ['SOURCE_SHA']" in workflow
+                        and "assert run['run_attempt'] == 1" in workflow
+                        and "verify_rehearsal(Path('candidate'), candidate)" in workflow
+                    ))
                     and "python -m twine check dist/*" in workflow
                 )
                 else "fail"
@@ -2013,6 +2069,17 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },
     ]
+    if candidate_workflow_used:
+        for action in next_actions:
+            if "gh workflow run release.yml" in action["command"]:
+                action["command"] += ' -f candidate_run_id="$CANDIDATE_RUN_ID"'
+        next_actions.insert(0, {
+            "id": "immutable-candidate-first",
+            "title": "After merge: build once, then #918 and explicitly authorized #920 before tagging/publication",
+            "command": 'gh workflow run release-candidate.yml --repo codemower-ai/code-mower --ref main '
+                       '-f expected_sha="$RELEASE_SHA" -f release_pr="$RELEASE_PR"',
+            "url": "https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-runbook.md",
+        })
     incomplete_dispatch_actions = _incomplete_dispatch_actions(workflow, next_actions)
     incomplete_documented_dispatches = _incomplete_documented_dispatches(workflow, docs)
     checks.append(

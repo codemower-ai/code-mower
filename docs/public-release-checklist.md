@@ -1,10 +1,11 @@
 # Code Mower Public Release Checklist
 
-v1.4.2 is published. The pinned index commands below install the current
-release; verify the exact command path and version after installing. Release
-evidence is on the
-[v1.4.2 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.4.2)
-and in the [v1.4.2 qualification record](v142-qualification.md).
+v1.5.0 uses the exact install pin `code-mower==1.5.0`. Verify the command path
+and version after installing. Use the [v1.5.0 qualification record](v150-qualification.md)
+for observed results and the [candidate runbook](v150-release-runbook.md) for
+prepublication local-wheel rehearsals. Index commands select the release after
+publication; offline preparation does not establish live Slack readiness.
+
 
 Use this checklist for public OSS readiness and 1.x hardening. The standalone
 `code-mower` repository is public; the remaining work is to make the first
@@ -17,8 +18,8 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has public releases and reports its version with
   `code-mower --version`.
-- The current published package-index release entrypoint is
-  `code-mower==1.4.2` (GitHub tag `v1.4.2`), with
+- The current package-index release entrypoint is
+  `code-mower==1.5.0` (GitHub tag `v1.5.0`), with
   `code-mower doctor --adoption --repo OWNER/REPO` as the human-facing
   first-run setup diagnostic and `code-mower lanes status --repo OWNER/REPO`
   as the operator snapshot. v1.4.2 superseded `code-mower==1.4.1` (GitHub tag

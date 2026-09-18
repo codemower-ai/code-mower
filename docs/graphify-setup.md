@@ -1,6 +1,6 @@
 # Optional Graphify setup
 
-Graphify shipped in v1.4.1 and is available in the published v1.4.2 release as
+Graphify shipped in v1.4.1 and is available in v1.5.0 as
 an **optional** local repository-graph provider. It is separately installed into
 an operator-owned environment, explicitly activated, and outside the base
 dependency set: a default Claude + Codex installation adds no Graphify
@@ -86,10 +86,10 @@ configuration files with `PIP_CONFIG_FILE=/dev/null`. `--isolated` alone still
 permits global/site configuration and a file selected by `PIP_CONFIG_FILE`;
 those sources must not add an alternate index or local dependency source.
 
-The next two paragraphs are **post-`v1.4.2`**: they describe current `main` and
+The next two paragraphs are included in v1.5.0 and
 arrived with [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007),
 so they are not part of the published `v1.4.2` package. See
-[Published `v1.4.2` versus current `main`](#published-v142-versus-current-main).
+[v1.5.0 compatibility](#v150-compatibility-and-existing-generations).
 
 Install any required language extras into this same separate environment before
 the contained build. For SQL inputs, select `[sql]` on the verified local wheel
@@ -168,7 +168,7 @@ it. A provider run that admitted an incomplete census publishes a generation
 `status` calls `partial` and refuses, rather than describing it as `current`.
 
 The rest of this step, up to step 4, is **post-`v1.4.2`** and describes
-current `main` (#1029, intended for `v1.5.0`). `status` also reports `search`:
+v1.5.0 (#1029 / #1031). `status` also reports `search`:
 whether the installed query reader can consume the generation. A `current`
 generation with `search: unavailable` exits non-zero. Read
 `query_reader.next_action`:
@@ -245,16 +245,15 @@ provider environment from
 [Separate acquisition environment](#separate-acquisition-environment) is yours
 to keep or delete separately; Code Mower never touches it.
 
-## Published `v1.4.2` versus current `main`
+<a id="published-v142-versus-current-main"></a>
 
-The published `v1.4.2` package on the package index contains the optional
-Graphify integration exactly as it originally shipped. The base setup and
-ramp-up above -- acquisition, the separate contained offline build, and steps 1
-through 7 -- describe that published package. The paragraphs above that are
-explicitly marked post-`v1.4.2` describe current `main` instead: the
-language-extras and runtime-ownership paragraphs under
-[Separate acquisition environment](#separate-acquisition-environment) and the
-search-readiness text in step 3 are the only ones so marked today.
+## v1.5.0 compatibility and existing generations
+
+The historical `v1.4.2` package contains the originally shipped optional
+Graphify integration. v1.5.0 includes the compatibility and readiness additions
+throughout this guide, including the language-extras/runtime-ownership guidance
+and reader-based search-readiness checks. None of these additions changes the
+accepted provider pin or enables Graphify by default.
 
 [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007) has since
 merged to `main` with further real-pilot compatibility fixes: a bounded 16 MiB
@@ -265,21 +264,22 @@ recognition of JavaScript/TypeScript `.test`/`.spec` and `__tests__`
 conventions together with `imports` relationships. The language-extras and
 runtime-ownership paragraphs under
 [Separate acquisition environment](#separate-acquisition-environment) arrived
-with the same change. All of it is on `main` and intended for the next
-appropriate release; none of it is in the published `v1.4.2` package.
+with the same change. All of it is included in v1.5.0; none of it is in the historical `v1.4.2` package.
+PR #1031 adds reader-based readiness, actionable compatibility diagnostics, and
+separate generation/query completeness. A bounded partial answer remains usable;
+it does not itself require rebuilding an otherwise complete generation.
 
 The accepted provider pin is unchanged. This is a Code Mower compatibility fix,
 not a Graphify upgrade: `graphifyy` `0.9.58` and the recorded wheel digest above
 stay exactly as they are.
 
-Because a published generation is never rewritten in place, installing that
-later release does not repair a generation you already built. That matters only
+Because a published generation is never rewritten in place, installing v1.5.0 does not repair a generation you already built. That matters only
 for a generation one of #1007's compatibility gaps actually affected -- most
 often an older frontend generation left **partial**: one whose oversized
 provider manifest was refused, or one whose inputs a missing language parser
 could not process. Those are the generations to rebuild.
 
-This is not a blanket rebuild of everything built before that future release.
+This is not a blanket rebuild of everything built before v1.5.0.
 Ask `code-mower context-graph status --json` first: a generation it already
 reports usable is unaffected and needs no rebuild. If it reports `partial`,
 rebuild that generation explicitly with `code-mower context-graph refresh`

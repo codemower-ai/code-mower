@@ -46,8 +46,10 @@ history opens the repository. They should be able to confirm:
 
 ## Current v1.0 Baseline
 
-The public-release baseline is the published `v1.4.2` of the standalone
-package. Before widening the release, record:
+The historical public-release baseline below is the published `v1.4.2`.
+For v1.5.0 follow [the immutable candidate-first runbook](v150-release-runbook.md);
+these publication and dogfood steps record the previous release procedure.
+Before widening that release, record:
 
 - non-editable package-install rehearsal in a clean venv;
 - fresh toy-repo easy-mode rehearsal from the installed package;

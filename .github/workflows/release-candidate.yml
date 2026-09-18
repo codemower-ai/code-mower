@@ -1,0 +1,76 @@
+name: Code Mower Immutable Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact merge SHA of the release preparation PR; never a branch or tag.
+        required: true
+        type: string
+      release_pr:
+        description: Merged release preparation PR number.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: release-candidate-${{ inputs.expected_sha }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate candidate selection
+        env:
+          SOURCE_SHA: ${{ inputs.expected_sha }}
+          RELEASE_PR: ${{ inputs.release_pr }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || exit 1
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$RELEASE_PR" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$GITHUB_SHA" == "$SOURCE_SHA" ]] || exit 1
+          [[ "$GITHUB_RUN_ATTEMPT" == 1 ]] || exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install build twine
+
+      - name: Build the immutable artifact pair once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.expected_sha }}
+          RELEASE_PR: ${{ inputs.release_pr }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          python scripts/release_candidate.py build --source "$GITHUB_WORKSPACE" \
+            --dist "$RUNNER_TEMP/candidate" --source-sha "$SOURCE_SHA" --release-pr "$RELEASE_PR"
+
+      - name: Rehearse the exact wheel in disposable environments
+        env:
+          SOURCE_SHA: ${{ inputs.expected_sha }}
+        run: |
+          python scripts/rehearse_v150.py --dist "$RUNNER_TEMP/candidate" \
+            --source-sha "$SOURCE_SHA" --work-dir "$RUNNER_TEMP/rehearsal"
+          cp "$RUNNER_TEMP/rehearsal/rehearsal.json" "$RUNNER_TEMP/candidate/rehearsal.json"
+
+      - name: Retain candidate and sanitized evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: code-mower-candidate
+          path: ${{ runner.temp }}/candidate/*
+          if-no-files-found: error
+          retention-days: 90

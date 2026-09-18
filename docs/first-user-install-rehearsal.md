@@ -1,10 +1,11 @@
 # First-User Install Rehearsal
 
-v1.4.2 is published. The pinned index commands below install the current
-release; verify the exact command path and version after installing. Release
-evidence is on the
-[v1.4.2 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.4.2)
-and in the [v1.4.2 qualification record](v142-qualification.md).
+v1.5.0 uses the exact install pin `code-mower==1.5.0`. Verify the command path
+and version after installing. Use the [v1.5.0 qualification record](v150-qualification.md)
+for observed results and the [candidate runbook](v150-release-runbook.md) for
+prepublication local-wheel rehearsals. Index commands select the release after
+publication; offline preparation does not establish live Slack readiness.
+
 
 This is the release-gate rehearsal for Code Mower's early-adopter path. It
 installs Code Mower into a clean virtual environment, creates a fresh toy Git
@@ -54,7 +55,7 @@ Use the current public tag or release candidate:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.4.2 \
+  --package-spec code-mower==1.5.0 \
   --allow-package-index \
   --python "$(command -v python3.12)" \
   --json
@@ -78,7 +79,7 @@ For a fixed output directory:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.4.2 \
+  --package-spec code-mower==1.5.0 \
   --allow-package-index \
   --python "$(command -v python3.12)" \
   --work-dir /tmp/code-mower-first-user-rehearsal \
@@ -110,7 +111,7 @@ For a GitHub tag fallback, pass the tag URL explicitly:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v1.4.2" \
+  --package-spec "git+https://github.com/codemower-ai/code-mower.git@v1.5.0" \
   --python "$(command -v python3.12)" \
   --json
 ```
@@ -122,7 +123,7 @@ deciding the package index or the release is broken. For pipx:
 
 ```bash
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.4.2
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
 code-mower --version
 ```
 
@@ -132,7 +133,7 @@ For uv:
 env -u UV_INDEX -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_EXTRA_INDEX_URL \
   -u UV_FIND_LINKS -u UV_NO_INDEX -u UV_OFFLINE \
   uv --no-config --no-cache tool install --python 3.12 --reinstall \
-  --default-index https://pypi.org/simple/ code-mower==1.4.2
+  --default-index https://pypi.org/simple/ code-mower==1.5.0
 code-mower --version
 ```
 
@@ -163,7 +164,7 @@ repository after the package install succeeds:
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.4.2 \
+  --package-spec code-mower==1.5.0 \
   --allow-package-index \
   --repo-path /path/to/external-repo \
   --python "$(command -v python3.12)" \
@@ -255,7 +256,7 @@ When a product repository already has Code Mower wrapper files, the same
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.4.2 \
+  --package-spec code-mower==1.5.0 \
   --allow-package-index \
   --repo-path /path/to/product-repo \
   --python "$(command -v python3.12)" \
@@ -314,6 +315,11 @@ Treat the rehearsal as passing only when:
 If this fails, fix the first-user path before cutting or promoting a release.
 
 ## Stable Package-Index Release Procedure
+
+The following v1.4.2 publication commands are historical evidence, not the
+v1.5.0 sequence. For v1.5.0 build the merge-SHA candidate first, qualify it in
+#918 and explicitly authorized #920, then tag/publish the unchanged source SHA
+and the same artifacts through #923. Follow [the current runbook](v150-release-runbook.md).
 
 Publish and rehearse the package-index artifacts in this order. After the
 release tag exists at the release commit, dispatch both package-index

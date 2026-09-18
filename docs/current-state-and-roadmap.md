@@ -22,14 +22,13 @@ dry-run-first.
 
 ## Current Published Baseline
 
-The current package-index release baseline is `v1.4.2`, with pinned package
-install spec `code-mower==1.4.2`. Release evidence is recorded on the GitHub
-release and in the first-user install rehearsal. It was published from release
-commit `55339bf1acf76d33be5937e80bdaad772e0b2bf5` under the annotated `v1.4.2`
-tag; release [#952](https://github.com/codemower-ai/code-mower/issues/952) is
-closed. See the
-[v1.4.2 release notes](v142-release-notes.md) and the
-[v1.4.2 qualification record](v142-qualification.md).
+The current package-index release baseline is `v1.5.0`, with pinned package
+install spec `code-mower==1.5.0`. Release evidence is recorded on the GitHub
+release and in the first-user install rehearsal. See the
+[v1.5.0 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-notes.md)
+and [qualification record](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md)
+for the exact source, artifact digests and separately observed gates.
+Historical v1.4.x artifacts and qualification records remain unchanged.
 
 `v1.4.0`, `v1.4.1` and `v1.4.2` have all shipped, and the v1.4.0 and v1.4.1
 artifacts remain unchanged. The published baselines require Python 3.12 or
@@ -126,8 +125,8 @@ future hosted-service work.
 - Private Coworker delivery is limited to explicitly approved Claude, Codex, and
   Devin roles.
 - Graphify is a shipped optional bounded provider with no default dependency,
-  and Slack is an ingress foundation only: v1.4.2 delivers no Slack worker
-  results.
+  and Slack v1.5.0 adds explicit setup/doctor and supervisor v2. Private hosted
+  readiness and the two capped canaries remain independent acceptance gates.
 - Provider cost fields remain unknown when the provider does not return them.
 - A successful release campaign proves installation and operational transport,
   not builder quality or reviewer promotion readiness.
@@ -235,8 +234,8 @@ Real-pilot compatibility fixes have since merged to `main` in
 provider-manifest reader separate from the compact generation-manifest bound,
 explicit refusal of an oversized provider manifest, `doc_ref` nodes as declared
 non-code exclusions, and JavaScript/TypeScript test-convention and `imports`
-recognition in `related_tests`. They are on `main` and intended for the next
-appropriate release; the published `v1.4.2` package does not contain them. The
+recognition in `related_tests`. They are included in v1.5.0 together with #1031 readiness/query parity;
+the historical `v1.4.2` package does not contain them. The
 accepted `0.9.58` provider pin is unchanged. Because a published generation is
 never rewritten in place, upgrading Code Mower repairs no generation already
 built -- but only the generations those compatibility gaps actually affected
@@ -291,13 +290,16 @@ blocks dispatch, and selecting a provider never promotes its role. Ingress
 foundations [#916](https://github.com/codemower-ai/code-mower/issues/916) and
 [#917](https://github.com/codemower-ai/code-mower/issues/917) are merged and
 shipped in `v1.4.0`.
-Remaining work is OAuth, the qualified-supervisor adapter
-([#977](https://github.com/codemower-ai/code-mower/issues/977)), durable
-interactions, the bridge, paired telemetry, setup
-([#922](https://github.com/codemower-ai/code-mower/issues/922)), and release
-acceptance #923. Slack consumes the durable session lifecycle and event surface
-rather than scraping terminal or Board output, and carries no raw private
-context or private reviewer findings.
+The v1.5.0 public package includes the basic setup/doctor runbook (#1024),
+qualified-supervisor v2 contract and checkpointed clarification/fix semantics.
+The private implementation and acceptance stay in their owned repositories.
+#1027 prepares the immutable merge-SHA package; #918 consumes those bytes for
+private administration/readiness; #920 consumes them for one completion and
+one confirmed cancellation only after explicit numeric authorization; #923
+then tags and publishes the unchanged source SHA and independently reinstalls it.
+Slack telemetry/Board/cloud links and rich UX remain v1.5.1. Slack consumes the
+durable lifecycle instead of scraping terminal or Board output and carries no
+raw private context or private reviewer findings.
 
 The preceding phases are complete, so this runtime work is no longer deferred.
 Board readiness gates only Slack's end-to-end canary and final acceptance in
@@ -319,9 +321,8 @@ Elapsed time, implementation difficulty, or an open draft PR never changes this
 release order. Merged fixes count as on main until a later published package is
 verified to contain them; #935/#973 and the phase-3 Board PRs are now verified
 in the published `v1.4.2` artifact, while the merged Graphify compatibility
-fixes in [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007) are on
-main awaiting the next appropriate release. They are intended for `v1.5.0`
-together with the #1029 search-readiness check. That check makes `status` and
+fixes in [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007) are included in `v1.5.0`
+together with the #1029 search-readiness check from merged PR #1031. That check makes `status` and
 `connection-status` report `search` from the installed query reader, so a
 current generation the reader cannot consume is reported as a reader mismatch
 with an upgrade action rather than as searchable.

@@ -1,10 +1,10 @@
 # Code Mower Early Adopter Guide
 
-Current release: v1.4.2, published and qualified. Release invitations and
-pinned index installs target `code-mower==1.4.2`.
+Current release: v1.5.0, supervised-pilot baseline. Release invitations and
+pinned index installs target `code-mower==1.5.0`.
 
 This document records the historical v0.5 early-adopter product plan. The
-current public install path is the v1.4.2 supervised-pilot release; use
+current public install path is the v1.5.0 supervised-pilot release; use
 [Install And Bootstrap](install.md), [Try Code Mower In 10 Minutes](try-in-10-minutes.md),
 and [Quickstart](quickstart.md) for live adoption steps.
 

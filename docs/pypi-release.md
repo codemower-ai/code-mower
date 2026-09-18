@@ -1,16 +1,19 @@
 # PyPI Release Runbook
 
-Code Mower users install from PyPI. The release workflow builds source and
-wheel distributions, verifies them with `twine check`, and can publish to
-TestPyPI or production PyPI through trusted publishing.
+Code Mower users install from PyPI. For v1.5.0, build the immutable merge-SHA
+candidate first, qualify those bytes through #918 and explicitly authorized
+#920, then tag and publish the unchanged SHA through #923. The release workflow
+retrieves the retained candidate and verifies it without rebuilding. Follow the
+[v1.5.0 runbook](v150-release-runbook.md) and [qualification record](v150-qualification.md).
+The v1.4.2 post-merge section below is preserved historical evidence.
 
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.2
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
 ```
 
-v1.4.2 is published; the steps below are the executed record of that release
-and the shape the next release follows. All mutating steps require the
+v1.4.2 is published; its steps below are the executed record of that release.
+They are not the v1.5.0 candidate-first sequence. All mutating steps require the
 supervisor and the recorded owner release decision.
 
 <a id="v140-post-merge-release-runbook"></a>
@@ -52,18 +55,19 @@ package. Never rewrite a published tag to correct the wording.
 
 5. Obtain independent review on the exact preparation PR head, green CI, and
    the authoritative Code Mower gate before merge. After the recorded owner
-   release decision, bind the merged release commit and create the tag using
-   the existing release procedure. Re-run the identity check from that exact
-   checkout before dispatching with `--ref v1.5.0` and `-f expected_sha=...`.
+   merge process, bind the actual merge SHA and build the candidate once.
+   Complete #918 and explicitly capped #920 on that wheel before the #923 owner
+   release decision, tag or publication. Re-run identity on that exact checkout;
+   publish the retained pair with the same SHA and candidate workflow run ID.
 
 Ordinary release-readiness CI invokes the same checker using the source
 version's intended tag, so contradictions are reviewable before tagging. The
 release workflow checks out the exact dispatched tag or published release tag
 with full tag history, resolves lightweight and annotated tags to their commit,
 and proves that checked-out HEAD equals that commit before checking the public
-text. It exports the validated 40-character SHA to the distribution build,
-which checks out that SHA; event `github.sha` is not used as source identity.
-Both TestPyPI and PyPI consume only the resulting verified distributions.
+text. It exports the validated 40-character SHA to candidate retrieval,
+which checks out that SHA and verifies the retained pair; event `github.sha`
+is not used as source identity. Both TestPyPI and PyPI consume only that pair.
 Manual dispatch additionally requires the resolved tag commit to equal the
 supplied `expected_sha`; a branch dispatch or mismatched tag ref fails closed.
 
@@ -76,12 +80,13 @@ release-candidate baseline and may describe a candidate. A final `vX.Y.Z` tag
 always requires final-state text, including TestPyPI rehearsals and GitHub
 releases marked prerelease. Neither the index nor that flag bypasses the gate.
 
-The executed v1.4.2 commands below remain a historical record; substitute the
-chosen release identity in future release work rather than reusing that tag.
+The executed v1.4.2 commands below remain a historical record. Do not mechanically
+substitute v1.5.0: its candidate-before-tag procedure is in the current runbook.
 
 ## Current Status
 
-- GitHub Release workflow builds distributions on every published release.
+- GitHub Release workflow retrieves and verifies the qualified candidate on
+  every published release; it does not rebuild the distributions.
 - The release workflow downloads the uploaded distributions and runs
   `twine check` before any optional PyPI publish job can start.
 - TestPyPI publishing is gated behind the `testpypi` GitHub environment.
