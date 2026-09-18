@@ -167,6 +167,28 @@ code-mower context-graph status --json
 it. A provider run that admitted an incomplete census publishes a generation
 `status` calls `partial` and refuses, rather than describing it as `current`.
 
+The rest of this step, up to step 4, is **post-`v1.4.2`** and describes
+current `main` (#1029, intended for `v1.5.0`). `status` also reports `search`:
+whether the installed query reader can consume the generation. A `current`
+generation with `search: unavailable` exits non-zero. Read
+`query_reader.next_action`:
+
+- `reader: incompatible` is a known provider/reader mismatch. The
+  `remediation` block names your installed Code Mower and the release that
+  reads the generation. Upgrade Code Mower; the generation needs no rebuild.
+  If it names an unreviewed provider instead (another release, or another
+  distribution at the same version), refresh with the pinned
+  `graphifyy` `0.9.58`.
+- `reader: unreadable` means the generation holds something no reader has an
+  account of. It fails closed on purpose; report it rather than working around
+  it.
+
+The published `v1.4.2` package has no such check. There, `status` and
+`connection-status` can report a usable graph and `search: available` while
+the first dependency query fails with `unreadable` on a generation containing
+`doc_ref` nodes. That query failure is this mismatch; upgrading to the release
+containing #1007 and #1029 resolves it.
+
 **4. Register the graph as a local context connection.**
 
 ```bash
@@ -231,8 +253,8 @@ ramp-up above -- acquisition, the separate contained offline build, and steps 1
 through 7 -- describe that published package. The paragraphs above that are
 explicitly marked post-`v1.4.2` describe current `main` instead: the
 language-extras and runtime-ownership paragraphs under
-[Separate acquisition environment](#separate-acquisition-environment) are the
-only ones so marked today.
+[Separate acquisition environment](#separate-acquisition-environment) and the
+search-readiness text in step 3 are the only ones so marked today.
 
 [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007) has since
 merged to `main` with further real-pilot compatibility fixes: a bounded 16 MiB

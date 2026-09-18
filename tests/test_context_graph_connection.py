@@ -27,15 +27,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from code_mower import __version__ as CODE_MOWER_VERSION
 from code_mower import context_delivery, context_packets, context_prepare, context_session
+from code_mower import context_graph_command as command
 from code_mower import context_graph_connection as connection
 from code_mower import context_graph_lifecycle as lifecycle
 from code_mower import context_graph_query as query
 from code_mower.context_contract import ContextError, ContextRequest
 from code_mower.context_store import ContextStore
+from code_mower.package_manifest import PACKAGE_FILES
 from test_context_connections import MemoryVault
 from test_context_graph_query import (
-    PIN, git, graph_document, indexer, make_repository, wide_graph_document,
+    PIN, edge, git, graph_document, indexer, make_repository, node, wide_graph_document,
 )
 
 
@@ -715,6 +718,293 @@ class GraphConnectionStateTests(unittest.TestCase):
         self.assertFalse(connection.is_graph({"schema": "code_mower.contextLocalConnection.v1"}))
         with self.assertRaises(ContextError):
             connection.saved_state({"schema": connection.GRAPH_SCHEMA}, "local-graph")
+
+
+def doc_ref_document() -> dict:
+    """A complete generation whose pinned extractor also emitted ``doc_ref`` nodes."""
+    document = graph_document()
+    document["nodes"].append(
+        node("n-doc-ref", "README.md", "example_pkg/config.py", 1, file_type="doc_ref")
+    )
+    document["edges"].extend([
+        edge("n-config", "n-doc-ref", "references"),
+        edge("n-doc-ref", "n-load", "references"),
+    ])
+    return document
+
+
+def unknown_type_document() -> dict:
+    """A generation carrying a node type no Code Mower reader has an account of."""
+    document = graph_document()
+    document["nodes"].append(
+        node("n-hologram", "hologram-label", "example_pkg/config.py", 1, file_type="hologram_ref")
+    )
+    return document
+
+
+@unittest.skipUnless(os.name == "posix", "private context needs POSIX protections")
+class SearchReadinessTests(unittest.TestCase):
+    """``status``, ``connection-status`` and a real query agree on search (#1029).
+
+    The lifecycle alone can say a generation is current and complete. Whether
+    the installed reader can answer from it is a second fact, and every
+    surface that reports ``search`` must report that one -- the same verdict
+    the query itself reaches -- rather than inferring it from the first.
+    """
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.repository = make_repository(self.root)
+        self.private = self.root / "private"
+        self.private.mkdir(mode=0o700)
+        self.store: ContextStore | None = None
+
+    def publish(self, document: dict, *, pin=PIN):
+        return lifecycle.build_graph(
+            self.repository, pin=pin, indexer=indexer(document), root=self.private,
+        )
+
+    def connected(self) -> ContextStore:
+        if self.store is None:
+            self.store = ContextStore(self.private, vault=MemoryVault())
+            connection.connect(self.store, "local-graph", {
+                "repository_root": str(self.repository),
+                "repositories": ["owner/repo"],
+                "recipients": RECIPIENTS,
+            })
+        return self.store
+
+    def readiness(self) -> dict:
+        return query.search_readiness(
+            lifecycle.GraphStateRoot(self.repository, root=self.private),
+            lifecycle.graph_status(self.repository, root=self.private),
+        )
+
+    def status_command(self, *, as_json: bool = True):
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            code = command.main([
+                "status", "--repo-path", str(self.repository), "--state-dir", str(self.private),
+                *(["--json"] if as_json else []),
+            ])
+        output = stream.getvalue()
+        return code, (json.loads(output) if as_json else output)
+
+    def ask(self, **overrides) -> query.GraphContext:
+        store = self.connected()
+        with store.locked("local-graph") as locked:
+            envelope = connection.authorize_locked(locked, "local-graph", root=self.private)
+        arguments = {
+            "question": "impact", "target": "parse_config", "envelope": envelope,
+            "policy": POLICY, "context_repository": "owner/repo", "work_item": "WORK-1",
+            "root": self.private,
+        }
+        arguments.update(overrides)
+        return query.graph_context(self.repository, **arguments)
+
+    def observed(self):
+        """Every surface at once: the status command, the connection, and a query."""
+        code, status = self.status_command()
+        report = connection.status(self.connected(), "local-graph", root=self.private)
+        return code, status, report, self.ask()
+
+    def assert_private(self, *values) -> None:
+        """No graph content, target, or local path in any reported verdict."""
+        text = json.dumps(values, sort_keys=True)
+        for forbidden in ("README.md", "parse_config", "example_pkg", "n-doc-ref",
+                          "hologram", str(self.root), str(self.repository), str(self.private)):
+            self.assertNotIn(forbidden, text)
+
+    def test_a_complete_generation_with_doc_refs_validates_and_is_queryable(self) -> None:
+        self.publish(doc_ref_document())
+        readiness = self.readiness()
+        self.assertEqual((readiness["search"], readiness["reader"]), ("available", "compatible"))
+        self.assertEqual(readiness["installed_code_mower"], CODE_MOWER_VERSION)
+        code, status, report, context = self.observed()
+        self.assertEqual(code, 0, status)
+        self.assertEqual((status["state"], status["search"]), ("current", "available"))
+        self.assertEqual(status["build"]["completeness"], lifecycle.COMPLETE)
+        self.assertEqual((report["search"], report["authorization"]), ("available", "available"))
+        self.assertEqual(context.status, query.AVAILABLE)
+        self.assertEqual(context.summary["generation_completeness"], lifecycle.COMPLETE)
+        self.assertTrue(context.packet["documents"])
+
+    def test_an_old_reader_mismatch_is_an_upgrade_action_everywhere(self) -> None:
+        """The v1.4.2 reader, simulated: the same code path without ``doc_ref``.
+
+        The generation is valid, current and complete; only the reader is
+        behind. Status must not say ``search: available``, and neither it nor
+        the query may call the graph ``unreadable`` -- the fix is to upgrade.
+        """
+        self.publish(doc_ref_document())
+        older = query.GRAPH_FILE_TYPES - {"doc_ref"}
+        with patch.object(query, "GRAPH_FILE_TYPES", older):
+            readiness = self.readiness()
+            code, status, report, context = self.observed()
+            text_code, text = self.status_command(as_json=False)
+        for verdict in (readiness, status["query_reader"], report["query_reader"]):
+            self.assertEqual(verdict["search"], "unavailable")
+            self.assertEqual((verdict["reader"], verdict["reason"]), ("incompatible", "reader_incompatible"))
+            remediation = verdict["remediation"]
+            self.assertEqual(remediation["required_code_mower"], "1.5.0")
+            self.assertEqual(remediation["installed_code_mower"], CODE_MOWER_VERSION)
+            self.assertEqual(remediation["node_type"], "doc_ref")
+            self.assertEqual(remediation["generation_provider"], "graphifyy==0.9.58")
+            self.assertIn("Upgrade Code Mower to 1.5.0 or later", verdict["next_action"])
+        # The generation itself is still the lifecycle's ``current``: this is a
+        # reader verdict beside it, not a rewrite of it.
+        self.assertEqual(code, 1)
+        self.assertEqual((status["state"], status["usable"], status["search"]),
+                         ("current", True, "unavailable"))
+        self.assertEqual((report["search"], report["authorization"]), ("unavailable", "unavailable"))
+        self.assertEqual(context.status, query.REQUIRED_UNAVAILABLE)
+        self.assertEqual(context.summary["reason"], "reader_incompatible")
+        self.assertEqual(context.summary["next_action"], readiness["next_action"])
+        self.assertEqual(text_code, 1)
+        self.assertIn("search:     unavailable (query reader: incompatible)", text)
+        self.assertIn("Upgrade Code Mower to 1.5.0", text)
+        self.assert_private(readiness, status, report, context.summary, text)
+
+    def test_an_unreviewed_provider_release_names_a_rebuild_or_an_upgrade(self) -> None:
+        other = lifecycle.GraphifyPin(distribution="graphifyy", version="0.9.99", wheel_sha256="a" * 64)
+        self.publish(unknown_type_document(), pin=other)
+        readiness = self.readiness()
+        self.assertEqual((readiness["search"], readiness["reason"]), ("unavailable", "reader_incompatible"))
+        self.assertEqual(readiness["remediation"]["generation_provider"], "graphifyy==0.9.99")
+        self.assertNotIn("required_code_mower", readiness["remediation"])
+        self.assertIn("0.9.58", readiness["next_action"])
+        context = self.ask()
+        self.assertEqual(context.summary["reason"], "reader_incompatible")
+        self.assert_private(readiness, context.summary)
+
+    def test_a_same_version_provider_from_another_distribution_is_not_reviewed(self) -> None:
+        """The review covers ``graphifyy==0.9.58``, not every distribution at 0.9.58."""
+        other = lifecycle.GraphifyPin(distribution="other-provider", version="0.9.58", wheel_sha256="a" * 64)
+        self.publish(unknown_type_document(), pin=other)
+        readiness = self.readiness()
+        self.assertEqual(
+            (readiness["search"], readiness["reader"], readiness["reason"]),
+            ("unavailable", "incompatible", "reader_incompatible"),
+        )
+        remediation = readiness["remediation"]
+        self.assertEqual(remediation["generation_provider"], "other-provider==0.9.58")
+        self.assertEqual(remediation["reader_providers"], ["graphifyy==0.9.58"])
+        self.assertNotIn("required_code_mower", remediation)
+        self.assertNotIn("node_type", remediation)
+        self.assertIn("graphifyy==0.9.58", readiness["next_action"])
+        code, status, report, context = self.observed()
+        self.assertEqual(code, 1)
+        self.assertEqual(status["query_reader"]["reason"], "reader_incompatible")
+        self.assertEqual((report["search"], report["authorization"]), ("unavailable", "unavailable"))
+        self.assertEqual(context.status, query.REQUIRED_UNAVAILABLE)
+        self.assertEqual(context.summary["reason"], "reader_incompatible")
+        self.assert_private(readiness, status, report, context.summary)
+        self.assertNotIn("hologram", json.dumps([readiness, status, report, context.summary]))
+
+    def test_the_reviewed_provider_is_matched_by_its_normalized_requirement(self) -> None:
+        for distribution, version, reviewed in (
+            ("graphifyy", "0.9.58", True),
+            ("Graphifyy", "0.9.58", True),
+            ("graphifyy", "0.9.59", False),
+            ("other-provider", "0.9.58", False),
+            ("graphify", "0.9.58", False),
+            (None, "0.9.58", False),
+        ):
+            with self.subTest(distribution=distribution, version=version):
+                self.assertIs(
+                    query._reviewed_provider({"distribution": distribution, "version": version}), reviewed,
+                )
+
+    def test_unknown_node_types_still_fail_closed(self) -> None:
+        with self.assertRaises(query.UnsupportedNodeType):
+            query.load_graph(unknown_type_document(), generation="a" * 32, commit="b" * 40)
+        self.publish(unknown_type_document())
+        readiness = self.readiness()
+        self.assertEqual(
+            (readiness["search"], readiness["reader"], readiness["reason"]),
+            ("unavailable", "unreadable", "unreadable"),
+        )
+        self.assertNotIn("remediation", readiness)
+        code, status, report, context = self.observed()
+        self.assertEqual(code, 1)
+        self.assertEqual(status["search"], "unavailable")
+        self.assertEqual((report["search"], report["authorization"]), ("unavailable", "unavailable"))
+        self.assertEqual(context.status, query.REQUIRED_UNAVAILABLE)
+        self.assertEqual(context.summary["reason"], "unreadable")
+        self.assert_private(readiness, status, report, context.summary)
+
+    def test_a_disconnected_status_does_not_read_the_graph(self) -> None:
+        """Disconnected cannot search, so the reader check is not paid for."""
+        self.publish(doc_ref_document())
+        store = self.connected()
+        with patch.object(query, "read_graph", wraps=query.read_graph) as reader:
+            report = connection.status(store, "local-graph", root=self.private)
+            self.assertEqual(reader.call_count, 1)
+            self.assertEqual(report["query_reader"]["reader"], "compatible")
+            connection.disconnect(store, "local-graph")
+            reader.reset_mock()
+            report = connection.status(store, "local-graph", root=self.private)
+        reader.assert_not_called()
+        self.assertEqual(report["query_reader"], {
+            "schema": query.READINESS_SCHEMA, "search": "unavailable",
+            "reader": "not_checked", "reason": "disconnected",
+        })
+        self.assertEqual((report["search"], report["authorization"]), ("unavailable", "unavailable"))
+        # The generation's own verdict is still reported beside it.
+        self.assertEqual(report["graph"]["state"], "current")
+        self.assert_private(report)
+
+    def test_a_bounded_partial_query_stays_available_and_says_why(self) -> None:
+        """Partial answer, complete generation: two facts, reported apart."""
+        document = wide_graph_document(7)
+        document["edges"][0]["confidence"] = "AMBIGUOUS"
+        self.publish(document)
+        code, status, report, _ = self.observed()
+        self.assertEqual(code, 0, status)
+        self.assertEqual((status["state"], status["search"]), ("current", "available"))
+        self.assertEqual(status["build"]["completeness"], lifecycle.COMPLETE)
+        self.assertEqual(report["authorization"], "available")
+        # Six relationships of seven, five documents of six, one ambiguous claim.
+        context = self.ask(node_budget=6)
+        self.assertEqual((context.status, context.dependent_work), (query.AVAILABLE, "usable"))
+        self.assertEqual(context.summary["generation_completeness"], lifecycle.COMPLETE)
+        self.assertEqual(context.summary["query_completeness"], "partial")
+        for omission in ("provider_has_more", "unresolved_entities", "document_limit"):
+            self.assertIn(omission, context.packet["omissions"])
+            self.assertIn(omission, context.summary["omissions"])
+        self.assertNotIn("provider_partial", context.packet["omissions"])
+        self.assertTrue(context.packet["truncated"])
+
+    def test_an_ambiguity_only_answer_is_partial_but_usable(self) -> None:
+        """No budget, depth or document limit applies; one relationship is ambiguous."""
+        document = wide_graph_document(3)
+        document["edges"][0]["confidence"] = "AMBIGUOUS"
+        self.publish(document)
+        code, status, report, _ = self.observed()
+        self.assertEqual(code, 0, status)
+        self.assertEqual((status["search"], report["authorization"]), ("available", "available"))
+        context = self.ask()
+        self.assertEqual((context.status, context.dependent_work), (query.AVAILABLE, "usable"))
+        self.assertEqual(context.summary["generation_completeness"], lifecycle.COMPLETE)
+        self.assertEqual(context.summary["query_completeness"], "partial")
+        self.assertEqual(context.summary["completeness"], "partial")
+        self.assertEqual(context.packet["completeness"], "partial")
+        self.assertFalse(context.packet["truncated"])
+        self.assertEqual(context.packet["omissions"], ["unresolved_entities"])
+        self.assertEqual(context.summary["omissions"], ["unresolved_entities"])
+
+    def test_the_graphify_modules_remain_in_the_package_inventory(self) -> None:
+        manifest = json.loads(
+            (Path(__file__).resolve().parents[1] / "code-mower-package-manifest.json").read_text(encoding="utf-8")
+        )
+        packaged = {entry[0] for entry in PACKAGE_FILES}
+        written = {entry.get("source") for entry in manifest["files_written"]}
+        for module in ("context_graph", "context_graph_lifecycle", "context_graph_query",
+                       "context_graph_command", "context_graph_connection"):
+            self.assertIn(f"src/code_mower/{module}.py", packaged)
+            self.assertIn(f"src/code_mower/{module}.py", written)
 
 
 if __name__ == "__main__":  # pragma: no cover - direct invocation

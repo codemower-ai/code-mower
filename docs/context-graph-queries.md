@@ -206,6 +206,17 @@ arrived after `v1.4.2` was published and are on `main` for the next appropriate
 release. In the published package a `doc_ref` node is an unknown type and the
 JavaScript/TypeScript conventions are not recognized.
 
+From #1029, a reader that meets `doc_ref` without supporting it reports that
+node type as a known provider/reader mismatch and names Code Mower `1.5.0` as
+the release that reads it. It does not call the generation `unreadable`. Other
+unknown node types stay unexplained refusals. When the generation was built by
+a provider this reader was not reviewed against, an unknown node type is
+reported as `reader_incompatible` with a rebuild-or-upgrade remediation.
+Reviewed means an exact requirement, distribution and version together
+(`graphifyy==0.9.58` today, the distribution compared in its normalized
+spelling), so another distribution published at `0.9.58` is not reviewed.
+Either way, search is unavailable until the reader and the generation agree.
+
 Each traversal is symbol-first: a target resolves to the symbols carrying that
 name, and only a target that names no symbol at all is read as a path. Each is
 breadth-first over adjacency sorted by the full relationship identity described
@@ -346,6 +357,22 @@ Confidence maps the provider's own qualification onto the contract's vocabulary:
 | `inferred` | `inferred` | derived, not read directly |
 | `ambiguous` | `unknown` | resolved to more than one candidate |
 
+A partial packet is still an available answer. When a relationship budget, the
+depth limit, the seed bound, or the policy's document limit stops a query, or
+the query crosses an ambiguous relationship or leaves a target unresolved, the
+status stays `available` and
+`dependent_work` stays `usable`. The omissions say what was left out and why.
+The query summary reports two completeness claims separately, so a bounded
+answer is never read as a broken build:
+
+| Summary field | Describes |
+| --- | --- |
+| `generation_completeness` | the published build's own `complete`/`partial`, from its manifest |
+| `query_completeness` | this answer: `partial` whenever an omission above applies, including `unresolved_entities` alone |
+
+`completeness` keeps its earlier meaning, the packet's completeness, and
+equals `query_completeness`.
+
 `ambiguous` also raises `unresolved_entities` on the packet, so a recipient sees
 the uncertainty at the packet level and not only per document. A target name
 that matches more than one definition does the same.
@@ -375,6 +402,13 @@ feature.
 | --- | --- | --- | --- |
 | `required: true` | `required_unavailable` | `paused` | 1 |
 | `required: false` | `optional_unavailable` | `usable` | 0 |
+
+A usable generation that the installed reader cannot consume follows the same
+table. Its `reason` is `reader_incompatible` when the mismatch is a known one,
+and the summary carries the same `remediation` and `next_action` that
+`status` and `connection-status` report. It is `unreadable` when the reader
+has no account of the content, which stays closed. See
+[search readiness](context-graph-lifecycle.md#search-readiness-is-a-separate-verdict).
 
 The words match `context_prepare`, so a caller branches on one vocabulary.
 Optional unavailable context is not a degraded answer — there is no packet at

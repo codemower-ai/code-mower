@@ -97,9 +97,15 @@ def saved_state(value: Any, name: str) -> dict[str, Any]:
                                         ("repository_root", "repositories", "recipients")})}
 
 
-def _summary(state: Mapping[str, Any]) -> dict[str, Any]:
+def _summary(state: Mapping[str, Any], *, search: str = "available") -> dict[str, Any]:
+    """The connection's shape. ``search`` is the provider capability by default.
+
+    ``connect`` and ``disconnect`` report the capability the connection offers;
+    ``status`` passes the observed readiness instead, because that is the one
+    report an operator reads to decide whether a query will work now.
+    """
     return {"schema": "code_mower.contextConnectionSummary.v1", "provider": PROVIDER,
-            "kind": CONNECTION_KIND, "status": state["state"], "search": "available",
+            "kind": CONNECTION_KIND, "status": state["state"], "search": search,
             "memory": "unavailable", "credential_storage": "none"}
 
 
@@ -154,10 +160,23 @@ def status(store: ContextStore, name: str, *, root: Path | None = None,
     """Report the connection and the graph behind it, without minting evidence."""
     with store.locked(name) as locked:
         state = saved_state(locked.read(), name)
-    report = lifecycle.graph_status(Path(state["repository_root"]), root=root, revision=revision)
-    return {**_summary(state), "graph": report.shareable_summary(),
-            "authorization": "available" if state["state"] == "verified" and report.usable
-            else "unavailable"}
+    repository = Path(state["repository_root"])
+    report = lifecycle.graph_status(repository, root=root, revision=revision)
+    # The query's own read, not the lifecycle's verdict alone: a current,
+    # complete generation this reader cannot consume must not be reported as
+    # searchable and then fail on the first question asked of it. A
+    # disconnected connection cannot search whatever the reader says, so the
+    # graph artifact is not opened for it.
+    verified = state["state"] == "verified"
+    if verified:
+        readiness = query.search_readiness(lifecycle.GraphStateRoot(repository, root=root), report)
+    else:
+        readiness = query.reader_not_checked("disconnected")
+    search = readiness["search"]
+    return {**_summary(state, search=search), "graph": report.shareable_summary(),
+            "query_reader": readiness,
+            "authorization": "available" if verified and report.usable
+            and search == query.SEARCH_AVAILABLE else "unavailable"}
 
 
 def _published(state: Mapping[str, Any], *, root: Path | None,

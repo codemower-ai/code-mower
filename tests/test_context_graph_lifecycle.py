@@ -4567,8 +4567,16 @@ class CommandTests(TemporaryWorkspace):
 
         Built through the injected indexer rather than the launcher, because
         what is under test is which state the verbs address, not containment.
+        The artifact is a real (empty) provider graph document: ``status``
+        exits zero only when the query reader can consume the generation too.
         """
-        self.build()
+        document = b'{"nodes": [], "edges": []}'
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
+            info = tarfile.TarInfo("graph.json")
+            info.size = len(document)
+            archive.addfile(info, io.BytesIO(document))
+        self.build(indexer=recording_indexer(buffer.getvalue()))
         inside = ["--repo-path", str(self.repository / "example_pkg"),
                   "--state-dir", str(self.state), "--json"]
         code, output = self.run_command("status", *inside)
