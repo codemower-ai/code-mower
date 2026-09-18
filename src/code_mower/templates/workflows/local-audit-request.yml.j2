@@ -1,0 +1,27 @@
+# Request a default-branch reviewer run; all submitted metadata is revalidated.
+name: Code Mower Local Audit Request
+on:
+  pull_request_target:
+    types: [opened, synchronize, labeled]
+permissions:
+  contents: write
+jobs:
+  request:
+    if: >-
+      vars.__LOCAL_AUDIT_RUNNER_ENABLED_VAR__ == 'true' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      (github.event.action != 'labeled' || (__LOCAL_AUDIT_LABEL_MATCH__)) &&
+      ((__LOCAL_AUDIT_LABEL_MATCH__) || (__LOCAL_AUDIT_LABEL_CONTAINS__))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request supervised local review
+        env:
+          GH_TOKEN: {% raw %}${{ github.token }}{% endraw %}
+          PR_NUMBER: {% raw %}${{ github.event.pull_request.number }}{% endraw %}
+          PR_HEAD_SHA: {% raw %}${{ github.event.pull_request.head.sha }}{% endraw %}
+        run: |
+          set -euo pipefail
+          jq -n --argjson number "$PR_NUMBER" --arg head "$PR_HEAD_SHA" \
+            '{event_type:"code-mower-local-review",client_payload:{pr_number:$number,head_sha:$head}}' |
+            gh api "repos/${GITHUB_REPOSITORY}/dispatches" --input -

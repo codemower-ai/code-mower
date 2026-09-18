@@ -89,6 +89,26 @@ For the full reviewed upgrade PR sequence, including `repo-only` handling and
 wrapper/pin drift checks, see
 [Upgrade An Existing Repository](upgrade-existing-repo.md).
 
+## Local audit workflow publication
+
+A source/candidate install containing the local audit publisher generates
+`.github/workflows/local-audit-publication.yml` alongside the updated labelers,
+gate and standalone verification helpers. Commit that generated set to the
+repository's default branch before switching local Claude/Codex wrappers to
+workflow publication. A PR's copy of the verifier has no publication authority.
+The current pinned release instructions below are unchanged; this feature needs
+a reviewed candidate until it is included in a release.
+
+The generated self-hosted audit job seals the verdict digest in an immutable
+Actions step before dispatch. The publisher requires that exact source
+run/job/attempt and PR head; a personal PAT alone cannot mint a reviewer verdict.
+The job dispatches with its short-lived workflow
+token (Contents write and Actions read), and the publisher posts with its own
+repository token (Issues write). No new long-lived bot credential is required.
+Existing `DISPATCH_TOKEN` uses elsewhere in the build loop remain separate.
+For saved-artifact publication, explicit direct compatibility and terminal-result
+verification, follow [Local Audit Runner](local-audit-runner.md#verified-workflow-publication).
+
 ## Laptop Or Workstation
 
 Install with pipx and an explicit Python 3.12+ interpreter:

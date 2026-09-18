@@ -209,10 +209,11 @@ tools/code_mower bootstrap --print-python
 ```
 
 For trailer-comment lanes, authors added through `*_BOT_AUTHORS` must post the
-lane's matching hidden `*_AUDIT_STATE` trailer. This lets one operator or
-shared machine user run several local audit lanes without the labeler or cloud
-metadata confusing the lane identity; generated gate and gate-health workflows
-read those same repository variables at runtime.
+lane's matching hidden `*_AUDIT_STATE` trailer. This is the direct compatibility
+path; it does not establish independence when the same account built the PR.
+Use verified workflow publication for normal local Claude/Codex merge-authority
+audits. Generated gate and gate-health workflows trust the publisher path only
+for these supported lanes and still enforce builder lineage.
 
 If the standalone Code Mower source repository is still private and the product
 repo's GitHub Actions jobs do not have authenticated standalone checkout,
@@ -471,13 +472,37 @@ tools/run_claude_audit_pr.sh \
   --pr 123 \
   --repo-paths owner/repo:/path/to/repo
 
-tools/run_codex_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
-tools/run_claude_audit_pr.sh --repost-verdict-artifact /path/to/verdict.json
+tools/run_codex_audit_pr.sh --publish-verdict-artifact /path/to/verdict.json
+tools/run_claude_audit_pr.sh --publish-verdict-artifact /path/to/verdict.json
 ```
 
-When reposting a workflow-authored verdict artifact, Code Mower rebinds any
-`CODE_MOWER_AUDIT_RUN` marker to the newly created GitHub comment id and final
-body digest before the generated labeler or gate can trust the terminal trailer.
+The normal path projects a metadata-only artifact and waits for verified workflow
+publication. Keep `local-audit-publication.yml`, the updated Claude/Codex labelers,
+the gate and generated `tools/audit_publication.py`, `audit_labeler_lib.py`,
+`trailer_comment_labeler.py` and supported `lane_configs/` helpers together on the
+default branch. Publication completion uses these generated labeler helpers so
+an older installed package cannot reinterpret a new receipt. Keep these helpers
+when removing older mirrors. Regenerate both workflow-template trees and the
+package manifest when customizing the protocol.
+
+Keep the request `local-audit-request.yml` and source `local-cli-audit.yml` workflows, `audit (lane)` job names and
+reviewer-seal step together with the publisher. Source workflow/path/event,
+default branch, run/attempt, PR/head/lane and sealed digest are verified
+against Actions records. Do not grant authority to a dispatch without a seal,
+expose Actions command files to providers, or inject dispatch secrets into the
+Claude/Codex job.
+
+Do not change the publisher into a PR-head checkout or `workflow_dispatch` on an
+arbitrary ref. Do not add submitted strings to shell commands, run names or
+uploaded files. The receipt job's name uses only verifier-produced numeric IDs
+and the canonical SHA-256 digest. The public artifact has a closed schema and a
+2 KiB limit; adding fields is a protocol change requiring updated verification
+and adversarial tests. Keep the workflow path/name and serialization group stable.
+
+`--publication direct` and `--repost-verdict-artifact` remain explicit emergency
+paths. They post with the caller's identity and cannot mint the new receipt.
+See [Local Audit Runner](local-audit-runner.md#verified-workflow-publication) for
+permissions, freshness, replay handling and context-bound reviews.
 
 The reference provider catalog marks Codex and Claude audit lanes as
 merge-authority lanes, so their wrapper comments render that posture by default.

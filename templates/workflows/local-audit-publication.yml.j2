@@ -1,0 +1,43 @@
+# Metadata only. repository_dispatch always executes the default-branch workflow.
+# Never check out a PR, interpolate payloads in shell, or upload local artifacts.
+name: Code Mower Local Audit Publication
+on:
+  repository_dispatch:
+    types: [code-mower-local-audit]
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: write
+concurrency:
+  group: code-mower-local-audit-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    outputs:
+      pr_number: ${{ steps.publish.outputs.pr_number }}
+      comment_id: ${{ steps.publish.outputs.comment_id }}
+      digest: ${{ steps.publish.outputs.digest }}
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out immutable trusted default-branch code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify and publish audit metadata
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/audit_publication.py publish
+  # Only verifier-produced numeric ids and a validated hex digest enter this
+  # immutable receipt. Consumers bind the comment id to this job via the API.
+  receipt:
+    needs: publish
+    name: "Local audit pr=${{ needs.publish.outputs.pr_number }} comment=${{ needs.publish.outputs.comment_id }} digest=${{ needs.publish.outputs.digest }}"
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: 'true'

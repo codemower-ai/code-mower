@@ -187,7 +187,19 @@ def _post_audit_comment(
     *,
     token: str,
     actions_run_id: Optional[str],
+    publication: str = "direct",
+    artifact_path: Optional[Path] = None,
 ) -> tuple[dict[str, Any], str]:
+    if publication == "workflow":
+        from code_mower.audit_publication import Refused, stage, submit, unavailable_notice
+        if artifact_path is None:
+            raise Refused("workflow publication requires a saved verdict artifact")
+        notice = unavailable_notice(artifact_path, "claude")
+        if notice is not None:
+            return post_pr_comment(repo, pr_number, notice, token=token), notice
+        transport = stage if os.environ.get("CODE_MOWER_AUDIT_STAGE_PATH") else submit
+        posted = transport(artifact_path, token=token, lane="claude")
+        return posted, posted["body"]
     posted = post_pr_comment(repo, pr_number, body, token=token)
     if not actions_run_id:
         return posted, body
@@ -235,6 +247,8 @@ class ClaudeAuditConfig:
     max_diff_bytes: int = DEFAULT_MAX_DIFF_BYTES
     max_diff_hard_limit_bytes: Optional[int] = None
     dry_run: bool = False
+    # Direct callers retain compatibility; the CLI defaults to workflow publication.
+    publication: str = "direct"
     allow_claude_owned: bool = False
     prompt_lenses: Tuple[str, ...] = field(
         default_factory=lambda: code_mower_prompts.DEFAULT_REVIEW_LENSES
@@ -1494,6 +1508,8 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                     comment_body,
                     token=config.github_token,
                     actions_run_id=actions_run_id,
+                    publication=config.publication if config.merge_authority else "direct",
+                    artifact_path=result.verdict_artifact_path,
                 )
                 result.comment_body = comment_body
                 result.posted_comment_url = posted.get("html_url")
@@ -1538,7 +1554,7 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
     acquire_lineage(repo, pr_number, pr_meta, checkout=local_repo,
         base_sha=config.base_ref,
         fetch_comments=lambda: fetch_issue_comments(repo, pr_number, token=config.github_token),
-        reviewer="claude", reviewer_accounts=tuple(item.strip() for item in
+        reviewer="claude", reviewer_accounts=("github-actions[bot]",) if config.publication == "workflow" and config.merge_authority else tuple(item.strip() for item in
             os.environ.get("CLAUDE_AUDIT_BOT_AUTHORS", "claude-audit-bot,claude-audit-bot[bot]").split(",") if item.strip()),
         extra_authorities=decision_authorities)
 
@@ -1839,6 +1855,8 @@ def audit_pr(config: ClaudeAuditConfig, repo: str, pr_number: int) -> ClaudeAudi
                 comment_body,
                 token=config.github_token,
                 actions_run_id=actions_run_id,
+                publication=config.publication if config.merge_authority else "direct",
+                artifact_path=result.verdict_artifact_path,
             )
             result.comment_body = comment_body
             result.posted_comment_url = posted.get("html_url")
@@ -1895,6 +1913,10 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Claude audit CLI - review a single pull request.")
     ap.add_argument("--repo", help="owner/repo")
     ap.add_argument("--pr", type=int, help="PR number")
+    ap.add_argument("--publication", choices=("workflow", "direct"), default="workflow",
+                    help="Merge-authority publication transport (default: workflow; direct is emergency compatibility).")
+    ap.add_argument("--publish-verdict-artifact", type=Path,
+                    help="Publish an existing structured verdict through the trusted workflow and wait; no provider call.")
     ap.add_argument(
         "--repost-verdict-artifact",
         type=Path,
@@ -2085,6 +2107,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 file=sys.stderr,
             )
         return 1
+    if args.publish_verdict_artifact is not None:
+        from code_mower.audit_publication import submit
+        try:
+            posted = submit(args.publish_verdict_artifact, token=token, lane="claude")
+        except Exception:
+            print("error: workflow publication failed closed; inspect the publication run", file=sys.stderr)
+            return 1
+        print(posted.get("html_url") or "published")
+        return 0
     if args.repost_verdict_artifact is not None:
         try:
             posted = repost_audit_verdict_artifact(
@@ -2140,6 +2171,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             max_diff_bytes=args.max_diff_bytes,
             max_diff_hard_limit_bytes=args.max_diff_hard_limit_bytes,
             dry_run=args.dry_run,
+            publication=args.publication,
             allow_claude_owned=args.allow_claude_owned,
             prompt_lenses=code_mower_prompts.split_lenses(args.prompt_lenses),
             prompt_dir=args.prompt_dir,

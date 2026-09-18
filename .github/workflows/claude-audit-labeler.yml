@@ -2,6 +2,9 @@
 name: Claude audit labeler
 
 on:
+  workflow_run:
+    workflows: ["Code Mower Local Audit Publication"]
+    types: [completed]
   issue_comment:
     types: [created, edited]
 
@@ -20,6 +23,7 @@ env:
 jobs:
   label:
     if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
       (
         github.event_name == 'issue_comment' &&
         github.event.issue.pull_request &&
@@ -54,20 +58,36 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
+      - name: Resolve verified publication comment
+        id: publication
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRAILER_LANE: claude
+        run: python3 tools/audit_publication.py prepare-label-event
+
       - name: Apply Claude audit labels
+        if: github.event_name != 'workflow_run' || steps.publication.outputs.ready == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
           CLAUDE_AUDIT_BOT_AUTHORS: ${{ vars.CLAUDE_AUDIT_BOT_AUTHORS }}
           PYTHONPATH: src
+          PUBLICATION_EVENT_PATH: ${{ steps.publication.outputs.event_path }}
           TRAILER_LANE: claude
-          CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml"
-        run: scripts/dev-python -m code_mower.cli trailer-comment-labeler --lane "${TRAILER_LANE}"
+          CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml,.github/workflows/local-audit-publication.yml"
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
+            python3 -m tools.trailer_comment_labeler --lane "${TRAILER_LANE}" --event-path "${PUBLICATION_EVENT_PATH}"
+          else
+            scripts/dev-python -m code_mower.cli trailer-comment-labeler --lane "${TRAILER_LANE}"
+          fi
 
       - name: Recompute Code Mower gate
+        if: github.event_name != 'workflow_run' || steps.publication.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ steps.publication.outputs.pr_number || github.event.issue.number }}
         run: |
           set -euo pipefail
           head_sha="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"

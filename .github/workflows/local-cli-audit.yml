@@ -7,11 +7,14 @@
 name: Code Mower Local CLI Audits
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, labeled]
+
+  repository_dispatch:
+    types: [code-mower-local-review]
 
 permissions:
-  contents: read
+  actions: read
+  # repository_dispatch publication uses only this short-lived workflow token.
+  contents: write
   issues: write
   pull-requests: write
 
@@ -20,19 +23,33 @@ env:
   CODE_MOWER_LOCAL_AUDIT_PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 jobs:
+  prepare:
+    if: vars.CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ready: ${{ steps.validate.outputs.ready }}
+      pr_number: ${{ steps.validate.outputs.pr_number }}
+      head_sha: ${{ steps.validate.outputs.head_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate requested review against the current PR
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/audit_publication.py prepare-review
+
   audit:
     name: audit (${{ matrix.lane.lane }})
+    needs: prepare
     if: >-
       vars.CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED == 'true' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      (
-        github.event.action != 'labeled' ||
-        (github.event.label.name == 'needs-codex-audit' || github.event.label.name == 'needs-claude-audit')
-      ) &&
-      (
-        (github.event.label.name == 'needs-codex-audit' || github.event.label.name == 'needs-claude-audit') ||
-        (contains(github.event.pull_request.labels.*.name, 'needs-codex-audit') || contains(github.event.pull_request.labels.*.name, 'needs-claude-audit'))
-      )
+      needs.prepare.outputs.ready == 'true'
     runs-on: [self-hosted, macOS, code-mower-audit]
     timeout-minutes: 90
     strategy:
@@ -40,13 +57,15 @@ jobs:
       matrix:
         lane: [{"audit_budget_usd": "", "audit_max_diff_bytes": "180000", "audit_max_diff_hard_limit_bytes": "1500000", "display_name": "Codex", "lane": "codex", "needs_label": "needs-codex-audit", "script": "tools/run_codex_audit_pr.sh", "token_env": "DISPATCH_TOKEN"}, {"audit_budget_usd": "", "audit_max_diff_bytes": "180000", "audit_max_diff_hard_limit_bytes": "1500000", "display_name": "Claude", "lane": "claude", "needs_label": "needs-claude-audit", "script": "tools/run_claude_audit_pr.sh", "token_env": "DISPATCH_TOKEN"}]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ matrix.lane.lane }}
+      group: ${{ github.workflow }}-${{ needs.prepare.outputs.pr_number }}-${{ needs.prepare.outputs.head_sha }}-${{ matrix.lane.lane }}
       cancel-in-progress: true
     env:
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+      PR_HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
       PR_HEAD_PATH: ${{ github.workspace }}/pr-head
       SUPPORT_PATH: ${{ github.workspace }}/code-mower-support
+      CODE_MOWER_LOCAL_AUDIT_LANE: ${{ matrix.lane.lane }}
+      CODE_MOWER_AUDIT_STAGE_PATH: ${{ github.workspace }}/audit-publication-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.lane.lane }}.json
     steps:
       - name: Verify local runner environment
         run: |
@@ -66,7 +85,7 @@ jobs:
       - name: Check out trusted Code Mower support files from default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.sha }}
           path: code-mower-support
           persist-credentials: false
 
@@ -78,7 +97,7 @@ jobs:
       - name: Check out pull request head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ needs.prepare.outputs.head_sha }}
           path: pr-head
           fetch-depth: 0
           persist-credentials: false
@@ -119,7 +138,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
           CODE_MOWER_REVIEWER_SPEND_PATH: ${{ runner.temp }}/code-mower-reviewer-spend.json
-          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+
           CODE_MOWER_LOCAL_AUDIT_LANE: ${{ matrix.lane.lane }}
           CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME: ${{ matrix.lane.display_name }}
           CODE_MOWER_LOCAL_AUDIT_NEEDS_LABEL: ${{ matrix.lane.needs_label }}
@@ -134,8 +153,14 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
-          export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
+          # Only Claude/Codex use authenticated default-branch publication.
+          case "${CODE_MOWER_LOCAL_AUDIT_LANE}:${GITHUB_EVENT_NAME}" in
+            codex:repository_dispatch|claude:repository_dispatch|devin_cli:pull_request_target) ;;
+            *) echo "audited=false" >> "${GITHUB_OUTPUT}"; exit 0 ;;
+          esac
+
+          export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"
           labels_file="${RUNNER_TEMP}/code-mower-local-audit-labels.txt"
           gh pr view "${PR_NUMBER}" \
             --repo "${GITHUB_REPOSITORY}" \
@@ -158,10 +183,13 @@ jobs:
             exit 1
           fi
 
-          token="${!CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV:-}"
-          if [ -z "${token}" ]; then
-            token="${GITHUB_TOKEN:-}"
-          fi
+          case "${CODE_MOWER_LOCAL_AUDIT_LANE}" in
+            codex|claude) token="${GITHUB_TOKEN:-}"
+                         unset DISPATCH_TOKEN "${CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV}"
+                         rm -f "${CODE_MOWER_AUDIT_STAGE_PATH}" ;;
+            *) token="${!CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV:-}"
+               token="${token:-${GITHUB_TOKEN:-}}" ;;
+          esac
           if [ -z "${token}" ]; then
             echo "::error::No GitHub token available for ${CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME} audit"
             exit 1
@@ -172,11 +200,39 @@ jobs:
           # PR_HEAD_PATH was checked out and verified at PR_HEAD_SHA above.
           # Code Mower's PR-head fetch helper skips the private pull/N/head
           # fetch when --repo-paths already points at that exact head.
+          # Provider text must not be interpreted as runner workflow commands.
+          command_guard="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+          echo "::stop-commands::${command_guard}"
+          audit_status=0
+          umask 077
+          audit_log="${RUNNER_TEMP}/code-mower-reviewer-${GITHUB_RUN_ID}-${CODE_MOWER_LOCAL_AUDIT_LANE}.log"
           printf '%s\n' "${token}" | "${wrapper}" \
             --read-token-from-stdin \
             --repo "${GITHUB_REPOSITORY}" \
             --pr "${PR_NUMBER}" \
-            --repo-paths "${GITHUB_REPOSITORY}:${PR_HEAD_PATH}"
+            --repo-paths "${GITHUB_REPOSITORY}:${PR_HEAD_PATH}" > "${audit_log}" 2>&1 || audit_status=$?
+          echo "::${command_guard}::"
+          # PASS/BLOCKED finish successfully; failures cannot reach the seal.
+          exit "${audit_status}"
+
+      - name: Validate staged reviewer metadata
+        id: prepare_seal
+        if: >-
+          steps.run_audit.outputs.audited == 'true' &&
+          (matrix.lane.lane == 'codex' || matrix.lane.lane == 'claude')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 "${SUPPORT_PATH}/tools/audit_publication.py" prepare-seal
+
+      - name: Code Mower reviewer seal ${{ steps.prepare_seal.outputs.digest }}
+        if: steps.prepare_seal.outputs.digest != ''
+        run: 'true'
+
+      - name: Publish verified local audit and wait
+        if: steps.prepare_seal.outputs.digest != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 "${SUPPORT_PATH}/tools/audit_publication.py" submit-staged
 
       - name: Upload Code Mower audit metadata
         if: >-
