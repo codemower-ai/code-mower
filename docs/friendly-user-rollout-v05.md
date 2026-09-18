@@ -1,13 +1,13 @@
 # Friendly-User Rollout Plan
 
-Current release: v1.4.2, published and qualified. Release invitations and
-pinned index installs target `code-mower==1.4.2`.
+Current release: v1.5.0, supervised-pilot baseline. Release invitations and
+pinned index installs target `code-mower==1.5.0`.
 
 This is the operating plan for the first 5-10 friendly users before Code Mower
 widens to 20-50 early adopters.
 
 The filename is historical from the v0.5 planning pass. The live baseline in
-this document is the current v1.4.2 supervised-pilot release.
+this document is the current v1.5.0 supervised-pilot release.
 
 Code Mower is supervised-pilot, bring-your-own-agent-loop software for teams willing to
 calibrate reviewers. It is not a drop-in autonomous merge gate.
@@ -31,13 +31,13 @@ out in the invite:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.2
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
 ```
 
-The current package-index release baseline is `v1.4.2`, with pinned package
-install spec `code-mower==1.4.2`. Release evidence is recorded on the GitHub
+The current package-index release baseline is `v1.5.0`, with pinned package
+install spec `code-mower==1.5.0`. Release evidence is recorded on the GitHub
 release and in the first-user install rehearsal. See the
-[v1.4.2 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.4.2).
+[v1.5.0 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.5.0).
 
 ## Invite Criteria
 

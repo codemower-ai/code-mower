@@ -7,14 +7,20 @@ later entries are regular releases.
 
 ## Unreleased
 
-Accepted on `main` and not in any published package. The published `v1.4.2`
-package on the package index contains the originally shipped optional Graphify
-integration; the entries below are intended for the next appropriate release.
-The lineage-contract and Coworker-citation entries that were previously listed
-here shipped in the published `v1.4.1` artifact and are recorded under that
-release below.
+No additional changes recorded.
+
+## 1.5.0 — release
+
+Supervised private-workspace Slack preparation and supervisor v2, Graphify
+compatibility and query-reader parity. See [release notes](docs/v150-release-notes.md)
+and the [qualification record](docs/v150-qualification.md).
 
 ### Added
+
+- Explicit `slack setup` hosted manifest and redacted `slack doctor` (#1024).
+  Default install remains Slack-free. Offline snapshots never prove live readiness.
+  Basic private-workspace interaction only; telemetry/Board links and rich UX
+  remain v1.5.1. Audit publication binds the current head reliably (#1025).
 
 - Supervisor v2 owns checkpointed `clarify` answers and explicitly authorized
   `fix` requests under the original claim, provider binding, live lease and
@@ -22,9 +28,8 @@ release below.
   exact-head independent review, bounded fix/review allowances and saved
   duplicate outcomes prevent implicit recovery or ambiguous message replay.
   The packaged v1 schema, fixtures and five-operation enum remain frozen.
-  This source contract is intended for v1.5; private bridge development may use
-  an exact reviewed source pin, but live canaries and deployment require the
-  final v1.5 package. No hosted canary or provider qualification is claimed.
+  Live canaries and deployment require the immutable v1.5.0 package and
+  separate authorization. No hosted canary or provider qualification is claimed.
 
 - Release campaigns can authenticate their isolated Codex home on a headless
   Linux host that has no OS keyring. `CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE=file`
@@ -131,7 +136,7 @@ release below.
   ambiguous relationship, stays `available` and usable, discloses
   `provider_has_more`, `unresolved_entities` or `document_limit`, and does not
   mark the generation incomplete. An answer whose only omission is
-  `unresolved_entities` is `partial` too. Intended for `v1.5.0` together with #1007.
+  `unresolved_entities` is `partial` too. Included in `v1.5.0` together with #1007.
 
 ## 1.4.2 — published
 

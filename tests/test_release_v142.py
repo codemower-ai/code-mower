@@ -85,8 +85,8 @@ class PublishedIdentityTests(unittest.TestCase):
 
     def test_shared_baseline_sentence_matches_the_published_version(self):
         sentence = versioning.public_baseline_sentence(__version__)
-        self.assertIn("`v1.4.2`", sentence)
-        self.assertIn("`code-mower==1.4.2`", sentence)
+        self.assertIn("`v1.5.0`", sentence)
+        self.assertIn("`code-mower==1.5.0`", sentence)
         for relative in ("README.md", "docs/current-state-and-roadmap.md",
                          "docs/friendly-user-rollout-v05.md"):
             with self.subTest(doc=relative):
@@ -188,11 +188,11 @@ class PackagedTemplateConsistencyTests(unittest.TestCase):
 
 
 class PublicReleaseChecklistTests(unittest.TestCase):
-    def test_checklist_names_v142_as_the_published_entrypoint(self):
+    def test_checklist_names_v150_as_the_published_entrypoint(self):
         checklist = " ".join(_read("docs/public-release-checklist.md").split())
         self.assertIn(
-            "The current published package-index release entrypoint is "
-            "`code-mower==1.4.2` (GitHub tag `v1.4.2`)",
+            "The current package-index release entrypoint is "
+            "`code-mower==1.5.0` (GitHub tag `v1.5.0`)",
             checklist,
         )
 
@@ -358,15 +358,15 @@ class UpgradeRehearsalTests(unittest.TestCase):
 
 
 class VersionIdentityTests(unittest.TestCase):
-    def test_source_version_is_1_4_2(self):
-        self.assertEqual(__version__, "1.4.2")
+    def test_source_version_is_1_5_0(self):
+        self.assertEqual(__version__, "1.5.0")
 
     def test_committed_manifest_version_matches_source(self):
         manifest = package_module.generate_committed_package_manifest(ROOT)
         self.assertEqual(manifest["package"]["version"], __version__)
 
     def test_release_tag_for_current_version(self):
-        self.assertEqual(release_readiness._release_tag_for_version(__version__), "v1.4.2")
+        self.assertEqual(release_readiness._release_tag_for_version(__version__), "v1.5.0")
 
 
 class RunbookIdentityTests(unittest.TestCase):
@@ -516,53 +516,31 @@ class BoardAndGraphifyDiscoverabilityTests(unittest.TestCase):
         self.assertIn("Clean-room experiment", evaluation)
 
     def test_graphify_docs_separate_the_published_package_from_current_main(self):
-        """v1.4.2 ships the original integration; #1007's fixes are only on main."""
+        """v1.4.2 history stays distinct from the v1.5.0 compatibility additions."""
         setup = " ".join(_read("docs/graphify-setup.md").split())
-        self.assertIn("Published `v1.4.2` versus current `main`", setup)
+        self.assertIn("v1.5.0 compatibility and existing generations", setup)
         self.assertIn("/pull/1007", setup)
         # The boundary is stated in both directions.
         self.assertIn("merged to `main`", setup)
-        self.assertIn("none of it is in the published `v1.4.2` package", setup)
+        self.assertIn("none of it is in the historical `v1.4.2` package", setup)
         # An upgrade alone does not repair a generation built earlier.
         self.assertIn("does not repair a generation you already built", setup)
         self.assertIn("context-graph refresh", setup)
 
         roadmap = " ".join(_read("docs/current-state-and-roadmap.md").split())
         self.assertIn("/pull/1007", roadmap)
-        self.assertIn("the published `v1.4.2` package does not contain them", roadmap)
+        self.assertIn("the historical `v1.4.2` package does not contain them", roadmap)
 
-    def test_graphify_setup_does_not_claim_every_paragraph_is_the_published_package(self):
-        """#1007's paragraphs sit above the boundary section, so "everything
-        above" would be false. The page must scope the claim to the base setup
-        and ramp-up, and mark the post-v1.4.2 paragraphs where they appear."""
+    def test_graphify_setup_marks_v150_additions_and_preserves_acquisition_guidance(self):
         raw = _read("docs/graphify-setup.md")
         setup = " ".join(raw.split())
-        # The false blanket claim must not come back in any spelling.
-        for blanket in ("Everything above describes that package",
-                        "Everything above describes the published",
-                        "All of the above describes that package"):
-            with self.subTest(phrase=blanket):
-                self.assertNotIn(blanket.lower(), setup.lower())
-        # The published package is claimed only for the base setup and ramp-up.
-        self.assertIn("The base setup and ramp-up above", setup)
-        self.assertIn("describe that published package", setup)
-        # The #1007 paragraphs are marked where a reader meets them, above the
-        # boundary section, and the boundary section points back at that mark.
-        marker = "The next two paragraphs are **post-`v1.4.2`**"
-        self.assertIn(marker, setup)
-        self.assertLess(
-            raw.index("The next two paragraphs are"),
-            raw.index("## Published `v1.4.2` versus current `main`"),
-            "the post-v1.4.2 marker must precede the boundary section it explains",
-        )
-        self.assertIn("explicitly marked post-`v1.4.2` describe current `main`", setup)
-        # Both #1007 paragraphs still sit under the acquisition heading the
-        # boundary section names.
+        self.assertIn("v1.5.0 includes the compatibility and readiness additions", setup)
+        self.assertIn("The historical `v1.4.2` package", setup)
+        self.assertIn("The next two paragraphs are included in v1.5.0", setup)
         acquisition = raw.split("## Separate acquisition environment", 1)[1]
         acquisition = acquisition.split("## Separate contained offline build", 1)[0]
         self.assertIn("Install any required language extras", acquisition)
         self.assertIn("If runtime ownership checks refuse", acquisition)
-        self.assertIn("The next two paragraphs are", acquisition)
 
     def test_rebuild_guidance_is_scoped_to_generations_the_1007_gaps_affected(self):
         """Not every generation built before the next release needs a rebuild --
@@ -644,7 +622,7 @@ class BoardAndGraphifyDiscoverabilityTests(unittest.TestCase):
 
 class InstalledPromptPackTests(unittest.TestCase):
     def test_literal_starter_and_explicit_config_walkthrough(self):
-        """Exercise installed 1.4.2 code, with no provider login or network doctor probes."""
+        """Exercise installed 1.5.0 code, with no provider login or network doctor probes."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             supplied = os.environ.get("CODE_MOWER_QUALIFICATION_WHEEL")
@@ -678,7 +656,7 @@ import code_mower
 from code_mower import cli, package
 from code_mower.config import load_config
 assert Path(code_mower.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve())
-assert code_mower.__version__ == '1.4.2'
+assert code_mower.__version__ == '1.5.0'
 empty_store = Path.cwd() / 'empty-provider-store'
 empty_store.mkdir()
 def run(args, doctor=False):

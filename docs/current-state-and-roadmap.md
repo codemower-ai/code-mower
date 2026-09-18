@@ -22,14 +22,13 @@ dry-run-first.
 
 ## Current Published Baseline
 
-The current package-index release baseline is `v1.4.2`, with pinned package
-install spec `code-mower==1.4.2`. Release evidence is recorded on the GitHub
-release and in the first-user install rehearsal. It was published from release
-commit `55339bf1acf76d33be5937e80bdaad772e0b2bf5` under the annotated `v1.4.2`
-tag; release [#952](https://github.com/codemower-ai/code-mower/issues/952) is
-closed. See the
-[v1.4.2 release notes](v142-release-notes.md) and the
-[v1.4.2 qualification record](v142-qualification.md).
+The current package-index release baseline is `v1.5.0`, with pinned package
+install spec `code-mower==1.5.0`. Release evidence is recorded on the GitHub
+release and in the first-user install rehearsal. See the
+[v1.5.0 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-notes.md)
+and [qualification record](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md)
+for the exact source, artifact digests and separately observed gates.
+Historical v1.4.x artifacts and qualification records remain unchanged.
 
 `v1.4.0`, `v1.4.1` and `v1.4.2` have all shipped, and the v1.4.0 and v1.4.1
 artifacts remain unchanged. The published baselines require Python 3.12 or
@@ -235,8 +234,8 @@ Real-pilot compatibility fixes have since merged to `main` in
 provider-manifest reader separate from the compact generation-manifest bound,
 explicit refusal of an oversized provider manifest, `doc_ref` nodes as declared
 non-code exclusions, and JavaScript/TypeScript test-convention and `imports`
-recognition in `related_tests`. They are on `main` and intended for the next
-appropriate release; the published `v1.4.2` package does not contain them. The
+recognition in `related_tests`. They are included in v1.5.0 together with #1031 readiness/query parity;
+the historical `v1.4.2` package does not contain them. The
 accepted `0.9.58` provider pin is unchanged. Because a published generation is
 never rewritten in place, upgrading Code Mower repairs no generation already
 built -- but only the generations those compatibility gaps actually affected
@@ -319,9 +318,8 @@ Elapsed time, implementation difficulty, or an open draft PR never changes this
 release order. Merged fixes count as on main until a later published package is
 verified to contain them; #935/#973 and the phase-3 Board PRs are now verified
 in the published `v1.4.2` artifact, while the merged Graphify compatibility
-fixes in [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007) are on
-main awaiting the next appropriate release. They are intended for `v1.5.0`
-together with the #1029 search-readiness check. That check makes `status` and
+fixes in [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007) are included in `v1.5.0`
+together with the #1029 search-readiness check from merged PR #1031. That check makes `status` and
 `connection-status` report `search` from the installed query reader, so a
 current generation the reader cannot consume is reported as a reader mismatch
 with an upgrade action rather than as searchable.
