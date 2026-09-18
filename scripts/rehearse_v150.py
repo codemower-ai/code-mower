@@ -232,7 +232,7 @@ assert all(importlib.util.find_spec(n) is None for n in ('slack_sdk', 'slack_bol
     hosted_manifest = json.loads(output.read_text())
     assert hosted_manifest["oauth_config"]["scopes"]["bot"] == ["commands"]
     assert hosted_manifest["oauth_config"]["redirect_urls"] == [
-        "https://codemower-slack-oauth-ingress.jhuber.workers.dev/callback"]
+        "https://slack-oauth.messagebridge.app/callback"]
     assert hosted_manifest["features"]["slash_commands"][0]["url"] == \
         "https://codemower.com/api/slack/commands"
     assert hosted_manifest["settings"]["interactivity"]["request_url"] == \
