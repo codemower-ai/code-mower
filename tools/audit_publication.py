@@ -246,7 +246,9 @@ def verify_run(run, repository, *, run_id=None, terminal=False):
         isinstance(run.get("head_sha"), str) and SHA.fullmatch(run["head_sha"]),
         "invalid workflow SHA",
     )
-    require(run.get("display_title") == WORKFLOW_NAME, "invalid run title")
+    # repository_dispatch uses the event type as display_title; name identifies
+    # the workflow, alongside the trusted path checked above.
+    require(run.get("name") == WORKFLOW_NAME, "untrusted workflow name")
     if terminal:
         require(
             run.get("status") == "completed" and run.get("conclusion") == "success",

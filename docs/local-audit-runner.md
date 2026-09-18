@@ -8,8 +8,88 @@ logins. Install the GitHub runner as a service only after the generated local
 audit workflow passes the same smoke checks.
 
 For service mode, set `USER`, `LOGNAME`, `SHELL`, and `LANG` in the runner
-`.env`, then fully recycle the listener after edits. `svc.sh stop/start` may
+`.env`, along with `CODE_MOWER_PYTHON` as described below, then fully recycle
+the listener after edits. `svc.sh stop/start` may
 leave an older `Runner.Listener` process alive with the previous environment.
+
+## Stable Python environment
+
+The source wrappers use `scripts/dev-python` and require Python 3.12+ with the
+runtime dependencies declared in the trusted support checkout's `pyproject.toml`
+(currently `PyYAML>=6.0` and `packaging>=23.2`). A Python executable alone is not
+enough. Provision a dedicated virtual environment outside the runner's disposable
+work directories, using an installed Python 3.12+ interpreter and a reviewed
+Code Mower source checkout:
+
+```bash
+python3.12 -m venv "$HOME/.local/share/code-mower/audit-venv"
+"$HOME/.local/share/code-mower/audit-venv/bin/python" -m pip install /absolute/path/to/reviewed/code-mower
+"$HOME/.local/share/code-mower/audit-venv/bin/python" -m pip check
+```
+
+Installing that checkout installs its declared runtime dependencies. Repeat the
+install when those requirements change. Never install dependencies from a PR
+checkout into this trusted environment. Configure the runner `.env` with the
+**literal absolute path**, for example:
+
+```dotenv
+CODE_MOWER_PYTHON=/absolute/path/to/audit-venv/bin/python
+```
+
+Replace this example with the full path to the environment created above;
+`.env` does not expand `$HOME` or `~`.
+Keep the interpreter path stable across support-checkout resets and recycle the
+listener after configuring it. Do not rely on shell activation or an interactive
+shell's Python selection. `scripts/dev-python` prefers a `.venv` in its current
+working directory over `CODE_MOWER_PYTHON`, so keep that job directory free of a
+shadowing `.venv`; the preflight below rejects a different selected interpreter.
+
+After the trusted default-branch support checkout, run this preflight in an
+actual runner job with `SUPPORT_PATH` set to that checkout. Run from the job
+workspace, never the PR checkout. It checks the same interpreter selector and
+source imports used by the wrappers and metadata upload, without invoking a
+provider or uploading anything:
+
+```bash
+set -euo pipefail
+export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"
+if ! {
+  test -n "${CODE_MOWER_PYTHON:-}" &&
+  test -x "${CODE_MOWER_PYTHON}" &&
+  "${CODE_MOWER_PYTHON}" -m pip check &&
+  "${SUPPORT_PATH}/scripts/dev-python" - <<'PY'
+import os
+import sys
+from pathlib import Path
+import tomllib
+
+assert sys.version_info >= (3, 12)
+assert os.path.abspath(sys.executable) == os.path.abspath(os.environ["CODE_MOWER_PYTHON"])
+from importlib.metadata import version
+from packaging.requirements import Requirement
+import yaml
+import code_mower.cli
+
+support = Path(os.environ["SUPPORT_PATH"])
+assert Path(code_mower.cli.__file__).resolve() == (support / "src/code_mower/cli.py").resolve()
+project = tomllib.loads((support / "pyproject.toml").read_text())["project"]
+for declared in project["dependencies"]:
+    requirement = Requirement(declared)
+    if requirement.marker is None or requirement.marker.evaluate():
+        assert requirement.specifier.contains(version(requirement.name))
+PY
+} >/dev/null 2>&1; then
+  echo "::error::Code Mower Python preflight failed; check CODE_MOWER_PYTHON and trusted runtime dependencies."
+  exit 1
+fi
+echo "Code Mower Python preflight passed"
+```
+
+Keep installation diagnostics and any provider stdout/stderr in private local
+logs. Do not dump the runner environment, tokens, auth status payloads, or raw
+provider output into Actions logs or artifacts.
+
+## Runner account preflight
 
 Check `~/Library/LaunchAgents/actions.runner.*.plist` after `svc.sh install`.
 If it contains `SessionCreate=true`, remove that key and unload/reload the
@@ -23,9 +103,11 @@ Verify from a runner job, not only from an interactive terminal:
 gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }
 codex --version
 claude auth status >/dev/null 2>&1 && echo "claude auth ok" || { echo "claude auth NOT ready"; false; }
-claude -p "Reply with exactly: ok" --output-format json
 devin auth status >/dev/null 2>&1 && echo "devin auth ok" || { echo "devin auth NOT ready"; false; }
 ```
+
+Check only providers enabled for this runner. These are auth readiness checks;
+they do not start a provider canary or repeat an audit.
 
 Local Claude and Codex merge-authority audits normally publish through
 `.github/workflows/local-audit-publication.yml`. The self-hosted audit job uses

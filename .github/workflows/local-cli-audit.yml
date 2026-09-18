@@ -248,6 +248,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="${CODE_MOWER_LOCAL_AUDIT_PATH}:${PATH}"
+          export PYTHONPATH="${SUPPORT_PATH}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
           if [ -z "${CODE_MOWER_CLOUD_TOKEN:-}" ]; then
             echo "::notice::CODE_MOWER_CLOUD_TOKEN is not configured; skipping audit metadata upload."
