@@ -12,6 +12,7 @@ import copy
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -313,6 +314,17 @@ class GeneratedRunnerTests(unittest.TestCase):
                         explicit_issue_target: bool = False,
                         candidate_issues: str | None = None,
                         gh_call_log: Path | None = None,
+                        base_sha: str | None = None,
+                        supervise_log: Path | None = None,
+                        trusted_creation_prefixes: tuple[str, ...] = ("codex/",),
+                        creation_branch_prs: str = "[]",
+                        eligibility_log: Path | None = None,
+                        unknown_eligibility_subcommand: bool = False,
+                        lineage_store_pr: int | None = None,
+                        discovered_creation_pr: int | None = None,
+                        publication_completes: bool = True,
+                        after_snapshot_fails: bool = False,
+                        lineage_listing: list[str] | None = None,
                         ) -> tuple[subprocess.CompletedProcess, str, dict]:
         """Run the generated codex runner against a fake provider that opens a PR.
 
@@ -322,6 +334,27 @@ class GeneratedRunnerTests(unittest.TestCase):
         ``existing_branch`` makes the fake ``git ls-remote`` advertise that branch
         as already present on origin and ``existing_branch_prs`` is the ``gh pr
         list --head`` JSON attached to it.
+
+        ``base_sha`` is what the fake ``git rev-parse`` reports for the immutable
+        launch base. ``supervise_log`` records the exact ``lane-delivery
+        supervise`` argv this runner builds, one argument per line, and strips
+        the lineage selection from the invocation that actually runs so the
+        fixture stays offline while still inspecting what was passed.
+        ``lineage_store_pr`` pre-creates the private lineage record a delivered
+        pull request of that number would carry, which is what marks a rerun as
+        continuing an existing chain rather than bootstrapping a new one.
+
+        ``discovered_creation_pr`` makes the supervised creation round behave as
+        one that discovered and bound that pull request: it names it in the
+        pre-publication output and leaves the private record under the issue.
+        ``publication_completes`` then decides whether the round also got as far
+        as writing the attribution output a completed publication writes --
+        ``False`` is the partially applied publication, which posts the public
+        marker and then fails before that output exists.
+        ``after_snapshot_fails`` makes every post-delivery ``gh pr view`` fail,
+        which is the incomplete after-snapshot that ends the run at the
+        undelivered path. ``lineage_listing`` is extended with the private
+        lineage directory's entries before the fixture is torn down.
         """
         ls_remote = "exit 0"
         if existing_branch is not None:
@@ -343,12 +376,28 @@ class GeneratedRunnerTests(unittest.TestCase):
             delivered_listing,
         )
         self.assertNotEqual(header, _FAKE_GH_DELIVERY_HEADER)
+        if after_snapshot_fails:
+            # Only the read the runner takes *after* the provider delivered:
+            # the pre-run snapshot has to stay complete or the unit is refused
+            # before a provider ever starts.
+            marker = 'if [ "$cmd" = "pr list" ]'
+            self.assertIn(marker, header)
+            header = header.replace(
+                marker,
+                'if [ "$cmd" = "pr view" ] && [ -f "$HOME/lane-delivered" ]; then\n'
+                "  exit 1\n"
+                "el" + marker,
+                1,
+            )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bin_dir = root / "bin"
             bin_dir.mkdir()
             work_root = root / "work"
             (work_root / "codex" / repo_dir / ".git" / "hooks").mkdir(parents=True)
+            if lineage_store_pr is not None:
+                (root / ".local/share/code-mower/lineage" / repo_dir
+                 / str(lineage_store_pr)).mkdir(parents=True)
             prompt_log = root / "prompt.md"
             fake_gh = bin_dir / "gh"
             fake_gh.write_text(
@@ -397,12 +446,17 @@ fi
 if [ "${1:-}" = "-C" ] && [ "${3:-}" = "ls-remote" ]; then
   __LS_REMOTE__
 fi
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "rev-parse" ] && [ "${4:-}" = "origin/main^{commit}" ]; then
+  __REV_PARSE__
+fi
 if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--git-path" ]; then
   printf '%s\\n' ".git/${3}"
   exit 0
 fi
 exit 0
-""".replace("owner/repo", repo).replace("__LS_REMOTE__", ls_remote),
+""".replace("owner/repo", repo).replace("__LS_REMOTE__", ls_remote).replace(
+                    "__REV_PARSE__",
+                    f"printf '%s\\n' '{base_sha}'; exit 0" if base_sha else ":"),
                 encoding="utf-8",
             )
             fake_git.chmod(0o755)
@@ -417,6 +471,151 @@ printf 'fake codex completed\\n'
                 encoding="utf-8",
             )
             enable_fake_codex_sandbox(fake_codex)
+            lane_delivery_env = dict(_LANE_DELIVERY_ENV)
+            if supervise_log is not None:
+                recorder = bin_dir / "recording-lane-delivery"
+                # The runner's own argv is the evidence, so it is written down
+                # verbatim before anything consumes it. The lineage selection is
+                # then dropped from the invocation that actually runs: starting a
+                # creation round would read the real repository, and this fixture
+                # is about what the runner passes, not about the round itself.
+                #
+                # ``discovered_creation_pr`` stands in for the effects a real
+                # creation round leaves behind before returning: the private
+                # record is filed under the issue the round was launched for,
+                # and the pull request the supervisor discovered is named in the
+                # output written before publication starts. The attribution
+                # output only follows when publication ran to completion.
+                #
+                # ``trusted_creation_prefixes`` is what the target repository's
+                # immutable-base policy declares for this lane, and
+                # ``creation_branch_prs`` is what the repository answers when
+                # the reservation asks whether any pull request was ever opened
+                # from the branch. Those are the two things `creation-eligible`
+                # answers from, and neither is anything the runner can see for
+                # itself: the prefixes are deliberately not the runner's own
+                # generated set -- an empty tuple is the shipped-example case
+                # where `builder_identity.branch_prefixes` names other lanes
+                # only -- and a closed pull request on a deleted branch is
+                # invisible to the runner's `git ls-remote`. The runner must
+                # reach the ordinary bootstrap in both cases. The refusal texts
+                # mirror the real subcommand's, which
+                # `tests/test_lineage_creation.py` pins.
+                #
+                # The stub also refuses a probe that does not name the
+                # repository under test, so no row can pass a creation round
+                # while the reservation is asked about the wrong repository.
+                recorder.write_text(
+                    """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "creation-eligible" ]; then
+  eligibility_log=__ELIGIBILITY_LOG__
+  [ -z "$eligibility_log" ] || printf '%s\\n' "$@" > "$eligibility_log"
+  if [ -n "__UNKNOWN_ELIGIBILITY__" ]; then
+    printf "lane-delivery: error: argument command: invalid choice: 'creation-eligible'\\n" >&2
+    exit 2
+  fi
+  eligible_branch=""
+  eligible_repo=""
+  eligible_skip=""
+  for arg in "$@"; do
+    if [ -n "$eligible_skip" ]; then
+      case "$eligible_skip" in
+        --lineage-branch) eligible_branch="$arg" ;;
+        --writer-repo) eligible_repo="$arg" ;;
+      esac
+      eligible_skip=""
+      continue
+    fi
+    case "$arg" in --cwd|--lineage-base|--writer-lane|--writer-repo|--lineage-branch) eligible_skip="$arg" ;; esac
+  done
+  eligible_prefixes=__TRUSTED_CREATION_PREFIXES__
+  if [ "$(printf '%s\\n' "$eligible_prefixes" | jq -r 'length')" = "0" ]; then
+    printf 'lane-delivery: %s\\n' "Creation requires a configured branch prefix for this lane" >&2
+    exit 2
+  fi
+  if ! printf '%s\\n' "$eligible_prefixes" | jq -e --arg branch "$eligible_branch" \
+      'any(.[]; . as $p | ($branch | ascii_downcase | startswith($p)))' >/dev/null; then
+    printf 'lane-delivery: %s\\n' "Reserved creation branch is outside this lane's configured prefixes" >&2
+    exit 2
+  fi
+  if [ "$eligible_repo" != "__REPO__" ]; then
+    printf 'lane-delivery: %s\\n' "Creation eligibility requires the target repository" >&2
+    exit 2
+  fi
+  if [ "$(printf '%s\\n' __CREATION_BRANCH_PRS__ | jq -r 'length')" != "0" ]; then
+    printf 'lane-delivery: %s\\n' "Reserved creation branch already has a pull request." >&2
+    exit 2
+  fi
+  exit 0
+fi
+if [ "${1:-}" = "supervise" ]; then
+  printf '%s\\n' "$@" > __SUPERVISE_LOG__
+  filtered=()
+  skip=""
+  provider_argv=0
+  lineage_issue=""
+  lineage_store=""
+  lineage_output=""
+  lineage_creation_output=""
+  for arg in "$@"; do
+    if [ -n "$skip" ]; then
+      case "$skip" in
+        --lineage-issue) lineage_issue="$arg" ;;
+        --lineage-store) lineage_store="$arg" ;;
+        --lineage-output) lineage_output="$arg" ;;
+        --lineage-created) lineage_creation_output="$arg" ;;
+      esac
+      skip=""
+      continue
+    fi
+    # Everything after the first -- is the provider's own argv and is passed
+    # through untouched.
+    if [ "$provider_argv" = 1 ]; then
+      filtered+=("$arg")
+      continue
+    fi
+    if [ "$arg" = "--" ]; then
+      provider_argv=1
+      filtered+=("$arg")
+      continue
+    fi
+    case "$arg" in
+      --lineage-issue|--lineage-branch|--lineage-before|--lineage-base|--lineage-writer|--lineage-store|--lineage-output|--lineage-created)
+        skip="$arg"; continue ;;
+    esac
+    filtered+=("$arg")
+  done
+  if [ -n "__DISCOVERED_CREATION_PR__" ] && [ -n "$lineage_issue" ] \
+    && [ -n "$lineage_store" ] && [ -n "$lineage_creation_output" ]; then
+    mkdir -p "$lineage_store"
+    printf '%s\\n' '{"schema":"code_mower.lineageCreated.v1","repo":"__REPO__","pr_number":__DISCOVERED_CREATION_PR__}' \
+      > "$lineage_creation_output"
+    if [ -n "__PUBLICATION_COMPLETES__" ] && [ -n "$lineage_output" ]; then
+      printf '%s\\n' '{"dimensions":{"pr_repo":"__REPO__","pr_number":"__DISCOVERED_CREATION_PR__"}}' \
+        > "$lineage_output"
+    fi
+  fi
+  set -- "${filtered[@]}"
+fi
+exec __REAL_LANE_DELIVERY__ "$@"
+""".replace("__SUPERVISE_LOG__", shlex.quote(str(supervise_log)))
+   .replace("__TRUSTED_CREATION_PREFIXES__",
+            shlex.quote(json.dumps(list(trusted_creation_prefixes))))
+   .replace("__ELIGIBILITY_LOG__",
+            shlex.quote("" if eligibility_log is None else str(eligibility_log)))
+   .replace("__UNKNOWN_ELIGIBILITY__", "1" if unknown_eligibility_subcommand else "")
+   .replace("__CREATION_BRANCH_PRS__", shlex.quote(creation_branch_prs))
+   .replace("__DISCOVERED_CREATION_PR__",
+            "" if discovered_creation_pr is None else str(discovered_creation_pr))
+   .replace("__PUBLICATION_COMPLETES__", "1" if publication_completes else "")
+   .replace("__REPO__", repo)
+   .replace("__REAL_LANE_DELIVERY__",
+            shlex.quote(_LANE_DELIVERY_ENV["CODE_MOWER_LANE_DELIVERY_CMD"])),
+                    encoding="utf-8",
+                )
+                recorder.chmod(0o755)
+                lane_delivery_env["CODE_MOWER_LANE_DELIVERY_CMD"] = str(recorder)
             argv = [str(runner), "--lane", "codex", "--repo", repo, "--max-minutes", "1"]
             if explicit_issue_target:
                 argv.extend(["--target", "issue:12"])
@@ -431,7 +630,7 @@ printf 'fake codex completed\\n'
                     "PROMPT_LOG": str(prompt_log),
                     "EXISTING_OPEN_PRS_JSON": existing_issue_prs,
                     "GH_CALL_LOG": str(gh_call_log) if gh_call_log else "",
-                    **_LANE_DELIVERY_ENV,
+                    **lane_delivery_env,
                 },
                 text=True,
                 capture_output=True,
@@ -440,6 +639,11 @@ printf 'fake codex completed\\n'
             prompt = prompt_log.read_text(encoding="utf-8") if prompt_log.exists() else ""
             guard_path = work_root / "codex" / repo_dir / ".git" / "code-mower-lane-guard.json"
             guard = json.loads(guard_path.read_text(encoding="utf-8")) if guard_path.exists() else {}
+            if lineage_listing is not None:
+                lineage_root = root / ".local/share/code-mower/lineage" / repo_dir
+                lineage_listing.extend(
+                    sorted(entry.name for entry in lineage_root.iterdir())
+                    if lineage_root.is_dir() else [])
         return completed, prompt, guard
 
     @staticmethod
@@ -475,6 +679,353 @@ printf 'fake codex completed\\n'
         self.assertEqual(guard["allowed_branch_expected_head"], "absent")
         self.assertNotIn("allowed_pattern", guard)
         self.assertEqual(guard["allowed_prefixes"], [])
+
+    # Creation lineage (codemower-ai/code-mower#1020) attests the pull request
+    # an issue-targeted round opens. These rows read the argv the runner itself
+    # builds for `lane-delivery supervise`, because the contract only holds if
+    # the real issue path passes the origin binding; calling the supervisor
+    # helper directly would prove nothing about this runner.
+    LANE_PREFIX_TEMPLATE = "{lane}/{issue_number}-{slug}"
+    CREATED_BRANCH = "codex/12-nv-accessible-label"
+
+    def _supervise_argv(self, **kwargs) -> tuple[subprocess.CompletedProcess, list[str], str, dict]:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "supervise-argv"
+            completed, prompt, guard = self._run_codex_lane(supervise_log=log, **kwargs)
+            argv = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        return completed, argv, prompt, guard
+
+    @staticmethod
+    def _flag(argv: list[str], flag: str) -> str | None:
+        return argv[argv.index(flag) + 1] if flag in argv else None
+
+    def test_issue_runner_launches_a_creation_round_bound_to_the_reserved_branch(self) -> None:
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        base = "d" * 40
+        completed, argv, prompt, guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE,
+            base_sha=base)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        # The round is bound to the issue it was launched for, the branch the
+        # runner reserved before launch, and the immutable base this checkout
+        # sits on -- not to anything the writer chooses afterwards.
+        self.assertEqual(self._flag(argv, "--lineage-issue"), "12")
+        self.assertEqual(self._flag(argv, "--lineage-branch"), self.CREATED_BRANCH)
+        self.assertEqual(self._flag(argv, "--lineage-base"), base)
+        self.assertTrue((self._flag(argv, "--lineage-writer") or "").startswith("codex"))
+        store = self._flag(argv, "--lineage-store") or ""
+        self.assertTrue(store.endswith("/lineage/owner__repo/issue-12"), store)
+        self.assertTrue((self._flag(argv, "--lineage-output") or "").endswith(".lineage.json"))
+        # The round is also told where to name the pull request it discovers,
+        # which is what this runner files the private record on -- and it is a
+        # different file from the attribution only a completed publication
+        # writes, because a publication can post the marker and then fail.
+        created = self._flag(argv, "--lineage-created") or ""
+        self.assertTrue(created.endswith(".created.json"), created)
+        self.assertNotEqual(created, self._flag(argv, "--lineage-output"))
+        # An issue-targeted round has no pre-existing pull request to hand over
+        # or to snapshot, and the supervisor refuses the combination outright.
+        self.assertNotIn("--lineage-before", argv)
+        self.assertNotIn("--lineage-handoff", argv)
+        self.assertNotIn("--lineage-create", argv)
+        # The reserved branch is the one name the writer is told to push and the
+        # only one the guard authorizes, so the reservation is not advisory.
+        self.assertIn("push exactly the branch " + self.CREATED_BRANCH, prompt)
+        self.assertEqual(guard["allowed_branch"], self.CREATED_BRANCH)
+        self.assertEqual(guard["allowed_prefixes"], [])
+
+    def test_a_policy_branch_outside_the_lane_prefixes_keeps_the_plain_bootstrap(self) -> None:
+        # fix/12-... cannot be reserved by this lane, and the no-PR bootstrap
+        # this runner has always performed must survive that, not refuse.
+        own = self._pr(77, "fix/12-nv-accessible-label", labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, argv, _prompt, _guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+        self.assertIn("runs without creation lineage", completed.stdout)
+        self.assertIn("outside this lane's configured prefixes", completed.stdout)
+
+    def test_a_lane_the_trusted_policy_declares_no_prefix_for_keeps_the_bootstrap(self) -> None:
+        # The shipped example declares branch_prefixes for other lanes only,
+        # while this runner is generated with `codex/` for every local lane. The
+        # branch is therefore inside the runner's own prefixes and outside the
+        # policy's, which is precisely the split that used to select a creation
+        # round the supervisor then refused before launching the provider. The
+        # run must reach the long-standing no-PR bootstrap instead.
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, argv, prompt, guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE,
+            trusted_creation_prefixes=())
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        # The provider still ran, and it still ran under the supervisor: only
+        # the lineage selection is withheld.
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+        self.assertIn("Creation requires a configured branch prefix for this lane",
+                      completed.stdout)
+        self.assertIn("runs without creation lineage", completed.stdout)
+        # Write authority and the branch the writer is told to push are the
+        # resolved policy branch either way; only the attestation is dropped.
+        self.assertIn("push exactly the branch " + self.CREATED_BRANCH, prompt)
+        self.assertEqual(guard["allowed_branch"], self.CREATED_BRANCH)
+
+    def test_a_branch_a_closed_pull_request_once_used_keeps_the_bootstrap(self) -> None:
+        # The issue's previous pull request was closed and its branch deleted,
+        # and the issue is rerun. Nothing closes the issue, `git ls-remote`
+        # advertises no ref, and the branch is inside the policy's prefixes --
+        # so every signal this runner can read for itself says bootstrap-
+        # eligible. The reservation still refuses that name for the pull request
+        # once opened from it, which is why the runner has to ask rather than
+        # decide: gating on its own view selected a round the supervisor then
+        # refused before launching the provider, taking away an ordinary
+        # replacement run that had always worked.
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, argv, prompt, guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE,
+            creation_branch_prs=json.dumps([{"number": 61, "state": "closed"}]))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        # The provider still ran under the supervisor; only the lineage
+        # selection is withheld, and the run is never refused.
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+        self.assertIn("Reserved creation branch already has a pull request.",
+                      completed.stdout)
+        self.assertIn("runs without creation lineage", completed.stdout)
+        # Write authority and the branch the writer is told to push are the
+        # resolved policy branch either way; only the attestation is dropped.
+        self.assertIn("push exactly the branch " + self.CREATED_BRANCH, prompt)
+        self.assertEqual(guard["allowed_branch"], self.CREATED_BRANCH)
+
+    def test_an_installed_cli_without_the_eligibility_probe_keeps_the_bootstrap(self) -> None:
+        # `creation-eligible` is newer than the released CLI the runner may be
+        # sitting on, and argparse answers an unknown subcommand with exit 2.
+        # That is an unavailable answer, not an admitted reservation, so the
+        # issue run degrades to the bootstrap rather than being refused.
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, argv, _prompt, _guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE,
+            unknown_eligibility_subcommand=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+        self.assertIn("runs without creation lineage", completed.stdout)
+
+    def test_the_runner_asks_eligibility_of_the_checkout_and_its_immutable_base(self) -> None:
+        # The question has to be about the target repository at the revision the
+        # round would be bound to; asking about anything else is what let the
+        # two checks disagree in the first place.
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        base = "d" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            probe_log = Path(tmp) / "eligibility-argv"
+            completed, _prompt, _guard = self._run_codex_lane(
+                json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE, base_sha=base,
+                supervise_log=Path(tmp) / "supervise-argv", eligibility_log=probe_log)
+            probe = probe_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(probe[0], "creation-eligible")
+        self.assertEqual(self._flag(probe, "--lineage-base"), base)
+        self.assertEqual(self._flag(probe, "--writer-lane"), "codex")
+        # And about the repository the branch would be reserved in: the
+        # reservation half of the answer is a read of that repository's pull
+        # requests and refs, not of anything on this host.
+        self.assertEqual(self._flag(probe, "--writer-repo"), "owner/repo")
+        self.assertEqual(self._flag(probe, "--lineage-branch"), self.CREATED_BRANCH)
+        self.assertTrue((self._flag(probe, "--cwd") or "").endswith("/codex/owner__repo"),
+                        self._flag(probe, "--cwd"))
+
+    def test_an_existing_lane_owned_policy_branch_starts_no_creation_round(self) -> None:
+        # Continuing work that already has a branch is not a creation, and the
+        # reservation would refuse it; the runner must not ask for one.
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        completed, argv, _prompt, _guard = self._supervise_argv(
+            delivered_listing=json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE,
+            existing_branch=self.CREATED_BRANCH, existing_branch_head="c" * 40,
+            existing_branch_prs=json.dumps([own]))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+
+    def _continuation_lane(self, **kwargs):
+        """An issue rerun whose pull request this lane already created.
+
+        The delivered pull request is open on the reserved branch at ``a``*40,
+        closes the issue, and the round moves its head to ``b``*40.
+        """
+        head = "a" * 40
+        open_pr = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                           author="chatgpt-codex-connector[bot]", head=head)
+        moved = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                         author="chatgpt-codex-connector[bot]", head="b" * 40)
+        return self._supervise_argv(
+            delivered_listing=json.dumps([moved]), template=self.LANE_PREFIX_TEMPLATE,
+            base_sha="d" * 40, existing_issue_prs=json.dumps([open_pr]),
+            existing_branch=self.CREATED_BRANCH, existing_branch_head=head,
+            existing_branch_prs=json.dumps([open_pr]),
+            # The branch comes from the open pull request, never from a fresh
+            # slug, so reaching the title lookup would mean this is not the
+            # rerun path under test.
+            title_lookup="printf 'title lookup must not run\\n' >&2; exit 99",
+            explicit_issue_target=True, **kwargs)
+
+    def test_rerunning_an_issue_continues_its_created_pull_requests_chain(self) -> None:
+        # The creation round published a chain bound to the head it delivered
+        # and moved the private record onto the delivered number. A rerun that
+        # advances that pull request without extending the chain leaves the
+        # published lineage on a head that no longer exists, which is what
+        # answers `lineage_head_pending` for later reviewers and fix rounds.
+        completed, argv, _prompt, _guard = self._continuation_lane(lineage_store_pr=77)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        # This is a delivery to an existing pull request, so it takes exactly
+        # the continuation path a fix round on that pull request takes.
+        self.assertTrue((self._flag(argv, "--lineage-before") or "").endswith(".continuation.json"))
+        self.assertEqual(self._flag(argv, "--lineage-base"), "d" * 40)
+        self.assertTrue((self._flag(argv, "--lineage-writer") or "").startswith("codex"))
+        store = self._flag(argv, "--lineage-store") or ""
+        self.assertTrue(store.endswith("/lineage/owner__repo/77"), store)
+        self.assertTrue((self._flag(argv, "--lineage-output") or "").endswith(".lineage.json"))
+        # Nothing is created here: the branch exists, so there is no
+        # reservation to claim, and the writer has not changed, so no handoff.
+        self.assertNotIn("--lineage-issue", argv)
+        self.assertNotIn("--lineage-branch", argv)
+        self.assertNotIn("--lineage-created", argv)
+        self.assertNotIn("--lineage-create", argv)
+        self.assertNotIn("--lineage-handoff", argv)
+
+    def test_a_pull_request_carrying_no_chain_keeps_the_unsupervised_rerun(self) -> None:
+        # Same rerun, no private record: there is no chain to continue, so the
+        # long-standing issue rerun is left exactly as it was rather than
+        # gaining a new pre-launch refusal surface.
+        completed, argv, _prompt, _guard = self._continuation_lane()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("supervise", argv)
+        self.assertFalse([arg for arg in argv if arg.startswith("--lineage-")], argv)
+        self.assertIn("carries no private lineage record", completed.stdout)
+
+    def _published_creation_lane(self, **kwargs):
+        """A creation round that discovered its pull request before returning."""
+        own = self._pr(77, self.CREATED_BRANCH, labels=("builder:codex",),
+                       author="chatgpt-codex-connector[bot]")
+        return self._supervise_argv(
+            delivered_listing=json.dumps([own]), template=self.LANE_PREFIX_TEMPLATE,
+            base_sha="d" * 40, **kwargs)
+
+    def test_a_published_creation_round_files_its_record_before_classification(self) -> None:
+        # The chain is minted and published inside the supervisor. The runner's
+        # own after-snapshot then fails, which ends the unit at the undelivered
+        # path -- before every post-delivery block. The private record has to be
+        # filed on the pull request the supervisor itself discovered by then, or
+        # the published chain has nothing for a later fix round or issue rerun
+        # to extend and each of them answers `lineage_head_pending` instead.
+        listing: list[str] = []
+        completed, argv, _prompt, _guard = self._published_creation_lane(
+            discovered_creation_pr=77, after_snapshot_fails=True, lineage_listing=listing)
+        self.assertEqual(self._flag(argv, "--lineage-issue"), "12")
+        # The run really did end where the finding says it ends.
+        self.assertEqual(completed.returncode, 3, completed.stderr)
+        self.assertIn("no validated delivery", completed.stderr)
+        self.assertEqual(listing, ["77"])
+
+    def test_a_published_creation_round_replaces_the_post_hoc_builder_record(self) -> None:
+        # Same publication, classification succeeding this time: the record is
+        # filed on the same number, and the weaker post-hoc attribution is not
+        # written on top of the exact one this round already published.
+        listing: list[str] = []
+        completed, argv, _prompt, _guard = self._published_creation_lane(
+            discovered_creation_pr=77, lineage_listing=listing)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(self._flag(argv, "--lineage-issue"), "12")
+        self.assertEqual(listing, ["77"])
+        self.assertNotIn("builder provenance record skipped", completed.stderr)
+
+    def test_a_publication_that_posted_and_then_failed_still_files_the_record(self) -> None:
+        # `publish` posts the public marker before it reads it back and
+        # reconciles labels, so a failure after that post leaves the chain
+        # published on the created head and the round's attribution output never
+        # written. Filing the record only on that output would strand it under
+        # the issue in exactly the case the chain most needs continuing: the
+        # created pull request's own fix round, and a rerun of this issue, look
+        # only under the delivered number.
+        listing: list[str] = []
+        completed, argv, _prompt, _guard = self._published_creation_lane(
+            discovered_creation_pr=77, publication_completes=False, lineage_listing=listing)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(self._flag(argv, "--lineage-issue"), "12")
+        self.assertEqual(listing, ["77"])
+
+    def test_a_creation_round_that_discovered_nothing_files_no_record(self) -> None:
+        # No pull request discovered, so there is nothing to attribute and
+        # nothing to relocate; the run keeps the post-hoc path it always had.
+        listing: list[str] = []
+        completed, argv, _prompt, _guard = self._published_creation_lane(lineage_listing=listing)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(self._flag(argv, "--lineage-issue"), "12")
+        self.assertEqual(listing, [])
+
+    def test_every_runner_copy_passes_the_same_creation_origin_binding(self) -> None:
+        for path in (ROOT / "tools/lanes/run_mac_lane.sh",
+                     ROOT / "templates/lanes/run_mac_lane.sh",
+                     ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh"):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(runner=path.name, parent=path.parent.as_posix()):
+                self.assertIn('--lineage-issue "$num" --lineage-branch "$creation_branch"', text)
+                self.assertIn('--lineage-store "$creation_store"', text)
+                # A rerun of a delivered issue continues that chain in every
+                # copy, or the published lineage strands wherever this runner
+                # was installed from.
+                self.assertIn('--lineage-before "$continuation_before"', text)
+                self.assertIn('--lineage-store "$continuation_store"', text)
+                # A creation round files its record on the number the supervisor
+                # discovered, and does it before the independently fallible
+                # delivery classification -- in every copy, or the chain strands
+                # wherever this runner was installed from.
+                self.assertIn('--lineage-created "${log%.log}.created.json"', text)
+                self.assertIn("creation_published=1", text)
+                self.assertIn('&& [ -z "$creation_published" ]; then', text)
+                self.assertLess(
+                    text.index('mv "$creation_store" "$creation_delivered_store"'),
+                    text.index('capture_target_state "$after_state"'),
+                    "the record must be filed before the after-snapshot is even read")
+                # And it is filed on the round's own pre-publication evidence,
+                # never on the attribution only a completed publication writes:
+                # a publication that posts the marker and then fails publishes
+                # the chain without ever reaching that output.
+                self.assertLess(
+                    text.index('[ -s "${log%.log}.created.json" ]'),
+                    text.index('mv "$creation_store" "$creation_delivered_store"'))
+                self.assertLess(
+                    text.index('mv "$creation_store" "$creation_delivered_store"'),
+                    text.index('[ -s "${log%.log}.lineage.json" ]'),
+                    "publication success may not gate filing the record")
+                # Whether a round may be started at all is the supervisor's own
+                # answer about the target repository at the immutable base, in
+                # every copy: a copy still gating on its generated prefixes would
+                # select rounds the supervisor refuses before launching anything.
+                self.assertIn('creation-eligible --cwd "$work"', text)
+                self.assertIn('--lineage-base "$lineage_base" --writer-lane "$LANE"', text)
+                self.assertIn('--lineage-branch "$resolved_branch"', text)
+                # Including the reservation half of that answer, which needs the
+                # repository: a copy asking only about prefixes cannot see a
+                # branch a closed pull request already used, and would select a
+                # round the reservation refuses before the writer starts.
+                self.assertIn('--writer-repo "$REPO"', text.split(
+                    "creation-eligible --cwd")[1].split("creation_refusal=\"$(printf")[0])
+                self.assertNotIn('"$lane_branch_prefixes_json"', text.split(
+                    "# Creation lineage attests")[1].split("elif [ \"$issue_pr_status\" = \"lane\" ]")[0])
+                self.assertLess(
+                    text.index("creation-eligible --cwd"),
+                    text.index('creation_branch="$resolved_branch"'),
+                    "the reservation may only be taken after the policy admits it")
 
     def test_runner_refuses_an_existing_policy_branch_it_does_not_own(self) -> None:
         # fix/12-nv-accessible-label is the one name the policy allows for

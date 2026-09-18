@@ -12,8 +12,8 @@ import re
 import subprocess
 
 from .builder_lineage import (
-    Authorities, Chain, ContractError, Episode, History, Identity, LINEAGE_MARKER,
-    Target, parse_markers, render, resolve,
+    Authorities, Chain, ContractError, Episode, FIRST_EPISODE_KINDS, History, Identity,
+    LINEAGE_MARKER, Target, parse_markers, render, resolve,
 )
 from .context_store import ContextStore, strict_json
 
@@ -285,8 +285,10 @@ class ProducerStore:
             raw = locked.read()
             if raw is None and create:
                 previous = []
-                if delivery.episode.sequence != 1 or delivery.episode.kind != "handoff":
-                    raise ProducerRefusal("Creation requires a first verified takeover.")
+                # A chain starts either at a verified takeover of an existing PR
+                # or at the verified creation of the PR by this very lane.
+                if delivery.episode.sequence != 1 or delivery.episode.kind not in FIRST_EPISODE_KINDS:
+                    raise ProducerRefusal("Creation requires a first verified takeover or PR creation.")
             else:
                 raw = self._read(raw, target)
                 previous = raw["episodes"]
@@ -341,6 +343,71 @@ class GitHub:
     def history(self, target):
         return fetch_history(lambda page, size: self._json(
             f"repos/{target.repo}/issues/{target.pr_number}/comments?per_page={size}&page={page}"))
+
+    def pulls_for_branch(self, repo, branch):
+        """Every PR ever opened from one same-repository branch, in one finite read.
+
+        ``state=all`` is deliberate: a closed or superseded pull request on the
+        same branch still makes the creation ambiguous, and a caller that only
+        saw the open one would bind a creation episode to the wrong PR.
+        """
+        owner = repo.split("/")[0]
+        raw = self._json(f"repos/{repo}/pulls?state=all&per_page=100"
+                         f"&head={owner}:{branch}")
+        if not isinstance(raw, list) or len(raw) >= 100:
+            raise ProducerRefusal("Complete readable created pull request list required.")
+        return raw
+
+    def pull_frontier(self, repo):
+        """The highest pull request number this repository had at the time of the read.
+
+        GitHub allocates issue and pull request numbers from one monotone
+        per-repository sequence, so a pull request opened after this read is
+        numbered strictly above every pull request that already existed. Read
+        before a creation round launches, this is the independent evidence that
+        separates a pull request the round created from one it merely found.
+
+        Exactly one pull request is requested. The response is ordered
+        newest-created-first and creation order is that same monotone sequence,
+        so the first entry already carries the maximum and no later entry could
+        exceed it. Asking for a full page instead would decide every creation
+        round on response size: ``_json`` passes the whole payload through
+        ``decode_transport``, which refuses beyond a fixed byte budget, and a
+        hundred complete pull request objects exceed that budget in any
+        long-lived repository -- refusing the round before the writer starts.
+        """
+        raw = self._json(f"repos/{repo}/pulls?state=all&sort=created&direction=desc&per_page=1")
+        if not isinstance(raw, list) or len(raw) > 1 or any(
+                not isinstance(item, dict) or type(item.get("number")) is not int for item in raw):
+            raise ProducerRefusal("Readable pull request frontier required.")
+        return max((item["number"] for item in raw), default=0)
+
+    def branch_ref(self, repo, branch):
+        """The exact commit one same-repository branch points at, or ``None``.
+
+        Read before a creation round launches, an absent ref is what makes the
+        branch exclusively that round's: a pull request needs a head ref, so one
+        observed on this branch afterwards cannot predate the ref. Read again
+        after the writer stops, the same call proves the branch the created pull
+        request sits on carries the exact head the writer's checkout left.
+
+        ``matching-refs`` is a prefix read that returns an empty list rather
+        than failing when nothing matches, so proved absence never has to be
+        inferred from a transport error; the exact ref is then selected here.
+        """
+        raw = self._json(f"repos/{repo}/git/matching-refs/heads/{branch}")
+        if not isinstance(raw, list) or len(raw) >= 100:
+            raise ProducerRefusal("Complete readable branch ref list required.")
+        exact = [item for item in raw if isinstance(item, dict)
+                 and item.get("ref") == f"refs/heads/{branch}"]
+        if not exact:
+            return None
+        if len(exact) != 1 or not isinstance(exact[0].get("object"), dict):
+            raise ProducerRefusal("Exact readable branch ref required.")
+        sha = exact[0]["object"].get("sha")
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ProducerRefusal("Exact 40-hex branch ref commit required.")
+        return sha
 
     def post(self, target, body):
         self._json(f"repos/{target.repo}/issues/{target.pr_number}/comments",

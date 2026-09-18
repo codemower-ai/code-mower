@@ -20,7 +20,11 @@ from code_mower.audit_labeler_lib import lineage_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = "e818a3b639dfe903bdc16aff3674af98a5a08233"
-CORE_HASH = "2842d106bc7c3ecb95007b7de6ff3447d8ea3a49e8995e422ff279463ae5653c"
+# #1020 stage 1 adds the initial issue-to-PR `creation` episode kind to the pure
+# contract, so both mirrors of that one file move together to the digest below.
+# The accepted #963 handoff/continuation semantics and their rendered marker
+# bytes are unchanged, and tests/test_lineage_creation.py asserts both.
+CORE_HASH = "08cbd85276e0c208bbcdbd715060326a781b1eea533a6ce34dbd208278ee289d"
 ASSETS = ("workflows/builder-lineage-producer.yml.j2", "lanes/lineage-producer.sh")
 
 

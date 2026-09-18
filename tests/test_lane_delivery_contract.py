@@ -1851,6 +1851,20 @@ class RunnerScriptContractTests(unittest.TestCase):
                     # the value the runner assigns to declared_summary.
                     self.assertEqual(completed.stdout.rstrip("\n"), expected)
 
+    def test_every_runner_reads_the_declaration_where_the_supervisor_looks(self) -> None:
+        # A supervised creation round skips publication when the provider
+        # declared a bounded outcome and created nothing, so it has to read the
+        # same file the runner brokers. Two spellings of the path would leave a
+        # declared no-creation round failing its own launcher again.
+        for path in (RUNNER_TEMPLATE, PACKAGED_RUNNER_TEMPLATE, REPO_RUNNER):
+            with self.subTest(path=path.name):
+                self.assertIn(
+                    'lane_outcome_file="${work}/'
+                    + lane_delivery.LANE_OUTCOME_FILE.as_posix()
+                    + '"',
+                    path.read_text(encoding="utf-8"),
+                )
+
     def test_the_summary_program_voids_a_declaration_with_no_summary_key(self) -> None:
         jq = shutil.which("jq")
         if jq is None:  # pragma: no cover - depends on the host toolchain
