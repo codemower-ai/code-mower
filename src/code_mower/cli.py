@@ -83,6 +83,7 @@ from . import prompts as code_mower_prompts
 from . import release_qualify as code_mower_release_qualify
 from . import reviewer_metrics
 from . import session as code_mower_session
+from . import slack_setup as code_mower_slack
 from . import saas_reviewer_labeler
 from . import trailer_comment_labeler
 from . import work_orders as code_mower_work_orders
@@ -441,6 +442,7 @@ CommandHandler = Callable[[list[str]], int]
 
 COMMAND_DESCRIPTIONS: dict[str, str] = {
     "session": "Prepare session briefs and manage private remote work.",
+    "slack": "Prepare optional private Slack setup and inspect redacted readiness.",
     "antigravity-cli": "Run an Antigravity/Gemini CLI structured audit lane.",
     "blind-review": "Coordinate hidden/blind review artifacts.",
     "board": "Serve, record, or manage a persistent local lane visibility board.",
@@ -641,6 +643,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "reviewer-metrics": reviewer_metrics.main,
     "saas-reviewer-labeler": saas_reviewer_labeler.main,
     "session": code_mower_session.main,
+    "slack": code_mower_slack.main,
     "telemetry": code_mower_telemetry.main,
     "trailer-comment-labeler": trailer_comment_labeler.main,
     "tracker": code_mower_jira_mutations.main,

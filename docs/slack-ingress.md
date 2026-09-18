@@ -1,5 +1,9 @@
 # Slack authenticated ingress
 
+For the hosted v1.5.0 operator path, use [Optional Slack setup](slack-setup.md).
+Its separate hosted manifest uses `/codemower` and the hosted command/modal
+routes. The `/code-mower` manifest below remains the standalone OSS seam example.
+
 Issue #917 implements `code_mower.slack_ingress`, a stdlib-only request seam for
 [slack_contract](slack-contract.md). There is no server, OAuth installation,
 network client, worker dispatch, or deployment. Default installation is still
