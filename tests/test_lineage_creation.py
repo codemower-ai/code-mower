@@ -801,6 +801,53 @@ class CreationLauncherTests(unittest.TestCase):
         self.assertEqual(observer.checkout, real)
         self.assertEqual(policy.call_args.args[0], real)
 
+    def test_a_continuation_binds_a_symlinked_checkout_by_its_canonical_path(self):
+        """A rerun of the same issue continues through the same symlinked root.
+
+        Once the created pull request exists, the next run of its issue is a
+        continuation, not a creation, and the runner still hands it the work
+        root's spelling as ``--cwd``. ``_lineage_checkout`` refuses any path that
+        is not already canonical, so the continuation must bind the resolved
+        checkout exactly as the creation round did, or the provider never starts.
+        """
+        import subprocess
+        root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        real = root / "real"
+        real.mkdir()
+        def git(*argv):
+            return subprocess.check_output(
+                ["git", "-C", str(real), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                 "-c", "commit.gpgsign=false", *argv], text=True).strip()
+        git("init", "-q")
+        git("commit", "-q", "--allow-empty", "-m", "base")
+        git("checkout", "-q", "-b", BRANCH)
+        head = git("rev-parse", "HEAD")
+        link = root / "link"
+        link.symlink_to(real, target_is_directory=True)
+        before = Snapshot(created_target(head_sha=head), "owner-login", ("builder:claude",))
+        selection = self.artifacts / "before.json"
+        selection.write_text("{}", encoding="utf-8")
+        decision = argparse.Namespace(status="ready", current_writer="claude", reason="")
+        history = argparse.Namespace(history=lambda target: History([]))
+        policy = patch("code_mower.provider_runners.lineage.trusted_policy",
+                       return_value=({}, POLICY, AUTHORITY)).start()
+        patch("code_mower.lane_delivery.lineage_target_state", return_value=before).start()
+        patch("code_mower.builder_lineage_producer.exact_snapshot", return_value=before).start()
+        patch("code_mower.audit_labeler_lib.lineage_decision", return_value=(None, decision)).start()
+        with patch("code_mower.lane_delivery._lineage_checkout", REAL_CHECKOUT):
+            # The spelling alone is still not a canonical checkout.
+            with self.assertRaises(ProducerRefusal):
+                REAL_CHECKOUT(link, before.target)
+            observer, _ = lane_delivery._start_lineage_round(
+                self.args(cwd=link, lineage_issue=None, lineage_branch=None, lineage_created=None,
+                          lineage_before=selection, lineage_store=None, lineage_create=True),
+                io=history, runtime_observation=lambda: "ready")
+        self.assertEqual(observer.before, before.target)
+        self.assertEqual(policy.call_args.args[0], real)
+        self.assertEqual(MemoryStore.records[(observer.control.store.root, observer.control.key)]
+                         ["checkout"], str(real))
+
     def test_launcher_refuses_an_unfinished_or_failed_round_without_publishing(self):
         io = self.unused()
         observer, finish = lane_delivery._start_creation_round(

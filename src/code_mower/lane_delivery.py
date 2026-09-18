@@ -2398,7 +2398,11 @@ def _start_lineage_round(args, *, io=None, runtime_observation=None):
     # its private record is filed under, so nothing here relocates it.
     if getattr(args, "lineage_created", None):
         raise LaneDeliveryError("An existing pull request target creates no pull request to name")
-    config, identity, authorities = trusted_policy(args.cwd, args.lineage_base)
+    # Bound to the canonical checkout exactly as a creation round is: a rerun of
+    # an issue continues its chain here, and the runner's work root may still
+    # spell the checkout through a symlink that ``_lineage_checkout`` refuses.
+    checkout = Path(args.cwd).resolve()
+    config, identity, authorities = trusted_policy(checkout, args.lineage_base)
     before = lineage_target_state(args.writer_repo, json.loads(args.lineage_before.read_text()))
     io = io if io is not None else GitHub()
     if exact_snapshot(io, before.target) != before:
@@ -2407,7 +2411,7 @@ def _start_lineage_round(args, *, io=None, runtime_observation=None):
                           args.writer_lane + "_cli", "local_cli")
     if runtime_observation is None:
         def runtime_observation():
-            lane_runtime.prepare(args.cwd, sys.executable)
+            lane_runtime.prepare(checkout, sys.executable)
             return "ready"
     handoff = Handoff(**json.loads(args.lineage_handoff.read_text())) if args.lineage_handoff else None
     store = ProducerStore(args.lineage_store) if args.lineage_store else None
@@ -2429,7 +2433,7 @@ def _start_lineage_round(args, *, io=None, runtime_observation=None):
     elif decision.current_writer != transport.lane:
         raise LaneDeliveryError("Observed current writer differs from actual transport")
     observer = LineageRound(args.writer_state_dir, args.writer, args.lineage_writer,
-        before.target, transport, args.cwd, config=config, runtime_observation=runtime_observation)
+        before.target, transport, checkout, config=config, runtime_observation=runtime_observation)
 
     def finish(result):
         from .builder_lineage import Target
