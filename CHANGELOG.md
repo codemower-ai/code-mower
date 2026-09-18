@@ -65,6 +65,14 @@ release below.
 
 ### Fixed
 
+- Release publication now checks the selected tag against package metadata,
+  the opening README release statement, and the active CHANGELOG entry before
+  either TestPyPI or PyPI can run. The same release-readiness check runs in CI
+  before tagging and rejects unfinished publication promises. Release jobs
+  resolve the selected tag to its commit, validate that checkout, and pass the
+  exact SHA to the distribution build. Manual dispatch additionally requires
+  that tag commit to match the supplied expected SHA (#1014).
+
 - A doctor snapshot taken while a Board is still binding its port no longer
   reports that no Board is running moments before `board list` lists it. Board
   visibility gets one short bounded re-observation (default 2s, capped at 10s,

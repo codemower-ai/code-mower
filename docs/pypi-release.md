@@ -18,6 +18,67 @@ supervisor and the recorded owner release decision.
 The [historical v1.4.0 post-merge release runbook](v140-release-runbook.md#v140-post-merge-release-runbook)
 is preserved unchanged.
 
+## Immutable Release Text Gate (v1.5.0 onward)
+
+Finalize the versioned public text **before creating the immutable tag**, in
+the release preparation PR. The v1.4.1 tag permanently described itself as a
+source candidate with publication pending #915 even after publication finished.
+Editing `main` cannot repair that tagged README or the README embedded in its
+package. Never rewrite a published tag to correct the wording.
+
+1. Choose the exact release tag, such as `v1.5.0`. Set both the project version
+   in `pyproject.toml` and `src/code_mower/__init__.py` to `1.5.0`.
+2. Add exactly one matching `## 1.5.0` (or `## v1.5.0`) CHANGELOG heading as
+   the first versioned entry; an `Unreleased` section may precede it. Describe
+   what the release contains. A neutral heading such as `## 1.5.0 — release`
+   works before publication and remains true afterward.
+3. Set the README's opening public release statement to
+   `The current package-index release baseline is v1.5.0, with pinned package install spec code-mower==1.5.0.`
+   Markdown backticks and line wrapping are supported. Keep this statement
+   before the first `##` heading and keep its tag and install spec exact.
+   Remove temporary promises from the introduction and the selected changelog
+   entry: no `source candidate`, `publication pending`, or assertion that the
+   release depends on an issue closing. Use the release issue and mutable
+   GitHub Release evidence to track publication progress; do not claim a
+   completed upload before it happens or bake a temporary upload status into
+   the immutable package description.
+4. Run the shared check against the intended tag while it is still a proposed
+   name (the tag does not need to exist):
+
+   ```bash
+   .venv/bin/python src/code_mower/release_identity.py --tag v1.5.0
+   .venv/bin/python -m code_mower.migration release-readiness --json
+   ```
+
+5. Obtain independent review on the exact preparation PR head, green CI, and
+   the authoritative Code Mower gate before merge. After the recorded owner
+   release decision, bind the merged release commit and create the tag using
+   the existing release procedure. Re-run the identity check from that exact
+   checkout before dispatching with `--ref v1.5.0` and `-f expected_sha=...`.
+
+Ordinary release-readiness CI invokes the same checker using the source
+version's intended tag, so contradictions are reviewable before tagging. The
+release workflow checks out the exact dispatched tag or published release tag
+with full tag history, resolves lightweight and annotated tags to their commit,
+and proves that checked-out HEAD equals that commit before checking the public
+text. It exports the validated 40-character SHA to the distribution build,
+which checks out that SHA; event `github.sha` is not used as source identity.
+Both TestPyPI and PyPI consume only the resulting verified distributions.
+Manual dispatch additionally requires the resolved tag commit to equal the
+supplied `expected_sha`; a branch dispatch or mismatched tag ref fails closed.
+
+TestPyPI qualification may call its artifact a candidate in instruction
+sections. Historical CHANGELOG entries and `Unreleased` are outside the active
+entry's wording gate. Canonical prerelease tags `vX.Y.Z-alpha.N`,
+`vX.Y.Z-beta.N`, and `vX.Y.Z-rc.N` bind to package versions `X.Y.ZaN`,
+`X.Y.ZbN`, and `X.Y.ZrcN`; their README statement uses the existing beta or
+release-candidate baseline and may describe a candidate. A final `vX.Y.Z` tag
+always requires final-state text, including TestPyPI rehearsals and GitHub
+releases marked prerelease. Neither the index nor that flag bypasses the gate.
+
+The executed v1.4.2 commands below remain a historical record; substitute the
+chosen release identity in future release work rather than reusing that tag.
+
 ## Current Status
 
 - GitHub Release workflow builds distributions on every published release.

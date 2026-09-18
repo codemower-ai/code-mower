@@ -27,6 +27,7 @@ TestPyPI, live package-index propagation, or external provider network calls.
 .venv/bin/python -m ruff check .
 .venv/bin/python -m unittest discover -s tests
 .venv/bin/python -m compileall -q src scripts
+.venv/bin/python -m code_mower.migration release-readiness --json
 .venv/bin/python scripts/smoke_easy_mode.py --code-mower-bin .venv/bin/code-mower --json
 ```
 

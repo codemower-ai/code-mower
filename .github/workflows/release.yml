@@ -26,25 +26,57 @@ permissions:
 jobs:
   release-identity:
     runs-on: ubuntu-latest
+    outputs:
+      resolved-sha: ${{ steps.identity.outputs.resolved-sha }}
     steps:
-      - name: Assert the dispatched ref and commit are the expected release
+      - name: Require a tag dispatch and a full expected commit SHA
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
-          ACTUAL_SHA: ${{ github.sha }}
           ACTUAL_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           printf '%s\n' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
-          test "$ACTUAL_REF" = "refs/tags/v1.4.2"
-          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          [[ "$ACTUAL_REF" == refs/tags/v* ]] || exit 1
+
+      - name: Check out the selected release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Validate the selected tag and immutable public release text
+        id: identity
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+          ACTUAL_REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$ACTUAL_REF" = "refs/tags/$RELEASE_TAG"
+          RESOLVED_SHA="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+          printf '%s\n' "$RESOLVED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          test "$(git rev-parse HEAD)" = "$RESOLVED_SHA"
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            test "$RESOLVED_SHA" = "$EXPECTED_SHA"
+          fi
+          python src/code_mower/release_identity.py --tag "$RELEASE_TAG"
+          printf 'resolved-sha=%s\n' "$RESOLVED_SHA" >> "$GITHUB_OUTPUT"
 
   build-distributions:
     needs: release-identity
     runs-on: ubuntu-latest
     steps:
-      - name: Check out
+      - name: Check out the validated release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.release-identity.outputs.resolved-sha }}
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
