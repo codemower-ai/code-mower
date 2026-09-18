@@ -91,6 +91,10 @@ diagnostics with no type, path or content leakage. These three named checks are
 required in `rehearsal.json` before publication. No private graph/adoption data
 or live extractor is used.
 
+The normal CI `release wheel rehearsal` job builds the exact PR head as
+`kind=rehearsal` and runs these checks before merge. Its sanitized evidence
+artifact is not a release candidate and cannot be selected for publication.
+
 ## 3. Private acceptance consumes these exact bytes (#918)
 
 Bind private installation/administration evidence to `RELEASE_SHA` and the wheel

@@ -215,6 +215,17 @@ class WorkflowBindingTests(unittest.TestCase):
         self.assertLess(verification, evidence)
         self.assertLess(evidence, self.publish.index("cp candidate/*.whl"))
 
+    def test_ci_exercises_the_installed_wheel_without_claiming_a_candidate(self):
+        jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+        job = jobs["release_rehearsal"]
+        self.assertEqual(job["steps"][0]["with"]["ref"], "${{ env.SOURCE_SHA }}")
+        commands = "\n".join(step.get("run", "") for step in job["steps"])
+        self.assertIn("python scripts/release_candidate.py build", commands)
+        self.assertIn('python scripts/rehearse_v150.py --dist "$RUNNER_TEMP/rehearsal-dist"', commands)
+        self.assertNotIn("--release-pr", commands)
+        self.assertIn("release_rehearsal", jobs["package"]["needs"])
+        self.assertIn('test "${{ needs.release_rehearsal.result }}" = "success"', jobs["package"]["steps"][0]["run"])
+
 
 class OfflineGuardTests(unittest.TestCase):
     def test_graph_exception_only_allows_transport_disabled_fixture_git_reads(self):
