@@ -3,12 +3,18 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import re
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+
+import yaml
 
 from code_mower import __version__, release_readiness
 
@@ -16,6 +22,10 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("release_candidate", ROOT / "scripts/release_candidate.py")
 candidate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(candidate)
+spec = importlib.util.spec_from_file_location("rehearse_v150", ROOT / "scripts/rehearse_v150.py")
+rehearsal = importlib.util.module_from_spec(spec)
+with patch.dict(sys.modules, {"release_candidate": candidate}):
+    spec.loader.exec_module(rehearsal)
 SHA = "a" * 40
 
 
@@ -101,6 +111,134 @@ class ArtifactTests(unittest.TestCase):
                 build.assert_not_called()
 
 
+class RehearsalEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dist = Path(self.temp.name)
+        # A future version uses the manifest's wheel identity, not a v1.5.0 key.
+        self.wheel = "code_mower-1.5.1-py3-none-any.whl"
+        self.manifest = {"source_sha": SHA, "artifacts": {self.wheel: "b" * 64}}
+        self.evidence = {"schema": candidate.REHEARSAL_SCHEMA, "status": "pass",
+                         "source_sha": SHA, "artifact_sha256": "b" * 64,
+                         "checks": list(candidate.REHEARSAL_CHECKS)}
+
+    def verify(self):
+        (self.dist / "rehearsal.json").write_text(json.dumps(self.evidence))
+        return candidate.verify_rehearsal(self.dist, self.manifest)
+
+    def test_wheel_identity_is_derived_from_manifest_for_later_versions(self):
+        self.assertEqual(self.verify(), self.evidence)
+
+    def test_missing_or_ambiguous_wheel_has_clear_identity_error(self):
+        for artifacts in ({}, {self.wheel: "b" * 64, "another.whl": "c" * 64}):
+            with self.subTest(artifacts=artifacts):
+                self.manifest["artifacts"] = artifacts
+                with self.assertRaisesRegex(ValueError, "identity requires exactly one wheel"):
+                    self.verify()
+
+    def test_every_named_check_is_required_even_with_overall_pass(self):
+        self.assertEqual(len(candidate.GRAPHIFY_CHECKS), 3)
+        for name in candidate.REHEARSAL_CHECKS:
+            with self.subTest(name=name):
+                self.evidence["checks"] = [c for c in candidate.REHEARSAL_CHECKS if c != name]
+                with self.assertRaisesRegex(ValueError, "missing required rehearsal checks"):
+                    self.verify()
+
+    def test_wrong_identity_or_failure_cannot_qualify(self):
+        for field, value, error in (
+            ("schema", "unknown", "identity"), ("status", "fail", "status"),
+            ("source_sha", "c" * 40, "source SHA"), ("artifact_sha256", "c" * 64, "digest"),
+            ("checks", None, "checks"), ("checks", [{"not": "a check"}], "checks"),
+        ):
+            with self.subTest(field=field), patch.dict(self.evidence, {field: value}):
+                with self.assertRaisesRegex(ValueError, error):
+                    self.verify()
+
+
+class WorkflowBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.candidate_steps = yaml.safe_load((ROOT / ".github/workflows/release-candidate.yml").read_text())["jobs"]["candidate"]["steps"]
+        steps = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["jobs"]["build-distributions"]["steps"]
+        self.publish = next(step["run"] for step in steps if "gh run download" in step.get("run", ""))
+
+    def test_candidate_exact_workflow_sha_and_first_attempt_before_checkout(self):
+        validation, *following = self.candidate_steps
+        self.assertIn("actions/checkout@", following[0]["uses"])
+        self.assertNotIn("uses", validation)
+        environment = {"GITHUB_REF": "refs/heads/main", "SOURCE_SHA": SHA,
+                       "GITHUB_SHA": SHA, "GITHUB_RUN_ATTEMPT": "1", "RELEASE_PR": "1033"}
+        for overrides, passed in (
+            ({}, True), ({"GITHUB_SHA": "b" * 40}, False),
+            ({"GITHUB_RUN_ATTEMPT": "2"}, False), ({"GITHUB_RUN_ATTEMPT": ""}, False),
+            ({"GITHUB_REF": "refs/heads/other"}, False), ({"SOURCE_SHA": "main"}, False),
+            ({"RELEASE_PR": "0"}, False),
+        ):
+            with self.subTest(overrides=overrides):
+                result = subprocess.run(["/bin/bash", "-c", validation["run"]],
+                                        env={**environment, **overrides}, capture_output=True)
+                self.assertEqual(result.returncode == 0, passed)
+
+    def test_publication_rejects_wrong_run_identity_before_downloading(self):
+        before_download = self.publish.split("gh run download", 1)[0]
+        code, = re.findall(r"<<'PY'\n(.*?)\nPY", before_download, re.S)
+        run = {"path": ".github/workflows/release-candidate.yml", "event": "workflow_dispatch",
+               "head_branch": "main", "head_sha": SHA, "run_attempt": 1,
+               "status": "completed", "conclusion": "success",
+               "repository": {"full_name": "codemower-ai/code-mower"}}
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "run.json"
+            def validate():
+                path.write_text(json.dumps(run))
+                with patch.object(sys, "argv", ["-", str(path)]), patch.dict(os.environ, SOURCE_SHA=SHA):
+                    exec(compile(code, "release.yml run identity", "exec"), {})
+            validate()
+            for field, bad in (("path", "other.yml"), ("event", "push"), ("head_branch", "other"),
+                               ("head_sha", "b" * 40), ("run_attempt", 2), ("run_attempt", "1"),
+                               ("status", "in_progress"), ("conclusion", "failure"),
+                               ("repository", {"full_name": "someone/fork"})):
+                with self.subTest(field=field, bad=bad), patch.dict(run, {field: bad}):
+                    with self.assertRaises(AssertionError):
+                        validate()
+            for field in ("head_sha", "run_attempt"):
+                value = run.pop(field)
+                with self.subTest(missing=field), self.assertRaises(KeyError):
+                    validate()
+                run[field] = value
+
+    def test_publication_requires_verified_artifacts_and_named_rehearsal_before_copy(self):
+        self.assertNotIn("code_mower-1.5.0-py3-none-any.whl", self.publish)
+        self.assertNotIn("python -m build", self.publish)
+        verification = self.publish.index("python scripts/release_candidate.py verify")
+        self.assertIn("--require-candidate", self.publish[verification:])
+        evidence = self.publish.index("verify_rehearsal(Path('candidate'), candidate)")
+        self.assertLess(verification, evidence)
+        self.assertLess(evidence, self.publish.index("cp candidate/*.whl"))
+
+
+class OfflineGuardTests(unittest.TestCase):
+    def test_graph_exception_only_allows_transport_disabled_fixture_git_reads(self):
+        repository = "/synthetic/repository"
+        environment = {"GIT_ALLOW_PROTOCOL": "", "GIT_NO_LAZY_FETCH": "1",
+                       "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        prefix = ["git", "-C", repository, "--no-optional-locks"]
+        for event, args, allowed in (
+            ("subprocess.Popen", ["git", prefix + ["rev-parse", "HEAD"], None, environment], True),
+            ("subprocess.Popen", ["git", prefix + ["fetch"], None, environment], False),
+            ("subprocess.Popen", ["git", prefix + ["config", "x", "y"], None, environment], False),
+            ("subprocess.Popen", ["git", prefix + ["cat-file", "--batch"], None, {}], False),
+            ("subprocess.Popen", ["git", ["git", "-C", "/other", "rev-parse"], None, environment], False),
+            ("subprocess.Popen", ["sh", ["sh", "-c", "true"], None, environment], False),
+            ("socket.__new__", [], False), ("os.system", ["true"], False),
+            ("os.posix_spawn", ["/bin/sh", [], {}], False),
+        ):
+            with self.subTest(event=event, args=args):
+                # Audit events alone exercise the guard without launching any child.
+                code = rehearsal.installed_code(f"sys.audit({event!r}, *{args!r})", repository)
+                result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True)
+                self.assertEqual(result.returncode == 0, allowed)
+
+
 class ReleaseContractTests(unittest.TestCase):
     def test_identity_and_readiness(self):
         self.assertEqual(__version__, "1.5.0")
@@ -120,6 +258,26 @@ class ReleaseContractTests(unittest.TestCase):
             checks = release_readiness.render_release_readiness(ROOT)["checks"]
         check = next(c for c in checks if c["id"] == "distribution-build-and-verify")
         self.assertEqual(check["status"], "pass")
+
+    def test_readiness_rejects_missing_candidate_workflow_or_integrity_gates(self):
+        original = release_readiness._read_text_if_exists
+        candidate_path = ROOT / ".github/workflows/release-candidate.yml"
+        publication_path = ROOT / ".github/workflows/release.yml"
+        for path, marker in (
+            (candidate_path, None),
+            (candidate_path, '[[ "$GITHUB_SHA" == "$SOURCE_SHA" ]]'),
+            (candidate_path, '[[ "$GITHUB_RUN_ATTEMPT" == 1 ]]'),
+            (publication_path, "assert run['head_sha'] == os.environ['SOURCE_SHA']"),
+            (publication_path, "assert run['run_attempt'] == 1"),
+            (publication_path, "verify_rehearsal(Path('candidate'), candidate)"),
+        ):
+            def read(selected, path=path, marker=marker):
+                text = original(selected)
+                return (text.replace(marker, "") if marker else "") if selected == path else text
+            with self.subTest(marker=marker), patch.object(release_readiness, "_read_text_if_exists", side_effect=read):
+                checks = release_readiness.render_release_readiness(ROOT)["checks"]
+            check = next(c for c in checks if c["id"] == "distribution-build-and-verify")
+            self.assertEqual(check["status"], "fail")
 
     def test_historical_v14_records_are_unchanged(self):
         # Recorded from the parent release-prep baseline. No Git history needed in sdist tests.

@@ -26,6 +26,12 @@ RELEASE_SHA="$(gh pr view "$RELEASE_PR" --repo "$REPO" --json mergeCommit --jq '
 
 ## 2. Build and retain the merge-SHA candidate once
 
+Dispatch while `main` still points at `RELEASE_SHA`: the workflow requires its
+own `GITHUB_SHA` to equal that source SHA before checkout or build. It also
+requires `GITHUB_RUN_ATTEMPT=1`; GitHub reruns are refused before any build.
+If main has advanced, stop and resolve the release source through a newly
+reviewed preparation PR; do not use an ancestor as a substitute workflow head.
+
 ```bash
 gh workflow run release-candidate.yml --repo "$REPO" --ref main \
   -f expected_sha="$RELEASE_SHA" -f release_pr="$RELEASE_PR"
@@ -50,7 +56,8 @@ python scripts/release_candidate.py verify --dist "$CANDIDATE_DIR" \
 
 Record PR/merge SHA, workflow run, both SHA-256 digests, inventory outcome and
 the sanitized rehearsal result on #1027. `candidate.json` must name that merged
-PR and SHA. Reruns must consume the retained pair; never regenerate it. If a
+PR and SHA. Subsequent qualification/publication must consume the retained pair;
+never rerun the candidate build or dispatch a second build for that SHA. If a
 code fix is needed, invalidate this candidate explicitly and repeat all gates
 for a newly reviewed source. Do not tag or publish the invalidated bytes.
 
@@ -68,10 +75,21 @@ No `--release-pr` means `kind=rehearsal`; publication rejects it. Output/work
 directories must be new, and build output must be outside the exact checkout.
 Use Python 3.12+ from the selected runner PATH. The script installs only package
 dependencies from canonical PyPI. Product smoke runs use installed modules with
-network/subprocess denial and no inherited provider credentials. Default install,
+network denial and no inherited provider credentials. Only read-only,
+transport-disabled Git commands against the synthetic fixture are allowed as
+product subprocesses. Default install,
 explicit Slack setup, offline doctor, 1.4.2 upgrade, disposable rollback and
 uninstall are checked. Disabled snapshots and local manifest removal are offline
 evidence only, not live hosted disable/uninstall.
+
+The same installed wheel publishes synthetic complete Graphify generations and
+checks the real reader, status, connection and query paths: `doc_ref` is excluded
+as non-code while search remains available; ambiguity alone yields a usable
+partial answer from a complete generation; and an unknown type from a different
+distribution at the reviewed version yields bounded `reader_incompatible`
+diagnostics with no type, path or content leakage. These three named checks are
+required in `rehearsal.json` before publication. No private graph/adoption data
+or live extractor is used.
 
 ## 3. Private acceptance consumes these exact bytes (#918)
 
@@ -112,7 +130,8 @@ gh workflow run release.yml --repo "$REPO" --ref v1.5.0 \
 
 Verify the exact no-publish run's ref/SHA, identity/retrieval/verification success
 and skipped publication jobs. The release workflow validates the candidate run
-origin, merged PR, source SHA, digest pair, inventories and rehearsal binding.
+origin, exact run head SHA, first attempt, merged PR, source SHA, digest pair,
+inventories and required rehearsal checks bound to the single verified wheel.
 It **downloads the retained candidate; it does not rebuild**. Publication never
 accepts a pre-merge rehearsal. If TestPyPI is required by the owner, dispatch the
 same tag/SHA/run with only `publish_testpypi=true` and independently verify that

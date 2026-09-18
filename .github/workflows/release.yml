@@ -101,12 +101,15 @@ jobs:
           [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > "$RUNNER_TEMP/candidate-run.json"
           python - "$RUNNER_TEMP/candidate-run.json" <<'PY'
-          import json, sys
-          run = json.load(open(sys.argv[1]))
+          import json, os, sys
+          from pathlib import Path
+          run = json.loads(Path(sys.argv[1]).read_text())
           assert run['path'] == '.github/workflows/release-candidate.yml'
           assert run['event'] == 'workflow_dispatch' and run['head_branch'] == 'main'
           assert run['status'] == 'completed' and run['conclusion'] == 'success'
           assert run['repository']['full_name'] == 'codemower-ai/code-mower'
+          assert run['head_sha'] == os.environ['SOURCE_SHA']
+          assert run['run_attempt'] == 1
           PY
           gh run download "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --name code-mower-candidate --dir candidate
@@ -115,14 +118,12 @@ jobs:
           python - <<'PY'
           import json, os, subprocess
           from pathlib import Path
+          from scripts.release_candidate import verify_rehearsal
           candidate = json.loads(Path('candidate/candidate.json').read_text())
           pr = json.loads(subprocess.check_output(['gh', 'pr', 'view', str(candidate['release_pr']),
               '--repo', os.environ['GITHUB_REPOSITORY'], '--json', 'state,mergeCommit']))
           assert pr['state'] == 'MERGED' and pr['mergeCommit']['oid'] == os.environ['SOURCE_SHA']
-          evidence = json.loads(Path('candidate/rehearsal.json').read_text())
-          assert evidence['status'] == 'pass' and evidence['source_sha'] == os.environ['SOURCE_SHA']
-          wheel_name, = (name for name in candidate['artifacts'] if name.endswith('.whl'))
-          assert evidence['artifact_sha256'] == candidate['artifacts'][wheel_name]
+          verify_rehearsal(Path('candidate'), candidate)
           PY
           mkdir dist
           cp candidate/*.whl candidate/*.tar.gz dist/

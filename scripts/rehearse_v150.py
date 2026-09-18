@@ -9,7 +9,168 @@ from pathlib import Path
 import subprocess
 import sys
 
-from release_candidate import NAMES, verify
+from release_candidate import GRAPHIFY_CHECKS, NAMES, REHEARSAL_SCHEMA, verify, verify_rehearsal
+
+
+# This program runs under the fresh venv's -I interpreter. It imports only the
+# retained wheel and the standard library, never checkout/test fixture modules.
+GRAPHIFY_SMOKE = """
+import io, json, tarfile
+from contextlib import redirect_stdout
+from pathlib import Path
+import code_mower
+from code_mower import context_graph_command as command
+from code_mower import context_graph_connection as connection
+from code_mower import context_graph_lifecycle as lifecycle
+from code_mower import context_graph_query as query
+from code_mower.context_store import ContextStore
+
+for module in (code_mower, command, connection, lifecycle, query):
+    assert Path(module.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+repository, private = (Path(arg) for arg in sys.argv[1:])
+private.mkdir(mode=0o700)
+
+class NoCredentials:
+    def refuse(self, *args):
+        raise AssertionError('synthetic graph must not access credentials')
+    get = put = delete = refuse
+
+store = ContextStore(private, vault=NoCredentials())
+connection.connect(store, 'synthetic-graph', {
+    'repository_root': str(repository), 'repositories': ['public/example'],
+    'recipients': ['codex:builder'],
+})
+policy = {'schema': 'code_mower.contextPolicy.v1', 'connection': 'synthetic-graph',
+          'policy_version': 'v1', 'required': True}
+
+def node(identifier, label, line, **extra):
+    return {'id': identifier, 'label': label, 'file_type': 'code',
+            'source_file': 'example.py', 'source_location': f'L{line}', **extra}
+
+def edge(source, target, relation='calls', confidence='EXTRACTED'):
+    return {'source': source, 'target': target, 'relation': relation,
+            'confidence': confidence, 'source_file': 'example.py', 'source_location': 'L1'}
+
+def document():
+    return {'nodes': [node('n-target', 'synthetic_target', 1),
+                      node('n-caller', 'synthetic_caller', 2)],
+            'edges': [edge('n-caller', 'n-target')], 'hyperedges': [],
+            'input_tokens': 0, 'output_tokens': 0, 'extracted_sources': ['example.py']}
+
+def publish(value, distribution='graphifyy'):
+    def indexer(request):
+        raw = json.dumps(value).encode()
+        with tarfile.open(request.output_path, 'w') as archive:
+            member = tarfile.TarInfo('graph.json')
+            member.size = len(raw)
+            archive.addfile(member, io.BytesIO(raw))
+        return lifecycle.IndexResult(completeness=lifecycle.COMPLETE, indexed_files=1)
+    manifest = lifecycle.build_graph(repository, root=private, indexer=indexer,
+        pin=lifecycle.GraphifyPin(distribution=distribution, version='0.9.58', wheel_sha256='a'*64))
+    assert manifest.completeness == lifecycle.COMPLETE
+
+def observe():
+    state = lifecycle.GraphStateRoot(repository, root=private)
+    status = lifecycle.graph_status(repository, root=private)
+    assert status.usable and status.manifest.completeness == lifecycle.COMPLETE
+    readiness = query.search_readiness(state, status)
+    stream = io.StringIO()
+    with redirect_stdout(stream):
+        code = command.main(['status', '--repo-path', str(repository),
+                             '--state-dir', str(private), '--json'])
+    report = json.loads(stream.getvalue())
+    connected = connection.status(store, 'synthetic-graph', root=private)
+    with store.locked('synthetic-graph') as locked:
+        envelope = connection.authorize_locked(locked, 'synthetic-graph', root=private)
+    context = query.graph_context(repository, root=private, question='impact',
+        target='synthetic_target', envelope=envelope, policy=policy,
+        context_repository='public/example', work_item='SYNTHETIC-1')
+    return state, status, readiness, code, report, connected, context
+
+checks = []
+value = document()
+value['nodes'].append(node('n-doc', 'synthetic_doc_content', 1, file_type='doc_ref'))
+value['edges'] += [edge('n-target', 'n-doc', 'references'), edge('n-doc', 'n-caller', 'references')]
+publish(value)
+state, status, readiness, code, report, connected, context = observe()
+graph = query.read_graph(state, status)
+assert 'n-doc' not in graph.nodes and not graph.incomplete
+assert all('n-doc' not in (item.source, item.target) for item in graph.edges)
+assert code == 0 and report['search'] == connected['authorization'] == 'available'
+assert readiness['search'] == 'available' and readiness['reader'] == 'compatible'
+assert readiness['installed_code_mower'] == code_mower.__version__
+assert context.status == query.AVAILABLE and context.packet['documents']
+assert context.summary['generation_completeness'] == lifecycle.COMPLETE
+assert context.summary['query_completeness'] == lifecycle.COMPLETE
+assert 'synthetic_doc_content' not in json.dumps(context.packet)
+checks.append('graphify_doc_ref_excluded_reader_available')
+
+value = document()
+value['edges'][0]['confidence'] = 'AMBIGUOUS'
+publish(value)
+_, _, readiness, code, report, connected, context = observe()
+assert code == 0 and readiness['search'] == report['search'] == connected['authorization'] == 'available'
+assert context.status == query.AVAILABLE and context.dependent_work == 'usable'
+assert context.summary['generation_completeness'] == lifecycle.COMPLETE
+assert context.summary['query_completeness'] == context.summary['completeness'] == 'partial'
+assert context.packet['completeness'] == 'partial' and not context.packet['truncated']
+assert context.packet['omissions'] == context.summary['omissions'] == ['unresolved_entities']
+assert context.packet['documents']
+checks.append('graphify_ambiguity_only_partial_usable_complete_generation')
+
+value = document()
+value['nodes'].append(node('n-unknown', 'synthetic_unknown_content', 1,
+    file_type='synthetic_unknown_type', source_file='synthetic_unknown_path.py'))
+publish(value, distribution='other-provider')
+_, _, readiness, code, report, connected, context = observe()
+assert code == 1 and report['state'] == 'current' and report['usable']
+assert report['search'] == connected['search'] == connected['authorization'] == 'unavailable'
+assert context.status == query.REQUIRED_UNAVAILABLE and context.dependent_work == 'paused'
+assert context.packet is None and context.summary['reason'] == 'reader_incompatible'
+for verdict in (readiness, report['query_reader'], connected['query_reader']):
+    assert verdict['search'] == 'unavailable' and verdict['reader'] == 'incompatible'
+    assert verdict['reason'] == 'reader_incompatible'
+    assert verdict['remediation'] == context.summary['remediation']
+    assert verdict['remediation']['generation_provider'] == 'other-provider==0.9.58'
+    assert verdict['remediation']['reader_providers'] == ['graphifyy==0.9.58']
+    assert 'node_type' not in verdict['remediation']
+    assert 'required_code_mower' not in verdict['remediation']
+    assert verdict['next_action'] == context.summary['next_action']
+public = json.dumps([readiness, report, connected, context.summary])
+assert len(public) < 12000
+for forbidden in ('synthetic_unknown_type', 'synthetic_unknown_path', 'synthetic_unknown_content',
+                  'n-unknown', 'synthetic_target', 'example.py', str(repository), str(private)):
+    assert forbidden not in public
+checks.append('graphify_wrong_distribution_reader_incompatible_no_leakage')
+print(json.dumps(checks))
+"""
+
+
+def installed_code(code, git_repository=None):
+    """Deny network/children, except transport-disabled Git reads of the fixture."""
+    return "git_repository = " + repr(str(git_repository) if git_repository else None) + "\n" + """
+import sys
+def guard(event, args):
+    if event == 'subprocess.Popen' and git_repository is not None:
+        executable, argv, cwd, environment = args
+        prefix = ['git', '-C', git_repository, '--no-optional-locks']
+        if executable == 'git' and isinstance(argv, list) and argv[:4] == prefix:
+            tail = argv[4:]
+            safety = ['-c', 'protocol.allow=never', '-c', 'core.fsmonitor=false',
+                      '-c', 'fetch.recurseSubmodules=no', '-c', 'uploadpack.allowFilter=false']
+            if tail[:len(safety)] == safety:
+                tail = tail[len(safety):]
+            if (tail and tail[0] in ('rev-parse', 'ls-tree', 'cat-file', 'config')
+                    and (tail[0] != 'config' or tail[1:4] == ['--local', '--name-only', '--get-regexp'])
+                    and environment.get('GIT_ALLOW_PROTOCOL') == ''
+                    and environment.get('GIT_NO_LAZY_FETCH') == '1'
+                    and environment.get('GIT_CONFIG_GLOBAL') == __import__('os').devnull
+                    and environment.get('GIT_CONFIG_NOSYSTEM') == '1'):
+                return
+    if event.startswith('socket.') or event in ('subprocess.Popen', 'os.system', 'os.posix_spawn'):
+        raise RuntimeError('offline rehearsal forbids network and child processes')
+sys.addaudithook(guard)
+""" + code
 
 
 def rehearse(dist, sha, work):
@@ -17,7 +178,9 @@ def rehearse(dist, sha, work):
     work.mkdir(parents=True, exist_ok=False)
     # Only infrastructure variables enter the disposable product processes.
     env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "TMPDIR") if key in os.environ}
-    env.update(HOME=str(work / "home"), PIP_CONFIG_FILE=os.devnull, PYTHONNOUSERSITE="1")
+    env.update(HOME=str(work / "home"), PIP_CONFIG_FILE=os.devnull, PYTHONNOUSERSITE="1",
+               GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+               GIT_ALLOW_PROTOCOL="", GIT_NO_LAZY_FETCH="1")
     (work / "home").mkdir()
 
     def command(*args, expected=0):
@@ -30,16 +193,8 @@ def rehearse(dist, sha, work):
     def pip(python, *args):
         return command(python, "-m", "pip", "--isolated", *args)
 
-    def installed(python, code, *args, expected=0):
-        # No checkout imports (-I), sockets, service processes or provider CLI.
-        guard = """
-import sys
-def guard(event, args):
-    if event.startswith('socket.') or event in ('subprocess.Popen', 'os.system', 'os.posix_spawn'):
-        raise RuntimeError('offline rehearsal forbids network and child processes')
-sys.addaudithook(guard)
-"""
-        return command(python, "-I", "-c", guard + code, *args, expected=expected)
+    def installed(python, code, *args, expected=0, git_repository=None):
+        return command(python, "-I", "-c", installed_code(code, git_repository), *args, expected=expected)
 
     def cli(python, *args, expected=0):
         return installed(python, "from code_mower.cli import main\nraise SystemExit(main(sys.argv[1:]))", *args, expected=expected)
@@ -99,6 +254,21 @@ Path(sys.argv[1]).write_text(json.dumps(value))
     output.unlink()  # The only local opt-in artifact; there is no Slack service.
     checks.append("offline_disabled_snapshot_and_local_manifest_removal")
 
+    # This fixture is public synthetic source, with no remote, hooks, provider
+    # executable or Graphify install. The wheel's real lifecycle seals it; only
+    # the extractor is replaced by a deterministic synthetic document writer.
+    repository = work / "synthetic-repository"
+    command("git", "init", "--template=", "-q", "-b", "main", repository)
+    (repository / "example.py").write_text("def synthetic_target(): pass\ndef synthetic_caller(): synthetic_target()\n")
+    command("git", "-C", repository, "add", "example.py")
+    command("git", "-C", repository, "-c", "core.hooksPath=" + os.devnull,
+            "-c", "user.name=Rehearsal", "-c", "user.email=rehearsal@example.invalid",
+            "commit", "--no-gpg-sign", "-q", "-m", "Synthetic public graph fixture")
+    graph_checks = json.loads(installed(py, GRAPHIFY_SMOKE, repository, work / "graph-state",
+                                       git_repository=repository))
+    assert graph_checks == list(GRAPHIFY_CHECKS)
+    checks.extend(graph_checks)
+
     # Preserve synthetic operator evidence outside site-packages, byte for byte.
     state = work / "operator-state"
     state.mkdir()
@@ -138,12 +308,13 @@ Path(sys.argv[1]).write_text(json.dumps(value))
     installed(fresh / "bin/python", "import importlib.util\nassert importlib.util.find_spec('code_mower') is None")
     assert before == state_hashes()
     checks.append("uninstall_preserves_synthetic_state")
-    result = {"schema": "code_mower.v150_rehearsal.v1", "source_sha": sha,
+    result = {"schema": REHEARSAL_SCHEMA, "source_sha": sha,
               "artifact_sha256": manifest["artifacts"][NAMES[0]], "checks": checks,
               "rollback_wheel_sha256": old_digest, "synthetic_state_preserved": True,
               "live_slack_readiness": "not_run", "live_disable_uninstall": "not_run",
               "paid_canaries": "not_run", "status": "pass"}
     (work / "rehearsal.json").write_text(json.dumps(result, indent=2) + "\n")
+    verify_rehearsal(work, manifest)
     return result
 
 

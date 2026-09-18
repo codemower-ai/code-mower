@@ -12,7 +12,7 @@ Historical v1.4.x qualification records remain unchanged.
 | --- | --- |
 | Release preparation PR and reviewed head | The single PR closing #1027; independent exact-head audit and CI/gate checks |
 | Final source | That PR's actual `mergeCommit.oid`, never its earlier head or mutable main |
-| Candidate workflow | Successful `Code Mower Immutable Candidate` run on main with `expected_sha` equal to the merge SHA |
+| Candidate workflow | Successful first attempt of `Code Mower Immutable Candidate` on main, with both run `head_sha` and `expected_sha` equal to the merge SHA; reruns are refused |
 | Wheel and sdist | `code-mower-candidate` artifact: `code_mower-1.5.0-py3-none-any.whl` and `code_mower-1.5.0.tar.gz` |
 | Digests/inventory | `candidate.json`: source SHA, merged PR, SHA-256 of each artifact, complete inspected member lists and default dependencies |
 | Disposable rehearsals | `rehearsal.json`, bound to that source SHA and exact wheel digest |
@@ -27,6 +27,7 @@ Historical v1.4.x qualification records remain unchanged.
 | Candidate | Build once from a clean merge-SHA checkout; twine and both inventories pass; retain artifacts and digests | Requires merged release PR; pre-merge builds are rehearsals only |
 | Default install | Installed-wheel provenance; only base dependencies; init preview without Slack; no Slack network, login or service | Disposable rehearsal script; not live administration |
 | Slack opt-in | Installed setup creates mode-0600 hosted manifest and refuses overwrite; default and all-green offline doctor deny readiness | Disposable rehearsal script; no private probe is supplied |
+| Graphify compatibility | Installed wheel accepts/excludes `doc_ref`, reports reader/search available, preserves ambiguity-only partial usability with complete generation, and returns bounded `reader_incompatible` for a same-version wrong-distribution unknown type without content/type/path leakage | Three named checks in `rehearsal.json`, required by publication; synthetic public fixtures only |
 | Upgrade | Published 1.4.2 wheel verified against historical digest, then exact candidate wheel; synthetic config/receipt/reservation bytes preserved | Disposable rehearsal script |
 | Disable/removal | Disabled offline observation denies; local manifest removed; package uninstall preserves synthetic state | Offline only; live disable/uninstall belongs to #918 |
 | Rollback | Disposable package restores exact digest-verified 1.4.2 and preserves synthetic state | Does not authorize downgrading live v2 claims or schema |

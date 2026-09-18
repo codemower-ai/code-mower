@@ -28,6 +28,22 @@ MODULES = (
 )
 DOCS = ("v150-release-notes.md", "v150-qualification.md", "v150-release-runbook.md",
         "slack-setup.md", "graphify-setup.md")
+REHEARSAL_SCHEMA = "code_mower.v150_rehearsal.v1"
+GRAPHIFY_CHECKS = (
+    "graphify_doc_ref_excluded_reader_available",
+    "graphify_ambiguity_only_partial_usable_complete_generation",
+    "graphify_wrong_distribution_reader_incompatible_no_leakage",
+)
+REHEARSAL_CHECKS = (
+    "fresh_default_slack_free_no_network_or_service",
+    "explicit_slack_setup_exclusive_private_manifest",
+    "all_green_offline_snapshot_cannot_claim_live_readiness",
+    "offline_disabled_snapshot_and_local_manifest_removal",
+    *GRAPHIFY_CHECKS,
+    "upgrade_1_4_2_to_exact_wheel_preserves_synthetic_state",
+    "disposable_rollback_to_digest_verified_1_4_2_preserves_state",
+    "uninstall_preserves_synthetic_state",
+)
 
 
 def run(*args, cwd=None):
@@ -106,6 +122,22 @@ def verify(dist: Path, sha: str, *, candidate=False):
         require(manifest["artifacts"][name] == digest(dist / name), "artifact digest mismatch")
     require(manifest.get("inventory") == inspect(dist), "artifact inventory mismatch")
     return manifest
+
+
+def verify_rehearsal(dist: Path, manifest: dict):
+    """Require wheel-bound lifecycle/Graphify evidence from a verified manifest."""
+    wheels = [name for name in manifest["artifacts"] if name.endswith(".whl")]
+    require(len(wheels) == 1, "candidate identity requires exactly one wheel")
+    evidence = json.loads((dist / "rehearsal.json").read_text())
+    require(evidence.get("schema") == REHEARSAL_SCHEMA and evidence.get("status") == "pass",
+            "invalid rehearsal identity or status")
+    require(evidence.get("source_sha") == manifest["source_sha"], "rehearsal source SHA mismatch")
+    require(evidence.get("artifact_sha256") == manifest["artifacts"][wheels[0]],
+            "rehearsal wheel digest mismatch")
+    checks = evidence.get("checks")
+    require(isinstance(checks, list) and all(isinstance(check, str) for check in checks)
+            and set(REHEARSAL_CHECKS) <= set(checks), "missing required rehearsal checks")
+    return evidence
 
 
 def build(source: Path, dist: Path, sha: str, release_pr: int | None):

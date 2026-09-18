@@ -1528,7 +1528,10 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     workflow_path = repo_path / ".github" / "workflows" / "release.yml"
     workflow = _read_text_if_exists(workflow_path)
     candidate_workflow = _read_text_if_exists(repo_path / ".github/workflows/release-candidate.yml")
-    candidate_workflow_used = bool(candidate_workflow)
+    candidate_workflow_used = (
+        (repo_path / ".github/workflows/release-candidate.yml").exists()
+        or "scripts/release_candidate.py" in workflow
+    )
     ci_workflow_path = repo_path / ".github" / "workflows" / "ci.yml"
     ci_workflow = _read_text_if_exists(ci_workflow_path)
     workflow_jobs = _workflow_jobs(workflow)
@@ -1758,7 +1761,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         ),
         _release_check(
             check_id="distribution-build-and-verify",
-            title="Release workflow builds and verifies distributions before publish",
+            title="Release workflows build once and verify distributions before publish",
             status=(
                 "pass"
                 if (
@@ -1771,6 +1774,11 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                         and "--name code-mower-candidate" in workflow
                         and "python -m build" not in workflow
                         and "python scripts/release_candidate.py build" in candidate_workflow
+                        and '[[ "$GITHUB_SHA" == "$SOURCE_SHA" ]]' in candidate_workflow
+                        and '[[ "$GITHUB_RUN_ATTEMPT" == 1 ]]' in candidate_workflow
+                        and "assert run['head_sha'] == os.environ['SOURCE_SHA']" in workflow
+                        and "assert run['run_attempt'] == 1" in workflow
+                        and "verify_rehearsal(Path('candidate'), candidate)" in workflow
                     ))
                     and "python -m twine check dist/*" in workflow
                 )

@@ -30,9 +30,11 @@ jobs:
           RELEASE_PR: ${{ inputs.release_pr }}
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF" == refs/heads/main ]]
-          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$RELEASE_PR" =~ ^[1-9][0-9]*$ ]]
+          [[ "$GITHUB_REF" == refs/heads/main ]] || exit 1
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$RELEASE_PR" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$GITHUB_SHA" == "$SOURCE_SHA" ]] || exit 1
+          [[ "$GITHUB_RUN_ATTEMPT" == 1 ]] || exit 1
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
