@@ -213,6 +213,13 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(self.call([*args, "--yes"])[0], 0)
             manifest = json.loads(path.read_bytes())
             self.assertEqual(manifest["oauth_config"]["scopes"], {"bot": ["commands"]})
+            self.assertEqual(manifest["oauth_config"]["redirect_urls"], [
+                "https://codemower-slack-oauth-ingress.jhuber.workers.dev/callback"
+            ])
+            self.assertEqual(manifest["features"]["slash_commands"][0]["url"],
+                             "https://codemower.com/api/slack/commands")
+            self.assertEqual(manifest["settings"]["interactivity"]["request_url"],
+                             "https://codemower.com/api/slack/interactions")
             self.assertTrue(manifest["settings"]["token_rotation_enabled"])
             self.assertNotIn("event_subscriptions", manifest["settings"])
             self.assertEqual(manifest["features"]["slash_commands"][0]["command"], "/codemower")

@@ -35,9 +35,11 @@ public channels and rich Slack UX are deferred to v1.5.1.
 2. An authorized administrator imports the generated manifest into the private
    Slack app. Preserve exactly the bot `commands` scope, no user scopes or Events
    API subscriptions, no organization-wide install, and token rotation. The
-   hosted command/interactivity/OAuth routes are fixed in the manifest; do not
-   substitute previews, localhost or private URLs. Verify the installed settings
-   match: a generated file does not prove installation. See Slack's official
+   hosted routes are fixed in the manifest: command and interactivity requests go
+   to the application, while the OAuth redirect goes only through the dedicated
+   query-scrubbing relay before a query-free browser handoff to the application.
+   Do not substitute previews, localhost or private URLs. Verify the installed
+   settings match: a generated file does not prove installation. See Slack's official
    [manifest](https://docs.slack.dev/reference/app-manifest/),
    [OAuth](https://docs.slack.dev/authentication/installing-with-oauth/) and
    [token rotation](https://docs.slack.dev/authentication/using-token-rotation/)
