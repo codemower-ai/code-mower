@@ -72,6 +72,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
           CLAUDE_AUDIT_BOT_AUTHORS: ${{ vars.CLAUDE_AUDIT_BOT_AUTHORS }}
+          PYTHONPATH: src
           PUBLICATION_EVENT_PATH: ${{ steps.publication.outputs.event_path }}
           TRAILER_LANE: claude
           CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml,.github/workflows/local-audit-publication.yml"

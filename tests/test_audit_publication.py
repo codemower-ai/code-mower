@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -683,6 +684,67 @@ urllib.request.urlopen=response
                         states["gate_state"],
                         "success" if verdict == "PASS" else "failure",
                         result.stdout,
+                    )
+
+    def test_publication_cannot_downgrade_to_legacy_workflow_attestation(self):
+        value, api, comment, _, _ = self.setup_case()
+        api.run.update(
+            path=".github/workflows/local-cli-audit.yml",
+            event="pull_request_target",
+            pull_requests=[{"number": 42, "head": {"sha": HEAD}}],
+        )
+        self.assertFalse(
+            lib.github_actions_comment_attested(
+                repo=REPO,
+                body=comment["body"],
+                comment_id=91,
+                issue_number=42,
+                head_sha=HEAD,
+                workflow_paths=(".github/workflows/local-cli-audit.yml", pub.WORKFLOW),
+                tokens=(lib.GitHubToken("fixture", "fixture"),),
+                actions_run_lookup=lambda _: api.run,
+            )
+        )
+
+    def test_actual_wrapper_floor_uses_publication_identity_but_keeps_builder_exclusion(self):
+        from lineage_consumer_fixtures import wrapper_boundary, policy, complete_pr
+        from contextlib import ExitStack
+
+        for lane, module, cls in (
+            ("claude", claude_audit_pr, "ClaudeAuditConfig"),
+            ("codex", codex_audit_pr, "AuditConfig"),
+        ):
+            original = getattr(module, cls)
+            for publication, builder, allowed in (
+                ("workflow", "codex" if lane == "claude" else "claude", True),
+                ("direct", "codex" if lane == "claude" else "claude", False),
+                ("workflow", lane, False),
+            ):
+                with (
+                    self.subTest(lane=lane, publication=publication, builder=builder),
+                    tempfile.TemporaryDirectory() as tmp,
+                    ExitStack() as stack,
+                ):
+                    stack.enter_context(
+                        patch.dict(
+                            os.environ,
+                            {"CLAUDE_AUDIT_BOT_AUTHORS": "human", "CODEX_BOT_AUTHORS": "human"},
+                        )
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            module,
+                            cls,
+                            side_effect=partial(original, publication=publication),
+                        )
+                    )
+                    pr = complete_pr(
+                        branch=f"{builder}/topic" if builder != lane else "human/topic",
+                        labels=[f"builder:{builder}"],
+                    )
+                    pr["head"]["repo"] = {"full_name": REPO}
+                    self.assertEqual(
+                        wrapper_boundary(Path(tmp) / "repo", lane, policy(), pr, []), allowed
                     )
 
     def test_generated_helpers_and_manifest_are_current(self):

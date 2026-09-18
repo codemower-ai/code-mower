@@ -286,10 +286,20 @@ print(init._render_workflow_template(source.read_text(), {}), end='')
                  'templates/lanes/run_mac_lane.sh', 'src/code_mower/templates/lanes/run_mac_lane.sh']
         paths.extend(p.relative_to(ROOT).as_posix() for p in (ROOT/'.github/workflows').glob('*'))
         baseline = self.accepted_baseline()['unchanged_files']
-        self.assertCountEqual(paths, baseline, 'Actual init/runner/workflow inventory differs from accepted baseline')
+        # #1022 explicitly adds verified local-audit publication and updates its
+        # labeler/runner consumers. Preserve the accepted lineage baseline itself;
+        # test_audit_publication.py owns these successor workflows and their parity.
+        publication_workflows = {
+            '.github/workflows/local-audit-publication.yml',
+            '.github/workflows/claude-audit-labeler.yml',
+            '.github/workflows/codex-audit-labeler.yml',
+            '.github/workflows/local-cli-audit.yml',
+        }
+        self.assertCountEqual(paths, set(baseline) | {'.github/workflows/local-audit-publication.yml'},
+                              'Actual init/runner/workflow inventory differs from accepted baseline and #1022')
         activated = {'src/code_mower/init.py', 'tools/lanes/run_mac_lane.sh',
             'templates/lanes/run_mac_lane.sh', 'src/code_mower/templates/lanes/run_mac_lane.sh',
-            '.github/workflows/code-mower-gate.yml'}
+            '.github/workflows/code-mower-gate.yml'} | publication_workflows
         for path in paths:
             if path not in activated:
                 content = (ROOT/path).read_bytes()

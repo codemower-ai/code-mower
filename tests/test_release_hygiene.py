@@ -3712,6 +3712,7 @@ jobs:
                 ".github/workflows/codex-audit-labeler.yml",
                 ".github/workflows/codex-clear-stale.yml",
                 ".github/workflows/gitar-audit-labeler.yml",
+                ".github/workflows/local-audit-publication.yml",
                 ".github/workflows/local-cli-audit.yml",
             }
             self.assertTrue(expected.isdisjoint(placeholder_files))
@@ -3742,7 +3743,7 @@ jobs:
             self.assertIn("DISPATCH_TOKEN", claude)
             self.assertIn("CLAUDE_AUDIT_BOT_AUTHORS", claude)
             self.assertIn("actions: write", claude)
-            self.assertIn('CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml"', claude)
+            self.assertIn('CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml,.github/workflows/local-audit-publication.yml"', claude)
             self.assertIn("gh workflow run code-mower-gate.yml", claude)
             self.assertIn("repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}", claude)
             self.assertIn('-f "head_sha=${head_sha}"', claude)
