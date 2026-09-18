@@ -21,6 +21,7 @@ SCHEMA = "code_mower.auditPublication.v1"
 WORKFLOW = ".github/workflows/local-audit-publication.yml"
 WORKFLOW_NAME = "Code Mower Local Audit Publication"
 EVENT = "code-mower-local-audit"
+SOURCE_WORKFLOW = ".github/workflows/local-cli-audit.yml"
 MAX_BYTES = 2048
 MAX_EVENT_BYTES = 128 * 1024
 MAX_AGE = 24 * 60 * 60
@@ -35,6 +36,8 @@ FIELDS = frozenset(
         "lane",
         "verdict",
         "created_at",
+        "source_run_id",
+        "source_run_attempt",
     }
 )
 MARKER = "<!-- CODE_MOWER_AUDIT_PUBLICATION: "
@@ -92,6 +95,12 @@ def validate(text, expected_digest, *, now=None):
         "publication digest mismatch",
     )
     require(positive(value["repository_id"]) and positive(value["pr_number"]), "invalid target")
+    require(
+        positive(value["source_run_id"])
+        and value["source_run_attempt"] == 1
+        and type(value["source_run_attempt"]) is int,
+        "invalid source run/attempt",
+    )
     require(value["lane"] in ("claude", "codex"), "unsupported reviewer lane")
     require(value["verdict"] in ("PASS", "BLOCKED"), "unsupported verdict")
     require(
@@ -108,6 +117,49 @@ def validate(text, expected_digest, *, now=None):
 
 def receipt_name(value, comment_id):
     return f"Local audit pr={value['pr_number']} comment={comment_id} digest={digest(canonical(value))}"
+
+
+def seal_name(value):
+    return "Code Mower reviewer seal " + digest(canonical(value))
+
+
+def verify_source(io, value, repository):
+    """Require a completed seal step in a default-branch reviewer job.
+
+    Dispatch credentials cannot write Actions job/step records. The enclosing
+    job may still be waiting for publication, so only the seal must be terminal.
+    repository_dispatch always runs default-branch code, including the source
+    wrapper. Unlike pull_request_target there is no alternate base-ref workflow
+    that a builder can replace. The sealed digest binds the actual reviewed head.
+    """
+    source = io.request(f"/actions/runs/{value['source_run_id']}")
+    require(
+        source.get("id") == value["source_run_id"]
+        and source.get("run_attempt") == value["source_run_attempt"]
+        and source.get("path") == SOURCE_WORKFLOW
+        and source.get("event") == "repository_dispatch"
+        and source.get("head_branch") == repository["default_branch"]
+        and isinstance(source.get("head_sha"), str)
+        and SHA.fullmatch(source["head_sha"])
+        and source.get("repository", {}).get("id") == repository["id"]
+        and source.get("head_repository", {}).get("id") == repository["id"],
+        "untrusted source audit run",
+    )
+    jobs = io.pages(f"/actions/runs/{source['id']}/attempts/1/jobs", "jobs")
+    matching = [
+        job
+        for job in jobs
+        if job.get("run_id") == source["id"]
+        and job.get("name") == f"audit ({value['lane']})"
+        and any(
+            step.get("name") == seal_name(value)
+            and step.get("status") == "completed"
+            and step.get("conclusion") == "success"
+            for step in job.get("steps", [])
+        )
+    ]
+    require(len(matching) == 1, "source reviewer seal missing or ambiguous")
+    return source
 
 
 def receipts(run):
@@ -329,6 +381,7 @@ def publish(event, env, io, *, now=None):
     run = io.request(f"/actions/runs/{run_id}")
     verify_run(run, repository, run_id=run_id)
     require(run["head_sha"] == env.get("GITHUB_SHA"), "wrong publishing run binding")
+    verify_source(io, value, repository)
     # The global workflow concurrency group serializes reservations. Successful
     # receipt jobs are a second durable replay ledger even if a comment is deleted.
     for earlier in recent_runs(io, value):
@@ -364,6 +417,7 @@ def publish(event, env, io, *, now=None):
     path = f"/issues/comments/{comment['id']}"
     try:
         current_pr(io, value)
+        verify_source(io, value, repository)
         body = render(value, run, comment["id"])
         posted = io.request(path, method="PATCH", body={"body": body})
         require(
@@ -373,6 +427,7 @@ def publish(event, env, io, *, now=None):
             "comment publication mismatch",
         )
         current_pr(io, value)
+        verify_source(io, value, repository)
         return posted
     except Exception:
         # Consumers require successful completion: even a failed cleanup cannot
@@ -399,7 +454,8 @@ def project_local(artifact, repository, *, lane, now):
     )
     body = artifact.get("comment_body")
     require(
-        isinstance(body, str) and body.startswith(f"## {lane.title()} audit (merge-authority lane)\n\n"),
+        isinstance(body, str)
+        and body.startswith(f"## {lane.title()} audit (merge-authority lane)\n\n"),
         "artifact is not merge authority",
     )
     require(
@@ -421,6 +477,8 @@ def project_local(artifact, repository, *, lane, now):
         "lane": lane,
         "verdict": artifact.get("verdict"),
         "created_at": created_at,
+        "source_run_id": artifact.get("source_run_id"),
+        "source_run_attempt": artifact.get("source_run_attempt"),
     }
     text = canonical(value)
     validate(text, digest(text), now=now)
@@ -431,14 +489,67 @@ def project_local(artifact, repository, *, lane, now):
     return value
 
 
-def submit(path, *, token, lane, timeout=900, io=None, clock=time.monotonic, sleep=time.sleep):
+def read_local(path):
     with Path(path).expanduser().open("rb") as stream:
         raw = stream.read(1024 * 1024 + 1)
     artifact = decode(raw.decode("utf-8"), 1024 * 1024)
     require(isinstance(artifact, dict), "invalid local artifact")
+    return artifact
+
+
+def unavailable_notice(path, lane):
+    """Visible, metadata-only failure status, with no authority or audit trailer."""
+    artifact = read_local(path)
+    if not (
+        artifact.get("quarantine_reason")
+        or artifact.get("quarantined") is True
+        or artifact.get("verdict") in ("UNKNOWN", "STALE")
+    ):
+        return None
+    head = artifact.get("head_sha_start")
+    head_line = f"Head SHA: `{head}`\n" if isinstance(head, str) and SHA.fullmatch(head) else ""
+    return (
+        f"## {lane.title()} audit unavailable\n\n{head_line}Verdict: UNKNOWN\n"
+        "No merge-authority verdict was published. The local artifact was quarantined, "
+        "stale, or inconclusive. Check the local runner and requeue this audit.\n"
+    )
+
+
+def stage(path, *, token, lane, env=None, io=None):
+    """Save metadata locally; a later trusted step seals it before dispatch."""
+    env = os.environ if env is None else env
+    artifact = read_local(path)
+    io = io or GitHub(artifact.get("repo"), token)
+    repository = io.request("")
+    require(
+        env.get("GITHUB_EVENT_NAME") == "repository_dispatch"
+        and env.get("GITHUB_WORKFLOW_REF")
+        == f"{io.repo}/{SOURCE_WORKFLOW}@refs/heads/{repository['default_branch']}"
+        and env.get("GITHUB_RUN_ATTEMPT") == "1"
+        and env.get("CODE_MOWER_LOCAL_AUDIT_LANE") == lane
+        and env.get("PR_HEAD_SHA") == artifact.get("head_sha_start"),
+        "untrusted staging environment",
+    )
+    artifact.update(source_run_id=int(env["GITHUB_RUN_ID"]), source_run_attempt=1)
+    value = project_local(artifact, repository, lane=lane, now=int(time.time()))
+    current_pr(io, value)
+    Path(path).write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
+    Path(env["CODE_MOWER_AUDIT_STAGE_PATH"]).write_text(canonical(value), encoding="ascii")
+    return {"body": "Local audit staged; awaiting trusted workflow publication.", "html_url": ""}
+
+
+def submit(path, *, token, lane, timeout=900, io=None, clock=time.monotonic, sleep=time.sleep):
+    artifact = read_local(path)
     io = io or GitHub(artifact.get("repo"), token)
     repository = io.request("")
     value = project_local(artifact, repository, lane=lane, now=int(time.time()))
+    return submit_value(value, io=io, timeout=timeout, clock=clock, sleep=sleep)
+
+
+def submit_value(value, *, io, timeout=900, clock=time.monotonic, sleep=time.sleep):
+    repository = io.request("")
+    validate(canonical(value), digest(canonical(value)), now=int(time.time()))
+    verify_source(io, value, repository)
     current_pr(io, value)
     require(
         not any(
@@ -532,13 +643,67 @@ def prepare_label_event(event, env, io):
     return {"action": "edited", "issue": {**pr, "pull_request": {}}, "comment": accepted[0]}
 
 
+def prepare_review(event, env, io):
+    repository = io.request("")
+    default_ref = "refs/heads/" + repository["default_branch"]
+    legacy = env.get("GITHUB_EVENT_NAME") == "pull_request_target"
+    require(
+        (
+            (
+                env.get("GITHUB_EVENT_NAME") == "repository_dispatch"
+                and event.get("action") == "code-mower-local-review"
+            )
+            or (legacy and event.get("action") in ("opened", "synchronize", "labeled"))
+        )
+        and env.get("GITHUB_REF") == default_ref
+        and env.get("GITHUB_WORKFLOW_REF") == f"{io.repo}/{SOURCE_WORKFLOW}@{default_ref}"
+        and env.get("GITHUB_RUN_ATTEMPT") == "1"
+        and event.get("repository", {}).get("id") == repository["id"],
+        "untrusted review request",
+    )
+    payload = event.get("client_payload")
+    if legacy:
+        pr = event.get("pull_request", {})
+        payload = {"pr_number": pr.get("number"), "head_sha": pr.get("head", {}).get("sha")}
+    require(
+        isinstance(payload, dict)
+        and set(payload) == {"pr_number", "head_sha"}
+        and positive(payload["pr_number"])
+        and isinstance(payload["head_sha"], str)
+        and SHA.fullmatch(payload["head_sha"]),
+        "invalid review request",
+    )
+    pr = current_pr(
+        io,
+        dict(
+            pr_number=payload["pr_number"],
+            repository_id=repository["id"],
+            head_sha_start=payload["head_sha"],
+        ),
+    )
+    require(
+        pr.get("head", {}).get("repo", {}).get("id") == repository["id"]
+        and pr.get("base", {}).get("ref") == repository["default_branch"],
+        "untrusted review target",
+    )
+    return payload
+
+
 def main():
     try:
         env = os.environ
         io = GitHub(env["GITHUB_REPOSITORY"], env["GH_TOKEN"])
-        with Path(env["GITHUB_EVENT_PATH"]).open("rb") as stream:
-            event = decode(stream.read(MAX_EVENT_BYTES + 1).decode("utf-8"), MAX_EVENT_BYTES)
-        if sys.argv[1:] == ["publish"]:
+        event = None
+        if sys.argv[1:] in (["publish"], ["prepare-label-event"], ["prepare-review"]):
+            with Path(env["GITHUB_EVENT_PATH"]).open("rb") as stream:
+                event = decode(stream.read(MAX_EVENT_BYTES + 1).decode("utf-8"), MAX_EVENT_BYTES)
+        if sys.argv[1:] == ["prepare-review"]:
+            requested = prepare_review(event, env, io)
+            with Path(env["GITHUB_OUTPUT"]).open("a") as output:
+                output.write(
+                    f"ready=true\npr_number={requested['pr_number']}\nhead_sha={requested['head_sha']}\n"
+                )
+        elif sys.argv[1:] == ["publish"]:
             posted = publish(event, env, io)
             value = metadata(posted["body"])
             with Path(env["GITHUB_OUTPUT"]).open("a") as output:
@@ -555,6 +720,24 @@ def main():
                     output.write(
                         f"event_path={path}\npr_number={prepared['issue']['number']}\nready=true\n"
                     )
+        elif sys.argv[1:] in (["prepare-seal"], ["submit-staged"]):
+            with Path(env["CODE_MOWER_AUDIT_STAGE_PATH"]).open("rb") as stream:
+                raw = stream.read(MAX_BYTES + 1).decode("ascii")
+            value = validate(raw, digest(raw), now=int(time.time()))
+            require(
+                str(value["source_run_id"]) == env["GITHUB_RUN_ID"]
+                and str(value["source_run_attempt"]) == env["GITHUB_RUN_ATTEMPT"]
+                and value["lane"] == env["CODE_MOWER_LOCAL_AUDIT_LANE"]
+                and value["head_sha_start"] == env["PR_HEAD_SHA"]
+                and str(value["pr_number"]) == env["PR_NUMBER"],
+                "wrong staging binding",
+            )
+            current_pr(io, value)
+            if sys.argv[1:] == ["prepare-seal"]:
+                with Path(env["GITHUB_OUTPUT"]).open("a") as output:
+                    output.write(f"digest={digest(raw)}\n")
+            else:
+                submit_value(value, io=io)
         else:
             raise Refused("unsupported publication command")
         return 0

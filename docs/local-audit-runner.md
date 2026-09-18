@@ -41,13 +41,14 @@ still have the normal account-based reviewer floor.
 ## Verified workflow publication
 
 Install the publisher, both updated labelers, gate, and generated `tools/`
-helpers together on the **default branch** before enabling the new wrapper.
+helpers and `local-audit-request.yml` together on the **default branch** before enabling the new wrapper.
 Use a source/candidate installation containing this feature until a release
 includes it; installing the currently pinned release alone does not activate
 new publication code. No release or deployment is performed by this setup.
 
 Claude/Codex CLI runs default to `--publication workflow`. To publish a saved
-structured verdict without invoking either provider again:
+structured verdict generated and sealed by the trusted local-audit workflow,
+without invoking either provider again:
 
 ```bash
 tools/run_claude_audit_pr.sh --publish-verdict-artifact /path/to/verdict.json
@@ -56,15 +57,17 @@ tools/run_codex_audit_pr.sh --publish-verdict-artifact /path/to/verdict.json
 
 The caller needs repository-dispatch access (Contents write), Pull requests read,
 Issues read and Actions read. The generated runner workflow grants these to its
-short-lived token. A local caller can use its existing authenticated token with
-those permissions. Publication waits up to 15 minutes for the terminal run and
+short-lived token. A local caller can retry an already sealed artifact with its
+existing authenticated token; dispatch permission alone grants no reviewer
+authority. Unsealed artifacts from arbitrary local/PAT runs are refused.
+Publication waits up to 15 minutes for the terminal run and
 its verified comment. A dispatch timeout is an unknown delivery result: inspect
 the existing run and PR reservation before retrying. Do not rerun the model just
 to recover a publication result.
 
 Only canonical metadata leaves the machine: schema, numeric repository ID, PR
-number, reviewer lane, PASS/BLOCKED, full start/end head SHAs and artifact creation
-time. The repository name, comment prose, findings, code, prompts, transcript,
+number, reviewer lane, PASS/BLOCKED, full start/end head SHAs, artifact creation
+time, and the originating audit run ID/attempt. The repository name, comment prose, findings, code, prompts, transcript,
 paths and provider output stay local. The SHA-256 digest covers those exact
 canonical metadata bytes. The publisher accepts only equal full start/end SHAs,
 an open PR at that SHA, and artifacts no more than 24 hours old. UNKNOWN, STALE,
@@ -84,15 +87,36 @@ attempt is refused. Keep receipts and reservations for at least the 24-hour
 artifact lifetime. The global publication concurrency group serializes claims;
 GitHub may cancel an older queued dispatch, which requires inspecting its result.
 
-Dispatch access is the trust boundary for the local reviewer's assertion. The
-workflow verifies the assertion's structure and binding, not whether a model
-actually reviewed the code. Only trusted operators/supervised wrappers should
-have dispatch permission. It does not waive builder-lineage or context checks.
+The source job stages the metadata, independently validates it, and completes a
+`Code Mower reviewer seal <digest>` step before dispatch. The publisher verifies
+that immutable Actions step record in the matching `audit (claude|codex)` job,
+source run ID/attempt, trusted `local-cli-audit.yml` `repository_dispatch` event,
+same repository and default branch. The sealed digest binds the PR, lane and
+full start/end head. The small `local-audit-request.yml` trigger requests the
+review; the source workflow validates the request against the live PR before
+starting a provider. Both source and publisher use `repository_dispatch`, which
+always executes default-branch code: a builder cannot counterfeit a source job
+using a workflow on an alternate PR base branch.
+The enclosing source job may remain in progress while waiting for publication.
+A fabricated digest, a builder workflow, a non-default base, a rerun, or a
+personal-PAT dispatch without that seal cannot create merge authority. Both
+PASS and BLOCKED are sealed. Only allowlisted metadata appears in the seal.
+
+The trusted source workflow checks out the immutable default-branch run SHA. It does not
+inject dispatch secrets for Claude/Codex. The wrapper clears configured token
+aliases; provider children additionally lose Actions runtime credentials and
+command-file variables. Workflow commands are disabled while provider output
+is printed. Builder-lineage and context checks remain mandatory.
 
 For an explicit emergency/compatibility path, use `--publication direct` on a
 new audit or `--repost-verdict-artifact` to repost a saved direct comment. Those
 paths do not create the new workflow attestation and may require the existing
-owner decision process. There is no automatic fallback to direct posting.
+owner decision process. There is no automatic fallback to a direct merge-authority verdict. Quarantined,
+stale and inconclusive results leave a fixed, metadata-only UNKNOWN notice so
+operators can requeue them; these notices carry no audit trailer or attestation.
+Reviewer stdout/stderr stays in a private runner-local log and is never echoed
+or uploaded to GitHub. Devin CLI retains its separate legacy trigger and direct
+transport when selected.
 
 ## Wrapper Contract
 

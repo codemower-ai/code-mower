@@ -8,6 +8,27 @@ import sys
 from typing import TextIO
 
 
+def github_secret_env_names(env):
+    return ("GITHUB_TOKEN", "GH_TOKEN", "DISPATCH_TOKEN",
+            env.get("CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV", ""))
+
+
+def provider_unset_env_names(env):
+    # Provider children cannot dispatch audits, create artifact attestations,
+    # or set outputs used by the trusted source-job seal.
+    return github_secret_env_names(env) + (
+        "GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_STATE", "GITHUB_STEP_SUMMARY",
+        "GITHUB_PATH", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL", "CODE_MOWER_AUDIT_STAGE_PATH",
+    )
+
+
+def clear_github_secrets():
+    for name in github_secret_env_names(os.environ):
+        if name:
+            os.environ.pop(name, None)
+
+
 def pop_github_token_env() -> str | None:
     """Return GITHUB_TOKEN and clear GitHub token aliases from this process.
 
@@ -16,7 +37,7 @@ def pop_github_token_env() -> str | None:
     """
 
     token = os.environ.pop("GITHUB_TOKEN", None)
-    os.environ.pop("GH_TOKEN", None)
+    clear_github_secrets()
     return token
 
 
@@ -30,8 +51,7 @@ def resolve_github_token_from_stdin_or_env(
     if read_from_stdin:
         source = stdin if stdin is not None else sys.stdin
         line = source.readline()
-        os.environ.pop("GITHUB_TOKEN", None)
-        os.environ.pop("GH_TOKEN", None)
+        clear_github_secrets()
         if not line:
             return None
         return line.rstrip("\r\n")

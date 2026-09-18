@@ -1481,7 +1481,7 @@ exit 1
         self.assertIn("CODE_MOWER_REVIEWER_SPEND_PATH", local_audit)
         self.assertNotIn("CODE_MOWER_REVIEWER_SPEND_PATH", local_audit.split("    steps:", 1)[0])
         self.assertIn("Reset pull request checkout path", local_audit)
-        self.assertIn("${{ github.workflow }}-${{ github.event.pull_request.number }}", local_audit)
+        self.assertIn("${{ github.workflow }}-${{ needs.prepare.outputs.pr_number }}", local_audit)
         self.assertIn("${{ matrix.lane.lane }}", local_audit)
         self.assertIn("cancel-in-progress: true", local_audit)
         self.assertIn("id: run_audit", local_audit)
@@ -3770,7 +3770,9 @@ jobs:
             local_cli_audit = output_dir.joinpath(
                 ".github/workflows/local-cli-audit.yml"
             ).read_text(encoding="utf-8")
-            self.assertIn("pull_request_target:\n    types: [opened, synchronize, labeled]", local_cli_audit)
+            self.assertIn("repository_dispatch:\n    types: [code-mower-local-review]", local_cli_audit)
+            request = output_dir.joinpath(".github/workflows/local-audit-request.yml").read_text()
+            self.assertIn("pull_request_target:\n    types: [opened, synchronize, labeled]", request)
             self.assertIn("vars.CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED == 'true'", local_cli_audit)
             self.assertIn("runs-on: [self-hosted, macOS, code-mower-audit]", local_cli_audit)
             self.assertIn("pull-requests: write", local_cli_audit)
@@ -3883,9 +3885,9 @@ jobs:
                 "steps.verify_pr_head.conclusion == 'success'",
                 local_cli_audit,
             )
-            self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", local_cli_audit)
+            self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", request)
             self.assertIn("CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED", local_cli_audit)
-            self.assertIn("github.event.action != 'labeled'", local_cli_audit)
+            self.assertIn("github.event.action != 'labeled'", request)
             self.assertIn("needs-codex-audit", local_cli_audit)
             self.assertIn("needs-claude-audit", local_cli_audit)
             self.assertIn("DISPATCH_TOKEN", local_cli_audit)
@@ -3950,11 +3952,11 @@ jobs:
                 "${{ runner.temp }}/code-mower-reviewer-spend.json",
             )
             self.assertIn(
-                "github.event.pull_request.head.repo.full_name == github.repository",
+                "needs.prepare.outputs.ready == 'true'",
                 audit_job["if"],
             )
             self.assertIn(
-                "${{ github.event.pull_request.head.sha }}",
+                "${{ needs.prepare.outputs.head_sha }}",
                 audit_job["concurrency"]["group"],
             )
             self.assertIn(

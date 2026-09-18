@@ -291,11 +291,12 @@ print(init._render_workflow_template(source.read_text(), {}), end='')
         # test_audit_publication.py owns these successor workflows and their parity.
         publication_workflows = {
             '.github/workflows/local-audit-publication.yml',
+            '.github/workflows/local-audit-request.yml',
             '.github/workflows/claude-audit-labeler.yml',
             '.github/workflows/codex-audit-labeler.yml',
             '.github/workflows/local-cli-audit.yml',
         }
-        self.assertCountEqual(paths, set(baseline) | {'.github/workflows/local-audit-publication.yml'},
+        self.assertCountEqual(paths, set(baseline) | {'.github/workflows/local-audit-publication.yml', '.github/workflows/local-audit-request.yml'},
                               'Actual init/runner/workflow inventory differs from accepted baseline and #1022')
         activated = {'src/code_mower/init.py', 'tools/lanes/run_mac_lane.sh',
             'templates/lanes/run_mac_lane.sh', 'src/code_mower/templates/lanes/run_mac_lane.sh',

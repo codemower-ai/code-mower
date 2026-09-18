@@ -99,7 +99,10 @@ workflow publication. A PR's copy of the verifier has no publication authority.
 The current pinned release instructions below are unchanged; this feature needs
 a reviewed candidate until it is included in a release.
 
-The generated self-hosted audit job dispatches with its short-lived workflow
+The generated self-hosted audit job seals the verdict digest in an immutable
+Actions step before dispatch. The publisher requires that exact source
+run/job/attempt and PR head; a personal PAT alone cannot mint a reviewer verdict.
+The job dispatches with its short-lived workflow
 token (Contents write and Actions read), and the publisher posts with its own
 repository token (Issues write). No new long-lived bot credential is required.
 Existing `DISPATCH_TOKEN` uses elsewhere in the build loop remain separate.

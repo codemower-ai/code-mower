@@ -485,6 +485,13 @@ an older installed package cannot reinterpret a new receipt. Keep these helpers
 when removing older mirrors. Regenerate both workflow-template trees and the
 package manifest when customizing the protocol.
 
+Keep the request `local-audit-request.yml` and source `local-cli-audit.yml` workflows, `audit (lane)` job names and
+reviewer-seal step together with the publisher. Source workflow/path/event,
+default branch, run/attempt, PR/head/lane and sealed digest are verified
+against Actions records. Do not grant authority to a dispatch without a seal,
+expose Actions command files to providers, or inject dispatch secrets into the
+Claude/Codex job.
+
 Do not change the publisher into a PR-head checkout or `workflow_dispatch` on an
 arbitrary ref. Do not add submitted strings to shell commands, run names or
 uploaded files. The receipt job's name uses only verifier-produced numeric IDs

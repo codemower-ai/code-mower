@@ -112,7 +112,9 @@ session or spend a new recovery allowance.
 
 ## Local audit publication evidence
 
-For Claude/Codex workflow publication, record the local artifact's canonical
+For Claude/Codex workflow publication, record the source local-audit run ID,
+attempt, matching lane job and completed reviewer-seal step, as well as the
+local artifact's canonical
 metadata digest, PR/head, publisher run URL, created comment ID and terminal run
 conclusion. The public comment contains only allowlisted verdict metadata and
 existing lane/run trailers. A successful receipt job binds the exact metadata

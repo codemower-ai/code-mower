@@ -798,9 +798,11 @@ def _local_audit_workflow_entry(
     local_audit_runner_label: str = LOCAL_AUDIT_RUNNER_LABEL,
     local_audit_runner_enabled_var: str = "CODE_MOWER_LOCAL_AUDIT_RUNNER_ENABLED",
 ) -> dict[str, str]:
-    token_envs = sorted({entry["token_env"] for entry in entries if entry["token_env"]})
+    token_envs = sorted({entry["token_env"] for entry in entries
+                        if entry["token_env"] and entry["lane"] not in {"codex", "claude"}})
     token_assignments = "\n".join(
-        f"          {token_env}: ${{{{ secrets.{token_env} }}}}" for token_env in token_envs
+        f"          {token_env}: ${{{{ matrix.lane.lane != 'codex' && matrix.lane.lane != 'claude' && secrets.{token_env} || '' }}}}"
+        for token_env in token_envs
     )
     return {
         "path": LOCAL_AUDIT_WORKFLOW_PATH,
@@ -813,6 +815,9 @@ def _local_audit_workflow_entry(
         "local_audit_runner_label": local_audit_runner_label,
         "local_audit_runner_enabled_var": local_audit_runner_enabled_var,
         "local_audit_token_env_assignments": token_assignments,
+        "local_audit_legacy_trigger": (
+            "  pull_request_target:\n    types: [opened, synchronize, labeled]"
+            if any(entry["lane"] == "devin_cli" for entry in entries) else ""),
     }
 
 
@@ -1980,6 +1985,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__LOCAL_AUDIT_LABEL_CONTAINS__": str(entry.get("local_audit_label_contains") or ""),
         "__LOCAL_AUDIT_LABEL_MATCH__": str(entry.get("local_audit_label_match") or ""),
         "__LOCAL_AUDIT_LANES_JSON__": str(entry.get("local_audit_lanes_json") or "[]"),
+        "__LOCAL_AUDIT_LEGACY_TRIGGER__": str(entry.get("local_audit_legacy_trigger") or ""),
         "__LOCAL_AUDIT_RUNNER_LABEL__": str(entry.get("local_audit_runner_label") or ""),
         "__LOCAL_AUDIT_RUNNER_LABEL_YAML__": _yaml_scalar(
             entry.get("local_audit_runner_label") or ""
@@ -2835,6 +2841,18 @@ def render_init_plan(
                 ],
             )
         )
+        request_entry = dict(generated_files[-1])
+        publication_entries = tuple(e for e in local_audit_entries if e["lane"] in {"claude", "codex"})
+        request_entry.update(local_audit_label_match=_local_audit_label_expression(publication_entries, "event") or "false",
+                             local_audit_label_contains=_local_audit_label_expression(publication_entries, "pull_request") or "false")
+        request_path = ".github/workflows/local-audit-request.yml"
+        request_entry.update(path=request_path,
+                             copy_from="templates/workflows/local-audit-request.yml.j2",
+                             package_copy_from="templates/workflows/local-audit-request.yml.j2")
+        generated_files.append(request_entry)
+        generated_paths.add(request_path)
+        workflow_targets.add(request_path)
+        workflows.append({"lane": "local-audit-request", "driver": "local_cli", "target": request_path})
 
     if builder_entries and BUILDER_DISPATCH_WORKFLOW_PATH not in generated_paths:
         workflow_targets.add(BUILDER_DISPATCH_WORKFLOW_PATH)

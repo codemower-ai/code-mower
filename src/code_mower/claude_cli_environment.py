@@ -33,7 +33,8 @@ def clean_claude_cli_env(
     env = dict(base_env)
     names: list[str] = []
     if unset_github_tokens:
-        names.extend(GITHUB_TOKEN_ENV)
+        from code_mower.provider_runners.github_auth import provider_unset_env_names
+        names.extend(provider_unset_env_names(base_env))
     if scrub_auth_overrides:
         names.extend(CLAUDE_AUTH_OVERRIDE_ENV)
     names.extend(extra_unset)

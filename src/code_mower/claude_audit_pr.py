@@ -191,10 +191,14 @@ def _post_audit_comment(
     artifact_path: Optional[Path] = None,
 ) -> tuple[dict[str, Any], str]:
     if publication == "workflow":
-        from code_mower.audit_publication import Refused, submit
+        from code_mower.audit_publication import Refused, stage, submit, unavailable_notice
         if artifact_path is None:
             raise Refused("workflow publication requires a saved verdict artifact")
-        posted = submit(artifact_path, token=token, lane="claude")
+        notice = unavailable_notice(artifact_path, "claude")
+        if notice is not None:
+            return post_pr_comment(repo, pr_number, notice, token=token), notice
+        transport = stage if os.environ.get("CODE_MOWER_AUDIT_STAGE_PATH") else submit
+        posted = transport(artifact_path, token=token, lane="claude")
         return posted, posted["body"]
     posted = post_pr_comment(repo, pr_number, body, token=token)
     if not actions_run_id:

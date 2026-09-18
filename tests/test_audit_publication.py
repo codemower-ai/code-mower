@@ -40,6 +40,8 @@ def artifact(lane="claude", verdict="PASS", **changes):
             lane=lane,
             verdict=verdict,
             created_at=NOW,
+            source_run_id=700,
+            source_run_attempt=1,
         )
         | changes
     )
@@ -106,6 +108,27 @@ def pull(value, *, builder=None):
     )
 
 
+def source_for(value):
+    return dict(
+        id=value["source_run_id"],
+        path=pub.SOURCE_WORKFLOW,
+        event="repository_dispatch",
+        run_attempt=1,
+        head_sha=SOURCE,
+        head_branch="main",
+        repository=REPOSITORY,
+        head_repository=REPOSITORY,
+        pull_requests=[dict(number=42, base=dict(ref="main", repo=REPOSITORY))],
+        jobs=[
+            dict(
+                run_id=value["source_run_id"],
+                name=f"audit ({value['lane']})",
+                steps=[dict(name=pub.seal_name(value), status="completed", conclusion="success")],
+            )
+        ],
+    )
+
+
 class MemoryGitHub:
     repo = REPO
 
@@ -113,6 +136,7 @@ class MemoryGitHub:
         self.value = value or artifact()
         self.repository = deepcopy(REPOSITORY)
         self.run = run_for(self.value)
+        self.source = source_for(self.value)
         self.pr = pull(self.value)
         self.comments = []
         self.runs = [self.run]
@@ -132,6 +156,8 @@ class MemoryGitHub:
                 if self.move_at == self.pr_reads:
                     self.pr["head"]["sha"] = "c" * 40
                 return deepcopy(self.pr)
+            if path == "/actions/runs/700":
+                return deepcopy(self.source)
             if path.startswith("/actions/runs/"):
                 number = int(path.rsplit("/", 1)[1])
                 return deepcopy(next((run for run in self.runs if run["id"] == number), self.run))
@@ -171,6 +197,8 @@ class MemoryGitHub:
     def pages(self, path, key=None):
         if path.startswith("/actions/workflows/"):
             return deepcopy(self.runs)
+        if path.endswith("/attempts/1/jobs"):
+            return deepcopy(self.source["jobs"])
         if path.endswith("/jobs"):
             number = int(path.split("/")[-2])
             return deepcopy(
@@ -184,6 +212,74 @@ class MemoryGitHub:
 
 
 class ContractTests(unittest.TestCase):
+    def test_review_request_validates_live_target_before_provider_work(self):
+        api = MemoryGitHub()
+        api.pr["head"]["repo"] = REPOSITORY
+        api.pr["base"]["ref"] = "main"
+        env = environment() | {
+            "GITHUB_WORKFLOW_REF": f"{REPO}/{pub.SOURCE_WORKFLOW}@refs/heads/main"
+        }
+        event = dict(
+            action="code-mower-local-review",
+            repository=REPOSITORY,
+            client_payload=dict(pr_number=42, head_sha=HEAD),
+        )
+        self.assertEqual(pub.prepare_review(event, env, api), event["client_payload"])
+        for changes in (
+            {"pr_number": True},
+            {"pr_number": "42"},
+            {"head_sha": "c" * 40},
+            {"head_sha": "short"},
+            {"raw_output": "PRIVATE"},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(pub.Refused):
+                pub.prepare_review(
+                    event | {"client_payload": event["client_payload"] | changes}, env, api
+                )
+        for changes in (
+            {"GITHUB_REF": "refs/heads/evil"},
+            {"GITHUB_RUN_ATTEMPT": "2"},
+            {"GITHUB_EVENT_NAME": "workflow_dispatch"},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(pub.Refused):
+                pub.prepare_review(event, env | changes, api)
+        api.pr["head"]["repo"] = {"id": 999}
+        with self.assertRaises(pub.Refused):
+            pub.prepare_review(event, env, api)
+        self.assertEqual(api.writes, [])
+
+    def test_fabricated_or_mismatched_source_proof_never_publishes(self):
+        mutations = [
+            lambda s: s.update(id=701),
+            lambda s: s.update(path=".github/workflows/builder.yml"),
+            lambda s: s.update(event="workflow_dispatch"),
+            lambda s: s.update(event="pull_request"),
+            lambda s: s.update(run_attempt=2),
+            lambda s: s.update(head_sha="invalid"),
+            lambda s: s.update(head_branch="builder/evil"),
+            lambda s: s.update(repository={"id": 999}),
+            lambda s: s.update(head_repository={"id": 999}),
+            lambda s: s.update(event="pull_request_target"),
+            lambda s: s["jobs"][0].update(name="audit (codex)"),
+            lambda s: s["jobs"][0].update(run_id=701),
+            lambda s: s["jobs"][0].update(steps=[]),
+            lambda s: s["jobs"][0]["steps"][0].update(name="Code Mower reviewer seal " + "0" * 64),
+            lambda s: s["jobs"][0]["steps"][0].update(status="in_progress"),
+            lambda s: s["jobs"][0]["steps"][0].update(conclusion="failure"),
+            lambda s: s["jobs"].append(deepcopy(s["jobs"][0])),
+        ]
+        for index, mutate in enumerate(mutations):
+            api = MemoryGitHub()
+            mutate(api.source)
+            with self.subTest(index=index), self.assertRaises(pub.Refused):
+                pub.publish(event_for(api.value), environment(), api, now=NOW)
+            self.assertEqual(api.writes, [])
+        # Even a correctly hashed fabricated PASS cannot reuse a BLOCKED seal.
+        api = MemoryGitHub(artifact(verdict="BLOCKED"))
+        with self.assertRaises(pub.Refused):
+            pub.publish(event_for(artifact(verdict="PASS")), environment(), api, now=NOW)
+        self.assertEqual(api.writes, [])
+
     def test_canonical_exact_schema_digest_and_field_types(self):
         value = artifact()
         for lane in ("claude", "codex"):
@@ -207,6 +303,10 @@ class ContractTests(unittest.TestCase):
             dict(created_at=NOW + 1),
             dict(created_at=NOW - pub.MAX_AGE - 1),
             dict(created_at=True),
+            dict(source_run_id=True),
+            dict(source_run_id=0),
+            dict(source_run_attempt=2),
+            dict(source_run_attempt=True),
             dict(source="private source"),
             dict(comment_body="raw findings"),
         ]
@@ -383,6 +483,7 @@ class ContractTests(unittest.TestCase):
             "local-audit-publication.yml.j2",
             "trailer-comment-labeler.yml.j2",
             "self-hosted-local-audit.yml.j2",
+            "local-audit-request.yml.j2",
         ):
             self.assertEqual(
                 (ROOT / "templates/workflows" / name).read_bytes(),
@@ -391,6 +492,174 @@ class ContractTests(unittest.TestCase):
 
 
 class WrapperTests(unittest.TestCase):
+    def test_real_source_step_seals_blocked_without_leaking_tokens_or_output(self):
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / ".github/workflows/local-cli-audit.yml").read_text())
+        step = next(s for s in workflow["jobs"]["audit"]["steps"] if s.get("id") == "run_audit")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "gh").write_text("#!/bin/bash\nprintf 'needs-claude-audit\\n'\n")
+            (root / "wrapper").write_text("""#!/bin/bash
+set -euo pipefail
+test -z "${DISPATCH_TOKEN:-}"
+test -z "${CUSTOM_TOKEN:-}"
+read -r token
+test "$token" = short-fixture
+echo 'PRIVATE_SOURCE /local/path raw-provider-output'
+echo '::set-output name=digest::forged'
+printf '{}' > "$CODE_MOWER_AUDIT_STAGE_PATH"
+exit 0
+""")
+            for name in ("gh", "wrapper"):
+                (root / name).chmod(0o755)
+            env = dict(
+                os.environ,
+                CODE_MOWER_LOCAL_AUDIT_PATH=str(root),
+                CODE_MOWER_LOCAL_AUDIT_LANE="claude",
+                GITHUB_EVENT_NAME="repository_dispatch",
+                CODE_MOWER_LOCAL_AUDIT_NEEDS_LABEL="needs-claude-audit",
+                CODE_MOWER_LOCAL_AUDIT_DISPLAY_NAME="Claude",
+                CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV="CUSTOM_TOKEN",
+                CODE_MOWER_LOCAL_AUDIT_SCRIPT="wrapper",
+                SUPPORT_PATH=str(root),
+                RUNNER_TEMP=str(root),
+                PR_NUMBER="42",
+                PR_HEAD_PATH=str(root),
+                GITHUB_REPOSITORY=REPO,
+                GITHUB_RUN_ID="700",
+                GITHUB_TOKEN="short-fixture",
+                DISPATCH_TOKEN="long-fixture",
+                CUSTOM_TOKEN="long-fixture",
+                GITHUB_OUTPUT=str(root / "output"),
+                CODE_MOWER_AUDIT_STAGE_PATH=str(root / "stage"),
+            )
+            result = subprocess.run(
+                ["bash", "-c", step["run"]], env=env, capture_output=True, text=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / "output").read_text(), "audited=true\n")
+            self.assertNotIn("PRIVATE_SOURCE", result.stdout + result.stderr)
+            self.assertNotIn("forged", result.stdout + result.stderr)
+            self.assertEqual(
+                (root / "code-mower-reviewer-700-claude.log").stat().st_mode & 0o777, 0o600
+            )
+
+    def test_workflow_failures_publish_only_visible_non_authoritative_metadata(self):
+        for lane, module in (("claude", claude_audit_pr), ("codex", codex_audit_pr)):
+            for change in (
+                {"verdict": "STALE"},
+                {"verdict": "UNKNOWN"},
+                {"quarantined": True, "quarantine_reason": "PRIVATE /local/secret"},
+            ):
+                with self.subTest(lane=lane, change=change), tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "local.json"
+                    path.write_text(json.dumps(self.local(lane, **change)))
+                    with (
+                        patch.object(pub, "submit") as submit,
+                        patch.object(module, "post_pr_comment") as post,
+                    ):
+                        _, body = module._post_audit_comment(
+                            REPO,
+                            42,
+                            "PRIVATE",
+                            token="fixture",
+                            actions_run_id="800",
+                            publication="workflow",
+                            artifact_path=path,
+                        )
+                    post.assert_called_once_with(REPO, 42, body, token="fixture")
+                    submit.assert_not_called()
+                    self.assertIn("Verdict: UNKNOWN", body)
+                    self.assertIn("requeue", body)
+                    for private in ("AUDIT_STATE:", "AUDIT_RUN:", "PRIVATE", "/local/", REPO):
+                        self.assertNotIn(private, body)
+
+    def test_provider_children_and_token_resolver_remove_automation_credentials(self):
+        from io import StringIO
+        from code_mower.provider_runners import github_auth
+
+        env = dict(
+            GITHUB_TOKEN="short",
+            GH_TOKEN="short",
+            DISPATCH_TOKEN="long",
+            CODE_MOWER_LOCAL_AUDIT_TOKEN_ENV="CUSTOM_TOKEN",
+            CUSTOM_TOKEN="long",
+            GITHUB_OUTPUT="output",
+            GITHUB_ENV="env",
+            GITHUB_STATE="state",
+            GITHUB_STEP_SUMMARY="summary",
+            GITHUB_PATH="path",
+            ACTIONS_RUNTIME_TOKEN="runtime",
+            ACTIONS_ID_TOKEN_REQUEST_TOKEN="oidc",
+            ACTIONS_ID_TOKEN_REQUEST_URL="oidc-url",
+            CODE_MOWER_AUDIT_STAGE_PATH="stage",
+            USER="reviewer",
+        )
+        for child in (
+            claude_audit_pr._claude_env,
+            lambda: codex_audit_pr._build_subprocess_env(None),
+        ):
+            with patch.dict(os.environ, env, clear=True):
+                actual = child()
+            self.assertEqual(actual["USER"], "reviewer")
+            for key in github_auth.provider_unset_env_names(env):
+                self.assertNotIn(key, actual)
+        for stdin in (False, True):
+            with patch.dict(os.environ, env, clear=True):
+                token = github_auth.resolve_github_token_from_stdin_or_env(
+                    stdin, stdin=StringIO("short\n")
+                )
+                self.assertEqual(token, "short")
+                for key in github_auth.github_secret_env_names(env):
+                    self.assertNotIn(key, os.environ)
+
+    def test_stage_saves_source_binding_without_dispatch_and_can_resume(self):
+        local = self.local()
+        local.pop("source_run_id")
+        local.pop("source_run_attempt")
+        api = MemoryGitHub(artifact(created_at=int(time.time())))
+        with tempfile.TemporaryDirectory() as tmp:
+            path, staged = Path(tmp) / "local.json", Path(tmp) / "metadata.json"
+            path.write_text(json.dumps(local))
+            env = dict(
+                GITHUB_EVENT_NAME="repository_dispatch",
+                GITHUB_RUN_ID="700",
+                GITHUB_RUN_ATTEMPT="1",
+                PR_HEAD_SHA=HEAD,
+                GITHUB_WORKFLOW_REF=f"{REPO}/{pub.SOURCE_WORKFLOW}@refs/heads/main",
+                CODE_MOWER_LOCAL_AUDIT_LANE="claude",
+                CODE_MOWER_AUDIT_STAGE_PATH=str(staged),
+            )
+            pub.stage(path, token="fixture", lane="claude", env=env, io=api)
+            value = pub.validate(staged.read_text(), pub.digest(staged.read_text()))
+            self.assertEqual(value["source_run_id"], 700)
+            self.assertNotIn("PRIVATE_SOURCE", staged.read_text())
+            self.assertEqual(api.writes, [])
+            api.source = source_for(value)
+            api.auto_publish = True
+            self.assertEqual(pub.submit(path, token="fixture", lane="claude", io=api)["id"], 91)
+            with self.assertRaises(pub.Refused):
+                pub.stage(
+                    path,
+                    token="fixture",
+                    lane="claude",
+                    env=env
+                    | {"GITHUB_WORKFLOW_REF": f"{REPO}/{pub.SOURCE_WORKFLOW}@refs/heads/builder"},
+                    io=api,
+                )
+
+    def test_unsealed_local_artifact_cannot_be_submitted_with_personal_token(self):
+        local = self.local()
+        local.pop("source_run_id")
+        api = MemoryGitHub()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "local.json"
+            path.write_text(json.dumps(local))
+            with self.assertRaises(pub.Refused):
+                pub.submit(path, token="personal-token", lane="claude", io=api)
+        self.assertEqual(api.writes, [])
+
     def local(self, lane="claude", **changes):
         value = artifact(lane, created_at=int(time.time()))
         return (
@@ -408,6 +677,8 @@ class WrapperTests(unittest.TestCase):
                 + pub.trailer(value)
                 + "\nPRIVATE_SOURCE /private/path token transcript",
                 posted_comment_url=None,
+                source_run_id=700,
+                source_run_attempt=1,
             )
             | changes
         )
@@ -471,6 +742,7 @@ class WrapperTests(unittest.TestCase):
                 provider.assert_not_called()
             with (
                 patch.object(pub, "submit", return_value={"body": "metadata", "html_url": "url"}),
+                patch.object(pub, "unavailable_notice", return_value=None),
                 patch.object(module, "post_pr_comment") as direct,
             ):
                 _, body = module._post_audit_comment(

@@ -1880,6 +1880,11 @@
     {
       "kind": "workflow",
       "source": "generated",
+      "target": "src/code_mower/templates/workflows/local-audit-request.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
       "target": "src/code_mower/templates/workflows/local-cli-audit.yml.j2"
     },
     {
@@ -2196,6 +2201,11 @@
       "kind": "workflow",
       "source": "generated",
       "target": "templates/workflows/local-audit-publication.yml.j2"
+    },
+    {
+      "kind": "workflow",
+      "source": "generated",
+      "target": "templates/workflows/local-audit-request.yml.j2"
     },
     {
       "kind": "workflow",

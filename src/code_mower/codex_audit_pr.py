@@ -423,10 +423,14 @@ def _post_audit_comment(
     artifact_path: Optional[Path] = None,
 ) -> tuple[dict[str, Any], str]:
     if publication == "workflow":
-        from code_mower.audit_publication import Refused, submit
+        from code_mower.audit_publication import Refused, stage, submit, unavailable_notice
         if artifact_path is None:
             raise Refused("workflow publication requires a saved verdict artifact")
-        posted = submit(artifact_path, token=token, lane="codex")
+        notice = unavailable_notice(artifact_path, "codex")
+        if notice is not None:
+            return post_pr_comment(repo, pr_number, notice, token=token), notice
+        transport = stage if os.environ.get("CODE_MOWER_AUDIT_STAGE_PATH") else submit
+        posted = transport(artifact_path, token=token, lane="codex")
         return posted, posted["body"]
     posted = post_pr_comment(repo, pr_number, body, token=token)
     if not actions_run_id:
@@ -1172,7 +1176,8 @@ def _build_subprocess_env(venv_path: Optional[Path]) -> Dict[str, str]:
     # `gh auth token` fallback in the wrapper made every audit caller a
     # potential exposure, but the same issue applied to manually-exported
     # tokens before that. This sanitization closes both paths.
-    for sensitive in ("GITHUB_TOKEN", "GH_TOKEN"):
+    from code_mower.provider_runners.github_auth import provider_unset_env_names
+    for sensitive in provider_unset_env_names(env):
         env.pop(sensitive, None)
     if venv_path is None:
         return env
