@@ -585,6 +585,32 @@ written.
 `partial` exists because of the requeue defect recorded in the evaluation: a
 fast incremental repeat is not proof that the graph is complete.
 
+### Search readiness is a separate verdict
+
+The states above describe the *generation*: present, intact, complete, and
+bound to the revision. They do not say whether the installed query reader can
+consume it. A generation can be `current` and complete and still carry a
+provider node type the installed reader predates. The `v1.4.2` reader, for
+example, refuses the `doc_ref` nodes the pinned extractor emits. Since #1029,
+`build`, `refresh`, `status` and `connection-status` run the query's own read
+over the published generation and report the result beside the state, never in
+place of it:
+
+| `search` | `query_reader.reader` | Meaning | Next action |
+| --- | --- | --- | --- |
+| `available` | `compatible` | The reader consumed the generation; a query can answer from it. | none |
+| `unavailable` | `not_checked` | The generation is not usable; `reason` repeats its state. | build or refresh |
+| `unavailable` | `incompatible` | Known provider/reader mismatch. `remediation` names the installed Code Mower, the generation's provider release and the required Code Mower release, when one is known. | upgrade Code Mower, or rebuild with a reviewed provider release |
+| `unavailable` | `unreadable` | The reader has no account of what the generation contains, for example an unknown node type from the reviewed provider release. Fails closed. | treat as a defect; do not work around it |
+
+`status` and `build` exit zero only when the generation is usable **and**
+`search` is `available`. `connection-status` reports `authorization:
+available` under the same condition. The verdict is metadata only: fixed
+reasons, release numbers and the Code Mower vocabulary for a known node type.
+It never contains graph content, a query target, an unknown type's spelling, or
+a local path. A reader upgrade does not require a rebuild. The published
+generation stays valid, and the new reader reads it as it is.
+
 ## Commands
 
 ```
@@ -595,8 +621,10 @@ code-mower context-graph remove  [--show-local-paths]
 code-mower context-graph doctor  [--pin-file PIN]
 ```
 
-`status` exits non-zero when the graph is not usable, so a script can branch on
-it. `build` and `refresh` do the same, and for the same reason: a provider that
+`status` exits non-zero when the graph is not usable or the installed reader
+cannot search it (see
+[Search readiness is a separate verdict](#search-readiness-is-a-separate-verdict)),
+so a script can branch on it. `build` and `refresh` do the same, and for the same reason: a provider that
 admitted an incomplete run has published a generation `status` will call
 `partial` and refuse, so the build prints `partial` and exits non-zero rather
 than describing it as `current` for as long as it takes to ask again.

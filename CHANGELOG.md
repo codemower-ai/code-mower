@@ -111,6 +111,25 @@ release below.
   test queries recognize JavaScript/TypeScript `.test`/`.spec` and `__tests__`
   conventions and import relationships without claiming execution coverage.
 
+- Graphify search readiness now comes from the installed query reader, not
+  from the lifecycle alone (#1029). `context-graph build`, `refresh`, `status`
+  and `connection-status` read the published generation the same way a query
+  does. They report `search` and a metadata-only `query_reader` verdict beside
+  the generation state, and exit non-zero or withhold `authorization` unless
+  the reader can consume the generation. So `status`, `connection-status` and
+  a real query agree. A known provider/reader mismatch, such as a `doc_ref`
+  generation meeting the `v1.4.2` reader, reports `reader_incompatible`. Its
+  remediation names the installed Code Mower and the release that reads it,
+  and does not call the generation `unreadable`. A generation from an
+  unreviewed provider release gets a rebuild-or-upgrade remediation. Unknown
+  node types from the reviewed release still fail closed, and no verdict
+  carries graph content, targets or local paths. Query summaries now report
+  `generation_completeness` and `query_completeness` separately. A bounded
+  answer that stopped at a budget, depth or document limit, or crossed an
+  ambiguous relationship, stays `available` and usable, discloses
+  `provider_has_more`, `unresolved_entities` or `document_limit`, and does not
+  mark the generation incomplete. Intended for `v1.5.0` together with #1007.
+
 ## 1.4.2 — published
 
 - `code-mower board service` manages a persistent local Board: render a

@@ -114,6 +114,21 @@ def _write_packet(destination: Path, packet: dict) -> None:
         raise
 
 
+def _readiness(repository: Path, root: Path | None, report: lifecycle.GenerationStatus) -> dict:
+    """The query reader's verdict on the published generation, metadata only."""
+    return query.search_readiness(lifecycle.GraphStateRoot(repository, root=root), report)
+
+
+def _search_text(readiness: dict) -> str:
+    """The readiness lines appended to the lifecycle's own status text."""
+    lines = [f"  search:     {readiness['search']} (query reader: {readiness['reader']})"]
+    if readiness.get("detail") and readiness["reader"] != "not_checked":
+        lines.append(f"  reader:     {readiness['detail']}")
+    if readiness.get("next_action"):
+        lines.append(f"  next:       {readiness['next_action']}")
+    return "\n".join(lines) + "\n"
+
+
 def _emit(payload: dict, *, as_json: bool, text: str) -> None:
     if as_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -210,12 +225,19 @@ def main(argv=None) -> int:
                 manifest=manifest,
                 detail="" if complete else "local graph build was incomplete; refresh it",
             )
-            summary = {"status": "published", "usable": published.usable, **manifest.shareable_summary()}
-            _emit(summary, as_json=args.json, text=lifecycle.render_status_text(published))
-            # Publishing an unusable generation is a reportable condition, not
-            # a crash: exit non-zero for the same reason ``status`` does, so a
-            # script does not have to re-ask to find out what it just built.
-            return 0 if published.usable else 1
+            # Asked of the generation just published, not of whatever ``status``
+            # would find later: the manifest is the one this build wrote.
+            readiness = _readiness(args.repo_path, args.state_dir, published)
+            summary = {"status": "published", "usable": published.usable, **manifest.shareable_summary(),
+                       "search": readiness["search"], "query_reader": readiness}
+            _emit(summary, as_json=args.json,
+                  text=lifecycle.render_status_text(published) + _search_text(readiness))
+            # Publishing an unusable or unsearchable generation is a reportable
+            # condition, not a crash: exit non-zero for the same reason
+            # ``status`` does, so a script does not have to re-ask to find out
+            # what it just built.
+            searchable = readiness["search"] == query.SEARCH_AVAILABLE
+            return 0 if published.usable and searchable else 1
         if args.command == "status":
             report = lifecycle.graph_status(
                 args.repo_path,
@@ -223,10 +245,19 @@ def main(argv=None) -> int:
                 revision=args.revision,
                 require_complete=not args.allow_partial,
             )
-            _emit(report.shareable_summary(), as_json=args.json, text=lifecycle.render_status_text(report))
-            # A non-current graph is a normal, reportable condition, not a
-            # command failure; exit 1 so a script can branch on usability.
-            return 0 if report.usable else 1
+            # ``state``/``usable`` stay the generation's own verdict -- current,
+            # complete, bound to this revision -- and ``search`` is whether the
+            # installed reader can answer from it. They are different facts, so
+            # they are different fields; the exit code needs both.
+            readiness = _readiness(args.repo_path, args.state_dir, report)
+            summary = {**report.shareable_summary(), "search": readiness["search"],
+                       "query_reader": readiness}
+            _emit(summary, as_json=args.json,
+                  text=lifecycle.render_status_text(report) + _search_text(readiness))
+            # A non-current or unsearchable graph is a normal, reportable
+            # condition, not a command failure; exit 1 so a script can branch.
+            searchable = readiness["search"] == query.SEARCH_AVAILABLE
+            return 0 if report.usable and searchable else 1
         if args.command == "query":
             authorization = _load_authorization(args.authorization)
             outcome = query.graph_context(

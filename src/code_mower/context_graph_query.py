@@ -46,6 +46,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import __version__ as CODE_MOWER_VERSION
 from . import context_graph_lifecycle as lifecycle
 from .context_contract import (
     CAPABILITY_VERSION,
@@ -145,6 +146,20 @@ GRAPH_EDGE_FIELDS = ("source", "target", "relation", "confidence", "source_file"
 #: no line-checkable location in the bound commit.
 GRAPH_FILE_TYPES = frozenset({"code", "document", "paper", "image", "rationale", "concept", "doc_ref"})
 CODE_FILE_TYPE = "code"
+
+#: Provider node types whose reader support arrived after the first Graphify
+#: release, and the Code Mower release whose reader first consumed each. A
+#: reader that meets one of these without supporting it is a *known*
+#: provider/reader mismatch with a concrete fix -- install that release -- and
+#: says so instead of calling a valid generation ``unreadable``. Every other
+#: unsupported type stays an unexplained refusal: fail closed, name nothing.
+KNOWN_PROVIDER_FILE_TYPES: Mapping[str, str] = {"doc_ref": "1.5.0"}
+
+#: The provider releases this reader was reviewed against. A generation whose
+#: manifest names another release and then fails to read is a provider/reader
+#: mismatch the operator can resolve by rebuilding with a reviewed release or
+#: installing a Code Mower whose reader covers theirs.
+READER_PROVIDER_VERSIONS = frozenset({"0.9.58"})
 
 #: The pinned validator's ``VALID_CONFIDENCES``, lowercased. The provider
 #: writes these uppercase; the packet contract's vocabulary is lowercase, and
@@ -474,6 +489,50 @@ class CodeGraph:
         return self.seed_matches(target)[0]
 
 
+class UnsupportedNodeType(ContextError):
+    """A node type no Code Mower reader is known to read. Always fails closed."""
+
+
+class ReaderIncompatible(ContextError):
+    """A valid generation this installed reader cannot consume, and how to fix it.
+
+    Carries only vocabulary this module already owns -- a type from
+    ``KNOWN_PROVIDER_FILE_TYPES``, release numbers from a validated manifest and
+    this package -- so its remediation can be shown to anyone who may see a
+    status report. Nothing from the graph's content, and no local path.
+    """
+
+    def __init__(self, message: str, *, minimum_reader: str | None = None,
+                 node_type: str | None = None, provider: str | None = None) -> None:
+        super().__init__(message)
+        self.minimum_reader = minimum_reader
+        self.node_type = node_type
+        self.provider = provider
+
+    def remediation(self) -> dict[str, Any]:
+        reviewed = ", ".join(sorted(READER_PROVIDER_VERSIONS))
+        value: dict[str, Any] = {
+            "installed_code_mower": CODE_MOWER_VERSION,
+            "reader_provider_versions": sorted(READER_PROVIDER_VERSIONS),
+        }
+        if self.provider is not None:
+            value["generation_provider"] = self.provider
+        if self.minimum_reader is not None:
+            value["node_type"] = self.node_type
+            value["required_code_mower"] = self.minimum_reader
+            value["action"] = (
+                f"Upgrade Code Mower to {self.minimum_reader} or later (installed "
+                f"{CODE_MOWER_VERSION}); the published generation is valid and needs no rebuild."
+            )
+        else:
+            value["action"] = (
+                f"Refresh the graph with a provider release this reader was reviewed against "
+                f"({reviewed}), or upgrade Code Mower (installed {CODE_MOWER_VERSION}) to a "
+                "release whose reader supports the generation's provider."
+            )
+        return value
+
+
 def _required(value: Any, fields: Sequence[str], *, what: str) -> Mapping[str, Any]:
     """A provider record with every field its own validator requires.
 
@@ -608,7 +667,15 @@ def _node(value: Any) -> _ParsedNode:
     # raises TypeError out of a reader whose only failure is ``ContextError``.
     file_type = _text(record["file_type"], maximum=64)
     if file_type not in GRAPH_FILE_TYPES:
-        raise ContextError("unsupported local graph node file type")
+        # Only a type from the known table is ever named back: an unknown one
+        # is provider output, and its spelling is not metadata.
+        if file_type in KNOWN_PROVIDER_FILE_TYPES:
+            raise ReaderIncompatible(
+                "local graph carries a provider node type this Code Mower reader predates",
+                minimum_reader=KNOWN_PROVIDER_FILE_TYPES[file_type],
+                node_type=file_type,
+            )
+        raise UnsupportedNodeType("unsupported local graph node file type")
     identifier = _text(record["id"], maximum=512)
     if file_type != CODE_FILE_TYPE:
         return _ParsedNode(id=identifier, node=None)
@@ -865,7 +932,64 @@ def read_graph(state: lifecycle.GraphStateRoot, status: lifecycle.GenerationStat
         payload = json.loads(raw)
     except (ValueError, UnicodeError, RecursionError):
         raise ContextError("local graph document is not supported JSON") from None
-    return load_graph(payload, generation=status.generation, commit=status.manifest.commit)
+    provider = status.manifest.provider
+    requirement = f"{provider.get('distribution')}=={provider.get('version')}"
+    try:
+        return load_graph(payload, generation=status.generation, commit=status.manifest.commit)
+    except ReaderIncompatible as error:
+        error.provider = requirement
+        raise
+    except UnsupportedNodeType:
+        # The same unknown type means two different things depending on who
+        # built the generation. From a reviewed release it is a document this
+        # reader has no account of, and stays an unexplained refusal. From an
+        # unreviewed release it is the expected consequence of a provider the
+        # reader was never checked against, which has a concrete fix.
+        if provider.get("version") in READER_PROVIDER_VERSIONS:
+            raise
+        raise ReaderIncompatible(
+            "local graph was built by a provider release this Code Mower reader was not reviewed against",
+            provider=requirement,
+        ) from None
+
+
+#: Machine-readable search readiness, reported by ``build``, ``status`` and
+#: ``connection-status`` beside -- never folded into -- the generation state.
+READINESS_SCHEMA = "code_mower.contextGraphSearchReadiness.v1"
+SEARCH_AVAILABLE = "available"
+SEARCH_UNAVAILABLE = "unavailable"
+
+
+def search_readiness(state: lifecycle.GraphStateRoot, status: lifecycle.GenerationStatus) -> dict[str, Any]:
+    """Whether the installed reader can answer from the published generation.
+
+    ``graph_status`` answers a different question: is the generation present,
+    intact, complete and bound to this revision. A generation can be all of
+    those and still be one this reader cannot consume, and a status that said
+    ``search: available`` on the strength of the lifecycle alone would disagree
+    with the first real query. So the check here is the query's own read --
+    ``read_graph``, the same function ``graph_context`` calls -- and not a
+    second, cheaper approximation of it that could drift.
+
+    Metadata only: the verdict, a fixed reason, and for a known mismatch the
+    remediation, which names releases and never graph content or paths.
+    """
+    if not status.usable:
+        return {"schema": READINESS_SCHEMA, "search": SEARCH_UNAVAILABLE,
+                "reader": "not_checked", "reason": status.state}
+    try:
+        read_graph(state, status)
+    except ReaderIncompatible as error:
+        remediation = error.remediation()
+        return {"schema": READINESS_SCHEMA, "search": SEARCH_UNAVAILABLE,
+                "reader": "incompatible", "reason": "reader_incompatible",
+                "detail": str(error), "remediation": remediation,
+                "next_action": remediation["action"]}
+    except ContextError as error:
+        return {"schema": READINESS_SCHEMA, "search": SEARCH_UNAVAILABLE,
+                "reader": "unreadable", "reason": "unreadable", "detail": str(error)}
+    return {"schema": READINESS_SCHEMA, "search": SEARCH_AVAILABLE, "reader": "compatible",
+            "installed_code_mower": CODE_MOWER_VERSION}
 
 
 @dataclass(frozen=True)
@@ -1400,6 +1524,13 @@ def build_packet(
         "graph_generation": result.generation,
         "documents": len(documents),
         "completeness": packet_completeness,
+        # Two different completeness claims, reported separately so a bounded
+        # answer is never read as a broken build. ``generation_completeness`` is
+        # the published build's own; ``query_completeness`` is this answer's,
+        # partial whenever a budget, a depth or the document limit stopped it
+        # or the walk crossed a relationship the provider could not state.
+        "generation_completeness": completeness,
+        "query_completeness": packet_completeness,
         "truncated": truncated,
         "omissions": omissions,
         "recipients": list(connection["recipients"]),
@@ -1494,6 +1625,13 @@ def graph_context(
     try:
         graph = read_graph(state, status)
         census = lifecycle.read_tracked_census(state.repository, manifest.commit)
+    except ReaderIncompatible as error:
+        # The same reason and the same remediation ``search_readiness`` reports,
+        # so status and the query that follows it cannot tell two stories.
+        remediation = error.remediation()
+        return _unavailable(required, "reader_incompatible", {
+            "detail": str(error), "remediation": remediation, "next_action": remediation["action"],
+        })
     except ContextError as error:
         return _unavailable(required, "unreadable", {"detail": str(error)})
     result = run_query(graph, question=question, target=target, depth=depth, node_budget=node_budget)
@@ -1533,17 +1671,25 @@ __all__: Sequence[str] = (
     "GraphContext",
     "GraphEdge",
     "GraphNode",
+    "KNOWN_PROVIDER_FILE_TYPES",
     "MAX_NODE_BUDGET",
     "OPTIONAL_UNAVAILABLE",
     "PacketDraft",
     "QUESTIONS",
     "QUERY_SCHEMA",
     "QueryResult",
+    "READER_PROVIDER_VERSIONS",
+    "READINESS_SCHEMA",
     "REQUIRED_UNAVAILABLE",
+    "ReaderIncompatible",
     "Relation",
+    "SEARCH_AVAILABLE",
+    "SEARCH_UNAVAILABLE",
+    "UnsupportedNodeType",
     "build_packet",
     "graph_context",
     "load_graph",
     "read_graph",
     "run_query",
+    "search_readiness",
 )

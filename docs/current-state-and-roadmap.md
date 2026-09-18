@@ -320,7 +320,11 @@ release order. Merged fixes count as on main until a later published package is
 verified to contain them; #935/#973 and the phase-3 Board PRs are now verified
 in the published `v1.4.2` artifact, while the merged Graphify compatibility
 fixes in [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007) are on
-main awaiting the next appropriate release.
+main awaiting the next appropriate release. They are intended for `v1.5.0`
+together with the #1029 search-readiness check. That check makes `status` and
+`connection-status` report `search` from the installed query reader, so a
+current generation the reader cannot consume is reported as a reader mismatch
+with an upgrade action rather than as searchable.
 
 Each child issue should produce one reviewable PR with one branch writer,
 independent current-head review, the normal gate, and package-level validation.
