@@ -1597,7 +1597,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         if runbook_doc
         else ["unknown release version"]
     )
-    if version == "1.5.0":
+    if candidate_workflow_used:
         missing_runbook_markers, missing_runbook_assertions = _candidate_runbook_checks(repo_path)
         runbook_markers = ("docs/v150-release-runbook.md: candidate, private acceptance, canaries, tag, publish",)
         runbook_assertions = ("merge SHA and retained artifact binding; explicit owner gates",)
@@ -2069,7 +2069,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             "url": PACKAGE_INDEX_SETUP_URLS["release_workflow"],
         },
     ]
-    if version == "1.5.0":
+    if candidate_workflow_used:
         for action in next_actions:
             if "gh workflow run release.yml" in action["command"]:
                 action["command"] += ' -f candidate_run_id="$CANDIDATE_RUN_ID"'

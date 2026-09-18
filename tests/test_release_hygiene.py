@@ -216,7 +216,8 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("  package:\n    name: package\n", workflow)
         jobs = yaml.safe_load(workflow)["jobs"]
         package = jobs["package"]
-        self.assertCountEqual(package["needs"], ["package_matrix", "board_qualification"])
+        self.assertCountEqual(package["needs"],
+                              ["package_matrix", "board_qualification", "release_rehearsal"])
         self.assertEqual(package["if"], "always()")
         result_checks = "\n".join(step.get("run", "") for step in package["steps"])
         for dependency in package["needs"]:
@@ -8750,10 +8751,21 @@ def main():
             if "context-graph-lifecycle.md" in text:
                 self.assertIn(doc, packaged)
 
+    def _historical_release_readiness(self, docs: dict[str, str] | None = None) -> dict:
+        # A historical checkout has no candidate workflow or publication consumer.
+        # Changing only its version would still select the current workflow contract.
+        docs = release_readiness._release_docs(ROOT) if docs is None else docs
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "pyproject.toml").write_text('[project]\nversion = "1.4.2"\n')
+            for relative_path, text in docs.items():
+                path = repo / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+            return release_readiness.render_release_readiness(repo)
+
     def test_release_readiness_requires_the_ordered_post_merge_runbook(self) -> None:
-        # Preserve the historical v1.4.2 publication contract; v1.5 has separate tests.
-        with mock.patch.object(release_readiness, "_python_package_version", return_value="1.4.2"):
-            payload = release_readiness.render_release_readiness(ROOT)
+        payload = self._historical_release_readiness()
         checks = {check["id"]: check for check in payload["checks"]}
         runbook = checks["post-merge-release-runbook-ordered"]
 
@@ -8768,6 +8780,8 @@ def main():
         self.assertIn("publish_pypi=true", commands["publish-pypi-release"])
         self.assertIn("--name code-mower-dist", commands["compare-artifact-digests"])
         self.assertIn("--verify-tag", commands["create-github-release"])
+        self.assertNotIn("immutable-candidate-first", commands)
+        self.assertNotIn("candidate_run_id", commands["publish-pypi-release"])
 
     def test_release_readiness_fails_when_the_runbook_stops_at_testpypi(self) -> None:
         docs = release_readiness._release_docs(ROOT)
@@ -8775,9 +8789,7 @@ def main():
             "### 7. Publish production PyPI only"
         )[0]
 
-        with mock.patch.object(release_readiness, "_release_docs", return_value=docs), \
-                mock.patch.object(release_readiness, "_python_package_version", return_value="1.4.2"):
-            payload = release_readiness.render_release_readiness(ROOT)
+        payload = self._historical_release_readiness(docs)
 
         checks = {check["id"]: check for check in payload["checks"]}
         runbook = checks["post-merge-release-runbook-ordered"]
@@ -8796,16 +8808,12 @@ def main():
     def _asserted_runbook_check(self, mutate: Callable[[str], str]) -> dict:
         docs = release_readiness._release_docs(ROOT)
         docs["docs/pypi-release.md"] = mutate(docs["docs/pypi-release.md"])
-        with mock.patch.object(release_readiness, "_release_docs", return_value=docs), \
-                mock.patch.object(release_readiness, "_python_package_version", return_value="1.4.2"):
-            payload = release_readiness.render_release_readiness(ROOT)
+        payload = self._historical_release_readiness(docs)
         checks = {check["id"]: check for check in payload["checks"]}
         return checks["post-merge-release-runbook-asserted"]
 
     def test_release_readiness_requires_asserted_release_gates(self) -> None:
-        # Preserve the historical v1.4.2 publication contract; v1.5 has separate tests.
-        with mock.patch.object(release_readiness, "_python_package_version", return_value="1.4.2"):
-            payload = release_readiness.render_release_readiness(ROOT)
+        payload = self._historical_release_readiness()
         checks = {check["id"]: check for check in payload["checks"]}
         asserted = checks["post-merge-release-runbook-asserted"]
         required = asserted["detail"]["required_assertions"]

@@ -266,9 +266,44 @@ class ReleaseContractTests(unittest.TestCase):
 
     def test_later_versions_do_not_revert_to_building_at_publication(self):
         with patch.object(release_readiness, "_python_package_version", return_value="1.5.1"):
-            checks = release_readiness.render_release_readiness(ROOT)["checks"]
-        check = next(c for c in checks if c["id"] == "distribution-build-and-verify")
-        self.assertEqual(check["status"], "pass")
+            payload = release_readiness.render_release_readiness(ROOT)
+        checks = {c["id"]: c for c in payload["checks"]}
+        for name in ("distribution-build-and-verify", "post-merge-release-runbook-ordered",
+                     "post-merge-release-runbook-asserted", "release-workflow-next-actions-dispatchable"):
+            with self.subTest(check=name):
+                self.assertEqual(checks[name]["status"], "pass")
+        ordered = checks["post-merge-release-runbook-ordered"]["detail"]
+        asserted = checks["post-merge-release-runbook-asserted"]["detail"]
+        self.assertEqual(ordered["release_tag"], "v1.5.1")
+        self.assertIn("docs/v150-release-runbook.md", ordered["required_commands"][0])
+        self.assertNotIn("gh release create v1.5.1", ordered["required_commands"])
+        self.assertEqual(asserted["required_assertions"],
+                         ["merge SHA and retained artifact binding; explicit owner gates"])
+        self.assertEqual(payload["next_actions"][0]["id"], "immutable-candidate-first")
+        self.assertIn("gh workflow run release-candidate.yml", payload["next_actions"][0]["command"])
+        dispatches = [a for a in payload["next_actions"] if "gh workflow run release.yml" in a["command"]]
+        self.assertEqual(len(dispatches), 3)
+        for action in dispatches:
+            self.assertIn("--ref v1.5.1", action["command"])
+            self.assertIn('-f candidate_run_id="$CANDIDATE_RUN_ID"', action["command"])
+
+    def test_later_versions_still_reject_missing_candidate_runbook_gates(self):
+        original = release_readiness._read_text_if_exists
+        runbook_path = ROOT / "docs/v150-release-runbook.md"
+        for marker, check_id, detail in (
+            ("## 3. Private acceptance", "post-merge-release-runbook-ordered", "missing_or_out_of_order"),
+            ("aggregate campaign ACU", "post-merge-release-runbook-asserted", "missing_assertions"),
+        ):
+            def read(path, marker=marker):
+                text = original(path)
+                return text.replace(marker, "") if path == runbook_path else text
+            with self.subTest(marker=marker), \
+                    patch.object(release_readiness, "_python_package_version", return_value="1.5.1"), \
+                    patch.object(release_readiness, "_read_text_if_exists", side_effect=read):
+                checks = release_readiness.render_release_readiness(ROOT)["checks"]
+            check = next(c for c in checks if c["id"] == check_id)
+            self.assertEqual(check["status"], "fail")
+            self.assertIn(marker, check["detail"][detail])
 
     def test_readiness_rejects_missing_candidate_workflow_or_integrity_gates(self):
         original = release_readiness._read_text_if_exists
