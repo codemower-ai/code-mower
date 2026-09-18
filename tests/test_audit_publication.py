@@ -737,6 +737,11 @@ class ContractTests(unittest.TestCase):
         self.assertIn("ref: ${{ github.sha }}", text)
         self.assertIn("python3 tools/audit_publication.py publish", text)
         self.assertIn("cancel-in-progress: false", text)
+        # A pull request uses the Issues comments endpoint, but GitHub's
+        # installation token authorizes that resource through Pull requests.
+        # Read-only permission fails at the reservation-comment write with 403.
+        self.assertIn("pull-requests: write", text)
+        self.assertIn("issues: write", text)
         for name in (
             "local-audit-publication.yml.j2",
             "trailer-comment-labeler.yml.j2",
