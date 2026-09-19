@@ -41,6 +41,19 @@ Good reports include:
   keep code local, remote endpoints cannot.
 - Cloud bundle/export commands are opt-in and produce inspectable artifacts
   before upload.
+- Hosted Slack is opt-in. The v1.5.0 app is limited to one private workspace,
+  exact member/repository/private-channel bindings, and the bot `commands`
+  scope; it has no message-history, posting, file, email, event-subscription,
+  or organization-wide permission.
+- Slack command/modal text and routing identifiers cross from Slack to the
+  hosted service. They may cross to the authorized supervisor/provider only
+  after current policy and spend caps pass. Slack never grants provider,
+  review, approval, or merge authority.
+- OAuth codes/tokens, signing secrets, response URLs, trigger IDs, Slack
+  identifiers, private mappings, and request bodies must not enter application
+  logs, traces, diagnostics, Board, cloud exports, fixtures, or public reports.
+  The dedicated OAuth relay must scrub callback queries before application
+  handoff and run without request logging or customer-zone analytics.
 - Default cloud export and upload paths must not include source code, raw
   diffs, raw model transcripts, raw stdout/stderr, auth probe output, or
   secrets.
@@ -48,7 +61,8 @@ Good reports include:
   paid or hosted lanes manual or explicitly labeled until calibrated.
 
 If you find a default path that leaks source, raw diffs, raw transcripts, auth
-output, or secrets, treat it as a security issue.
+output, secrets, Slack request content/routing data, or an OAuth callback query,
+treat it as a security issue.
 
 ## Maintainer Release Checks
 

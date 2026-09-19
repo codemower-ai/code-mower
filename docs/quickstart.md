@@ -3,15 +3,15 @@
 This is the reference for Code Mower's first-user command surface. For the two
 guided starts, use [Try Code Mower In 10 Minutes](try-in-10-minutes.md) for the
 reviewer gate or [Build Loop In 30 Minutes](build-loop-in-30-minutes.md) for
-builders plus orchestration. The current Code Mower release line is
-supervised-pilot software; start on one repository and keep reviewer lanes
+builders plus orchestration. The Code Mower v1.5 source line is supervised-pilot
+software; start on one repository and keep reviewer lanes
 manual until the output is useful on your codebase.
 
 To see the value loop before you touch a product repository, open the
 [Demo Calibration Example](../examples/demo-calibration/README.md), the
 [Board Demo Rehearsal](../examples/board-demo/README.md), and the
 [First-User Demo Transcript](first-user-demo-transcript.md) (a v1.4.0
-illustrative shape, not the current v1.5.0 pin).
+illustrative shape, not the v1.5.0 source pin).
 
 ## 1. Install
 
@@ -37,9 +37,10 @@ pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
 code-mower --version
 ```
 
-`1.5.0` is the supervised-pilot release baseline. These pinned install
-commands select it after publication; prepublication qualification uses the
-exact wheel from [the candidate runbook](v150-release-runbook.md). If you want a future prerelease instead
+`1.5.0` is the supervised-pilot source target. Confirm it is visible on the
+selected package index before using these pinned commands. Prepublication
+qualification uses the exact wheel from
+[the candidate runbook](v150-release-runbook.md). If you want a future prerelease instead
 of this exact release target, use:
 
 ```bash

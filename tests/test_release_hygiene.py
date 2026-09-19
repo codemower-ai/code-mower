@@ -268,7 +268,7 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertIn("Cold Install Vs Upgrade", install)
         self.assertIn("Switching Between pipx And uv", install)
         self.assertIn("uv tool install --python 3.12 --reinstall --refresh-package", install)
-        self.assertIn("code-mower==1.4.2", troubleshooting)
+        self.assertIn("code-mower==1.5.0", troubleshooting)
         self.assertNotIn("code-mower==0.8.0b1", troubleshooting)
         self.assertIn("pipx uninstall code-mower", install)
         for env_name in ("PIPX_HOME", "PIPX_BIN_DIR", "PIPX_LOG_DIR"):
@@ -11131,10 +11131,11 @@ def main():
         self.assertEqual(
             code_mower_versioning.public_baseline_sentence(__version__),
             (
-                "The current package-index release baseline is `v1.5.0`, "
-                "with pinned package install spec `code-mower==1.5.0`. "
-                "Release evidence is recorded on the GitHub release and in the "
-                "first-user install rehearsal."
+                "This source defines Code Mower `v1.5.0`, with package spec "
+                "`code-mower==1.5.0`. Confirm the release tag on GitHub Releases "
+                "and the package version on the selected index before using an "
+                "index install command; source version and publication state are "
+                "separate facts."
             ),
         )
         self.assertEqual(
@@ -11146,8 +11147,8 @@ def main():
         )
 
     def test_public_announcement_docs_use_current_release_helpers(self) -> None:
-        # v1.4.2 is published, so the shared published-baseline helper is the
-        # sentence these pages carry. Deriving it here keeps the docs and the
+        # The shared source-identity helper is the sentence these pages carry.
+        # Deriving it here keeps the docs and the
         # helper from drifting apart at the next release.
         baseline_sentence = code_mower_versioning.public_baseline_sentence(__version__)
         package_spec = code_mower_versioning.public_package_spec(__version__)
@@ -11201,7 +11202,7 @@ def main():
             encoding="utf-8"
         )
         self.assertIn("Documentation on `main` follows the source on `main`", readme)
-        self.assertIn("included in the published `code-mower==1.4.2` release", sessions)
+        self.assertIn("included in `code-mower==1.5.0`", sessions)
         self.assertIn("# Code Mower v1.4.2 Release Notes", release_notes)
         self.assertIn("The privacy boundary is unchanged.", release_notes)
         release_history = (ROOT / "docs" / "release-history.md").read_text(
@@ -11255,11 +11256,11 @@ def main():
         for text in (readme, current_state, rollout):
             self.assertIn(current_status, " ".join(text.split()))
         self.assertIn(
-            "The current package-index release entrypoint is\n"
-            "  `code-mower==1.5.0` (GitHub tag `v1.5.0`)",
+            "The v1.5.0 source defines package-index entrypoint `code-mower==1.5.0`\n"
+            "  (GitHub tag `v1.5.0`)",
             public_release,
         )
-        self.assertIn("The current supervised-pilot release includes", public_release)
+        self.assertIn("The v1.5.0 supervised-pilot source includes", public_release)
         self.assertIn(
             "`code-mower lanes status --repo OWNER/REPO` as the operator snapshot",
             " ".join(public_release.split()),

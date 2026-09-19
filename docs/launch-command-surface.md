@@ -68,6 +68,32 @@ Select any additional builder or reviewer explicitly.
 | `code-mower cloud board-snapshot --repo-slug OWNER/REPO --json` | Preview a metadata-only Board mirror event with zero reports. | no | no upload |
 | `code-mower cloud board-snapshot --repo-slug OWNER/REPO --yes --json` | Upload the explicit Board mirror event after inspection. | no | yes |
 
+## Optional Hosted Slack
+
+For an ordinary hosted installation, a Code Mower team administrator opens
+**Setup → Manage Slack integration** in the dashboard and completes Slack OAuth
+for one private workspace. No CLI manifest command, local Slack credential, or
+self-hosted service is required. After an administrator binds an exact member,
+repository alias, and private unshared channel, users can run `/codemower help`,
+`start`, `status`, `answer`, and `cancel`. The qualified supervisor still owns
+execution, review, and provider lifecycle; Slack grants none of those powers.
+
+The following CLI commands belong to operator/self-host preparation and
+readiness inspection. They are not first-user setup commands.
+
+| Command | Purpose | Writes? | Network? |
+| --- | --- | --- | --- |
+| `code-mower slack setup --manifest slack-app.json --interactive` | Generate the static hosted-app manifest for an operator-owned Slack app after terminal confirmation. | new mode-0600 local file | no |
+| `code-mower slack setup --manifest slack-app.json --yes` | Generate the same manifest for an explicitly opted-in script. | new mode-0600 local file | no |
+| `code-mower slack doctor` | Show closed, redacted readiness states without contacting a host. | no | no |
+| `code-mower doctor --slack --json` | Run the same Slack-only default doctor and emit its closed JSON schema. | no | no |
+| `code-mower slack doctor --probe /absolute/operator/probe --json` | Ask an explicitly selected trusted private-host adapter for fresh, redacted readiness observations. | no | operator probe may use its existing authenticated interfaces |
+
+The manifest command does not create a Slack app, perform OAuth, fetch
+credentials, change hosted policy, or deploy a service. See
+[Optional Slack setup](slack-setup.md) for the separate hosted and operator
+paths, supported private-workspace behavior, and privacy boundaries.
+
 ## Advanced Or Operator Commands
 
 These commands are real, but they are not the first-user spine.

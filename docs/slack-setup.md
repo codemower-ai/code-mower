@@ -1,45 +1,121 @@
-# Optional Slack setup and operator runbook
+# Optional Slack setup
 
 Slack v1.5.0 is an explicit opt-in for **one private workspace**, an authorized
-private, unshared channel, and a bound repository. Initial setup remains
-Claude + Codex: no Slack prompt, dependency, login or service. Slack conveys requests;
-the qualified supervisor owns execution. Hosted Devin is a bounded builder,
-never an orchestrator qualification.
+private, unshared channel, and a bound repository. The normal hosted setup is a
+short dashboard OAuth flow. It does not require a local manifest, Slack app
+creation, or Slack credentials on the user's machine. The default Claude +
+Codex setup has no Slack prompt, dependency, login, or service.
 
-These commands are included in v1.5.0. Use its reviewed wheel for offline
-preparation; live operation requires the final immutable v1.5.0 package and
-separately qualified hosted deployment. The private bridge verifies its
-implementation lock and rejects editable/VCS installs for live operation.
-Version alone is insufficient. Live completion/cancellation qualification
-belongs to #920 under #923; this guide authorizes neither spend nor deployment. Telemetry
-readiness, Board/cloud links, a general integrations picker, Slack Connect,
-public channels and rich Slack UX are deferred to v1.5.1.
+Slack conveys a bounded request to the qualified supervisor; it does not run an
+agent or gain provider, review, approval, or merge authority. Hosted Devin is a
+bounded builder, never an orchestrator qualification.
 
-## Fresh installation
+Live operation requires the immutable v1.5.0 package and a separately qualified
+hosted deployment. The private bridge verifies its implementation lock and
+rejects editable/VCS installs for live operation. Version alone is insufficient.
+Telemetry readiness, Board/cloud links, a general integrations picker, Slack
+Connect, public channels, DMs, and rich Slack UX are outside v1.5.0.
 
-1. Install Code Mower normally. Only if you want Slack, prepare the dedicated
-   **hosted** manifest in an existing local directory. Choose either interactive
-   or scripted opt-in:
+## Hosted setup for a workspace administrator
+
+Use this path when your team uses the Code Mower hosted service. A Slack
+workspace owner or administrator and a Code Mower team owner or administrator
+must complete the setup. The hosted Code Mower app is already configured; do
+not create or import a Slack app manifest.
+
+1. Sign in to Code Mower, select the intended team, then open **Setup → Manage
+   Slack integration**. Supply the exact Slack workspace ID. If the deployment
+   supports an Enterprise Grid workspace, also supply the expected enterprise
+   ID; v1.5.0 still rejects organization-wide installation.
+
+2. Choose **Install**, review Slack's consent screen, and authorize the Code
+   Mower app in that same workspace. The v1.5.0 hosted app requests only the bot
+   `commands` scope. It does not request message or channel history, posting,
+   files, email, user tokens, Events API subscriptions, Socket Mode, or an
+   organization-wide grant. Token rotation is enabled.
+
+3. Return to **Manage Slack integration** and verify that the installation is
+   active and names the expected workspace. A successful OAuth redirect is not
+   enough: a wrong workspace, expired or replayed state, revoked administrator,
+   or failed token rotation must leave the integration unavailable. If rotation
+   is uncertain, reconnect with a fresh OAuth attempt; never reuse a refresh
+   token.
+
+4. Map the exact Slack user ID to an existing active Code Mower member. Select
+   one authorized catalog repository and give it a private command alias. Bind
+   the exact private, unshared Slack channel and renew its verification within
+   one hour. Display names and email addresses are not authorization. Public
+   channels, DMs, Slack Connect channels, and cross-workspace use are denied.
+
+5. Ask the hosted operator to confirm the qualified supervisor, builder
+   transport, numeric spend/task caps, and the fresh readiness checks described
+   below. Enabling the web integration alone starts no agent work. Do not run a
+   paid task until those checks pass and the owner has approved the cap.
+
+6. In the bound private channel, begin with `/codemower help`, then use the
+   operations in [Start, status, answer and cancel](#start-status-answer-and-cancel).
+   Replies are requester-private. Treat command and modal text as private task
+   input: Slack delivers it to Code Mower, and an authorized task can pass the
+   bounded work request to the configured supervisor and builder.
+
+To disable the integration, stop new admission in Code Mower first, reconcile
+or cancel active work and confirm provider exit, then disable/delete the hosted
+installation and remove the app in Slack. Removing the Slack app does not cancel
+provider work already started.
+
+### What crosses the Slack boundary
+
+- Slack sees the slash command or modal text submitted through Slack. It sends
+  that text, authenticated workspace/channel/user routing fields, and short-lived
+  response/interaction capabilities to the hosted Code Mower service.
+- Code Mower verifies Slack's signature, resolves the exact installation,
+  member, repository alias, and private channel against server-held policy, and
+  stores a minimized bounded receipt. Raw Slack requests, OAuth queries,
+  response URLs, trigger IDs, and private mappings must not enter logs, Board,
+  cloud exports, diagnostics, or public evidence.
+- After current policy, supervisor, and numeric caps pass, the supervisor and
+  configured builder can receive the bounded task request and the repository
+  context their existing authorization permits. Slack cannot approve provider
+  permissions, change safe mode, or authorize a merge.
+- The hosted service stores rotating Slack credentials and policy bindings in
+  its protected stores. Ordinary users do not copy those secrets into the CLI,
+  a repository, support ticket, or local manifest.
+
+See [Privacy and threat model](privacy-threat-model.md#hosted-slack-boundary) for
+the complete trust-boundary description.
+
+## Operator or self-host setup
+
+This section is for the party that owns the Slack app and hosted deployment. It
+is not part of ordinary hosted adoption. The public package supplies a static
+manifest generator and a redacted readiness protocol; it does not include the
+private host, database, secrets, or deployment.
+
+1. Install the reviewed Code Mower package. Prepare the dedicated **hosted**
+   manifest in an existing local directory, choosing interactive or scripted
+   opt-in:
 
    ```sh
    code-mower slack setup --manifest slack-app.json --interactive
    code-mower slack setup --manifest slack-app.json --yes
    ```
 
-   The command exclusively creates a mode-0600 static manifest, refusing existing
-   files and symlinks. It performs no network request, credential lookup, policy
-   change or service installation. The old `templates/slack/app-manifest.json`
-   belongs to the OSS `/code-mower` seam; the new `hosted-app-manifest.json` is
-   for the `/codemower` operator path.
+   The command creates only a mode-0600 static manifest, refusing existing files
+   and symlinks. It performs no network request, credential lookup, OAuth,
+   policy change, or service installation. The
+   `templates/slack/app-manifest.json` file belongs to the standalone OSS
+   `/code-mower` request seam; `hosted-app-manifest.json` belongs to this
+   operator-owned `/codemower` deployment path.
 
-2. An authorized administrator imports the generated manifest into the private
-   Slack app. Preserve exactly the bot `commands` scope, no user scopes or Events
-   API subscriptions, no organization-wide install, and token rotation. The
-   hosted routes are fixed in the manifest: command and interactivity requests go
-   to the application, while the OAuth redirect goes only through the dedicated,
-   owner-controlled query-scrubbing relay before a query-free browser handoff to
-   the application. The fixed relay is the dedicated production `workers.dev`
-   route. It deliberately avoids a customer-zone custom domain because Cloudflare
+2. An authorized app administrator imports the generated manifest into the
+   operator-owned Slack app. Preserve exactly the bot `commands` scope, no user
+   scopes or Events API subscriptions, no organization-wide install, and token
+   rotation. The hosted routes are fixed in the manifest: command and
+   interactivity requests go to the application, while the OAuth redirect goes
+   only through the dedicated, owner-controlled query-scrubbing relay before a
+   query-free browser handoff to the application. The fixed relay is the
+   dedicated production `workers.dev` route. It deliberately avoids a
+   customer-zone custom domain because Cloudflare
    Security Analytics samples all traffic for such a zone and can retain OAuth
    query strings even when Worker logs and traces are disabled. Preview URLs stay
    disabled, and no custom domain or zone route may expose the Worker.
@@ -59,20 +135,16 @@ public channels and rich Slack UX are deferred to v1.5.1.
    response URLs and routing identities at every platform, application, tracing,
    database and export layer. Leave Slack disabled if suppression is unverified.
 
-4. Enable the hosted control plane only for the private installation. A signed-in
-   owner/admin uses **Setup → Manage Slack integration**, supplies the expected
-   immutable workspace (and enterprise identity where applicable), and completes
-   OAuth as the same administrator. Wrong app/workspace, revoked membership,
-   expired/reused OAuth state or missing rotating credentials must deny. Inspect
-   connection/rotation health privately. Recover uncertain rotation with a fresh
-   OAuth attempt; never replay a refresh token.
+4. Enable the hosted control plane only for a private installation. The
+   workspace administrator then follows the hosted OAuth path above. Wrong
+   app/workspace, revoked membership, expired/reused OAuth state, or missing
+   rotating credentials must deny. Inspect connection/rotation health privately.
 
-5. Map the exact Slack user ID to an existing active member, never a display
-   name/email. Select an authorized catalog repository and alias. Bind the exact
-   private, unshared channel in the installed workspace and renew verification
-   within one hour. Connect, public channels and DMs are unsupported for this
-   release. A changed person/repository behind a mapping requires removal and a
-   new binding; an existing grant cannot change meaning. Observer permits
+5. Verify that the hosted administrator mapped the exact Slack user ID to an
+   existing active member, authorized catalog repository and private alias, and
+   the exact private, unshared channel. A changed person/repository behind a
+   mapping requires removal and a new binding; an existing grant cannot change
+   meaning. Observer permits
    status; operator permits start, answer and owned cancellation. Team-wide
    cancellation requires separate explicit admin authority.
 
@@ -97,8 +169,8 @@ public channels and rich Slack UX are deferred to v1.5.1.
    and bridge flags only after their owner-controlled deployment/logging gates
    pass. Explicitly enable host composition too; web configuration starts no
    worker. Missing supervision leaves work waiting/denied and prevents dispatch.
-   Qualify the two explicitly capped #920 canaries before treating the candidate as a
-   supported live installation.
+   Qualify the release's two explicitly capped canaries before treating the
+   candidate as a supported live installation.
 
 ## Readiness and redaction
 
@@ -244,5 +316,6 @@ There is no local Slack service/dependency to remove.
 Retain only approved check names/states, pass/fail counts, public immutable
 release/PR/head and review/gate outcomes as release evidence. Never upload
 snapshots, host logs, credentials, identities, mappings, URLs, provider output,
-prompts, source/diffs or task/message prose. These commands emit no cloud
-telemetry. Live deployment and capped canary evidence remain separate.
+prompts, source/diffs or task/message prose. The local setup and doctor commands
+emit no cloud telemetry. Live deployment and capped canary evidence remain
+separate.

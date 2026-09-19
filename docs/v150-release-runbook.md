@@ -3,15 +3,20 @@
 The release preparation PR performs no paid work, tag, package publication,
 hosted deployment or live Slack mutation. Index install commands select
 `code-mower==1.5.0` after publication; qualification before that uses the exact
-local wheel. Never treat a pre-merge wheel as the final candidate.
+local wheel. The [qualification document](v150-qualification.md) is the release
+contract, while observed results belong on #923 and the GitHub Release. Never
+treat a pre-merge wheel as the final candidate.
 
 ## 1. Review and merge the preparation PR
 
 Require one writer, independent exact-head audit with no P0/P1/P2 findings,
 normal CI, the authoritative gate, full tests, lint, privacy scan, package guards,
 release identity and `migration release-readiness --json`. Dependencies #1007,
-#1024, #1025 and #1031 must be ancestors. The owner-controlled merge process
-supplies the final source SHA. Do not merge or bypass a gate as part of rehearsal.
+#1024, #1025, #1031 and #1037 must be ancestors. The release preparation PR
+must also contain the final reviewed release notes, qualification contract and
+publication instructions; a prior code-only or pre-#1037 head is not the final
+documentation head. The owner-controlled merge process supplies the final
+source SHA. Do not merge or bypass a gate as part of rehearsal.
 
 In one operator shell, set the actual PR number, then bind it once:
 
@@ -55,11 +60,12 @@ python scripts/release_candidate.py verify --dist "$CANDIDATE_DIR" \
 ```
 
 Record PR/merge SHA, workflow run, both SHA-256 digests, inventory outcome and
-the sanitized rehearsal result on #1027. `candidate.json` must name that merged
-PR and SHA. Subsequent qualification/publication must consume the retained pair;
-never rerun the candidate build or dispatch a second build for that SHA. If a
-code fix is needed, invalidate this candidate explicitly and repeat all gates
-for a newly reviewed source. Do not tag or publish the invalidated bytes.
+the sanitized rehearsal result on #923 (with #1027 retained as preparation
+history). `candidate.json` must name that merged PR and SHA. Subsequent
+qualification/publication must consume the retained pair; never rerun the
+candidate build or dispatch a second build for that SHA. If code or packaged
+documentation changes, invalidate this candidate explicitly and repeat all
+gates for a newly reviewed source. Do not tag or publish the invalidated bytes.
 
 For **pre-merge local rehearsal only**, clone the reviewed head into a new clean
 directory, install build/twine in a separate tools venv and use:
@@ -155,6 +161,90 @@ the GitHub Release does not publish twice. For release-event verification, set
 Keep the trusted `pypi`/`testpypi` environments and explicit owner release decision;
 a passing offline rehearsal is not publication approval.
 
+### Create and verify the GitHub Release
+
+The GitHub Release is the mutable public record for observed qualification and
+publication evidence. Prepare a release body that starts with the immutable
+`docs/v150-release-notes.md` text, then adds only sanitized observations: links
+to #923 and the public evidence comments, the exact release PR/merge SHA,
+candidate and publication workflow run IDs, artifact digests, canary outcomes,
+and canonical reinstall outcome. Do not put private observations or secrets in
+the body.
+
+Before release creation, assert both release-event publish switches are false
+and set the temporary candidate lookup variable. An unset publish switch is not
+accepted as evidence of false. Stop if a release already exists; never clobber
+or silently edit one in this creation path.
+
+```bash
+set -euo pipefail
+RELEASE_TAG=v1.5.0
+RELEASE_TITLE='Code Mower v1.5.0'
+GITHUB_RELEASE_NOTES=REPLACE_WITH_SANITIZED_RELEASE_BODY_FILE
+RELEASE_ASSET_DIR="$CANDIDATE_DIR"
+
+gh variable set CODE_MOWER_TESTPYPI_PUBLISH --repo "$REPO" --body false
+gh variable set CODE_MOWER_PYPI_PUBLISH --repo "$REPO" --body false
+gh variable set CODE_MOWER_CANDIDATE_RUN_ID --repo "$REPO" \
+  --body "$CANDIDATE_RUN_ID"
+test "$(gh variable get CODE_MOWER_TESTPYPI_PUBLISH --repo "$REPO" \
+  --json value --jq .value)" = false
+test "$(gh variable get CODE_MOWER_PYPI_PUBLISH --repo "$REPO" \
+  --json value --jq .value)" = false
+test "$(gh variable get CODE_MOWER_CANDIDATE_RUN_ID --repo "$REPO" \
+  --json value --jq .value)" = "$CANDIDATE_RUN_ID"
+
+if gh release view "$RELEASE_TAG" --repo "$REPO" >/dev/null 2>&1; then
+  echo "release already exists; inspect it without mutation" >&2
+  exit 1
+fi
+gh release create "$RELEASE_TAG" \
+  "$RELEASE_ASSET_DIR/code_mower-1.5.0-py3-none-any.whl" \
+  "$RELEASE_ASSET_DIR/code_mower-1.5.0.tar.gz" \
+  --repo "$REPO" --verify-tag --latest --title "$RELEASE_TITLE" \
+  --notes-file "$GITHUB_RELEASE_NOTES"
+```
+
+Bind `RELEASE_EVENT_RUN_ID` by inspecting the `release`-event run created by
+that exact published release. Require its tag and resolved SHA to equal
+`RELEASE_TAG` and `RELEASE_SHA`, require candidate retrieval and distribution
+verification to pass, and require both publish jobs to be skipped. A manual
+publish success does not substitute for this release-event check.
+
+Download the published assets into a new directory and compare them byte for
+byte with the retained candidate. Verify that the release is neither draft nor
+prerelease and that the latest-release endpoint selects it:
+
+```bash
+RELEASE_DOWNLOAD_DIR="$(mktemp -d /tmp/code-mower-v150-release.XXXXXX)"
+gh run watch "$RELEASE_EVENT_RUN_ID" --repo "$REPO" --exit-status
+gh release view "$RELEASE_TAG" --repo "$REPO" \
+  --json tagName,targetCommitish,isDraft,isPrerelease,assets,url
+gh release download "$RELEASE_TAG" --repo "$REPO" \
+  --dir "$RELEASE_DOWNLOAD_DIR" --pattern 'code_mower-1.5.0*'
+cmp "$CANDIDATE_DIR/code_mower-1.5.0-py3-none-any.whl" \
+  "$RELEASE_DOWNLOAD_DIR/code_mower-1.5.0-py3-none-any.whl"
+cmp "$CANDIDATE_DIR/code_mower-1.5.0.tar.gz" \
+  "$RELEASE_DOWNLOAD_DIR/code_mower-1.5.0.tar.gz"
+test "$(gh api "repos/$REPO/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"
+```
+
+Only after that run and asset verification succeed, remove the temporary
+candidate lookup variable. Leave both release-event publish variables explicitly
+`false`; they are durable fail-closed defaults, not temporary authorization.
+
+```bash
+gh variable delete CODE_MOWER_CANDIDATE_RUN_ID --repo "$REPO"
+if gh variable get CODE_MOWER_CANDIDATE_RUN_ID --repo "$REPO" >/dev/null 2>&1; then
+  echo "temporary candidate variable still exists" >&2
+  exit 1
+fi
+test "$(gh variable get CODE_MOWER_TESTPYPI_PUBLISH --repo "$REPO" \
+  --json value --jq .value)" = false
+test "$(gh variable get CODE_MOWER_PYPI_PUBLISH --repo "$REPO" \
+  --json value --jq .value)" = false
+```
+
 ## 6. Independent canonical reinstall and release evidence
 
 Download exact 1.5.0 from production PyPI without dependencies/config/cache into
@@ -166,10 +256,12 @@ Slack checks using the published wheel, and independently verify the private
 host's installed implementation lock through #923. Inspect every existing Board
 binding privately and restart only through its owned managed/transient lifecycle.
 
-Attach the exact verified wheel/sdist to the GitHub Release with `--verify-tag`,
-record the candidate and publication runs and digests, then append sanitized
-outcomes to #1027/#918/#920/#923. Do not claim a package is independently
-reinstalled from its build log alone. No cloud upload is implicit.
+Confirm the GitHub Release assets still match the exact verified wheel/sdist,
+record the candidate, publication and release-event runs and digests, then add
+the sanitized reinstall outcome to #923 and the GitHub Release evidence. Link
+#1027/#918/#920 as supporting history without copying private observations. Do
+not claim a package is independently reinstalled from its build log alone. No
+cloud upload is implicit.
 
 ## Live rollback boundary
 

@@ -142,8 +142,13 @@ class ReadinessTests(unittest.TestCase):
 class ProbeTests(unittest.TestCase):
     def run_probe(self, body):
         with tempfile.TemporaryDirectory() as root:
+            # A shebang cannot quote an interpreter path.  Use a temporary
+            # space-free alias so this rehearsal also works from checkouts
+            # whose path contains spaces.
+            interpreter = Path(root) / "python"
+            interpreter.symlink_to(sys.executable)
             path = Path(root) / "probe"
-            path.write_text(f"#!{sys.executable}\nimport json, sys, time, os\n" + body)
+            path.write_text(f"#!{interpreter}\nimport json, sys, time, os\n" + body)
             path.chmod(0o700)
             return readiness.probe(path)
 

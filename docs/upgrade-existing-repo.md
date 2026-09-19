@@ -21,18 +21,63 @@ universal prompt in [Orchestrator Prompt Pack](orchestrator-prompt-pack.md) so
 it reports the same active command, exact version, posture-specific doctor,
 lanes status, and owner click-list as the primary orchestrator.
 
-## 2. Generate Fresh Setup Output
+## 2. Upgrade The Tool To v1.5.0
+
+Upgrade the installer that owns the active command before generating or
+comparing setup. Running `setup-drift` under 1.4.2 only compares the repository
+with 1.4.2's packaged files.
+
+Confirm `code-mower==1.5.0` is visible on the selected package index before
+running either upgrade block. Prepublication qualification uses the retained
+candidate wheel from the [v1.5.0 release runbook](v150-release-runbook.md).
+
+For an existing pipx install:
+
+```bash
+python3.12 --version
+export CODE_MOWER_PYTHON="$(command -v python3.12)"
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
+hash -r
+command -v code-mower
+code-mower --version
+```
+
+For an existing uv tool install:
+
+```bash
+uv python install 3.12
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.0
+hash -r
+command -v code-mower
+code-mower --version
+```
+
+Run only the block for the installer that should keep owning the command. The
+final line must print `code-mower 1.5.0`, and `command -v` must still identify
+that installer. If it does not, resolve the competing pipx/uv/checkout path
+before changing repository files. This is the tool upgrade; the reviewed
+repository setup upgrade follows below.
+
+## 3. Generate Fresh Setup Output
 
 From a clean repository checkout:
 
 ```bash
-code-mower init --easy --apply --output-dir .code-mower.generated
+code-mower init code-mower.yml --profile PROFILE --dry-run
+code-mower init code-mower.yml --profile PROFILE --apply \
+  --output-dir .code-mower.generated
 ```
+
+Replace `PROFILE` with the profile the repository already uses. This explicit
+config path preserves its participant, lane, and policy choices while rendering
+the v1.5.0 support files. If the repository truly has no `code-mower.yml`, use
+`code-mower init --easy --apply --output-dir .code-mower.generated` and review
+the packaged starter as a new adoption.
 
 Treat `.code-mower.generated` as review input. Do not copy it wholesale until
 you have compared it with the existing repository files.
 
-## 3. Inspect Setup Drift
+## 4. Inspect Setup Drift
 
 Run the read-only drift report:
 
@@ -95,7 +140,7 @@ When builder files are tracked but `--builders` was omitted, the report prints a
 builder hint with the safest inferred `--builders` option. Rerun with that option
 before copying generated setup if those builder lanes are still enabled.
 
-## 4. Copy Only Intended Files
+## 5. Copy Only Intended Files
 
 Open a branch for the upgrade PR, then copy the generated files you intend to
 adopt:
@@ -110,7 +155,7 @@ Review the diff before committing. Preserve repository-specific edits in
 `code-mower.yml`, local wrapper files, workflow permissions, and owner-surface
 labels unless this upgrade intentionally changes them.
 
-## 5. Check Builder And Reviewer Identity
+## 6. Check Builder And Reviewer Identity
 
 Confirm the generated builder identity matches how agents actually open PRs:
 
@@ -125,7 +170,7 @@ For audit comments, set trusted author repository variables such as
 may post manual pilot verdicts. `doctor --adoption --github` verifies only
 variable names and presence status; it never prints variable values.
 
-## 6. Check Wrapper And Pin Drift
+## 7. Check Wrapper And Pin Drift
 
 If the product repository uses standalone support wrappers, inspect:
 
@@ -140,7 +185,7 @@ source. Product wrappers should delegate to the pinned standalone package unless
 the repository is intentionally keeping a local fallback. For deeper migrations,
 use [Mirror-Removal Runbook](mirror-removal-runbook.md).
 
-## 7. Verify And Open The PR
+## 8. Verify And Open The PR
 
 Run:
 

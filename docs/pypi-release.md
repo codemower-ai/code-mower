@@ -2,9 +2,12 @@
 
 Code Mower users install from PyPI. For v1.5.0, build the immutable merge-SHA
 candidate first, qualify those bytes through #918 and explicitly authorized
-#920, then tag and publish the unchanged SHA through #923. The release workflow
-retrieves the retained candidate and verifies it without rebuilding. Follow the
-[v1.5.0 runbook](v150-release-runbook.md) and [qualification record](v150-qualification.md).
+#920, then tag and publish the unchanged SHA through #923. The final candidate
+head must include #1037 and the reviewed release documentation. The release
+workflow retrieves the retained candidate and verifies it without rebuilding.
+Follow the [v1.5.0 runbook](v150-release-runbook.md) and
+[qualification contract](v150-qualification.md); observed evidence belongs on
+#923 and the GitHub Release.
 The v1.4.2 post-merge section below is preserved historical evidence.
 
 ```bash
@@ -35,10 +38,13 @@ package. Never rewrite a published tag to correct the wording.
    the first versioned entry; an `Unreleased` section may precede it. Describe
    what the release contains. A neutral heading such as `## 1.5.0 — release`
    works before publication and remains true afterward.
-3. Set the README's opening public release statement to
-   `The current package-index release baseline is v1.5.0, with pinned package install spec code-mower==1.5.0.`
+3. Set the README's opening source identity statement to
+   `This source defines Code Mower v1.5.0, with package spec code-mower==1.5.0.`
    Markdown backticks and line wrapping are supported. Keep this statement
    before the first `##` heading and keep its tag and install spec exact.
+   Follow it with the durable instruction to confirm the release tag on GitHub
+   Releases and the package version on the selected index before using an index
+   install command; source identity and publication state remain separate facts.
    Remove temporary promises from the introduction and the selected changelog
    entry: no `source candidate`, `publication pending`, or assertion that the
    release depends on an issue closing. Use the release issue and mutable
@@ -53,9 +59,11 @@ package. Never rewrite a published tag to correct the wording.
    .venv/bin/python -m code_mower.migration release-readiness --json
    ```
 
-5. Obtain independent review on the exact preparation PR head, green CI, and
-   the authoritative Code Mower gate before merge. After the recorded owner
-   merge process, bind the actual merge SHA and build the candidate once.
+5. Obtain independent review on the exact final preparation PR head, green CI,
+   and the authoritative Code Mower gate before merge. For v1.5.0, require #1037
+   and the final reviewed release notes, qualification contract and publication
+   instructions on that head. After the recorded owner merge process, bind the
+   actual merge SHA and build the candidate once.
    Complete #918 and explicitly capped #920 on that wheel before the #923 owner
    release decision, tag or publication. Re-run identity on that exact checkout;
    publish the retained pair with the same SHA and candidate workflow run ID.
@@ -163,7 +171,9 @@ should be the `/releases/latest` result, and exact-version installs should
 resolve from PyPI.
 
 ```bash
-gh release view v1.4.2 \
+RELEASE_VERSION="${RELEASE_VERSION:-1.5.0}"
+RELEASE_TAG="v$RELEASE_VERSION"
+gh release view "$RELEASE_TAG" \
   --repo codemower-ai/code-mower \
   --json tagName,isPrerelease
 gh api repos/codemower-ai/code-mower/releases/latest \
@@ -2127,7 +2137,17 @@ artifacts.
 
 Use cache-bypassing exact-version installs when validating a just-published
 release. That keeps stale local wheels from looking like a successful release
-and keeps PyPI propagation delays from looking like source regressions.
+and keeps PyPI propagation delays from looking like source regressions. Bind the
+release once in the operator shell; update `RELEASE_VERSION` for the release
+being verified instead of copying an older version pin through this reusable
+section:
+
+```bash
+export RELEASE_VERSION="${RELEASE_VERSION:-1.5.0}"
+export RELEASE_TAG="v$RELEASE_VERSION"
+export RELEASE_SPEC="code-mower==$RELEASE_VERSION"
+export RELEASE_WHEEL_STEM="code_mower-${RELEASE_VERSION}"
+```
 
 For pipx:
 
@@ -2137,7 +2157,7 @@ export CODE_MOWER_PYTHON="$(command -v python3.12)"
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   PIP_CONFIG_FILE=/dev/null pipx install --force --backend pip \
   --python "$CODE_MOWER_PYTHON" --index-url https://pypi.org/simple/ \
-  --pip-args='--isolated --no-cache-dir' code-mower==1.4.2
+  --pip-args='--isolated --no-cache-dir' "$RELEASE_SPEC"
 code-mower --version
 ```
 
@@ -2152,7 +2172,7 @@ uv python install 3.12
 env -u UV_INDEX -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_EXTRA_INDEX_URL \
   -u UV_FIND_LINKS -u UV_NO_INDEX -u UV_OFFLINE \
   uv --no-config --no-cache tool install --python 3.12 --reinstall \
-  --default-index https://pypi.org/simple/ code-mower==1.4.2
+  --default-index https://pypi.org/simple/ "$RELEASE_SPEC"
 code-mower --version
 ```
 
@@ -2196,7 +2216,7 @@ env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   install --no-cache-dir --index-url https://pypi.org/simple/ --upgrade pip
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   PIP_CONFIG_FILE=/dev/null /tmp/code-mower-pypi-smoke/bin/python -m pip --isolated \
-  install --no-cache-dir --index-url https://pypi.org/simple/ code-mower==1.4.2
+  install --no-cache-dir --index-url https://pypi.org/simple/ "$RELEASE_SPEC"
 /tmp/code-mower-pypi-smoke/bin/code-mower --version
 ```
 
@@ -2205,7 +2225,7 @@ Then run the release-gate first-user rehearsal against the same package:
 ```bash
 env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
   PIP_CONFIG_FILE=/dev/null code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.4.2 \
+  --package-spec "$RELEASE_SPEC" \
   --allow-package-index \
   --pip-index-url https://pypi.org/simple/ \
   --upgrade-pip \
@@ -2216,11 +2236,11 @@ env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL -u PIP_FIND_LINKS -u PIP_NO_INDEX \
 Do not rehearse a TestPyPI candidate by adding production PyPI as an extra
 index: pip gives the primary index no priority, so production PyPI can satisfy
 `code-mower` and the run proves nothing about the candidate. Rehearse the
-candidate the way the v1.4.2 runbook does instead -- download the exact
-candidate wheel in an isolated, no-deps, TestPyPI-only step, bind its filename
-and SHA-256, then rehearse that local wheel with
-`--package-spec /path/to/code_mower-1.4.2-py3-none-any.whl` while dependencies
-resolve from canonical PyPI.
+candidate using the immutable-candidate procedure for its release instead --
+download the exact candidate wheel in an isolated, no-deps, TestPyPI-only step,
+bind its filename and SHA-256, then rehearse that local wheel with
+`--package-spec "/path/to/${RELEASE_WHEEL_STEM}-py3-none-any.whl"` while
+dependencies resolve from canonical PyPI.
 
 `code-mower release qualify` and `code-mower release campaign` accept the
 equivalent closed `--package-source testpypi` flag (default: `pypi`) to
@@ -2230,8 +2250,8 @@ on production PyPI -- see
 
 ```bash
 code-mower release qualify \
-  --release-tag v1.4.2 \
-  --package-spec code-mower==1.4.2 \
+  --release-tag "$RELEASE_TAG" \
+  --package-spec "$RELEASE_SPEC" \
   --output result.json \
   --package-source testpypi \
   --execute
@@ -2273,8 +2293,10 @@ The primary README command stays on the exact current release so an adopter,
 an agent, and the release rehearsal all install the same artifact:
 
 ```bash
+RELEASE_VERSION="${RELEASE_VERSION:-1.5.0}"
+RELEASE_SPEC="code-mower==$RELEASE_VERSION"
 CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.4.2
+pipx install --python "$CODE_MOWER_PYTHON" "$RELEASE_SPEC"
 ```
 
 An unpinned `pipx install code-mower` may be mentioned as a convenience only

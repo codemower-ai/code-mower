@@ -188,11 +188,12 @@ class PackagedTemplateConsistencyTests(unittest.TestCase):
 
 
 class PublicReleaseChecklistTests(unittest.TestCase):
-    def test_checklist_names_v150_as_the_published_entrypoint(self):
+    def test_checklist_names_v150_as_the_source_entrypoint(self):
         checklist = " ".join(_read("docs/public-release-checklist.md").split())
         self.assertIn(
-            "The current package-index release entrypoint is "
-            "`code-mower==1.5.0` (GitHub tag `v1.5.0`)",
+            "The v1.5.0 source defines package-index entrypoint "
+            "`code-mower==1.5.0` (GitHub tag `v1.5.0`). Confirm that the tag "
+            "and package version are published before using the index command.",
             checklist,
         )
 
@@ -223,10 +224,11 @@ class RoadmapDocFactsTests(unittest.TestCase):
         self.assertNotIn("Board work is underway", roadmap)
         self.assertNotIn("Board implementation is accepted on `main`, not underway", roadmap)
 
-    def test_v150_slack_is_the_active_phase_and_no_longer_deferred(self):
+    def test_v150_slack_is_in_release_qualification_and_no_longer_deferred(self):
         roadmap = " ".join(_read("docs/current-state-and-roadmap.md").split())
-        self.assertIn("active, `v1.5.0`", roadmap)
-        self.assertIn("This is the current roadmap phase.", roadmap)
+        self.assertIn("implementation complete; release qualification active for `v1.5.0`", roadmap)
+        self.assertIn("This is the current release-qualification phase.", roadmap)
+        self.assertIn("Remaining work is live lifecycle qualification", roadmap)
         self.assertNotIn(
             "This runtime work is deferred until the sequence above is complete.",
             roadmap,

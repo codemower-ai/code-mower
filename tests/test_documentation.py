@@ -19,7 +19,7 @@ EXPLICIT_ANCHOR_RE = re.compile(
 
 
 def _markdown_files() -> list[Path]:
-    ignored = {".git", ".venv", "build", "dist"}
+    ignored = {".code-mower", ".git", ".venv", "build", "dist"}
     return sorted(
         path
         for path in ROOT.rglob("*.md")

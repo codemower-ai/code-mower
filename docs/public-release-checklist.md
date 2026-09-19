@@ -1,10 +1,11 @@
 # Code Mower Public Release Checklist
 
 v1.5.0 uses the exact install pin `code-mower==1.5.0`. Verify the command path
-and version after installing. Use the [v1.5.0 qualification record](v150-qualification.md)
-for observed results and the [candidate runbook](v150-release-runbook.md) for
-prepublication local-wheel rehearsals. Index commands select the release after
-publication; offline preparation does not establish live Slack readiness.
+and version after installing. Use the [v1.5.0 qualification contract](v150-qualification.md)
+for required observations and the [candidate runbook](v150-release-runbook.md)
+for prepublication local-wheel rehearsals and publication. Sanitized observed
+results belong on #923 and the GitHub Release. Index commands select the release
+after publication; offline preparation does not establish live Slack readiness.
 
 
 Use this checklist for public OSS readiness and 1.x hardening. The standalone
@@ -18,16 +19,17 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has public releases and reports its version with
   `code-mower --version`.
-- The current package-index release entrypoint is
-  `code-mower==1.5.0` (GitHub tag `v1.5.0`), with
-  `code-mower doctor --adoption --repo OWNER/REPO` as the human-facing
-  first-run setup diagnostic and `code-mower lanes status --repo OWNER/REPO`
+- The v1.5.0 source defines package-index entrypoint `code-mower==1.5.0`
+  (GitHub tag `v1.5.0`). Confirm that the tag and package version are published
+  before using the index command. Its first-run setup diagnostic is
+  `code-mower doctor --adoption --repo OWNER/REPO`, and
+  `code-mower lanes status --repo OWNER/REPO`
   as the operator snapshot. v1.4.2 superseded `code-mower==1.4.1` (GitHub tag
   `v1.4.1`) when release
   [#952](https://github.com/codemower-ai/code-mower/issues/952) closed;
   `doctor --preflight` and `doctor --v05` remain compatibility presets for
   scripts.
-- The current supervised-pilot release includes Python 3.12+ install hardening,
+- The v1.5.0 supervised-pilot source includes Python 3.12+ install hardening,
   hosted-builder doctor postures, non-expiring token diagnostics, native
   redacted lane status, local Board, Board history, spend/verdict timelines,
   owner queue, optional metadata-only agent cards, Board doctor, Board reset,
@@ -135,13 +137,15 @@ not know the original reference repos.
 Before tagging a public release, run these from a clean standalone checkout:
 
 First finalize the README opening release statement and the matching CHANGELOG
-entry in the reviewed release preparation PR. Follow the
+entry, release notes, qualification contract and publication instructions in
+the reviewed final release preparation PR. For v1.5.0 that head must include
+#1037 and its fixed Slack callback boundary. Follow the
 [immutable release text gate](pypi-release.md#immutable-release-text-gate-v150-onward):
 run `python src/code_mower/release_identity.py --tag vX.Y.Z` with the actual
 proposed tag before creating it. Publication progress belongs in the release
 issue, not in temporary promises inside the immutable public text. Independent
-review, CI, and the authoritative Code Mower gate must pass on the exact PR
-head before merge; release and publication still require the owner decision.
+review, CI, and the authoritative Code Mower gate must pass on that exact final
+docs head before merge; release and publication still require the owner decision.
 
 ```bash
 scripts/dev-python -m venv .venv

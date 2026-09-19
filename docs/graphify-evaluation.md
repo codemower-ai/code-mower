@@ -9,13 +9,13 @@ forward to [epic #902](https://github.com/codemower-ai/code-mower/issues/902).
 > **Historical record. Graphify has since shipped.** This page is the dated
 > evaluation that produced the adopt decision on 2026-09-12, and its
 > present-tense statements describe the repository as it stood *then*. The
-> optional local Graphify provider shipped in `v1.4.1` and is available in the
-> published `v1.4.2` release. For what exists today, read
+> optional local Graphify provider shipped in `v1.4.1`; `v1.5.0` includes the
+> real-pilot reader compatibility and readiness work. For what exists today, read
 > [Optional Graphify Setup](graphify-setup.md),
 > [the revision-bound lifecycle](context-graph-lifecycle.md), and
 > [bounded queries and context packets](context-graph-queries.md). For the
-> real-pilot compatibility fixes that merged to `main` after the release, read
-> [published `v1.4.2` versus current `main`](graphify-setup.md#published-v142-versus-current-main). The
+> release-to-release compatibility notes, read
+> [`v1.4.2` versus `v1.5.0`](graphify-setup.md#published-v142-versus-current-main). The
 > benchmark evidence and thresholds below are preserved as recorded and are not
 > rewritten.
 

@@ -29,8 +29,8 @@ agent hosting a session is the default orchestrator.
 | Devin, Grok Bot, Antigravity, Muse, custom hosts | Recognized host identities for briefs and telemetry; execution remains an explicit handoff or provider-specific transport until separately qualified | No implicit Jira authority; use the guarded Code Mower tracker commands for writes |
 
 The lease, shared Jira brief, and explicit Cursor qualification have been
-available since `code-mower==1.4.0` and are present in the current
-`code-mower==1.4.2` release; see [Participants And Sessions](sessions.md) for
+available since `code-mower==1.4.0` and are present in
+`code-mower==1.5.0`; see [Participants And Sessions](sessions.md) for
 the operating contract.
 
 ## Provider Classes

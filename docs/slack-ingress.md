@@ -1,17 +1,29 @@
-# Slack authenticated ingress
+# Slack authenticated ingress contract
 
-For the hosted v1.5.0 operator path, use [Optional Slack setup](slack-setup.md).
-Its separate hosted manifest uses `/codemower` and the hosted command/modal
-routes. The `/code-mower` manifest below remains the standalone OSS seam example.
+This page documents the standalone OSS request-validation seam for implementers.
+It is not the hosted installation guide. Workspace administrators using the
+Code Mower hosted service should follow [Optional Slack setup](slack-setup.md)
+and authorize the existing app through the dashboard; they do not generate or
+import a manifest.
+
+| Path | Audience | Command | What it provides |
+| --- | --- | --- | --- |
+| Hosted v1.5.0 | Workspace and Code Mower administrators | `/codemower` | Dashboard OAuth, hosted policy/bindings, durable interactions, supervisor bridge |
+| Standalone OSS seam | Adapter implementers and self-host operators | `/code-mower` | Authentication, normalization, and durable receipt contract only |
+
+The paths use separate manifests and command vocabularies. Do not point the OSS
+example manifest at hosted routes or treat passing its unit tests as evidence
+that a hosted installation, supervisor, or provider is ready.
 
 Issue #917 implements `code_mower.slack_ingress`, a stdlib-only request seam for
-[slack_contract](slack-contract.md). There is no server, OAuth installation,
-network client, worker dispatch, or deployment. Default installation is still
-Claude + Codex. Slack has no participant, provider, review, or merge authority.
+[slack_contract](slack-contract.md). That public module includes no server,
+OAuth installation, network client, worker dispatch, or deployment. Default
+installation is still Claude + Codex. Slack has no participant, provider,
+review, or merge authority.
 
-The mirrored `templates/slack/app-manifest.json` is an optional template. Replace
-the reserved example endpoint privately before later live acceptance. It requests
-only the bot `commands` scope, with one `/code-mower` command and interactivity.
+The mirrored `templates/slack/app-manifest.json` is an optional implementer
+template. Replace the reserved example endpoint privately before deployment.
+It requests only the bot `commands` scope, with one `/code-mower` command and interactivity.
 It requests no user scopes/tokens, history, files, email, or posting permissions.
 There are no Events API subscriptions: the contract requires explicit commands
 and modal replies, not passive message events. JSON URL verification is supported;
@@ -58,8 +70,8 @@ with plain_text_input action `text`, and empty private_metadata/external_id.
 Modal delivery derives from app/installed-team/view ID, bound to a server-held
 one-time correlation. The optional `view.hash` is a mutable revision, not a
 delivery identifier: hash changes alone remain duplicates, while changed
-normalized request content conflicts under the same view ID. A modal opens only
-in a later integration; this handler neither opens nor updates views.
+normalized request content conflicts under the same view ID. A composing adapter
+may open a modal; this handler itself neither opens nor updates views.
 
 Workspace installs within Enterprise Grid accept bounded enterprise ID/name
 metadata and a false `is_enterprise_install` (omitted defaults to false). True
@@ -87,8 +99,8 @@ retention window so exact retries reconcile without authorizing new work. Never 
 grant from modal metadata, Slack membership, or a user-provided session. The seam
 validates the returned policy and calls `slack_contract.normalize(verified=True)`.
 Binding and storage dependencies must not log inputs, perform remote work, or
-include private data in diagnostics. Authorization is rechecked by a future
-consumer; receipt acknowledges neither authorization to execute nor execution.
+include private data in diagnostics. The consumer must recheck authorization;
+receipt acknowledges neither authorization to execute nor execution.
 
 ## Durable receipt and response
 
@@ -139,4 +151,4 @@ raw-byte signing, malformed/unknown/oversized inputs, replay and conflicts,
 storage failure, deadlines, challenge handling and receipt-before-ack ordering.
 Live manifest import, signed endpoint delivery, modal rendering/correlation,
 durable-store crash/race tests and end-to-end acknowledgement latency remain
-acceptance for a later adapter/deployment issue.
+deployment acceptance outside this standalone module.

@@ -197,7 +197,7 @@ If pipx should own the command, reinstall the exact release with cache bypass:
 
 ```bash
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.4.2
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
 hash -r
 code-mower --version
 ```
@@ -208,7 +208,7 @@ path:
 
 ```bash
 pipx uninstall code-mower
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.4.2
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.0
 hash -r
 command -v code-mower
 code-mower --version
@@ -230,6 +230,30 @@ posture-specific doctor command it ran, and `code-mower lanes status --repo
 OWNER/REPO`. If different agents on the same workstation see different
 versions, pin each agent to an isolated pipx or uv tool directory instead of
 changing the shared command mid-PR.
+
+## Headless Codex Campaign Says A Keyring Is Unavailable
+
+The isolated Codex campaign home uses the OS keyring by default. A Linux host
+without a desktop session can select v1.5.0's explicit file-backed mode instead:
+
+```bash
+export CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE=file
+code-mower doctor --adoption --campaign
+export CODEX_HOME="$HOME/.config/code-mower/provider-homes/codex"
+printf '%s\n' "$OPENAI_API_KEY" | codex login --with-api-key
+code-mower doctor --adoption --campaign
+```
+
+Keep `CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE=file` in every runner or service
+environment that starts the campaign. The first doctor call prepares the
+restricted home and reports the credential missing; the login creates the
+credential, and the second doctor call proves that exact isolated home is
+ready. Code Mower accepts only a private regular `auth.json`, refuses symlinks
+and other file types, and strips ambient API keys from the campaign child.
+
+If you leave the variable unset, keyring mode remains selected and continues to
+refuse a readable `auth.json`. For device-code login and the complete boundary,
+see [Headless Linux campaign authentication](release-qualification.md#headless-linux-campaign-authentication).
 
 ## GitHub Auth Or Private Repo Checks Fail
 

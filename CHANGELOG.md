@@ -13,7 +13,7 @@ No additional changes recorded.
 
 Supervised private-workspace Slack preparation and supervisor v2, Graphify
 compatibility and query-reader parity. See [release notes](docs/v150-release-notes.md)
-and the [qualification record](docs/v150-qualification.md).
+and the [qualification contract](docs/v150-qualification.md).
 
 ### Added
 
@@ -34,7 +34,7 @@ and the [qualification record](docs/v150-qualification.md).
 - Release campaigns can authenticate their isolated Codex home on a headless
   Linux host that has no OS keyring. `CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE=file`
   explicitly selects the maintained CLI's file credential store for that home;
-  unset (or `keyring`) keeps the released keyring-only behaviour unchanged. The
+  unset (or `keyring`) keeps the existing keyring-default behaviour unchanged. The
   CLI's `auto` and `ephemeral` stores are refused because neither names one
   explicit, durable source, and any unrecognized value fails closed in both the
   campaign adapter and doctor rather than becoming a readiness pass. File mode
@@ -76,6 +76,13 @@ and the [qualification record](docs/v150-qualification.md).
   strings even when Worker logs and traces are disabled; the production route
   keeps preview URLs, custom domains, and zone routes out of the callback path
   (#1037). The prior v1.5.0 candidate is invalidated and must be rebuilt.
+
+- The final candidate now requires the reviewed post-#1037 documentation head.
+  The v1.5.0 qualification page is the immutable contract; sanitized observed
+  results live on #923 and the GitHub Release. The publication runbook creates
+  the Release from the retained wheel/sdist, verifies its assets and the
+  non-publishing release-event workflow, and removes the temporary candidate
+  lookup variable while leaving both publish switches explicitly disabled.
 
 - Release publication now checks the selected tag against package metadata,
   the opening README release statement, and the active CHANGELOG entry before

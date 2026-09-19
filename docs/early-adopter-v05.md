@@ -1,10 +1,11 @@
 # Code Mower Early Adopter Guide
 
-Current release: v1.5.0, supervised-pilot baseline. Release invitations and
-pinned index installs target `code-mower==1.5.0`.
+Source target: v1.5.0 supervised-pilot baseline. Release invitations and pinned
+index installs target `code-mower==1.5.0` only after that version is visible on
+the selected package index.
 
 This document records the historical v0.5 early-adopter product plan. The
-current public install path is the v1.5.0 supervised-pilot release; use
+current public install path is the newest published supervised-pilot release; use
 [Install And Bootstrap](install.md), [Try Code Mower In 10 Minutes](try-in-10-minutes.md),
 and [Quickstart](quickstart.md) for live adoption steps.
 

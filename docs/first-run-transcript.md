@@ -1,9 +1,8 @@
 # First Run Transcript
 
 Historical: this transcript is pinned to the published `v1.4.0` shape and is
-not updated for the current published `v1.4.2` release. Use [Install And
-Bootstrap](install.md) and [Try Code Mower In 10
-Minutes](try-in-10-minutes.md) for current guidance.
+not current installation guidance. Use [Install And Bootstrap](install.md) and
+[Try Code Mower In 10 Minutes](try-in-10-minutes.md) for the maintained path.
 
 This page shows the intended first-run shape before a user installs anything.
 It is a static transcript, not a guarantee that every machine will produce the
