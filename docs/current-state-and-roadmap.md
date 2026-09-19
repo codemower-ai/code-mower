@@ -20,14 +20,17 @@ provider differences:
 The product is useful without CodeMower.com. Cloud sharing is optional and
 dry-run-first.
 
-## Current Published Baseline
+## Current Source And Published Baseline
 
-The current package-index release baseline is `v1.5.0`, with pinned package
-install spec `code-mower==1.5.0`. Release evidence is recorded on the GitHub
-release and in the first-user install rehearsal. See the
+This source defines Code Mower `v1.5.0`, with package spec
+`code-mower==1.5.0`. Confirm the release tag on GitHub Releases and the package
+version on the selected index before using an index install command; source
+version and publication state are separate facts. See the
 [v1.5.0 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-notes.md)
-and [qualification record](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md)
-for the exact source, artifact digests and separately observed gates.
+and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md).
+After publication, the GitHub Release and linked release issue carry the
+observed source SHA, artifact digests, canary outcomes, publication run and
+reinstall evidence.
 Historical v1.4.x artifacts and qualification records remain unchanged.
 
 `v1.4.0`, `v1.4.1` and `v1.4.2` have all shipped, and the v1.4.0 and v1.4.1
@@ -66,7 +69,7 @@ and feedback retain explicit authorization, expiry, and refresh checks.
 | Organizational context | Optional Coworker packets for approved Claude/Codex/Devin roles, subject to role admission |
 | Repository context graph | Provider-neutral packet extension, offline scope/freshness checks, and a revision-bound local graph lifecycle; Graphify is an optional bounded provider with no default dependency |
 | Work tracking | GitHub Issues by default; Jira Cloud optional, bounded, and dry-run-first for writes |
-| Team interaction | CLI, GitHub, local Board, and optional CodeMower.com metadata views; Slack has an authenticated bounded ingress foundation with no worker delivery |
+| Team interaction | CLI, GitHub, local Board, optional CodeMower.com metadata views, and optional private-workspace Slack through the bounded hosted bridge and qualified Codex supervisor |
 
 Provider selection, execution transport, and review authority are separate.
 For example, selecting Devin does not promote the Devin reviewer, and selecting
@@ -124,9 +127,11 @@ future hosted-service work.
 - Devin has stronger builder support than reviewer or orchestrator support.
 - Private Coworker delivery is limited to explicitly approved Claude, Codex, and
   Devin roles.
-- Graphify is a shipped optional bounded provider with no default dependency,
-  and Slack v1.5.0 adds explicit setup/doctor and supervisor v2. Private hosted
-  readiness and the two capped canaries remain independent acceptance gates.
+- Graphify is a shipped optional bounded provider with no default dependency.
+  Slack v1.5.0 supports one private workspace with explicit member, repository
+  and private-channel mappings plus private start, status, answer and
+  confirmed-cancel interactions. Telemetry, Board links, Slack Connect, public
+  channels and richer Slack UX remain later work.
 - Provider cost fields remain unknown when the provider does not return them.
 - A successful release campaign proves installation and operational transport,
   not builder quality or reviewer promotion readiness.
@@ -156,10 +161,12 @@ immutable. The agreed sequence from the stabilization epic ran as follows:
    [#951](https://github.com/codemower-ai/code-mower/issues/951) stays open
    only for its bounded hosted Devin canary, which needs an explicit owner
    authorization and is not claimed by this release.
-4. **Active phase.** Supervised Slack is the `v1.5.0` work
+4. **Release qualification.** Supervised Slack is the `v1.5.0` work
    ([#903](https://github.com/codemower-ai/code-mower/issues/903) /
    [#923](https://github.com/codemower-ai/code-mower/issues/923)). The
-   preceding sequence is complete, so its runtime work is no longer deferred.
+   preceding sequence and implementation are complete. Final release acceptance
+   requires the recorded completion and confirmed-cancellation canaries,
+   publication evidence and canonical reinstall evidence.
 
 Devin support is a bounded builder qualification only: a maintained local CLI
 builder lane and the exact PR-bound hosted work-order library seam. Hosted
@@ -179,7 +186,8 @@ neither is part of the immutable `v1.4.0` artifact, and both are part of the
 published `v1.4.1` artifact.
 
 Each phase below was an independently gated epic rather than one cross-cutting
-implementation PR. Phases 1 to 3 are history; phase 4 is the active one.
+implementation PR. Phases 1 to 3 are history; phase 4 is in final release
+qualification.
 
 ### 1. Accepted `v1.4.0` Stabilization -- shipped in `v1.4.1` ([#979](https://github.com/codemower-ai/code-mower/issues/979))
 
@@ -280,31 +288,30 @@ prose. `code-mower board service` keeps one Board running as a supervised
 launchd service on macOS and refuses every other platform; see
 [Board Service Lifecycle](board-service-lifecycle.md).
 
-### 4. Supervised Slack Task And Status Interaction -- active, `v1.5.0` ([#903](https://github.com/codemower-ai/code-mower/issues/903) / release [#923](https://github.com/codemower-ai/code-mower/issues/923))
+### 4. Supervised Slack Task And Status Interaction -- implementation complete; release qualification active for `v1.5.0` ([#903](https://github.com/codemower-ai/code-mower/issues/903) / release [#923](https://github.com/codemower-ai/code-mower/issues/923))
 
-This is the current roadmap phase.
+This is the current release-qualification phase.
 
 Slack is an interaction channel, not an orchestrator. A real qualified Codex or
-Claude supervisor controls bounded hosted work: missing supervisor readiness
+other separately qualified supervisor controls bounded hosted work; v1.5.0's
+accepted basic path uses Codex. Missing supervisor readiness
 blocks dispatch, and selecting a provider never promotes its role. Ingress
 foundations [#916](https://github.com/codemower-ai/code-mower/issues/916) and
 [#917](https://github.com/codemower-ai/code-mower/issues/917) are merged and
 shipped in `v1.4.0`.
 The v1.5.0 public package includes the basic setup/doctor runbook (#1024),
 qualified-supervisor v2 contract and checkpointed clarification/fix semantics.
-The private implementation and acceptance stay in their owned repositories.
-#1027 prepares the immutable merge-SHA package; #918 consumes those bytes for
-private administration/readiness; #920 consumes them for one completion and
-one confirmed cancellation only after explicit numeric authorization; #923
+The authorized private implementation provides OAuth, durable inbox/outbox,
+policy bindings and the hosted supervisor bridge. #918 qualifies private
+administration/readiness; #920 consumes the immutable candidate for one
+completion and one confirmed cancellation under an explicit numeric cap; #923
 then tags and publishes the unchanged source SHA and independently reinstalls it.
 Slack telemetry/Board/cloud links and rich UX remain v1.5.1. Slack consumes the
 durable lifecycle instead of scraping terminal or Board output and carries no
 raw private context or private reviewer findings.
 
-The preceding phases are complete, so this runtime work is no longer deferred.
-Board readiness gates only Slack's end-to-end canary and final acceptance in
-#923; it does not block independent Slack OAuth, inbox, interaction, bridge,
-setup, or documentation work.
+The implementation is complete. Remaining work is live lifecycle qualification,
+the two capped canaries, final acceptance, publication and canonical reinstall.
 
 ## Delivery Order
 
@@ -314,8 +321,9 @@ setup, or documentation work.
    #915, after #914.
 3. **Done.** Board shipped as `v1.4.2` through #952, after #961 and #951's
    merged local-evidence code.
-4. **Active.** Merge the supervised Slack runtime last, to be accepted in #923
-   for `v1.5.0`.
+4. **Release qualification.** The supervised Slack runtime is implemented.
+   Accept the lifecycle evidence and two capped canaries in #923, then publish
+   and independently reinstall `v1.5.0`.
 
 Elapsed time, implementation difficulty, or an open draft PR never changes this
 release order. Merged fixes count as on main until a later published package is

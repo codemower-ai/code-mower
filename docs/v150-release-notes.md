@@ -54,11 +54,13 @@ query reached a traversal limit. See [Graphify setup](graphify-setup.md).
 
 ## Qualification and boundaries
 
-The [qualification record](v150-qualification.md) separates pre-merge rehearsal,
+The [qualification contract](v150-qualification.md) separates pre-merge rehearsal,
 the immutable merge-SHA candidate, private acceptance (#918), one completion and
 one confirmed-cancellation canary (#920), and publication/reinstall (#923).
-Only explicitly observed outcomes count. These notes claim no paid or live
-hosted result. Canaries require numeric task and aggregate authorization.
+Only explicitly observed outcomes count. Sanitized outcomes belong on #923 and
+the GitHub Release rather than in the qualified source.
+These notes claim no paid or live hosted result. Canaries require numeric task
+and aggregate authorization.
 
 Slack scope is one private workspace, private unshared channels, authorized
 repository aliases, private replies, start/status/answer/confirmed cancellation,
@@ -76,3 +78,8 @@ a reviewed compatible deployment through its owner-controlled rollback. Follow
 No private graph, query, source, task prose, credentials, mappings, provider
 output or adoption evidence belongs in public artifacts. Historical v1.4.x
 release notes, qualification records and published artifacts remain unchanged.
+
+The immutable v1.5.0 candidate must be built from the final reviewed
+documentation head after #1037. Publication attaches that retained artifact
+pair to the GitHub Release, verifies the non-publishing release-event run and
+assets, and removes the temporary candidate-run repository variable.

@@ -1,5 +1,10 @@
 # Slack ingress contract v1
 
+This page defines the standalone OSS transport contract. It does not describe
+the separately owned hosted OAuth installation. Workspace administrators and
+hosted operators should follow [Optional Slack setup](slack-setup.md); the
+standalone contract below includes no OAuth store, network client, or worker.
+
 Issue #916 in epic #903 defines an optional ingress and conversation transport.
 Slack is not a builder, reviewer, participant, scheduler, or orchestrator. It has
 no merge, approval, provider selection, or uncertain-delivery acknowledgement

@@ -202,9 +202,10 @@ exclusions, like document nodes. They and their incident edges do not become
 code query results or source citations; unknown node types remain invalid.
 
 The test-path conventions and the `doc_ref` acceptance described in this section
-arrived after `v1.4.2` was published and are on `main` for the next appropriate
-release. In the published package a `doc_ref` node is an unknown type and the
-JavaScript/TypeScript conventions are not recognized.
+are included in `v1.5.0`. The historical `v1.4.2` package treats a `doc_ref`
+node as an unknown type and does not recognize the JavaScript/TypeScript
+conventions; upgrade Code Mower before querying a generation that contains
+those nodes.
 
 From #1029, a reader that meets `doc_ref` without supporting it reports that
 node type as a known provider/reader mismatch and names Code Mower `1.5.0` as

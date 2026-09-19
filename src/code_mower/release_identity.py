@@ -102,15 +102,12 @@ def check_release_identity(repo_path: Path, tag: str) -> list[str]:
 
     readme = read("README.md")
     intro = _HEADING.split(readme, maxsplit=1)[0]
-    baseline_label = (
-        "release" if final else "release-candidate" if "-rc." in tag else "beta"
-    )
     expected = (
-        f"The current package-index {baseline_label} baseline is {tag}, "
-        f"with pinned package install spec code-mower=={version}."
+        f"This source defines Code Mower {tag}, with package spec "
+        f"code-mower=={version}."
     )
     public_intro = _public_text(intro)
-    baselines = re.findall(r"The current package-index [^.]*? baseline is\b", public_intro)
+    baselines = re.findall(r"This source defines Code Mower\b", public_intro)
     if len(baselines) != 1 or expected not in public_intro:
         problems.append(f"README.md: expected exactly one opening release statement: {expected}")
 

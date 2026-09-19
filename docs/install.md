@@ -1,10 +1,14 @@
 # Install And Bootstrap
 
-v1.5.0 uses the exact install pin `code-mower==1.5.0`. Verify the command path
-and version after installing. Use the [v1.5.0 qualification record](v150-qualification.md)
-for observed results and the [candidate runbook](v150-release-runbook.md) for
-prepublication local-wheel rehearsals. Index commands select the release after
-publication; offline preparation does not establish live Slack readiness.
+v1.5.0 uses the exact install pin `code-mower==1.5.0`. Confirm that version is
+published on the selected index, then verify the command path and version after
+installing. The [v1.5.0 qualification contract](v150-qualification.md) defines
+the required evidence. After publication, the GitHub Release and linked release
+issue carry the observed source SHA, artifact digests, canary outcomes,
+publication run and reinstall evidence. Use the
+[candidate runbook](v150-release-runbook.md) for
+prepublication local-wheel rehearsals. Offline preparation does not establish
+live Slack readiness.
 
 
 Code Mower requires Python 3.12 or newer. Use one install path per machine or
@@ -92,13 +96,13 @@ wrapper/pin drift checks, see
 
 ## Local audit workflow publication
 
-A source/candidate install containing the local audit publisher generates
+v1.5.0 includes the local audit publisher, which generates
 `.github/workflows/local-audit-publication.yml` alongside the updated labelers,
 gate and standalone verification helpers. Commit that generated set to the
 repository's default branch before switching local Claude/Codex wrappers to
 workflow publication. A PR's copy of the verifier has no publication authority.
-The current pinned release instructions below are unchanged; this feature needs
-a reviewed candidate until it is included in a release.
+Before v1.5.0 is published, use its reviewed candidate wheel; afterward, use the
+exact published pin below.
 
 The generated self-hosted audit job seals the verdict digest in an immutable
 Actions step before dispatch. The publisher requires that exact source
@@ -458,14 +462,16 @@ returning to them, so they are stated here rather than only in the reference:
   SESSION_ID`, then `code-mower session lease release --session-id SESSION_ID`
   after its writers stop. Use `--dry-run` for a preview or `--no-lease` for a
   saved read-only brief.
-- **Headless authorization has real limits.** Codex's isolated campaign home is
-  keyring-only. On a Linux host with no desktop session, doctor reports that as
-  a fact and does not recommend a keyring login there; it offers the supported
-  routes instead -- dispatch from a host with a desktop-session keyring, run
-  `doctor --hosted-builders` or `--orchestrator-only`, or set
-  `CODE_MOWER_CAMPAIGN_AUTH_PROBE=0` to leave the lane capability-only. Isolated
-  non-keyring Codex campaign authentication is tracked separately in
-  [#983](https://github.com/codemower-ai/code-mower/issues/983).
+- **Headless authorization uses an explicit credential source.** Codex's
+  isolated campaign home uses the OS keyring by default. On headless Linux,
+  set `CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE=file`, run `code-mower doctor
+  --adoption --campaign` once to prepare the restricted home, authenticate that
+  exact `CODEX_HOME`, then rerun doctor. File mode accepts only a private regular
+  `auth.json`; keyring mode still refuses that file, and neither mode consumes
+  ambient token variables. You can instead dispatch from a desktop-keyring
+  host, use `doctor --hosted-builders` or `--orchestrator-only`, or set
+  `CODE_MOWER_CAMPAIGN_AUTH_PROBE=0` for a capability-only check. See
+  [Headless Linux campaign authentication](release-qualification.md#headless-linux-campaign-authentication).
 - **The Board is loopback-only and does not upload.** `code-mower board serve
   --repo OWNER/REPO` binds a loopback host, redacts local paths by default, and
   prints a URL that is local to that machine unless you build your own tunnel.

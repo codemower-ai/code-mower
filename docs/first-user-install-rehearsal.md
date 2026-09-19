@@ -1,10 +1,14 @@
 # First-User Install Rehearsal
 
-v1.5.0 uses the exact install pin `code-mower==1.5.0`. Verify the command path
-and version after installing. Use the [v1.5.0 qualification record](v150-qualification.md)
-for observed results and the [candidate runbook](v150-release-runbook.md) for
-prepublication local-wheel rehearsals. Index commands select the release after
-publication; offline preparation does not establish live Slack readiness.
+v1.5.0 uses the exact install pin `code-mower==1.5.0`. Verify that version is
+published on the selected index, then verify the command path and version after
+installing. The [v1.5.0 qualification contract](v150-qualification.md) defines
+the required evidence. After publication, the GitHub Release and linked release
+issue carry the observed source SHA, artifact digests, canary outcomes,
+publication run and reinstall evidence. Use the
+[candidate runbook](v150-release-runbook.md) for
+prepublication local-wheel rehearsals. Offline preparation does not establish
+live Slack readiness.
 
 
 This is the release-gate rehearsal for Code Mower's early-adopter path. It

@@ -3566,8 +3566,10 @@ class StatusCacheTests(TestCase):
         cache = board.StatusCache(
             compute,
             ttl_seconds=0.1,
-            retry_base_seconds=0.1,
-            retry_max_seconds=0.5,
+            # Keep the live failure observable even when the host pauses the
+            # polling thread briefly after the background worker exits.
+            retry_base_seconds=1.0,
+            retry_max_seconds=1.0,
             refresh_timeout_seconds=1.0,
         )
         server = board.ThreadingHTTPServer(

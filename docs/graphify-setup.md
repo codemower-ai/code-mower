@@ -86,9 +86,9 @@ configuration files with `PIP_CONFIG_FILE=/dev/null`. `--isolated` alone still
 permits global/site configuration and a file selected by `PIP_CONFIG_FILE`;
 those sources must not add an alternate index or local dependency source.
 
-The next two paragraphs are included in v1.5.0 and
-arrived with [PR #1007](https://github.com/codemower-ai/code-mower/pull/1007),
-so they are not part of the published `v1.4.2` package. See
+The next two paragraphs are included in v1.5.0 and arrived with
+[PR #1007](https://github.com/codemower-ai/code-mower/pull/1007). They are not
+part of the historical `v1.4.2` package. See
 [v1.5.0 compatibility](#v150-compatibility-and-existing-generations).
 
 Install any required language extras into this same separate environment before
@@ -167,8 +167,8 @@ code-mower context-graph status --json
 it. A provider run that admitted an incomplete census publishes a generation
 `status` calls `partial` and refuses, rather than describing it as `current`.
 
-The rest of this step, up to step 4, is **post-`v1.4.2`** and describes
-v1.5.0 (#1029 / #1031). `status` also reports `search`:
+The rest of this step, up to step 4, is the **v1.5.0** behavior from #1029 and
+#1031. `status` also reports `search`:
 whether the installed query reader can consume the generation. A `current`
 generation with `search: unavailable` exits non-zero. Read
 `query_reader.next_action`:

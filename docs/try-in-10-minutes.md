@@ -48,9 +48,10 @@ For a repository that already has generated Code Mower support, follow
 [Upgrade An Existing Repository](upgrade-existing-repo.md) before copying a new
 `.code-mower.generated` tree.
 
-`1.5.0` is the supervised-pilot release baseline. These pinned install
-commands select it after publication; prepublication qualification uses the
-exact wheel from [the candidate runbook](v150-release-runbook.md). To follow a future prerelease line
+`1.5.0` is the supervised-pilot source target. Confirm it is visible on the
+selected package index before using these pinned commands. Prepublication
+qualification uses the exact wheel from
+[the candidate runbook](v150-release-runbook.md). To follow a future prerelease line
 instead of pinning this exact build:
 
 ```bash

@@ -5,26 +5,28 @@ teams give one builder ownership of a change, obtain independent reviews on the
 current pull-request head, recover stalled work, and measure which builder and
 reviewer combinations are useful on their own codebase.
 
-The current release is supervised-pilot, bring-your-own-agent-loop software.
+Code Mower is supervised-pilot, bring-your-own-agent-loop software.
 It is not a drop-in unattended merge gate. Humans still own credentials,
 repository policy, reviewer promotion, and exceptional decisions.
 
-The current package-index release baseline is `v1.5.0`, with pinned package
-install spec `code-mower==1.5.0`. Release evidence is recorded on the GitHub
-release and in the first-user install rehearsal. See the
+This source defines Code Mower `v1.5.0`, with package spec
+`code-mower==1.5.0`. Confirm the release tag on GitHub Releases and the package
+version on the selected index before using an index install command; source
+version and publication state are separate facts. See the
 [v1.5.0 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-notes.md)
-and [qualification record](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md)
-for the exact source, artifact digests and separately observed gates.
+and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md).
+After publication, the GitHub Release and linked release issue carry the
+observed source SHA, artifact digests, canary outcomes, publication run and
+reinstall evidence.
 Historical v1.4.x artifacts and qualification records remain unchanged.
+The v1.4.2 release did not claim the bounded hosted Devin canary tracked by
+[#951](https://github.com/codemower-ai/code-mower/issues/951); that result is
+not claimed by its immutable qualification record.
 
-The bounded hosted Devin canary tracked by
-[#951](https://github.com/codemower-ai/code-mower/issues/951) is not claimed here;
-paid work requires explicit numeric owner authorization.
-
-Documentation on `main` follows the source on `main`. To read the guide exactly as
-v1.5.0 ships it, use the
+Documentation on `main` follows the source on `main`. After v1.5.0 is published,
+read its immutable
 [`v1.5.0` guide](https://github.com/codemower-ai/code-mower/blob/v1.5.0/docs/try-in-10-minutes.md);
-the pages on `main` are the maintained current versions.
+before then, the pages on `main` describe the reviewed source target.
 
 ## What Code Mower Adds
 
@@ -253,6 +255,34 @@ raw diffs, model transcripts, raw stdout/stderr, auth output, issue body text,
 local secret values, and secrets. See [Cloud Sharing](https://github.com/codemower-ai/code-mower/blob/main/docs/cloud-sharing.md)
 and the [Cloud Data Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/cloud-data-contract.md).
 
+## Optional Hosted Slack
+
+v1.5.0 adds a basic Slack control surface for one private workspace and one
+authorized private, unshared channel. A Code Mower team administrator opens
+**Setup → Manage Slack integration** in the hosted dashboard and completes OAuth
+as a Slack workspace administrator. Ordinary hosted setup does not require a
+local manifest, Slack app creation, or Slack credentials on the user's machine.
+
+The app requests only the bot `commands` scope. It does not request message or
+channel history, posting, files, email, user tokens, Events API subscriptions,
+Socket Mode, or an organization-wide install. An administrator binds exact
+Slack user, repository alias, and private-channel identities before users can
+run `/codemower help`, `start`, `status`, `answer`, or `cancel`. Replies are
+requester-private.
+
+Slack is an authenticated request surface, not an agent or authority. The
+qualified supervisor reauthorizes execution and owns the provider lifecycle,
+independent review, and completion/cancellation evidence. Slack cannot approve
+provider permissions, change safe mode, or grant merge authority. Command and
+modal text cross from Slack to the hosted service and may be sent to the
+configured supervisor/builder for an authorized task; credentials, routing
+identifiers, raw payloads, and private bindings are excluded from logs, Board,
+cloud exports, and public diagnostics.
+
+App/deployment operators have a separate manifest and redacted readiness path.
+See [Optional Slack Setup](https://github.com/codemower-ai/code-mower/blob/main/docs/slack-setup.md)
+for both workflows, supported behavior, and the trust boundary.
+
 ## Current Capabilities And Limits
 
 | Area | v1.5.0 posture |
@@ -265,7 +295,7 @@ and the [Cloud Data Contract](https://github.com/codemower-ai/code-mower/blob/ma
 | Forge and merge gate | GitHub |
 | Cloud | Optional metadata/report upload; no upload by default |
 | Graphify | Optional bounded local repository-graph provider behind the packet contract; no default dependency and no network access for the provider |
-| Slack | Explicit private-workspace setup/doctor and supervisor v2 contract; live hosted readiness and capped canaries are separate gates |
+| Slack | Optional hosted OAuth and `/codemower` control surface for one private workspace/channel; exact bindings, qualified supervisor, and numeric caps gate work |
 
 GitLab, Bitbucket, broad unattended rollout, uncalibrated merge gates, Devin
 peer-orchestrator/reviewer parity, a hosted work-order CLI, a required Graphify
@@ -315,7 +345,7 @@ does not need rebuilding. See
 - [Upgrade An Existing Repository](https://github.com/codemower-ai/code-mower/blob/main/docs/upgrade-existing-repo.md)
 - [Quickstart Reference](https://github.com/codemower-ai/code-mower/blob/main/docs/quickstart.md)
 - [Troubleshooting](https://github.com/codemower-ai/code-mower/blob/main/docs/troubleshooting.md)
-- [First Run Transcript](https://github.com/codemower-ai/code-mower/blob/main/docs/first-run-transcript.md) (v1.4.0 illustrative shape, not the current v1.5.0 pin)
+- [First Run Transcript](https://github.com/codemower-ai/code-mower/blob/main/docs/first-run-transcript.md) (v1.4.0 illustrative shape, not the v1.5.0 source pin)
 
 ### Local Board And Repository Context
 
@@ -336,7 +366,8 @@ does not need rebuilding. See
 - [Builder Experiments](https://github.com/codemower-ai/code-mower/blob/main/docs/builder-experiments.md)
 - [Orchestrator Prompt Pack](https://github.com/codemower-ai/code-mower/blob/main/docs/orchestrator-prompt-pack.md)
 - [Optional Devin Setup Prompt](https://github.com/codemower-ai/code-mower/blob/main/docs/devin-setup-prompt.md)
-- [Optional Private Slack Setup and Runbook](https://github.com/codemower-ai/code-mower/blob/main/docs/slack-setup.md) (explicit opt-in; default setup unchanged)
+- [Optional Slack Setup](https://github.com/codemower-ai/code-mower/blob/main/docs/slack-setup.md) (hosted dashboard OAuth for workspace administrators; separate manifest/readiness path for operators)
+- [Slack Authenticated Ingress Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/slack-ingress.md) (standalone OSS adapter seam)
 - [Provider Matrix](https://github.com/codemower-ai/code-mower/blob/main/docs/provider-matrix.md)
 - [Provider Calibration Scorecard](https://github.com/codemower-ai/code-mower/blob/main/docs/provider-calibration-scorecard.md)
 - [Devin Peer-Support Qualification](https://github.com/codemower-ai/code-mower/blob/main/docs/devin-peer-support-qualification.md)
@@ -370,7 +401,7 @@ does not need rebuilding. See
 - [Public Release Checklist](https://github.com/codemower-ai/code-mower/blob/main/docs/public-release-checklist.md)
 - [v1.5.0 Release Notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-notes.md)
 - [v1.4.2 Release Notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v142-release-notes.md)
-- [v1.5.0 Qualification Record](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md)
+- [v1.5.0 Qualification Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md)
 - [v1.4.2 Qualification Record](https://github.com/codemower-ai/code-mower/blob/main/docs/v142-qualification.md)
 - [Release History And Archived Plans](https://github.com/codemower-ai/code-mower/blob/main/docs/release-history.md)
 - [Changelog](https://github.com/codemower-ai/code-mower/blob/main/CHANGELOG.md)

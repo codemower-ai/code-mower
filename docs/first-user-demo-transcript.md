@@ -1,9 +1,9 @@
 # First-User Demo Transcript
 
 Historical: this transcript is pinned to the published `v1.4.0` shape and is
-not updated for the current published `v1.4.2` release. Use [Quickstart](quickstart.md)
-and [First-User Install Rehearsal](first-user-install-rehearsal.md) for
-current guidance.
+not current installation guidance. Use [Quickstart](quickstart.md) and
+[First-User Install Rehearsal](first-user-install-rehearsal.md) for the
+maintained path.
 
 This is a sanitized transcript of the first-user install rehearsal shape. It is
 designed for someone evaluating Code Mower for the first time: no private repo,

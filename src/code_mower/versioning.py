@@ -42,20 +42,15 @@ def github_package_spec(version: str, repo_url: str = PUBLIC_REPO_URL) -> str:
 
 
 def public_baseline_sentence(version: str) -> str:
-    """Return the shared current-baseline sentence for public docs."""
+    """Return the shared immutable source-identity sentence for public docs."""
 
     release_tag = release_tag_for_version(version)
-    if re.fullmatch(r"\d+\.\d+\.\d+", version):
-        baseline_label = "package-index release baseline"
-    elif re.fullmatch(r"\d+\.\d+\.\d+rc\d+", version):
-        baseline_label = "package-index release-candidate baseline"
-    else:
-        baseline_label = "package-index beta baseline"
     return (
-        f"The current {baseline_label} is `{release_tag}`, with "
-        f"pinned package install spec `{public_package_spec(version)}`. "
-        "Release evidence is recorded on the GitHub release and in the "
-        "first-user install rehearsal."
+        f"This source defines Code Mower `{release_tag}`, with package spec "
+        f"`{public_package_spec(version)}`. Confirm the release tag on GitHub "
+        "Releases and the package version on the selected index before using "
+        "an index install command; source version and publication state are "
+        "separate facts."
     )
 
 
