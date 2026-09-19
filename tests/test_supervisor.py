@@ -523,6 +523,10 @@ reply = dict(schema='code_mower.supervisor_decision.v1', binding=r['binding'],
     builder_acu=5, reviewer='claude')
 schema = json.loads(Path(args[args.index('--output-schema') + 1]).read_text())
 assert set(reply) == set(schema['required'])
+assert set(schema['$defs']) == {'binding'}
+assert schema['properties']['schema']['type'] == 'string'
+assert schema['properties']['decision']['type'] == 'string'
+assert schema['properties']['reviewer']['type'] == 'string'
 for name in ('input', 'schema', 'result', 'log'):
     assert os.stat(name).st_mode & 0o077 == 0
 Path(args[args.index('--output-last-message') + 1]).write_text(json.dumps(reply))
