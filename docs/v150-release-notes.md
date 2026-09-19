@@ -58,6 +58,13 @@ The [qualification contract](v150-qualification.md) separates pre-merge rehearsa
 the immutable merge-SHA candidate, private acceptance (#918), one accepted
 completion and one accepted confirmed-cancellation outcome (#920), with every
 attempt and reservation count-preserved, and publication/reinstall (#923).
+The final candidate normally supplies the paid canary bytes. For this v1.5.0
+closeout, the contract also permits a machine-verified carry-forward from a
+retained ancestor candidate only when every wheel member outside the closed
+audit/release/documentation set is byte-identical, both immutable audit receipts
+replay successfully, and the exact final wheel repeats private no-provider
+acceptance. Any Slack, supervisor, provider, CLI, persistence, state, dependency
+or entry-point difference requires newly authorized canaries.
 Only explicitly observed outcomes count. Sanitized outcomes belong on #923 and
 the GitHub Release rather than in the qualified source.
 These notes claim no paid or live hosted result. Canaries require numeric task
