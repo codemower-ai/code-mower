@@ -2104,12 +2104,14 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
                     '--json value --jq .value)" = false && '
                     'test "$(gh variable get CODE_MOWER_CANDIDATE_RUN_ID --repo codemower-ai/code-mower '
                     '--json value --jq .value)" = "$CANDIDATE_RUN_ID" && '
-                    '! gh release view v1.5.0 --repo codemower-ai/code-mower >/dev/null 2>&1 && '
-                    'gh release create v1.5.0 '
-                    '"$CANDIDATE_DIR/code_mower-1.5.0-py3-none-any.whl" '
-                    '"$CANDIDATE_DIR/code_mower-1.5.0.tar.gz" '
+                    f'! gh release view {release_tag} --repo codemower-ai/code-mower '
+                    '>/dev/null 2>&1 && '
+                    f'gh release create {release_tag} '
+                    f'"$CANDIDATE_DIR/code_mower-{version}-py3-none-any.whl" '
+                    f'"$CANDIDATE_DIR/code_mower-{version}.tar.gz" '
                     '--repo codemower-ai/code-mower --verify-tag --latest '
-                    '--title "Code Mower v1.5.0" --notes-file "$GITHUB_RELEASE_NOTES"'
+                    f'--title "Code Mower {release_tag}" '
+                    '--notes-file "$GITHUB_RELEASE_NOTES"'
                 )
         next_actions.insert(0, {
             "id": "immutable-candidate-first",

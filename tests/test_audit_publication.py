@@ -1219,8 +1219,28 @@ class ConsumerTests(unittest.TestCase):
             api,
             sleep=complete,
         )
-        self.assertEqual(sleeps, [1])
+        self.assertEqual(sleeps, [pub.LABEL_RUN_DELAY])
         self.assertEqual(event["issue"]["number"], 42)
+
+    def test_label_notification_fails_closed_after_bounded_wait(self):
+        _, api, _, _, _ = self.setup_case("codex", "PASS")
+        api.run["status"] = "in_progress"
+        api.run["conclusion"] = None
+        sleeps = []
+        with self.assertRaisesRegex(pub.Refused, "publication run not successful"):
+            pub.prepare_label_event(
+                {
+                    "action": pub.LABEL_EVENT,
+                    "client_payload": {"publication_run_id": 800},
+                },
+                {"TRAILER_LANE": "codex"},
+                api,
+                sleep=sleeps.append,
+            )
+        self.assertEqual(
+            sleeps,
+            [pub.LABEL_RUN_DELAY] * (pub.LABEL_RUN_ATTEMPTS - 1),
+        )
 
     def test_gate_runs_actual_standalone_template_with_workflow_receipt(self):
         # Execute the emitted gate's Python block in isolation; only GitHub is simulated.

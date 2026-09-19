@@ -25,6 +25,8 @@ LABEL_EVENT = "code-mower-local-audit-published"
 SOURCE_WORKFLOW = ".github/workflows/local-cli-audit.yml"
 MAX_BYTES = 2048
 MAX_EVENT_BYTES = 128 * 1024
+LABEL_RUN_ATTEMPTS = 60
+LABEL_RUN_DELAY = 2
 MAX_AGE = 24 * 60 * 60
 MAX_PAGES = 10
 FIELDS = frozenset(
@@ -718,13 +720,13 @@ def prepare_label_event(event, env, io, *, sleep=time.sleep):
     )
     run_id = payload["publication_run_id"]
     run = None
-    for attempt in range(10):
+    for attempt in range(LABEL_RUN_ATTEMPTS):
         run = load_run(io, run_id)
         verify_run(run, repository, run_id=run_id)
         if run.get("status") == "completed":
             break
-        if attempt < 9:
-            sleep(1)
+        if attempt < LABEL_RUN_ATTEMPTS - 1:
+            sleep(LABEL_RUN_DELAY)
     assert run is not None
     verify_run(run, repository, run_id=run_id, terminal=True)
     proof = receipts(run)
