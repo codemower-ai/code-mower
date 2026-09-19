@@ -8285,19 +8285,24 @@ def main():
         urls = {action["id"]: action.get("url", "") for action in payload["next_actions"]}
         self.assertIn("--ref v1.5.0", commands["dry-run-release-workflow"])
         self.assertNotIn("--ref main", commands["dry-run-release-workflow"])
-        self.assertIn("--ref v1.5.0", commands["publish-testpypi-candidate"])
-        self.assertNotIn("--ref main", commands["publish-testpypi-candidate"])
-        self.assertIn("publish_testpypi=true", commands["publish-testpypi-candidate"])
-        self.assertIn("publish_pypi=false", commands["publish-testpypi-candidate"])
-        qualification = commands["testpypi-source-exclusive-qualification"]
+        self.assertIn("publish-testpypi-candidate", commands)
         self.assertNotIn("testpypi-install-rehearsal", commands)
-        self.assertIn("code-mower release qualify", qualification)
-        self.assertIn("--release-tag v1.5.0", qualification)
-        self.assertIn("--package-spec code-mower==1.5.0", qualification)
-        self.assertIn("--package-source testpypi", qualification)
-        self.assertIn("--execute", qualification)
-        self.assertNotIn("--pip-extra-index-url", qualification)
-        self.assertNotIn("--pip-index-url", qualification)
+        self.assertIn("testpypi-source-exclusive-qualification", commands)
+        actions = {action["id"]: action for action in payload["next_actions"]}
+        self.assertIs(actions["publish-testpypi-candidate"]["optional"], True)
+        self.assertIs(actions["testpypi-source-exclusive-qualification"]["optional"], True)
+        self.assertTrue(actions["publish-testpypi-candidate"]["title"].startswith("Optional:"))
+        release = commands["create-github-release"]
+        self.assertIn("CODE_MOWER_CANDIDATE_RUN_ID", release)
+        self.assertIn("CODE_MOWER_TESTPYPI_PUBLISH", release)
+        self.assertIn("CODE_MOWER_PYPI_PUBLISH", release)
+        self.assertIn('--title "Code Mower v1.5.0"', release)
+        self.assertIn('--notes-file "$GITHUB_RELEASE_NOTES"', release)
+        self.assertIn('$CANDIDATE_DIR/code_mower-1.5.0-py3-none-any.whl', release)
+        self.assertEqual(
+            actions["create-github-release"]["required_env"],
+            ["CANDIDATE_DIR", "CANDIDATE_RUN_ID", "GITHUB_RELEASE_NOTES"],
+        )
         self.assertEqual(
             check_ids["package-index-rehearsal-docs"]["status"], "pass"
         )
@@ -8318,10 +8323,6 @@ def main():
         self.assertEqual(
             urls["dry-run-release-workflow"],
             "https://github.com/codemower-ai/code-mower/actions/workflows/release.yml",
-        )
-        self.assertEqual(
-            urls["testpypi-source-exclusive-qualification"],
-            "https://test.pypi.org/project/code-mower/",
         )
 
     def _package_index_docs_check(

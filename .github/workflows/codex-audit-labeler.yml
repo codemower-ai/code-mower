@@ -2,9 +2,8 @@
 name: Codex audit labeler
 
 on:
-  workflow_run:
-    workflows: ["Code Mower Local Audit Publication"]
-    types: [completed]
+  repository_dispatch:
+    types: [code-mower-local-audit-published]
   issue_comment:
     types: [created, edited]
 
@@ -23,7 +22,7 @@ env:
 jobs:
   label:
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'repository_dispatch' && github.event.action == 'code-mower-local-audit-published') ||
       (
         github.event_name == 'issue_comment' &&
         github.event.issue.pull_request &&
@@ -60,14 +59,14 @@ jobs:
 
       - name: Resolve verified publication comment
         id: publication
-        if: github.event_name == 'workflow_run'
+        if: github.event_name == 'repository_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           TRAILER_LANE: codex
         run: python3 tools/audit_publication.py prepare-label-event
 
       - name: Apply Codex audit labels
-        if: github.event_name != 'workflow_run' || steps.publication.outputs.ready == 'true'
+        if: github.event_name != 'repository_dispatch' || steps.publication.outputs.ready == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
@@ -77,14 +76,14 @@ jobs:
           TRAILER_LANE: codex
           CODE_MOWER_GITHUB_ACTIONS_WORKFLOWS: ".github/workflows/local-cli-audit.yml,.github/workflows/local-audit-publication.yml"
         run: |
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
             python3 -m tools.trailer_comment_labeler --lane "${TRAILER_LANE}" --event-path "${PUBLICATION_EVENT_PATH}"
           else
             scripts/dev-python -m code_mower.cli trailer-comment-labeler --lane "${TRAILER_LANE}"
           fi
 
       - name: Recompute Code Mower gate
-        if: github.event_name != 'workflow_run' || steps.publication.outputs.ready == 'true'
+        if: github.event_name != 'repository_dispatch' || steps.publication.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.publication.outputs.pr_number || github.event.issue.number }}

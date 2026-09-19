@@ -41,3 +41,27 @@ jobs:
     permissions: {}
     steps:
       - run: 'true'
+  # repository_dispatch resets GitHub's three-level workflow_run chain while
+  # carrying no audit assertion. Consumers fetch and verify this run, receipt,
+  # published comment and current PR/head before applying a label.
+  reconcile:
+    needs: receipt
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Notify verified audit labelers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          for attempt in 1 2 3; do
+            if gh api -X POST "repos/${GITHUB_REPOSITORY}/dispatches" \
+              -f event_type=code-mower-local-audit-published \
+              -F "client_payload[publication_run_id]=${GITHUB_RUN_ID}"; then
+              exit 0
+            fi
+            sleep "$((attempt * 2))"
+          done
+          echo "::warning::Audit publication is valid, but labeler notification failed; redispatch this immutable publication run id."
+          exit 0

@@ -48,9 +48,9 @@ For a repository that already has generated Code Mower support, follow
 [Upgrade An Existing Repository](upgrade-existing-repo.md) before copying a new
 `.code-mower.generated` tree.
 
-`1.5.0` is the supervised-pilot source target. Confirm it is visible on the
-selected package index before using these pinned commands. Prepublication
-qualification uses the exact wheel from
+`1.5.0` is the supervised-pilot release line. Confirm it is visible on the
+selected package index before using these pinned commands. Release qualification
+uses the exact wheel from
 [the candidate runbook](v150-release-runbook.md). To follow a future prerelease line
 instead of pinning this exact build:
 
@@ -258,6 +258,9 @@ The default next steps stay focused on the selected peer reviewers. For later
 calibration, existing-repository migration, package rehearsal, or cloud setup,
 use `code-mower next-steps --advanced`. These are not prerequisites for the first
 useful audit. Missing local history or cost data means unknown.
+
+For the later opt-in private-channel interaction path, see
+[Slack Setup](slack-setup.md).
 
 ## 8. Next: Claude + Codex Build Loop
 

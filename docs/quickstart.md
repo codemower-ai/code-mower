@@ -37,9 +37,9 @@ pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
 code-mower --version
 ```
 
-`1.5.0` is the supervised-pilot source target. Confirm it is visible on the
-selected package index before using these pinned commands. Prepublication
-qualification uses the exact wheel from
+`1.5.0` is the supervised-pilot release line. Confirm it is visible on the
+selected package index before using these pinned commands. Release qualification
+uses the exact wheel described by
 [the candidate runbook](v150-release-runbook.md). If you want a future prerelease instead
 of this exact release target, use:
 
@@ -662,3 +662,4 @@ Read in this order when moving from a first reviewer gate to a real build loop:
 - [Local Audit Runner](local-audit-runner.md)
 - [Provider Matrix](provider-matrix.md)
 - [GitHub Setup](github-setup.md)
+- [Optional Slack Setup](slack-setup.md)

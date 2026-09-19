@@ -224,11 +224,13 @@ class RoadmapDocFactsTests(unittest.TestCase):
         self.assertNotIn("Board work is underway", roadmap)
         self.assertNotIn("Board implementation is accepted on `main`, not underway", roadmap)
 
-    def test_v150_slack_is_in_release_qualification_and_no_longer_deferred(self):
+    def test_v150_slack_source_is_complete_without_baked_in_release_state(self):
         roadmap = " ".join(_read("docs/current-state-and-roadmap.md").split())
-        self.assertIn("implementation complete; release qualification active for `v1.5.0`", roadmap)
-        self.assertIn("This is the current release-qualification phase.", roadmap)
-        self.assertIn("Remaining work is live lifecycle qualification", roadmap)
+        self.assertIn("source implementation complete for `v1.5.0`", roadmap)
+        self.assertIn("The source implementation and qualification contract are complete.", roadmap)
+        self.assertIn("Consult #923 and the GitHub Release", roadmap)
+        self.assertNotIn("This is the current release-qualification phase.", roadmap)
+        self.assertNotIn("Remaining work is live lifecycle qualification", roadmap)
         self.assertNotIn(
             "This runtime work is deferred until the sequence above is complete.",
             roadmap,

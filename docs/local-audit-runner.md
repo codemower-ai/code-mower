@@ -112,8 +112,11 @@ they do not start a provider canary or repeat an audit.
 Local Claude and Codex merge-authority audits normally publish through
 `.github/workflows/local-audit-publication.yml`. The self-hosted audit job uses
 its short-lived `GITHUB_TOKEN` to dispatch this default-branch workflow. The
-publisher posts as `github-actions[bot]`; the completed run wakes the existing
-labelers and gate through `workflow_run`, without relying on bot comment events.
+publisher posts as `github-actions[bot]`; its receipt job then sends a narrow
+`repository_dispatch` containing only that publication run ID. The labelers fetch
+the completed run and verify its workflow identity, receipt, published comment,
+lane and current PR head before applying a label. This resets GitHub's three-level
+`workflow_run` chain without trusting the dispatch payload or bot comment event.
 No additional bot account or long-lived bot credential is needed.
 
 For direct compatibility posting and other build-loop operations, keep the

@@ -55,14 +55,15 @@ query reached a traversal limit. See [Graphify setup](graphify-setup.md).
 ## Qualification and boundaries
 
 The [qualification contract](v150-qualification.md) separates pre-merge rehearsal,
-the immutable merge-SHA candidate, private acceptance (#918), one completion and
-one confirmed-cancellation canary (#920), and publication/reinstall (#923).
+the immutable merge-SHA candidate, private acceptance (#918), one accepted
+completion and one accepted confirmed-cancellation outcome (#920), with every
+attempt and reservation count-preserved, and publication/reinstall (#923).
 Only explicitly observed outcomes count. Sanitized outcomes belong on #923 and
 the GitHub Release rather than in the qualified source.
 These notes claim no paid or live hosted result. Canaries require numeric task
 and aggregate authorization.
 
-Slack scope is one private workspace, private unshared channels, authorized
+Slack scope is one private workspace, one private unshared channel, authorized
 repository aliases, private replies, start/status/answer/confirmed cancellation,
 qualified Codex supervision and bounded hosted Devin execution. Registration is
 not qualification; acknowledgement is not provider exit or settled billing.
@@ -79,7 +80,8 @@ No private graph, query, source, task prose, credentials, mappings, provider
 output or adoption evidence belongs in public artifacts. Historical v1.4.x
 release notes, qualification records and published artifacts remain unchanged.
 
-The immutable v1.5.0 candidate must be built from the final reviewed
-documentation head after #1037. Publication attaches that retained artifact
-pair to the GitHub Release, verifies the non-publishing release-event run and
-assets, and removes the temporary candidate-run repository variable.
+The immutable v1.5.0 candidate must be built from the final reviewed release
+source after every required qualification ancestor, including #1043 and the
+final closeout change. Publication attaches that retained artifact pair to the
+GitHub Release, verifies the non-publishing release-event run and assets, and
+removes the temporary candidate-run repository variable.

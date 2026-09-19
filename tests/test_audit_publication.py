@@ -729,7 +729,8 @@ class ContractTests(unittest.TestCase):
 
     def test_workflow_has_no_unvalidated_output_or_pr_execution(self):
         text = (ROOT / "templates/workflows/local-audit-publication.yml.j2").read_text()
-        self.assertNotIn("client_payload", text)
+        self.assertIn("client_payload[publication_run_id]", text)
+        self.assertIn("event_type=code-mower-local-audit-published", text)
         self.assertNotIn("workflow_dispatch:", text)
         self.assertNotIn("pull_request", text)
         self.assertNotIn("upload-artifact", text)
@@ -1136,7 +1137,12 @@ class ConsumerTests(unittest.TestCase):
             for verdict in ("PASS", "BLOCKED"):
                 value, api, comment, lineage, identity = self.setup_case(lane, verdict)
                 event = pub.prepare_label_event(
-                    {"workflow_run": {"id": 800}}, {"TRAILER_LANE": lane}, api
+                    {
+                        "action": pub.LABEL_EVENT,
+                        "client_payload": {"publication_run_id": 800},
+                    },
+                    {"TRAILER_LANE": lane},
+                    api,
                 )
                 with tempfile.TemporaryDirectory() as tmp:
                     path = Path(tmp) / "event.json"
@@ -1171,8 +1177,70 @@ class ConsumerTests(unittest.TestCase):
                 api.pr["head"]["sha"] = "c" * 40
                 with self.assertRaises(pub.Refused):
                     pub.prepare_label_event(
-                        {"workflow_run": {"id": 800}}, {"TRAILER_LANE": lane}, api
+                        {
+                            "action": pub.LABEL_EVENT,
+                            "client_payload": {"publication_run_id": 800},
+                        },
+                        {"TRAILER_LANE": lane},
+                        api,
                     )
+
+    def test_label_notification_rejects_untrusted_payload_shapes(self):
+        _, api, _, _, _ = self.setup_case("codex", "PASS")
+        for event in (
+            {},
+            {"action": "other", "client_payload": {"publication_run_id": 800}},
+            {"action": pub.LABEL_EVENT, "client_payload": {"publication_run_id": "800"}},
+            {
+                "action": pub.LABEL_EVENT,
+                "client_payload": {"publication_run_id": 800, "head_sha": "a" * 40},
+            },
+        ):
+            with self.subTest(event=event), self.assertRaises(pub.Refused):
+                pub.prepare_label_event(event, {"TRAILER_LANE": "codex"}, api)
+
+    def test_label_notification_waits_for_terminal_publication(self):
+        _, api, _, _, _ = self.setup_case("codex", "PASS")
+        api.run["status"] = "in_progress"
+        api.run["conclusion"] = None
+        sleeps = []
+
+        def complete(delay):
+            sleeps.append(delay)
+            api.run["status"] = "completed"
+            api.run["conclusion"] = "success"
+
+        event = pub.prepare_label_event(
+            {
+                "action": pub.LABEL_EVENT,
+                "client_payload": {"publication_run_id": 800},
+            },
+            {"TRAILER_LANE": "codex"},
+            api,
+            sleep=complete,
+        )
+        self.assertEqual(sleeps, [pub.LABEL_RUN_DELAY])
+        self.assertEqual(event["issue"]["number"], 42)
+
+    def test_label_notification_fails_closed_after_bounded_wait(self):
+        _, api, _, _, _ = self.setup_case("codex", "PASS")
+        api.run["status"] = "in_progress"
+        api.run["conclusion"] = None
+        sleeps = []
+        with self.assertRaisesRegex(pub.Refused, "publication run not successful"):
+            pub.prepare_label_event(
+                {
+                    "action": pub.LABEL_EVENT,
+                    "client_payload": {"publication_run_id": 800},
+                },
+                {"TRAILER_LANE": "codex"},
+                api,
+                sleep=sleeps.append,
+            )
+        self.assertEqual(
+            sleeps,
+            [pub.LABEL_RUN_DELAY] * (pub.LABEL_RUN_ATTEMPTS - 1),
+        )
 
     def test_gate_runs_actual_standalone_template_with_workflow_receipt(self):
         # Execute the emitted gate's Python block in isolation; only GitHub is simulated.
