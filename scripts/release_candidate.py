@@ -29,6 +29,7 @@ MODULES = (
 DOCS = ("v150-release-notes.md", "v150-qualification.md", "v150-release-runbook.md",
         "slack-setup.md", "graphify-setup.md")
 REHEARSAL_SCHEMA = "code_mower.v150_rehearsal.v1"
+CANARY_EQUIVALENCE_SCHEMA = "code_mower.canary_candidate_equivalence.v1"
 GRAPHIFY_CHECKS = (
     "graphify_doc_ref_excluded_reader_available",
     "graphify_ambiguity_only_partial_usable_complete_generation",
@@ -44,6 +45,24 @@ REHEARSAL_CHECKS = (
     "disposable_rollback_to_digest_verified_1_4_2_preserves_state",
     "uninstall_preserves_synthetic_state",
 )
+
+# A one-release exception for carrying already accepted paid canary outcomes
+# across the reviewed release-closeout changes. Every wheel member outside
+# these audit/release/documentation surfaces must remain byte-identical. Keep
+# this list narrow: Slack, supervisor, provider, entry-point and dependency
+# changes must force new live canaries under a new explicit authorization.
+CANARY_EQUIVALENCE_ALLOWED_WHEEL_CHANGES = frozenset({
+    "code_mower/audit_publication.py",
+    "code_mower/release_readiness.py",
+    "code_mower/templates/workflows/local-audit-publication.yml.j2",
+    "code_mower/templates/workflows/trailer-comment-labeler.yml.j2",
+    f"code_mower-{VERSION}.data/data/share/code-mower/docs/graphify-setup.md",
+    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v150-qualification.md",
+    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v150-release-notes.md",
+    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v150-release-runbook.md",
+    f"code_mower-{VERSION}.dist-info/METADATA",
+    f"code_mower-{VERSION}.dist-info/RECORD",
+})
 
 
 def run(*args, cwd=None):
@@ -140,6 +159,73 @@ def verify_rehearsal(dist: Path, manifest: dict):
     return evidence
 
 
+def _wheel_members(path: Path) -> dict[str, bytes]:
+    with zipfile.ZipFile(path) as archive:
+        return {name: archive.read(name) for name in archive.namelist()}
+
+
+def _metadata_headers(raw: bytes) -> list[tuple[str, str]]:
+    metadata = BytesParser().parsebytes(raw)
+    return sorted((name.lower(), value.strip()) for name, value in metadata.items())
+
+
+def compare_canary_surface(prior_dist: Path, final_dist: Path, prior_sha: str,
+                           final_sha: str, source: Path):
+    """Attest that a final candidate did not change the paid-canary surface.
+
+    This does not qualify either candidate or replace final-candidate private
+    acceptance. It only establishes that already accepted live canaries may be
+    carried across the bounded v1.5.0 release-closeout delta documented in the
+    qualification contract.
+    """
+    require(prior_sha != final_sha, "candidate comparison requires distinct source SHAs")
+    prior = verify(prior_dist, prior_sha, candidate=True)
+    final = verify(final_dist, final_sha, candidate=True)
+    run("git", "merge-base", "--is-ancestor", prior_sha, final_sha, cwd=source)
+
+    prior_wheel = prior_dist / NAMES[0]
+    final_wheel = final_dist / NAMES[0]
+    before = _wheel_members(prior_wheel)
+    after = _wheel_members(final_wheel)
+    require(set(before) == set(after), "wheel member inventory changed")
+    changed = sorted(name for name in before if before[name] != after[name])
+    disallowed = sorted(set(changed) - CANARY_EQUIVALENCE_ALLOWED_WHEEL_CHANGES)
+    require(not disallowed, "paid-canary surface changed: " + ", ".join(disallowed))
+    require(changed, "candidate comparison found no wheel member changes")
+
+    metadata_name = f"code_mower-{VERSION}.dist-info/METADATA"
+    if metadata_name in changed:
+        require(_metadata_headers(before[metadata_name]) == _metadata_headers(after[metadata_name]),
+                "package metadata headers changed")
+
+    required_canary_members = sorted("code_mower/" + module for module in MODULES)
+    require(all(before[name] == after[name] for name in required_canary_members),
+            "required Slack, Graphify or supervisor module changed")
+    unchanged = len(before) - len(changed)
+    changed_digests = {
+        name: {
+            "prior": hashlib.sha256(before[name]).hexdigest(),
+            "final": hashlib.sha256(after[name]).hexdigest(),
+        }
+        for name in changed
+    }
+    return {
+        "schema": CANARY_EQUIVALENCE_SCHEMA,
+        "status": "pass",
+        "prior_source_sha": prior_sha,
+        "final_source_sha": final_sha,
+        "prior_release_pr": prior["release_pr"],
+        "final_release_pr": final["release_pr"],
+        "prior_wheel_sha256": prior["artifacts"][NAMES[0]],
+        "final_wheel_sha256": final["artifacts"][NAMES[0]],
+        "changed_wheel_members": changed,
+        "changed_wheel_member_sha256": changed_digests,
+        "unchanged_wheel_member_count": unchanged,
+        "metadata_headers_unchanged": True,
+        "required_canary_members_unchanged": True,
+    }
+
+
 def build(source: Path, dist: Path, sha: str, release_pr: int | None):
     require(re.fullmatch(r"[0-9a-f]{40}", sha), "a full source SHA is required")
     require(run("git", "rev-parse", "HEAD", cwd=source) == sha, "checkout is not the requested SHA")
@@ -178,10 +264,13 @@ def build(source: Path, dist: Path, sha: str, release_pr: int | None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("build", "verify"))
+    parser.add_argument("action", choices=("build", "verify", "compare-canary-surface"))
     parser.add_argument("--source", type=Path, default=Path.cwd())
     parser.add_argument("--dist", type=Path, required=True)
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--prior-dist", type=Path)
+    parser.add_argument("--prior-source-sha")
+    parser.add_argument("--report", type=Path)
     parser.add_argument("--release-pr", type=int)
     parser.add_argument("--require-candidate", action="store_true")
     args = parser.parse_args(argv)
@@ -195,12 +284,25 @@ def main(argv=None):
                 require(pr["state"] == "MERGED" and pr["mergeCommit"]["oid"] == args.source_sha,
                         "candidate must bind the release PR's actual merge SHA")
             result = build(args.source.resolve(), args.dist.resolve(), args.source_sha, args.release_pr)
-        else:
+        elif args.action == "verify":
             result = verify(args.dist.resolve(), args.source_sha, candidate=args.require_candidate)
+        else:
+            require(args.prior_dist is not None and args.prior_source_sha is not None,
+                    "candidate comparison requires --prior-dist and --prior-source-sha")
+            result = compare_canary_surface(
+                args.prior_dist.resolve(), args.dist.resolve(), args.prior_source_sha,
+                args.source_sha, args.source.resolve())
+            if args.report:
+                require(not args.report.exists(), "comparison report already exists")
+                args.report.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f"Candidate refused: {exc}\n")
-    print(json.dumps({key: result[key] for key in
-                      ("schema", "version", "source_sha", "kind", "release_pr", "artifacts")}, sort_keys=True))
+    if args.action == "compare-canary-surface":
+        output = result
+    else:
+        output = {key: result[key] for key in
+                  ("schema", "version", "source_sha", "kind", "release_pr", "artifacts")}
+    print(json.dumps(output, sort_keys=True))
     return 0
 
 

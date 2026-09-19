@@ -66,6 +66,9 @@ qualification/publication must consume the retained pair; never rerun the
 candidate build or dispatch a second build for that SHA. If code or packaged
 documentation changes, invalidate this candidate explicitly and repeat all
 gates for a newly reviewed source. Do not tag or publish the invalidated bytes.
+The bounded v1.5.0 paid-canary carry-forward in section 4 changes neither rule:
+it compares an invalidated canary candidate with a new final candidate and does
+not authorize publication of the former.
 
 For **pre-merge local rehearsal only**, clone the reviewed head into a new clean
 directory, install build/twine in a separate tools venv and use:
@@ -122,12 +125,60 @@ silently retry. Preserve unsettled/unknown outcomes and full original
 reservations. No elapsed time, credits or prior release authorization substitutes
 for this decision. An unresolved failure blocks publication.
 
+### Bounded v1.5.0 canary carry-forward
+
+The exact final candidate remains the default canary input. For the observed
+v1.5.0 closeout only, already accepted paid outcomes may carry from their
+retained candidate to a reviewed descendant candidate when no further provider
+create is authorized and all of these conditions pass:
+
+1. both candidates are successful first-attempt immutable workflow artifacts;
+2. the canary source is an ancestor of the final source;
+3. `compare-canary-surface` finds the same wheel-member inventory, unchanged
+   package metadata headers, and byte-identical Slack, supervisor, provider,
+   CLI, persistence, state, dependency and entry-point surfaces;
+4. every changed wheel member is in the command's closed v1.5.0 allowlist of
+   audit publication, release readiness, their workflow templates, packaged
+   release documentation, `METADATA` description text and `RECORD`;
+5. the changed audit-publication path is replayed successfully against both
+   immutable audit receipts at the exact canary head;
+6. the final candidate passes every normal rehearsal, and #918 repeats the
+   private no-provider installation and administration lifecycle against its
+   exact digest; and
+7. #920 and #923 count-preserve every attempt, reservation, failure, replacement,
+   cancellation acknowledgement, observed exit and unsettled billing state.
+
+Unknown, added or dynamically loaded wheel members fail closed. A version,
+dependency, entry point, Slack manifest, supervisor/provider, CLI/bootstrap,
+persistence or state-contract difference requires fresh numeric authorization
+and new canaries. An owner comment alone cannot waive this comparison.
+
+After downloading both retained candidates, write the public sanitized
+attestation outside either artifact directory:
+
+```bash
+PRIOR_CANDIDATE_DIR=REPLACE_WITH_RETAINED_CANARY_CANDIDATE
+PRIOR_RELEASE_SHA=REPLACE_WITH_CANARY_SOURCE_SHA
+EQUIVALENCE_REPORT="$PWD/v150-canary-equivalence.json"
+python scripts/release_candidate.py compare-canary-surface \
+  --prior-dist "$PRIOR_CANDIDATE_DIR" --prior-source-sha "$PRIOR_RELEASE_SHA" \
+  --dist "$CANDIDATE_DIR" --source-sha "$RELEASE_SHA" --source "$PWD" \
+  --report "$EQUIVALENCE_REPORT"
+```
+
+Record both source SHAs, candidate runs and wheel digests, the complete changed
+member list, unchanged-member count, final rehearsal result, exact-head audit
+replay and private final-candidate acceptance on #923 and the GitHub Release.
+This report carries the two accepted paid outcomes only; it does not replace
+final-candidate publication, reinstall or private administration evidence.
+
 ## 5. Owner decision, unchanged tag and publication (#923)
 
-Only after #918 and #920 pass against the retained candidate does the owner
-record the release decision on #923. Recheck candidate digests, the preparation
-PR's merge SHA, independent review, CI and authoritative gate before tagging.
-Do not modify release source to append qualification evidence.
+Only after #918 passes against the retained final candidate and #920 passes
+against it or the bounded carry-forward above does the owner record the release
+decision on #923. Recheck candidate digests, the preparation PR's merge SHA,
+independent review, CI and authoritative gate before tagging. Do not modify
+release source to append qualification evidence.
 
 ```bash
 git fetch origin "$RELEASE_SHA"

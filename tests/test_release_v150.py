@@ -156,6 +156,129 @@ class RehearsalEvidenceTests(unittest.TestCase):
                     self.verify()
 
 
+class CanaryCandidateEquivalenceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.prior = self.root / "prior"
+        self.final = self.root / "final"
+        self.prior_sha = "a" * 40
+        self.final_sha = "b" * 40
+        self._write_candidate(self.prior, self.prior_sha, 100)
+        self._write_candidate(
+            self.final, self.final_sha, 101,
+            changes={
+                "code_mower/audit_publication.py": b"final audit publication",
+                "code_mower-1.5.0.data/data/share/code-mower/docs/v150-qualification.md":
+                    b"final qualification",
+                "code_mower-1.5.0.dist-info/METADATA": self._metadata(b"final description"),
+                "code_mower-1.5.0.dist-info/RECORD": b"final record",
+            },
+        )
+
+    @staticmethod
+    def _metadata(description=b"prior description"):
+        return (b"Name: code-mower\nVersion: 1.5.0\nSummary: stable\n"
+                b"Requires-Dist: PyYAML>=6.0\nRequires-Dist: packaging>=23.2\n\n" + description)
+
+    def _wheel_files(self):
+        files = {
+            "code_mower-1.5.0.dist-info/METADATA": self._metadata(),
+            "code_mower-1.5.0.dist-info/RECORD": b"prior record",
+            "code_mower-1.5.0.dist-info/entry_points.txt":
+                b"[console_scripts]\ncode-mower=code_mower.cli:main\n",
+            "code_mower/audit_publication.py": b"prior audit publication",
+            "code_mower/release_readiness.py": b"prior release readiness",
+            "code_mower/campaign_adapters.py": b"paid canary surface",
+            "code_mower/templates/workflows/local-audit-publication.yml.j2": b"prior template",
+            "code_mower/templates/workflows/trailer-comment-labeler.yml.j2": b"prior template",
+        }
+        files.update({"code_mower/" + module: b"stable required module"
+                      for module in candidate.MODULES})
+        files.update({"code_mower-1.5.0.data/data/share/code-mower/docs/" + doc:
+                      b"stable documentation" for doc in candidate.DOCS})
+        return files
+
+    def _write_candidate(self, path, sha, release_pr, changes=None):
+        path.mkdir()
+        files = self._wheel_files()
+        files.update(changes or {})
+        with zipfile.ZipFile(path / candidate.NAMES[0], "w") as archive:
+            for name, content in files.items():
+                archive.writestr(name, content)
+        with tarfile.open(path / candidate.NAMES[1], "w:gz") as archive:
+            for member in (["src/code_mower/" + name for name in candidate.MODULES] +
+                           ["docs/" + name for name in candidate.DOCS]):
+                info = tarfile.TarInfo("code_mower-1.5.0/" + member)
+                info.size = len(b"synthetic")
+                archive.addfile(info, io.BytesIO(b"synthetic"))
+        manifest = {
+            "schema": candidate.SCHEMA,
+            "version": candidate.VERSION,
+            "source_sha": sha,
+            "kind": "candidate",
+            "release_pr": release_pr,
+            "artifacts": {name: candidate.digest(path / name) for name in candidate.NAMES},
+            "inventory": candidate.inspect(path),
+        }
+        (path / "candidate.json").write_text(json.dumps(manifest))
+
+    def compare(self):
+        with patch.object(candidate, "run", return_value="") as ancestry:
+            result = candidate.compare_canary_surface(
+                self.prior, self.final, self.prior_sha, self.final_sha, ROOT)
+        ancestry.assert_called_once_with(
+            "git", "merge-base", "--is-ancestor", self.prior_sha, self.final_sha, cwd=ROOT)
+        return result
+
+    def test_closed_non_canary_delta_passes_with_explicit_attestation(self):
+        result = self.compare()
+        self.assertEqual(result["schema"], candidate.CANARY_EQUIVALENCE_SCHEMA)
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["prior_release_pr"], 100)
+        self.assertEqual(result["final_release_pr"], 101)
+        self.assertTrue(result["metadata_headers_unchanged"])
+        self.assertTrue(result["required_canary_members_unchanged"])
+        self.assertEqual(result["changed_wheel_members"], sorted({
+            "code_mower/audit_publication.py",
+            "code_mower-1.5.0.data/data/share/code-mower/docs/v150-qualification.md",
+            "code_mower-1.5.0.dist-info/METADATA",
+            "code_mower-1.5.0.dist-info/RECORD",
+        }))
+        self.assertEqual(set(result["changed_wheel_member_sha256"]),
+                         set(result["changed_wheel_members"]))
+        for digests in result["changed_wheel_member_sha256"].values():
+            self.assertRegex(digests["prior"], r"^[0-9a-f]{64}$")
+            self.assertRegex(digests["final"], r"^[0-9a-f]{64}$")
+            self.assertNotEqual(digests["prior"], digests["final"])
+
+    def test_operational_member_or_inventory_change_fails_closed(self):
+        for name, content, error in (
+            ("code_mower/campaign_adapters.py", b"changed provider path", "paid-canary surface"),
+            ("code_mower/new_dynamic_loader.py", b"new member", "member inventory"),
+        ):
+            with self.subTest(name=name):
+                final = self.root / ("bad-" + name.rsplit("/", 1)[-1])
+                self._write_candidate(final, self.final_sha, 101, changes={name: content})
+                with patch.object(candidate, "run", return_value=""), \
+                        self.assertRaisesRegex(ValueError, error):
+                    candidate.compare_canary_surface(
+                        self.prior, final, self.prior_sha, self.final_sha, ROOT)
+
+    def test_metadata_header_change_fails_closed(self):
+        final = self.root / "bad-metadata"
+        metadata = self._metadata(b"final description").replace(b"Summary: stable", b"Summary: changed")
+        self._write_candidate(final, self.final_sha, 101, changes={
+            "code_mower-1.5.0.dist-info/METADATA": metadata,
+            "code_mower-1.5.0.dist-info/RECORD": b"final record",
+        })
+        with patch.object(candidate, "run", return_value=""), \
+                self.assertRaisesRegex(ValueError, "metadata headers"):
+            candidate.compare_canary_surface(
+                self.prior, final, self.prior_sha, self.final_sha, ROOT)
+
+
 class WorkflowBindingTests(unittest.TestCase):
     def setUp(self):
         self.candidate_steps = yaml.safe_load((ROOT / ".github/workflows/release-candidate.yml").read_text())["jobs"]["candidate"]["steps"]
@@ -263,6 +386,23 @@ class ReleaseContractTests(unittest.TestCase):
             with self.subTest(text=bad[:10]), patch.object(release_readiness, "_read_text_if_exists", return_value=bad):
                 order, assertions = release_readiness._candidate_runbook_checks(ROOT)
                 self.assertTrue(order or assertions)
+
+    def test_bounded_canary_carry_forward_is_closed_and_machine_verified(self):
+        runbook = (ROOT / "docs/v150-release-runbook.md").read_text()
+        qualification = (ROOT / "docs/v150-qualification.md").read_text()
+        for marker in (
+            "compare-canary-surface",
+            "same wheel-member inventory",
+            "Unknown, added or dynamically loaded wheel members fail closed",
+            "An owner comment alone cannot waive this comparison",
+            "exact final candidate",
+            "private no-provider installation and administration lifecycle",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, runbook)
+        self.assertIn("code_mower.canary_candidate_equivalence.v1", qualification)
+        self.assertIn("any operational member difference requires newly authorized canaries",
+                      qualification)
 
     def test_later_versions_do_not_revert_to_building_at_publication(self):
         with patch.object(release_readiness, "_python_package_version", return_value="1.5.1"):

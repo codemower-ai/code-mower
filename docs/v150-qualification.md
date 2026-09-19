@@ -18,6 +18,7 @@ remain unchanged.
 | Wheel and sdist | `code-mower-candidate` artifact: `code_mower-1.5.0-py3-none-any.whl` and `code_mower-1.5.0.tar.gz` |
 | Digests/inventory | `candidate.json`: source SHA, merged PR, SHA-256 of each artifact, complete inspected member lists and default dependencies |
 | Disposable rehearsals | `rehearsal.json`, bound to that source SHA and exact wheel digest |
+| Bounded canary carry-forward | `code_mower.canary_candidate_equivalence.v1` report on #923, binding the retained canary and final candidates, ancestry, both wheel digests, the complete changed-member list and exact operational closure |
 | Private qualification | Sanitized pass/fail and immutable identifiers on #918 and #920, never raw private observations |
 | Publication | #923 owner decision and observed evidence, unchanged `v1.5.0` tag SHA, publication and release-event runs, GitHub Release asset digests, canonical index digests and independent reinstall |
 
@@ -34,8 +35,8 @@ remain unchanged.
 | Disable/removal | Disabled offline observation denies; local manifest removed; package uninstall preserves synthetic state | Offline only; live disable/uninstall belongs to #918 |
 | Rollback | Disposable package restores exact digest-verified 1.4.2 and preserves synthetic state | Does not authorize downgrading live v2 claims or schema |
 | Private administration | Install/bind/readiness, rotation, disable/uninstall and retained state observed against this candidate | #918, requires owner-controlled private interfaces |
-| Two accepted canary outcomes | One accepted completion and one accepted confirmed cancellation, writer/reviewer exit observed, independent review/gate and uncertainty preserved; every failed, retired, replacement or recovery attempt and reservation remains count-preserved in the evidence | #920, only after explicit numeric authorization; the prep PR does not run them and no retry may be silent |
-| Publish/reinstall | Same source SHA and same bytes after #918/#920 pass, owner decision, manual publication, verified non-publishing release-event run, exact GitHub Release assets, independent canonical PyPI reinstall and temporary variable cleanup | Record observed results on #923 and the GitHub Release; not run by the prep PR |
+| Two accepted canary outcomes | One accepted completion and one accepted confirmed cancellation, writer/reviewer exit observed, independent review/gate and uncertainty preserved; every failed, retired, replacement or recovery attempt and reservation remains count-preserved. Outcomes use the final candidate by default. The observed v1.5.0 closeout may use only the runbook's machine-verified closed-member carry-forward from an ancestor candidate, with exact final-candidate #918 acceptance and audit-receipt replay; any operational member difference requires newly authorized canaries | #920, only after explicit numeric authorization; the prep PR does not run them and no retry may be silent |
+| Publish/reinstall | Final source SHA and final candidate bytes after #918 and #920 pass directly or through the bounded canary carry-forward, owner decision, manual publication, verified non-publishing release-event run, exact GitHub Release assets, independent canonical PyPI reinstall and temporary variable cleanup | Record observed results on #923 and the GitHub Release; not run by the prep PR |
 
 An offline synthetic green observation always exits nonzero and reports
 `ready=false`, `dispatch_authorized=false`. A live probe needs the trusted
@@ -47,4 +48,6 @@ publish only counts, check outcomes, public source/run identities and artifact
 digests. The GitHub Release and #923 are the evidence records for what was
 actually observed; this packaged contract remains unchanged. A failed or expired
 candidate is a stop: do not silently rebuild, relabel a different SHA, replay
-prior receipts or substitute source modules.
+prior receipts or substitute source modules. The bounded carry-forward compares
+retained immutable candidates and replays only their audit receipts; it never
+replays or invents a provider outcome.
