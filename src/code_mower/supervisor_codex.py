@@ -22,12 +22,15 @@ from .supervisor_contract import MAX_BYTES, SupervisorError, decode, schema
 class CodexRuntime:
     product = "codex"
 
-    def __init__(self, *, executable: Path, private_root: Path, model: str, environment=None):
+    def __init__(self, *, executable: Path, private_root: Path, model: str,
+                 credential_store: str = "keyring", environment=None):
         if (not executable.is_absolute() or not executable.is_file()
                 or not os.access(executable, os.X_OK)
+                or credential_store not in {"keyring", "file"}
                 or not re.fullmatch(r"[A-Za-z0-9._:-]{1,100}", model)):
             raise SupervisorError("supervisor_unavailable")
         self.executable, self.root, self.model = executable, private_root, model
+        self.credential_store = credential_store
         self.environment = environment
         # A new connection object means a new generation. Never resume arbitrary
         # CLI sessions or infer liveness from a saved operating brief.
@@ -86,7 +89,10 @@ class CodexRuntime:
                             "--output-schema", str(files["schema"]),
                             "--output-last-message", str(files["result"]),
                             "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
-                            "-c", "mcp_servers={}"]
+                            "-c", "mcp_servers={}", "-c",
+                            f'cli_auth_credentials_store="{self.credential_store}"']
+                    if self.credential_store == "keyring":
+                        argv.extend(["--enable", "secret_auth_storage"])
                     for feature in ("shell_tool", "unified_exec", "apps", "plugins", "hooks",
                                     "multi_agent", "browser_use", "computer_use", "image_generation",
                                     "code_mode", "code_mode_host", "skill_search", "goals", "auth_elicitation"):

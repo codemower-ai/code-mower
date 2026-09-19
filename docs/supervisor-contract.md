@@ -65,9 +65,14 @@ or recovery allowances in this v1 boundary.
 ## Maintained local runtime connection
 
 Construct `supervisor_codex.CodexRuntime` with an explicitly selected absolute
-Codex executable, model and private runtime directory. The caller retains the
-already configured runtime authentication; the adapter neither discovers nor
-reads credentials. `CodexRuntime` runs fixed `codex exec` invocations with
+Codex executable, model, private runtime directory and credential store. The
+store is `keyring` by default; headless hosts that deliberately use the isolated
+home's private `auth.json` pass `credential_store="file"`. No other store is
+accepted. The caller retains the already configured runtime authentication; the
+adapter neither discovers nor reads credentials. `CodexRuntime` passes that
+closed credential-store selection explicitly because `--ignore-user-config`
+also ignores the isolated home's non-secret store setting. It runs fixed
+`codex exec` invocations with
 `--output-schema`, `--output-last-message`, `--ephemeral`, `--ignore-user-config`,
 read-only sandboxing and no approvals. Shell execution, apps, plugins, hooks,
 multi-agent, browser/computer use and other execution features are disabled;
@@ -95,7 +100,7 @@ already privately configured/resolved objects; this is not a public CLI):
 
 ```python
 runtime = CodexRuntime(executable=codex_executable, private_root=runtime_root,
-                       model=selected_model)
+                       model=selected_model, credential_store="keyring")
 supervisor = Supervisor(root=supervisor_root, runner=registered_runner,
                         authorization=authorized_private_store, runtime=runtime,
                         builder=HostedBuilder(configured_work_orders),
