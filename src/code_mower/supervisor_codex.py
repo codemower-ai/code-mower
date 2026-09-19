@@ -12,11 +12,81 @@ import re
 import stat
 import tempfile
 import uuid
+from copy import deepcopy
 from pathlib import Path
 
 from .context_store import ContextStore
 from .lane_delivery import supervise_process
 from .supervisor_contract import MAX_BYTES, SupervisorError, decode, schema
+
+
+def _json_schema_type(value):
+    if value is None:
+        return "null"
+    if type(value) is bool:
+        return "boolean"
+    if type(value) is int:
+        return "integer"
+    if type(value) is float:
+        return "number"
+    if type(value) is str:
+        return "string"
+    if type(value) is list:
+        return "array"
+    if type(value) is dict:
+        return "object"
+    raise SupervisorError("supervisor_unavailable")
+
+
+def _decision_output_schema():
+    """Materialize only the decision schema accepted by Codex structured output."""
+    contract_schema = schema()
+    definitions = contract_schema["$defs"]
+    result = deepcopy(definitions["decision"])
+    selected = {}
+
+    def references(value):
+        found = set()
+        if isinstance(value, dict):
+            ref = value.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                found.add(ref.removeprefix("#/$defs/"))
+            for child in value.values():
+                found.update(references(child))
+        elif isinstance(value, list):
+            for child in value:
+                found.update(references(child))
+        return found
+
+    pending = references(result)
+    while pending:
+        name = pending.pop()
+        if name in selected or name not in definitions:
+            if name not in definitions:
+                raise SupervisorError("supervisor_unavailable")
+            continue
+        selected[name] = deepcopy(definitions[name])
+        pending.update(references(selected[name]) - selected.keys())
+    if selected:
+        result["$defs"] = selected
+
+    def make_types_explicit(value):
+        if isinstance(value, dict):
+            if "type" not in value and "const" in value:
+                value["type"] = _json_schema_type(value["const"])
+            elif "type" not in value and "enum" in value:
+                types = {_json_schema_type(item) for item in value["enum"]}
+                if len(types) != 1:
+                    raise SupervisorError("supervisor_unavailable")
+                value["type"] = types.pop()
+            for child in value.values():
+                make_types_explicit(child)
+        elif isinstance(value, list):
+            for child in value:
+                make_types_explicit(child)
+
+    make_types_explicit(result)
+    return result
 
 
 class CodexRuntime:
@@ -48,7 +118,7 @@ class CodexRuntime:
                     files = {name: root / name for name in ("input", "schema", "result", "log")}
                     for path in files.values():
                         path.touch(mode=0o600, exist_ok=False)
-                    decision_schema = {**schema()["$defs"]["decision"], "$defs": schema()["$defs"]}
+                    decision_schema = _decision_output_schema()
                     files["schema"].write_text(json.dumps(decision_schema), encoding="utf-8")
                     instructions = (
                         "You are the explicitly selected Code Mower Codex supervisor. Decide only; "
